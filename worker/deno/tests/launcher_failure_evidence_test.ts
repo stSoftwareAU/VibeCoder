@@ -20,6 +20,7 @@ import { ANOTHER_WORKER_RUNNING_EXIT } from "../commands/container_reap.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
 import { HOST_EGRESS_BLOCKED_EXIT_STATUS } from "../lib/container_egress_probe.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "../lib/toolchain_selfcheck.ts";
+import { ROOT_FS_FAULT_EXIT_STATUS } from "../lib/root_filesystem_fault.ts";
 
 const KNOWN = knownWorkerStatuses(
   QUOTA_PAUSE_EXIT_STATUS,
@@ -28,6 +29,7 @@ const KNOWN = knownWorkerStatuses(
   EXTENSION_START_ABORT_EXIT_STATUS,
   HOST_EGRESS_BLOCKED_EXIT_STATUS,
   TOOLCHAIN_SELFCHECK_EXIT_STATUS,
+  ROOT_FS_FAULT_EXIT_STATUS,
 );
 
 // ---------------------------------------------------------------------------
@@ -79,16 +81,25 @@ Deno.test("knownWorkerStatuses - the table matches the real exit constants", () 
   // runtime client would send the reader to the wrong half of the search
   // space.
   assertEquals(TOOLCHAIN_SELFCHECK_EXIT_STATUS, 89);
+  // The read-only root of Issue #3179 is the worker's own status as well.
+  assertEquals(ROOT_FS_FAULT_EXIT_STATUS, 74);
   assertEquals([...KNOWN.statuses].sort((a, b) => a - b), [
     0,
     1,
     3,
     4,
+    74,
     75,
     76,
     88,
     89,
   ]);
+});
+
+Deno.test("explainExitStatus - a read-only root filesystem is named as a host fault (Issue #3179)", () => {
+  const explanation = explainExitStatus(ROOT_FS_FAULT_EXIT_STATUS, KNOWN);
+  assertStringIncludes(explanation, "root filesystem");
+  assertEquals(explanation.includes("container runtime client"), false);
 });
 
 Deno.test("explainExitStatus - a failed toolchain self-check is named, not blamed on the runtime (Issue #1956)", () => {

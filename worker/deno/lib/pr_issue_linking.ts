@@ -37,6 +37,7 @@ import {
 } from "./merged_sweep_watermark.ts";
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { holdIssueOpenForMissingCriteria } from "./missing_criterion_close_guard.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
 function buildPrUrl(repo: string, prNumber: number): string {
@@ -1040,6 +1041,31 @@ export async function closeIssuesForMergedPrs(
                 rollbackSkipReason(rollback),
             );
             heldBack = true;
+            continue;
+          }
+
+          // Issue #3177: the merged PR's own closure block says a criterion
+          // is missing, so the merge does not complete the issue. A milestone
+          // PR merges unreviewed on green CI, so this is the only check.
+          // Leave it open for a human; a failed label throws to the catch
+          // below and is retried next cycle.
+          const missing = pr.missingCriteria ?? [];
+          if (missing.length > 0) {
+            const held = await holdIssueOpenForMissingCriteria({
+              repo,
+              issueNumber,
+              prNumber: pr.number,
+              baseRefName: landing.baseRefName,
+              missing,
+              issueLabels: issueData.labels.map((l) => l.name),
+              ghCommandFn,
+            });
+            options?.logFn?.(
+              `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} ` +
+                `marks ${missing.length} criteria missing — left open ` +
+                `(${held}) (Issue #3177)`,
+            );
+            if (held === "held") mutated = true;
             continue;
           }
 

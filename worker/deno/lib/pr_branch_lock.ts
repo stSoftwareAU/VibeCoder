@@ -104,6 +104,11 @@ export interface BranchUpdateLockResult {
   lockCommentId?: number;
   /** Worker ID of the lock winner (when contention occurred). */
   winnerId?: string;
+  /**
+   * Unix seconds the winner's lock marker carries, so a caller that stands
+   * down can say how old the holding lock is (Issue #3031).
+   */
+  winnerLockedAt?: number;
 }
 
 /** Options for acquiring a branch update lock. */
@@ -663,7 +668,11 @@ export async function acquireBranchUpdateLock(
     await dropOwnLockComment();
     return {
       ok: true,
-      value: { acquired: false, winnerId: lockData?.workerId },
+      value: {
+        acquired: false,
+        winnerId: lockData?.workerId,
+        ...(lockData ? { winnerLockedAt: lockData.timestamp } : {}),
+      },
     };
   }
 
@@ -691,7 +700,14 @@ export async function acquireBranchUpdateLock(
   // may copy (Issue #1249).
   await dropOwnLockComment();
 
-  return { ok: true, value: { acquired: false, winnerId } };
+  return {
+    ok: true,
+    value: {
+      acquired: false,
+      winnerId,
+      ...(winnerData ? { winnerLockedAt: winnerData.timestamp } : {}),
+    },
+  };
 }
 
 /**

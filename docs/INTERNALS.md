@@ -358,6 +358,17 @@ bash `worker/run_core.sh` conductor. It sequences:
    or before the merge. An unreadable comment thread leaves the issue open,
    naming the cause, rather than closing on an unproven assumption.
 
+   Last, both closers read the merged PR's **own closure block** (Issue
+   #3177, [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)).
+   A PR into a milestone branch merges unreviewed on green CI, so a PR whose
+   `## Acceptance Criteria` block marks any criterion `missing` used to close
+   its issue as completed. Now the issue stays open: the closer labels it
+   `needs-human` and comments naming each missing criterion, and an issue that
+   already carries `needs-human` is left alone so the comment is not repeated.
+   The PR itself is raised as `Part of #N` rather than `Closes #N` in that case
+   (`assemblePrBody`), but a fleet PR's title still names its issue, so the
+   closer check is what actually holds it open.
+
    It spends quota the way the rest of the worker does (Issue #1477): one
    rate-limit pre-flight per sweep, a stop at the first primary-quota
    refusal — reported as one skipped sweep that resumes next cycle, never as
@@ -381,8 +392,11 @@ flowchart TD
     R -->|Yes| Z
     R -->|No| F{"Merge landed on the<br/>default branch? (#4396)"}
     F -->|No| Z
-    F -->|Yes| G["Closed, naming the PR<br/>and the merge commit"]
+    F -->|Yes| M{"PR's closure block marks<br/>a criterion missing? (#3177)"}
+    M -->|Yes| H["Left open, labelled needs-human,<br/>comment names the missing criteria"]
+    M -->|No| G["Closed, naming the PR<br/>and the merge commit"]
     style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style H fill:#e9c46a,stroke:#b08900,color:#000
 ```
 
 5. **Main loop** — invokes the `run-core` command
@@ -5154,6 +5168,8 @@ All business logic lives here. Shell tooling invokes them directly with
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                 |
 |                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from a rewritten pr-summary file after a fix-run push (Issue #3089)                                                                                               |
+|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143)                                                    |
+|                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143)                                                                                                  |
 |                             | [pr_comments.ts](../worker/deno/lib/pr_comments.ts)                                                               | PR comment/feedback detection and processing                                                                                                                                         |
 |                             | [pr_evidence.ts](../worker/deno/lib/pr_evidence.ts)                                                               | Screenshot processing and evidence validation                                                                                                                                        |
 |                             | [pr_issue_linking.ts](../worker/deno/lib/pr_issue_linking.ts)                                                     | Ensure PRs reference closing issues                                                                                                                                                  |
@@ -5193,6 +5209,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [claude_auth.ts](../worker/deno/lib/claude_auth.ts)                                                               | Claude CLI authentication detection                                                                                                                                                  |
 |                             | [prompt_builder.ts](../worker/deno/lib/prompt_builder.ts)                                                         | Prompt assembly from templates and context                                                                                                                                           |
 |                             | [implementation_comments.ts](../worker/deno/lib/implementation_comments.ts)                                       | Selects and bounds the issue comments the implementation prompt carries                                                                                                              |
+|                             | [owner_direction.ts](../worker/deno/lib/owner_direction.ts)                                                       | Trusted-author direction from the milestone parent and linked issue, for issue and review-fix runs (#3205)                                                                           |
 |                             | [prompt_manager.ts](../worker/deno/lib/prompt_manager.ts)                                                         | Prompt template versioning and selection                                                                                                                                             |
 |                             | [model_fallback.ts](../worker/deno/lib/model_fallback.ts)                                                         | Model tier hierarchy and fallback mapping on rate limit                                                                                                                              |
 |                             | [credit_tracker.ts](../worker/deno/lib/credit_tracker.ts)                                                         | Credit tracking, model fallback events, and token usage logging                                                                                                                      |
@@ -5270,6 +5287,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts)                                                     | Startup housekeeping orchestration and signal-driven cleanup (terminate descendants, remove PID file)                                                                                |
 |                             | [merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts)                                           | Housekeeping sweep closing issues whose fix already merged and landed (Issue #504)                                                                                                   |
 |                             | [milestone_rollback_marker.ts](../worker/deno/lib/milestone_rollback_marker.ts)                                    | The fleet-authored milestone roll-back marker both merged-PR closers honour, so a reverted child stays reopened (Issue #1770)                                                        |
+|                             | [missing_criterion_close_guard.ts](../worker/deno/lib/missing_criterion_close_guard.ts)                            | A PR whose closure block marks a criterion `missing` is raised as `Part of #N`, and the merged-PR closers leave its issue open for a human (Issue #3177)                              |
 |                             | [milestone_rollback_requeue.ts](../worker/deno/lib/milestone_rollback_requeue.ts)                                  | After a successful roll-back, reopen and re-queue each reverted child and close its PRs; after a failed one, escalate once on an issue that already exists (Issue #1781)             |
 |                             | [quality_gate.ts](../worker/deno/lib/quality_gate.ts)                                                             | Quality gate entry point                                                                                                                                                             |
 |                             | [quality_helpers.ts](../worker/deno/lib/quality_helpers.ts)                                                       | Quality check runner utilities                                                                                                                                                       |

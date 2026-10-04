@@ -248,7 +248,9 @@ export function reviewBody(
   const lines: string[] = [];
   if (outcome === "changes_requested") {
     for (const f of review.findings) {
-      lines.push(`**\`${f.file}:${f.line}\`**: ${f.problem}`);
+      // Line 0: a finding about a whole check, not a line (Issue #3142).
+      const at = f.line > 0 ? `${f.file}:${f.line}` : f.file;
+      lines.push(`**\`${at}\`**: ${f.problem}`);
       if (f.fix) lines.push("", `**Fix:** ${f.fix}`);
       lines.push("");
     }

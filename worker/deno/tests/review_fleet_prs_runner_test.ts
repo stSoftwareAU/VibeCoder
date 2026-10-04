@@ -41,6 +41,8 @@ async function fixture(
   *app_token.ts*) printf '%s' '${tokenOutput}'
     [ ${tokenExit} = 0 ] || echo "reviewer App token: Bad credentials" >&2
     exit ${tokenExit} ;;
+  *post.ts*) for a in "$@"; do case "$a" in --input=*) cat "\${a#--input=}" >> "$HOME/post-inputs"; echo >> "$HOME/post-inputs" ;; esac; done
+    echo '{"posted":true,"outcome":"changes_requested"}'; exit 0 ;;
   *escalate.ts*) echo "$*" >> "$HOME/escalate-args"
     echo "GH_TOKEN=\${GH_TOKEN:-unset}" >> "$HOME/escalate-env"
     [ ${escalateExit} = 0 ] || echo "escalate: boom" >&2
@@ -371,4 +373,56 @@ Deno.test("run.sh logs round done and escalates ok when the round succeeds", asy
   assertEquals(code, 0, output);
   assertStringIncludes(await runnerLog(home), "round done");
   assertStringIncludes((await recorded(home, "escalate-args"))!, "--result=ok");
+});
+
+// Issue #3142: a red dependency audit CI-fix could not clear is sent back by
+// post.ts with the gate's ready-made review, with no Claude round.
+const AUDIT_BLOCKED = {
+  repo: "owner/repo",
+  number: 9,
+  headSha: "abc123",
+  check: "audit",
+  review: {
+    summary: "audit red",
+    findings: [{ file: "audit", line: 0, problem: "fix it in this PR" }],
+    testChanges: "none",
+    testChangeNotes: [],
+    unrelatedIssues: [],
+  },
+};
+
+Deno.test("run.sh posts each auditBlocked PR with post.ts and starts no Claude round for it (Issue #3142)", async () => {
+  const home = await fixture(
+    JSON.stringify({ ready: [], auditBlocked: [AUDIT_BLOCKED], skipped: {} }),
+  );
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(await claudeArgs(home), null);
+  const inputs = (await recorded(home, "post-inputs") ?? "").trim()
+    .split("\n").filter((l) => l !== "");
+  assertEquals(inputs.length, 1, inputs.join("\n"));
+  const input = JSON.parse(inputs[0]!);
+  assertEquals(input.pr.repo, "owner/repo");
+  assertEquals(input.pr.number, 9);
+  assertEquals(input.pr.headSha, "abc123");
+  assertEquals(input.review, AUDIT_BLOCKED.review);
+  assertStringIncludes(await runnerLog(home), "audit send-back: owner/repo#9");
+});
+
+Deno.test("run.sh keeps auditBlocked PRs out of the Claude round's prompt (Issue #3142)", async () => {
+  const home = await fixture(JSON.stringify({
+    ready: [{ repo: "owner/repo", number: 7, title: "Fix it" }],
+    auditBlocked: [AUDIT_BLOCKED],
+    skipped: {},
+  }));
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = await claudeArgs(home);
+  assert(args, "Claude was not started");
+  assertStringIncludes(args, '"repo":"owner/repo","number":7');
+  assertEquals(args.includes("auditBlocked"), false, args);
+  assertEquals(
+    ((await recorded(home, "post-inputs")) ?? "").includes('"number":9'),
+    true,
+  );
 });

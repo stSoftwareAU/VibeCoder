@@ -111,6 +111,10 @@ import {
   restampHumanGateMarker,
 } from "./ci_fix_attempt_markers.ts";
 import { isCheckRedOnBranch } from "./ci_base_branch_check.ts";
+import {
+  ADVISORY_ID_PATTERN,
+  isDependencyAuditCheck,
+} from "./dependency_audit_check.ts";
 import { buildHumanGateComment } from "./ci_human_gate_comment.ts";
 import { redactSecrets } from "./secret_redaction.ts";
 import {
@@ -1431,16 +1435,19 @@ async function _processCiWithHeartbeat(
     message: a.message,
     path: a.path,
   }));
+  // The failure as the classifier, the signature and the base-branch
+  // deferral's audit check (Issue #3141) all read it.
+  const failureText = `${annotationDetails}\n${prFailureActionsExcerpt}`;
   const failureClassification = classifyCiFailure(
     checkName,
     classifierAnnotations,
-    `${annotationDetails}\n${prFailureActionsExcerpt}`,
+    failureText,
   );
   const signature = computeFailureSignature({
     repo,
     locus: { kind: "pr", number: prNumber },
     checkName,
-    logExcerpt: `${annotationDetails}\n${prFailureActionsExcerpt}`,
+    logExcerpt: failureText,
     ...(processorDeps.workDir !== undefined
       ? { workspaceRoot: processorDeps.workDir }
       : {}),
@@ -2278,6 +2285,7 @@ async function _processCiWithHeartbeat(
       prNumber,
       baseRef: input.baseRef,
       checkName,
+      failureText,
       signature,
       markers: markerState.markers,
       ghCommandFn: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
@@ -3272,6 +3280,8 @@ interface BaseBranchDeferralOptions {
   baseRef: string | undefined;
   /** Name of the failing check. */
   checkName: string;
+  /** The failure's annotations and log excerpt (Issue #3141). */
+  failureText: string;
   /** Failure signature the markers are keyed by. */
   signature: string;
   /** Fleet-authored markers already on the pull request. */
@@ -3292,7 +3302,8 @@ interface BaseBranchDeferralOptions {
  * a green base, a lookup that errored, a marker that would not build) returns
  * `none`, and the caller then posts the ordinary reply and charges an
  * attempt — so an unverifiable claim fails loud through the cap rather than
- * parking the pull request.
+ * parking the pull request. A dependency-audit check is never deferred at all
+ * (Issue #3141): the pull request can bump the vulnerable package itself.
  *
  * @param options - The agent's message, the failure, and the `gh` runner.
  * @returns What the caller should do.
@@ -3306,6 +3317,7 @@ async function _resolveBaseBranchDeferral(
     prNumber,
     baseRef,
     checkName,
+    failureText,
     signature,
     markers,
     ghCommandFn,
@@ -3329,6 +3341,22 @@ async function _resolveBaseBranchDeferral(
     number: blocked.dependency.number,
   };
   const ref = formatDependencyRef(dependency);
+
+  // Issue #3141: refused before the base branch or any prior deferral is
+  // consulted. A deferral charges no attempt and pages no human, so an
+  // unfixed advisory deferred here could park every open pull request
+  // unseen; the ordinary path charges the attempt and the cap escalates it.
+  if (isDependencyAuditCheck(checkName, failureText)) {
+    const advisory = ADVISORY_ID_PATTERN.exec(failureText)?.[0];
+    logger.warn(
+      `CI-fix agent declared \`Depends on ${ref}\` for check ` +
+        `\`${checkName}\`${advisory ? ` (advisory ${advisory})` : ""}, but ` +
+        "a dependency-audit check is never deferred — running the ordinary " +
+        "no-changes path (Issue #3141)",
+      { repo, prNumber, checkName, advisory, refusedDependsOn: ref },
+    );
+    return { kind: "none" };
+  }
 
   if (baseRef === undefined || baseRef.trim().length === 0) {
     logger.warn(

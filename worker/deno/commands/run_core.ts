@@ -12,6 +12,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import { setRunProviderOverride } from "../lib/agent_provider.ts";
 import { createDefaultRunCoreConfig, runCoreLoop } from "../lib/run_core.ts";
 import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import type { RootFilesystemFault } from "../lib/root_filesystem_fault.ts";
 import {
   formatBuildBanner,
   resolveWorkerBuildInfo,
@@ -31,6 +32,8 @@ interface RunCoreCommandData {
   quotaPaused: boolean;
   /** When that quota window reopens, in epoch milliseconds, when known. */
   quotaResetEpochMs?: number;
+  /** The root filesystem stopped being writable (Issue #3179). */
+  rootFilesystemFault?: RootFilesystemFault;
 }
 
 /**
@@ -165,6 +168,9 @@ export const runCoreCommand: Command = {
           quotaPaused: result.quotaPaused,
           ...(result.quotaResetEpochMs !== undefined
             ? { quotaResetEpochMs: result.quotaResetEpochMs }
+            : {}),
+          ...(result.rootFilesystemFault
+            ? { rootFilesystemFault: result.rootFilesystemFault }
             : {}),
         },
       };

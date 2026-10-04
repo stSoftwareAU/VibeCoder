@@ -1653,6 +1653,37 @@ Deno.test("findConflictingPr - an exhausted PR with a known issue is abandoned, 
   assertStringIncludes(claim.body, CONFLICT_RESTART_MARKER);
 });
 
+Deno.test("findConflictingPr - an exhausted milestone head goes to the processor for its rebuild, never closed (Issue #3036)", async () => {
+  // A milestone/** head is many sub-PRs' work. Its redo is the milestone
+  // rebuild, which needs the clone only the processor has; the single-issue
+  // abandon would close the milestone PR and drop every sub-PR with it.
+  const fake = makeFakeGh(exhaustedState({
+    prs: [{
+      number: 48,
+      headRefName: "milestone/16-raise-the-cap",
+      baseRefName: "main",
+    }],
+  }));
+
+  const { result } = await scanWith(fake);
+
+  assertEquals(result.value.selected?.prNumber, 48);
+  assertEquals(result.value.selected?.branchName, "milestone/16-raise-the-cap");
+  assertEquals(
+    result.value.selected?.attemptCount,
+    CONFLICT_RESOLUTION_BUDGET,
+  );
+  assertEquals(
+    fake.calls.filter((c) => c[0] === "pr" && c[1] === "close"),
+    [],
+  );
+  assertEquals(
+    fake.commentsPosted.filter((c) => c.body.includes(CONFLICT_RESTART_MARKER)),
+    [],
+  );
+  assertNoNeedsHumanWrites(fake);
+});
+
 Deno.test("findConflictingPr - an abandoned PR leaves one merge-fallback flag behind (Issue #2310)", async () => {
   // The fallback undoes work. Until #2304 it undid it silently, so the next
   // attempt started from the same blank page and could walk into the same

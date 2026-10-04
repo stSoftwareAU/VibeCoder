@@ -42,13 +42,19 @@ const SPEC_BLOCK_LINES: readonly string[] = [
 /**
  * The `## Standards Review` half: its own reviewer's provenance marker, a
  * `violation` naming labelled evidence and its outcome, and the `clean` areas.
+ *
+ * The example outcome is `fixed in this diff`, never "why it stands": a breach
+ * in a line the PR adds or changes is fixed before the PR is raised, and only a
+ * pre-existing one may carry `pre-existing, filed #<n>` (Issue #3196). The gate
+ * refuses any other reason, so the template shows the one a run will almost
+ * always write.
  */
 const STANDARDS_BLOCK_LINES: readonly string[] = [
   "## Standards Review",
   "",
   '<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->',
   "",
-  "- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: <fixed here, or why it stands>",
+  "- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: fixed in this diff",
   "- **clean** — <the areas the reviewer checked and found compliant>",
 ];
 

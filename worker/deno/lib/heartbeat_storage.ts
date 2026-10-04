@@ -10,6 +10,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { escapeRegExp } from "./regexp_escape.ts";
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import type { RunOutcome } from "./run_outcome.ts";
 import { PR_PENDING_MARKER } from "./deferred_pr_store.ts";
 import {
@@ -363,7 +365,7 @@ export function formatAttemptBlock(tally: ReleaseAttemptTally): string {
  */
 export function parseAttemptBlock(body: string): ReleaseAttemptTally | null {
   const heading = new RegExp(
-    `^\\s*${ATTEMPTS_HEADING.replace(/\*/g, "\\*")}\\s*(\\d+)\\s*$`,
+    `^\\s*${escapeRegExp(ATTEMPTS_HEADING)}\\s*(\\d+)\\s*$`,
     "m",
   );
   const m = heading.exec(body ?? "");
@@ -543,9 +545,7 @@ function renderPreservedWipClause(preserved: PreservedWip): string {
  * ellipsis — the same discipline as {@link normaliseMilestoneText}.
  */
 function boundOutcomeText(text: string, maxLength: number): string {
-  const flat = text
-    .replace(/<!--/g, "<!- -")
-    .replace(/-->/g, "- ->")
+  const flat = neutraliseCommentDelimiters(text)
     .replace(/\s+/g, " ")
     .trim();
   if (flat.length <= maxLength) return flat;

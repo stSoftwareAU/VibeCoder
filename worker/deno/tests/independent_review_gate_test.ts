@@ -276,6 +276,82 @@ Deno.test("independent review - a fixed violation passes", () => {
   assertEquals(result.valid, true);
 });
 
+// --- a self-flagged breach may not stand (Issue #3196) ---
+
+/** A summary whose only Standards finding is one `violation` with `reason`. */
+function violationSummary(reason: string): string {
+  return summary(GOOD_SPEC_BLOCK, [
+    "## Standards Review",
+    "",
+    STANDARDS_MARKER,
+    "",
+    "- **violation** — A Code Change Owes a Docs Change — evidence: " +
+    `\`docs/workflows/merge-conflicts.md:1415\` — reason: ${reason}`,
+  ]);
+}
+
+Deno.test("independent review - a violation left standing for a follow-up blocks (Issue #3196)", () => {
+  for (
+    const reason of [
+      "stands, left for a follow-up",
+      "left for a follow-up issue",
+      "not fixed — it stands",
+      "out of scope for this PR",
+    ]
+  ) {
+    const result = validateIndependentReview({
+      issueBody: ISSUE_WITH_CRITERIA,
+      prSummaryContent: violationSummary(reason),
+    });
+    assertEquals(result.valid, false, `"${reason}" must block`);
+    assertEquals(result.problems.length, 1);
+    assertStringIncludes(result.problems[0]!, "neither fixed nor filed");
+    assertStringIncludes(result.problems[0]!, "reason: fixed in this diff");
+    assertStringIncludes(result.problems[0]!, "reason: pre-existing, filed #");
+  }
+});
+
+Deno.test("independent review - a violation fixed in this diff passes (Issue #3196)", () => {
+  for (
+    const reason of [
+      "fixed in this diff",
+      "**Fixed** — the file map now names the 2-hour watchdog",
+      "corrected in this diff",
+      "resolved in this diff",
+    ]
+  ) {
+    const result = validateIndependentReview({
+      issueBody: ISSUE_WITH_CRITERIA,
+      prSummaryContent: violationSummary(reason),
+    });
+    assertEquals(result.problems, [], `"${reason}" must pass`);
+  }
+});
+
+Deno.test("independent review - a pre-existing violation with a filed issue passes (Issue #3196)", () => {
+  for (
+    const reason of [
+      "pre-existing, filed #123",
+      "pre-existing on the base branch, filed stSoftwareAU/VibeCoder#4567",
+      "pre-existing, filed https://github.com/stSoftwareAU/GRQ-AutoTrader/issues/2210",
+    ]
+  ) {
+    const result = validateIndependentReview({
+      issueBody: ISSUE_WITH_CRITERIA,
+      prSummaryContent: violationSummary(reason),
+    });
+    assertEquals(result.problems, [], `"${reason}" must pass`);
+  }
+});
+
+Deno.test("independent review - a placeholder issue reference does not pass (Issue #3196)", () => {
+  const result = validateIndependentReview({
+    issueBody: ISSUE_WITH_CRITERIA,
+    prSummaryContent: violationSummary("pre-existing, filed #<n>"),
+  });
+  assertEquals(result.valid, false);
+});
+
 // --- axis separation ---
 
 Deno.test("independent review - a standards finding inside the criteria block is a merge", () => {

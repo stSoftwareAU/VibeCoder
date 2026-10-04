@@ -207,8 +207,12 @@ export type ConflictTakeoverOutcome =
     route: "milestone-fix" | "ladder";
     detail: string;
   }
-  /** Another host holds the cross-host PR lock; nothing was posted. */
-  | { kind: "lock-held"; holder: string }
+  /**
+   * Another host holds the cross-host PR lock; nothing was posted.
+   * `lockAgeSeconds` is how old the holder's lock marker is, when it could
+   * be read (Issue #3031).
+   */
+  | { kind: "lock-held"; holder: string; lockAgeSeconds?: number }
   /**
    * The handler time left cannot cover an agent run. Nothing was posted,
    * so the next cycle can try once the budget is there.
@@ -418,10 +422,25 @@ export async function runConflictTakeover(
   if (held.kind === "held-by-other") {
     logger.info(
       `Conflict takeover for PR #${pr.number}: standing down, the ` +
-        `cross-host lock is held by ${held.holder}`,
-      { ...context, lockHolder: held.holder },
+        `cross-host lock is held by ${held.holder}` +
+        (held.lockAgeSeconds !== undefined
+          ? ` (lock age ${held.lockAgeSeconds}s)`
+          : ""),
+      {
+        ...context,
+        lockHolder: held.holder,
+        ...(held.lockAgeSeconds !== undefined
+          ? { lockAgeSeconds: held.lockAgeSeconds }
+          : {}),
+      },
     );
-    return { kind: "lock-held", holder: held.holder };
+    return {
+      kind: "lock-held",
+      holder: held.holder,
+      ...(held.lockAgeSeconds !== undefined
+        ? { lockAgeSeconds: held.lockAgeSeconds }
+        : {}),
+    };
   }
 
   try {
@@ -630,7 +649,7 @@ async function holdTakeoverLock(
     release: () => Promise<void>;
     renewal?: BranchLockRenewalHandle;
   }
-  | { kind: "held-by-other"; holder: string }
+  | { kind: "held-by-other"; holder: string; lockAgeSeconds?: number }
 > {
   if (deps.workerId === undefined) {
     return { kind: "free", release: () => Promise.resolve() };
@@ -650,7 +669,15 @@ async function holdTakeoverLock(
     lock.value.lockCommentId === undefined
   ) {
     const holder = lock.ok ? lock.value.winnerId ?? "unknown" : "unknown";
-    return { kind: "held-by-other", holder };
+    const lockedAt = lock.ok ? lock.value.winnerLockedAt : undefined;
+    const nowSeconds = Math.floor((deps.nowMs ?? Date.now()) / 1000);
+    return {
+      kind: "held-by-other",
+      holder,
+      ...(lockedAt !== undefined
+        ? { lockAgeSeconds: Math.max(0, nowSeconds - lockedAt) }
+        : {}),
+    };
   }
 
   const lockCommentId = lock.value.lockCommentId;

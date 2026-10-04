@@ -15,6 +15,8 @@
  * Australian English throughout (behaviour, organisation, recognised).
  */
 
+import { escapeTableCell } from "./markdown_table.ts";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -256,7 +258,7 @@ export const EOL_RUNTIMES: readonly EolRuntimeEntry[] = Object.freeze([
 
 /** Escape pipe characters that would otherwise break a Markdown table cell. */
 function escapeCell(value: string): string {
-  return value.replace(/\|/g, "\\|");
+  return escapeTableCell(value);
 }
 
 /**

@@ -483,6 +483,13 @@ flowchart TD
   stall watchdog calls it (Issue #3001); every GitHub call and both resolvers
   are injected, and production binds both in
   [`conflict_takeover_resolvers.ts`](../../worker/deno/lib/conflict_takeover_resolvers.ts).
+- The merge-conflict pass calls it too, for every `milestone/**` head, in the
+  cycle that first sees the conflict (Issue #3031). There is no milestone
+  stand-down any more: `processMergeConflict` hands the PR straight to the
+  takeover, which opens one `milestone-fix/**` PR or reuses the open one. It
+  skips only while another host holds a live PR lock, and its log line names
+  that host and the lock's age. A failed takeover spends one attempt from the
+  shared budget, exactly as on the ordinary route.
 - Read-only checks first: reads the shared tally from trusted markers
   (`readResolutionAttempts`); declines with no marker at all when
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
@@ -781,10 +788,18 @@ there is no such budget to use up.
   replayed and every skipped sub-PR by sub-issue number. No `needs-human` on
   any outcome and no restart cap; a failed step is reported by name like the
   single-issue route (`milestone-sub-prs`, `milestone-rebuild`,
-  `milestone-push`, `sub-issue-requeue`, `pr-comment`). Note honestly: the
-  merge-conflict pass still stands down on `milestone/**` heads before
-  spending an attempt (Issue #1772), so this route is what the rung does once
-  a milestone head reaches it.
+  `milestone-push`, `sub-issue-requeue`, `pr-comment`). **How a milestone
+  head reaches it** (Issue #3036): the merge-conflict pass takes a
+  `milestone/**` head over through a `milestone-fix/**` PR (Issue #3031), and
+  once that spends the shared budget the takeover declines and the pass runs
+  this rebuild in the same cycle — it is the pass with a clone. The scan
+  hands a spent milestone head to that pass rather than to
+  `abandonAndRestart`, and the stall watchdog, which has no clone, never
+  abandons one: it restarts its clock and leaves the rebuild to the pass. The
+  rebuild's PR comment carries a `merge-conflict-resolved` marker for the
+  rebuilt head, so the redo starts with a fresh budget instead of being
+  rebuilt again on the next pass. `conflict_2028_replay_test.ts` replays
+  GRQ-AutoTrader#2028 through this route.
 - **A part-done abandon is never where this stops.** Every step names itself on
   failure, and the pass records that step at WARN with `route=abandon-failed` —
   "PR closed, issue not re-queued" must be visible, not silent.
@@ -927,8 +942,8 @@ single owner check's responsibility, whatever caused the silence
 one owner for every conflicted PR, not a backstop keyed on label age alone: its
 clock starts at the **latest** of four events — the `merge-conflict` label's own
 `labeled` timeline event; the latest trusted stand-down
-(`readLatestStandDownAtMs`, Issue #2997 — gated-head, milestone-head or park
-markers, read back by their own `at="…"`); the last trusted resolution attempt
+(`readLatestStandDownAtMs`, Issue #2997 — gated-head, legacy milestone-head
+or park markers, read back by their own `at="…"`); the last trusted resolution attempt
 (`readResolutionAttempts`, Issue #2996); and the head's own last move (the head
 commit's committer date, read per PR — a future-dated or unreadable time is
 ignored, so the watchdog fails towards acting). Only fleet-authored markers

@@ -130,6 +130,7 @@ import { workOnIssue } from "./issue_worker.ts";
 import { createDefaultDeps, type WorkerDeps } from "./issue_worker_wiring.ts";
 import { fetchIssueData, type IssueData } from "./issue_data.ts";
 import { buildImplementationCommentContext } from "./implementation_comments.ts";
+import { fetchMilestoneParentDirection } from "./owner_direction.ts";
 import { observeUntrustedIssueImages } from "./issue_content_trust_filter.ts";
 import { stripDiscoveryLabelsOnEscalation } from "./escalation_cleanup.ts";
 import { routeIdleTaskInProcessIssue } from "./idle_task_process_issue_route.ts";
@@ -510,6 +511,7 @@ import {
   summariseWorkVolumePrune,
 } from "./work_volume_prune.ts";
 import { workVolumeFault } from "./work_volume_fault.ts";
+import { createRootFilesystemCheck } from "./root_filesystem_fault.ts";
 import { WorkVolumeMonitor } from "./work_volume_monitor.ts";
 import {
   describeGuestReclaimToHost,
@@ -2287,6 +2289,11 @@ export async function createProductionRunCoreDeps(
             // the worker filed under its own login as trusted.
             githubUser,
             trustedReviewBots: config.trustedReviewBots ?? [],
+            // Issue #3205: whose comments count as owner direction.
+            ownerDirectionAuthors: {
+              allowedAuthors: config.allowedAuthors ?? [],
+              authorisedCommenters: config.authorisedCommenters ?? [],
+            },
             repoConfigs: config.repoConfig,
             // Issue #2103: the host switch for the Graft repo-context bundle.
             graftContextEnabled: isGraftContextEnabled(config),
@@ -2825,6 +2832,47 @@ export async function createProductionRunCoreDeps(
       // Issue #1112: every decision this cycle's scans reached, so the stall
       // watchdog can name the skip reasons recorded for a stalled PR (#1109).
       const scanDecisions: ConflictPrDecision[] = [];
+      // Issue #3001/#3031: the conflict takeover's two resolvers, shared by
+      // the drain (a `milestone/**` head goes straight to a milestone-fix PR)
+      // and the stall watchdog below.
+      const takeoverResolvers = bindConflictTakeoverResolvers({
+        checkout: async (repo: string) => {
+          const setup = await setupRepo(repo, workDir);
+          if (!setup.success) {
+            throw new Error(
+              `repo setup failed for ${repo}: ${setup.message}`,
+            );
+          }
+          return setup.message;
+        },
+        agentFn: (request) => {
+          const agentTimeoutSeconds = takeoverAgentTimeoutSeconds(
+            opts?.deadlineEpochMs,
+            config.claudeTimeout,
+            Date.now(),
+          );
+          const bound = bindMilestoneConflictAgent({
+            repo: request.repo,
+            grant: {
+              agentAllowed: true,
+              ...(agentTimeoutSeconds !== undefined
+                ? { agentTimeoutSeconds }
+                : {}),
+            },
+            config,
+            logger,
+          });
+          if (!bound) {
+            return Promise.resolve({
+              ok: false,
+              error: new Error(
+                `no resolution agent for ${request.repo}`,
+              ),
+            });
+          }
+          return bound(request);
+        },
+      });
       const drain = await drainConflictingPrs({
         logger,
         ...(opts?.deadlineEpochMs !== undefined
@@ -2932,6 +2980,12 @@ export async function createProductionRunCoreDeps(
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
             githubUser,
+            // Issue #3031: a milestone head is resolved through the takeover
+            // in this same cycle.
+            takeoverResolvers,
+            ...(opts?.deadlineEpochMs !== undefined
+              ? { deadlineEpochMs: opts.deadlineEpochMs }
+              : {}),
           });
 
           if (!result.ok) {
@@ -3011,44 +3065,7 @@ export async function createProductionRunCoreDeps(
           ...(opts?.deadlineEpochMs !== undefined
             ? { deadlineEpochMs: opts.deadlineEpochMs }
             : {}),
-          takeoverResolvers: bindConflictTakeoverResolvers({
-            checkout: async (repo: string) => {
-              const setup = await setupRepo(repo, workDir);
-              if (!setup.success) {
-                throw new Error(
-                  `repo setup failed for ${repo}: ${setup.message}`,
-                );
-              }
-              return setup.message;
-            },
-            agentFn: (request) => {
-              const agentTimeoutSeconds = takeoverAgentTimeoutSeconds(
-                opts?.deadlineEpochMs,
-                config.claudeTimeout,
-                Date.now(),
-              );
-              const bound = bindMilestoneConflictAgent({
-                repo: request.repo,
-                grant: {
-                  agentAllowed: true,
-                  ...(agentTimeoutSeconds !== undefined
-                    ? { agentTimeoutSeconds }
-                    : {}),
-                },
-                config,
-                logger,
-              });
-              if (!bound) {
-                return Promise.resolve({
-                  ok: false,
-                  error: new Error(
-                    `no resolution agent for ${request.repo}`,
-                  ),
-                });
-              }
-              return bound(request);
-            },
-          }),
+          takeoverResolvers,
         });
       }
 
@@ -4493,6 +4510,18 @@ export async function createProductionRunCoreDeps(
         });
       }
 
+      // Owner direction on the milestone parent (Issue #3205), shared with
+      // the `work-on-issue` command: a design the owner replaced on the
+      // parent after this sub-issue was written.
+      const parentOwnerDirection = await fetchMilestoneParentDirection({
+        repo: issue.repo,
+        issueNumber: issue.issueNumber,
+        milestoneTitle: issue.milestoneTitle || issueData.milestoneTitle,
+        allowedAuthors: config.allowedAuthors ?? [],
+        authorisedCommenters: config.authorisedCommenters ?? [],
+        workerLogin: githubUser,
+      });
+
       const ctx = {
         repo: issue.repo,
         issueNumber: issue.issueNumber,
@@ -4516,6 +4545,7 @@ export async function createProductionRunCoreDeps(
         ),
         githubUser,
         milestoneTitle: issue.milestoneTitle || undefined,
+        ...(parentOwnerDirection ? { parentOwnerDirection } : {}),
         config,
         // Issue #4254: bound the execute timeout by the cycle deadline.
         cycleDeadlineEpochMs,
@@ -5257,6 +5287,16 @@ export async function createProductionRunCoreDeps(
     // Present only when an operator configured a ceiling; otherwise the run
     // loop skips the check entirely.
     ...(checkSpendCeiling ? { checkSpendCeiling } : {}),
+
+    // -- Root filesystem (Issue #3179) --
+    // The container's scratch and state volumes, probed at the top of every
+    // cycle; a read-only or I/O-faulted one ends the run for a fresh
+    // container rather than failing the health check until the launch cap.
+    checkRootFilesystem: createRootFilesystemCheck({
+      workDir,
+      ...(env("TMPDIR") ? { tmpDir: env("TMPDIR") } : {}),
+      warn: (message) => logger.warn(message),
+    }),
 
     // -- Misc --
     touchPidFile: () => Promise.resolve(),

@@ -137,7 +137,10 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    edited test files). Each one needs an issue requirement that makes it
    untrue, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
-   covers the behaviour and say where.
+   covers the behaviour and say where. The worker enforces this at PR
+   creation (`removed_assertion_gate.ts`, Issue #3131): the removed
+   assertion must be named in the summary's Test Plan, and the Standards
+   reviewer is asked to judge each one.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
@@ -200,12 +203,20 @@ earns its place by meeting all four conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
-4. **The pinned phrase occurs only in the rule being added.** A phrase the
+4. **Every pinned phrase occurs only in the rule being added.** A phrase the
    section already held before the change stays green when the new rule is
    deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
-   issue prompt already carried. Check the phrase is absent from the base
-   branch's version of that section, or delete the new rule and confirm the
-   test goes red.
+   issue prompt already carried. The check is **per pinned phrase, not per
+   test**: each phrase must be absent from the base branch's version of its
+   scoped section (`git show <base>:<doc>`, narrowed with the same `section()`
+   title). "The test goes red against the base" is not enough when a test pins
+   more than one phrase — one new pin turns it red and hides a vacuous pin
+   beside it, which is how VibeCoder#3156 kept a bare `needs-human` pin the
+   base section already held four times. Run
+   `deno task drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
+   `worker/deno` for each section a test reads: it lists every phrase the base
+   section already held and exits 1 when there is one. Record the result for
+   every pinned phrase in the PR's Test Plan.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
@@ -327,7 +338,15 @@ in order before the assertion runs, a phrase the section already held before
 the change. Remove the change on purpose (delete the clause, drop the cap,
 restore the old expression), run the test, see it fail, then restore it. A
 new test that stays green without its change is a blocking self-review
-finding. A test that only pins current behaviour — the fault was unreproduced
+finding. For a documentation-drift test the check is per pinned phrase, not
+per test: one new pin turns a test red against the base and hides a vacuous
+pin beside it. Look for each phrase in the base branch's version of every
+section the test reads (`git show <base>:<doc>`, narrowed to the same section
+title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
+<doc> <section> <phrase>...` from `worker/deno` does this), and record in the
+Test Plan that each pinned phrase is absent from the base section; a phrase
+the base section already held is a blocking self-review finding. A test that
+only pins current behaviour — the fault was unreproduced
 or already fixed, and no production change was made — is expected green on
 base, and the Test Plan says so. **A negative test must be able to fail**
 below is this rule for an assertion that something does *not* happen.
@@ -390,7 +409,14 @@ other outcomes. Flip each outcome on purpose (return the lenient value
 instead of the error, treat "absent" as "failed"), run the tests, confirm at
 least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
-for it.
+for it. When the run writes or refreshes a PR summary, record the
+enumeration as a `Branch outcomes:` list in its Test Plan — one line per
+outcome naming `path:line`, the outcome, the test that reaches it, and that
+flipping it went red — or `Branch outcomes: none added` when the diff adds
+no branch; every test it names must exist at the head (see **A named test
+must exist**). A fix to an existing PR re-enumerates every branch its own
+commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -442,11 +468,15 @@ state it never checked is a blocking self-review finding (Issue #3107).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
-file in the PR's diff or already tracked at the head. Before raising the PR,
-check each named path with `git ls-files <path>`; a named-but-absent test is a
-blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist. A test cited as evidence
-is also run on the final head and its result reported, and a coverage claim
+file in the PR's diff or already tracked at the head, named **relative to the
+repository root** — `worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`,
+even when the repository's own test command runs from a subdirectory such as
+`worker/deno` (Issue #3160). Before raising the PR, check each named path
+with `git ls-files <path>` run **from the repository root**; a
+named-but-absent test is a blocking self-review finding — add the test or
+drop the claim, and never commit an anchor that references a test that does
+not exist. A test cited as evidence is also run on the final head and its
+result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
 untested is an over-claim (Issue #3058). An unresolved placeholder where a
 result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where
@@ -699,9 +729,13 @@ simply no longer waits out a stopwatch to do it.
   `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
   overlap: trim the line first and drop the redundant quantifier, make the
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
-  trailing whitespace, or cap the run. Then add one hostile case per pattern:
-  a long run of the shared character followed by a character the pattern
-  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because
+  `.` stops at a lone `\r`: after an unanchored label such as `reason:`, the
+  search restarts at every later occurrence of the label and rescans to the
+  end each time, so read the value with `([^\n]*)` and no `$` (Issue #3186).
+  Then add one hostile case per pattern: a long run of the shared character
+  followed by a character the pattern rejects. A parser with several
+  patterns needs a case for each. stSoftwareAU/VibeCoder#3085
   capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
   with the same defect, and #3160's hostile cases covered the inline form while
   `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
@@ -1071,6 +1105,22 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   mentions the changed surface, not only the section you edited. Each
   remaining hit goes in the Docs sweep line by `file:line` with the reason it
   is still true.
+- **Check where you insert.** Before adding a new function, item, test or
+  paragraph, read the lines directly above and below the insertion point. A
+  doc comment, attribute or decorator directly above belongs to the item
+  below it: insert above the doc comment, never between it and its item. A
+  following sentence that points back ("above", "both paragraphs above",
+  "this", "the rule above", "as described earlier") must still point at what
+  it meant; if it would not, insert after it, or reword it to name what it
+  means. In the diff, check the first and last context lines of every hunk
+  that adds a block, since that is where these breaks appear. The docs
+  sweep misses them, because the sentence made wrong is one the diff neither
+  adds nor edits, and no linter catches the Rust case: there is no blank
+  line for Clippy's `empty_line_after_doc_comments` to flag.
+  stSoftwareAU/GRQ-AutoTrader#2218 and #2413 each put a new function between
+  another function's doc comment and that function, so rustdoc opened the
+  new helper's doc with the other function's description, and #2478 put a
+  new paragraph in front of "Both paragraphs above describe …" (Issue #3194).
 
 ## A Contract a Deployed Extension Reads Is Additive-Only
 
@@ -1152,6 +1202,11 @@ is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
 (or `Blocked by`) line naming an issue that is still open then defers the
 issue and raises no PR. A closed or unreadable dependency does not defer;
 the committed run hands off to a human and raises no PR.
+The worker enforces this itself, not only a reviewer, because a PR into a
+milestone branch merges unreviewed on green CI (Issue #3177): a summary
+whose `## Acceptance Criteria` block marks any criterion `missing` is raised
+as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
+the issue open, labels it `needs-human` and names the missing criteria.
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits

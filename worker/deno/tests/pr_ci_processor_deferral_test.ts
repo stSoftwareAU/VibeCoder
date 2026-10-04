@@ -56,6 +56,8 @@ interface Captured {
   labelsAdded: string[];
   errors: string[];
   warnings: string[];
+  /** Reads of the base branch's (`develop`) check runs (Issue #3141). */
+  baseCheckRunReads?: number;
 }
 
 /** How the stubbed GitHub answers the base-branch and issue-state reads. */
@@ -68,11 +70,11 @@ interface StubOptions {
   existingComments?: GitHubComment[];
 }
 
-/** A `check-runs` payload naming one completed run of `semgrep`. */
-function baseCheckRunsPayload(conclusion: string): string {
+/** A `check-runs` payload naming one completed run of `name`. */
+function baseCheckRunsPayload(conclusion: string, name = "semgrep"): string {
   return JSON.stringify({
     check_runs: [
-      { id: 7, name: "semgrep", status: "completed", conclusion },
+      { id: 7, name, status: "completed", conclusion },
     ],
   });
 }
@@ -106,6 +108,9 @@ function makeGhRunner(
 
     // The base branch's own run of the failing check.
     if (args[0] === "api" && String(args[1] ?? "").includes("/check-runs")) {
+      if (String(args[1]).includes("/commits/develop/check-runs")) {
+        captured.baseCheckRunReads = (captured.baseCheckRunReads ?? 0) + 1;
+      }
       if (options.baseCheckRuns === "error") {
         return Promise.reject(new Error("HTTP 502: Bad Gateway"));
       }
@@ -501,4 +506,97 @@ Deno.test("processCiFailure - a deferral comment that fails to post is never rep
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Dependency-audit checks are never deferred (Issue #3141)
+// ---------------------------------------------------------------------------
+
+/** The agent's message for an audit failure it blames on the base branch. */
+const AUDIT_AGENT_MESSAGE = [
+  "No change required for audit — the advisory is in the base branch's " +
+  "lockfile, not in this pull request's diff.",
+  "",
+  `Depends on ${BLOCKER}`,
+].join("\n");
+
+/** A CI-fix input for `checkName` with one annotation reading `message`. */
+function makeCheckInput(checkName: string, message: string): CiFixInput {
+  const annotations: CheckAnnotation[] = [
+    { path: "deno.lock", start_line: 1, message },
+  ];
+  return {
+    ...makeInput(),
+    checkName,
+    encodedAnnotations: btoa(JSON.stringify(annotations)),
+  };
+}
+
+Deno.test("processCiFailure - an audit check with a Depends on line and a red base is not deferred and charges an attempt (Issue #3141)", async () => {
+  const checkName = "audit (Deno Audit)";
+  const captured = await runDeferralScenario(
+    AUDIT_AGENT_MESSAGE,
+    { baseCheckRuns: baseCheckRunsPayload("failure", checkName) },
+    makeCheckInput(checkName, "deno audit: 1 vulnerability found"),
+  );
+
+  assertEquals(captured.comments.length >= 1, true);
+  assertEquals(
+    captured.comments.some((c) => c.includes("<!-- vibe-ci-fix-deferred ")),
+    false,
+    `an audit check must never be deferred; got: ${
+      captured.comments.join(" | ")
+    }`,
+  );
+  const body = captured.comments.at(-1) ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-attempt ");
+  // Refused before the base branch is ever consulted.
+  assertEquals(captured.baseCheckRunReads ?? 0, 0);
+  assertEquals(
+    captured.warnings.some((line) =>
+      line.includes("dependency-audit check is never deferred") &&
+      line.includes(checkName) && line.includes(BLOCKER)
+    ),
+    true,
+    `expected the refusal warning; got: ${captured.warnings.join(" | ")}`,
+  );
+});
+
+Deno.test("processCiFailure - a non-audit check whose failure text names a GHSA advisory is not deferred (Issue #3141)", async () => {
+  const captured = await runDeferralScenario(
+    AGENT_MESSAGE,
+    { baseCheckRuns: baseCheckRunsPayload("failure", "test") },
+    makeCheckInput("test", "vulnerable dependency GHSA-vfj7-8cjw-p6xm"),
+  );
+
+  assertEquals(
+    captured.comments.some((c) => c.includes("<!-- vibe-ci-fix-deferred ")),
+    false,
+  );
+  assertStringIncludes(
+    captured.comments.at(-1) ?? "",
+    "<!-- vibe-ci-fix-attempt ",
+  );
+  assertEquals(captured.baseCheckRunReads ?? 0, 0);
+  assertEquals(
+    captured.warnings.some((line) => line.includes("GHSA-vfj7-8cjw-p6xm")),
+    true,
+    `expected the warning to name the advisory; got: ${
+      captured.warnings.join(" | ")
+    }`,
+  );
+});
+
+Deno.test("processCiFailure - a non-audit check with a Depends on line and a red base is still deferred (Issue #3141)", async () => {
+  const captured = await runDeferralScenario(
+    AGENT_MESSAGE,
+    { baseCheckRuns: baseCheckRunsPayload("failure", "lint") },
+    makeCheckInput("lint", "lint: no-unused-vars"),
+  );
+
+  assertEquals(captured.comments.length, 1);
+  const body = captured.comments[0] ?? "";
+  assertStringIncludes(body, "<!-- vibe-ci-fix-deferred ");
+  assertEquals(body.includes("<!-- vibe-ci-fix-attempt "), false);
+  assertEquals(captured.baseCheckRunReads, 1);
 });
