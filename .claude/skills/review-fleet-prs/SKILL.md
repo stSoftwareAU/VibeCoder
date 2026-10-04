@@ -51,7 +51,8 @@ When minting fails, the pass is skipped; it never falls back to posting as the
 `gh` user. The App needs **Pull requests**, **Issues**, **Contents** and
 **Workflows** read and write, plus **Checks** and **Commit statuses** read:
 Contents write lets the Dependabot upkeep merge an already-clean PR with
-`gh pr merge --auto` and arm auto-merge, and Workflows write lets it merge
+`gh pr merge --auto` and arm auto-merge, and lets the skill bring an approved
+fleet PR's branch up to date (`update-branch`); Workflows write lets it merge
 Dependabot's GitHub Actions bumps, which change `.github/workflows/*`.
 Installation is needed on every monitored repo and on
 `stSoftwareAU/VibeCoder` (for improvement issues).
@@ -141,21 +142,36 @@ print the minted token, since tracing is suspended around the mint.
    and this PR must fix it. Only a problem that is already present on the
    base branch, unchanged by the PR, is filed separately; when in doubt, it
    is a finding.
-8. **Review each head commit once.** A new push that changes the PR's own
-   diff gets a fresh review. When the fleet pushes a fix to a PR that was
-   sent back, the re-review checks the earlier findings were fixed, and
-   approves once they are. When a PR was sent back and the only commits
-   since are merges from the base branch that leave its own diff unchanged,
-   the gate skips it as `awaiting-fix` until the fleet pushes its fix, so the
-   review is not repeated.
-9. **Repeated findings improve the VibeCoder.** Review findings are also
-   feedback about the worker itself. After each round, compare blocking
-   findings with recent review history. When the same underlying mistake has
-   recurred across independent PRs and clearer VibeCoder prompt, skill,
-   coding-standard or other guidance could reasonably prevent it, file a
-   deduplicated improvement issue in `stSoftwareAU/VibeCoder`. Do not turn a
-   one-off bug into guidance, and do not weaken the review rule just because
-   a finding is common.
+8. **Review each head commit once, across every host.** A new push that
+   changes the PR's own diff gets a fresh review. When the fleet pushes a fix
+   to a PR that was sent back, the re-review checks the earlier findings were
+   fixed, and approves once they are. When a PR was sent back and the only
+   commits since are merges from the base branch that leave its own diff
+   unchanged, the gate skips it as `awaiting-fix` until the fleet pushes its
+   fix, so the review is not repeated. The skill runs on more than one host
+   (a laptop as the `gh` user, GRQ-25 as the reviewer App), so a review
+   carrying the skill's marker counts as this skill's review whichever login
+   posted it, and a PR anyone has approved at its head commit is skipped as
+   `approved`: there is nothing left to review, and it merges once it is up
+   to date.
+9. **Approve first, then bring the branch up to date.** Every fleet PR is
+   armed with auto-merge on three conditions: CI green, approved, and branch
+   up to date. The review is of the diff as it stands; when the outcome is an
+   approval and the PR is behind its base, `post.ts` then asks GitHub to merge
+   the base in (`update-branch`, at the reviewed head), so CI re-runs on the
+   merge commit and the PR merges with no further round. The gate does the
+   same once per head for a fleet PR already approved at its head but still
+   behind. A PR is never brought up to date before its review: the approval
+   would then be of a head nobody read. Dependabot branches are never pushed
+   to (see [Dependabot PRs](#dependabot-prs)).
+10. **Repeated findings improve the VibeCoder.** Review findings are also
+    feedback about the worker itself. After each round, compare blocking
+    findings with recent review history. When the same underlying mistake has
+    recurred across independent PRs and clearer VibeCoder prompt, skill,
+    coding-standard or other guidance could reasonably prevent it, file a
+    deduplicated improvement issue in `stSoftwareAU/VibeCoder`. Do not turn a
+    one-off bug into guidance, and do not weaken the review rule just because
+    a finding is common.
 
 ## Which repos
 
@@ -182,17 +198,34 @@ failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
 <first line of the error>` (or `rebase failed: ...`), logged, and does not
 stop the pass; that action is not retried until the PR's head commit changes.
 
+## Approved fleet PRs that are behind
+
+Each gate pass also brings up to date any **fleet** PR that is approved at its
+head commit (by any host or by hand) but `BEHIND` its base
+(`branch_update.ts`): it asks GitHub to merge the base in once per head, with
+`expected_head_sha` set to the approved head so a push the fleet made meanwhile
+makes GitHub refuse rather than update a head nobody reviewed. The upkeep line
+is `<repo>#<n> branch update requested`; a refusal is `branch update failed:
+...`, logged, and not retried at that head. An unapproved PR is left as it is:
+it is reviewed first, and `post.ts` brings it up to date after the approval
+(rule 9).
+
 ## The loop
 
 The gate script does the polling, not the model. With `--watch=300` it checks
 every 5 minutes and **exits only when a PR is ready for review**, so an idle
-night costs no tokens.
+night costs no tokens. It reports at most **5** ready PRs per pass
+(`--limit=<n>` changes that), counted after every other skip, so a PR that is
+red, approved, already reviewed or awaiting a fix never takes one of the slots;
+the rest are counted as `over-limit` and come back next pass. The search is
+oldest-updated first, so a PR whose head keeps moving cannot starve the quiet
+ones behind it.
 
 1. Start the gate in the background, from this skill's base directory, with
    the Bash tool's `run_in_background: true`:
 
    ```bash
-   deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --watch=300 [--repo=owner/name]
+   deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --watch=300 [--repo=owner/name] [--limit=5]
    ```
 
 2. Do nothing until it finishes: you are re-invoked when it exits. Do not
@@ -206,8 +239,8 @@ night costs no tokens.
    (steps below). `run.sh` posts them the same way before its round.
 4. Start step 1 again, adding `--sleep-first`. The PRs just reviewed are now
    `already-reviewed` at their head commit, so the gate does not report them
-   again; one whose review failed, or that was over the per-round limit, is
-   reported after the next interval rather than straight away.
+   again; one whose review failed, or that was `over-limit`, is reported
+   after the next interval rather than straight away.
 
 If the gate exits non-zero it could not reach GitHub for an hour; report its
 error and stop.
@@ -219,9 +252,11 @@ the ready PRs (possibly none) and exits.
 
 ### 1. Review
 
-Take at most **5** PRs per round, so a backlog cannot burn a night's quota in
-one go; the rest come back on the next gate run. Launch one Agent per PR in a
-single message so they run in parallel, each with
+Review every PR in `ready`: the gate has already capped the round at 5 (or
+its `--limit`), so a backlog cannot burn a night's quota in one go, and the
+rest come back on the next gate run. Do not pick among them, re-check their
+CI or look at other PRs. Launch one Agent per PR in a single message so they
+run in parallel, each with
 `subagent_type: "fleet-pr-reviewer"` — the agent definition in
 `.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
 at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
@@ -327,6 +362,11 @@ The script does the rest, so do not post anything yourself:
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
   worker ignores; otherwise **approve**.
+- After an approval, when the PR is behind its base (and is not a Dependabot
+  PR), it asks GitHub to bring the branch up to date at the reviewed head
+  (rule 9), so the armed auto-merge can complete once CI re-runs. The result
+  is `branchUpdated: true` or `branchUpdateError: <first line>`; a refusal
+  leaves the approval posted and the next gate pass retries the update.
 - After a held review posts, it labels the PR `needs-human`. When it later
   posts an approved or sent-back review for a PR whose latest `log.jsonl`
   record shows this skill added that label, it removes it; it never
@@ -339,7 +379,8 @@ The script does the rest, so do not post anything yourself:
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, filedIssues?, labelError?, reason? }`.
+It prints `{ posted, outcome?, filedIssues?, labelError?, branchUpdated?,
+branchUpdateError?, reason? }`.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
 code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
@@ -384,8 +425,9 @@ search or file an improvement issue must not change the PR review outcome.
 ### 4. Report
 
 One short line per round: approved, sent back, and held for the owner, each
-with PR links, plus any issues filed. When post.ts printed a `labelError`
-for a PR, name that PR and the failure. Then go back to the loop.
+with PR links, plus any issues filed. When post.ts printed a `labelError` or
+a `branchUpdateError` for a PR, name that PR and the failure. Then go back to
+the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also
 send one PushNotification (status `proactive`) naming those PRs and why,
@@ -408,7 +450,8 @@ the last 7 days. Every gate pass rewrites it at no token cost.
 - PRs authored by the signed-in user are never candidates: GitHub does not
   let an author approve their own PR.
 - Cost while idle: one GraphQL search (about 2 points) every 5 minutes, and
-  no model tokens. Each ready PR adds one REST call for its file list.
+  no model tokens. Each ready PR adds one REST call for its file list; an
+  `over-limit` PR adds none.
 - `<logs>` is the Vibe Coder's own log directory: `.config.json` `log_dir`
   (the fleet sets `~/logs`), else the platform default. Everything this skill
   writes lives in `<logs>/review-fleet-prs/`, outside the checkout, which the

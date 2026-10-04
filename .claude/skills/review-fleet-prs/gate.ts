@@ -3,10 +3,14 @@
 // Finds the open PRs by Dependabot and the fleet accounts in the repos of the
 // VibeCoder .config.json that are ready for a model review: into the default
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
-// head commit, and not sent back awaiting a fix whose only new commits are
-// base-branch merges. It never posts anything itself; a red dependency audit
-// CI-fix could not clear is reported in `auditBlocked` with a ready-made
-// review for post.ts (Issue #3142).
+// head commit (by this reviewer, by anyone's approval, or by another host's
+// marker-carrying review), and not sent back awaiting a fix whose only new
+// commits are base-branch merges. At most --limit (default 5) PRs are
+// reported per pass, counted after every other skip, so a red or approved PR
+// never takes a slot and the rest come back next pass (Issue #3225). It never
+// posts anything itself; a red dependency audit CI-fix could not clear is
+// reported in `auditBlocked` with a ready-made review for post.ts (Issue
+// #3142).
 //
 // One GraphQL search (about 2 points a page) covers every repo, so polling
 // every few minutes stays cheap. With --watch=<seconds> the gate keeps polling
@@ -17,14 +21,16 @@
 //
 // Usage: deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts
 //          [--config=<path>] [--repo=<owner/name>] [--watch=<seconds>]
-//          [--sleep-first]
+//          [--sleep-first] [--limit=<n>]
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
 // skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each pass also does the
-// Dependabot upkeep in dependabot.ts (rebase requests, arming auto-merge);
-// --dry-run reports that upkeep without doing it. A failed upkeep action is
-// reported in `upkeep` too, and is not retried at the same head commit.
+// Dependabot upkeep in dependabot.ts (rebase requests, arming auto-merge) and
+// brings a fleet PR that is approved at its head but behind its base up to
+// date (branch_update.ts), once per head; --dry-run reports that upkeep
+// without doing it. A failed upkeep action is reported in `upkeep` too, and
+// is not retried at the same head commit.
 
 // The skill lives at <checkout>/.claude/skills/review-fleet-prs/, next to the
 // checkout's own .config.json.
@@ -44,6 +50,11 @@ import {
   writeSummary,
 } from "./review_log.ts";
 import { dependabotAction } from "./dependabot.ts";
+import {
+  approvedAtHead,
+  needsBranchUpdate,
+  updateBranch,
+} from "./branch_update.ts";
 import { isDependencyAuditCheck } from "../../../worker/deno/lib/dependency_audit_check.ts";
 import {
   type CiFixMarkerComment,
@@ -52,7 +63,11 @@ import {
 
 // Every review body the skill posts ends with this marker, so a comment-only
 // "held for the owner" review still counts as this commit's review.
-export { REVIEW_MARKER };
+export { approvedAtHead, REVIEW_MARKER };
+
+// PRs reported per pass unless --limit says otherwise: a backlog cannot burn
+// a night's quota in one round, and the rest come back next pass.
+export const DEFAULT_LIMIT = 5;
 
 const DEPENDABOT_LOGINS = new Set([
   "app/dependabot",
@@ -71,8 +86,10 @@ type Skip =
   | "conflicting" // the fleet resolves it; no review
   | "draft"
   | "not-default-branch" // e.g. into a milestone branch: the merge to the default branch gets the review
-  | "already-reviewed" // reviewed at this exact head commit
-  | "awaiting-fix"; // sent back at an earlier commit; only base-branch merges since, the PR's own diff unchanged
+  | "already-reviewed" // reviewed at this exact head commit, by this reviewer or by this skill on another host
+  | "approved" // someone else approved it at this exact head commit (Issue #3225): nothing left to review
+  | "awaiting-fix" // sent back at an earlier commit; only base-branch merges since, the PR's own diff unchanged
+  | "over-limit"; // ready, but past this pass's --limit; back next pass
 
 export interface ReadyPr {
   repo: string;
@@ -216,12 +233,15 @@ export function noTestAdded(files: PrFile[], kind: ReadyPr["kind"]): boolean {
 // worker dismisses a change request when it claims the feedback, before it
 // pushes the fix, and the fix's new commit is what earns a fresh review. A
 // comment-only review counts only when this skill posted it (the owner's
-// own comments do not).
+// own comments do not). A review carrying the skill's marker counts
+// whichever login posted it: the skill runs on several hosts (a laptop as
+// the gh user, GRQ-25 as the reviewer App), and one host's review must not
+// be repeated by another (Issue #3225).
 function countsAsReview(r: Review, reviewer: string): boolean {
+  if ((r.body ?? "").includes(REVIEW_MARKER)) return true;
   return sameLogin(r.author?.login, reviewer) &&
     (r.state === "APPROVED" || r.state === "CHANGES_REQUESTED" ||
-      r.state === "DISMISSED" ||
-      (r.state === "COMMENTED" && (r.body ?? "").includes(REVIEW_MARKER)));
+      r.state === "DISMISSED");
 }
 
 export function reviewedAtHead(
@@ -401,6 +421,9 @@ export async function skipReason(
   if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
     return "already-reviewed";
   }
+  // The owner, or another reviewer, approved this head by hand: a second
+  // approval adds nothing, and the PR merges once it is up to date.
+  if (approvedAtHead(pr.reviews.nodes, pr.headRefOid)) return "approved";
   const since = sentBackAt(
     pr.reviews.nodes,
     reviewer,
@@ -620,8 +643,10 @@ async function searchOpenPrs(
   logins: string[],
   gh: (args: string[]) => Promise<string>,
 ): Promise<SearchPr[]> {
+  // Oldest-updated first: with a per-pass limit, a PR whose head keeps
+  // moving (so its review never posts) must not starve the quiet ones.
   const q = [
-    "is:pr is:open archived:false",
+    "is:pr is:open archived:false sort:updated-asc",
     ...owners.map((o) => `user:${o}`),
     ...logins.map((l) => `author:${l}`),
   ].join(" ");
@@ -648,9 +673,13 @@ async function searchOpenPrs(
 // request is not repeated while Dependabot works on it.
 const REBASE_FILE = "dependabot-rebase.json";
 
-// Head commit an upkeep action (rebase or auto-merge) last failed at, per PR
-// and action, so a failure is not retried every pass.
+// Head commit an upkeep action (rebase, auto-merge or branch update) last
+// failed at, per PR and action, so a failure is not retried every pass.
 const FAILED_FILE = "dependabot-failed.json";
+
+// Head commit a fleet PR's branch update was last requested at, per PR, so
+// GitHub is asked once while CI runs on the merge commit (Issue #3225).
+const BRANCH_UPDATE_FILE = "branch-update.json";
 
 // --dry-run reports the Dependabot upkeep it would do without doing it.
 const DRY_RUN = Deno.args.includes("--dry-run");
@@ -679,10 +708,15 @@ export async function pass(
   repos: ReadonlySet<string>,
   fleet: ReadonlySet<string>,
   reviewer: string,
-  deps: { gh?: (args: string[]) => Promise<string>; dir?: string } = {},
+  deps: {
+    gh?: (args: string[]) => Promise<string>;
+    dir?: string;
+    limit?: number;
+  } = {},
 ) {
   const callGh = deps.gh ?? gh;
   const dir = deps.dir ?? stateDir();
+  const limit = deps.limit ?? DEFAULT_LIMIT;
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
   const logins = ["app/dependabot", ...fleet];
   const ready: ReadyPr[] = [];
@@ -692,6 +726,7 @@ export async function pass(
   const upkeep: string[] = [];
   const log = await readLog(dir);
   const rebaseAsked = await readMemory(dir, REBASE_FILE);
+  const updateAsked = await readMemory(dir, BRANCH_UPDATE_FILE);
   const failed = await readMemory(dir, FAILED_FILE);
   const single = repos.size === 1;
   const active = single
@@ -779,6 +814,31 @@ export async function pass(
         ownDiffUnchanged(callGh, repo, pr.baseRefName, since, pr.headRefOid),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
     );
+    // Review first, then up to date (Issue #3225): a fleet PR approved at
+    // its head (by any host or by hand) but behind its base cannot merge,
+    // so the base is merged in once per head. An unapproved PR is reviewed
+    // as it is; post.ts brings it up to date after the approval.
+    const key = prKey(repo, pr.number);
+    if (
+      needsBranchUpdate(pr, kind, updateAsked[key]) &&
+      failed[`${key} branch-update`] !== pr.headRefOid
+    ) {
+      const result = DRY_RUN ? { updated: true as const } : await updateBranch(
+        { repo, number: pr.number, headSha: pr.headRefOid },
+        callGh,
+      );
+      if (result.updated) {
+        if (!DRY_RUN) updateAsked[key] = pr.headRefOid;
+        upkeep.push(
+          `${key} branch update requested${DRY_RUN ? " (dry run)" : ""}`,
+        );
+      } else {
+        failed[`${key} branch-update`] = pr.headRefOid;
+        const line = `${key} branch update failed: ${result.error}`;
+        upkeep.push(line);
+        console.error(line);
+      }
+    }
     // Rule 2's one exception (Issue #3142): a red dependency audit CI-fix
     // has already replied to at this head is sent back once, never approved.
     const auditCheck = skip === "ci-failed"
@@ -807,6 +867,13 @@ export async function pass(
       skipped[skip] = (skipped[skip] ?? 0) + 1;
       continue;
     }
+    // The cap is applied here, after every other skip, so a red, approved
+    // or already-reviewed PR never counts against it, and no file list is
+    // read for a PR that will not be reviewed this pass.
+    if (ready.length >= limit) {
+      skipped["over-limit"] = (skipped["over-limit"] ?? 0) + 1;
+      continue;
+    }
     const files: PrFile[] = JSON.parse(
       await callGh([
         "api",
@@ -832,6 +899,7 @@ export async function pass(
   // summary's open set alone.
   if (repos.size > 1) await writeSummary(dir, open);
   await writeMemory(dir, REBASE_FILE, rebaseAsked);
+  await writeMemory(dir, BRANCH_UPDATE_FILE, updateAsked);
   await writeMemory(dir, FAILED_FILE, failed);
   return { ready, auditBlocked, skipped, upkeep };
 }
@@ -887,6 +955,7 @@ async function main() {
   const reviewer = arg("reviewer") ??
     (await gh(["api", "user", "--jq", ".login"])).trim();
   const watchSeconds = Number(arg("watch") ?? 0);
+  const limit = Number(arg("limit") ?? DEFAULT_LIMIT);
 
   const sleep = () => new Promise((r) => setTimeout(r, watchSeconds * 1000));
   if (watchSeconds > 0 && Deno.args.includes("--sleep-first")) await sleep();
@@ -894,7 +963,7 @@ async function main() {
   let failures = 0;
   while (true) {
     try {
-      const result = await pass(repos, fleet, reviewer);
+      const result = await pass(repos, fleet, reviewer, { limit });
       failures = 0;
       if (
         result.ready.length > 0 || result.auditBlocked.length > 0 ||
