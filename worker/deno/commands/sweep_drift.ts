@@ -13,9 +13,8 @@
 
 import {
   driftSince,
-  LIB_SWEEP_LEDGER_PATH,
   listSweptModulesForRoots,
-  parseCoverageLedger,
+  readCoverageLedger,
   type SliceDrift,
   type SweepCoverageLedger,
   type SweepGitRunner,
@@ -113,10 +112,7 @@ export const sweepDriftCommand: Command = {
     const repoRoot = typeof args.repo === "string" && args.repo.length > 0
       ? args.repo
       : Deno.cwd();
-    const json = await Deno.readTextFile(
-      `${repoRoot}/${LIB_SWEEP_LEDGER_PATH}`,
-    );
-    const ledger = parseCoverageLedger(json);
+    const ledger = await readCoverageLedger(repoRoot);
     const onDisk = await listSweptModulesForRoots(repoRoot, ledger.roots);
     const runGit = typeof args.runGit === "function"
       ? args.runGit as SweepGitRunner
