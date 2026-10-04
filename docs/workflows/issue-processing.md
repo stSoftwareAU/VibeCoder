@@ -1441,6 +1441,30 @@ missing both an earlier gate's requirement and the Docs sweep line is asked
 for both at once, in the earlier gate's notice, rather than losing the sweep
 to a second, unrecovered block (Issue #3085 review).
 
+**The line's own terms are re-run at the head (Issue #3172).** A complete-looking
+line used to pass while hits of its own grep terms still stated the removed
+behaviour, often in a file it listed as updated — the agent fixed the section
+it named and stopped (GRQ-AutoTrader#2413), or grepped one inflection and
+missed another (#2405: "replaces or removes" against "replaced or removed").
+Once the line passes,
+[`docs_sweep_hits.ts`](../../worker/deno/lib/docs_sweep_hits.ts)
+(`checkDocsSweepTerms`) re-runs each term the line quotes after `grep:`
+(backticked or double-quoted) with `git grep -i` at `HEAD` over `README.md`,
+every `*/README.md` and `docs/` (excluding `docs/archive/`). Terms are
+literal, except that a `\w*` or `\w+` stem marker matches a run of word
+characters, so `replac\w*` finds both forms. A hit is cleared when it sits
+on a line the branch's `git diff --unified=0 <base>...HEAD` added or
+changed, or when the line names it as `file:line` or `file:start-end`. Any
+other hit blocks the summary with a notice listing each `file:line` and its
+sentence (at most 20, then "and N more"), through the same single in-run
+recovery turn: fix it, or name it as `file:line — still true because …`. A
+term with more than 10 such hits in doc files the diff did not touch is a
+locator word, not a removed claim: those hits are set aside and the term
+is logged as not checked line by line, while its hits in files the diff
+touched are still listed. A grep or diff that cannot run, or an
+unresolvable base ref, is logged at ERROR as not checked and does not block
+the PR.
+
 ## 🚫 A leftover placeholder token blocks the summary
 
 A fleet PR could leave a literal fill-in-later token — e.g.

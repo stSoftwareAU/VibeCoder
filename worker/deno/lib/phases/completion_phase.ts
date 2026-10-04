@@ -58,6 +58,11 @@ import {
   validateDocsSweep,
 } from "../docs_sweep_gate.ts";
 import {
+  buildDocsSweepHitsComment,
+  checkDocsSweepTerms,
+  describeDocsSweepHits,
+} from "../docs_sweep_hits.ts";
+import {
   buildResultPlaceholderGateComment,
   findResultPlaceholders,
 } from "../result_placeholder_gate.ts";
@@ -2168,10 +2173,61 @@ async function completionBody(
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
   });
-  const docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
-  const docsSweepReason = `Docs sweep not recorded in the PR summary: ${
+  let docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
+  let docsSweepReason = `Docs sweep not recorded in the PR summary: ${
     docsSweep.problems[0] ?? "Docs sweep line missing"
   }`;
+  let docsSweepComment = buildDocsSweepGateComment(docsSweep);
+
+  // Issue #3172: once the line itself passes, re-run the grep terms it
+  // quotes over the head's docs. A hit outside every line the diff changed,
+  // and not named in the line as `file:line`, is a sentence the sweep found
+  // and left — it blocks through the same single recovery turn. A grep or
+  // diff that cannot run is logged as not checked, never read as clean.
+  if (docsSweep.applicable && docsSweep.valid) {
+    const termCheck = comparableBase.ok
+      ? await checkDocsSweepTerms({
+        rawBody: docsSweep.line.rawBody,
+        base: comparableBase.value,
+        runGit: async (args) => {
+          const result = await deps.git.runGitCommand(args, {
+            cwd: state.repoPath,
+          });
+          if (!result.ok) throw result.error;
+          return result.value;
+        },
+      })
+      : {
+        status: "not_checked" as const,
+        reason: `base ref unresolvable: ${comparableBase.error.message}`,
+        terms: [],
+      };
+    if (termCheck.status === "not_checked") {
+      logger.error(
+        "Docs sweep terms not checked against the head — the line passed " +
+          "the gate but its grep terms could not be re-run (Issue #3172)",
+        { reason: termCheck.reason, terms: termCheck.terms.length },
+      );
+    } else if (termCheck.status === "skipped") {
+      logger.info("Docs sweep terms not re-run (Issue #3172)", {
+        reason: termCheck.reason,
+      });
+    }
+    if (termCheck.status === "checked" && termCheck.broadTerms.length > 0) {
+      logger.warn(
+        "Docs sweep terms too broad to check line by line outside the " +
+          "files the diff touched — not checked there (Issue #3172)",
+        { terms: termCheck.broadTerms },
+      );
+    }
+    if (termCheck.status === "checked" && termCheck.staleHits.length > 0) {
+      docsSweepBlocked = true;
+      docsSweepReason = `Docs sweep incomplete at the head: ${
+        describeDocsSweepHits(termCheck.staleHits)
+      }`;
+      docsSweepComment = buildDocsSweepHitsComment(termCheck.staleHits);
+    }
+  }
 
   // ---------------------------------------------------------------------
   // Result-placeholder verdict, computed early alongside the docs-sweep one
@@ -2197,9 +2253,7 @@ async function completionBody(
     let foldedComment = comment;
     if (docsSweepBlocked) {
       foldedReason = `${foldedReason}; ${docsSweepReason}`;
-      foldedComment = `${foldedComment}\n\n---\n\n${
-        buildDocsSweepGateComment(docsSweep)
-      }`;
+      foldedComment = `${foldedComment}\n\n---\n\n${docsSweepComment}`;
     }
     if (placeholderBlocked) {
       foldedReason = `${foldedReason}; ${placeholderReason}`;
@@ -2341,6 +2395,7 @@ async function completionBody(
       changedFilesKnown,
       codeFiles: docsSweep.codeFiles.length,
       problems: docsSweep.problems,
+      reason: docsSweepReason,
     });
     // Issue #3124: fold the placeholder verdict in too, so a summary that
     // fails both the docs sweep and the placeholder gate gets told about
@@ -2348,13 +2403,13 @@ async function completionBody(
     const folded = placeholderBlocked
       ? {
         reason: `${docsSweepReason}; ${placeholderReason}`,
-        comment: `${buildDocsSweepGateComment(docsSweep)}\n\n---\n\n${
+        comment: `${docsSweepComment}\n\n---\n\n${
           buildResultPlaceholderGateComment(placeholderTokens)
         }`,
       }
       : {
         reason: docsSweepReason,
-        comment: buildDocsSweepGateComment(docsSweep),
+        comment: docsSweepComment,
       };
     return await reportSummaryRuleBlock(
       folded.reason,
