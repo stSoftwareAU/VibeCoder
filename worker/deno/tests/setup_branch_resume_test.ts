@@ -476,6 +476,74 @@ Deno.test("#2530 - a shared stream keeps this run on a per-issue session", async
   }
 });
 
+Deno.test("#3033 - a re-queued redo starts on a fresh branch from the base tip, not the abandoned head", async () => {
+  const workDir = await Deno.makeTempDir({ prefix: "issue3033-setup-" });
+  try {
+    // A plain title: the mock `git.createBranchName` does not strip
+    // punctuation the way the real one does, and the marker's `branch`
+    // attribute must be a value {@link restartMarkerBranches} accepts.
+    const ctx = buildContext(workDir, false, {
+      issueTitle: "redo this issue after an abandoned PR",
+    });
+    const state = buildState();
+    const freshBranches: string[] = [];
+    // The mock `git.createBranchName` (not the real one) is what the phase
+    // actually calls to derive the branch name.
+    const derivedBranchName = createMockDeps({}).git.createBranchName(
+      211,
+      ctx.issueTitle,
+    );
+    // The remote lists only the branch the ladder abandoned, which happens to
+    // be this issue's title-derived name (it was retitled back to the same
+    // slug by the re-queue).
+    const abandonedBranch = derivedBranchName;
+    const deps = createMockDeps({
+      git: {
+        listRemoteIssueBranches: () =>
+          Promise.resolve({
+            ok: true as const,
+            value: [{ branch: abandonedBranch, sha: "7bc5ea8" }],
+          }),
+        countCommitsAhead: () =>
+          Promise.resolve({ ok: true as const, value: 2 }),
+        resumeFeatureBranchFromRemote: () =>
+          Promise.resolve({ ok: true as const, value: true }),
+        createFeatureBranchFromBase: (branch: string, base: string) => {
+          freshBranches.push(branch);
+          assertEquals(base, "main");
+          return Promise.resolve({ ok: true as const, value: branch });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) => {
+          const url = args[args.length - 1] ?? "";
+          if (url.includes("/comments")) {
+            return Promise.resolve(JSON.stringify([{
+              body: `<!-- vibe-merge-conflict-restart pr="${ctx.repo}#34" ` +
+                `branch="${abandonedBranch}" -->\n♻️ re-queued`,
+              user: { login: "vibe-worker" },
+            }]));
+          }
+          return Promise.resolve("");
+        },
+      },
+    });
+
+    const result = await workOnIssueSetupBranch(ctx, state, deps);
+
+    assertEquals(result.status, "continue");
+    assertEquals(state.resumedFromCheckpoint, false);
+    assertEquals(state.branchName, `${derivedBranchName}-redo-1`);
+    assertEquals(freshBranches, [`${derivedBranchName}-redo-1`]);
+    // The abandoned branch itself is never pushed to.
+    assertEquals(freshBranches.includes(abandonedBranch), false);
+
+    if (state.heartbeatHandle) await stopHeartbeat(state.heartbeatHandle);
+  } finally {
+    await Deno.remove(workDir, { recursive: true }).catch(() => undefined);
+  }
+});
+
 Deno.test("#2530 - only a sharing tier gets past a busy stream", async () => {
   const workDir = await Deno.makeTempDir({ prefix: "issue2530-tier-" });
   try {

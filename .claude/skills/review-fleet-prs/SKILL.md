@@ -35,7 +35,10 @@ per machine.
 
 `--install` registers a launchd agent on macOS or a systemd user service on
 Linux. The host needs `deno`, `jq`, `gh` signed in, and `claude` signed in.
-The log is `runner.log` in the log directory below. A headless round cannot send the
+The log is `runner.log` in the log directory below. Every pass writes a
+line to it: an idle pass logs `gate: nothing ready (...)` with the gate's
+skip counts, so a quiet log still shows the gate running every 5 minutes.
+A headless round cannot send the
 PushNotification in step 4; `summary.md` still shows what is waiting.
 
 ### As a GitHub App
@@ -85,7 +88,9 @@ If the escalation itself fails, that is logged as "escalation failed" and
 the next pass retries it.
 
 `run.sh --once` runs the same housekeeping as the loop: pruning rounds older
-than 30 days and rotating `runner.log`. Running `bash -x run.sh` does not
+than 30 days, rotating `runner.log` past 10 MB, and emptying the
+service's own `service.out` in place past 10 MB (launchd holds it open, and
+everything in it is also in `runner.log`). Running `bash -x run.sh` does not
 print the minted token, since tracing is suspended around the mint.
 
 ## Rules

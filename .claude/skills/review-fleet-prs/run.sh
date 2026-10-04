@@ -41,6 +41,12 @@ housekeep() {
   if [[ -f "$LOG" && $(wc -c <"$LOG") -gt 10000000 ]]; then
     mv "$LOG" "$LOG.1"
   fi
+  # The service manager holds service.out open, so a rename would leave it
+  # writing to the old file: empty it in place instead. Everything in it is
+  # also in runner.log.
+  if [[ -f "$SERVICE_OUT" && $(wc -c <"$SERVICE_OUT") -gt 10000000 ]]; then
+    : >"$SERVICE_OUT"
+  fi
 }
 
 install_service() {
@@ -61,8 +67,8 @@ install_service() {
       echo '  <key>RunAtLoad</key><true/>'
       echo '  <key>KeepAlive</key><true/>'
       echo '  <key>ThrottleInterval</key><integer>60</integer>'
-      echo "  <key>StandardOutPath</key><string>$STATE_DIR/service.out</string>"
-      echo "  <key>StandardErrorPath</key><string>$STATE_DIR/service.out</string>"
+      echo "  <key>StandardOutPath</key><string>$SERVICE_OUT</string>"
+      echo "  <key>StandardErrorPath</key><string>$SERVICE_OUT</string>"
       echo '</dict></plist>'
     } >"$plist"
     launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
@@ -149,6 +155,9 @@ pass() {
     return 1
   fi
   if [[ $(jq '.ready | length' <<<"$ready" 2>/dev/null) == 0 ]]; then
+    # One short line per idle pass, so the log shows the gate is running.
+    log "gate: nothing ready ($(jq -r '.skipped | to_entries
+      | map("\(.key) \(.value)") | join(", ")' <<<"$ready" 2>/dev/null))"
     return 0
   fi
 
@@ -172,7 +181,9 @@ round report."
 
   # `exec ... or die`: a bare exec that cannot start `claude` (not on PATH)
   # falls through and perl exits 0, which would read as a completed round.
-  (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+  # `claude -p` otherwise kills its reviewer agents 600s in and ends the
+  # round with their PRs unreviewed; the alarm is the round's only limit.
+  (cd "$CHECKOUT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
     "$ROUND_TIMEOUT" \
     claude -p "$prompt" \
     --model claude-opus-5-5 --effort xhigh \
@@ -230,6 +241,7 @@ main() {
   }
   LOG="$STATE_DIR/runner.log"
   LOCK="$STATE_DIR/runner.lock"
+  SERVICE_OUT="$STATE_DIR/service.out"
   case "${1:-}" in
   --install)
     shift

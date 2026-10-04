@@ -495,6 +495,12 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
+  heavyBuildDeferral,
+  registerHeavyBuildDiskProbe,
+  releaseCheckoutTargetDirs,
+} from "./heavy_build_gate.ts";
+import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
+import {
   reclaimWorkVolumeTiers,
   repoDirName,
   summariseWorkVolumeTiers,
@@ -639,6 +645,13 @@ export interface ProductionDepsOptions {
    * in a recorder rather than mutating the environment every test shares.
    */
   setEnv?: (name: string, value: string) => void;
+
+  /**
+   * The agent health probe behind `checkClaudeHealth` (Issue #3180).
+   * Defaults to {@link claudeHealthCheck}; a test hands in a fake so the
+   * wiring can be checked without spawning a real agent.
+   */
+  agentHealthCheck?: typeof claudeHealthCheck;
 }
 
 // ---------------------------------------------------------------------------
@@ -1480,6 +1493,7 @@ export async function createProductionRunCoreDeps(
 
   // Health cache working directory
   const healthCacheDir = workDir;
+  const agentHealthCheck = options.agentHealthCheck ?? claudeHealthCheck;
 
   // Build RunCoreConfig
   const runCoreConfig = createDefaultRunCoreConfig();
@@ -1785,6 +1799,20 @@ export async function createProductionRunCoreDeps(
   let hostDiskLowSeen = false;
   let lastSharedCloneSweepAtMs: number | undefined;
 
+  // Issue #3178: maintenance that runs a repository build or test reads the
+  // same monitor the claim gate does, so below the floor it waits too.
+  registerHeavyBuildDiskProbe(async () => {
+    const status = await hostDisk.check();
+    if (status.level === "low") hostDiskLowSeen = true;
+    return {
+      status,
+      floorBytes: status.totalBytes === undefined
+        ? undefined
+        : hostDisk.floorBytesFor(status.totalBytes),
+      trimRefused: hostDisk.workVolumeTrimRefused,
+    };
+  });
+
   const deps: RunCoreDeps = {
     // -- Logging --
     log: (msg) => logger.info(msg),
@@ -1957,7 +1985,7 @@ export async function createProductionRunCoreDeps(
         return { ok: true, value: { healthy: true } };
       }
       try {
-        const result = await claudeHealthCheck(
+        const result = await agentHealthCheck(
           30,
           logger,
           provider,
@@ -2000,7 +2028,11 @@ export async function createProductionRunCoreDeps(
         }
         return {
           ok: true,
-          value: { healthy: false, exitCode: result.exitCode },
+          value: {
+            healthy: false,
+            exitCode: result.exitCode,
+            message: result.message,
+          },
         };
       } catch (err) {
         invalidateHealthCache(healthCacheDir, cacheType);
@@ -2843,9 +2875,6 @@ export async function createProductionRunCoreDeps(
             // repo×author serves every Priority-1.x scan this cycle.
             cache: issueCache,
             shuffleRepos: shuffleArray,
-            // Issue #395: the scan escalates a repeatedly disrupted conflict
-            // itself, so it needs the configured escalation label.
-            needsHumanLabel: config.needsHumanLabel,
             exclude,
             // Issue #1111: the deferral cursor, so a PR the last pass left
             // behind leads this one.
@@ -2897,7 +2926,6 @@ export async function createProductionRunCoreDeps(
             claudeNoOutputTimeout: config.claudeNoOutputTimeout,
             maxRateLimitRetries: config.maxRateLimitRetries,
             workerId: getWorkerUniqueId(config.workerName),
-            needsHumanLabel: config.needsHumanLabel,
             repoConfigs: config.repoConfig,
             // Issue #1247: the abandon rung reads its restart bound off comment
             // markers, so it needs to know whose markers count.
@@ -6182,6 +6210,24 @@ async function syncMilestoneBranchesFn(
     repos,
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
+    // Issue #3178: a sync that merges is verified by the repository's own
+    // build and test; below the host floor, or over the ephemeral cargo
+    // budget, it waits. The clone's ephemeral target dirs go when the pass
+    // ends rather than at the relaunch.
+    heavyBuildGateFn: (repo) =>
+      heavyBuildDeferral(`${workDir}/${repo.split("/")[1]}`),
+    releaseBuildArtefactsFn: async (repo) => {
+      if (!workVolumeTrimRefusedForLaunch()) return;
+      const released = await releaseCheckoutTargetDirs(
+        `${workDir}/${repo.split("/")[1]}`,
+      );
+      for (const error of released.errors) {
+        logger.warn(
+          `Could not release an ephemeral target dir of ${repo}: ${error} ` +
+            `(Issue #3178)`,
+        );
+      }
+    },
     syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
       // Issue #2309: every behind branch is offered the agent rung, and only
       // the handler's remaining budget refuses one. A branch that was not

@@ -195,6 +195,8 @@
         "worker/deno/lib/config.ts",
         "worker/deno/lib/conflict_abandon_restart.ts",
         "worker/deno/lib/conflict_issue_context.ts",
+        "worker/deno/lib/conflict_redo_branch.ts",
+        "worker/deno/lib/conflict_redo_candidate.ts",
         "worker/deno/lib/container_extension_config.ts",
         "worker/deno/lib/container_image_prune.ts",
         "worker/deno/lib/container_manifest.ts",
@@ -2489,6 +2491,18 @@
       ]
     },
     {
+      "issue": 3035,
+      "chunk": "top-up-3035",
+      "title": "top-up: the milestone-redo rebuild module",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3035",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_milestone_rebuild.ts (#3035)",
+      "status": "claimed",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
+      "paths": [
+        "worker/deno/lib/conflict_milestone_rebuild.ts"
+      ]
+    },
+    {
       "issue": 3073,
       "chunk": "top-up-3073",
       "title": "top-up: the docs-sweep manual gate",
@@ -2535,6 +2549,18 @@
       "sweptAt": "521483190dca4eb2de4976ee494be7f1a7d0e6b1",
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
+      ]
+    },
+    {
+      "issue": 3178,
+      "chunk": "top-up-3178",
+      "title": "top-up: the host-disk gate on heavy builds",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3178",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: heavy_build_gate.ts (#3178)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/heavy_build_gate.ts"
       ]
     },
     {
