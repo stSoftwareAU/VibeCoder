@@ -192,6 +192,157 @@ Deno.test("findNotPlannedDocReferences - declared dependency outside the milesto
   assertEquals(compareCalls, 0);
 });
 
+Deno.test("findNotPlannedDocReferences - a member depending on itself triggers no single-issue lookup", async () => {
+  let singleLookupCalls = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        {
+          number: 80,
+          title: "Self-referential",
+          body: "Depends on #80",
+          state: "open",
+        },
+      ]);
+    }
+    if (/\/issues\/\d+$/.test(key)) {
+      singleLookupCalls++;
+      throw new Error(`unexpected single-issue lookup: ${key}`);
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({ files: [] });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(singleLookupCalls, 0);
+});
+
+Deno.test("findNotPlannedDocReferences - a member depending on another member triggers no single-issue lookup", async () => {
+  let singleLookupCalls = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        { number: 81, title: "First", body: "Depends on #82", state: "open" },
+        { number: 82, title: "Second", body: "", state: "open" },
+      ]);
+    }
+    if (/\/issues\/\d+$/.test(key)) {
+      singleLookupCalls++;
+      throw new Error(`unexpected single-issue lookup: ${key}`);
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({ files: [] });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  assertEquals(singleLookupCalls, 0);
+});
+
+Deno.test("findNotPlannedDocReferences - two members declaring the same outside not_planned dependency trigger exactly one lookup and one reported reference", async () => {
+  let lookupCallsFor900 = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        { number: 90, title: "First", body: "Depends on #900", state: "open" },
+        { number: 91, title: "Second", body: "Depends on #900", state: "open" },
+      ]);
+    }
+    if (key.includes("/issues/900")) {
+      lookupCallsFor900++;
+      return JSON.stringify({
+        number: 900,
+        title: "Dropped outsider",
+        state: "closed",
+        state_reason: "not_planned",
+      });
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/shared.md",
+            status: "modified",
+            patch: patchAdding(1, ["still relies on #900"]),
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(lookupCallsFor900, 1);
+  assertEquals(result.value.references.length, 1);
+  assertEquals(result.value.references[0]!.issueNumber, 900);
+});
+
+Deno.test("findNotPlannedDocReferences - two members declaring the same outside completed dependency trigger exactly one cached lookup", async () => {
+  let lookupCallsFor901 = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        { number: 92, title: "First", body: "Depends on #901", state: "open" },
+        { number: 93, title: "Second", body: "Depends on #901", state: "open" },
+      ]);
+    }
+    if (key.includes("/issues/901")) {
+      lookupCallsFor901++;
+      return JSON.stringify({
+        number: 901,
+        title: "Shipped outsider",
+        state: "closed",
+        state_reason: "completed",
+      });
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({ files: [] });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(lookupCallsFor901, 1);
+  assertEquals(result.value.references, []);
+});
+
 Deno.test("findNotPlannedDocReferences - no candidates means compare is never called", async () => {
   let compareCalls = 0;
   const ghFn = async (args: string[]): Promise<string> => {
@@ -220,6 +371,104 @@ Deno.test("findNotPlannedDocReferences - no candidates means compare is never ca
   assertEquals(compareCalls, 0);
 });
 
+Deno.test("findNotPlannedDocReferences - an item with a non-integer issue number never becomes a candidate", async () => {
+  let compareCalls = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      // The only item on the page has a string, not integer, "number" —
+      // it must be dropped as junk, leaving zero candidates.
+      return JSON.stringify([
+        {
+          number: "7",
+          title: "String number",
+          state: "closed",
+          state_reason: "not_planned",
+        },
+      ]);
+    }
+    if (key.includes("/compare/")) {
+      compareCalls++;
+      return JSON.stringify({ files: [] });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  // Zero candidates means the compare step is skipped entirely.
+  assertEquals(compareCalls, 0);
+  assertEquals(result.value.references, []);
+});
+
+Deno.test("findNotPlannedDocReferences - non-object, non-integer-number and pull-request items are skipped from the issues page", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        null,
+        42,
+        {
+          number: "7",
+          title: "String number",
+          state: "closed",
+          state_reason: "not_planned",
+        },
+        {
+          number: 8,
+          title: "A pull request",
+          state: "closed",
+          state_reason: "not_planned",
+          pull_request: {},
+        },
+        {
+          number: 22,
+          title: "Really dropped",
+          state: "closed",
+          state_reason: "not_planned",
+          body: "",
+        },
+      ]);
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/junk.md",
+            status: "modified",
+            // Names #7, #8 and #22; only #22 is a real candidate.
+            patch: patchAdding(1, [
+              "see #7 and #8 and #22 here",
+            ]),
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.references.length, 1);
+  assertEquals(result.value.references[0]!.issueNumber, 22);
+});
+
 // ---------------------------------------------------------------------------
 // findIssueReferences
 // ---------------------------------------------------------------------------
@@ -235,6 +484,10 @@ Deno.test("findIssueReferences - accepts bare, parenthesised and spelt-out same-
   assertEquals(findIssueReferences("(#20)", REPO), [20]);
   assertEquals(findIssueReferences("see #20 above", REPO), [20]);
   assertEquals(findIssueReferences(`see ${REPO}#20`, REPO), [20]);
+});
+
+Deno.test("findIssueReferences - a repeated reference on one line is de-duplicated", () => {
+  assertEquals(findIssueReferences("#5 and again #5", REPO), [5]);
 });
 
 // ---------------------------------------------------------------------------
@@ -379,6 +632,106 @@ Deno.test("findNotPlannedDocReferences - Markdown file without patch is unchecke
   if (!result.ok) return;
   assertEquals(result.value.references, []);
   assertEquals(result.value.unchecked, ["docs/big.md"]);
+});
+
+Deno.test("findNotPlannedDocReferences - a doc line naming a non-candidate issue is not reported, while another line's candidate is", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        {
+          number: 100,
+          title: "Dropped",
+          state: "closed",
+          state_reason: "not_planned",
+        },
+        {
+          number: 101,
+          title: "Still open",
+          state: "open",
+        },
+      ]);
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/mixed.md",
+            status: "modified",
+            patch: patchAdding(1, [
+              "mentions the still-open #101",
+              "mentions the dropped #100",
+            ]),
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.references.length, 1);
+  assertEquals(result.value.references[0]!.issueNumber, 100);
+});
+
+Deno.test("findNotPlannedDocReferences - the same issue named on two lines of one file yields one reference with both line numbers ascending; a second file is a separate entry", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        {
+          number: 110,
+          title: "Dropped twice",
+          state: "closed",
+          state_reason: "not_planned",
+        },
+      ]);
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/a.md",
+            status: "modified",
+            patch: patchAdding(10, [
+              "second mention of #110 below",
+              "unrelated line here",
+              "first mention actually at line 12 names #110 too",
+            ]),
+          },
+          {
+            filename: "docs/b.md",
+            status: "modified",
+            patch: patchAdding(1, ["also names #110"]),
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.references.length, 2);
+  const aRef = result.value.references.find((r) => r.file === "docs/a.md")!;
+  const bRef = result.value.references.find((r) => r.file === "docs/b.md")!;
+  assertEquals(aRef.lines, [10, 12]);
+  assertEquals(bRef.lines, [1]);
 });
 
 Deno.test("findNotPlannedDocReferences - 300 files triggers a truncation entry", async () => {
@@ -542,6 +895,64 @@ Deno.test("findNotPlannedDocReferences - invalid branch is ok:false", async () =
   assertEquals(result.ok, false);
 });
 
+Deno.test("findNotPlannedDocReferences - invalid milestone number is refused before any gh call", async () => {
+  let ghCalled = false;
+  const ghFn = async (): Promise<string> => {
+    ghCalled = true;
+    return "[]";
+  };
+
+  for (const milestoneNumber of [0, -1, 1.5]) {
+    const result = await findNotPlannedDocReferences({
+      repo: REPO,
+      milestoneNumber,
+      defaultBranch: "main",
+      milestoneBranch: "milestone/v1",
+      ghCommandFn: ghFn,
+    });
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      assertStringIncludes(result.error.message, "Invalid milestone number");
+    }
+  }
+  assertEquals(ghCalled, false);
+
+  // Same options but with a legal milestone number are accepted.
+  const okResult = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(okResult.ok, true);
+});
+
+Deno.test("findNotPlannedDocReferences - invalid default branch name is refused", async () => {
+  const ghFn = async (): Promise<string> => "[]";
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "bad branch",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "Invalid default branch name");
+  }
+
+  // Same options but with a legal default branch name are accepted.
+  const okResult = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(okResult.ok, true);
+});
+
 // ---------------------------------------------------------------------------
 // renderNotPlannedDocSection
 // ---------------------------------------------------------------------------
@@ -581,6 +992,21 @@ Deno.test("renderNotPlannedDocSection - unchecked-only scan still renders", () =
     "Docs not checked for issues closed as not planned",
   );
   assertStringIncludes(section, "docs/big.md");
+});
+
+Deno.test("renderNotPlannedDocSection - exactly one blank line separates the last reference bullet from 'Not checked'", () => {
+  const section = renderNotPlannedDocSection({
+    references: [
+      {
+        issueNumber: 20,
+        title: "Dropped feature",
+        file: "docs/x.md",
+        lines: [6, 7],
+      },
+    ],
+    unchecked: ["docs/big.md"],
+  });
+  assertStringIncludes(section, "line(s) 6, 7\n\nNot checked");
 });
 
 Deno.test("NOT_PLANNED_DOCS_UNVERIFIED_NOTE - names the fallback reason", () => {
