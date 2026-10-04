@@ -54,11 +54,14 @@ import {
 } from "./prompt_delimiter.ts";
 
 // A markdown heading line reading "Failure Detection" (any heading level).
-const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection\s*:?\s*$/i;
+// Both tails below are `\s*(?::\s*)?`, not `\s*:?\s*`: two whitespace runs with
+// only an optional `:` between them backtrack quadratically on a label padded
+// with spaces and then any character the pattern rejects (Issue #3164).
+const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection\s*(?::\s*)?$/i;
 
 // A bolded inline label, e.g. "**Failure detection:** A new test ...".
 const BOLD_LABEL_RE =
-  /^\s{0,3}\*\*\s*failure\s+detection\s*:?\s*\*\*\s*:?\s*(.*)$/i;
+  /^\s{0,3}\*\*\s*failure\s+detection\s*(?::\s*)?\*\*\s*:?\s*(.*)$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
@@ -418,9 +421,11 @@ export function applyFailureDetectionSection(
   body: string,
   content: string,
 ): string {
+  // `trimEnd()`, not `/\s+$/`: unanchored, that pattern restarts at every
+  // space of a long run that a non-space then ends, quadratically (#3164).
   const base = stripExistingSection(body)
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/\s+$/, "");
+    .trimEnd();
   return `${base}\n\n## Failure Detection\n\n${content.trim()}\n`;
 }
 
