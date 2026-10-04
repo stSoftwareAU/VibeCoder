@@ -1344,6 +1344,19 @@ every other regex in the same module. The same change fixed the
 independent-review and reproduction-status parsers, and the trailing
 `/\s+$/` strip in the failure-detection repair.
 
+**A `(.*)$` tail can fail on a lone carriage return (Issue #3186).** The
+same gates read labelled values (`reason:`, `evidence:`, `symptom:`,
+`status:`, `test:`) and list items with a greedy `(.*)$`. `.` does not cross
+a lone `\r`, so on a line holding one the tail could not reach `$`: an
+unanchored label search restarted at every later occurrence of the label and
+rescanned to the end each time, and an anchored one split a run of spaces
+between `\s*` and `(.*)` in every possible way. Both are quadratic; at the
+200 000-character scan cap a single PR summary cost seconds to tens of
+seconds per call, and the closure gate has no cap. Each value is now read
+with `([^\n]*)` and no `$`, a tail that cannot fail, so the first labelled
+occurrence wins and a value after a lone `\r` is read rather than dropped.
+The regex-vetting rule names the shape.
+
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
 learn what the real tool does, so fleet PRs guessed and built the fake from

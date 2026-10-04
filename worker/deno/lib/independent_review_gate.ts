@@ -115,8 +115,13 @@ const STANDARDS_HEADING_RE =
 /** Any markdown heading — the section boundary. */
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
 
-/** A top-level markdown list item, with any task-list checkbox stripped. */
-const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+(?:\[[ xX~]?\]\s*)?(.*)$/;
+/**
+ * A top-level markdown list item, with any task-list checkbox stripped. The
+ * text is `([^\n]*)` with no `$`, not `(.*)$`: `.` stops at a lone `\r`, and a
+ * failing tail split a padded item's spaces between `\s+` and `(.*)` in every
+ * possible way — quadratic in the run (Issue #3186).
+ */
+const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+(?:\[[ xX~]?\]\s*)?([^\n]*)/;
 
 /** The leading status token of an entry: `**met**`, `met`, `` `met` ``. */
 const LEADING_TOKEN_RE = /^[`*_\s]*([a-z][a-z-]{1,15})[`*_\s]*(?=[—\-:,.]|$)/i;
