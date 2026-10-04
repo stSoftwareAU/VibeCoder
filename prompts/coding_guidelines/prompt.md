@@ -602,6 +602,20 @@ separate.
   inflates both readings and stays green, which is exactly what an absolute
   budget cannot do (Issue #530). Compare two readings of the same work; never
   a reading against a constant.
+- **Vet every regex on untrusted text, one hostile case per pattern.** Every
+  regex a change adds or edits that runs on untrusted or agent-written text
+  (an issue body, a PR summary, agent output) gets its own check, not one per
+  module. Read each pattern for two quantifiers that can match the same
+  characters with only optional tokens between them: `\s*:?\s*$`,
+  `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
+  overlap: trim the line first and drop the redundant quantifier, make the
+  pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
+  trailing whitespace, or cap the run. Then add one hostile case per pattern:
+  a long run of the shared character followed by a character the pattern
+  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
+  with the same defect, and #3160's hostile cases covered the inline form while
+  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.
@@ -702,7 +716,11 @@ still open; a closed or unreadable dependency does not defer, and the worker
 hands the issue to a human and raises no PR. A CI-fix run is the exception
 for a check already red on the base branch: `prompts/ci_fix/prompt.md`
 "Base-branch failures" still ends with
-`Depends on owner/repo#N`, and that line defers that check.
+`Depends on owner/repo#N`, and that line defers that check. That CI-fix
+deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
+or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
+(`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
+branch is red.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the

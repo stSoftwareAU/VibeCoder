@@ -281,6 +281,28 @@ Deno.test("issue_finder_logger - enabled property reflects configuration", () =>
 // =============================================================================
 
 Deno.test(
+  "issue_finder_logger - logConflictRedoSelection emits unconditionally when disabled (Issue #3034)",
+  () => {
+    const { diag, output } = createTestDiagnostics(false);
+
+    diag.logConflictRedoSelection({
+      repo: "owner/repo",
+      number: 42,
+      source: "work-on",
+      restartedAt: "2026-01-01T00:00:00Z",
+    });
+
+    assertEquals(output.length, 1);
+    const line = output[0]!;
+    assertStringIncludes(line, "[issue-finder] selected repo=owner/repo");
+    assertStringIncludes(line, "issue=#42");
+    assertStringIncludes(line, "reason=conflict-redo");
+    assertStringIncludes(line, "source=work-on");
+    assertStringIncludes(line, "restarted-at=2026-01-01T00:00:00Z");
+  },
+);
+
+Deno.test(
   "issue_finder_logger - logCloseOutSelection emits unconditionally when disabled (Issue #2009)",
   () => {
     const { diag, output } = createTestDiagnostics(false);

@@ -67,9 +67,14 @@ export interface ReproductionGateResult {
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
-/** A `## Reproduction` (or `## Reproduction Status`) heading, any level. */
+/**
+ * A `## Reproduction` (or `## Reproduction Status`) heading, any level. The
+ * tail is `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace runs with only an
+ * optional `:` between them backtrack quadratically on a heading padded with
+ * spaces and then any other character (Issue #3164).
+ */
 const REPRODUCTION_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+reproduction(\s+status)?\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+reproduction(\s+status)?\s*(?::\s*)?$/i;
 
 /** Any markdown heading — the section boundary. */
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;

@@ -603,10 +603,11 @@ export interface ConflictStallRepairOptions extends ConflictStallRepairDeps {
  * reason, which the shared budget still bounds — never `stalled`, which is
  * exempt from that guard.
  *
- * It never applies `needs-human` itself — only `abandonAndRestart`'s own
- * restarts-spent hand-off does — and it files no issue and adds no label of
- * its own. It never throws: every failure is logged and reported as
- * `"failed"`, and the next pass retries.
+ * It files no issue, adds no label and never applies `needs-human` — nor does
+ * the rung it hands off to: there is no restart cap and no needs-human
+ * hand-off for this route, however many times the issue has already been
+ * redone (Issue #3033). It never throws: every failure is logged and
+ * reported as `failed`, and the next pass retries.
  */
 export async function repairConflictQueueStall(
   stall: ConflictQueueStall,

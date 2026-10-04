@@ -420,7 +420,7 @@ Deno.test("an unanswered comment still trips after the first trip's own marker a
   assertEquals(state.prClosed, true);
 });
 
-Deno.test("second trip on an issue already redone twice adds needs-human and one comment, no third redo (Issue #2804)", async () => {
+Deno.test("second trip on an issue already redone twice still abandons and re-queues, no needs-human (Issue #3033)", async () => {
   const claim = (pr: number): Comment => ({
     body: `${CONFLICT_RESTART_MARKER} pr="${REPO}#${pr}" -->`,
     user: { login: FLEET },
@@ -434,20 +434,29 @@ Deno.test("second trip on an issue already redone twice adds needs-human and one
 
   assertEquals(await repairStalledPr(stall, deps), "first-trip");
   state.now += THRESHOLD;
-  assertEquals(await repairStalledPr(stall, deps), "abandon-declined");
+  assertEquals(await repairStalledPr(stall, deps), "abandoned");
 
-  assertEquals(state.prClosed, false, "no third redo closes the PR");
-  assertEquals(state.issueLabels, ["work-on", "needs-human"]);
+  assertEquals(
+    state.prClosed,
+    true,
+    "the exhausted PR is closed and the issue re-queued instead",
+  );
+  // A third restart is still a restart, not a hand-off: the pickup label the
+  // issue already carried is kept, and no `needs-human` is ever applied
+  // (Issue #3033).
+  assertEquals(state.issueLabels, ["work-on"]);
   assertEquals(state.issueComments.length, 3);
   assertStringIncludes(state.issueComments[2]!.body, `${REPO}#${PR}`);
   assertStringIncludes(state.issueComments[2]!.body, "has stalled");
+  assertStringIncludes(state.issueComments[2]!.body, "restart **3**");
+  assert(
+    !state.issueComments.some((entry) =>
+      entry.body.includes("needs a human") ||
+      entry.body.includes("handed to a human")
+    ),
+    "no hand-off comment is posted",
+  );
   assertEquals(state.writesOutsideLease, [], "every write holds the lease");
-
-  // A later check finds needs-human already there and says nothing more.
-  state.now += THRESHOLD;
-  assertEquals(await repairStalledPr(stall, deps), "abandon-declined");
-  assertEquals(state.issueComments.length, 3);
-  assertEquals(state.prClosed, false);
 });
 
 // ---------------------------------------------------------------------------
