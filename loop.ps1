@@ -12,6 +12,9 @@
 # Issue #342:  A launcher that stopped because the host is out of Claude quota
 #              is a scheduled pause, not a failure: it exits $QuotaPauseExit and
 #              the recorder re-probes on a fixed cadence instead of backing off.
+# Issue #3179: A run whose container root filesystem went read-only exits
+#              $RootFsFaultExit: the recorder relaunches at the base cadence
+#              and counts it as a host fault rather than growing the backoff.
 # Issue #4072: A failed launcher is recorded rather than retried blindly: the
 #              worker's `container-restart-backoff` command grows the wait
 #              across consecutive failures, records the recovery as a self-heal
@@ -78,6 +81,12 @@ $QuotaPauseExit = 75
 # (ANOTHER_WORKER_RUNNING_EXIT in worker/deno/commands/container_reap.ts,
 # Issues #26, #1056). The design invariant holding, not a crash.
 $AnotherWorkerRunningExit = 4
+
+# The worker's own "my container's root filesystem went read-only" status
+# (ROOT_FS_FAULT_EXIT_STATUS in worker/deno/lib/root_filesystem_fault.ts,
+# Issue #3179). A fresh container is the repair, so the recorder answers with
+# the base cadence rather than a grown backoff, and counts it as a host fault.
+$RootFsFaultExit = 74
 
 $WorkerMod = Join-Path $ScriptDir "worker/deno/mod.ts"
 $DenoCmd = Get-Command "deno" -CommandType Application -ErrorAction SilentlyContinue |
@@ -308,6 +317,10 @@ while ($true) {
         Write-LoopLine ("loop.ps1: run.ps1 did not launch — another worker is already running " +
             "on this host (status $status); one worker per host, so this is not a failure " +
             "(Issues #26, #1056)")
+    } elseif ($status -eq $RootFsFaultExit) {
+        Write-LoopLine ("loop.ps1: run.ps1 ended — its container's root filesystem went read-only " +
+            "(status $status); relaunching into a fresh container at the base cadence, " +
+            "recorded as a host fault (Issue #3179)")
     } elseif ($status -ne 0) {
         Write-LoopLine "loop.ps1: run.ps1 exited with status $status — backing off and retrying"
     }

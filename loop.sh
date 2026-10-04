@@ -28,6 +28,9 @@ set -uo pipefail
 #   #342  — a launcher that stopped because the host is out of Claude quota is
 #           a scheduled pause, not a failure: it exits QUOTA_PAUSE_EXIT and the
 #           recorder re-probes on a fixed cadence instead of backing off.
+#   #3179 — a run whose container root filesystem went read-only exits
+#           ROOT_FS_FAULT_EXIT: the recorder relaunches at the base cadence and
+#           counts it as a host fault rather than growing the backoff.
 #   #1072 — a launcher stopped by a signal is recorded as a stop, not as a
 #           failure of this host: run.sh exits with the runtime client's own
 #           status (255 when its container is stopped under it), so it declares
@@ -292,6 +295,13 @@ readonly QUOTA_PAUSE_EXIT=75
 # recorder answers with the base cadence.
 readonly ANOTHER_WORKER_RUNNING_EXIT=4
 
+# The worker's own "my container's root filesystem went read-only" status
+# (ROOT_FS_FAULT_EXIT_STATUS in worker/deno/lib/root_filesystem_fault.ts,
+# Issue #3179). Nothing inside that container could repair it; the fresh one
+# the next launch builds is the repair, so the recorder answers with the base
+# cadence rather than a grown backoff, and counts it as a host fault.
+readonly ROOT_FS_FAULT_EXIT=74
+
 # Reap what a killed run.sh leaves behind (Issue #322).
 #
 # run.sh execs the worker inside a container named `vibe-coder-<run.sh pid>`.
@@ -490,6 +500,10 @@ while true; do
         echo "loop.sh: ./run.sh did not launch — another worker is already running on this" \
              "host (status ${run_status}); one worker per host, so this is not a failure" \
              "(Issues #26, #1056)"
+    elif [[ "${run_status}" -eq "${ROOT_FS_FAULT_EXIT}" ]]; then
+        echo "loop.sh: ./run.sh ended — its container's root filesystem went read-only" \
+             "(status ${run_status}); relaunching into a fresh container at the base" \
+             "cadence, recorded as a host fault (Issue #3179)"
     elif [[ "${run_status}" -ne 0 ]]; then
         echo "loop.sh: ./run.sh exited with status ${run_status} — backing off and retrying"
     fi

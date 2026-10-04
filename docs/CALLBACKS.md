@@ -521,7 +521,10 @@ The same facts are exported as scalars, one variable each:
 A cycle hook additionally receives `VIBECODER_ISSUES_SCANNED`,
 `VIBECODER_CLAIMS_ATTEMPTED`, `VIBECODER_CLAIMS_TAKEN` and
 `VIBECODER_CYCLE_END_REASON` (`no_eligible_work`, `quota_paused`,
-`rate_limited`, `shutdown`, `error`). It does **not** receive run-only scalars
+`rate_limited`, `shutdown`, `host_fault`, `error`). `host_fault` was
+**added** without a version bump (Issue #3179): the container's root
+filesystem went read-only, so the run is ending for a fresh container. The
+cause is the host, not an issue or a provider. It does **not** receive run-only scalars
 (`RESULT`, `REPOSITORY`, `ISSUE_NUMBER`, `EXIT_CODE`, …), so it cannot be
 mistaken for a run hook.
 

@@ -2536,6 +2536,18 @@
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
       ]
+    },
+    {
+      "issue": 3179,
+      "chunk": "top-up-3179",
+      "title": "top-up: the container root-filesystem fault probe",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3179",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: root_filesystem_fault.ts (#3179)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/root_filesystem_fault.ts"
+      ]
     }
   ],
   "roots": [
