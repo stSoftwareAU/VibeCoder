@@ -3,13 +3,14 @@
  *
  * The summary gates at the completion phase's PR-creation chokepoint —
  * acceptance-criteria closure (#518), independent two-axis review (#663), bug
- * reproduction status (#521), the docs-sweep line (#3073) and the
- * result-placeholder gate (#3124) — check a *document*, not the code. A run
- * that had already raised its own PR from inside the execute phase used to
- * skip this module's recovery entirely: `reportSummaryRuleBlock` (#1140)
- * finalised that PR straight off its first block, so the PR shipped with the
- * gate's shortfall unrepaired (#3155/#3158/#3159). With no PR the block
- * posted its remediation comment and ended the run, so the next run — a
+ * reproduction status (#521), the docs-sweep line (#3073), the
+ * result-placeholder gate (#3124) and the branch-outcomes list (#3147) —
+ * check a *document*, not the code. A run that had already raised its own PR
+ * from inside the execute phase used to skip this module's recovery
+ * entirely: `reportSummaryRuleBlock` (#1140) finalised that PR straight off
+ * its first block, so the PR shipped with the gate's shortfall unrepaired
+ * (#3155/#3158/#3159). With no PR the block posted its remediation comment
+ * and ended the run, so the next run — a
  * whole agent session — existed only to add a documentation block to a pushed,
  * quality-gated branch. On this host that was 4 of 16 runs that reached
  * completion in a fortnight, 3 of them failed outright.
