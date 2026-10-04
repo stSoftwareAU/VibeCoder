@@ -130,7 +130,22 @@ Deno.test("readCoverageLedger - a top-up file that is not valid JSON fails namin
 
 Deno.test("readCoverageLedger - a non-JSON file in the top-up directory fails loud", async () => {
   const root = await checkoutWith({ "notes.txt": "x" });
-  await assertRejects(() => readCoverageLedger(root), SweepLedgerError);
+  const err = await assertRejects(
+    () => readCoverageLedger(root),
+    SweepLedgerError,
+  );
+  // Pin the extension rule itself: the JSON parse would also refuse "x", but
+  // only with "not valid JSON", never this guidance.
+  assert(
+    err.message.startsWith(`${LIB_SWEEP_TOP_UP_DIR}/notes.txt:`),
+    err.message,
+  );
+  assert(
+    err.message.includes(
+      "only top-up-<issue>.json files belong in this directory",
+    ),
+    err.message,
+  );
 });
 
 Deno.test("readCoverageLedger - a top-up file reusing a ledger-file slice's issue fails loud", async () => {
