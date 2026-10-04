@@ -11,6 +11,7 @@ import {
   buildPriorityDispatchTable,
   createDefaultRunCoreConfig,
   createWorkProgressTracker,
+  describeHealthCheckFailure,
   type RunCoreDeps,
   runCoreLoop,
   sleepWithJitter,
@@ -635,6 +636,142 @@ Deno.test("run_core - an unhealthy alternative keeps the skip-cycle path (Issue 
   assert(
     errors.some((e) => e.includes("skipping cycle")),
     "no healthy alternative means the existing skip-cycle path stands",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Tests — the skip-cycle line names its cause (Issue #3180)
+// ---------------------------------------------------------------------------
+
+/** Run one loop with the given health result and return the error lines. */
+async function skipCycleErrors(
+  health: Awaited<ReturnType<RunCoreDeps["checkClaudeHealth"]>>,
+): Promise<string[]> {
+  const errors: string[] = [];
+  let nowValue = 0;
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: () => {
+      nowValue += 4000 * 1000;
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: () => Promise.resolve(health),
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  await runCoreLoop(config, deps);
+  return errors.filter((e) => e.includes("skipping cycle"));
+}
+
+Deno.test("run_core - a failed health-check Result puts its error on the skip-cycle line (Issue #3180)", async () => {
+  const lines = await skipCycleErrors({
+    ok: false,
+    error: new Error("Read-only file system (os error 30)"),
+  });
+  assert(lines.length > 0, "expected the skip-cycle line");
+  assertStringIncludes(lines[0] ?? "", "Read-only file system (os error 30)");
+});
+
+Deno.test("run_core - an unhealthy health check puts its message on the skip-cycle line (Issue #3180)", async () => {
+  const lines = await skipCycleErrors({
+    ok: true,
+    value: {
+      healthy: false,
+      exitCode: 1,
+      message: "Health check error: Read-only file system (os error 30)",
+    },
+  });
+  assert(lines.length > 0, "expected the skip-cycle line");
+  assertStringIncludes(
+    lines[0] ?? "",
+    "skipping cycle: Health check error: Read-only file system (os error 30)",
+  );
+});
+
+Deno.test("run_core - an unhealthy health check with no message still says so (Issue #3180)", async () => {
+  const lines = await skipCycleErrors({
+    ok: true,
+    value: { healthy: false, exitCode: 1 },
+  });
+  assert(lines.length > 0, "expected the skip-cycle line");
+  assertStringIncludes(lines[0] ?? "", "exit 1");
+});
+
+Deno.test("describeHealthCheckFailure - names the cause for every failure shape (Issue #3180)", () => {
+  assertEquals(
+    describeHealthCheckFailure({
+      ok: false,
+      error: new Error("Read-only file system (os error 30)"),
+    }),
+    "Read-only file system (os error 30)",
+  );
+  assertEquals(
+    describeHealthCheckFailure({
+      ok: true,
+      value: { healthy: false, exitCode: 7, message: "Claude CLI exited 7" },
+    }),
+    "Claude CLI exited 7",
+  );
+  assertEquals(
+    describeHealthCheckFailure({
+      ok: true,
+      value: { healthy: false, exitCode: 1, message: "  " },
+    }),
+    "exit 1, no reason reported",
+  );
+  assertEquals(
+    describeHealthCheckFailure({ ok: true, value: { healthy: false } }),
+    "no reason reported",
+  );
+});
+
+Deno.test("run_core - an unhealthy fallback alternative and the usage-window pause name their cause (Issue #3180)", async () => {
+  const errors: string[] = [];
+  let nowValue = 0;
+  const deps = createMockDeps({
+    now: () => nowValue,
+    sleep: (ms?: number) => {
+      nowValue += Math.max(ms ?? 0, 1000);
+      return Promise.resolve();
+    },
+    logError: (msg: string) => {
+      errors.push(msg);
+    },
+    checkClaudeHealth: (provider?: AgentProviderSelector) =>
+      Promise.resolve({
+        ok: true,
+        value: {
+          healthy: false,
+          exitCode: 3,
+          message: provider === "deepseek"
+            ? "DeepSeek CLI exited 1: HTTP 402 insufficient balance"
+            : "Claude Code is rate-limited: weekly limit reached",
+        },
+      }),
+    getRateLimitRemainingSeconds: () => Promise.resolve(25_000),
+  });
+  const config = createDefaultRunCoreConfig();
+  config.runDurationSeconds = 3600;
+  config.agentProviderFallback = ["deepseek"];
+
+  await runCoreLoop(config, deps);
+
+  assert(
+    errors.some((e) =>
+      e.includes("alternative deepseek is not healthy") &&
+      e.includes("HTTP 402 insufficient balance")
+    ),
+    `the alternative's cause must be logged: ${errors.join(" | ")}`,
+  );
+  assert(
+    errors.some((e) =>
+      e.includes("pausing until the usage window reopens") &&
+      e.includes("weekly limit reached")
+    ),
+    `the pause must name the primary's cause: ${errors.join(" | ")}`,
   );
 });
 

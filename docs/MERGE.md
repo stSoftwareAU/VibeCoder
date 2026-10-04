@@ -983,33 +983,17 @@ local HEAD did.
 
 A PR that conflicts with its base cannot run CI, so the merge-conflict pass
 merges the base branch in for real rather than side-picking. That pass is
-bounded by **three concluded attempts, shared across every pass that works the
-PR** — `CONFLICT_RESOLUTION_BUDGET`
-([`merge_conflict_markers.ts`](../worker/deno/lib/merge_conflict_markers.ts),
-Issue #2996) — one budget, tallied from marker comments on the PR itself
-(`pass="ladder"` for the stale-verdict ladder, `pass="sync"` for the milestone
-sync and `pass="takeover"` for the takeover rung; a legacy marker carrying no
-`pass=` reads as `ladder`), so the same PR cannot be given extra attempts just
-by being worked through more than one pass. The third judged failure runs the
-abandon-and-restart rung, and no outcome of the *scan's* spent-budget route
-asks a person at all (Issue #2310); the resolution processor's own last
-escalation goes with the next sub-issue under #2298.
-
-**A failed attempt leaves the PR to its owner for a bounded window, rather
-than no wait at all** (Issue #2996, superseding the "no wait between them"
-stance of Issue #2305 on this point). The next attempt is due once
-`CONFLICT_OWNER_CHECK_HOURS` (2 hours) have passed with the PR's head SHA
-unchanged since the failed attempt — or at once if the head has already moved,
-since a moved head is a different merge the owner cannot have been still
-reviewing. A legacy failure marker with no recorded head, or a current head
-that cannot be read, cannot prove the head moved, so the 2-hour spacing
-applies; a failure with no readable timestamp is due at once (the three-attempt
-budget still bounds it regardless). While the PR waits out that window it is
-recorded with the `owner-check-pending` skip reason and stays labelled and
-queued — see
-[the merge-conflict workflow](workflows/merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)
-for the full decision and its flowchart. Two hosts are still kept off one PR by
-the cross-host lock, never by this spacing.
+bounded by **two concluded attempts, with no wait between them** —
+`DEFAULT_MAX_CONFLICT_ATTEMPTS`
+([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
+the first attempt and one retry against whatever the base has become since
+(Issue #2305). The second judged failure runs the abandon-and-restart rung, and
+no outcome of the *scan's* spent-budget route asks a person at all (Issue #2310);
+the resolution processor's own spent budget asks no person either — it goes to
+abandon-and-redo in its turn (Issue #3032). A PR one concluded failure in is due
+again on the very next pass: the four-hour cooldown that used to sit between
+the attempts bought nothing a moved base does not, and two hosts are kept off
+one PR by the cross-host lock rather than by a wait.
 
 That rung closes the PR — never force-pushes it — and re-queues its originating
 issue. A pickup label the issue already carries is kept as it is, so a restart
@@ -1019,10 +1003,9 @@ the issue at `needs-human` (Issue #2277). Every fallback files one
 `merge-fallback` issue recording what happened, linked from the closed PR; a PR
 whose originating issue cannot be found is closed too, and its flag carries
 `idle-task` and the PR's diff summary so the flag *is* the re-do item
-(Issue #2310). Its preconditions,
-its two-restarts-per-issue bound and its exits — including the park that
-follows the second restart (Issue #2312) and the `needs-human` hand-off of an
-issue whose two redos are spent (Issue #2804) — are in
+(Issue #2310). There is no cap on restarts per issue (Issue #3033): every
+redo starts on a fresh branch cut from the base branch's current tip, never
+the abandoned one. Its preconditions and its exits are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
 
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
@@ -1055,7 +1038,8 @@ self-closing alert issue per provider in VibeCoder — see
 
 A disrupted attempt is re-attempted rather than charged, and is bounded
 separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
-disruption — not the conflict — is the problem, and a human is told so.
+disruption — not the conflict — is the problem, and it is logged loudly rather
+than asking a person: no label is applied and the PR is left queued.
 
 For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
 itself, so the bound holds across hosts and worker restarts. For a **milestone

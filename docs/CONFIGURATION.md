@@ -4834,9 +4834,11 @@ the next cycle — and climbs a two-trip ladder:
   reason: the PR is closed (its branch kept) and its originating issue is
   re-queued, keeping its own pickup label or gaining `idle-task` — never
   `work-on`. A PR naming no originating issue is closed and **no** issue is
-  filed. The issue shares its two restarts with the merge-conflict ladder; once
-  both are spent, a further stall adds `needs-human` and one comment to the
-  issue instead of a third redo (Issue #2804).
+  filed. The issue shares the same restart marker vocabulary as the
+  merge-conflict ladder, and the same rules: there is no cap on restarts
+  (Issue #3033), so a further stall simply redoes the work again — on a
+  fresh branch cut from the base branch's current tip — rather than ever
+  handing the issue to a human for a spent restart budget.
 - **A marker counts for one stall only** — a trip marker left by an earlier
   stall the PR has since recovered from is ignored, and the new stall takes its
   own first trip. For an unanswered comment, the marker counts only if it is

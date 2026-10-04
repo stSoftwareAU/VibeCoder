@@ -2784,7 +2784,10 @@ happening.
 While the host disk is low and reclaim did not heal it, this sweep alone is
 skipped for the cycle (the handler's `pausesOnHostDiskLow` flag). Every other
 pass, lane or serial, keeps running because those passes land the PRs already
-open (Issue #226). See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
+open (Issue #226) — but a milestone sync that would run the repository's own
+build or test defers that branch until the host recovers (Issue #3178, see
+[HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
+See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
 in CONTAINER.md.
 
 ```mermaid
@@ -5151,6 +5154,8 @@ All business logic lives here. Shell tooling invokes them directly with
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                      |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                 |
 |                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from a rewritten pr-summary file after a fix-run push (Issue #3089)                                                                                               |
+|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143)                                                    |
+|                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143)                                                                                                  |
 |                             | [pr_comments.ts](../worker/deno/lib/pr_comments.ts)                                                               | PR comment/feedback detection and processing                                                                                                                                         |
 |                             | [pr_evidence.ts](../worker/deno/lib/pr_evidence.ts)                                                               | Screenshot processing and evidence validation                                                                                                                                        |
 |                             | [pr_issue_linking.ts](../worker/deno/lib/pr_issue_linking.ts)                                                     | Ensure PRs reference closing issues                                                                                                                                                  |

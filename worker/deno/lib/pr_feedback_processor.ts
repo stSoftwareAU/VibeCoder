@@ -2,8 +2,9 @@
  * PR feedback processor (Issue #967).
  *
  * Handles responding to PR review comments by checking out the PR branch,
- * building a feedback prompt, running Claude to fix issues, committing
- * changes, pushing, and replying to the comment.
+ * building a feedback prompt, running Claude to fix issues, running a drift
+ * check on the push, committing changes, pushing, and replying to the
+ * comment.
  *
  * Migrated from work_on_pr_feedback() in issue_worker.sh.
  *
@@ -46,6 +47,10 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { retryReplyPlaceholdersOnce } from "./result_placeholder_gate.ts";
+import {
+  DRIFT_CHECK_DISALLOWED_TOOLS,
+  runPrFeedbackDriftCheck,
+} from "./pr_feedback_drift_check.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -270,6 +275,11 @@ export interface PrFeedbackProcessorDeps {
    * (Issue #3089). Omitted → empty string.
    */
   workerName?: string;
+  /**
+   * Override the post-agent drift check (Issue #3143). Injected by tests;
+   * production leaves it undefined and gets {@link runPrFeedbackDriftCheck}.
+   */
+  driftCheckFn?: typeof runPrFeedbackDriftCheck;
 }
 
 // ---------------------------------------------------------------------------
@@ -977,6 +987,67 @@ async function _processFeedbackWithHeartbeat(
       logger,
     },
   );
+
+  // Post-agent drift check (Issue #3143): review-fix pushes have kept
+  // leaving the PR summary (or a manual) contradicting the code they just
+  // changed — the prompt's own prose rules against this (#3114, #3117,
+  // #3120) go unchecked on this path. Run it here, before the commit-and-
+  // push below, so a recovery-turn edit rides the same push and a residual
+  // hit reaches the reply through `.pr_response_message`, read later by
+  // `readPrResponseMessage`. Wrapped so an unexpected throw never aborts an
+  // otherwise-successful run — the check is a backstop, not a gate.
+  try {
+    const driftCheck = processorDeps.driftCheckFn ?? runPrFeedbackDriftCheck;
+    const driftOutcome = await driftCheck(
+      { repo, prNumber, repoPath: processorDeps.workDir, beforeSha },
+      {
+        runGit: async (args: string[]) => {
+          const r = await deps.git.runGitCommand(args, {
+            cwd: processorDeps.workDir,
+          });
+          return r.ok ? r.value : null;
+        },
+        runGh: (args: string[]) => deps.github.runGhCommand(args),
+        runAgent: async (req: { prompt: string; readOnly: boolean }) => {
+          const r = await deps.claude.runClaudeWithRetry(
+            {
+              prompt: req.prompt,
+              timeoutSeconds: claudeTimeout,
+              noOutputTimeout: claudeNoOutputTimeout,
+              phase: "pr_feedback",
+              cwd: processorDeps.workDir,
+              logger,
+              ...(req.readOnly
+                ? { disallowedTools: [...DRIFT_CHECK_DISALLOWED_TOOLS] }
+                : { systemPrompt }),
+            },
+            { maxRetries: maxRateLimitRetries },
+          );
+          if (!r.ok) return { ok: false, error: r.error };
+          if (r.value.timedOut) {
+            return { ok: false, error: new Error("timed out") };
+          }
+          return { ok: true, output: r.value.output ?? "" };
+        },
+        logger,
+      },
+    );
+    logger.info("PR feedback drift check (Issue #3143)", {
+      repo,
+      prNumber,
+      status: driftOutcome.status,
+    });
+  } catch (error) {
+    logger.error(
+      "PR feedback drift check failed — continuing to commit and push " +
+        "without it (Issue #3143)",
+      {
+        repo,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
 
   // Mark comment as processed
   await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);

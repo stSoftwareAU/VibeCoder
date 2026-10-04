@@ -166,7 +166,8 @@ match wins and the loop restarts.
    ```
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
-   reply; commit and push.
+   reply; run the **drift check** (see [The worker's drift check (Issue
+   #3143)](#the-workers-drift-check-issue-3143) below); commit and push.
 4. **Mark processed** — Add eyes reaction to comment and/or dismiss review so it
    is not picked again. The claim adds that reaction *before* it verifies the
    claim, to narrow the race window, so it **takes the reaction back** whenever
@@ -245,7 +246,74 @@ are that run's. A number is never carried over from the earlier iteration.
 Review-fix heads had edited the summary in the same push yet left a stale
 count or test list (VibeCoder#3075, #3105, #3108). The PR-body sync
 (Issue #3089) copies such a count faithfully, so the recount has to land
-in the summary file itself.
+in the summary file itself. The prose rule asks the agent to recount; the
+worker now recounts it too — see **The worker's drift check (Issue #3143)**
+below.
+
+#### The worker's drift check (Issue #3143)
+
+The prose rules above (Issues #3114, #3117, #3120) ask the agent to keep the
+summary, docs and Test Plan honest, but a fix push still landed with the
+summary, a manual or a prompt describing the **old** behaviour
+(VibeCoder#3134, #3095, #3132). After the agent's turn — and after the
+existing result-placeholder reply retry (Issue #3124) — and before the
+comment is marked processed and the worker's own final-mile commit-and-push,
+the worker runs a **drift check** on the push itself: the working-tree diff
+against the branch head captured before the agent ran, plus any untracked
+files. The check is skipped when there is no before-run head, or the push
+changed nothing.
+
+Three checks run, each only when it applies:
+
+1. **Model drift pass** — only when the push changes a code file (neither a
+   test nor documentation, the same rule as the docs-sweep gate below). A
+   read-only question (file-writing, sub-agent, web and plan-mode tools
+   denied, the same list as the closure-verdict question) is asked over the
+   PR summary and every doc/prompt/README the PR diff touches against its
+   base (capped at 40 files): list every sentence the code change makes
+   false or leaves incomplete, quoted verbatim.
+2. **Deterministic Test Plan recount** — whenever the PR diff carries a
+   summary, the worker counts top-level `Deno.test(` / `it(` declarations
+   at the head for every test file the PR diff adds or edits, and flags a
+   `## Test Plan` line naming those files with a test count that disagrees.
+   A file is left out when a declaration is inside a block, parentheses, or
+   a loop, or the scan ends inside a literal or with unbalanced depth.
+   Wrapped list items and slash-continued commands are read as one claim.
+   An issue number (`#3143`) is not a count, and a line that says tests
+   were added to or extended an existing file (`added to`, `extended`,
+   `with N tests`) is not compared with that file's whole count. Lines it
+   cannot total (an uncounted file, `--filter`, two different numbers, "N
+   new tests") are skipped.
+3. **Docs sweep re-check** — when the push changes a code file and a summary
+   exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
+   files.
+
+Any hit gets **one** recovery turn: the agent, with full tools, is asked to
+rewrite the listed sentences, recount the Test Plan and fix the Docs sweep
+line, without changing code. The checks are then re-run; a prose finding
+counts as fixed only when its quoted sentence was present before the
+recovery turn and is gone after it — a finding whose file was not one of
+the files the question was asked about is never read back, so it stays
+reported regardless of the recovery turn. A model pass that returns no
+verdict is not a hit and does not trigger a recovery turn on its own; it
+goes straight to the reply note. Whatever remains after the recovery turn —
+plus a model pass that returned no verdict — is appended to
+`.pr_response_message` under `### Drift check (Issue #3143)`, so it reaches
+the PR reply instead of being pushed silently.
+
+```mermaid
+flowchart TD
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep"]
+    D --> H{"Any hits?"}
+    H -- no --> P["Commit and push"]
+    H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
+    H -- yes --> R["One recovery turn"]
+    R --> C["Re-check"]
+    C --> L{"Anything left?"}
+    L -- yes --> N
+    L -- no --> P
+    N --> P
+```
 
 #### Verify a claim about another component before rewriting it (Issue #3090)
 

@@ -172,6 +172,15 @@ guessing — the analysis-only hand-off then routes it to a human.
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
    never by the file's topic.
+   Grep for the **stem** of a behavioural claim, not one inflection
+   (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
+   list as updated, read every passage that mentions the changed surface,
+   not only the section you edited. Then re-run every grep **on the final
+   head, after editing**, and record each hit you leave in place in the
+   Docs sweep line as `file:line — still true because …`. The worker
+   re-runs the line's quoted terms over the head's docs itself: a hit
+   outside the lines your diff changed that the line does not name as
+   `file:line` blocks the PR the same way a missing line does.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is
@@ -957,7 +966,7 @@ The file MUST contain:
    - For bug fixes/CLI changes: Reference the tests that verify the fix
    - Always: a one-line **Docs sweep** — the grep terms you searched, the
      manual section you found and checked, and the doc files you updated, or
-     `no hits` — e.g. **Docs sweep** — grep: `retryLimit`, "Retrying in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`
+     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -1026,7 +1035,17 @@ The file MUST contain:
    excluded with its reason, and a kept guard counts only once a named test
    reaches the new path with the guard's trigger holding and goes red when
    the new branch is moved ahead of the guard; a new path that skips a guard
-   with no stated reason is a blocking self-review finding. Likewise, code
+   with no stated reason is a blocking self-review finding. Likewise, a
+   branch, guard, capture or hand-off the diff adds below existing early
+   exits must be reachable by the input it exists for (see **A new branch
+   must be reachable by the input it exists for** in the guidelines): list
+   each exit above the insertion point and what fires it, move the new
+   branch above any exit a realistic input for its case can fire first (or
+   state why that exit must win — a real infrastructure signal, never a
+   wording guess), and name a test whose realistic input also trips each
+   earlier exit the new branch now precedes and goes red when the branch is
+   moved back below it; a new branch that a realistic input for its own
+   case cannot reach is a blocking self-review finding. Likewise, code
    the diff adds that deletes or replaces state — an `rm -rf`, a clone or
    `.git` swap, a `git reset --hard` or `git clean -fdx` — proves everything
    it destroys is safe to lose (see **Code that deletes or replaces state
