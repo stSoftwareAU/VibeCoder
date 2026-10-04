@@ -568,9 +568,15 @@ export interface RunCoreDeps {
   checkFeatureAvailability: () => Promise<void>;
 
   // Health checks
+  /**
+   * Agent health probe. An unhealthy value carries the probe's `message` so
+   * the skip-cycle line can say why (Issue #3180).
+   */
   checkClaudeHealth: (
     provider?: AgentProviderSelector,
-  ) => Promise<Result<{ healthy: boolean; exitCode?: number }>>;
+  ) => Promise<
+    Result<{ healthy: boolean; exitCode?: number; message?: string }>
+  >;
   /**
    * Fresh (uncached) agent auth re-probe for the mid-cycle auth-outage
    * breaker (Issue #4167). The cycle-start health gate passed, but a
@@ -5503,6 +5509,27 @@ function activeProviderIdOrUndefined(): string | undefined {
 }
 
 /**
+ * Describe why a health probe failed, for the line that reports it
+ * (Issue #3180). A failed `Result` yields its error; an unhealthy value its
+ * message, or its exit code when the probe gave no message. Without this the
+ * operator saw only "health check failed — skipping cycle" and had to read
+ * `dmesg` to learn the root filesystem had gone read-only.
+ *
+ * @param health - The probe's result
+ * @returns A one-line reason, never empty
+ */
+export function describeHealthCheckFailure(
+  health: Result<{ healthy: boolean; exitCode?: number; message?: string }>,
+): string {
+  if (!health.ok) return health.error.message || String(health.error);
+  const message = health.value.message?.trim();
+  if (message) return message;
+  return health.value.exitCode === undefined
+    ? "no reason reported"
+    : `exit ${health.value.exitCode}, no reason reported`;
+}
+
+/**
  * Probe the configured fallback providers in order for a healthy one
  * (Issue #2055).
  *
@@ -5527,7 +5554,8 @@ async function probeHealthGateFallback(
     const probe = await deps.checkClaudeHealth(id);
     if (probe.ok && probe.value.healthy) return id;
     deps.logError(
-      `[provider-fallback] alternative ${id} is not healthy — ` +
+      `[provider-fallback] alternative ${id} is not healthy ` +
+        `(${describeHealthCheckFailure(probe)}) — ` +
         `trying the next configured alternative (Issue #2055)`,
     );
   }
@@ -6351,8 +6379,9 @@ export async function runCoreLoop(
                 const nowSec = Math.floor(deps.now() / 1000);
                 const resetEpoch = nowSec + remaining;
                 deps.logError(
-                  "Claude health check failed and no configured alternative " +
-                    "is healthy — pausing until the usage window reopens " +
+                  "Claude health check failed " +
+                    `(${describeHealthCheckFailure(claudeHealth)}) and no ` +
+                    "configured alternative is healthy — pausing until the usage window reopens " +
                     `${formatRateLimitReset(resetEpoch, nowSec)} rather than ` +
                     `re-probing every ${config.sleepInterval}s (Issue #2119)`,
                 );
@@ -6371,7 +6400,10 @@ export async function runCoreLoop(
                 }
                 continue;
               }
-              deps.logError("Claude health check failed — skipping cycle");
+              deps.logError(
+                "Claude health check failed — skipping cycle: " +
+                  describeHealthCheckFailure(claudeHealth),
+              );
               await deps.sleep(config.sleepInterval * 1000);
               continue;
             }
