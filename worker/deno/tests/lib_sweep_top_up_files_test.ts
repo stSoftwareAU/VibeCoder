@@ -113,6 +113,21 @@ Deno.test("readCoverageLedger - a malformed top-up file fails naming that file",
   );
 });
 
+Deno.test("readCoverageLedger - a top-up file that is not valid JSON fails naming that file", async () => {
+  // A trailing comma must not surface as a bare SyntaxError naming no file.
+  const root = await checkoutWith({ "top-up-3300.json": '{"issue": 3300,}' });
+  const err = await assertRejects(
+    () => readCoverageLedger(root),
+    SweepLedgerError,
+  );
+  assert(
+    err.message.startsWith(
+      `${LIB_SWEEP_TOP_UP_DIR}/top-up-3300.json: not valid JSON`,
+    ),
+    err.message,
+  );
+});
+
 Deno.test("readCoverageLedger - a non-JSON file in the top-up directory fails loud", async () => {
   const root = await checkoutWith({ "notes.txt": "x" });
   await assertRejects(() => readCoverageLedger(root), SweepLedgerError);
