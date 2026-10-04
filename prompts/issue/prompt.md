@@ -1004,7 +1004,14 @@ The file MUST contain:
    guard, a new rule) counts only once you have seen it go red with only its
    change removed (see **A new test must go red without its change** in the
    guidelines); one that stays green without its change is a blocking
-   self-review finding. A test that only pins current behaviour, because the
+   self-review finding. For a documentation-drift test that check is per
+   pinned phrase, not per test: look for each phrase in the base branch's
+   version of the section the test reads (`git show <base>:<doc>`, narrowed
+   to the same section title; in the Vibe Coder repository, `deno task
+   drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
+   `worker/deno` does this), and record here that each pinned phrase is
+   absent from the base section; a phrase the base section already held is a
+   blocking self-review finding. A test that only pins current behaviour, because the
    fault was unreproduced or already fixed and no production change was made,
    is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard

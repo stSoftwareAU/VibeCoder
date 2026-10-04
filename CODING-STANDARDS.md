@@ -200,12 +200,20 @@ earns its place by meeting all four conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
-4. **The pinned phrase occurs only in the rule being added.** A phrase the
+4. **Every pinned phrase occurs only in the rule being added.** A phrase the
    section already held before the change stays green when the new rule is
    deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
-   issue prompt already carried. Check the phrase is absent from the base
-   branch's version of that section, or delete the new rule and confirm the
-   test goes red.
+   issue prompt already carried. The check is **per pinned phrase, not per
+   test**: each phrase must be absent from the base branch's version of its
+   scoped section (`git show <base>:<doc>`, narrowed with the same `section()`
+   title). "The test goes red against the base" is not enough when a test pins
+   more than one phrase — one new pin turns it red and hides a vacuous pin
+   beside it, which is how VibeCoder#3156 kept a bare `needs-human` pin the
+   base section already held four times. Run
+   `deno task drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
+   `worker/deno` for each section a test reads: it lists every phrase the base
+   section already held and exits 1 when there is one. Record the result for
+   every pinned phrase in the PR's Test Plan.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
@@ -327,7 +335,15 @@ in order before the assertion runs, a phrase the section already held before
 the change. Remove the change on purpose (delete the clause, drop the cap,
 restore the old expression), run the test, see it fail, then restore it. A
 new test that stays green without its change is a blocking self-review
-finding. A test that only pins current behaviour — the fault was unreproduced
+finding. For a documentation-drift test the check is per pinned phrase, not
+per test: one new pin turns a test red against the base and hides a vacuous
+pin beside it. Look for each phrase in the base branch's version of every
+section the test reads (`git show <base>:<doc>`, narrowed to the same section
+title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
+<doc> <section> <phrase>...` from `worker/deno` does this), and record in the
+Test Plan that each pinned phrase is absent from the base section; a phrase
+the base section already held is a blocking self-review finding. A test that
+only pins current behaviour — the fault was unreproduced
 or already fixed, and no production change was made — is expected green on
 base, and the Test Plan says so. **A negative test must be able to fail**
 below is this rule for an assertion that something does *not* happen.

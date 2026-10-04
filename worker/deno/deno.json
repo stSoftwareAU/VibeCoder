@@ -11,6 +11,7 @@
     "audit": "deno audit",
     "check": "deno check --frozen --lock=deno.lock '**/*.ts'",
     "check:manifests": "deno run --frozen --lock=deno.lock --allow-read --allow-env --allow-run check_manifests.ts",
+    "drift-pins-on-base": "deno run --frozen --lock=deno.lock --allow-read --allow-run=git tests/support/markdown_docs.ts",
     "lint": "deno lint",
     "fmt": "deno fmt",
     "quality": "deno run --frozen --lock=deno.lock --allow-env --allow-read --allow-run --allow-write --allow-net quality.ts",
