@@ -74,11 +74,17 @@ const FALLBACK_SECTION_HEADING_LEVEL = 2;
  * heading directly under a `## Test Plan` section is itself only one level
  * deeper than its enclosing section, so a universal level-3 cutoff treated
  * it as a boundary and stopped the scan before the list it grouped (PR
- * #3160 review, seventh round). The boundary must instead be relative to
- * the nearest heading above the header — any heading no deeper than that
- * enclosing heading ends the scan; a heading nested deeper than it (however
- * shallow in absolute terms) is a grouping sub-heading and is skipped. With
- * no enclosing heading at all, `FALLBACK_SECTION_HEADING_LEVEL` applies.
+ * #3160 review, seventh round). For an **inline** header (e.g.
+ * `**Branch outcomes:**`), the boundary is relative to the nearest heading
+ * above the header — any heading no deeper than that enclosing heading
+ * ends the scan; a heading nested deeper than it (however shallow in
+ * absolute terms) is a grouping sub-heading and is skipped. With no
+ * enclosing heading at all, `FALLBACK_SECTION_HEADING_LEVEL` applies. For a
+ * **heading-form** header (e.g. `### Branch outcomes`), this function is
+ * not used at all — the header's own level is the boundary directly, so a
+ * sibling heading at that same level still ends the scan even though it is
+ * only one level deeper than the enclosing section (PR #3160 review, eighth
+ * round).
  */
 function sectionBoundaryLevel(enclosingHeadingLevel: number): number {
   return enclosingHeadingLevel > 0
@@ -188,11 +194,19 @@ export function parseBranchOutcomes(
     }
 
     present = true;
-    // Boundary is relative to the nearest heading above this header, not a
-    // fixed depth — captured before this line's own heading-ness (if any)
-    // updates `lastHeadingLevel` for whatever header comes next.
-    const boundaryLevel = sectionBoundaryLevel(lastHeadingLevel);
-    if (heading) lastHeadingLevel = headingLevel(rawLine);
+    // For a heading-form header, the boundary is the header's OWN level: a
+    // sibling heading at that same level is a new section and must end the
+    // scan, even when it is only one level deeper than the enclosing
+    // section — deriving the boundary from the enclosing heading instead let
+    // an empty `### Branch outcomes` fall through into the next `###`
+    // section's bullets (PR #3160 review, eighth round). An inline header
+    // has no "own level"; it keeps falling back to the nearest heading
+    // above it.
+    const ownLevel = heading ? headingLevel(rawLine) : 0;
+    const boundaryLevel = ownLevel > 0
+      ? ownLevel
+      : sectionBoundaryLevel(lastHeadingLevel);
+    if (heading) lastHeadingLevel = ownLevel;
     const body = inlineMatch
       ? stripped.slice(inlineMatch[0].length).trim()
       : "";

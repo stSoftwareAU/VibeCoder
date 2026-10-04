@@ -192,6 +192,112 @@ Deno.test("validateBranchOutcomes - a second level-1 heading ends the scan under
 });
 
 // ---------------------------------------------------------------------------
+// Heading-form header's own-level boundary (PR #3160 review, eighth round):
+// `boundaryLevel` used to come from the heading ABOVE the header, so a
+// heading-form header's own level never ended its own section — a sibling
+// heading at the header's own level was wrongly treated as a deeper grouping
+// sub-heading and skipped, letting an empty list soak up the next section's
+// bullets. These two reproduce the review's exact layouts (a) and (b)
+// against the regression; both were wrongly `valid: true` before the fix.
+// ---------------------------------------------------------------------------
+
+Deno.test("validateBranchOutcomes - an empty level-3 heading-form header followed by a sibling section still blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["worker/deno/lib/foo.ts"],
+    prSummaryContent: "# PR Summary\n" +
+      "## Test Plan\n" +
+      "- ran the suite\n" +
+      "### Branch outcomes\n" +
+      "### Manual checks\n" +
+      "- clicked the button locally\n" +
+      "## Evidence\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.problems[0]!, "names no outcomes");
+});
+
+Deno.test("validateBranchOutcomes - an empty level-2 heading-form header under a level-1 title still blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["worker/deno/lib/foo.ts"],
+    prSummaryContent: "# PR Summary\n" +
+      "## Branch outcomes\n" +
+      "## Evidence\n" +
+      "- screenshot attached\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.problems[0]!, "names no outcomes");
+});
+
+// Isolates line 195's `lastHeadingLevel = ownLevel` update: a heading-form
+// header's own level must carry forward as the "nearest heading above" for a
+// LATER, inline header — otherwise that later header's boundary falls back
+// to the stale level from before the heading-form header, and a sibling
+// heading one level deeper than it is wrongly treated as a grouping
+// sub-heading, sweeping an unrelated section's citation in as this header's
+// own. Deleting line 195 alone (boundaryLevel's own-level fix left intact)
+// turns this green test red: `missingTests` gains the invented path.
+Deno.test("validateBranchOutcomes - a later inline header's boundary tracks the heading-form header's own level", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "### Branch outcomes\n" +
+      "- first entry\n" +
+      "\n" +
+      "**Branch outcomes:** second mention\n" +
+      "### Sibling\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+  assertEquals(result.missingTests, []);
+});
+
+// Isolates `collectEntries`' own dynamic boundary (branch_outcomes_gate.ts,
+// the `lvl <= boundaryLevel` check inside `collectEntries`) from
+// `scanRegionText`'s copy of the same check: the header's body is empty, so
+// "names no outcomes" depends only on `entries` being non-empty — `scanText`
+// also finds the same citation here, but that is never consulted once
+// `entries` is non-empty, so this flips only when `collectEntries`' own stop
+// is the one that is wrong (PR #3160 review, eighth round).
+Deno.test("validateBranchOutcomes - a level-3 grouping heading under a level-2 section still fills entries", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "**Branch outcomes:**\n" +
+      "### worker/deno/lib/foo.ts\n" +
+      "- worker/deno/tests/foo_test.ts::case\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+  assertEquals(result.record.entries, [
+    "worker/deno/tests/foo_test.ts::case",
+  ]);
+});
+
+// Isolates `scanRegionText`'s own dynamic boundary from `collectEntries`'
+// copy: a markdown table row is never collected into `entries` (confirmed
+// by the sibling table test above), so this citation can only be found via
+// `scanText` — `collectEntries` contributes nothing here either way, so
+// this flips only when `scanRegionText`'s own stop is the one that is wrong.
+Deno.test("validateBranchOutcomes - a level-3 grouping heading under a level-2 section still fills scanText", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "**Branch outcomes:** two arms added, grouped by file:\n" +
+      "### worker/deno/lib/foo.ts\n" +
+      "\n" +
+      "| Outcome | Test |\n" +
+      "| --- | --- |\n" +
+      `| success | ${INVENTED} |\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+// ---------------------------------------------------------------------------
 // collectEntries arms (PR #3160 fifth review round): each of the three
 // branches below passed all 173 gate-related tests when mutated alone, so
 // none was actually pinned.
