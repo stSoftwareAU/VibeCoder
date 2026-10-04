@@ -54,6 +54,7 @@ echo '${gateOutput}'; exit ${gateExit}`,
   await stub(
     "claude",
     `echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
+echo "BG_WAIT=\${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-unset}" >> "$HOME/claude-args"
 printf '%s\\n' "$@" >> "$HOME/claude-args"`,
   );
   return home;
@@ -120,6 +121,9 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless Claude rou
   // The headless session may write its round files: only an Edit rule on
   // an absolute (//-anchored) path allows that.
   assertStringIncludes(args, "Edit(//");
+  // Reviewer agents may outlast claude -p's 600s default background wait;
+  // only the round's own alarm may cut them off.
+  assertStringIncludes(args, "BG_WAIT=0");
   // The log sits beside the Vibe Coder's own, not in a hidden directory.
   assertStringIncludes(
     await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
@@ -132,6 +136,17 @@ Deno.test("run.sh --once starts no Claude session when nothing is ready", async 
   const { code, output } = await run(home, "--once");
   assertEquals(code, 0, output);
   assertEquals(await claudeArgs(home), null);
+});
+
+Deno.test("run.sh logs an idle pass as one line with the gate's skip counts", async () => {
+  const home = await fixture(
+    JSON.stringify({ ready: [], skipped: { "ci-failed": 4, "waiting-ci": 2 } }),
+  );
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const log = await runnerLog(home);
+  assertStringIncludes(log, "gate: nothing ready (ci-failed 4, waiting-ci 2)");
+  assertEquals(log.trim().split("\n").length, 1, log);
 });
 
 Deno.test("run.sh --once fails without a Claude session when the gate fails", async () => {
@@ -213,6 +228,22 @@ Deno.test("run.sh --once also runs housekeep, pruning old round directories", as
     pruned = true;
   }
   assert(pruned, "a round older than 30 days was not pruned");
+});
+
+Deno.test("run.sh housekeep empties an oversized service.out in place", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  const dir = `${home}/logs/review-fleet-prs`;
+  await Deno.mkdir(dir, { recursive: true });
+  const big = `${dir}/service.out`;
+  await Deno.writeFile(big, new Uint8Array(10_000_001));
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  // Emptied, not renamed: launchd keeps writing to the same open file.
+  assertEquals((await Deno.stat(big)).size, 0);
+  // A file at the limit is left alone.
+  await Deno.writeFile(big, new Uint8Array(10_000_000));
+  await run(home, "--once");
+  assertEquals((await Deno.stat(big)).size, 10_000_000);
 });
 
 Deno.test("run.sh never traces the minted App token, even under bash -x", async () => {
