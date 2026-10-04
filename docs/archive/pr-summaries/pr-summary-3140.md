@@ -37,7 +37,8 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 
 ## Evidence
 
-- **Red run against unchanged docs:** run in an `origin/main` worktree with only the new test added, `deno test tests/ci_fix_audit_in_pr_3116_test.ts` gave **7/7 FAILED**. The same test (now 10 cases) passes 10/10 on this branch.
+- **Red run against unchanged docs:** run in an `origin/main` worktree with only the head version of the new test added (10 cases, section-scoped helpers), `deno test tests/ci_fix_audit_in_pr_3116_test.ts` gave **10/10 FAILED**. The same test passes 10/10 on this branch.
+- **Escalation pins shown red:** with the `needs-human` label instruction and "The label and that comment always go together" removed from `prompts/ci_fix/prompt.md`, the escalation test fails (9 passed, 1 failed); with the manuals' advisory-naming `needs-human` wording replaced by "escalated", the three manual tests fail (7 passed, 3 failed). Both edits were reverted.
 - **Docs sweep:** grepped for "Dependency audit failures", "Base-branch failures", "A CI-fix run is the exception", `RUSTSEC` and `Depends on`. Updated `prompts/ci_fix/prompt.md`, `prompts/coding_guidelines/prompt.md`, `CODING-STANDARDS.md`, `docs/security-advisory-triage.md`, `docs/workflows/ci-fix.md` (section: Base-branch failure) and `docs/PROMPTS.md` (the ci_fix row). All three manuals (`docs/workflows/ci-fix.md`, `docs/PROMPTS.md`, `docs/security-advisory-triage.md`) now link the prompt's Dependency audit failures section and describe the audit exception as the prompt's own instruction to the agent — the worker itself does not yet enforce it, pending stSoftwareAU/VibeCoder#3141.
 
 ## Acceptance Criteria
@@ -74,7 +75,7 @@ No material departures found. Checked: rule consistency across prompts, pairing 
 - [x] `deno task test:unit tests/ci_fix_audit_in_pr_3116_test.ts`: 10 passed. The extra three pin the audit exception in `docs/workflows/ci-fix.md`, `docs/PROMPTS.md` and `docs/security-advisory-triage.md`, and the tracking test now requires the commit message and the summary path.
 - [x] Related tests (`pr_claims_verified_3058`, `2574`, `ci_fix_prompt_v4`): 26 passed
 - [x] `./quality.sh < /dev/null`: exit 0, PASSED (deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep). The config integration step was skipped with "deno or .config.json not available".
-- [x] New test shown red (7/7) against `origin/main` docs
+- [x] New test shown red (10/10 FAILED) against `origin/main` docs. Every helper reads only its named section (`flat(section(doc, title))`), and the escalation pins are wording only the new rule carries, not a bare `needs-human`.
 
 ## Pre-PR Security Self-Check
 

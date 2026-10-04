@@ -42,6 +42,10 @@ Deno.test("Issue #3140 - ci_fix Dependency audit failures section covers the nee
   for (
     const phrase of [
       "Only when no edge can be upgraded, removed or replaced",
+      // The label instruction and its pairing with the comment are the new
+      // rule; a bare `needs-human` already appears elsewhere in the prompt.
+      "add `needs-human` to the PR",
+      "The label and that comment always go together",
       "names the advisory ID",
     ]
   ) {
@@ -141,13 +145,23 @@ Deno.test("Issue #3140 - CODING-STANDARDS scopes the audit carve-out inside the 
 });
 
 /**
+ * Wording the CI-fix manual and the prompt index share for the escalation.
+ * A bare `needs-human` would not do: both sections already carried it before
+ * the audit exception (CODING-STANDARDS.md, "Documentation-drift tests",
+ * condition 4).
+ */
+const SHARED_ESCALATION = "`needs-human` with an advisory-naming comment";
+
+/**
  * The operator manual and the prompt index must name the same exception the
  * prompt does, and point at the section that states it. Scoped to the named
  * section for the same reason as `assertCiFixAuditScoping` above.
+ * `escalation` is the document's own wording for the `needs-human` hand-off.
  */
 async function assertAuditExceptionLinked(
   relative: string,
   title: string,
+  escalation: string = SHARED_ESCALATION,
 ): Promise<void> {
   const doc = await readRepoDoc(relative);
   const text = flat(section(doc, title));
@@ -155,7 +169,7 @@ async function assertAuditExceptionLinked(
     const phrase of [
       "fixed in the PR even when the base is red",
       "never deferred",
-      "needs-human",
+      escalation,
       "only when no edge can be upgraded, removed or replaced",
       "prompts/ci_fix/prompt.md#dependency-audit-failures",
       // The claim is scoped to what the prompt instructs, not a worker
@@ -183,5 +197,6 @@ Deno.test("Issue #3140 - advisory-triage manual states the audit exception and l
   await assertAuditExceptionLinked(
     "docs/security-advisory-triage.md",
     "Emergency dependency override",
+    "adds `needs-human` to the pull request, with a comment naming the advisory ID",
   );
 });
