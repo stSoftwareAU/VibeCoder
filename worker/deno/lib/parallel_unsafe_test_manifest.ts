@@ -185,6 +185,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   "tests/prompt_leak_redaction_test.ts",
+  // The removed-assertion gate lexes an agent-written test file whole; only a
+  // growth measurement separates its capped, linear scans from a quadratic
+  // walk on hostile nesting and unclosed brackets (#3148 review).
+  "tests/removed_assertion_gate_context_test.ts",
   "tests/run_ps1_launcher_test.ts",
 ];
 

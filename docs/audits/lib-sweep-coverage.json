@@ -2589,6 +2589,18 @@
       ]
     },
     {
+      "issue": 3131,
+      "chunk": "top-up-3131",
+      "title": "top-up: the removed-test-assertion summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3131",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: removed_assertion_gate.ts (#3131)",
+      "status": "claimed",
+      "sweptAt": "2559e3bfa65e8cbc65289259ecea5e129a35e028",
+      "paths": [
+        "worker/deno/lib/removed_assertion_gate.ts"
+      ]
+    },
+    {
       "issue": 3177,
       "chunk": "top-up-3177",
       "title": "top-up: the missing-criterion close guard",
