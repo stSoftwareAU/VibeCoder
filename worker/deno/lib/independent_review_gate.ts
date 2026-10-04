@@ -73,6 +73,8 @@ export interface ReviewEntry {
   hasEvidence: boolean;
   /** Whether the entry carries a reason. */
   hasReason: boolean;
+  /** The entry's `reason:` text, `null` when absent. */
+  reason: string | null;
   /** The entry text, for failure messages. */
   text: string;
 }
@@ -131,6 +133,45 @@ const LABEL_PATTERNS = {
   reason: /reason\s*[:\-—]\s*([^\n]*)/i,
   reviewer: /reviewer\s*[:\-—]\s*[`*_]*([a-z-]{1,16})/i,
 } as const;
+
+/**
+ * A `violation` reason that records a fix: it opens with `fixed`, `corrected`
+ * or `resolved`, once any markdown emphasis is stripped. Anchored to the start
+ * so "not fixed — it stands" is not read as a fix.
+ */
+const FIXED_OUTCOME_RE = /^[`*_\s]*(?:fixed|corrected|resolved)\b/i;
+
+/**
+ * A `violation` reason that names a filed issue: `#123`, `owner/repo#123` or a
+ * GitHub issue URL. A placeholder (`#<n>`) carries no digits, so it is no link.
+ */
+const ISSUE_REFERENCE_RE =
+  /(?<!&)#\d{1,7}\b|github\.com\/[\w.-]{1,100}\/[\w.-]{1,100}\/issues\/\d{1,7}\b/i;
+
+/** The two reason lines a `violation` may carry, printed when one is refused. */
+export const VIOLATION_REASON_LINES: readonly string[] = [
+  "`reason: fixed in this diff` — for a breach in a line this diff adds or changes",
+  "`reason: pre-existing, filed #<n>` — only for a breach in unchanged context, " +
+  "linking the follow-up issue the run filed",
+];
+
+/**
+ * Whether a Standards `violation`'s reason settles it (Issue #3196).
+ *
+ * A breach the Standards reviewer found has exactly two acceptable outcomes:
+ * fixed in this diff, or — for a line the diff did not touch — filed as a
+ * follow-up issue the reason links. "Stands", "left for a follow-up" and every
+ * other free-text excuse is neither, and used to ship self-flagged breaches
+ * that fleet review then sent back (VibeCoder#3065, GRQ-AutoTrader#2210 and
+ * #2479).
+ *
+ * @param reason - The `reason:` text of the `violation` entry.
+ * @returns True when the reason records a fix or links a filed issue.
+ */
+export function violationReasonSettles(reason: string): boolean {
+  const text = reason.slice(0, MAX_SCAN_CHARS);
+  return FIXED_OUTCOME_RE.test(text) || ISSUE_REFERENCE_RE.test(text);
+}
 
 /** The provenance markers each axis's reviewer stamps on its block. */
 const PROVENANCE_PATTERNS = {
@@ -210,6 +251,7 @@ function toEntry(
   const status = leadingStatus(text);
   if (!status || !vocabulary.includes(status)) return null;
 
+  const reason = labelValue(text, "reason");
   const reviewerRaw = labelValue(text, "reviewer")?.toLowerCase() ?? null;
   const reviewerVerdict = SPEC_STATUSES.includes(reviewerRaw as SpecStatus)
     ? reviewerRaw as SpecStatus
@@ -220,7 +262,8 @@ function toEntry(
     reviewerVerdict,
     departsFromReviewer: reviewerVerdict !== null && reviewerVerdict !== status,
     hasEvidence: labelValue(text, "evidence") !== null,
-    hasReason: labelValue(text, "reason") !== null,
+    hasReason: reason !== null,
+    reason,
     text,
   };
 }
@@ -295,7 +338,8 @@ function countForeignEntries(
  *   4. An entry whose status departs from that verdict carries a reason.
  *   5. A `## Standards Review` section exists, carries its own provenance
  *      marker and at least one finding, and every `violation` names evidence
- *      and a reason.
+ *      and a reason that settles it — `fixed in this diff`, or a linked
+ *      follow-up issue for a pre-existing breach (Issue #3196).
  *   6. Neither axis carries the other's findings — never merged, never reranked.
  *
  * @param opts.issueBody - The issue body the run implemented.
@@ -382,6 +426,13 @@ export function validateIndependentReview(opts: {
     if (!entry.hasReason) {
       problems.push(
         `\`violation\` finding carries no reason saying whether it was fixed: "${entry.text}"`,
+      );
+    } else if (!violationReasonSettles(entry.reason!)) {
+      problems.push(
+        `\`violation\` finding is neither fixed nor filed — a breach in a ` +
+          `line this diff adds or changes is fixed in this diff, never left ` +
+          `standing; write ${VIOLATION_REASON_LINES.join(", or ")}: ` +
+          `"${entry.text}"`,
       );
     }
   }

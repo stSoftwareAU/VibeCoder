@@ -185,6 +185,10 @@ import {
   type GraphqlQuotaReading,
   graphqlSpendBetween,
 } from "./graphql_quota_probe.ts";
+import {
+  formatRootFilesystemFault,
+  type RootFilesystemFault,
+} from "./root_filesystem_fault.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -398,6 +402,13 @@ export interface RunCoreResult {
    * milliseconds. Only set alongside `quotaPaused` (Issue #342).
    */
   quotaResetEpochMs?: number;
+  /**
+   * Issue #3179: the container's root filesystem (its scratch or a state
+   * volume) stopped being writable, so the run ended at the top of the cycle
+   * for the launcher to start a fresh container. A host fault — never an
+   * issue or provider failure. Absent on every other exit.
+   */
+  rootFilesystemFault?: RootFilesystemFault;
   /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
    * passed. Reported on the loop result so the caller can tell a healthy
@@ -1319,6 +1330,14 @@ export interface RunCoreDeps {
    * nothing new; the launcher repairs or recreates it next launch.
    */
   checkWorkVolumeFault?: () => { faulted: boolean; detail: string };
+  /**
+   * Container root-filesystem probe (Issue #3179), run at the top of every
+   * cycle: `/tmp`, `/var/tmp`, `TMPDIR` and the state volumes must accept a
+   * write, and no mount may be `emergency_ro`. A fault ends the run — a
+   * read-only root cannot recover inside the launch. Optional so test deps
+   * can omit it.
+   */
+  checkRootFilesystem?: () => Promise<RootFilesystemFault | null>;
   /**
    * Standing work-volume totals by category (Issue #244), logged at cycle
    * start beside the `Concurrency:` line and again at end of run. Returns
@@ -5663,6 +5682,8 @@ export async function runCoreLoop(
   let quotaPaused = false;
   /** Reset the quota pause was waiting on, in Unix seconds (Issue #342). */
   let quotaResetEpochSeconds = 0;
+  /** Set when the root filesystem stopped being writable (Issue #3179). */
+  let rootFilesystemFault: RootFilesystemFault | null = null;
   /**
    * Why the fleet was idle this cycle (Issue #855). Set from the idle
    * census when the scan claimed nothing, and used to attribute the
@@ -5832,6 +5853,7 @@ export async function runCoreLoop(
       ...(quotaPaused && quotaResetEpochSeconds > 0
         ? { quotaResetEpochMs: quotaResetEpochSeconds * 1000 }
         : {}),
+      ...(rootFilesystemFault ? { rootFilesystemFault } : {}),
       lastHealthCheckPassed,
     };
   }
@@ -6060,6 +6082,23 @@ export async function runCoreLoop(
 
           // Touch PID file for proof of life
           await deps.touchPidFile();
+
+          // --- Root filesystem (Issue #3179) ---
+          // First, before anything that needs to write: a read-only or
+          // I/O-faulted root otherwise surfaces as a failed provider health
+          // check every cycle until the launch cap, and nothing inside this
+          // container can repair it. End the run under its own name and
+          // status so the launcher relaunches promptly into a fresh one.
+          if (deps.checkRootFilesystem) {
+            const fault = await deps.checkRootFilesystem();
+            if (fault) {
+              rootFilesystemFault = fault;
+              lastHealthCheckPassed = false;
+              deps.logError(formatRootFilesystemFault(fault));
+              await fireCycleCallback("host_fault");
+              break;
+            }
+          }
 
           // --- Trusted-author snapshot (Issue #253) ---
           // Fail-closed: a refresh failure skips every trust-dependent
@@ -7095,7 +7134,9 @@ export async function runCoreLoop(
     deps.log("Run duration complete. Exiting for refresh.");
 
     return buildResult(
-      exitedOnFailures
+      rootFilesystemFault
+        ? "Root filesystem fault"
+        : exitedOnFailures
         ? "Consecutive failure threshold reached"
         : spendCeilingReached
         ? "Daily spend ceiling reached"

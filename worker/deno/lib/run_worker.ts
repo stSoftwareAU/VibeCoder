@@ -94,6 +94,10 @@ import {
   type QuotaPauseMarker,
   writeQuotaPauseMarker,
 } from "./quota_pause.ts";
+import {
+  ROOT_FS_FAULT_EXIT_STATUS,
+  type RootFilesystemFault,
+} from "./root_filesystem_fault.ts";
 
 /** Distinct outcomes of a worker driver invocation. */
 export type RunWorkerOutcome =
@@ -109,6 +113,8 @@ export type RunWorkerOutcome =
   | "identity-mismatch"
   | "completed"
   | "quota-paused"
+  /** The container's root filesystem went read-only (Issue #3179). */
+  | "root-fs-fault"
   | "failed";
 
 /** Result of {@link runWorker}. Carries the process exit code to surface. */
@@ -195,6 +201,8 @@ export interface RunWorkerDeps {
     quotaPaused?: boolean;
     /** When that quota window reopens, in epoch milliseconds, when known. */
     quotaResetEpochMs?: number;
+    /** The root filesystem stopped being writable (Issue #3179). */
+    rootFilesystemFault?: RootFilesystemFault;
   }>;
   /**
    * Declare a quota pause to the host supervisor (Issue #342) by writing the
@@ -501,13 +509,20 @@ export function createDefaultRunWorkerDeps(
         "github-user": githubUser,
       }, config);
       const data = result.data as
-        | { quotaPaused?: boolean; quotaResetEpochMs?: number }
+        | {
+          quotaPaused?: boolean;
+          quotaResetEpochMs?: number;
+          rootFilesystemFault?: RootFilesystemFault;
+        }
         | undefined;
       return {
         success: result.success,
         message: result.message,
         quotaPaused: data?.quotaPaused === true,
         quotaResetEpochMs: data?.quotaResetEpochMs,
+        ...(data?.rootFilesystemFault
+          ? { rootFilesystemFault: data.rootFilesystemFault }
+          : {}),
       };
     },
     declareQuotaPause: async (dir, marker) => {
@@ -828,6 +843,19 @@ ${credentialFailure}`);
       githubUser,
       config: options.config,
     });
+    // Issue #3179: a read-only or I/O-faulted root filesystem cannot recover
+    // inside this container. Its own status tells the supervisor to relaunch
+    // promptly into a fresh one and to record a host fault, not a crash of
+    // the worker or a failure of whatever issue was in flight.
+    if (loop.rootFilesystemFault) {
+      return {
+        outcome: "root-fs-fault",
+        exitCode: ROOT_FS_FAULT_EXIT_STATUS,
+        reason: `${loop.rootFilesystemFault.path} is not writable: ` +
+          loop.rootFilesystemFault.detail,
+      };
+    }
+
     // Issue #342: an out-of-quota run ends on purpose. It says so twice — in
     // a marker under the host-visible log directory, and in an exit status no
     // crash produces — so the supervisor re-probes at its fixed cadence

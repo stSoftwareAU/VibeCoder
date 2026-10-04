@@ -94,7 +94,9 @@ The container is a disposable execution environment: when it dies, the superviso
 
 5. **A host that was merely stopped.** `run.sh` forwards SIGTERM/SIGINT to the runtime client and exits with **that client's** status, which on the fleet's macOS hosts is **255** when the container is stopped under it. So an operator's `kill`, a launchd stop or a host shutdown was indistinguishable from a crash: it climbed the failure ladder, and three of them escalated a host that was working — with a report advising the reader to look at the container runtime, which for a stop is a phantom (Issues #879, #1072). The signal trap now declares what it knows in `${VIBE_STATE_DIR:-~/.vibe-coder}/last-launch-termination`, and the recorder **consumes** it, as it does the quota-pause marker. A stop **carries the streak through untouched** — counted neither up (it is not this host failing) nor down (an operator restarting a broken host must not erase the evidence) — escalates nothing, claims no recovery, and waits the base cadence, because whoever stopped the run wants it back. Three defences stop a leftover silencing a genuine failure: the launcher clears the marker at the start of every launch, the recorder consumes it, and a marker older than an hour is refused loudly. The **supervisor's own** deadline kill (`timeout`'s 124/137) is exempt and stays a failure: a cycle that had to be killed is a fault the host must escalate for (Issue #322).
 
-Every action — backoff, recovery, escalation, quota pause, stop — is emitted as a structured self-heal event, so it appears in `self-heal-summary` rather than only in a host log.
+6. **A container whose root filesystem went read-only.** On GRQ-23 (2026-10-03) guest write errors made ext4 remount the container root `emergency_ro`. The worker went on cycling and logged `Claude health check failed — skipping cycle` every two minutes until a human stopped the container, roughly 2 h 20 min short of the launch cap. Nothing inside that container can repair it; a fresh container can, because volume-init fscks every named volume at launch. So at the top of every cycle, before anything that needs to write, the worker probes its filesystems: it creates and deletes a file in `/tmp`, `/var/tmp`, `TMPDIR` and both state volumes (`…-agent-state`, `…-approval-state`), and it reads `/proc/mounts` for `emergency_ro`. A plain `ro` root is the deliberate `--read-only` of Issue #516 and is not a fault, and neither is a write refused for any reason other than an I/O-class error (`Read-only file system`, `Input/output error`, `Structure needs cleaning`, …). A fault logs one `ERROR: [ROOT_FS_READ_ONLY]` line, fires the cycle callback with `host_fault`, and ends the run with exit **74** (`ROOT_FS_FAULT_EXIT_STATUS`, `EX_IOERR`) before the provider health check runs, so it is never recorded as a provider or issue failure. The recorder classifies 74 as `root_fs_fault`: it waits only the **base cadence**, never the grown backoff, and emits a `root_fs_fault` self-heal event. It still **counts on the failure streak** and escalates at the `worker_run` threshold, because a host whose disk keeps faulting needs its operator (Issue #3179).
+
+Every action — backoff, recovery, escalation, quota pause, stop, root-filesystem fault — is emitted as a structured self-heal event, so it appears in `self-heal-summary` rather than only in a host log.
 
 ```mermaid
 flowchart TD
@@ -105,6 +107,7 @@ flowchart TD
   Quota["Reset counter, no escalation<br/>self-heal: quota_pause"]
   Stopped["Carry the streak through<br/>self-heal: terminated"]
   Count["Increment consecutive failures<br/>self-heal: restart_backoff"]
+  RootFs["Increment consecutive failures,<br/>backoff stays at the base cadence<br/>self-heal: root_fs_fault"]
   Threshold{"Failures ≥ phase threshold?<br/>egress 1, image build 2, otherwise 3"}
   Due{"New streak, retry due,<br/>or re-notify due?<br/>(crossing → hourly → daily)"}
   Dedup["Suppressed — this streak<br/>is already reported"]
@@ -118,6 +121,7 @@ flowchart TD
   Status -->|0| Reset --> Sleep
   Status -->|75, or a marker| Quota --> Cadence
   Status -->|"signalled (not 124/137)"| Stopped --> Sleep
+  Status -->|74 root filesystem fault| RootFs --> Threshold
   Status -->|any other non-zero| Count --> Threshold
   Threshold -->|No| Sleep
   Threshold -->|Yes| Due

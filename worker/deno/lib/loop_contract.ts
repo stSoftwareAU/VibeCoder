@@ -66,6 +66,14 @@ export const SHARED_EXIT_STATUSES: readonly SupervisorExitStatus[] = [
       "a host out of Claude quota is a scheduled pause re-probed on a fixed " +
       "cadence, not a failure to back off from (Issue #342)",
   },
+  {
+    name: "root-fs-fault",
+    status: 74,
+    reason:
+      "a container whose root filesystem went read-only is relaunched into a " +
+      "fresh one at the base cadence, not backed off from as a crash " +
+      "(Issue #3179)",
+  },
 ];
 
 /**
