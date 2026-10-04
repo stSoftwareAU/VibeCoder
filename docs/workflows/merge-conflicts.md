@@ -47,7 +47,8 @@ flag is the re-do item. **There is no cap on restarts per originating issue**
 re-queues the issue again, however many times it has already been restarted,
 and the fleet never hands the issue to a human just because it has spent a
 restart budget — there is no third-redo cut-off and no park-at-a-spent-budget
-step any more. Every redo starts on a **fresh branch cut from the base
+step any more (the scan's park path was retired with it, Issue #3166; only
+park markers posted before then are still honoured — see `parked` below). Every redo starts on a **fresh branch cut from the base
 branch's current tip**, never from the abandoned head, so a redo never
 inherits whatever defeated the one before it; the restart marker left on the
 issue records the abandoned branch's name so the next pickup's setup phase
@@ -164,8 +165,8 @@ flowchart TD
   first and lets the PR through only when a fleet-authored comment carries a
   `vibe-ci-fix-attempt` marker **and** no comment carries the conflict lane's
   own `needs-human-escalation: merge-conflict-…` marker. A marker from any
-  other login counts for nothing, and the budget, disruption bound, park and
-  abandon apply unchanged. `needs-human` stays on the PR for the red check. A
+  other login counts for nothing, and the budget, disruption bound, legacy
+  park and abandon apply unchanged. `needs-human` stays on the PR for the red check. A
   conflict whose two sides genuinely contradict each other **is** in scope — the
   agent judges it and names the call (Issue #2306); only a resolution the
   mechanical guards refuse leaves the merge ladder for abandon-and-restart, and
@@ -1204,7 +1205,7 @@ each carries the operands that make the decision checkable afterwards:
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `owner-check-pending` | `dueAt`, `attemptsSpent` | A failed attempt is spent but the next one is not due yet — the PR's head SHA has not moved since that failure and `CONFLICT_OWNER_CHECK_HOURS` (2 hours) have not yet passed, giving the owner a window to look first (Issue #2996). The PR stays labelled and queued; `dueAt` is when it next becomes due. |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
-| `parked` | `base`, `flagIssueNumber` | The scan's own park path (Issue #2312): reached when the rung declines a restart that is not an unfinished abandon of this PR, it leaves the PR open on `merge-conflict` and waits for its base tip to move. `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. Since Issue #3033 there is no restart count behind this path: nothing is spent, so no `needs-human` reaches the PR or its originating issue on this route. |
+| `parked` | `base` | A **legacy** park marker (Issue #2312) on a PR whose base tip has not moved since. **No pass writes a park marker any more** (Issue #3166): a park was the answer to an issue that had spent its restarts, and with no restart cap (Issue #3033) a spent budget always goes to abandon-and-redo — a declined abandon is recorded as `budget-spent`, never parked. The scan still honours markers posted before that change: `base` is the sha the marker records, the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the marker — the first pass it differs, after which it follows the uncapped abandon path like any other PR. No `needs-human` reaches the PR or its originating issue on this route. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |

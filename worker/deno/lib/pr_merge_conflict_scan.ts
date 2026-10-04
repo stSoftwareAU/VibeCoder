@@ -48,7 +48,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
-import { isMilestoneHead, standDownNextStepLines } from "./gated_head_guard.ts";
+import { isMilestoneHead } from "./gated_head_guard.ts";
 import { isCiFixEscalationOnly } from "./conflict_needs_human_gate.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
@@ -58,7 +58,6 @@ import {
   CONFLICT_OWNER_CHECK_HOURS,
   CONFLICT_RESOLUTION_BUDGET,
   CONFLICT_RESOLVED_MARKER,
-  conflictParkedMarker,
   type ConflictResolutionAttempt,
   isConflictHeadSha,
   MERGE_CONFLICT_LABEL,
@@ -119,8 +118,9 @@ export {
   // so every existing importer of this module can reach them without a
   // second import of `merge_conflict_markers.ts`.
   CONFLICT_OWNER_CHECK_HOURS,
-  // The park marker rides the same vocabulary (Issue #2312): the scan writes
-  // it, the stall watchdog reads it.
+  // The park marker rides the same vocabulary (Issue #2312). Nothing writes
+  // it any more (Issue #3166); the scan and the stall watchdog still read the
+  // markers already posted.
   CONFLICT_PARKED_MARKER,
   CONFLICT_RESOLUTION_BUDGET,
   CONFLICT_RESOLVED_MARKER,
@@ -259,17 +259,22 @@ export type ConflictSkipReason =
     flagIssueNumber?: number;
   }
   /**
-   * The issue has spent its restarts, so the PR is parked on `merge-conflict`
-   * and waits for its base tip to move (Issue #2312).
+   * The PR carries a park marker and its base tip has not moved since
+   * (Issue #2312).
+   *
+   * **No pass writes a park marker any more** (Issue #3166): a park was the
+   * answer to an issue that had spent its restarts, and there is no restart
+   * cap (Issue #3033), so a spent budget always goes to the abandon rung.
+   * This member is kept for the markers already posted before that change —
+   * such a PR waits for its base to move, then is offered again with a fresh
+   * attempt budget counted from the marker onward, and from there it follows
+   * the uncapped abandon-and-redo path like any other PR.
    *
    * Not an escalation and not a failure: no `needs-human` label, no comment
    * asking anybody for anything, and the queue label stays on. `base` is the
-   * base sha the park marker records — the PR is offered again the first pass
-   * its live `baseRefOid` differs from it, with a fresh attempt budget counted
-   * from the park marker onward. `flagIssueNumber` is the `merge-fallback`
-   * flag the park appended this event to, absent when the filing failed.
+   * base sha the park marker records.
    */
-  | { kind: "parked"; base: string; flagIssueNumber?: number }
+  | { kind: "parked"; base: string }
   /** Attempts keep being disrupted before they conclude (Issue #395). */
   | {
     kind: "disrupted-bound";
@@ -448,12 +453,7 @@ export function conflictReasonOperands(
           : {}),
       };
     case "parked":
-      return {
-        base: reason.base,
-        ...(reason.flagIssueNumber !== undefined
-          ? { flagIssueNumber: reason.flagIssueNumber }
-          : {}),
-      };
+      return { base: reason.base };
     case "disrupted-bound":
       return {
         disruptedCount: reason.disruptedCount,
@@ -1087,7 +1087,7 @@ interface ConflictFlagFilingArgs {
   baseBranch: string;
   /** The PR's thread, already reduced to the fleet's own comments. */
   prComments: readonly unknown[];
-  /** What the fallback closed, re-queued or parked, for the flag body. */
+  /** What the fallback closed or re-queued, for the flag body. */
   fallbackAction: string;
   trustedAuthors: readonly string[];
   fileFallbackFlag?: (
@@ -1106,10 +1106,9 @@ interface ConflictFlagFiling {
 /**
  * File or append the `merge-fallback` flag for one PR. Posts nothing.
  *
- * Split from {@link recordConflictFallbackFlag} (Issue #2312) because the two
- * events that file this flag say different things on the PR afterwards: a
- * fallback links the flag, a park carries the park marker as well, and a PR
- * must not receive two comments for one event.
+ * Split from {@link recordConflictFallbackFlag} (Issue #2312) so the filing
+ * can be decided apart from the comment that links it: a PR must not receive
+ * two comments for one event.
  *
  * @returns What was filed, or `undefined` when the filing itself failed —
  *   warned about, never thrown, because the caller's decision stands either
@@ -1202,152 +1201,6 @@ export function buildFallbackFlagLinkComment(
     "the flag exists so the same conflict can be seen rather than walked " +
     "into again.",
   ].join("\n");
-}
-
-// ---------------------------------------------------------------------------
-// Parking (Issue #2312)
-// ---------------------------------------------------------------------------
-
-/**
- * The comment that parks a PR on `merge-conflict`, carrying the park marker.
- *
- * One comment, not two: it is both the record a reader needs and the marker
- * every later pass reads back, and a PR must not collect a pair of comments
- * for one event.
- *
- * @param base - The base tip the PR is parked at; the marker's own key.
- * @param flagIssueNumber - The `merge-fallback` flag this event was appended
- *   to, or `undefined` when the filing failed — said out loud rather than
- *   quietly omitted.
- * @param standDownAtMs - When the park started, named on the marker and in
- *   the owner/takeover lines (Issue #2997). Throws on a non-finite value.
- */
-export function buildParkedPrComment(args: {
-  base: string;
-  baseBranch: string;
-  issueNumber: number;
-  flagIssueNumber?: number;
-  standDownAtMs: number;
-}): string {
-  const nextStepLines = standDownNextStepLines(
-    "conflict takeover",
-    args.standDownAtMs,
-  );
-  const flagLine = args.flagIssueNumber !== undefined &&
-      args.flagIssueNumber > 0
-    ? `This event is recorded in #${args.flagIssueNumber}, the ` +
-      `\`${MERGE_FALLBACK_LABEL}\` flag for this PR.`
-    : `Its \`${MERGE_FALLBACK_LABEL}\` flag could **not** be filed this pass, ` +
-      "so this comment is the only record of the park — the park itself " +
-      "stands.";
-  return [
-    conflictParkedMarker(args.base, args.standDownAtMs),
-    "⏸️ **Parked on `merge-conflict` until the base moves**",
-    "",
-    `Issue #${args.issueNumber} declined a further restart of this work, ` +
-    "so this PR is **left open** rather than closed.",
-    "",
-    `It keeps the \`${MERGE_CONFLICT_LABEL}\` label and stays in the queue, ` +
-    `but no further resolution attempt is started while \`${args.baseBranch}\` ` +
-    `is still at \`${args.base}\`. The moment that tip moves, this is a ` +
-    "genuinely different merge and the fleet attempts it again with a fresh " +
-    `${CONFLICT_RESOLUTION_BUDGET}-attempt budget counted from here.`,
-    "",
-    flagLine,
-    "",
-    ...nextStepLines,
-    "",
-    "**Nobody is being asked for anything.** No human-owned label is applied " +
-    "and no decision is waited on — merging the base branch in by hand, " +
-    "keeping both sides' changes, simply clears it sooner.",
-  ].join("\n");
-}
-
-/** What a park attempt did. */
-type ParkOutcome =
-  /** The marker is on the PR. `flagIssueNumber` is absent when none was filed. */
-  | { parked: true; flagIssueNumber?: number }
-  /** The marker could not be posted, so nothing recorded the park. */
-  | { parked: false };
-
-/**
- * Park a PR whose issue has spent its restarts (Issue #2312).
- *
- * The event is appended to the PR's own `merge-fallback` flag first — one
- * issue per PR, not one per event — and then said on the PR in a single
- * comment carrying the park marker.
- *
- * **The comment is what makes the park real**, so a comment that could not be
- * posted is not a park: the caller falls back to `budget-spent` and the next
- * pass tries again, rather than reporting a wait nothing recorded.
- */
-async function parkConflictingPr(
-  args: ConflictFlagFilingArgs & {
-    base: string;
-    issueNumber: number;
-    standDownAtMs: number;
-  },
-): Promise<ParkOutcome> {
-  const { repo, prNumber, ghCommandFn, logger } = args;
-
-  const filed = await fileConflictFallbackFlag(args);
-  const flagIssueNumber = filed !== undefined && filed.issueNumber > 0
-    ? filed.issueNumber
-    : undefined;
-
-  // Built before the try/catch: a non-finite `standDownAtMs` is a caller
-  // bug, not a recoverable `gh` failure, so it throws out rather than being
-  // swallowed into the warn path below.
-  const body = buildParkedPrComment({
-    base: args.base,
-    baseBranch: args.baseBranch,
-    issueNumber: args.issueNumber,
-    standDownAtMs: args.standDownAtMs,
-    ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
-  });
-
-  try {
-    await ghCommandFn([
-      "pr",
-      "comment",
-      String(prNumber),
-      "--repo",
-      repo,
-      "--body",
-      body,
-    ]);
-  } catch (error) {
-    // WARN, not ERROR: the pass handles this and the next one decides the PR
-    // again — the same level every other recoverable `gh` failure here uses.
-    logger.warn(
-      `PR #${prNumber}: could not post the merge-conflict park marker, so ` +
-        "the park is not recorded and the next pass will decide it again",
-      {
-        repo,
-        prNumber,
-        base: args.base,
-        error: error instanceof Error ? error.message : String(error),
-      },
-    );
-    return { parked: false };
-  }
-
-  logger.warn(
-    `PR #${prNumber} was parked on \`${MERGE_CONFLICT_LABEL}\` — issue ` +
-      `#${args.issueNumber} declined a further restart, so nothing is ` +
-      `attempted until \`${args.baseBranch}\` moves off ${args.base}`,
-    {
-      repo,
-      prNumber,
-      issueNumber: args.issueNumber,
-      base: args.base,
-      ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
-    },
-  );
-  return {
-    parked: true,
-    ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
-  };
 }
 
 /**
@@ -1658,8 +1511,8 @@ export async function findConflictingPr(
     // Issue #2728: a CI-fix escalation's `needs-human` does not stop the
     // conflict being resolved — that is mechanical work this lane owns. The
     // thread is read first so a trusted CI-fix marker can be seen; the lane's
-    // own escalation still stops it, and the budget, disruption bound, park
-    // and abandon below apply unchanged.
+    // own escalation still stops it, and the budget, disruption bound, legacy
+    // park and abandon below apply unchanged.
     if (labels.includes(NEEDS_HUMAN_LABEL)) {
       if (!isCiFixEscalationOnly(prComments)) {
         return {
@@ -1675,7 +1528,9 @@ export async function findConflictingPr(
     }
 
     // Issue #2312: a PR parked after its issue spent its restarts waits for
-    // one thing only — its base tip moving. Until then it is skipped without
+    // one thing only — its base tip moving. No park is written any more
+    // (Issue #3166, there is no restart cap); this honours the markers that
+    // were posted before, so such a PR is not abandoned on a stale budget. Until then it is skipped without
     // an attempt, a label change or a comment; once it moves, the merge is a
     // genuinely different one and the attempt budget is counted from the park
     // marker onward, so the PR gets a full budget rather than inheriting a
@@ -1812,65 +1667,6 @@ export async function findConflictingPr(
             ...(flagIssueNumber !== undefined ? { flagIssueNumber } : {}),
           },
         };
-      }
-
-      // Issue #2312: the issue has spent its restarts, so this PR is parked
-      // rather than closed — it keeps `merge-conflict`, carries a park marker
-      // naming the base tip it is waiting on, and is offered again the first
-      // pass that tip moves. No `needs-human`, no comment asking anybody for
-      // anything: the fleet is waiting on a base branch, not on a person.
-      //
-      // `samePr` is deliberately excluded. There the claim on the issue names
-      // *this* PR, which means an earlier abandon of it started and stopped
-      // part-way — the issue may never have been re-queued. That is a failure,
-      // not a wait, and parking it would replace the only record of it with a
-      // marker saying everything is fine. It falls through to `budget-spent`,
-      // whose WARN names the route, and the stall watchdog still sees it.
-      if (
-        abandon.outcome === "declined" &&
-        abandon.reason.kind === "already-restarted" &&
-        !abandon.reason.samePr
-      ) {
-        const base = await resolveBaseRefOid(repo, pr, ghCommandFn, logger);
-        if (base !== undefined) {
-          const parked = await parkConflictingPr({
-            repo,
-            prNumber: pr.number,
-            branchName: pr.headRefName,
-            // allow-hardcoded-branch — safe fallback when the listing omits it
-            baseBranch: pr.baseRefName || "main",
-            prComments,
-            base,
-            issueNumber: abandon.reason.issueNumber,
-            standDownAtMs: nowMs(),
-            fallbackAction: `Left ${repo}#${pr.number} ` +
-              `(\`${pr.headRefName}\`) open on \`${MERGE_CONFLICT_LABEL}\`. ` +
-              `Issue #${abandon.reason.issueNumber} declined a further ` +
-              `restart, so the PR is parked at base \`${base}\` and ` +
-              "re-attempted only when that tip moves.",
-            trustedAuthors,
-            ...(options.fileFallbackFlag !== undefined
-              ? { fileFallbackFlag: options.fileFallbackFlag }
-              : {}),
-            ghCommandFn,
-            logger,
-          });
-          // A marker that could not be posted records no park, so it falls
-          // through to `budget-spent` and the next pass decides the PR again
-          // rather than claiming a wait nobody can read back.
-          if (parked.parked) {
-            return {
-              outcome: "skipped",
-              reason: {
-                kind: "parked",
-                base,
-                ...(parked.flagIssueNumber !== undefined
-                  ? { flagIssueNumber: parked.flagIssueNumber }
-                  : {}),
-              },
-            };
-          }
-        }
       }
 
       // Issue #2310: no `needs-human` from here any more. The rung declined or

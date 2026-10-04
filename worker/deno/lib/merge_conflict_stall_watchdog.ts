@@ -14,7 +14,8 @@
  *
  * - the `merge-conflict` label going on;
  * - the newest trusted stand-down (`readLatestStandDownAtMs`,
- *   `gated_head_guard.ts`) — the gated-head and park waits both write one;
+ *   `gated_head_guard.ts`) — the gated-head wait writes one, and a legacy
+ *   park marker posted before Issue #3166 still counts as one;
  * - the newest trusted resolution attempt (`readResolutionAttempts`,
  *   `merge_conflict_markers.ts`) — any pass's attempt or conclusion marker;
  * - the PR's head moving (`headChangedAtMs`) — a fresh push is itself
