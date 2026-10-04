@@ -495,6 +495,12 @@ import {
 } from "./host_disk.ts";
 import { assessDiskTelemetry } from "./disk_telemetry.ts";
 import {
+  heavyBuildDeferral,
+  registerHeavyBuildDiskProbe,
+  releaseCheckoutTargetDirs,
+} from "./heavy_build_gate.ts";
+import { workVolumeTrimRefusedForLaunch } from "./ephemeral_build_cache.ts";
+import {
   reclaimWorkVolumeTiers,
   repoDirName,
   summariseWorkVolumeTiers,
@@ -1783,6 +1789,20 @@ export async function createProductionRunCoreDeps(
   // episode ends, rather than waiting for the next hourly tick.
   let hostDiskLowSeen = false;
   let lastSharedCloneSweepAtMs: number | undefined;
+
+  // Issue #3178: maintenance that runs a repository build or test reads the
+  // same monitor the claim gate does, so below the floor it waits too.
+  registerHeavyBuildDiskProbe(async () => {
+    const status = await hostDisk.check();
+    if (status.level === "low") hostDiskLowSeen = true;
+    return {
+      status,
+      floorBytes: status.totalBytes === undefined
+        ? undefined
+        : hostDisk.floorBytesFor(status.totalBytes),
+      trimRefused: hostDisk.workVolumeTrimRefused,
+    };
+  });
 
   const deps: RunCoreDeps = {
     // -- Logging --
@@ -6171,6 +6191,24 @@ async function syncMilestoneBranchesFn(
     repos,
     ghCommandFn: runGhCommand,
     defaultBranchFn: getRepoDefaultBranch,
+    // Issue #3178: a sync that merges is verified by the repository's own
+    // build and test; below the host floor, or over the ephemeral cargo
+    // budget, it waits. The clone's ephemeral target dirs go when the pass
+    // ends rather than at the relaunch.
+    heavyBuildGateFn: (repo) =>
+      heavyBuildDeferral(`${workDir}/${repo.split("/")[1]}`),
+    releaseBuildArtefactsFn: async (repo) => {
+      if (!workVolumeTrimRefusedForLaunch()) return;
+      const released = await releaseCheckoutTargetDirs(
+        `${workDir}/${repo.split("/")[1]}`,
+      );
+      for (const error of released.errors) {
+        logger.warn(
+          `Could not release an ephemeral target dir of ${repo}: ${error} ` +
+            `(Issue #3178)`,
+        );
+      }
+    },
     syncBranchFn: async (repo, milestoneBranch, defaultBranch, syncOptions) => {
       // Issue #2309: every behind branch is offered the agent rung, and only
       // the handler's remaining budget refuses one. A branch that was not

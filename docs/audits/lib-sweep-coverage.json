@@ -2536,6 +2536,18 @@
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
       ]
+    },
+    {
+      "issue": 3178,
+      "chunk": "top-up-3178",
+      "title": "top-up: the host-disk gate on heavy builds",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3178",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: heavy_build_gate.ts (#3178)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/heavy_build_gate.ts"
+      ]
     }
   ],
   "roots": [

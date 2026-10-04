@@ -1237,8 +1237,11 @@ reclaim skipped: …` and the host is left to the launcher's volume reset
 
 A host below its claiming floor stops claiming new issues, but every
 maintenance pass keeps running each cycle, because those passes land the
-PRs already open (Issue #226). The one exception is the shared-clone ref
-sweep: it stands down while the disk is low and reclaim did not heal it,
+PRs already open (Issue #226). There are two exceptions: a maintenance
+build, which waits for the host to recover
+([below](#host_disk_low-defers-maintenance-builds-issue-3178)), and the
+shared-clone ref sweep: it stands down while the disk is low and reclaim did
+not heal it,
 since a ref write interrupted by low disk is exactly what it repairs. The
 one-time-per-episode `[HOST_DISK_LOW]` warning described above is unchanged;
 there is no separate warn line for the pause.
@@ -1248,6 +1251,36 @@ reading is no longer low — the shared-clone ref sweep runs straight away
 rather than waiting out its usual hourly cadence, on the reasoning above: see
 [Shared clone ref sweep](INTERNALS.md#shared-clone-ref-sweep-issue-2889) in
 INTERNALS.md for the sweep itself.
+
+### HOST_DISK_LOW defers maintenance builds (Issue #3178)
+
+The claim gate stops the cheap thing; it used to let the expensive thing
+through. On GRQ-23 (2026-10-03) a launch started at 38.8 GB free against a
+46.0 GB floor, claimed nothing, and then ran a milestone sync whose
+verification and two agent repair rounds built and tested a large Rust
+workspace: 23 GB into `/var/tmp/vibe-cargo-target` in 23 minutes, until the
+host could not back the guest's writes and `/` went read-only.
+
+So a maintenance pass now asks before it runs the repository's own build or
+test (`worker/deno/lib/heavy_build_gate.ts`), reading the same
+`HostDiskMonitor` and the same floor the claim gate does:
+
+- **Below the floor, the build waits.** A milestone sync that would merge —
+  the periodic sweep and the pre-cut sync alike — is deferred before the merge,
+  so neither its verification nor its repair rounds run. The deferral is not a
+  failure: it charges and paces nothing in the conflict ledger. The log names
+  the floor:
+
+  ```text
+  [HOST_DISK_LOW] Milestone sync for '2285 …' in stSoftwareAU/GRQ-AutoTrader deferred to a later cycle: host disk below its floor — host (…) 38.8 GB free (8.4%) of 460.4 GB, floor 46.0 GB — below the floor; a repository build or test would grow host disk further, so it waits until the host recovers (Issue #3178)
+  ```
+
+- **A branch already level is not asked.** It has nothing to merge and so
+  nothing to build.
+- **Cheap maintenance continues.** API calls, fetches and label work never ask.
+
+An `unknown` reading never defers, the same rule as the claim gate: a blind
+probe must not stop every build in the fleet.
 
 ## When the runtime refuses the trim — the launcher self-heals (Issue #478)
 
@@ -1418,6 +1451,20 @@ build artefacts.
 - **An unusable root is a reported fallback, not a broken build.** If
   `/var/tmp/vibe-cargo-target` cannot be created `1777`, the launch says so and
   the build stays on the volume.
+- **The root has a budget (Issue #3178).** The layer is released at every
+  relaunch, but **within** a launch every byte written there is real host disk.
+  Before a maintenance build, the host must have its floor **plus 25 GB of
+  headroom** free (one build the size of the one that took GRQ-23 down). Short
+  of that, other checkouts' target directories are pruned, largest first,
+  skipping any written to in the last 20 minutes (another slot's build in
+  progress) and the building checkout's own (its incremental cache). If the
+  build is still not covered, it is refused with a line naming the floor and
+  the headroom. Pruning counts as room even where the trim is refused: the
+  guest filesystem reuses the freed blocks, so a build writing into them does
+  not grow the host image again.
+- **A pass releases what it built.** When the milestone sync's pass over a
+  repository ends, that clone's target directories are removed rather than
+  left to the relaunch.
 
 Incremental builds are lost at relaunch. They were lost at every recreate
 anyway — and a recreate now happens only when live data outgrows the floor,
