@@ -187,7 +187,9 @@ Deno.test("runCoreLoop - a health-check failure on a healthy filesystem behaves 
   assert(probes > 1, `the run must keep cycling, probed ${probes} time(s)`);
   assertEquals(result.rootFilesystemFault, undefined);
   assert(
-    errors.includes("Claude health check failed — skipping cycle"),
+    errors.some((line) =>
+      line.startsWith("Claude health check failed — skipping cycle")
+    ),
     errors.join("\n"),
   );
   assert(!errors.some((line) => line.includes("ROOT_FS_READ_ONLY")));
