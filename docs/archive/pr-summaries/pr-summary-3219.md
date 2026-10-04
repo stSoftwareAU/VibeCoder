@@ -143,8 +143,10 @@ own `sourceGrepOutput`
   `prompt_house_vocabulary_drift_test.ts`; 437 files, `DENO_JOBS=4
   --parallel`): 7226 passed, 1 failed. The failure,
   `planning_processor_test.ts` "drafts, self-critiques, revises, then
-  publishes (Issue #2652)", fails alone too; it reads no file this PR changes
-  and imports neither changed module.
+  publishes (Issue #2652)", fails alone too. Its failing assertion is the
+  planning draft turn's `phaseCount` (expected 0, got 1). That path does not
+  reach the Docs sweep re-run, though the test imports `completion_phase.ts`
+  transitively. It was not run against the base branch here.
 - `deno fmt --check`, `deno lint`, `deno task check` and
   `deno task check:manifests` (665 passed, 0 failed, 1 ignored): passed.
   `npx -y markdownlint-cli2`: 0 issues. The full `deno test` suite and
