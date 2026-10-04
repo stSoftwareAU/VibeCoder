@@ -1230,6 +1230,25 @@ applies before the outcome, keeping each on the new path or stating why it
 does not apply, and proving each kept guard with a test that goes red when
 the new branch is moved ahead of it.
 
+**A new branch must be reachable by the input it exists for (Issue #3167).**
+The mirror of the #3087 rule: fleet PRs inserted a new branch below an
+existing early exit that a realistic input for the new case fires first,
+and tested it with a fixture that never tripped that exit. GRQ#5105 placed
+the run-start test-mode guard after the roster loop's `exit 0` paths, so a
+leaked test-mode flag on an opted-out team or empty roster exited 0 with no
+refusal; VibeCoder#3134 placed the unassigned-gap capture below
+`if (subjectWordSet.size === 0) continue;`, dropping a `partial` or
+`missing` entry with no subject words; and VibeCoder#3159's
+self-filed-dependency hand-off sat first below the described-code-change
+retry and short-output failure, then — after one review-fix round — still
+below `detectRunInterrupted`, a wording guess that matches ordinary blocked
+prose. The guidelines, the issue prompt's Test Plan step and the
+PR-feedback prompt now require listing each exit above the insertion point
+and what fires it, moving the new branch above any exit its realistic input
+can fire first (or stating why a real infrastructure signal must win), and
+a test whose realistic input trips each earlier exit and goes red when the
+branch is moved back below it.
+
 **Code that deletes or replaces state proves everything it destroys is
 safe to lose (Issue #3107).** Fleet PRs wrote clone swaps that checked
 only the state they were about. GRQ#5153's promisor path in
