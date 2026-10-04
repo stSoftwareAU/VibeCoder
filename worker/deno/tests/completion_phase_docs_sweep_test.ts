@@ -88,6 +88,13 @@ interface Scenario {
    * (Issue #3073 / #3085 review).
    */
   diffFails?: boolean;
+  /**
+   * What `git grep` over the head's docs answers for the Docs sweep line's
+   * terms (Issue #3172), in `git grep -n -z HEAD` shape. Omitted, no hit.
+   */
+  grepOutput?: string;
+  /** Exit code `git grep` returns; defaults to 0 with output, 1 without. */
+  grepCode?: number;
   /** Ordered event log shared across the mocked deps, for assertion. */
   events?: string[];
 }
@@ -168,6 +175,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             value: { code: 0, stdout, stderr: "" },
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
+        if (cmdArgs[0] === "grep") {
+          const stdout = scenario.grepOutput ?? "";
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              code: scenario.grepCode ?? (stdout === "" ? 1 : 0),
+              stdout,
+              stderr: "",
+            },
+          });
+        }
         // The 3-arg form (`diff --name-only <base>...HEAD`) is the call that
         // feeds the docs-sweep gate's `changedFiles`; the 4-arg form (with
         // `--diff-filter=ACMR`) feeds the unrelated changed-workflow gate and
@@ -481,5 +499,90 @@ Deno.test(
     assertStringIncludes(outcome.reason ?? "", "Docs sweep");
     assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.comments[0]!, "section:");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #3172: the Docs sweep line's own grep terms are re-run at the head.
+// ---------------------------------------------------------------------------
+
+/** A hit of the line's own term (`BrokerBalance`) the diff did not change. */
+const STALE_HIT =
+  "HEAD:docs/reporting-api.md\u0000320\u0000BrokerBalance refuses a stale quote\n";
+
+/** The valid summary once the recovery names the hit as still true. */
+const SUMMARY_NAMING_HIT = SUMMARY_WITH_LINE.replace(
+  "; no hits",
+  "; `docs/reporting-api.md:320` — still true because the refusal stays",
+);
+
+Deno.test(
+  "completion - a stale hit of the Docs sweep's own term gets the one recovery turn, then the PR is raised once it is named",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      retryWrites: SUMMARY_NAMING_HIT,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertStringIncludes(
+      outcome.claudePrompts[0]!,
+      "docs/reporting-api.md:320",
+    );
+    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(
+      outcome.comments[0]!,
+      "BrokerBalance refuses a stale quote",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a stale hit the recovery leaves alone fails the run with no PR raised",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(outcome.reason ?? "", "docs/reporting-api.md:320");
+  },
+);
+
+Deno.test(
+  "completion - a grep that cannot run is logged as not checked and does not block the PR",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: "",
+      grepCode: 128,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 0);
+  },
+);
+
+Deno.test(
+  "completion - a docs-only diff never re-runs the terms",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "docs/guide.md",
+      grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 0);
   },
 );

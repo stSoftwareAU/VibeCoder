@@ -12,6 +12,29 @@
 import type { Result } from "../types.ts";
 
 /**
+ * Return a cryptographically secure random integer in [0, maxExclusive).
+ *
+ * Uses rejection sampling to avoid modulo bias.
+ */
+function secureRandomInt(maxExclusive: number): number {
+  if (!Number.isInteger(maxExclusive) || maxExclusive <= 0) {
+    throw new RangeError("maxExclusive must be a positive integer");
+  }
+
+  const maxUint32 = 0x1_0000_0000; // 2^32
+  const limit = maxUint32 - (maxUint32 % maxExclusive);
+  const buf = new Uint32Array(1);
+
+  while (true) {
+    crypto.getRandomValues(buf);
+    const value = buf[0]!;
+    if (value < limit) {
+      return value % maxExclusive;
+    }
+  }
+}
+
+/**
  * Shuffle an array using the Fisher-Yates algorithm.
  *
  * Returns a new array with elements in randomised order.
@@ -30,7 +53,7 @@ export function shuffleArray<T>(items: readonly T[]): T[] {
 
   // Fisher-Yates shuffle
   for (let i = n - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = secureRandomInt(i + 1);
     const tmp = result[i]!;
     result[i] = result[j]!;
     result[j] = tmp;

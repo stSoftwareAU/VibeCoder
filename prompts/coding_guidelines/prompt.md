@@ -254,6 +254,12 @@ not after a reviewer finds it weeks later.
   UI copy, and the docs prose for those fields. Make each one true for **every
   case** the new behaviour produces, not only the common one. Grep for the
   variant or field name **and** for the old wording.
+- Grep for the **stem** of a behavioural claim, not one inflection
+  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
+  final head after editing. In a file you update, read every passage that
+  mentions the changed surface, not only the section you edited. Each
+  remaining hit goes in the Docs sweep line by `file:line` with the reason it
+  is still true.
 
 ## Visual Documentation
 
@@ -602,6 +608,20 @@ separate.
   inflates both readings and stays green, which is exactly what an absolute
   budget cannot do (Issue #530). Compare two readings of the same work; never
   a reading against a constant.
+- **Vet every regex on untrusted text, one hostile case per pattern.** Every
+  regex a change adds or edits that runs on untrusted or agent-written text
+  (an issue body, a PR summary, agent output) gets its own check, not one per
+  module. Read each pattern for two quantifiers that can match the same
+  characters with only optional tokens between them: `\s*:?\s*$`,
+  `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
+  overlap: trim the line first and drop the redundant quantifier, make the
+  pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
+  trailing whitespace, or cap the run. Then add one hostile case per pattern:
+  a long run of the shared character followed by a character the pattern
+  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
+  with the same defect, and #3160's hostile cases covered the inline form while
+  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.
@@ -1190,6 +1210,20 @@ ahead of the guard (or remove the guard call) and confirm the test goes red.
 List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
+
+**A new branch must be reachable by the input it exists for.** When you add
+a branch, guard, capture or hand-off below existing early exits in the same
+function or its caller (`return`, `continue`, `break`, `exit`, a retry or
+failure return), list each exit above the insertion point and what fires it.
+For each one, ask whether a realistic input for the new case can fire it
+first. Free-text heuristics, empty or short-input filters and "nothing to do"
+exits are the usual culprits. If one can, move the new branch above it, or
+state in the PR summary why that exit must win. A real infrastructure signal
+can justify that; a wording guess cannot. Then add a test whose input is the
+realistic case and also trips each earlier exit the new branch now precedes.
+Move the new branch back below that exit and confirm the test goes red. A
+new branch that a realistic input for its own case cannot reach is a
+blocking self-review finding (Issue #3167).
 
 **Code that deletes or replaces state proves everything it destroys is safe
 to lose.** When a change adds code that `rm -rf`s a directory, swaps a new

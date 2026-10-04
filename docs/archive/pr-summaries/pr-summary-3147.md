@@ -150,8 +150,9 @@ fix, all now fixed:
   `branchOutcomes.applicable` or `changedFilesKnown` — it is
   `lookupTestsAtHead` itself (`branch_outcomes_gate.ts:622`) that skips
   calling `git` when there are zero paths, not the surrounding code skipping
-  the call. The comment (now `completion_phase.ts:2192-2198`) is rewritten
-  to describe the unconditional call.
+  the call. The comment (now `completion_phase.ts:2192-2198`, renumbered to
+  `2248-2254` after the merge with `main` — see merge note below) is
+  rewritten to describe the unconditional call.
 - This file's Branch outcomes list is regenerated below from the current
   head, covering every arm in `parseBranchOutcomes`, `scanRegionText` and
   `collectEntries` (the sixth round's own finding: the fifth round's
@@ -159,6 +160,31 @@ fix, all now fixed:
   each with the line it is at today and the flip result seen on this head.
 
 Closes #3147.
+
+## Merge note
+
+Merging `main` into this branch (PR #3160) brought in two unrelated `main`
+additions that touched the same two files as this PR, both now reconciled:
+
+- `docs/audits/lib-sweep-coverage.json`: `main` added top-up slices for
+  Issue #3178 (`heavy_build_gate.ts`) and Issue #3172 (`docs_sweep_hits.ts`).
+  Both are kept alongside this PR's `top-up-3147` slice — an append-only
+  ledger, so all three entries survive.
+- `worker/deno/lib/phases/completion_phase.ts`: `main`'s Issue #3172 change
+  (re-running the Docs sweep line's own grep terms at the head) and this PR's
+  three-way `docsSweepBlocked || placeholderBlocked || branchOutcomesBlocked`
+  block both touched the same late-gate `if`. The merged block keeps both:
+  the three-way array-based combination from this PR, reading `docsSweepComment`
+  (not a freshly-built `buildDocsSweepGateComment(docsSweep)`) so a #3172
+  stale-hit comment is not silently dropped when that gate is what actually
+  blocked. No other hunk in this file conflicted — the earlier `#3172` and
+  `#3147` additions (the `let docsSweepBlocked` term-recheck block,
+  `branchOutcomesBlocked`, `foldInLateSummaryGates`) landed at non-overlapping
+  locations and merged automatically.
+
+This inserted ~56 lines ahead of the Branch-outcomes-related lines this
+summary cites in `completion_phase.ts`; every citation into that file below
+is updated to the post-merge line number.
 
 ## Test Plan
 
@@ -337,7 +363,8 @@ over from an earlier round). Every arm of `parseBranchOutcomes`,
 `scanRegionText` and `collectEntries` has its own line this round (the
 sixth round's own finding against the fifth round's enumeration):
 
-- `worker/deno/lib/phases/completion_phase.ts:2210` — `changedFiles:
+- `worker/deno/lib/phases/completion_phase.ts:2266` (line number after the
+  merge with `main` — see merge note below; was `:2210`) — `changedFiles:
   changedFilesKnown ? changedFiles : null` passed into
   `validateBranchOutcomes` —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - an unreadable changed-files diff with a Branch outcomes list naming a missing test blocks PR creation`.
@@ -349,15 +376,16 @@ sixth round's own finding against the fifth round's enumeration):
   `failure` to `continue` (`prCreateCalls` from 0 to 1) — the gate became
   not-applicable instead of fail-closed, so a named test that does not
   exist at HEAD was never checked.
-- `completion_phase.ts:2244-2248` — `branchOutcomesBlocked` folded into an
-  earlier (closure/independent-review/reproduction-status) gate's
-  comment/reason —
+- `completion_phase.ts:2298-2302` (was `:2244-2248`; see merge note below) —
+  `branchOutcomesBlocked` folded into an earlier
+  (closure/independent-review/reproduction-status) gate's comment/reason —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a bug issue missing BOTH the Reproduction block and the Branch outcomes list names both in one block`.
   Flipped the `if (branchOutcomesBlocked)` guard to `if (false)`: the test's
   assertion that the one comment also names "Branch outcomes" failed (only
   the Reproduction-status message was present).
-- `completion_phase.ts:2403-2412` — the late-gate block's own
-  `branchOutcomesBlocked` arm (single-gate failure, outside the fold) —
+- `completion_phase.ts:2462-2471` (was `:2403-2412`; see merge note below) —
+  the late-gate block's own `branchOutcomesBlocked` arm (single-gate
+  failure, outside the fold) —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
   Flipped the `if (branchOutcomesBlocked)` guard to `if (false)`: the test
   failed (a downstream retry-prompt builder threw on the now-empty

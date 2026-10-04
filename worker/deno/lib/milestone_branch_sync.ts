@@ -412,6 +412,20 @@ export interface MilestoneBranchSyncDeps {
    */
   hostFn?: () => string;
   /**
+   * Ask whether a sync that would merge — and so run the repository's own
+   * build and test to verify it — must wait for host disk (Issue #3178).
+   * A reason defers the branch this cycle with that reason in the log; null
+   * proceeds. Omitted: nothing is gated. Production wires
+   * `heavyBuildDeferral` against the repository's shared clone.
+   */
+  heavyBuildGateFn?: (repo: string) => Promise<string | null>;
+  /**
+   * Release the build artefacts a repository's pass left in the ephemeral
+   * cargo root once the pass is over, rather than leaving them to the
+   * relaunch (Issue #3178). Called only when a sync ran; best-effort.
+   */
+  releaseBuildArtefactsFn?: (repo: string) => Promise<void>;
+  /**
    * Post the running-attempt announcement (Issue #2309). Defaults to
    * {@link announceAgentAttempt} through this pass's `ghCommandFn`.
    */
@@ -1544,6 +1558,9 @@ export async function syncMilestoneBranches(
     // Issue #2030: the lane runs beside the issue pool, so the clone is
     // leased for the whole repository pass and given back whatever happens.
     let lease: RepoLease | null | undefined;
+    // Issue #3178: set once a sync has run in this clone, so the pass
+    // releases the build artefacts it left behind.
+    let builtInClone = false;
     try {
       // Issue #1519: sync is a local-git operation. Skip repos that have
       // not been cloned in this environment — otherwise every git command
@@ -1685,6 +1702,24 @@ export async function syncMilestoneBranches(
           );
           skipped++;
           continue;
+        }
+
+        // Issue #3178: a sync that merges runs the repository's own build
+        // and test to verify the merge, and a repair round runs them again.
+        // Below the host floor that build is what tips the host over, so the
+        // branch waits — a deferral, not a failure, and charged nothing. A
+        // branch measured level has nothing to merge and nothing to build.
+        if (deps.heavyBuildGateFn && behindBy !== 0) {
+          const deferral = await deps.heavyBuildGateFn(repo);
+          if (deferral !== null) {
+            log(
+              `[HOST_DISK_LOW] Milestone sync for ` +
+                `'${milestone.milestoneTitle}' in ${repo} deferred to a ` +
+                `later cycle: ${deferral}`,
+            );
+            skipped++;
+            continue;
+          }
         }
 
         // The open PR a milestone branch is the head of spends the shared
@@ -2043,6 +2078,7 @@ export async function syncMilestoneBranches(
         // a throw both run the finally, so every path releases it.
         try {
           try {
+            builtInClone = true;
             syncResult = await syncBranchFn(
               repo,
               milestone.milestoneBranch,
@@ -2479,6 +2515,16 @@ export async function syncMilestoneBranches(
       const message = err instanceof Error ? err.message : String(err);
       log(`WARNING: Milestone branch sync failed for ${repo}: ${message}`);
     } finally {
+      if (builtInClone && deps.releaseBuildArtefactsFn) {
+        await deps.releaseBuildArtefactsFn(repo).catch((err) =>
+          log(
+            `WARNING: Could not release the build artefacts of ${repo}'s ` +
+              `milestone sync: ${
+                err instanceof Error ? err.message : String(err)
+              } — they stay until the relaunch (Issue #3178)`,
+          )
+        );
+      }
       lease?.release();
     }
     if (stoppedAt) break;
