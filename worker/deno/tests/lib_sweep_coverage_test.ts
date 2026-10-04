@@ -24,13 +24,16 @@ import {
   driftSince,
   duplicateSliceIds,
   ENUMERATED_SLICE_MAX_PATHS,
+  LEDGER_FILE_LAST_TOP_UP_ISSUE,
   LIB_SWEEP_LEDGER_PATH,
   LIB_SWEEP_ROOT,
+  LIB_SWEEP_TOP_UP_DIR,
   listSweptModules,
   listSweptModulesForRoots,
   localLedgerRecords,
   mismatchedTopUpIds,
   parseCoverageLedger,
+  readCoverageLedger,
   SWEEP_COVERAGE_ROOTS,
   type SweepCoverageLedger,
   type SweepGitRunner,
@@ -46,10 +49,8 @@ const FIXTURE_COMMIT = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 /** Repository root, two directories above `worker/deno/tests/`. */
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 
-function readRealLedger(): SweepCoverageLedger {
-  return parseCoverageLedger(
-    Deno.readTextFileSync(`${REPO_ROOT}${LIB_SWEEP_LEDGER_PATH}`),
-  );
+function readRealLedger(): Promise<SweepCoverageLedger> {
+  return readCoverageLedger(REPO_ROOT);
 }
 
 function ledgerFixture(
@@ -316,10 +317,10 @@ Deno.test("duplicateSliceIds - reports every repeated chunk id and issue number"
   );
 });
 
-Deno.test("the real ledger allocates each chunk id and issue number once (Issue #1968)", () => {
+Deno.test("the real ledger allocates each chunk id and issue number once (Issue #1968)", async () => {
   // `readRealLedger` parses, so a collision throws before this assertion; the
   // explicit check states the invariant the acceptance criterion names.
-  assertEquals(duplicateSliceIds(readRealLedger().slices), {
+  assertEquals(duplicateSliceIds((await readRealLedger()).slices), {
     chunks: [],
     issues: [],
   });
@@ -397,8 +398,8 @@ Deno.test("listSweptModules - a file root is returned as-is, a directory root is
   assertEquals(dirPaths, [...dirPaths].sort());
 });
 
-Deno.test("the ledger's roots match SWEEP_COVERAGE_ROOTS (Issues #2759, #2760)", () => {
-  const ledger = readRealLedger();
+Deno.test("the ledger's roots match SWEEP_COVERAGE_ROOTS (Issues #2759, #2760)", async () => {
+  const ledger = await readRealLedger();
   assertEquals(ledger.roots, [...SWEEP_COVERAGE_ROOTS]);
 });
 
@@ -408,7 +409,7 @@ Deno.test(
     // Regression test for the gap this issue closed. Before #1219 no ledger
     // existed at all, so every module in the closing pass was unaccounted for.
     // Removing the #1219 slice reconstructs that state: the check must go red.
-    const ledger = readRealLedger();
+    const ledger = await readRealLedger();
     const withoutClosingPass: SweepCoverageLedger = {
       ...ledger,
       slices: ledger.slices.filter((s) => s.issue !== 1219),
@@ -478,7 +479,7 @@ Deno.test("every sweep record the ledger names exists in the tree", async () => 
   // Fail direction: run against the tree before this change — the coverage
   // JSON named `docs/audits/security-sweep-1219-lib-closing-pass.md` and the
   // file did not exist — and this test goes red.
-  const ledger = readRealLedger();
+  const ledger = await readRealLedger();
   const records = localLedgerRecords(ledger);
   assert(records.length > 0, "expected the ledger to name written records");
   const missing: string[] = [];
@@ -495,7 +496,7 @@ Deno.test("every sweep record the ledger names exists in the tree", async () => 
 });
 
 Deno.test("every non-test module under the ledger roots is claimed by exactly one sweep slice (Issue #1609)", async () => {
-  const ledger = readRealLedger();
+  const ledger = await readRealLedger();
   const diff = diffCoverage(
     ledger,
     await listSweptModulesForRoots(REPO_ROOT, ledger.roots),
@@ -617,7 +618,7 @@ Deno.test("every small sweep slice's record names each module it claims", async 
   // naming the module — and, once those two were the only members of a
   // top-up slice, this check goes red. Both now sit in `12f`, whose record
   // names them.
-  const ledger = readRealLedger();
+  const ledger = await readRealLedger();
   const texts = new Map<string, string>();
   for (const record of localLedgerRecords(ledger)) {
     const text = await Deno.readTextFile(`${REPO_ROOT}${record}`).catch(
@@ -939,4 +940,42 @@ Deno.test("verifySweptAtsOnDefaultBranch - an unresolvable default branch fails 
   assert(thrown instanceof SweepLedgerError, String(thrown));
   assert(thrown.message.includes("origin/trunk"), thrown.message);
   assert(thrown.message.includes("git fetch"), thrown.message);
+});
+
+Deno.test("parseCoverageLedger - a new top-up slice in the ledger file itself is refused, naming the directory", () => {
+  const late = LEDGER_FILE_LAST_TOP_UP_ISSUE + 1;
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "12e", issue: 1219 },
+        { chunk: topUpChunkId(late), issue: late },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes(topUpChunkId(late)), err.message);
+  assert(err.message.includes(LIB_SWEEP_TOP_UP_DIR), err.message);
+  // The slices already in the file stay valid.
+  parseCoverageLedger(ledgerJson([
+    {
+      chunk: topUpChunkId(LEDGER_FILE_LAST_TOP_UP_ISSUE),
+      issue: LEDGER_FILE_LAST_TOP_UP_ISSUE,
+    },
+  ]));
+});
+
+Deno.test("parseCoverageLedger - a letter-chunk slice for a late issue in the ledger file is refused, naming the directory", () => {
+  // Copying the 12y..12ag letter shape still in the file must not get a new
+  // slice past the guard: the cut-off is by issue, whatever the chunk id.
+  const late = LEDGER_FILE_LAST_TOP_UP_ISSUE + 1;
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "12e", issue: 1219 },
+        { chunk: "12ah", issue: late },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("12ah"), err.message);
+  assert(err.message.includes(LIB_SWEEP_TOP_UP_DIR), err.message);
+  assert(err.message.includes(`${topUpChunkId(late)}.json`), err.message);
 });

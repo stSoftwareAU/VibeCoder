@@ -16,9 +16,16 @@ import {
   sweepDriftCommand,
   sweepGitRunnerFor,
 } from "../commands/sweep_drift.ts";
-import type { SweepCoverageLedger } from "../lib/lib_sweep_coverage.ts";
+import {
+  LIB_SWEEP_TOP_UP_DIR,
+  type SweepCoverageLedger,
+  topUpChunkId,
+} from "../lib/lib_sweep_coverage.ts";
 
 const COMMIT = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+/** The sweptAt of the top-up slice, distinct from the ledger file's. */
+const TOP_UP_COMMIT = "cccccccccccccccccccccccccccccccccccccccc";
+const TOP_UP_ISSUE = 3300;
 
 function ledger(): SweepCoverageLedger {
   return {
@@ -182,6 +189,30 @@ function ancestryRunner(onDefault: boolean) {
   return { runGit, calls };
 }
 
+/**
+ * The ledger checkout plus one top-up file in {@link LIB_SWEEP_TOP_UP_DIR},
+ * whose slice records {@link TOP_UP_COMMIT} and owns a second module.
+ */
+async function ledgerCheckoutWithTopUp(): Promise<string> {
+  const dir = await ledgerCheckout();
+  await Deno.mkdir(`${dir}/${LIB_SWEEP_TOP_UP_DIR}`, { recursive: true });
+  await Deno.writeTextFile(`${dir}/worker/deno/lib/b.ts`, "export {};\n");
+  await Deno.writeTextFile(
+    `${dir}/${LIB_SWEEP_TOP_UP_DIR}/${topUpChunkId(TOP_UP_ISSUE)}.json`,
+    JSON.stringify({
+      issue: TOP_UP_ISSUE,
+      chunk: topUpChunkId(TOP_UP_ISSUE),
+      title: "top-up fixture",
+      ledger: "docs/audits/b.md",
+      definition: "fixture",
+      status: "swept",
+      sweptAt: TOP_UP_COMMIT,
+      paths: ["worker/deno/lib/b.ts"],
+    }),
+  );
+  return dir;
+}
+
 Deno.test("sweep-drift command - --default-branch fails on a sweptAt off that branch, naming the slice (Issue #2754)", async () => {
   const dir = await ledgerCheckout();
   try {
@@ -214,6 +245,45 @@ Deno.test("sweep-drift command - --default-branch passes a ledger on that branch
       calls.join("\n"),
     );
     assert(calls.some((call) => call.startsWith("diff ")), calls.join("\n"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("sweep-drift command - --default-branch checks a top-up file's sweptAt, naming its slice (#3203 review)", async () => {
+  // Fail direction: CI's sweptAt-ancestry step runs this command, and every
+  // new slice now lives in a top-up file. Were the command to read only the
+  // ledger file, a top-up slice recording its feature branch's HEAD — a commit
+  // squash-merge deletes — would pass CI unchecked (Issue #2754). Only the
+  // top-up slice's commit is off the default branch, so the ledger file's
+  // slice alone can never make this fail.
+  const dir = await ledgerCheckoutWithTopUp();
+  try {
+    const calls: string[] = [];
+    const runGit = (args: readonly string[]) => {
+      calls.push(args.join(" "));
+      const offDefault = args[0] === "merge-base" &&
+        args[2] === TOP_UP_COMMIT;
+      return Promise.resolve({
+        code: offDefault ? 1 : 0,
+        stdout: "",
+        stderr: "",
+      });
+    };
+    const result = await sweepDriftCommand.execute(
+      { repo: dir, "default-branch": "origin/main", runGit },
+      {} as never,
+    );
+    assertEquals(result.success, false, result.message);
+    assert(
+      result.message?.includes(
+        `slice ${topUpChunkId(TOP_UP_ISSUE)} (#${TOP_UP_ISSUE})`,
+      ),
+      result.message,
+    );
+    assert(result.message?.includes(TOP_UP_COMMIT), result.message);
+    // The ledger file's slice was on the branch, so it is not blamed.
+    assert(!result.message?.includes("slice 12a"), result.message);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
