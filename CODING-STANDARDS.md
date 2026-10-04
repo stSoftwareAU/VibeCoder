@@ -1127,7 +1127,11 @@ A free-text escape hatch is honoured only while the branch has no commits
 and no uncommitted changes against the base (Issue #3058, #3088). A CI-fix
 run is the exception: a check
 already red on the base branch still defers on a `Depends on owner/repo#N`
-line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
+line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
+deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
+or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
+(`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
+branch is red. The Escape Hatch
 in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
 honoured on a committed PR branch when `.pr_response_message` names a
 follow-up issue. Any later commit on the branch — a

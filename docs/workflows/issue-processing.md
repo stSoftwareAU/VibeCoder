@@ -71,6 +71,24 @@ The label priority order is therefore: `top-priority` > `work-on` > `low-priorit
 
 The global guarantee for `low-priority` follows from the cross-repo collection in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts): every scannable repo contributes its candidates before [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) picks a tier. A single eligible `top-priority` issue in repo A will suppress every `work-on` and `low-priority` issue across repos B, C, … That keeps `low-priority` strictly idle-time work — backlog items the worker only reaches when there is genuinely nothing else to do anywhere.
 
+### Conflict redo first in its repo (Issue #3034)
+
+An issue re-queued by merge-conflict abandon-and-redo (see
+[merge-conflicts.md](merge-conflicts.md)) is a **conflict redo** once its
+comments carry a fleet-authored restart marker (author-checked, so an
+outsider's marker is ignored), it has no open fleet PR, and no PR referencing
+it was raised after the abandoned one. The tier ladder above still decides
+**which repo** wins, unchanged; once a repo is chosen, a conflict-redo
+candidate in that repo is returned ahead of every other candidate there —
+`top-priority` included — whatever pickup label the redo itself carries.
+Several redos in the same repo pick the oldest restart claim first, redos are
+exempt from the per-repo `low-priority`/`idle-task` suppression, and a redo
+never displaces another repo's candidate; week-pace (Issue #1885) still blocks
+`low-priority`/`idle-task` redos. This is ordering, not a label —
+`label_security` strips a worker-applied `top-priority` — and every selection
+of this kind is logged as `[issue-finder] selected repo=<repo> issue=#<n>
+reason=conflict-redo source=<tier> restarted-at=<iso>`.
+
 ```mermaid
 flowchart TD
     A[All repos scanned] --> B[Collect candidates per tier]

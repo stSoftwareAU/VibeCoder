@@ -708,7 +708,11 @@ still open; a closed or unreadable dependency does not defer, and the worker
 hands the issue to a human and raises no PR. A CI-fix run is the exception
 for a check already red on the base branch: `prompts/ci_fix/prompt.md`
 "Base-branch failures" still ends with
-`Depends on owner/repo#N`, and that line defers that check.
+`Depends on owner/repo#N`, and that line defers that check. That CI-fix
+deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
+or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
+(`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
+branch is red.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the
