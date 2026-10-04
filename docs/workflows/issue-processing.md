@@ -1265,6 +1265,24 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Vet every regex on untrusted text, one hostile case per pattern
+(Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
+case for the one pattern the author had in mind, and shipped a sibling
+pattern in the same module with the same quadratic backtracking:
+VibeCoder#3085 capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE`,
+which cost a third review round, and VibeCoder#3160's
+`BRANCH_OUTCOMES_HEADING_RE` took about a minute per call on a heading
+padded with spaces. The guidelines now require every regex a change adds
+or edits that runs on untrusted or agent-written text to be read for two
+quantifiers that can match the same characters with only optional tokens
+between them, to have that overlap removed, and to get its own hostile
+case: a long run of the shared character followed by a character the
+pattern rejects. The pr_feedback prompt sends a backtracking finding to
+every other regex in the same module. The same change fixed the
+`\s*:?\s*` heading tail in the acceptance-criteria, failure-detection,
+independent-review and reproduction-status parsers, and the trailing
+`/\s+$/` strip in the failure-detection repair.
+
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
 learn what the real tool does, so fleet PRs guessed and built the fake from
