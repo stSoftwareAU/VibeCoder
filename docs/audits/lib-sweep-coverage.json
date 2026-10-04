@@ -2623,18 +2623,6 @@
       "paths": [
         "worker/deno/lib/root_filesystem_fault.ts"
       ]
-    },
-    {
-      "issue": 3205,
-      "chunk": "top-up-3205",
-      "title": "top-up: owner direction on the milestone parent and linked issue",
-      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3205",
-      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: owner_direction.ts (#3205)",
-      "status": "claimed",
-      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
-      "paths": [
-        "worker/deno/lib/owner_direction.ts"
-      ]
     }
   ],
   "roots": [
