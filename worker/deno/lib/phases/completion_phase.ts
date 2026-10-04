@@ -44,6 +44,7 @@ import {
   buildClosureGateComment,
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
+import { findMissingCriteria } from "../missing_criterion_close_guard.ts";
 import {
   buildIndependentReviewComment,
   validateIndependentReview,
@@ -1877,6 +1878,17 @@ async function completionBody(
     footer,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
+  // Issue #3177: `assemblePrBody` withholds the closing keyword when the
+  // summary marks a criterion `missing`. Say so, since the PR then leaves
+  // the issue open and the merged-PR closers hand it to a human.
+  const missingCriteria = findMissingCriteria(summaryContent);
+  if (missingCriteria.length > 0) {
+    logger.warn(
+      "PR summary marks acceptance criteria missing — the PR is raised as " +
+        "`Part of #N` and does not close the issue (Issue #3177)",
+      { issueNumber, missing: missingCriteria.length },
+    );
+  }
 
   // Issue #2985: Make evidence image links render in the PR description.
   //
