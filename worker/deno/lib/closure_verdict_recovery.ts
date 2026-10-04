@@ -190,7 +190,7 @@ export function buildClosureVerdictPrompt(opts: {
           status: "violation",
           finding: "American spelling in a new identifier",
           evidence: "worker/deno/lib/foo.ts:42",
-          reason: "renamed in this diff",
+          reason: "fixed in this diff",
         },
         {
           status: "clean",
@@ -255,8 +255,10 @@ export function buildClosureVerdictPrompt(opts: {
     "identifier that shows it.",
     "- `partial`, `missing` and `unrequested` carry a one-line `reason`.",
     "- `standards` carries one entry per departure from `CODING-STANDARDS.md` " +
-    "(`violation`, with `evidence` as `file:line` and a `reason` saying " +
-    "whether it was fixed), plus a `clean` entry naming the areas you checked " +
+    "(`violation`, with `evidence` as `file:line` and a `reason` of " +
+    "`fixed in this diff` — or, only for a breach on a line the diff did not " +
+    "touch, `pre-existing, filed #<n>` linking the follow-up issue you filed " +
+    '— never "stands" or "left for a follow-up"), plus a `clean` entry naming the areas you checked ' +
     "and found compliant.",
     "- Never inflate a status, and never invent evidence. `partial` with the " +
     "gap named is a better answer than an unsupported `met`.",

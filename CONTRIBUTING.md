@@ -188,6 +188,13 @@ themselves:
   result. Tests that grep source files for patterns or function names
   are rejected; see [CODING-STANDARDS.md](CODING-STANDARDS.md#test-driven-development-tdd)
   for the rationale.
+- **Documentation-drift pins are checked one phrase at a time** — before
+  raising a PR that adds or changes a drift test, run
+  `cd worker/deno && deno task drift-pins-on-base origin/main <doc> <section> <phrase>...`
+  for each section it reads. It lists every pinned phrase the base section
+  already held and exits 1 when there is one; such a pin can never fail (see
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests),
+  condition 4).
 - **Speed budget** — a unit test finishes within 10 seconds. It is a
   target, not a kill: nothing times a unit test at run time, so it is
   enforced by shape (see
