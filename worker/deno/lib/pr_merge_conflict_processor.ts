@@ -47,7 +47,13 @@ import {
   createMergeConflictReplyReader,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
-import { standDownMilestoneHead } from "./gated_head_guard.ts";
+import { isMilestoneHead } from "./gated_head_guard.ts";
+import {
+  type ConflictTakeoverDeps,
+  type ConflictTakeoverOutcome,
+  type ConflictTakeoverPr,
+  runConflictTakeover,
+} from "./conflict_takeover.ts";
 import { assertNever } from "./assert_never.ts";
 import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
@@ -293,6 +299,25 @@ export interface MergeConflictProcessorDeps {
    * footer fallback (Issue #3089). Omitted → falls back to `GITHUB_USER`.
    */
   githubUser?: string;
+  /**
+   * The two resolvers the conflict takeover needs for a `milestone/**` head
+   * (Issue #3031). Production binds them in `run_core_production_deps.ts`.
+   * Absent on a milestone head is a configuration error, reported loudly.
+   */
+  takeoverResolvers?: Pick<
+    ConflictTakeoverDeps,
+    "resolveViaLadder" | "resolveOnFixBranch"
+  >;
+  /** The takeover run. Defaults to {@link runConflictTakeover}; tests inject it. */
+  takeoverFn?: (
+    pr: ConflictTakeoverPr,
+    deps: ConflictTakeoverDeps,
+  ) => Promise<ConflictTakeoverOutcome>;
+  /**
+   * Handler deadline, handed to the takeover so a cycle that cannot cover an
+   * agent run declines with no marker (Issue #3031).
+   */
+  deadlineEpochMs?: number;
 }
 
 /** What the human must do when the worker gives up on a conflict. */
@@ -925,33 +950,13 @@ export async function processMergeConflict(
     attemptCount: input.attemptCount,
   });
 
-  // Issue #1772: a `milestone/**` head belongs to the every-cycle milestone
-  // branch sync, which owns `default -> milestone/*` merges and already lands
-  // them through a sync PR when a ruleset refuses the direct push (#589).
-  // Running the ladder here too would duplicate that merge on the same branch
-  // and race its push — so stand down whether or not a rule is in force
-  // (#1679 stood down only on the gated case). Before the lock, the lock
-  // comment and the heartbeat, so the PR churns nothing on every run, and
-  // before the attempt marker below, so no attempt is spent.
-  if (
-    await standDownMilestoneHead({
-      repo,
-      prNumber,
-      branchName: input.branchName,
-      logger,
-      runGhCommand: processorDeps.deps.github.runGhCommand,
-    })
-  ) {
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        merged: false,
-        escalated: false,
-        summary: `PR #${prNumber} head '${input.branchName}' is a milestone ` +
-          `branch — left to the milestone branch sync, no attempt spent`,
-      },
-    };
+  // Issue #3031: a `milestone/**` head is resolved through the conflict
+  // takeover in this same cycle — a `milestone-fix/**` PR into the milestone
+  // branch, or the open one reused — never a stand-down. The takeover takes
+  // the cross-host lock and spends from the shared budget itself, so it runs
+  // before this pass's own lock, heartbeat and attempt marker.
+  if (isMilestoneHead(input.branchName)) {
+    return await takeOverMilestoneConflict(input, processorDeps);
   }
 
   let lockCommentId: number | undefined;
@@ -1062,6 +1067,188 @@ export async function processMergeConflict(
     if (lockCommentId !== undefined) {
       await releaseLock({ repo, prNumber, lockCommentId });
     }
+  }
+}
+
+/**
+ * Resolve a conflicted `milestone/**` PR through the conflict takeover
+ * (Issue #3031).
+ *
+ * The takeover opens at most one `milestone-fix/**` PR per milestone PR — an
+ * open one is reused — stands down only while another host holds a live PR
+ * lock, and records a failed run as one failed attempt against
+ * {@link CONFLICT_RESOLUTION_BUDGET}. No stand-down comment is posted.
+ */
+async function takeOverMilestoneConflict(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber } = input;
+  const { logger, workerId } = processorDeps;
+  const gh = processorDeps.deps.github.runGhCommand;
+  const resolvers = processorDeps.takeoverResolvers;
+  if (resolvers === undefined) {
+    return {
+      ok: false,
+      error: new Error(
+        `processMergeConflict: ${repo}#${prNumber} has a milestone head ` +
+          `'${input.branchName}' but no takeoverResolvers were injected — ` +
+          "refusing to silently skip the milestone-fix takeover",
+      ),
+    };
+  }
+
+  const summary = (text: string): string =>
+    `PR #${prNumber} milestone head '${input.branchName}': ${text}`;
+
+  let outcome: ConflictTakeoverOutcome;
+  try {
+    const view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid",
+      ]),
+    ) as { headRefOid?: unknown };
+    if (typeof view.headRefOid !== "string") {
+      throw new Error("`gh pr view` returned no head sha");
+    }
+    const takeover = processorDeps.takeoverFn ?? runConflictTakeover;
+    outcome = await takeover(
+      {
+        repo,
+        number: prNumber,
+        headRefName: input.branchName,
+        baseRefName: input.baseBranch,
+        headSha: view.headRefOid,
+      },
+      {
+        gh,
+        trustedAuthors: [...(processorDeps.trustedAuthors ?? [])],
+        logger,
+        ...resolvers,
+        ...(workerId !== undefined ? { workerId } : {}),
+        ...(processorDeps.acquireLockFn
+          ? { acquireLockFn: processorDeps.acquireLockFn }
+          : {}),
+        ...(processorDeps.releaseLockFn
+          ? { releaseLockFn: processorDeps.releaseLockFn }
+          : {}),
+        ...(processorDeps.startLockRenewalFn
+          ? { startLockRenewalFn: processorDeps.startLockRenewalFn }
+          : {}),
+        ...(processorDeps.deadlineEpochMs !== undefined
+          ? { deadlineEpochMs: processorDeps.deadlineEpochMs }
+          : {}),
+      },
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `Milestone-fix takeover failed for ${repo}#${prNumber}: ` +
+          (error instanceof Error ? error.message : String(error)),
+        { cause: error },
+      ),
+    };
+  }
+
+  const notRun = (text: string): Result<MergeConflictResult> => ({
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      summary: summary(text),
+    },
+  });
+
+  switch (outcome.kind) {
+    case "lock-held": {
+      const age = outcome.lockAgeSeconds !== undefined
+        ? `${outcome.lockAgeSeconds}s`
+        : "unknown";
+      logger.info(
+        `Milestone-fix takeover skipped for PR #${prNumber}: host ` +
+          `${outcome.holder} holds a live lock (lock age ${age})`,
+        {
+          repo,
+          prNumber,
+          lockHolder: outcome.holder,
+          ...(outcome.lockAgeSeconds !== undefined
+            ? { lockAgeSeconds: outcome.lockAgeSeconds }
+            : {}),
+        },
+      );
+      recordConflictDecision(logger, {
+        repo,
+        prNumber,
+        outcome: "skipped",
+        reason: { kind: "lock-held", lockHolder: outcome.holder },
+      });
+      return notRun(`locked by ${outcome.holder} (lock age ${age})`);
+    }
+    case "fix-pr-reused":
+      return notRun(
+        `open fix PR #${outcome.fixPr.number} reused — no second fix PR opened`,
+      );
+    case "declined-budget":
+      return notRun(
+        `shared budget already spent (${outcome.attemptsSpent}/` +
+          `${CONFLICT_RESOLUTION_BUDGET}) — no takeover attempted`,
+      );
+    case "declined-time":
+      return notRun("the cycle's time left cannot cover a takeover agent");
+    case "no-longer-due":
+      return notRun("the attempt tally changed under the lock — not due");
+    case "fix-pr-raised":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          summary: summary(`fix PR ${outcome.fixPr.url} raised`),
+        },
+      };
+    case "resolved":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: true,
+          escalated: false,
+          summary: summary("resolved by the takeover"),
+        },
+      };
+    case "failed":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          summary: summary(`takeover failed — ${outcome.detail}`),
+        },
+      };
+    case "disrupted":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          summary: summary(`takeover cut short — ${outcome.detail}`),
+          attemptCharged: false,
+          runEnded: true,
+        },
+      };
+    default:
+      return assertNever(outcome);
   }
 }
 

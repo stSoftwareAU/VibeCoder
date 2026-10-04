@@ -52,7 +52,6 @@ import {
   conflictRungFailedMarker,
 } from "../lib/merge_conflict_markers.ts";
 import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
-import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type {
   ClaudeDeps,
@@ -2125,73 +2124,12 @@ Deno.test("processMergeConflict - an ordinary push failure is still charged (Iss
 });
 
 // ---------------------------------------------------------------------------
-// A milestone head is left to the milestone sync (Issue #1772)
+// Milestone heads (Issues #1772, #3031)
+//
+// A `milestone/**` head no longer stands down: it goes through the conflict
+// takeover in the same cycle. Those cases live in
+// pr_merge_conflict_milestone_takeover_test.ts; the boundary stays here.
 // ---------------------------------------------------------------------------
-
-Deno.test("processMergeConflict - a milestone head is left to the milestone sync (Issue #1772)", async () => {
-  // GRQ#4702's shape. The every-cycle sync owns `default -> milestone/*`, so
-  // running the ladder here would duplicate that merge and race its push.
-  resetGatedHeadReportsForTest();
-  const lines: string[] = [];
-  const { captured, result } = await runProcessor(
-    makeInput({ branchName: "milestone/1730-resolve-merge-conflicts" }),
-    makeGitScript(),
-    { logger: makeRecordingLogger(lines) },
-    { postedCommentId: 7004 },
-  );
-
-  assert(result.ok);
-  assertEquals(result.value.processed, false);
-  assertEquals(result.value.merged, false);
-  assertEquals(result.value.escalated, false);
-
-  // No merge ran and no attempt was opened.
-  assertEquals(captured.agentRuns, 0);
-  assertEquals(captured.commitAndPushCalls, 0);
-  assertEquals(
-    captured.gitArgs.filter((args) => args[0] === "merge"),
-    [],
-    "no merge is attempted on a milestone head",
-  );
-  assertEquals(
-    captured.comments.filter((c) => c.includes(CONFLICT_ATTEMPT_MARKER)),
-    [],
-    "no attempt marker is posted, so no attempt is spent",
-  );
-
-  // One stand-down comment naming the sync, and one skip log line.
-  assertEquals(captured.comments.length, 1);
-  assertStringIncludes(captured.comments[0] ?? "", "milestone branch sync");
-  assertStringIncludes(
-    captured.comments[0] ?? "",
-    '<!-- vibe-milestone-head branch="milestone/1730-resolve-merge-conflicts"',
-  );
-  assertEquals(
-    lines.filter((line) =>
-      line.includes(
-        "skipped: milestone head — resolved by the milestone branch sync",
-      )
-    ).length,
-    1,
-  );
-});
-
-Deno.test("processMergeConflict - the milestone stand-down comments once per branch (Issue #1772)", async () => {
-  // A PR already carrying the marker is left silent: one comment per branch,
-  // not one per run.
-  resetGatedHeadReportsForTest();
-  const input = makeInput({ branchName: "milestone/1730-already-told" });
-  const marker =
-    '<!-- vibe-milestone-head branch="milestone/1730-already-told" -->';
-  const { captured } = await runProcessor(
-    input,
-    makeGitScript(),
-    undefined,
-    { postedCommentId: 7005, existingPrComments: [marker] },
-  );
-
-  assertEquals(captured.comments, []);
-});
 
 Deno.test("processMergeConflict - a non-milestone head is worked as before (Issue #1772)", async () => {
   // The boundary: an ordinary feature head still merges, pushes and concludes.

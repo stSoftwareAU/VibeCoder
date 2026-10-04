@@ -5,25 +5,16 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import {
-  assertEquals,
-  assertRejects,
-  assertStringIncludes,
-  assertThrows,
-} from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import {
   assessGatedHead,
   buildGatedHeadComment,
-  buildMilestoneHeadComment,
   gatedHeadMarker,
   gatedHeadMarkerPrefix,
   guardGatedHead,
   isMilestoneHead,
-  milestoneHeadMarker,
-  milestoneHeadMarkerPrefix,
   readLatestStandDownAtMs,
   resetGatedHeadReportsForTest,
-  standDownMilestoneHead,
   takeoverAtMs,
 } from "../lib/gated_head_guard.ts";
 import { CONFLICT_OWNER_CHECK_HOURS } from "../lib/merge_conflict_markers.ts";
@@ -299,157 +290,6 @@ Deno.test("buildGatedHeadComment - throws on a non-finite stand-down time", () =
 });
 
 // ---------------------------------------------------------------------------
-// standDownMilestoneHead (Issue #1772)
-// ---------------------------------------------------------------------------
-
-Deno.test("standDownMilestoneHead - an ungated milestone head still stands down", async () => {
-  // The sync owns `default -> milestone/*` whether or not a rule is in force,
-  // so this reads the branch name and never the ruleset.
-  resetGatedHeadReportsForTest();
-  const gh = makeGh({ rules: [] });
-  const stoodDown = await standDownMilestoneHead({
-    repo: "org/repo",
-    prNumber: 4702,
-    branchName: MILESTONE_HEAD,
-    logger: makeSilentLogger(),
-    runGhCommand: gh.run,
-  });
-
-  assertEquals(stoodDown, true);
-  assertEquals(
-    gh.calls.some((args) => args.join(" ").includes("rules/branches")),
-    false,
-    "the branch name decides it — no rules read is needed",
-  );
-  const comments = gh.calls.filter((args) =>
-    args[0] === "pr" && args[1] === "comment"
-  );
-  assertEquals(comments.length, 1);
-  assertStringIncludes(
-    comments[0]?.[comments[0].indexOf("--body") + 1] ?? "",
-    "milestone branch sync",
-  );
-});
-
-Deno.test("standDownMilestoneHead - an ordinary feature head is worked as before", async () => {
-  resetGatedHeadReportsForTest();
-  const gh = makeGh({ rules: [{ type: "required_status_checks" }] });
-  const stoodDown = await standDownMilestoneHead({
-    repo: "org/repo",
-    prNumber: 7,
-    branchName: "issue-7-fix",
-    logger: makeSilentLogger(),
-    runGhCommand: gh.run,
-  });
-
-  assertEquals(stoodDown, false);
-  assertEquals(gh.calls.length, 0);
-});
-
-Deno.test("standDownMilestoneHead - a PR already carrying the marker is not commented on again", async () => {
-  resetGatedHeadReportsForTest();
-  const gh = makeGh({
-    comments: [{
-      body: `${milestoneHeadMarkerPrefix(MILESTONE_HEAD)} -->\nsaid already`,
-    }],
-  });
-  const stoodDown = await standDownMilestoneHead({
-    repo: "org/repo",
-    prNumber: 4702,
-    branchName: MILESTONE_HEAD,
-    logger: makeSilentLogger(),
-    runGhCommand: gh.run,
-  });
-
-  assertEquals(stoodDown, true);
-  assertEquals(
-    gh.calls.some((args) => args[0] === "pr" && args[1] === "comment"),
-    false,
-  );
-});
-
-Deno.test("standDownMilestoneHead - the gated-head stand-down does not mask it", async () => {
-  // Two different stand-downs, two markers: a PR the CI-fix pass already
-  // commented on as gated still gets the merge-conflict pass's own comment.
-  resetGatedHeadReportsForTest();
-  const gh = makeGh({
-    comments: [{ body: `${gatedHeadMarkerPrefix(MILESTONE_HEAD)} -->` }],
-  });
-  await standDownMilestoneHead({
-    repo: "org/repo",
-    prNumber: 4702,
-    branchName: MILESTONE_HEAD,
-    logger: makeSilentLogger(),
-    runGhCommand: gh.run,
-  });
-
-  assertEquals(
-    gh.calls.filter((args) => args[0] === "pr" && args[1] === "comment").length,
-    1,
-  );
-});
-
-Deno.test("buildMilestoneHeadComment - names the branch and the sync that owns it", () => {
-  const standDownAtMs = Date.parse("2026-02-03T04:05:06.000Z");
-  const body = buildMilestoneHeadComment(MILESTONE_HEAD, standDownAtMs);
-  assertStringIncludes(
-    body,
-    milestoneHeadMarker(MILESTONE_HEAD, standDownAtMs),
-  );
-  assertStringIncludes(body, MILESTONE_HEAD);
-  assertStringIncludes(body, "milestone branch sync");
-  assertStringIncludes(body, "no resolution attempt is spent");
-});
-
-Deno.test("buildMilestoneHeadComment - names owner `milestone sync` and the exact UTC takeover time", () => {
-  const standDownAtMs = Date.parse("2026-02-03T04:05:06.000Z");
-  const body = buildMilestoneHeadComment(MILESTONE_HEAD, standDownAtMs);
-  assertStringIncludes(body, "**Owner:** `milestone sync`");
-
-  const match = /Takeover at (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)/
-    .exec(body);
-  assertEquals(match !== null, true);
-  const expected = new Date(
-    standDownAtMs + CONFLICT_OWNER_CHECK_HOURS * 3_600_000,
-  ).toISOString();
-  assertEquals(match![1], expected);
-});
-
-Deno.test("buildMilestoneHeadComment - throws on a non-finite stand-down time", () => {
-  assertThrows(() => buildMilestoneHeadComment(MILESTONE_HEAD, NaN));
-});
-
-Deno.test("standDownMilestoneHead - an unreadable comment thread posts nothing and says so", async () => {
-  // Same fail-loud stance as the gated-head guard: an unreadable thread is
-  // not an empty one, and reading it as empty is how "once per branch"
-  // becomes once per run.
-  resetGatedHeadReportsForTest();
-  const warnings: string[] = [];
-  const logger = makeSilentLogger();
-  logger.warn = (message: string) => warnings.push(message);
-  const gh = makeGh({ throwOn: "pr view" });
-
-  const stoodDown = await standDownMilestoneHead({
-    repo: "org/repo",
-    prNumber: 4702,
-    branchName: MILESTONE_HEAD,
-    logger,
-    runGhCommand: gh.run,
-  });
-
-  assertEquals(stoodDown, true, "the stand-down holds whatever gh answers");
-  assertEquals(
-    gh.calls.some((args) => args[0] === "pr" && args[1] === "comment"),
-    false,
-  );
-  assertEquals(
-    warnings.some((w) => w.includes("Could not record the stand-down")),
-    true,
-    "the failure to record is loud in the log",
-  );
-});
-
-// ---------------------------------------------------------------------------
 // takeoverAtMs (Issue #2997)
 // ---------------------------------------------------------------------------
 
@@ -469,54 +309,6 @@ Deno.test("takeoverAtMs - throws on a non-finite stand-down time", () => {
 // ---------------------------------------------------------------------------
 // Injected clock (Issue #2997)
 // ---------------------------------------------------------------------------
-
-Deno.test("standDownMilestoneHead - an injected nowMs posts the owner and takeover lines", async () => {
-  resetGatedHeadReportsForTest();
-  const gh = makeGh({ rules: [] });
-  const standDownAtMs = Date.parse("2026-03-01T00:00:00.000Z");
-
-  await standDownMilestoneHead({
-    repo: "org/repo",
-    prNumber: 4702,
-    branchName: MILESTONE_HEAD,
-    logger: makeSilentLogger(),
-    runGhCommand: gh.run,
-    nowMs: () => standDownAtMs,
-  });
-
-  const comments = gh.calls.filter((args) =>
-    args[0] === "pr" && args[1] === "comment"
-  );
-  assertEquals(comments.length, 1);
-  const body = comments[0]![comments[0]!.indexOf("--body") + 1]!;
-  assertStringIncludes(body, "**Owner:** `milestone sync`");
-  assertStringIncludes(
-    body,
-    new Date(takeoverAtMs(standDownAtMs)).toISOString(),
-  );
-});
-
-Deno.test("standDownMilestoneHead - a non-finite nowMs rejects and posts nothing", async () => {
-  resetGatedHeadReportsForTest();
-  const gh = makeGh({ rules: [] });
-
-  await assertRejects(() =>
-    standDownMilestoneHead({
-      repo: "org/repo",
-      prNumber: 4702,
-      branchName: MILESTONE_HEAD,
-      logger: makeSilentLogger(),
-      runGhCommand: gh.run,
-      nowMs: () => NaN,
-    })
-  );
-
-  assertEquals(
-    gh.calls.some((args) => args[0] === "pr" && args[1] === "comment"),
-    false,
-    "a clock that cannot be read must not post a comment",
-  );
-});
 
 Deno.test("guardGatedHead - an injected nowMs posts owner `conflict takeover` and the takeover line", async () => {
   resetGatedHeadReportsForTest();
@@ -589,7 +381,11 @@ Deno.test("readLatestStandDownAtMs - returns the newest trusted marker's at=, no
       user: { login: "vibe-coder-bot" },
     },
     {
-      body: milestoneHeadMarker(MILESTONE_HEAD, earlierAt),
+      // A legacy milestone-head stand-down (retired by Issue #3031) is
+      // still read.
+      body: `<!-- vibe-milestone-head branch="${MILESTONE_HEAD}" at="${
+        new Date(earlierAt).toISOString()
+      }" -->`,
       created_at: laterCreated,
       user: { login: "vibe-coder-bot" },
     },
