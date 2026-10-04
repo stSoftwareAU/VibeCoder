@@ -464,11 +464,13 @@ Deno.test(
 
 // --- (h) Diff scoped to just the changed test files (PR #3148 review) ------
 
-/** SUMMARY_WITH_ASSERTION plus a Docs sweep line, so a changed non-test
- * source file (`crates/api/src/lib.rs`) does not also trip that gate. */
+/** SUMMARY_WITH_ASSERTION plus a Docs sweep line and a Branch outcomes line,
+ * so a changed non-test source file (`crates/api/src/lib.rs`) does not also
+ * trip those gates (Issue #3147). */
 const SUMMARY_WITH_ASSERTION_AND_DOCS_SWEEP = SUMMARY_WITH_ASSERTION +
   "\n**Docs sweep** — grep: `score`; section: none — internal scoring " +
-  "logic isn't documented; no hits\n";
+  "logic isn't documented; no hits\n" +
+  "\n**Branch outcomes:** none added\n";
 
 Deno.test(
   "completion - the removed-assertion diff is scoped to just the changed test files",

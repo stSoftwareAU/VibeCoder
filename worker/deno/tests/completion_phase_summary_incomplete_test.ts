@@ -66,6 +66,8 @@ Distinguished the outcomes. Closes #1140.
 
 **Docs sweep** — grep: \`describeRunOutcome\`; section: \`docs/EXTENDING.md#run-outcome\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - \`worker/deno/tests/completion_phase_summary_incomplete_test.ts\`
