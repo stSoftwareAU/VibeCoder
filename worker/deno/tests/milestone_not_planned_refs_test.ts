@@ -154,6 +154,44 @@ Deno.test("findNotPlannedDocReferences - declared dependency outside the milesto
   assertEquals(result.value.references[0]!.issueNumber, 99);
 });
 
+Deno.test("findNotPlannedDocReferences - declared dependency outside the milestone, closed completed, is not a candidate", async () => {
+  let compareCalls = 0;
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        { number: 31, title: "Member", body: "Depends on #98" },
+      ]);
+    }
+    if (key.includes("/issues/98")) {
+      return JSON.stringify({
+        number: 98,
+        title: "Shipped dependency",
+        state: "closed",
+        state_reason: "completed",
+      });
+    }
+    if (key.includes("/compare/")) {
+      compareCalls++;
+      return JSON.stringify({ files: [] });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.references, []);
+  assertEquals(compareCalls, 0);
+});
+
 Deno.test("findNotPlannedDocReferences - no candidates means compare is never called", async () => {
   let compareCalls = 0;
   const ghFn = async (args: string[]): Promise<string> => {
@@ -227,6 +265,46 @@ Deno.test("addedLines - lines before the first hunk are ignored", () => {
 // ---------------------------------------------------------------------------
 // Markdown / non-Markdown files, missing patch, 300-file cap
 // ---------------------------------------------------------------------------
+
+Deno.test("findNotPlannedDocReferences - removed Markdown file is not scanned", async () => {
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([
+        {
+          number: 55,
+          title: "Dropped",
+          state: "closed",
+          state_reason: "not_planned",
+        },
+      ]);
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/removed.md",
+            status: "removed",
+            patch: patchAdding(1, ["names #55 in a removed file"]),
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.references, []);
+  assertEquals(result.value.unchecked, []);
+});
 
 Deno.test("findNotPlannedDocReferences - non-Markdown file ignored", async () => {
   const ghFn = async (args: string[]): Promise<string> => {

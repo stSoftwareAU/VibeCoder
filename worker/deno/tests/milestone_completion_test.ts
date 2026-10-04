@@ -1030,6 +1030,102 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-pl
   );
 });
 
+// Issue #3223: a candidate exists but the only Markdown file in the compare
+// diff lacks `patch` — the PR body must still carry the "not checked" note
+// (not silently say nothing was found).
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes an unchecked Markdown file with no patch", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([
+        {
+          number: 10,
+          title: "Dropped feature",
+          state: "closed",
+          state_reason: "not_planned",
+          body: "",
+        },
+      ]);
+    }
+
+    if (key.includes("/compare/") && key.includes("--jq")) {
+      return "5";
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          { filename: "docs/big.md", status: "modified" },
+        ],
+      });
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertStringIncludes(
+    createdPrs[0]!.body,
+    "Docs not checked for issues closed as not planned",
+  );
+  assertStringIncludes(createdPrs[0]!.body, "docs/big.md");
+});
+
 Deno.test("checkAndHandleMilestoneCompletions - reuses existing tracker with drifted default branch (no duplicate)", async () => {
   // Issue #2753: regression for the field bypass. A tracker filed when the
   // default branch was "Develop" must be reused this run (default branch
