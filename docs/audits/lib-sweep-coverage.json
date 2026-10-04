@@ -2536,6 +2536,18 @@
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
       ]
+    },
+    {
+      "issue": 3177,
+      "chunk": "top-up-3177",
+      "title": "top-up: the missing-criterion close guard",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3177",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: missing_criterion_close_guard.ts (#3177)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/missing_criterion_close_guard.ts"
+      ]
     }
   ],
   "roots": [

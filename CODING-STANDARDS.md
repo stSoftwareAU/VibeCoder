@@ -1111,6 +1111,11 @@ is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
 (or `Blocked by`) line naming an issue that is still open then defers the
 issue and raises no PR. A closed or unreadable dependency does not defer;
 the committed run hands off to a human and raises no PR.
+The worker enforces this itself, not only a reviewer, because a PR into a
+milestone branch merges unreviewed on green CI (Issue #3177): a summary
+whose `## Acceptance Criteria` block marks any criterion `missing` is raised
+as `Part of #<n>`, never `Closes #<n>`, and when it merges the worker leaves
+the issue open, labels it `needs-human` and names the missing criteria.
 In an issue run, a hand-off (the planning marker, a time deferral, or a
 `## Blocked:` dependency) is honoured after a commit as well as before one.
 A free-text escape hatch is honoured only while the branch has no commits

@@ -1015,6 +1015,46 @@ flowchart TD
     style B fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+### A `missing` criterion does not close the issue
+
+"A missing core deliverable is not a PR" used to be prose that only a reviewer
+enforced, and a PR into a milestone branch has no reviewer: it merges as soon
+as CI is green. GRQ-AutoTrader#2459 marked three of its four criteria
+`missing`, merged into its milestone and closed its issue as completed; #2307
+and #2370 did the same. The run had already said, in the closure block the
+gate parses, that the deliverable was absent. Since Issue #3177 the worker
+reads that signal at both ends
+([`missing_criterion_close_guard.ts`](../../worker/deno/lib/missing_criterion_close_guard.ts)):
+
+- **At PR creation.** When the summary's closure block has any `missing`
+  entry, `assemblePrBody` rewrites the summary's closing keywords for the
+  issue to `Part of #N`, adds a `## Not closing #N` section naming the missing
+  criteria, and appends no `Closes #N`. The same assembly runs when the PR
+  body is re-synced from the summary, so a later commit that finishes the
+  work (and marks the criteria `met`) restores the closing keyword.
+- **At merge.** A fleet PR's title still names its issue (`(Issue #N)`), and
+  the merged-PR closers read titles, so the PR body alone cannot hold the
+  issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
+  milestone auto-close) and `ensureIssueClosedIfPrMerged` (used by the
+  housekeeping sweep and the recovery path) — read the merged PR's closure
+  block. With a `missing` entry they leave the issue open, label it
+  `needs-human` and comment naming each missing criterion. An issue that
+  already carries `needs-human` is left alone, so the comment is posted once.
+
+```mermaid
+flowchart TD
+    S["PR summary closure block"] --> M{"Any entry<br/>missing?"}
+    M -->|no| C["PR body: Closes #N"]
+    M -->|yes| P["PR body: Part of #N<br/>+ Not closing #N section"]
+    C --> X["Merged: issue closed"]
+    P --> H["Merged: issue left open,<br/>needs-human + comment<br/>naming the missing criteria"]
+    style X fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style H fill:#e9c46a,stroke:#b08900,color:#000
+```
+
+A `partial` entry is unaffected: the PR still closes the issue and the
+Summary names the gap beside the closing keyword.
+
 ## 🔍 Independent review on two axes
 
 The closure block above says **which** criteria were met; Issue #663 added **who
@@ -1524,7 +1564,10 @@ flowchart TD
   an unrelated finding.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
-  survives the merge in the follow-up instead.
+  survives the merge in the follow-up instead. The one exception is a summary
+  that marks a criterion `missing`: that PR is raised as `Part of #N` and its
+  merge hands the issue to a human (Issue #3177, see
+  [A `missing` criterion does not close the issue](#a-missing-criterion-does-not-close-the-issue)).
 - **A healthy run is untouched**, whatever its summary says. A degraded run
   that showed every scope item `met` is left alone only when it reported no
   unmatched `partial` or `missing` entry. An unmatched entry like that is
