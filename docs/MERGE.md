@@ -859,14 +859,14 @@ flowchart TD
     A[PR pass picks up a PR] --> B{"Head is a milestone branch?"}
     B -- no --> W[Work the PR as before]
     B -- yes --> M{"Which pass?"}
-    M -- merge-conflict --> S["Stand down: left to<br/>the milestone sync"]
+    M -- merge-conflict --> S["Conflict takeover, same cycle:<br/>open or reuse one milestone-fix PR"]
     M -- spelling --> C[GET /rules/branches/head]
     C -- unreadable --> W
     C --> D{"required_status_checks<br/>or pull_request rule?"}
     D -- no --> W
     D -- yes --> E[Stand down: no agent run,<br/>no attempt, no retry]
     E --> F[One comment per branch,<br/>naming the rule]
-    S --> F2[One comment per branch,<br/>naming the sync]
+    S --> F2["Skip only while another host<br/>holds a live lock (logged)"]
     M -- CI fix --> G[GET /rules/branches/head]
     G -- unreadable --> W
     G --> H{"required_status_checks<br/>or pull_request rule?"}
@@ -888,17 +888,21 @@ What each pass does with a `milestone/**` head:
 | Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head`, owner `conflict takeover` |
 | CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while any fix PR for this head is already open (Issue #2907) | None — the stand-down is silent; the open fix PR itself carries the explanation |
 | Review feedback | Fixes on its own `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` branch and raises an auto-merge-armed PR the same way; no pre-agent stand-down — a different comment's fix in flight does not stop this one (Issue #2907) | None |
-| Merge conflict | **Left to the milestone sync**, gated or not (Issue #1772) | `vibe-milestone-head`, owner `milestone sync` |
+| Merge conflict | **Conflict takeover in the same cycle**, gated or not: opens one `milestone-fix/<leaf>/pr-<N>-takeover-<sha12>` PR into the head, or reuses the open one (Issue #3031) | None — no stand-down; the takeover's attempt and conclusion markers |
 
-- **The merge-conflict pass is left to the milestone sync.** The every-cycle
-  milestone branch sync is the single owner of `default → milestone/*` merges,
-  and it already lands its merge through a sync PR when a ruleset refuses the
-  direct push (Issue #589). Running the PR ladder on the same head would
-  duplicate that merge and race the sync's push, so the pass stands down on the
-  branch name alone — no rules read, no attempt marker, one log line
-  (`skipped: milestone head — resolved by the milestone branch sync`) and one
-  comment naming the sync. The CI-nudge behaviour (Issue #1762) is unchanged by
-  this.
+- **The merge-conflict pass takes a milestone head over in the same cycle**
+  (Issue #3031). It used to stand down and leave the head to the milestone
+  sync (Issue #1772), and GRQ-AutoTrader#2028 and #1957 both stalled there
+  until a human merged the base by hand. Now `processMergeConflict` calls
+  `runConflictTakeover` for any `milestone/**` head, decided on the branch name
+  alone: the takeover resolves on a `milestone-fix/**` side branch and opens
+  one PR into the milestone branch, or reuses the open one, so a milestone PR
+  never gets a second fix PR. It never pushes the head, so it cannot race the
+  sync's push. It skips only while another host holds a live PR lock, and the
+  log line names that host and the lock's age. A failed takeover posts a
+  `failed` marker that counts against the shared `CONFLICT_RESOLUTION_BUDGET`,
+  the same as the ordinary route. No stand-down comment is posted. The
+  CI-nudge behaviour (Issue #1762) is unchanged by this.
 - **The spelling pass's agent never runs on a gated head**, so nothing is
   committed that cannot be pushed, and no attempt or retry is spent —
   `guardGatedHead` runs before the checkout.
@@ -926,15 +930,14 @@ What each pass does with a `milestone/**` head:
   nudge and left for the milestone completion path. The `queued` path only
   re-runs a workflow and pushes nothing, so it is not gated.
 - **One comment per branch, not one per run.** The comment carries a hidden
-  marker — `<!-- vibe-gated-head branch="…" at="…" -->`, or
-  `<!-- vibe-milestone-head branch="…" at="…" -->` for the merge-conflict
-  stand-down; a later run that finds the marker stays silent. Dedup matches on
-  the `branch="…"` prefix, so a legacy marker without `at=` still suppresses a
-  repeat comment. A comment thread that cannot be read posts nothing and
+  marker — `<!-- vibe-gated-head branch="…" at="…" -->`; a later run that
+  finds the marker stays silent. (The retired merge-conflict stand-down's
+  `<!-- vibe-milestone-head … -->` marker is no longer posted, Issue #3031.)
+  Dedup matches on the `branch="…"` prefix, so a legacy marker without `at=`
+  still suppresses a repeat comment. A comment thread that cannot be read posts nothing and
   says so in the log — a duplicate every run is the noise this removes.
 - **Each stand-down names its owner and a takeover time** (Issue #2997).
-  `buildGatedHeadComment` (owner `conflict takeover`) and
-  `buildMilestoneHeadComment` (owner `milestone sync`) add a
+  `buildGatedHeadComment` (owner `conflict takeover`) adds a
   `**Owner:** \`<owner>\`` line and a `**Takeover at <ISO-8601 UTC>**` line —
   the stand-down time plus `CONFLICT_OWNER_CHECK_HOURS` (2 hours): if the PR
   head has not moved by then, the merge-conflict pass takes the conflict back
@@ -946,8 +949,8 @@ What each pass does with a `milestone/**` head:
   park comment.
   `readLatestStandDownAtMs(comments, isTrustedAuthor)` in
   `gated_head_guard.ts` is the pure reader for all three stand-down markers —
-  `vibe-gated-head`, `vibe-milestone-head` and the park marker
-  `vibe-merge-conflict-parked`: it returns the newest trusted marker's `at=`
+  `vibe-gated-head`, the legacy `vibe-milestone-head` (still read on PRs
+  that carry one) and the park marker `vibe-merge-conflict-parked`: it returns the newest trusted marker's `at=`
   time (epoch ms), falling back to the comment's `created_at` for a legacy
   marker and ignoring untrusted authors. It is not yet wired to the stall
   watchdog — that is a later sub-issue of #2965.
@@ -1081,9 +1084,9 @@ default tip never refills the attempt count.
   — `assessGatedHead()`, the read the CI-fix and review-feedback passes use to
   detect a gated head before working on a `milestone-fix/**` branch instead
   (Issue #2907), `guardGatedHead()`, the stand-down the spelling pass still
-  makes on a head no direct push can reach, and `standDownMilestoneHead()`,
-  the merge-conflict pass's own stand-down on any `milestone/**` head
-  (Issue #1772).
+  makes on a head no direct push can reach. The merge-conflict pass no longer
+  stands down on a `milestone/**` head: it calls `runConflictTakeover()`
+  (`conflict_takeover.ts`) in the same cycle (Issue #3031).
 - [`worker/deno/lib/milestone_fix_pr.ts`](../worker/deno/lib/milestone_fix_pr.ts)
   — `milestoneFixBranchFor()`, `findOpenMilestoneFixPr()` and
   `raiseMilestoneFixPr()`, the CI-fix and review-feedback passes' delivery of a

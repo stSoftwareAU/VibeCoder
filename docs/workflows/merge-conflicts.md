@@ -482,6 +482,13 @@ flowchart TD
   stall watchdog calls it (Issue #3001); every GitHub call and both resolvers
   are injected, and production binds both in
   [`conflict_takeover_resolvers.ts`](../../worker/deno/lib/conflict_takeover_resolvers.ts).
+- The merge-conflict pass calls it too, for every `milestone/**` head, in the
+  cycle that first sees the conflict (Issue #3031). There is no milestone
+  stand-down any more: `processMergeConflict` hands the PR straight to the
+  takeover, which opens one `milestone-fix/**` PR or reuses the open one. It
+  skips only while another host holds a live PR lock, and its log line names
+  that host and the lock's age. A failed takeover spends one attempt from the
+  shared budget, exactly as on the ordinary route.
 - Read-only checks first: reads the shared tally from trusted markers
   (`readResolutionAttempts`); declines with no marker at all when
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
@@ -926,8 +933,8 @@ single owner check's responsibility, whatever caused the silence
 one owner for every conflicted PR, not a backstop keyed on label age alone: its
 clock starts at the **latest** of four events — the `merge-conflict` label's own
 `labeled` timeline event; the latest trusted stand-down
-(`readLatestStandDownAtMs`, Issue #2997 — gated-head, milestone-head or park
-markers, read back by their own `at="…"`); the last trusted resolution attempt
+(`readLatestStandDownAtMs`, Issue #2997 — gated-head, legacy milestone-head
+or park markers, read back by their own `at="…"`); the last trusted resolution attempt
 (`readResolutionAttempts`, Issue #2996); and the head's own last move (the head
 commit's committer date, read per PR — a future-dated or unreadable time is
 ignored, so the watchdog fails towards acting). Only fleet-authored markers

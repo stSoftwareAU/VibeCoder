@@ -287,6 +287,8 @@ Deno.test("pr_branch_lock - acquireBranchUpdateLock loses when not earliest lock
   if (result.ok) {
     assertEquals(result.value.acquired, false);
     assertEquals(result.value.winnerId, "worker-01");
+    // Issue #3031: the winner's lock time, so a skip can log the lock age.
+    assertEquals(result.value.winnerLockedAt, 1700000000);
   }
   // Verify our lock comment was cleaned up
   assertEquals(deletedComments.includes(200), true);

@@ -24,10 +24,10 @@
  * carries one comment naming the rule rather than an alternating run of
  * "pushed" and "no changes were needed" replies.
  *
- * The merge-conflict pass has since gone one step further (Issue #1772): a
- * `milestone/**` head is the milestone branch sync's to resolve, gated or not,
- * so that pass calls {@link standDownMilestoneHead} and never reads the rules.
- * The spelling and CI-nudge passes still ask {@link guardGatedHead} and stand
+ * The merge-conflict pass no longer stands down on a `milestone/**` head at
+ * all (Issue #3031, superseding the Issue #1772 stand-down): it resolves the
+ * conflict in the same cycle through the conflict takeover's
+ * `milestone-fix/**` PR. The spelling and CI-nudge passes still ask {@link guardGatedHead} and stand
  * down. The CI-fix and review-feedback passes no longer do (Issue #2907):
  * they ask {@link assessGatedHead} directly and, when the head is gated, do
  * their fix work on a `milestone-fix/**` side branch and deliver it through
@@ -242,52 +242,6 @@ export function buildGatedHeadComment(
   ].join("\n");
 }
 
-/** Prefix shared by every milestone-head marker for one branch, legacy or current. */
-export function milestoneHeadMarkerPrefix(branchName: string): string {
-  return `<!-- vibe-milestone-head branch="${branchName}"`;
-}
-
-/** Hidden marker identifying the milestone-sync stand-down comment on a PR. */
-export function milestoneHeadMarker(
-  branchName: string,
-  standDownAtMs: number,
-): string {
-  return `${milestoneHeadMarkerPrefix(branchName)} ${
-    standDownAtAttribute(standDownAtMs)
-  } -->`;
-}
-
-/**
- * The merge-conflict pass's stand-down: this branch belongs to the sync.
- *
- * Same shape as {@link buildGatedHeadComment} — marker, one bold line, the
- * reason, and the once-per-branch note — but it names the milestone branch
- * sync rather than a ruleset, because the stand-down holds whether or not a
- * rule is in force (Issue #1772).
- */
-export function buildMilestoneHeadComment(
-  branchName: string,
-  standDownAtMs: number,
-): string {
-  const nextStepLines = standDownNextStepLines("milestone sync", standDownAtMs);
-  return [
-    milestoneHeadMarker(branchName, standDownAtMs),
-    `**Standing down — \`${branchName}\` is resolved by the milestone ` +
-    `branch sync.**`,
-    "",
-    `Merges of the default branch into \`${branchName}\` have a single ` +
-    `owner: the every-cycle milestone branch sync, which already falls back ` +
-    `to a sync PR when a ruleset refuses its direct push (Issue #589). ` +
-    `Running the merge-conflict pass here as well would duplicate that merge ` +
-    `on the same branch and race its push, so no resolution attempt is spent ` +
-    `on this PR.`,
-    "",
-    ...nextStepLines,
-    "",
-    "This comment is posted once per branch, not once per run.",
-  ].join("\n");
-}
-
 /** First letter upper-cased; an empty string stays empty, never "undefined". */
 function capitalise(text: string): string {
   return text.length === 0 ? text : `${text[0]!.toUpperCase()}${text.slice(1)}`;
@@ -365,59 +319,6 @@ export async function guardGatedHead(
     runGhCommand,
   });
   return assessment;
-}
-
-/** Options for {@link standDownMilestoneHead}. */
-export interface MilestoneHeadStandDownOptions {
-  repo: string;
-  prNumber: number;
-  branchName: string;
-  logger: Logger;
-  /** `gh` runner, used for the comment listing and the comment. */
-  runGhCommand: (args: string[]) => Promise<string>;
-  /** The current time, injected for tests. Defaults to `Date.now`. */
-  nowMs?: () => number;
-}
-
-/**
- * Stand down from a `milestone/**` PR head, gated or not (Issue #1772).
- *
- * The every-cycle milestone branch sync is the single owner of
- * `default → milestone/*` merges, and it already lands its merge through a
- * sync PR when a ruleset refuses the direct push (Issue #589). Resolving the
- * same conflict from the PR ladder would duplicate that merge on the same
- * branch and race its push, so the merge-conflict pass leaves the branch to
- * the sync — whether or not a rule is in force, which is why this is decided
- * on the branch name rather than on {@link assessGatedHead}.
- *
- * @returns `true` when the head is a milestone branch: the caller must not
- *   check it out, run the agent, or open an attempt on it.
- */
-export async function standDownMilestoneHead(
-  options: MilestoneHeadStandDownOptions,
-): Promise<boolean> {
-  const { repo, prNumber, branchName, logger, runGhCommand, nowMs = Date.now } =
-    options;
-  if (!isMilestoneHead(branchName)) return false;
-
-  logger.info(
-    "Merge-conflict resolution skipped: milestone head — resolved by the " +
-      "milestone branch sync",
-    { repo, prNumber, branchName },
-  );
-
-  const standDownAtMs = nowMs();
-  const body = buildMilestoneHeadComment(branchName, standDownAtMs);
-
-  await recordStandDownOnce({
-    repo,
-    prNumber,
-    markerPrefix: milestoneHeadMarkerPrefix(branchName),
-    body,
-    logger,
-    runGhCommand,
-  });
-  return true;
 }
 
 /**
@@ -511,6 +412,8 @@ async function hasStandDownComment(
 /** The literal prefixes {@link readLatestStandDownAtMs} recognises as a stand-down. */
 const STAND_DOWN_MARKER_PREFIXES: readonly string[] = [
   "<!-- vibe-gated-head ",
+  // The retired merge-conflict milestone stand-down (Issues #1772, #3031):
+  // no longer posted, but still read on PRs that already carry one.
   "<!-- vibe-milestone-head ",
   CONFLICT_PARKED_MARKER,
   CONFLICT_WATCHDOG_CHECKED_MARKER,

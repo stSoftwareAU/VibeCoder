@@ -2826,6 +2826,47 @@ export async function createProductionRunCoreDeps(
       // Issue #1112: every decision this cycle's scans reached, so the stall
       // watchdog can name the skip reasons recorded for a stalled PR (#1109).
       const scanDecisions: ConflictPrDecision[] = [];
+      // Issue #3001/#3031: the conflict takeover's two resolvers, shared by
+      // the drain (a `milestone/**` head goes straight to a milestone-fix PR)
+      // and the stall watchdog below.
+      const takeoverResolvers = bindConflictTakeoverResolvers({
+        checkout: async (repo: string) => {
+          const setup = await setupRepo(repo, workDir);
+          if (!setup.success) {
+            throw new Error(
+              `repo setup failed for ${repo}: ${setup.message}`,
+            );
+          }
+          return setup.message;
+        },
+        agentFn: (request) => {
+          const agentTimeoutSeconds = takeoverAgentTimeoutSeconds(
+            opts?.deadlineEpochMs,
+            config.claudeTimeout,
+            Date.now(),
+          );
+          const bound = bindMilestoneConflictAgent({
+            repo: request.repo,
+            grant: {
+              agentAllowed: true,
+              ...(agentTimeoutSeconds !== undefined
+                ? { agentTimeoutSeconds }
+                : {}),
+            },
+            config,
+            logger,
+          });
+          if (!bound) {
+            return Promise.resolve({
+              ok: false,
+              error: new Error(
+                `no resolution agent for ${request.repo}`,
+              ),
+            });
+          }
+          return bound(request);
+        },
+      });
       const drain = await drainConflictingPrs({
         logger,
         ...(opts?.deadlineEpochMs !== undefined
@@ -2933,6 +2974,12 @@ export async function createProductionRunCoreDeps(
             // Issue #3089: feed the refreshed PR body's footer.
             workerName: config.workerName,
             githubUser,
+            // Issue #3031: a milestone head is resolved through the takeover
+            // in this same cycle.
+            takeoverResolvers,
+            ...(opts?.deadlineEpochMs !== undefined
+              ? { deadlineEpochMs: opts.deadlineEpochMs }
+              : {}),
           });
 
           if (!result.ok) {
@@ -3012,44 +3059,7 @@ export async function createProductionRunCoreDeps(
           ...(opts?.deadlineEpochMs !== undefined
             ? { deadlineEpochMs: opts.deadlineEpochMs }
             : {}),
-          takeoverResolvers: bindConflictTakeoverResolvers({
-            checkout: async (repo: string) => {
-              const setup = await setupRepo(repo, workDir);
-              if (!setup.success) {
-                throw new Error(
-                  `repo setup failed for ${repo}: ${setup.message}`,
-                );
-              }
-              return setup.message;
-            },
-            agentFn: (request) => {
-              const agentTimeoutSeconds = takeoverAgentTimeoutSeconds(
-                opts?.deadlineEpochMs,
-                config.claudeTimeout,
-                Date.now(),
-              );
-              const bound = bindMilestoneConflictAgent({
-                repo: request.repo,
-                grant: {
-                  agentAllowed: true,
-                  ...(agentTimeoutSeconds !== undefined
-                    ? { agentTimeoutSeconds }
-                    : {}),
-                },
-                config,
-                logger,
-              });
-              if (!bound) {
-                return Promise.resolve({
-                  ok: false,
-                  error: new Error(
-                    `no resolution agent for ${request.repo}`,
-                  ),
-                });
-              }
-              return bound(request);
-            },
-          }),
+          takeoverResolvers,
         });
       }
 
