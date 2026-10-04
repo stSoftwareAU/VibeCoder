@@ -1373,16 +1373,54 @@ a non-ASCII path is not quoted into a pathspec that matches nothing), not
 from the rename-collapsed `git diff --name-only` list. A rename or copy
 whose old or new path is a test file contributes both paths, so a test
 file renamed to `src/moved.rs` is still a test-file change. It then reads
-`git diff --unified=0 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
+`git diff --unified=4000000 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
 Deleted test files are in that patch. A pathspec of only a rename's new
 name is not used: that would show the file as brand-new and hide the
-removed lines. For those test files it collects removed lines that start an assertion statement
-— `assert…(`, `assert_eq!(`, `assert.x(`, `expect(` not preceded by `.`, and
-Python/bats `assert`/`assert_x` commands; comment lines and `debug_assert!`
-are ignored — extending a statement over the following removed lines until
-its parentheses close (up to 12 lines). A removed assertion re-added verbatim
-in any test file of the same diff, ignoring whitespace so a re-wrap or
-re-indent still counts, is treated as moved, not removed.
+removed lines. The context is large enough that each test file's patch is
+one hunk holding the whole old file and the whole new file, so the gate
+sees every assertion in full and everything around it.
+
+On each side of each test file it lexes the source first, blanking
+comments and string contents (`//`, `/* */` and quotes for Rust and
+C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
+an assertion inside a comment or a string is not an assertion. It then
+collects every assertion statement — `assert…(`, `assert_eq!(`,
+`assert.x(`, `expect(` not preceded by `.`, and Python/bats
+`assert`/`assert_x` commands; `debug_assert!` and a declaration such as
+`function assertNoEscalation(…) {` are not assertions — extending each
+over the following lines until its brackets close (up to 200 lines).
+
+An assertion on the old side counts as kept or moved only when the new
+side of some test file in the diff holds a copy with the same text,
+ignoring whitespace, **and** the same context:
+
+- **The same guards and skips around it.** Its enclosing lines are found
+  by indentation and by open `{`, so both formatted and unformatted code
+  are covered. Every enclosing line that does not just name a test, a test
+  group, a test function (`#[test]`, `test_…`) or a type or module is part
+  of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
+  callback such as `.forEach(`, a wrapper helper, or a helper function that
+  may never be called. So are skip markers on the enclosing test:
+  `it.skip(`, `Deno.test.ignore(`, `xit(`, `ignore: true`, `#[ignore]`,
+  `#[should_panic]`, a non-test `#[cfg(…)]`, `@pytest.mark.skip`,
+  `@unittest.skip`, `pytestmark`.
+- **The same early exits before it** in its innermost function: `return`,
+  `continue`, `break`, `throw`, `raise`, `panic!`, `pytest.skip(`,
+  `t.Skip(` and the like, outside a closure opened on the same line.
+
+Copies are counted, so deleting one of two identical assertions is a
+removal. Everything else is removed: an edit to any line of a multi-line
+assertion (a `.any(` predicate losing a condition, an expected value
+changing), an assertion commented out or deleted, and a copy re-added
+under a new condition, into a skipped test or after a new early exit. An
+unchanged assertion whose guard, skip or preceding exit changed is
+removed too, and so is one whose brackets never close within 200 lines
+when the file changes at or after it, because the gate cannot tell where
+it ends. A re-wrap, a re-indent, or a move to another test or another
+test file with nothing new around it still counts as moved. As a backstop
+for a lexer mistake, a removed line that opens an assertion but that the
+lexer entered already inside a carried-over string or block comment is
+reported unless it is re-added verbatim.
 
 Each remaining removed assertion must appear, ignoring whitespace, in the
 Test Plan section; otherwise PR creation is blocked and the notice lists
@@ -1391,7 +1429,7 @@ named — whether the stated requirement truly makes it untrue is left to the
 Standards reviewer, whose brief now asks it to list every assertion the diff
 removes from an existing test and return a `violation` for any that has none.
 When the test-file patch itself cannot be read, or it reaches the
-2,000,000-character read cap, only the heading rule applies and a warning
+8,000,000-character read cap, only the heading rule applies and a warning
 is logged. The patch is not scanned after a silent cut.
 
 Like the docs-sweep and result-placeholder gates, its verdict is computed
@@ -1408,7 +1446,7 @@ flowchart TD
   A["Diff touches a test file?"] -->|No| Z["Continue"]
   A -->|Yes / unreadable| B["Summary has ## Test Plan heading?"]
   B -->|No| X["Block PR"]
-  B -->|Yes| C["Any removed assertions not re-added elsewhere?"]
+  B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
   C -->|No| Z
   C -->|Yes| D["Each named in the Test Plan?"]
   D -->|Yes| Z

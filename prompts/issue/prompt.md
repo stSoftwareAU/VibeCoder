@@ -1000,7 +1000,10 @@ The file MUST contain:
    finding — restore it, or move it to a test that still covers the behaviour
    and name that test. Copy each removed assertion as it appears in the diff —
    the worker matches it there — and include a `## Test Plan` heading whenever
-   the diff touches a test; it is required. Every new test added to guard a
+   the diff touches a test; it is required. The worker counts as removed a
+   multi-line assertion with any line changed, and an assertion re-added under
+   a new condition, loop or callback, into a skipped or ignored test, or after
+   a new early `return`. Every new test added to guard a
    change (a fix, a new guard, a new rule) counts only once you have seen it go
    red with only its change removed (see **A new test must go red without its
    change** in the

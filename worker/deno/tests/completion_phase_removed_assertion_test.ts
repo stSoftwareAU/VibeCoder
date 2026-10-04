@@ -221,8 +221,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (
-          cmdArgs[0] === "diff" && cmdArgs.includes("--unified=0") &&
-          cmdArgs.includes("--diff-filter=AMRD")
+          cmdArgs[0] === "diff" && cmdArgs.includes("--diff-filter=AMRD")
         ) {
           testDiffArgs = cmdArgs;
           if (scenario.testDiffFails) {
@@ -542,5 +541,48 @@ Deno.test(
       outcome.warnings.some((w) => w.includes("read cap")),
       "a warning must be logged when the patch is treated as unreadable",
     );
+  },
+);
+
+// --- (k) An assertion re-added under a new guard blocks (PR #3148 review) ---
+// The patch is read with whole-file context, so a Rust assertion moved into
+// a new multi-line `if false { … }` is seen with its guard and is not
+// "moved". A Test Plan that does not name it must not raise a PR.
+
+/** Whole-file patch: `assert_eq!` re-added inside a new `if false { }`. */
+const GUARDED_READD_DIFF = [
+  "diff --git a/crates/api/tests/decisions.rs b/crates/api/tests/decisions.rs",
+  "index abc123..def456 100644",
+  "--- a/crates/api/tests/decisions.rs",
+  "+++ b/crates/api/tests/decisions.rs",
+  "@@ -1,5 +1,7 @@",
+  " #[test]",
+  " fn scores_are_rated() {",
+  "     let record = load();",
+  '-    assert_eq!(record.score.to_string(), "-0.5");',
+  "+    if false {",
+  '+        assert_eq!(record.score.to_string(), "-0.5");',
+  "+    }",
+  " }",
+  "",
+].join("\n");
+
+Deno.test(
+  "completion - an assertion re-added inside a new `if false { }` blocks with no PR raised",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_ASSERTION,
+      changedFiles: "crates/api/tests/decisions.rs",
+      testDiff: GUARDED_READD_DIFF,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(
+      outcome.comments[0]!,
+      'assert_eq!(record.score.to_string(), "-0.5");',
+    );
+    assertStringIncludes(outcome.comments[0]!, "does not count as moved");
   },
 );
