@@ -408,6 +408,20 @@ List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
 
+**A new branch must be reachable by the input it exists for.** When you add
+a branch, guard, capture or hand-off below existing early exits in the same
+function or its caller (`return`, `continue`, `break`, `exit`, a retry or
+failure return), list each exit above the insertion point and what fires it.
+For each one, ask whether a realistic input for the new case can fire it
+first. Free-text heuristics, empty or short-input filters and "nothing to do"
+exits are the usual culprits. If one can, move the new branch above it, or
+state in the PR summary why that exit must win. A real infrastructure signal
+can justify that; a wording guess cannot. Then add a test whose input is the
+realistic case and also trips each earlier exit the new branch now precedes.
+Move the new branch back below that exit and confirm the test goes red. A
+new branch that a realistic input for its own case cannot reach is a
+blocking self-review finding (Issue #3167).
+
 **Code that deletes or replaces state proves everything it destroys is safe
 to lose.** When a change adds code that `rm -rf`s a directory, swaps a new
 clone or `.git` in for an old one, runs `git reset --hard` or `git clean -fdx`,
@@ -536,7 +550,10 @@ guidance under **Unit tests** below.
   past the branch does not count — see **Every outcome of a branch you add
   needs a test that reaches it** above. A new early return or route to an
   outcome an existing path reaches keeps that path's guards — see **A new
-  path to an existing outcome keeps that outcome's guards** above.
+  path to an existing outcome keeps that outcome's guards** above. A test
+  for a new branch below existing early exits uses the realistic input for
+  its case, including one that trips each earlier exit it now precedes — see
+  **A new branch must be reachable by the input it exists for** above.
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
@@ -674,6 +691,20 @@ simply no longer waits out a stopwatch to do it.
   costing about twelve seconds on the largest input GitHub accepts, which
   stalls a planning close but finishes well inside a test timeout, so the
   ratio is the only detector it has (Issue #1245).
+- **Vet every regex on untrusted text, one hostile case per pattern.** Every
+  regex a change adds or edits that runs on untrusted or agent-written text
+  (an issue body, a PR summary, agent output) gets its own check, not one per
+  module. Read each pattern for two quantifiers that can match the same
+  characters with only optional tokens between them: `\s*:?\s*$`,
+  `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
+  overlap: trim the line first and drop the redundant quantifier, make the
+  pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
+  trailing whitespace, or cap the run. Then add one hostile case per pattern:
+  a long run of the shared character followed by a character the pattern
+  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
+  with the same defect, and #3160's hostile cases covered the inline form while
+  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
 
 ### Integration tests
 
@@ -1117,7 +1148,11 @@ A free-text escape hatch is honoured only while the branch has no commits
 and no uncommitted changes against the base (Issue #3058, #3088). A CI-fix
 run is the exception: a check
 already red on the base branch still defers on a `Depends on owner/repo#N`
-line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
+line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
+deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
+or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
+(`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
+branch is red. The Escape Hatch
 in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
 honoured on a committed PR branch when `.pr_response_message` names a
 follow-up issue. Any later commit on the branch — a

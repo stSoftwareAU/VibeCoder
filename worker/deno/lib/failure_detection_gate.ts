@@ -47,11 +47,14 @@ export interface FailureDetectionOffender {
 export type GateLogger = Pick<Logger, "info" | "warn">;
 
 // A markdown heading line reading "Failure Detection" (any heading level).
-const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection\s*:?\s*$/i;
+// Both tails below are `\s*(?::\s*)?`, not `\s*:?\s*`: two whitespace runs with
+// only an optional `:` between them backtrack quadratically on a label padded
+// with spaces and then any character the pattern rejects (Issue #3164).
+const HEADING_RE = /^\s{0,3}#{1,6}\s+failure\s+detection\s*(?::\s*)?$/i;
 
 // A bolded inline label, e.g. "**Failure detection:** A new test ...".
 const BOLD_LABEL_RE =
-  /^\s{0,3}\*\*\s*failure\s+detection\s*:?\s*\*\*\s*:?\s*(.*)$/i;
+  /^\s{0,3}\*\*\s*failure\s+detection\s*(?::\s*)?\*\*\s*:?\s*(.*)$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
