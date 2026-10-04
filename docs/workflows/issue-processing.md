@@ -1400,6 +1400,15 @@ with `([^\n]*)` and no `$`, a tail that cannot fail, so the first labelled
 occurrence wins and a value after a lone `\r` is read rather than dropped.
 The regex-vetting rule names the shape.
 
+**The same shapes outside the gates (Issue #3206).** Applying the rule found
+three more patterns on untrusted text. The commit-message issue reference in
+`issue_lifecycle.ts` and the sub-issue parent link in `planning_processor.ts`
+had `\s*:?\s*` separators (the parent link followed by a further `\s*`, so
+cubic). They now use `\s*(?::\s*)?`. The partial-rollup closing-keyword guard
+in `milestone_partial_rollup.ts` scans a body carrying branch names of any
+length, and its `[\w.-]*\/?[\w.-]*#` reference split a long name in every
+way; each side of `owner/repo#N` is now capped at 100 characters.
+
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
 learn what the real tool does, so fleet PRs guessed and built the fake from
