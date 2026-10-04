@@ -1,0 +1,12 @@
+{
+  "issue": 3141,
+  "chunk": "top-up-3141",
+  "title": "top-up: dependency-audit check classifier",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3141",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: dependency_audit_check.ts (#3141)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/dependency_audit_check.ts"
+  ],
+  "sweptAt": "5d59c3bbc1dc69fbb28ce7a91870752a3f711df4"
+}
