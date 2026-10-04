@@ -23,6 +23,7 @@ hostile case. Closes #3206.
   whitespace, and `parent` takes `\s*(?::\s*)?`.
 - `docs/workflows/issue-processing.md`: a paragraph after the Issue #3186
   one.
+- `docs/archive/pr-summaries/pr-summary-3206.md`: this summary.
 
 ## Spec
 
@@ -94,10 +95,15 @@ regex-vetting paragraphs); updated: `docs/workflows/issue-processing.md`.
   - After the changes, all 6 passed in about 75 ms in total.
 - The existing suites for the touched modules (`issue_lifecycle`,
   `issue_lifecycle_cache`, `issue_lifecycle_close_exemption`,
-  `milestone_partial_rollup`, `planning_processor`) pass, except
-  `processIssuePlanning - drafts, self-critiques, revises, then publishes
-  (Issue #2652)`. That test fails the same way on unchanged `main`
+  `milestone_partial_rollup`, `planning_processor`), the earlier ReDoS and
+  regex-vetting suites (`heading_tail_redos_3164`, `label_tail_redos_3186`,
+  `regex_vetting_rule_3164_docs`, `regex_vetting_rule_3186_docs`), the suites
+  that read `docs/workflows/issue-processing.md`, and
+  `prompt_house_vocabulary_drift`: `307 passed | 1 failed`, plus
+  `issue_worker` and the completion-phase suites: `126 passed | 0 failed`.
+  The one failure is `processIssuePlanning - drafts, self-critiques, revises,
+  then publishes (Issue #2652)`. It fails the same way on unchanged `main`
   (`FAILED | 0 passed | 1 failed`), so this change did not cause it.
-- `deno fmt --check`, `deno lint`, `deno task check` and
-  `deno task check:manifests` pass, and `markdownlint-cli2` reports 0 issues.
-  The full suite is left to CI.
+- `deno fmt --check` and `deno lint` pass. `deno task check` reports
+  `663 passed | 0 failed`, and `deno task check:manifests` passes.
+  `markdownlint-cli2` reports 0 issues. The full suite is left to CI.
