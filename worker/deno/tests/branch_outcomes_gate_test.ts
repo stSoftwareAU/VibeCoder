@@ -106,6 +106,91 @@ Deno.test("parseBranchOutcomes - absent header reports not present", () => {
   assertEquals(record.present, false);
 });
 
+// PR #3160 review (seventh round): `none added.` (a full stop instead of a
+// semicolon) and `none:` must both still be recognised as the honest `none`
+// negative — `NONE_BODY_RE`'s `[.:;!]*` punctuation suffix had no test.
+Deno.test("parseBranchOutcomes - 'none added.' with a full stop is an honest negative", () => {
+  const record = parseBranchOutcomes("**Branch outcomes:** none added.\n");
+  assert(record.noneDeclared);
+});
+
+Deno.test("parseBranchOutcomes - 'none:' with a colon is an honest negative", () => {
+  const record = parseBranchOutcomes("**Branch outcomes:** none:\n");
+  assert(record.noneDeclared);
+});
+
+// PR #3160 review (seventh round), finding 1(b): an honest `none`/`none
+// added` header must not hide a real list that follows it — the region
+// after the header is scanned for a named test path regardless of the
+// header's own honest body.
+Deno.test("validateBranchOutcomes - 'none added.' followed by a refreshed list still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:** none added.\n" +
+      "\n" +
+      "The earlier rounds' arms, refreshed to the head:\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+// ---------------------------------------------------------------------------
+// Section-boundary heading depth (PR #3160 review, seventh round): the
+// boundary that ends a Branch-outcomes scan is relative to the heading
+// enclosing the header, not a fixed depth.
+// ---------------------------------------------------------------------------
+
+// Finding 1(a): a `### path/to/file.ts` grouping heading directly under a
+// `## Test Plan` section is only one level deeper than its enclosing
+// section. A fixed level-3 cutoff wrongly treated it as a boundary and
+// stopped the scan before the list it grouped.
+Deno.test("validateBranchOutcomes - a level-3 grouping heading under a level-2 section still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "**Branch outcomes:** grouped by file:\n" +
+      "### worker/deno/lib/foo.ts\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+// Under a level-1 enclosing section, a level-2 heading is a grouping
+// sub-heading (deeper than the enclosing level), not a boundary — the list
+// beneath it is still found.
+Deno.test("validateBranchOutcomes - a level-2 heading under a level-1 section does not end the scan", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "# Overview\n" +
+      "**Branch outcomes:** grouped by section:\n" +
+      "## Next\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+// The same level-1 enclosing section's own boundary still fires: a second
+// level-1 heading is a genuine new section and must end the scan, so an
+// unrelated path named after it is never swept in.
+Deno.test("validateBranchOutcomes - a second level-1 heading ends the scan under a level-1 section", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "# Overview\n" +
+      "**Branch outcomes:** none added\n" +
+      "# Another Section\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+  assertEquals(result.missingTests, []);
+});
+
 // ---------------------------------------------------------------------------
 // collectEntries arms (PR #3160 fifth review round): each of the three
 // branches below passed all 173 gate-related tests when mutated alone, so
@@ -202,6 +287,38 @@ Deno.test("parseBranchOutcomes - the test-path scan stops at the next markdown h
       "Mentions worker/deno/tests/unrelated_test.ts only in passing.\n",
   );
   assertEquals(namedTestPaths(record), []);
+});
+
+// PR #3160 review (seventh round), finding 2(4): `scanRegionText`'s header
+// stop checks both the inline (`BRANCH_OUTCOMES_PREFIX_RE`) and heading
+// (`BRANCH_OUTCOMES_HEADING_RE`) forms of a later `Branch outcomes` header.
+// Only the inline half had a test; a later *heading-form* header, deeper
+// than the enclosing boundary (so the generic heading-level stop does not
+// fire first), must still end the first header's own scan.
+Deno.test("parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** grouped by file:\n" +
+      "- outcome one\n" +
+      "\n" +
+      "#### Branch outcomes\n" +
+      "unrelated-marker-xyz\n",
+  );
+  assertEquals(record.scanText, "outcome one");
+});
+
+// PR #3160 review (seventh round), finding 2(3): the `inlineMatch &&`
+// conjunct of the `headerIndent` ternary had no test. A header that is both
+// a list item and a heading (`- ## Branch outcomes`) is heading-form
+// (`inlineMatch` is null), so its `headerIndent` must stay `-1` regardless
+// of the line itself matching `LIST_MARKER_RE`. Dropping the conjunct would
+// give it the line's own indent (0), wrongly ending the scan at the first
+// top-level list item instead of collecting it.
+Deno.test("parseBranchOutcomes - a list-item heading-form header still collects a following top-level entry", () => {
+  const record = parseBranchOutcomes(
+    "- ## Branch outcomes\n" +
+      "- entry one\n",
+  );
+  assertEquals(record.entries, ["entry one"]);
 });
 
 // ---------------------------------------------------------------------------

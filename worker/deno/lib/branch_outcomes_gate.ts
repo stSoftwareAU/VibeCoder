@@ -54,6 +54,13 @@ function headingLevel(line: string): number {
 }
 
 /**
+ * Fallback section-boundary level used when a `Branch outcomes` header has
+ * no heading anywhere above it in the document (so there is no enclosing
+ * section to take the boundary from).
+ */
+const FALLBACK_SECTION_HEADING_LEVEL = 2;
+
+/**
  * Heading depth at which a heading reads as a document section boundary
  * rather than a grouping sub-heading nested under one — e.g. a `####
  * path/to/file.ts` label grouping entries under a `**Branch outcomes:**`
@@ -61,9 +68,23 @@ function headingLevel(line: string): number {
  * sections PR summaries in this repository actually use) sit at level 1-2.
  * A heading at or shallower than this level ends a Branch-outcomes scan; a
  * deeper one is skipped over so the entries or text nested under it are
- * still read (PR #3160 review, sixth round).
+ * still read.
+ *
+ * A fixed level (previously 3) is wrong: a `### path/to/file.ts` grouping
+ * heading directly under a `## Test Plan` section is itself only one level
+ * deeper than its enclosing section, so a universal level-3 cutoff treated
+ * it as a boundary and stopped the scan before the list it grouped (PR
+ * #3160 review, seventh round). The boundary must instead be relative to
+ * the nearest heading above the header — any heading no deeper than that
+ * enclosing heading ends the scan; a heading nested deeper than it (however
+ * shallow in absolute terms) is a grouping sub-heading and is skipped. With
+ * no enclosing heading at all, `FALLBACK_SECTION_HEADING_LEVEL` applies.
  */
-const SECTION_HEADING_MAX_LEVEL = 3;
+function sectionBoundaryLevel(enclosingHeadingLevel: number): number {
+  return enclosingHeadingLevel > 0
+    ? enclosingHeadingLevel
+    : FALLBACK_SECTION_HEADING_LEVEL;
+}
 
 /** The `Branch outcomes` prefix once markdown decoration is stripped. */
 const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
@@ -153,20 +174,35 @@ export function parseBranchOutcomes(
   const scanTextParts: string[] = [];
   let present = false;
   let onlyNone = true;
+  let lastHeadingLevel = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i]!;
     const stripped = stripDecoration(rawLine);
     const inlineMatch = stripped.match(BRANCH_OUTCOMES_PREFIX_RE);
     const heading = BRANCH_OUTCOMES_HEADING_RE.test(stripped);
-    if (!inlineMatch && !heading) continue;
+    if (!inlineMatch && !heading) {
+      const lvl = headingLevel(rawLine);
+      if (lvl > 0) lastHeadingLevel = lvl;
+      continue;
+    }
 
     present = true;
+    // Boundary is relative to the nearest heading above this header, not a
+    // fixed depth — captured before this line's own heading-ness (if any)
+    // updates `lastHeadingLevel` for whatever header comes next.
+    const boundaryLevel = sectionBoundaryLevel(lastHeadingLevel);
+    if (heading) lastHeadingLevel = headingLevel(rawLine);
     const body = inlineMatch
       ? stripped.slice(inlineMatch[0].length).trim()
       : "";
     if (isNoneBody(body)) {
       if (body) bodyParts.push(body);
+      // An honest `none` still gets its trailing region scanned for a named
+      // test path: a review-fix rewording ("none added." + a refreshed list
+      // of the earlier rounds' arms) must not let an invented citation past
+      // the header's own words (PR #3160 review, seventh round).
+      scanTextParts.push(scanRegionText(lines, i + 1, boundaryLevel));
       continue;
     }
 
@@ -175,13 +211,13 @@ export function parseBranchOutcomes(
     const headerIndent = inlineMatch && LIST_MARKER_RE.test(rawLine)
       ? leadingIndent(rawLine)
       : -1;
-    const collected = collectEntries(lines, i + 1, headerIndent);
+    const collected = collectEntries(lines, i + 1, headerIndent, boundaryLevel);
     for (const entry of collected.entries) {
       if (entries.length >= MAX_ENTRIES) break;
       entries.push(entry);
     }
     if (collected.bodyExtra) bodyParts.push(collected.bodyExtra);
-    scanTextParts.push(scanRegionText(lines, i + 1));
+    scanTextParts.push(scanRegionText(lines, i + 1, boundaryLevel));
     i = collected.nextIndex - 1;
   }
 
@@ -196,24 +232,28 @@ export function parseBranchOutcomes(
 
 /**
  * Every line from `startIndex` to the next section-boundary heading (level
- * at or above `SECTION_HEADING_MAX_LEVEL`), the next `Branch outcomes`
- * header, or the end of the document — scanned (decoration stripped) for
- * `namedTestPaths` only. Deliberately independent of `collectEntries`: that
- * function's list-shaped parsing legitimately stops on a sibling bullet, a
- * table row, or prose after a blank line, any of which can still name a test
- * the header logically covers (PR #3160 review). A deeper grouping heading
- * (e.g. a `#### path/to/file.ts` label nested under a `**Branch
- * outcomes:**` paragraph) does not end the scan (PR #3160 review, sixth
- * round). Stopping at the next header, or a section-boundary heading, keeps
- * every header's scan disjoint, so the combined cost across a whole PR
- * summary stays linear.
+ * at or above `boundaryLevel`, see `sectionBoundaryLevel`), the next `Branch
+ * outcomes` header, or the end of the document — scanned (decoration
+ * stripped) for `namedTestPaths` only. Deliberately independent of
+ * `collectEntries`: that function's list-shaped parsing legitimately stops
+ * on a sibling bullet, a table row, or prose after a blank line, any of
+ * which can still name a test the header logically covers (PR #3160
+ * review). A deeper grouping heading (e.g. a `#### path/to/file.ts` label
+ * nested under a `**Branch outcomes:**` paragraph) does not end the scan
+ * (PR #3160 review, sixth round). Stopping at the next header, or a
+ * section-boundary heading, keeps every header's scan disjoint, so the
+ * combined cost across a whole PR summary stays linear.
  */
-function scanRegionText(lines: string[], startIndex: number): string {
+function scanRegionText(
+  lines: string[],
+  startIndex: number,
+  boundaryLevel: number,
+): string {
   const parts: string[] = [];
   for (let j = startIndex; j < lines.length; j++) {
     const line = lines[j]!;
     const lvl = headingLevel(line);
-    if (lvl > 0 && lvl <= SECTION_HEADING_MAX_LEVEL) break;
+    if (lvl > 0 && lvl <= boundaryLevel) break;
     const stripped = stripDecoration(line);
     if (
       BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
@@ -228,15 +268,16 @@ function scanRegionText(lines: string[], startIndex: number): string {
 
 /**
  * Entries and wrapped body text that follow one `Branch outcomes` header. A
- * heading deeper than `SECTION_HEADING_MAX_LEVEL` is skipped over rather
- * than ending the scan, so a `#### path/to/file.ts` grouping heading
- * between the header and its list does not hide that list from `entries`
- * (PR #3160 review, sixth round).
+ * heading deeper than `boundaryLevel` (see `sectionBoundaryLevel`) is
+ * skipped over rather than ending the scan, so a `#### path/to/file.ts`
+ * grouping heading between the header and its list does not hide that list
+ * from `entries` (PR #3160 review, sixth round).
  */
 function collectEntries(
   lines: string[],
   startIndex: number,
   headerIndent: number,
+  boundaryLevel: number,
 ): { entries: string[]; bodyExtra: string; nextIndex: number } {
   const entries: string[] = [];
   const wrap: string[] = [];
@@ -253,17 +294,20 @@ function collectEntries(
       continue;
     }
     const lvl = headingLevel(line);
-    if (lvl > 0 && lvl <= SECTION_HEADING_MAX_LEVEL) break;
+    if (lvl > 0 && lvl <= boundaryLevel) break;
     if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
     const indent = leadingIndent(line);
     if (LIST_MARKER_RE.test(line)) {
       if (indent <= headerIndent) break;
-      wrapping = false;
       // No MAX_ENTRIES cap here: parseBranchOutcomes' copy loop always
       // trims the merged result to MAX_ENTRIES regardless of how many
       // entries this call collects, so a cap here is never independently
       // observable — it was removed as dead weight (PR #3160 review).
+      //
+      // `wrapping` is not reset here: `entries.length > 0` already shuts
+      // the wrap branch below once any entry exists, making a reset here
+      // unobservable dead code (PR #3160 review, seventh round).
       entries.push(capEntry(stripDecoration(line)));
       sawBlank = false;
       continue;
@@ -330,13 +374,12 @@ function normaliseToken(token: string): string {
  * The test file paths named across a branch-outcomes record's entries, body
  * and scanned region text.
  *
- * No `noneDeclared` guard here: `isNoneBody` only recognises an exact `none`
- * / `none added` (plus punctuation) as a genuine negative, so whenever
- * `record.noneDeclared` is true, `body` and `scanText` hold nothing but that
- * honest declaration — a guard against scanning them was dead code once a
- * body that names real content (`none added; existing worker/deno/tests/
- * gone_test.ts covers it`) stopped being misread as `none` (PR #3160 review,
- * sixth round).
+ * No `noneDeclared` guard here, and deliberately so: an honest `none`/`none
+ * added` header's own `body` holds nothing but that declaration, but its
+ * `scanText` is still populated from the region after the header (PR #3160
+ * review, seventh round) — a review-fix rewording ("none added." followed
+ * by a refreshed list of the earlier rounds' arms) must not let an invented
+ * citation past the header's own honest word.
  *
  * Only paths shaped like, and recognised as, a test file are returned — a
  * branch-location citation such as `worker/deno/lib/foo.ts:42` is not a test
