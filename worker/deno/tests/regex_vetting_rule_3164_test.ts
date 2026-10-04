@@ -52,7 +52,7 @@ Deno.test("CODING-STANDARDS Unit tests pins the regex-vetting rule before the su
   );
 });
 
-Deno.test("coding_guidelines prompt Unit Tests vs Benchmarks pins the regex-vetting rule (Issue #3164)", async () => {
+Deno.test("coding_guidelines prompt unit-test section pins the regex-vetting rule (Issue #3164)", async () => {
   const text = flat(
     section(
       await readRepoDoc("prompts/coding_guidelines/prompt.md"),
