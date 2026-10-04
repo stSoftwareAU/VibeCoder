@@ -181,7 +181,9 @@ round report."
 
   # `exec ... or die`: a bare exec that cannot start `claude` (not on PATH)
   # falls through and perl exits 0, which would read as a completed round.
-  (cd "$CHECKOUT" && perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+  # `claude -p` otherwise kills its reviewer agents 600s in and ends the
+  # round with their PRs unreviewed; the alarm is the round's only limit.
+  (cd "$CHECKOUT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
     "$ROUND_TIMEOUT" \
     claude -p "$prompt" \
     --model claude-opus-5-5 --effort xhigh \
