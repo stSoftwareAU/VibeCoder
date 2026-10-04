@@ -54,6 +54,7 @@ echo '${gateOutput}'; exit ${gateExit}`,
   await stub(
     "claude",
     `echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
+echo "BG_WAIT=\${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-unset}" >> "$HOME/claude-args"
 printf '%s\\n' "$@" >> "$HOME/claude-args"`,
   );
   return home;
@@ -120,6 +121,9 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless Claude rou
   // The headless session may write its round files: only an Edit rule on
   // an absolute (//-anchored) path allows that.
   assertStringIncludes(args, "Edit(//");
+  // Reviewer agents may outlast claude -p's 600s default background wait;
+  // only the round's own alarm may cut them off.
+  assertStringIncludes(args, "BG_WAIT=0");
   // The log sits beside the Vibe Coder's own, not in a hidden directory.
   assertStringIncludes(
     await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
