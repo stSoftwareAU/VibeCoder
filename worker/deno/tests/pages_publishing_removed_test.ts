@@ -101,7 +101,7 @@ Deno.test("no published doc links at the retired Pages site", async () => {
       if (!entry.isFile || !entry.name.endsWith(".md")) continue;
       if (SITE_URL_EXEMPT.has(path)) continue;
       const body = await Deno.readTextFile(repoPath(path));
-      if (/stsoftwareau\.github\.io/.test(body)) offenders.push(path);
+      if (body.split("stsoftwareau.github.io").length > 1) offenders.push(path);
     }
   };
   await scan("");

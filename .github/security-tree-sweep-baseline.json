@@ -9,67 +9,6 @@
       "reason": "`field` iterates the worker's own config-schema field names (identifier characters only), matched against the worker's own source tree — no untrusted input reaches the pattern (Issue #4193 triage of semgrep detect-non-literal-regexp)."
     },
     {
-      "path": "worker/deno/lib/auto_fix_attempt_tracker.ts",
-      "rule": "incomplete-sanitization",
-      "line": 437,
-      "snippet": "const text = value.trim().replace(/\\|/g, \"\\\\|\").replace(/\\r?\\n/g, \" \");",
-      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
-    },
-    {
-      "path": "worker/deno/lib/default_branch_ruleset_audit.ts",
-      "rule": "incomplete-sanitization",
-      "line": 148,
-      "snippet": "return text.replace(/\\|/g, \"\\\\|\").replace(/\\s+/g, \" \").trim();",
-      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
-    },
-    {
-      "path": "worker/deno/lib/github_actions_catalogue.ts",
-      "rule": "incomplete-sanitization",
-      "line": 259,
-      "snippet": "return value.replace(/\\|/g, \"\\\\|\");",
-      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
-    },
-    {
-      "path": "worker/deno/lib/security_tree_sweep.ts",
-      "rule": "incomplete-sanitization",
-      "line": 1244,
-      "snippet": "return text.replace(/\\r?\\n/g, \" \").replace(/\\|/g, \"\\\\|\").trim();",
-      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
-    },
-    {
-      "path": "worker/deno/lib/tabletop_report.ts",
-      "rule": "incomplete-sanitization",
-      "line": 21,
-      "snippet": "return value.replace(/\\|/g, \"\\\\|\").replace(/\\r?\\n/g, \" \");",
-      "reason": "Markdown table-cell escaping: `|` is escaped so a value cannot break a report table; the value is quoted data, never interpreted, and a pre-existing backslash before `|` only changes rendering, not meaning (Issue #4409 CodeQL triage, js/incomplete-sanitization)."
-    },
-    {
-      "path": "worker/deno/lib/heartbeat_storage.ts",
-      "rule": "incomplete-sanitization",
-      "line": 318,
-      "snippet": "`^\\\\s*${ATTEMPTS_HEADING.replace(/\\*/g, \"\\\\*\")}\\\\s*(\\\\d+)\\\\s*$`,",
-      "reason": "The value escaped is the module's own constant heading (`ATTEMPTS_HEADING`), not input; the regex is fixed-shape (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/lib/heartbeat_storage.ts",
-      "rule": "bad-tag-filter",
-      "line": 458,
-      "snippet": ".replace(/-->/g, \"- ->\")",
-      "reason": "Global replace of `<!--`/`-->` with tokens (`<!- -`, `- ->`) that cannot re-form the pattern with their neighbours; the result is a comment-safe excerpt, and the check that matters is `assert(!out.includes(\"-->\"))` in the tests (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/lib/run_failure_issue.ts",
-      "rule": "bad-tag-filter",
-      "line": 187,
-      "snippet": "return bounded.replace(/<!--/g, \"<!- -\").replace(/-->/g, \"- ->\").replace(",
-      "reason": "Global replace of `<!--`/`-->` with `<!- -`/`- ->` — replacements that cannot re-form the token; the excerpt is bounded and fenced (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/lib/github.ts",
-      "rule": "incomplete-multi-character-sanitization",
-      "reason": "The comment strip only decides whether a body has visible text; the worst case for an unusual comment form is treating a comment-only body as visible, which is the safe direction (Issue #4409 CodeQL triage)."
-    },
-    {
       "path": "worker/deno/lib/llm_usage_detection.ts",
       "rule": "unsafe-regex",
       "line": 108,
@@ -91,26 +30,9 @@
       "reason": "The pattern requires `/` immediately after `github.com`, so a look-alike host (`github.com.evil/`) does not match; the extracted URLs are then validated against the repository slug downstream (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
     },
     {
-      "path": "worker/deno/lib/tabletop_harness.ts",
-      "rule": "weak-crypto",
-      "line": 78,
-      "snippet": "body += CANARY_ALPHABET[byte % CANARY_ALPHABET.length];",
-      "reason": "The canary is a detection marker planted for one harness run, not key material: a slight modulo bias in its characters does not weaken what it proves (whether the literal reaches an outbound artefact) (Issue #4409 CodeQL js/biased-cryptographic-random)."
-    },
-    {
-      "path": "worker/deno/tests/batch_api_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "reason": "Test assertions that a string contains a host name are not sanitisation (Issue #4409 CodeQL triage)."
-    },
-    {
       "path": "worker/deno/tests/planning_processor_test.ts",
       "rule": "incomplete-url-substring-sanitization",
       "reason": "Test assertions that generated text contains issue URLs are not sanitisation (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/tests/claim_pr_comment_test.ts",
-      "rule": "incomplete-multi-character-sanitization",
-      "reason": "A test fixture builder, not production sanitisation (Issue #4409 CodeQL triage)."
     },
     {
       "path": "worker/deno/tests/export_branding_test.ts",
@@ -121,50 +43,6 @@
       "path": "worker/deno/tests/export_scrub_gate_test.ts",
       "rule": "missing-space-in-concatenation",
       "reason": "Deliberate: fixtures are assembled from halves so the exported test file never carries the identifiers it tests for (Issue #4196) (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/lib/suspicious_image_handoff.ts",
-      "rule": "bad-tag-filter",
-      "line": 112,
-      "snippet": ".replace(/-->/g, \"- ->\")",
-      "reason": "Global replace of `-->`/`<!--` with `- ->`/`<!- -` — tokens that cannot re-form the pattern with their neighbours (the earlier `->` replacement that could was fixed under Issue #4409 and is covered by a hostile-dash-run test); the field is then bounded and fenced (Issue #4409 CodeQL triage)."
-    },
-    {
-      "path": "worker/deno/lib/already_resolved_outcome.ts",
-      "rule": "bad-tag-filter",
-      "reason": "`flattenField` neutralises both marker tokens with a global replace to `- ->`/`<!- -`; the replacements insert a space inside the token and never delete characters, so no run of dashes can re-form `<!--` or `-->` with its neighbours. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (CodeQL js/bad-tag-filter)."
-    },
-    {
-      "path": "worker/deno/lib/cross_repo_pr_handoff.ts",
-      "rule": "bad-tag-filter",
-      "reason": "`sanitiseDeclarationField` neutralises both marker tokens with a global replace to `- ->`/`<!- -`; the replacements insert a space inside the token and never delete characters, so no run of dashes can re-form `<!--` or `-->` with its neighbours. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (CodeQL js/bad-tag-filter)."
-    },
-    {
-      "path": "worker/deno/lib/bump_script_failure_streak.ts",
-      "rule": "bad-tag-filter",
-      "reason": "`bodySafe` neutralises both marker tokens with a global replace to `<!- -`/`- ->`; the replacements insert a space inside the token and never delete characters, so neither pass can re-form the other's token. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (CodeQL js/bad-tag-filter)."
-    },
-    {
-      "path": "worker/deno/lib/idle_inversion_streak.ts",
-      "rule": "bad-tag-filter",
-      "reason": "`bodySafe` neutralises both marker tokens with a global replace to `<!- -`/`- ->`; the replacements insert a space inside the token and never delete characters, so neither pass can re-form the other's token. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (CodeQL js/bad-tag-filter)."
-    },
-    {
-      "path": "worker/deno/lib/pr_branch_update_failure_streak.ts",
-      "rule": "bad-tag-filter",
-      "reason": "`bodySafe` neutralises both marker tokens with a global replace to `<!- -`/`- ->`; the replacements insert a space inside the token and never delete characters, so neither pass can re-form the other's token. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (CodeQL js/bad-tag-filter)."
-    },
-    {
-      "path": "worker/deno/tests/issue_worker_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "reason": "Test assertions that a posted comment body contains the cross-repo PR URL are not sanitisation (same triage as `planning_processor_test.ts` and `batch_api_test.ts`)."
-    },
-    {
-      "path": "worker/deno/tests/setup_credential_provisioning_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "line": 148,
-      "snippet": "output.includes(\"platform.deepseek.com\"),",
-      "reason": "Test assertion, not sanitisation: it checks that the DeepSeek warning NAMES `platform.deepseek.com` so an operator knows where to get a key. No URL is parsed, trusted or acted on — the string is the message under test (Issue #4193 triage, js/incomplete-url-substring-sanitization)."
     },
     {
       "path": "worker/deno/lib/container_extension_config.ts",
@@ -179,34 +57,6 @@
       "line": 394,
       "snippet": "if (typeof raw !== \"object\" || raw === null) return undefined;",
       "reason": "Same idiom and same analyser artefact as `container_extension_config.ts`: `typeof null` is `\"object\"`, so the `raw === null` arm is the guard that makes the narrowing sound. Removing it to satisfy the rule would reintroduce the null dereference it is there to stop (Issue #1518 triage, js/comparison-between-incompatible-types)."
-    },
-    {
-      "path": "worker/deno/lib/idle_starvation_escalation.ts",
-      "rule": "bad-tag-filter",
-      "line": 356,
-      "snippet": "return text.replace(/<!--/g, \"<!- -\").replace(/-->/g, \"- ->\")",
-      "reason": "`bodySafe` neutralises both marker tokens with a global replace to `<!- -`/`- ->`; the replacements insert a space inside the token and never delete characters, so neither pass can re-form the other's token. Same idiom already triaged in `heartbeat_storage.ts` and `run_failure_issue.ts` (Issue #1518 triage, CodeQL js/bad-tag-filter)."
-    },
-    {
-      "path": "worker/deno/tests/container_egress_probe_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "line": 231,
-      "snippet": "assert(!args.join(\" \").includes(\"github.com\"));",
-      "reason": "Test assertion, not sanitisation: it checks that the probe's argv NAMES no host at all (Issue #997 — the probe dials a literal IP). Nothing is parsed, trusted or acted on; the string is the argv under test (Issue #1518 triage, js/incomplete-url-substring-sanitization)."
-    },
-    {
-      "path": "worker/deno/tests/pages_publishing_removed_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "line": 104,
-      "snippet": "if (body.includes(\"stsoftwareau.github.io\")) offenders.push(path);",
-      "reason": "A documentation scan, not sanitisation: it fails the suite when any tracked Markdown file still mentions the retired Pages host. Over-matching a look-alike host would only add an offender to review, which is the safe direction (Issue #1518 triage, js/incomplete-url-substring-sanitization)."
-    },
-    {
-      "path": "worker/deno/tests/security_scan_overflow_1387_test.ts",
-      "rule": "incomplete-url-substring-sanitization",
-      "line": 91,
-      "snippet": "assert(out.includes(\"api.imgbb.com\"), out);",
-      "reason": "Test assertion, not sanitisation: it checks that redaction removed the key and LEFT the host, so an operator can still see which upload leaked. No URL is parsed or trusted — the string is the redacted output under test (Issue #1518 triage, js/incomplete-url-substring-sanitization)."
     },
     {
       "path": "worker/deno/tests/parallel_unsafe_test_manifest_test.ts",
