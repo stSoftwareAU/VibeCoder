@@ -3,8 +3,8 @@
  *
  * The processor is the receiver Issue #4373 deferred to: it merges the base
  * branch into a conflicting PR for real, refuses to push a tree that is not
- * fully resolved, bounds its attempts, and hands a spent budget to
- * abandon-and-redo — never to a human (Issue #3032).
+ * fully resolved, bounds its attempts, and escalates with `needs-human` when
+ * the budget is spent.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  *
@@ -30,22 +30,23 @@ import {
   type MergeConflictProcessorDeps,
   parseUnmergedPaths,
   processMergeConflict,
-  runAbandonRestart,
 } from "../lib/pr_merge_conflict_processor.ts";
-import type { MilestoneRebuilt } from "../lib/conflict_milestone_rebuild.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
   CONFLICT_RESOLVED_MARKER,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
   MERGE_CONFLICT_LABEL,
   parseConflictAttempts,
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   CONFLICT_NUDGE_MARKER,
   CONFLICT_REBASE_MARKER,
+  CONFLICT_RESOLUTION_BUDGET,
   CONFLICT_RUNG_FAILED_MARKER,
+  conflictAttemptMarker,
+  conflictFailedMarker,
   conflictNudgeMarker,
+  conflictParkedMarker,
   conflictRebaseMarker,
   conflictRungFailedMarker,
 } from "../lib/merge_conflict_markers.ts";
@@ -461,7 +462,11 @@ function makeGithub(
    * The raw REST comment thread `fetchIssueCommentPages` reads (Issue #2278),
    * author and all — a rung marker only counts when the fleet wrote it.
    */
-  threadComments: readonly { body: string; author: string }[] = [],
+  threadComments: readonly {
+    body: string;
+    author: string;
+    createdAt?: string;
+  }[] = [],
   /** Error `gh pr comment` rejects with, when the post must fail. */
   commentPostError?: string,
 ): Partial<GitHubDeps> {
@@ -551,9 +556,10 @@ function makeGithub(
         return Promise.resolve(
           JSON.stringify(
             page === "1"
-              ? threadComments.map(({ body, author }) => ({
+              ? threadComments.map(({ body, author, createdAt }) => ({
                 body,
                 user: { login: author },
+                ...(createdAt !== undefined ? { created_at: createdAt } : {}),
               }))
               : [],
           ),
@@ -728,6 +734,13 @@ Deno.test("processMergeConflict - resolves a conflict, pushes, comments and clea
 
   const resolved = captured.comments.at(-1) ?? "";
   assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
+  // Issue #2996: the resolved marker carries the pass and the head the
+  // attempt ran against — the head *before* the merge, not after.
+  assertStringIncludes(resolved, `pass="ladder"`);
+  assertStringIncludes(
+    resolved,
+    `head="1111111111111111111111111111111111111111"`,
+  );
 });
 
 Deno.test("processMergeConflict - records the attempt before touching the branch", async () => {
@@ -737,7 +750,15 @@ Deno.test("processMergeConflict - records the attempt before touching the branch
   assertStringIncludes(firstComment, CONFLICT_ATTEMPT_MARKER);
   assertStringIncludes(
     firstComment,
-    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+    `attempt 1 of ${CONFLICT_RESOLUTION_BUDGET}`,
+  );
+  // Issue #2996: the marker carries the pass that spent it and the head it
+  // ran against, which is what lets the shared budget be tallied regardless
+  // of which pass is asking.
+  assertStringIncludes(firstComment, `pass="ladder"`);
+  assertStringIncludes(
+    firstComment,
+    `head="1111111111111111111111111111111111111111"`,
   );
 
   const commentIndex = captured.events.indexOf("gh:comment");
@@ -973,7 +994,7 @@ Deno.test("processMergeConflict - 'refusing to merge unrelated histories' fails 
 Deno.test("processMergeConflict - a no-common-ancestor failure at the cap runs the abandon rung (Issue #3032)", async () => {
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({
       mergeCode: 128,
       unmergedAfterMerge: [],
@@ -999,7 +1020,7 @@ Deno.test("processMergeConflict - a no-common-ancestor failure at the cap runs t
 
 Deno.test("processMergeConflict - the final failed attempt never escalates to a human (Issue #3032)", async () => {
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
   );
 
@@ -1024,7 +1045,7 @@ Deno.test("processMergeConflict - the final failure abandons and restarts rather
   // `needs-human` on the PR before anything could try the restart.
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: (request) => {
@@ -1059,7 +1080,7 @@ Deno.test("processMergeConflict - the third attempt is the one that abandons (Is
   // abandon rung rather than a fourth attempt.
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: (request) => {
@@ -1076,7 +1097,7 @@ Deno.test("processMergeConflict - the third attempt is the one that abandons (Is
   assert(result.ok);
   assertStringIncludes(
     captured.comments[0] ?? "",
-    `attempt ${DEFAULT_MAX_CONFLICT_ATTEMPTS} of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+    `attempt ${CONFLICT_RESOLUTION_BUDGET} of ${CONFLICT_RESOLUTION_BUDGET}`,
   );
   assertEquals(seen.length, 1, "the abandon rung ran on the third failure");
   assertEquals(result.value.escalated, false);
@@ -1085,7 +1106,7 @@ Deno.test("processMergeConflict - the third attempt is the one that abandons (Is
 Deno.test("processMergeConflict - the second failure neither escalates nor abandons (Issue #1766)", async () => {
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 2 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 2 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: (request) => {
@@ -1113,7 +1134,7 @@ Deno.test("processMergeConflict - an abandon names the label the issue was re-qu
   // The rung closed the PR and re-queued the issue with `idle-task`, since it
   // carried no pickup label. Nobody is waiting on a human to re-apply one.
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: () =>
@@ -1139,7 +1160,7 @@ Deno.test("processMergeConflict - an abandon declined by a same-PR restart claim
   // names the route, and `needs-human` would take the PR out of the very lane
   // that reads the claim back.
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: () =>
@@ -1168,7 +1189,7 @@ Deno.test("processMergeConflict - an abandon declined by a same-PR restart claim
 Deno.test("processMergeConflict - an abandon that fails still asks no human (Issue #3032)", async () => {
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: (request) => {
@@ -1200,7 +1221,7 @@ Deno.test("processMergeConflict - an abandon that fails still asks no human (Iss
 Deno.test("processMergeConflict - a declined abandon (not already-restarted) still asks no human (Issue #3032)", async () => {
   const seen: AbandonRestartRequest[] = [];
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
     {
       abandonRestartFn: (request) => {
@@ -1244,7 +1265,7 @@ Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion"
   assertStringIncludes(conclusion, CONFLICT_FAILED_MARKER);
   assertStringIncludes(
     conclusion,
-    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed`,
+    `attempt 1 of ${CONFLICT_RESOLUTION_BUDGET} failed`,
   );
   assertStringIncludes(conclusion, "conflict markers");
   assertStringIncludes(conclusion, "SECURITY.md");
@@ -1252,7 +1273,7 @@ Deno.test("processMergeConflict - a failed attempt posts an explicit conclusion"
 
 Deno.test("processMergeConflict - the budget-spent attempt also posts its conclusion", async () => {
   const { captured, result } = await runProcessor(
-    makeInput({ attemptCount: DEFAULT_MAX_CONFLICT_ATTEMPTS - 1 }),
+    makeInput({ attemptCount: CONFLICT_RESOLUTION_BUDGET - 1 }),
     makeGitScript({ markersAfterAgent: true }),
   );
 
@@ -1274,7 +1295,7 @@ Deno.test("processMergeConflict - a disrupted earlier attempt is surfaced on the
   assertStringIncludes(attempt, CONFLICT_ATTEMPT_MARKER);
   assertStringIncludes(
     attempt,
-    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+    `attempt 1 of ${CONFLICT_RESOLUTION_BUDGET}`,
   );
   assertStringIncludes(attempt, "2 earlier attempt(s) were disrupted");
   assertStringIncludes(attempt, "does not spend");
@@ -1323,6 +1344,104 @@ Deno.test("processMergeConflict - the PR lock is refreshed while the agent works
   const afterRun = captured.lockRenewals.length;
   await new Promise((resolve) => setTimeout(resolve, 50));
   assertEquals(captured.lockRenewals.length, afterRun);
+});
+
+Deno.test("processMergeConflict - a failure that lands before the lock spends no attempt", async () => {
+  const head = "a".repeat(40);
+  const thread: { body: string; author: string; createdAt: string }[] = [];
+  let released = 0;
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 0 }),
+    makeGitScript(),
+    {
+      workerId: "worker-a",
+      trustedAuthors: ["vibe-coder"],
+      acquireLockFn: (() => {
+        thread.push({
+          body: [
+            conflictAttemptMarker(1, "takeover", head),
+            conflictFailedMarker(1, "takeover", head),
+          ].join("\n"),
+          author: "vibe-coder",
+          createdAt: new Date().toISOString(),
+        });
+        return Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 7 },
+        });
+      }) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+      releaseLockFn: (() => {
+        released++;
+        return Promise.resolve({ ok: true, value: undefined });
+      }) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+    },
+    {
+      threadComments: thread,
+      prHeadState: { headRefOid: head, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  if (result.ok) assertEquals(result.value.processed, false);
+  assertEquals(
+    captured.comments.some((body) => body.includes(CONFLICT_ATTEMPT_MARKER)),
+    false,
+  );
+  assertEquals(released, 1);
+});
+
+Deno.test("processMergeConflict - a parked PR whose base moved starts a fresh budget under the lock", async () => {
+  // Issue #2312: the scan offers a parked PR again once its base moves, with
+  // attemptCount 0. The failures before the park belong to the old base, so
+  // the under-lock re-read must not treat that spent budget as still spent.
+  const head = "b".repeat(40);
+  const parkedBase = "c".repeat(40);
+  const failed = (n: number) => ({
+    body: conflictFailedMarker(n, "ladder", head),
+    author: "vibe-coder",
+    createdAt: "2026-10-03T00:00:00Z",
+  });
+  const thread = [
+    failed(1),
+    failed(2),
+    failed(3),
+    {
+      body: conflictParkedMarker(parkedBase),
+      author: "vibe-coder",
+      createdAt: "2026-10-03T01:00:00Z",
+    },
+  ];
+  const { captured, result } = await runProcessor(
+    makeInput({ attemptCount: 0 }),
+    makeGitScript(),
+    {
+      workerId: "worker-a",
+      trustedAuthors: ["vibe-coder"],
+      acquireLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: { acquired: true, lockCommentId: 9 },
+        })) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+      releaseLockFn: (() =>
+        Promise.resolve({
+          ok: true,
+          value: undefined,
+        })) as unknown as MergeConflictProcessorDeps["releaseLockFn"],
+    },
+    {
+      threadComments: thread,
+      prHeadState: { headRefOid: head, mergeable: "CONFLICTING" },
+    },
+  );
+
+  assert(result.ok);
+  if (result.ok) assertEquals(result.value.processed, true);
+  assert(
+    captured.comments.some((body) =>
+      body.includes(`attempt 1 of ${CONFLICT_RESOLUTION_BUDGET}`)
+    ),
+    "the post-park attempt is number 1, not a stand-down",
+  );
 });
 
 Deno.test("processMergeConflict - a PR locked by another worker is left alone", async () => {
@@ -1548,8 +1667,10 @@ Deno.test("processMergeConflict - an unmerged path left by the rules fails the a
 // Comment rendering (Issue #466)
 // ---------------------------------------------------------------------------
 
+const TEST_HEAD_SHA = "1111111111111111111111111111111111111111";
+
 Deno.test("buildAttemptComment - promises no in-run quality gate (Issue #2306)", () => {
-  const body = buildAttemptComment(1, 3, "main");
+  const body = buildAttemptComment(1, 3, "main", TEST_HEAD_SHA);
   assertEquals(
     /quality gate/i.test(body),
     false,
@@ -1561,13 +1682,24 @@ Deno.test("buildAttemptComment - promises no in-run quality gate (Issue #2306)",
   assertStringIncludes(body, "judgement call is named file by file");
 });
 
+Deno.test('buildAttemptComment - the marker carries pass="ladder" and the head sha (Issue #2996)', () => {
+  const body = buildAttemptComment(1, 3, "main", TEST_HEAD_SHA);
+  assertStringIncludes(body, `pass="ladder"`);
+  assertStringIncludes(body, `head="${TEST_HEAD_SHA}"`);
+});
+
 Deno.test("buildResolvedComment - carries the agent's judgement lines verbatim (Issue #2306)", () => {
   const reply = "Merged `main` in.\n" +
     "Judgement: worker/deno/lib/a.ts — kept both guards; dropped nothing; " +
     "because the two sides guard different inputs\n" +
     "Judgement: worker/deno/lib/b.ts — kept the 10s timeout; dropped the 60s " +
     "default; because only the interactive path reads it";
-  const body = buildResolvedComment("main", "issue-16-fix", reply);
+  const body = buildResolvedComment(
+    "main",
+    "issue-16-fix",
+    TEST_HEAD_SHA,
+    reply,
+  );
   assertStringIncludes(
     body,
     "Judgement: worker/deno/lib/a.ts — kept both guards",
@@ -1580,9 +1712,31 @@ Deno.test("buildResolvedComment - carries the agent's judgement lines verbatim (
 
 Deno.test("buildResolvedComment - says nothing extra when the rules resolved nothing", () => {
   assertEquals(
-    buildResolvedComment("main", "issue-16-fix", "merged by hand"),
-    buildResolvedComment("main", "issue-16-fix", "merged by hand", []),
+    buildResolvedComment(
+      "main",
+      "issue-16-fix",
+      TEST_HEAD_SHA,
+      "merged by hand",
+    ),
+    buildResolvedComment(
+      "main",
+      "issue-16-fix",
+      TEST_HEAD_SHA,
+      "merged by hand",
+      [],
+    ),
   );
+});
+
+Deno.test('buildResolvedComment - the marker carries pass="ladder" and the head sha (Issue #2996)', () => {
+  const body = buildResolvedComment(
+    "main",
+    "issue-16-fix",
+    TEST_HEAD_SHA,
+    "merged by hand",
+  );
+  assertStringIncludes(body, `pass="ladder"`);
+  assertStringIncludes(body, `head="${TEST_HEAD_SHA}"`);
 });
 
 Deno.test("describeDependencyDecision - renders each decision shape", () => {
@@ -2019,7 +2173,7 @@ Deno.test("processMergeConflict - a milestone head is left to the milestone sync
   assertStringIncludes(captured.comments[0] ?? "", "milestone branch sync");
   assertStringIncludes(
     captured.comments[0] ?? "",
-    '<!-- vibe-milestone-head branch="milestone/1730-resolve-merge-conflicts" -->',
+    '<!-- vibe-milestone-head branch="milestone/1730-resolve-merge-conflicts"',
   );
   assertEquals(
     lines.filter((line) =>
@@ -2289,7 +2443,7 @@ Deno.test("processMergeConflict - a nudge leaves the next real attempt's number 
     captured.comments.find((c) => c.includes(CONFLICT_ATTEMPT_MARKER)) ?? "";
   assertStringIncludes(
     attempt,
-    `attempt 2 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+    `attempt 2 of ${CONFLICT_RESOLUTION_BUDGET}`,
   );
 });
 
@@ -3075,6 +3229,7 @@ Deno.test("buildResolvedComment - appends the timings line last, and omits it wh
   const withTimings = buildResolvedComment(
     "main",
     "issue-16-fix",
+    TEST_HEAD_SHA,
     "Merged cleanly.",
     [],
     null,
@@ -3083,7 +3238,7 @@ Deno.test("buildResolvedComment - appends the timings line last, and omits it wh
   assertStringIncludes(withTimings, line);
   assertEquals(withTimings.trimEnd().endsWith(line), true);
 
-  const without = buildResolvedComment("main", "issue-16-fix");
+  const without = buildResolvedComment("main", "issue-16-fix", TEST_HEAD_SHA);
   assertEquals(without.includes("Timings (host"), false);
 });
 
@@ -3093,14 +3248,35 @@ Deno.test("buildFailedComment - appends the timings line, and omits it when ther
     1,
     2,
     "main",
+    TEST_HEAD_SHA,
     "the agent left 1 path(s) unmerged",
     ["SECURITY.md"],
     line,
   );
   assertStringIncludes(withTimings, line);
 
-  const without = buildFailedComment(1, 2, "main", "boom", ["SECURITY.md"]);
+  const without = buildFailedComment(
+    1,
+    2,
+    "main",
+    TEST_HEAD_SHA,
+    "boom",
+    ["SECURITY.md"],
+  );
   assertEquals(without.includes("Timings (host"), false);
+});
+
+Deno.test('buildFailedComment - the marker carries pass="ladder" and the head sha (Issue #2996)', () => {
+  const body = buildFailedComment(
+    1,
+    3,
+    "main",
+    TEST_HEAD_SHA,
+    "boom",
+    ["SECURITY.md"],
+  );
+  assertStringIncludes(body, `pass="ladder"`);
+  assertStringIncludes(body, `head="${TEST_HEAD_SHA}"`);
 });
 
 Deno.test("processMergeConflict - an attempt the run ended still logs where its minutes went (Issue #2308)", async () => {
@@ -3138,123 +3314,70 @@ Deno.test("processMergeConflict - an attempt the run ended still logs where its 
 });
 
 // ---------------------------------------------------------------------------
-// Milestone redo routing (Issue #3035)
+// PR body sync after a successful push (Issue #3089)
 // ---------------------------------------------------------------------------
 
-/** Minimal `processorDeps` for calling {@link runAbandonRestart} directly. */
-function makeProcessorDeps(
-  captured: Captured,
-  overrides?: Partial<MergeConflictProcessorDeps>,
-): MergeConflictProcessorDeps {
-  return {
-    logger: makeSilentLogger(),
-    deps: createMockDeps({ github: makeGithub(captured) }),
-    workDir: "/tmp/does-not-matter",
-    workRoot: "/tmp/does-not-matter-root",
-    ...overrides,
+Deno.test("processMergeConflict - syncs the PR body once after a verified push", async () => {
+  const calls: Array<{ prNumber: number; repo: string; beforeSha?: string }> =
+    [];
+  const syncPrBodyFn: MergeConflictProcessorDeps["syncPrBodyFn"] = (input) => {
+    calls.push({
+      prNumber: input.prNumber,
+      repo: input.repo,
+      beforeSha: input.beforeSha,
+    });
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
   };
-}
 
-/** A blank {@link Captured} fixture for the direct `runAbandonRestart` tests. */
-function makeEmptyCaptured(): Captured {
-  return {
-    events: [],
-    comments: [],
-    labelsAdded: [],
-    labelsRemoved: [],
-    gitArgs: [],
-    commitAndPushCalls: 0,
-    agentRuns: 0,
-    agentPrompts: [],
-    lockRenewals: [],
-    commentsDeleted: [],
-    emptyCommits: [],
-    pushes: [],
-    resets: [],
-  };
-}
-
-/** A {@link MilestoneRebuilt} outcome fixture with no replays or requeues. */
-function makeMilestoneRebuilt(
-  overrides?: Partial<MilestoneRebuilt>,
-): MilestoneRebuilt {
-  return {
-    outcome: "milestone-rebuilt",
-    milestoneBranch: "milestone/13-fleet-lands-its-own-conflicted-prs",
-    baseBranch: "main",
-    baseSha: "1111111111111111111111111111111111111111",
-    rebuildSha: "2222222222222222222222222222222222222222",
-    replayed: [],
-    skipped: [],
-    requeued: [],
-    delivery: { kind: "pushed" },
-    ...overrides,
-  };
-}
-
-Deno.test("runAbandonRestart - a milestone/** head calls milestoneRebuildFn, never abandonRestartFn", async () => {
-  const input = makeInput({
-    branchName: "milestone/13-fleet-lands-its-own-conflicted-prs",
-  });
-  const milestoneCalls: AbandonRestartRequest[] = [];
-  let abandonRestartCalls = 0;
-  const outcome = makeMilestoneRebuilt();
-
-  const result = await runAbandonRestart(
-    input,
-    makeProcessorDeps(makeEmptyCaptured(), {
-      milestoneRebuildFn: (request) => {
-        milestoneCalls.push(request);
-        return Promise.resolve(outcome);
-      },
-      abandonRestartFn: () => {
-        abandonRestartCalls++;
-        return Promise.resolve({
-          outcome: "abandoned",
-          issueNumber: 999,
-          label: { kept: "top-priority" },
-        });
-      },
-    }),
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    { syncPrBodyFn },
   );
 
-  assertEquals(result, outcome);
-  assertEquals(milestoneCalls.length, 1);
-  assertEquals(milestoneCalls[0]?.repo, input.repo);
-  assertEquals(milestoneCalls[0]?.prNumber, input.prNumber);
-  assertEquals(milestoneCalls[0]?.branchName, input.branchName);
-  assertEquals(milestoneCalls[0]?.baseBranch, input.baseBranch);
-  assertEquals(abandonRestartCalls, 0);
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]?.prNumber, 48);
+  assertEquals(calls[0]?.repo, "org/repo");
+  assertEquals(calls[0]?.beforeSha, "1111111111111111111111111111111111111111");
 });
 
-Deno.test("runAbandonRestart - a non-milestone head calls abandonRestartFn, never milestoneRebuildFn", async () => {
-  const input = makeInput({ branchName: "issue-16-fix" });
-  const abandonCalls: AbandonRestartRequest[] = [];
-  let milestoneCalls = 0;
+Deno.test("processMergeConflict - does not sync the PR body when nothing was merged", async () => {
+  let syncCalled = false;
+  const syncPrBodyFn: MergeConflictProcessorDeps["syncPrBodyFn"] = () => {
+    syncCalled = true;
+    return Promise.resolve({
+      ok: true,
+      value: { status: "updated", issueNumber: 42 },
+    });
+  };
 
-  const result = await runAbandonRestart(
-    input,
-    makeProcessorDeps(makeEmptyCaptured(), {
-      abandonRestartFn: (request) => {
-        abandonCalls.push(request);
-        return Promise.resolve({
-          outcome: "abandoned",
-          issueNumber: 234,
-          label: { kept: "top-priority" },
-        });
-      },
-      milestoneRebuildFn: () => {
-        milestoneCalls++;
-        return Promise.resolve(makeMilestoneRebuilt());
-      },
-    }),
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ ancestorCode: 1 }),
+    { syncPrBodyFn },
   );
 
-  assertEquals(result.outcome, "abandoned");
-  assertEquals(abandonCalls.length, 1);
-  assertEquals(abandonCalls[0]?.repo, input.repo);
-  assertEquals(abandonCalls[0]?.prNumber, input.prNumber);
-  assertEquals(abandonCalls[0]?.branchName, input.branchName);
-  assertEquals(abandonCalls[0]?.baseBranch, input.baseBranch);
-  assertEquals(milestoneCalls, 0);
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(syncCalled, false);
+});
+
+Deno.test("processMergeConflict - a failing PR body sync does not fail the run", async () => {
+  const { result } = await runProcessor(
+    makeInput(),
+    makeGitScript(),
+    {
+      syncPrBodyFn: () =>
+        Promise.resolve({ ok: false, error: new Error("gh pr edit boom") }),
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, true);
+  assertEquals(result.value.escalated, false);
 });

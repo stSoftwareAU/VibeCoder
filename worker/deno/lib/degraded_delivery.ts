@@ -18,7 +18,7 @@
  * flowchart TD
  *     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(same verdict as the<br/>run-stats comment)"}
  *     D -- no --> P["PR as today"]
- *     D -- yes --> S{"Every accepted scope<br/>item shown met?"}
+ *     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
  *     S -- yes --> P
  *     S -- no --> G{"Any shortfall<br/>partial or missing?"}
  *     G -- yes --> F["File (or reuse) one follow-up<br/>naming each shortfall"]
@@ -31,11 +31,17 @@
  * The degraded verdict is the one {@link buildDegradationReport} gives the
  * run-stats comment, so the two can never disagree about a run — except that
  * a previous generation of the requested tier (a stale container) does not
- * count here: the run was not handed to a fallback model. A scope item
- * is delivered only when the PR summary's closure block marks it `met`; a
- * `partial` or `missing` entry, or no entry at all, is a shortfall. A degraded
- * run on an issue that states no scope names the issue itself as unverified,
- * since there is nothing narrower to name.
+ * count here: the run was not handed to a fallback model. Closure entries are
+ * matched to scope items by their words, not by their position in the list
+ * (Issue #3128): an entry that matches no scope item, or matches more than
+ * one equally well, does not assess that item, so it reads `unassessed`; one
+ * split across several entries takes their worst status. A `partial` or
+ * `missing` entry left unassigned is still a shortfall, named by its own
+ * subject, or by its `reason:` when the subject has no words. A scope item is
+ * delivered only when it is matched to a `met` entry (and nothing worse); a
+ * `partial` or `missing` match, or no match at all, is a shortfall. A
+ * degraded run on an issue that states no scope names the issue itself as
+ * unverified, since there is nothing narrower to name.
  *
  * Only a `partial` or `missing` shortfall files a follow-up (Issue #2695). An
  * `unassessed` item carries no evidence of a gap — the run said nothing about
@@ -47,7 +53,9 @@
  * The follow-up carries the `idle-task` label — the one work-trigger label the
  * worker may apply itself — so a later run picks the residue up without a
  * human, and a `finding-id` marker keyed on the parent, so a second degraded
- * run on the same issue reuses the open follow-up rather than filing another.
+ * run on the same issue reuses the open follow-up rather than filing
+ * another — and rewrites its body to that later run's shortfalls and
+ * delivered items, so the follow-up never goes stale (Issue #3145).
  *
  * The verdict and the rendering are pure; {@link fileDegradedFollowUp} is the
  * one I/O step, with `gh` injected.
@@ -59,6 +67,7 @@ import {
   extractAcceptedScope,
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
+import { matchClosureEntries } from "./closure_criterion_match.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { IMPLEMENTATION_RUN_STATS_PHASE } from "./issue_run_stats_comment.ts";
 import {
@@ -78,9 +87,13 @@ import type { Result } from "../types.ts";
 /** Why a scope item counts as not delivered. */
 export type ShortfallStatus = "partial" | "missing" | "unassessed";
 
-/** One accepted scope item a degraded run did not show as met. */
+/** One shortfall a degraded run files: a scope item not shown as met, or an unmatched gap the closure block reported. */
 export interface DegradedShortfall {
-  /** The scope item, as the issue states it. */
+  /**
+   * The scope item, as the issue states it. A gap the closure block left
+   * unmatched carries the entry's own subject instead — its `reason:` when
+   * that subject has no words.
+   */
   criterion: string;
   /** `partial`/`missing` as the summary said, or `unassessed` when it said nothing. */
   status: ShortfallStatus;
@@ -94,7 +107,7 @@ export interface DegradedDeliveryVerdict {
   reason?: string;
   /** Scope items the summary marks `met`. Empty on a healthy run. */
   delivered: string[];
-  /** Scope items short of `met`. Always empty on a healthy run. */
+  /** Scope items short of `met`, plus unmatched `partial` or `missing` gaps. Always empty on a healthy run. */
   shortfalls: DegradedShortfall[];
 }
 
@@ -141,15 +154,20 @@ export function assessDegradedDelivery(args: {
 
   const stated = extractAcceptedScope(args.issueBody);
   const scope = stated.length > 0 ? stated : [UNSTATED_SCOPE_ITEM];
-  // The closure block carries one assessment per criterion, in criterion
-  // order; `unrequested` entries describe the diff, not the scope.
-  const assessments = parseClosureEntries(args.prBody)
-    .filter((entry) => entry.status !== "unrequested");
+  // Closure entries are matched to criteria by their words, not by list
+  // position (Issue #3128): an entry that matches no criterion, or more than
+  // one equally well, assesses nothing, so its criterion is `unassessed`; a
+  // criterion split across several entries takes their worst status. A
+  // `partial` or `missing` entry left unassigned is still a shortfall, named
+  // by its own subject, so a paraphrased gap is not dropped.
+  const match = stated.length > 0
+    ? matchClosureEntries(stated, parseClosureEntries(args.prBody))
+    : { statuses: [], unassignedGaps: [] };
 
   const delivered: string[] = [];
   const shortfalls: DegradedShortfall[] = [];
   scope.forEach((criterion, index) => {
-    const status = stated.length > 0 ? assessments[index]?.status : undefined;
+    const status = stated.length > 0 ? match.statuses[index] : undefined;
     if (status === "met") {
       delivered.push(criterion);
     } else if (status === "partial" || status === "missing") {
@@ -158,6 +176,9 @@ export function assessDegradedDelivery(args: {
       shortfalls.push({ criterion, status: "unassessed" });
     }
   });
+  for (const gap of match.unassignedGaps) {
+    shortfalls.push({ criterion: gap.subject, status: gap.status });
+  }
 
   return {
     degraded: true,
@@ -180,7 +201,8 @@ export function degradedFollowUpFindingId(parentNumber: number): string {
 
 /** One markdown bullet per shortfall. */
 function shortfallLines(shortfalls: readonly DegradedShortfall[]): string[] {
-  // `criterion` is copied from the issue body, which is untrusted, into a
+  // `criterion` is the issue's scope item, or the closure entry's subject
+  // for an unmatched gap. Either is untrusted, and it is copied into a
   // fleet-authored idle-task issue whose own finding-id marker
   // `findOpenIssueByFindingId` trusts for dedup — Issue #2778.
   return shortfalls.map((s) =>
@@ -214,7 +236,8 @@ export function buildDegradedFollowUpIssue(args: {
     `Auto-filed by the Vibe Coder (Issue #2562): the implementation run for ` +
     `#${parentNumber} was **degraded** — ${
       verdict.reason ?? "served by a fallback model"
-    } — and did not show every accepted scope item as met. That run's PR ` +
+    } — and did not show every accepted scope item as met, or reported a ` +
+    `gap of its own. That run's PR ` +
     `still completes #${parentNumber} on merge; the outstanding scope ` +
     `continues here so it is not lost with it.`,
     "",
@@ -304,7 +327,8 @@ export function buildDegradedPrSection(
     "",
     `This run was degraded (${
       verdict.reason ?? "served by a fallback model"
-    }) and did not show every accepted scope item as met. The outstanding ` +
+    }) and did not show every accepted scope item as met, or reported a ` +
+    `gap of its own. The outstanding ` +
     `items continue in #${followUpNumber}:`,
     "",
     ...shortfallLines(verdict.shortfalls),
@@ -317,9 +341,15 @@ export function buildDegradedPrSection(
  * File the degraded run's follow-up, or reuse the open one for this parent
  * (Issue #2562).
  *
- * Fails loud: a follow-up that cannot be filed returns an error, and the
- * caller must not raise a PR that would close the parent with the residue
- * recorded nowhere.
+ * On reuse the open follow-up's body is rewritten to this run's verdict —
+ * its finding-id marker is kept, since {@link buildDegradedFollowUpIssue}
+ * emits the same one — so a later run's shortfalls and delivered items
+ * replace the earlier run's stale ones rather than being silently dropped
+ * (Issue #3145). The title is keyed on the parent and is left alone.
+ *
+ * Fails loud: a follow-up that cannot be filed, or a reused one that cannot
+ * be brought up to date, returns an error, and the caller must not raise a
+ * PR that would close the parent with the residue recorded nowhere.
  *
  * @returns The follow-up's issue number.
  */
@@ -370,6 +400,28 @@ export async function fileDegradedFollowUp(args: {
             `follow-up of #${args.parentNumber}`,
         ),
       };
+    }
+    if (filed.skipped) {
+      try {
+        await args.gh([
+          "issue",
+          "edit",
+          String(filed.number),
+          "--repo",
+          args.repo,
+          "--body",
+          issue.body,
+        ]);
+      } catch (error) {
+        const cause = error instanceof Error ? error.message : String(error);
+        return {
+          ok: false,
+          error: new Error(
+            `could not update the reused degraded-run follow-up ` +
+              `#${filed.number} of #${args.parentNumber}: ${cause}`,
+          ),
+        };
+      }
     }
     return { ok: true, value: { number: filed.number, reused: filed.skipped } };
   } catch (error) {

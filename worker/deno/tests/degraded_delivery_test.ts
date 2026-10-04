@@ -148,6 +148,111 @@ Deno.test("assessDegradedDelivery - a degraded run names each criterion short of
   ]);
 });
 
+/** Same three criteria as SUMMARY_PARTIAL, but the entries appear in a
+ * different order from the criteria — floor missing first, then router met,
+ * then docs met — so a positional match would misattribute every status
+ * (Issue #3128). */
+const SUMMARY_REORDERED = `## Summary
+
+Did some of it.
+
+## Acceptance Criteria
+
+- **missing** — the release floor is 1.9.0 — reviewer: missing — reason: ran out of turns
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **met** — the docs table lists opus for planning — evidence: \`docs/MODEL-AND-CACHING.md\` — reviewer: met
+`;
+
+Deno.test("assessDegradedDelivery - #3128: closure entries out of order are matched by content, not position", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: SUMMARY_REORDERED,
+  });
+  assertEquals(verdict.delivered, [
+    "The router sends planning to opus.",
+    "The docs table lists opus for planning.",
+  ]);
+  assertEquals(verdict.shortfalls, [
+    { criterion: "The release floor is 1.9.0.", status: "missing" },
+  ]);
+
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict,
+    runId: "vibe-test-reorder",
+  });
+  assertStringIncludes(issue.body, "The release floor is 1.9.0.");
+  assertStringIncludes(issue.body, "The router sends planning to opus.");
+  const deliveredSection = issue.body.split("## Already delivered")[1]!;
+  assert(!deliveredSection.includes("The release floor is 1.9.0."));
+});
+
+/** The first criterion split across a `met` entry and a `missing` entry; the
+ * other two keep their own separate entries (Issue #3128). */
+const SUMMARY_SPLIT_CRITERION = `## Summary
+
+Did some of it.
+
+## Acceptance Criteria
+
+- **met** — the router sends planning to opus for the eight planning phases — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **missing** — the router sends planning to opus for the ninth phase — reviewer: missing — reason: forgot one
+- **met** — the docs table lists opus for planning — evidence: \`docs/MODEL-AND-CACHING.md\` — reviewer: met
+- **met** — the release floor is 1.9.0 — evidence: \`.release-floor\` — reviewer: met
+`;
+
+Deno.test("assessDegradedDelivery - #3128: a criterion split across a met and a missing entry reads missing", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody: SUMMARY_SPLIT_CRITERION,
+  });
+  assertEquals(verdict.shortfalls, [
+    { criterion: "The router sends planning to opus.", status: "missing" },
+  ]);
+  assertEquals(verdict.delivered, [
+    "The docs table lists opus for planning.",
+    "The release floor is 1.9.0.",
+  ]);
+});
+
+Deno.test("degradedNeedsFollowUp - an unmatched missing entry files a follow-up even when every criterion is met (Issue #3128)", () => {
+  const prBody = `${SUMMARY_ALL_MET}
+- **missing** — the changelog entry — reviewer: missing — reason: the changelog still says the old floor
+`;
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody,
+  });
+
+  assertEquals(verdict.delivered.length, 3);
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+  assert(
+    verdict.shortfalls.some((s) =>
+      s.status === "missing" && s.criterion.includes("changelog entry")
+    ),
+    "the unmatched gap is named on the follow-up",
+  );
+  const followUp = buildDegradedFollowUpIssue({
+    parentNumber: 3128,
+    parentTitle: "match closure entries",
+    verdict,
+    runId: "test",
+  });
+  assertStringIncludes(followUp.body, "changelog entry");
+  assertStringIncludes(
+    followUp.body,
+    "did not show every accepted scope item as met, or reported a gap of its own",
+  );
+  assertStringIncludes(
+    buildDegradedPrSection(verdict, 99),
+    "did not show every accepted scope item as met, or reported a gap of its own",
+  );
+});
+
 Deno.test("assessDegradedDelivery - a degraded run that met every criterion has no shortfall", () => {
   const verdict = assessDegradedDelivery({
     claudeResults: HAIKU_FALLBACK,
@@ -326,6 +431,87 @@ Deno.test("fileDegradedFollowUp - reuses the open follow-up for the same parent"
   assert(!calls.some((c) => c[1] === "create"), "must not file a second one");
 });
 
+Deno.test("fileDegradedFollowUp - #3145: a reused follow-up is brought up to date with the later run's shortfalls", async () => {
+  const calls: string[][] = [];
+  const oldBody = [
+    `<!-- finding-id: ${degradedFollowUpFindingId(42)} -->`,
+    "",
+    "## Acceptance Criteria",
+    "",
+    "- **missing** — An old criterion the first run missed.",
+  ].join("\n");
+  const existing = JSON.stringify([{
+    number: 70,
+    body: oldBody,
+    author: { login: "vibe-bot" },
+  }]);
+  const verdict = degradedVerdict();
+  const result = await fileDegradedFollowUp({
+    repo: "o/r",
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict,
+    runId: "vibe-test-3145a",
+    dedupAuthors: FLEET,
+    gh: (args) => {
+      calls.push(args);
+      if (args[1] === "list") return Promise.resolve(existing);
+      if (args[1] === "edit") return Promise.resolve("");
+      return Promise.reject(new Error(`unexpected gh call: ${args[1]}`));
+    },
+  });
+  assertEquals(result, { ok: true, value: { number: 70, reused: true } });
+  assert(!calls.some((c) => c[1] === "create"), "must not file a second one");
+  const edits = calls.filter((c) => c[1] === "edit");
+  assertEquals(edits.length, 1);
+  const edit = edits[0]!;
+  assertEquals(edit[0], "issue");
+  assertEquals(edit[1], "edit");
+  assertEquals(edit[2], "70");
+  assertEquals(edit[3], "--repo");
+  assertEquals(edit[4], "o/r");
+  const bodyIndex = edit.indexOf("--body");
+  assert(bodyIndex !== -1, "edit must carry --body");
+  const body = edit[bodyIndex + 1]!;
+  const expected = buildDegradedFollowUpIssue({
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict,
+    runId: "vibe-test-3145a",
+  }).body;
+  assertEquals(body, expected);
+  assertStringIncludes(body, "The docs table lists opus for planning.");
+  assertStringIncludes(body, `finding-id: ${degradedFollowUpFindingId(42)}`);
+  assertStringIncludes(body, "vibe-test-3145a");
+  assert(
+    !body.includes("An old criterion the first run missed."),
+    "the stale shortfall must not survive the update",
+  );
+});
+
+Deno.test("fileDegradedFollowUp - #3145: a reused follow-up that cannot be updated is an error, not a silent pass", async () => {
+  const existing = JSON.stringify([{
+    number: 70,
+    body: `<!-- finding-id: ${degradedFollowUpFindingId(42)} -->`,
+    author: { login: "vibe-bot" },
+  }]);
+  const result = await fileDegradedFollowUp({
+    repo: "o/r",
+    parentNumber: 42,
+    parentTitle: "Finish the switch",
+    verdict: degradedVerdict(),
+    runId: "vibe-test-3145b",
+    dedupAuthors: FLEET,
+    gh: (args) =>
+      args[1] === "list"
+        ? Promise.resolve(existing)
+        : Promise.reject(new Error("HTTP 502")),
+  });
+  assertEquals(result.ok, false);
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "#70");
+});
+
 Deno.test("fileDegradedFollowUp - a failed create is an error, not a silent pass", async () => {
   const result = await fileDegradedFollowUp({
     repo: "o/r",
@@ -415,6 +601,58 @@ Deno.test("degradedNeedsFollowUp - (b) stated criteria all unassessed files no f
   });
   assertEquals(verdict.shortfalls.length, 3);
   assertEquals(degradedNeedsFollowUp(verdict), false);
+});
+
+Deno.test("degradedNeedsFollowUp - a missing entry with no subject still files a follow-up (Issue #3128)", () => {
+  const prBody = `## Acceptance Criteria
+
+- **met** — the router sends planning to opus — evidence: \`router.ts\` — reviewer: met
+- **missing** — reviewer: missing — reason: the docs table still says sonnet
+- **met** — the release floor is 1.9.0 — evidence: \`Cargo.toml\` — reviewer: met
+`;
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody,
+  });
+
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+  assert(
+    verdict.shortfalls.some((s) =>
+      s.status === "missing" &&
+      s.criterion.includes("docs table still says sonnet")
+    ),
+    "the reason names the gap when the entry has no subject",
+  );
+});
+
+Deno.test("degradedNeedsFollowUp - a reworded in-order missing entry still files a follow-up (Issue #3128)", () => {
+  const prBody = `## Acceptance Criteria
+
+- **met** — the router sends planning to opus — evidence: \`router.ts\` — reviewer: met
+- **missing** — the docs table names opus as the planning model — reason: the table still says sonnet
+`;
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_CRITERIA,
+    prBody,
+  });
+
+  assertEquals(degradedNeedsFollowUp(verdict), true);
+  assert(
+    verdict.shortfalls.some((s) =>
+      s.status === "missing" &&
+      s.criterion.includes("docs table names opus")
+    ),
+    "the paraphrased gap is named on the follow-up",
+  );
+  const followUp = buildDegradedFollowUpIssue({
+    parentNumber: 3128,
+    parentTitle: "match closure entries",
+    verdict,
+    runId: "test",
+  });
+  assertStringIncludes(followUp.body, "docs table names opus");
 });
 
 Deno.test("degradedNeedsFollowUp - (c) one partial criterion files a follow-up", () => {

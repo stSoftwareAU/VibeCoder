@@ -13,7 +13,7 @@ import {
 } from "../lib/pr_ci_nudge_scan.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../lib/fleet_authors.ts";
 import {
-  gatedHeadMarker,
+  gatedHeadMarkerPrefix,
   resetGatedHeadReportsForTest,
 } from "../lib/gated_head_guard.ts";
 import { INVITATION_PR_FIELDS } from "../lib/pr_invitation_lookup.ts";
@@ -819,7 +819,7 @@ Deno.test("processCiNudgeCandidate - a milestone head under required checks is n
   );
   assertEquals(commentCalls.length, 1);
   const body = commentCalls[0]![commentCalls[0]!.indexOf("--body") + 1]!;
-  assert(body.includes(gatedHeadMarker(GATED_MILESTONE_HEAD)));
+  assert(body.includes(gatedHeadMarkerPrefix(GATED_MILESTONE_HEAD)));
   assert(!body.includes(NUDGE_COMMENT_MARKER));
 });
 

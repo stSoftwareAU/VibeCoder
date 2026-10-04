@@ -242,12 +242,24 @@ not after a reviewer finds it weeks later.
   every exception the existing rules carve out. Two rules left telling the
   agent to do opposite things is a blocking self-review finding. List the
   related existing rules you checked in the PR body, or say you found none.
+- **Adding a member owes a docs change too.** When you add a field, enum
+  variant, kind, flag, column or row element to an existing set, grep for one
+  or two **existing sibling members**, not the new one — the new name is in no
+  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
+  manual page or API description that lists the set names the new member in
+  the same change, or is reworded so it no longer reads as complete.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
   UI copy, and the docs prose for those fields. Make each one true for **every
   case** the new behaviour produces, not only the common one. Grep for the
   variant or field name **and** for the old wording.
+- Grep for the **stem** of a behavioural claim, not one inflection
+  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
+  final head after editing. In a file you update, read every passage that
+  mentions the changed surface, not only the section you edited. Each
+  remaining hit goes in the Docs sweep line by `file:line` with the reason it
+  is still true.
 
 ## Visual Documentation
 
@@ -596,6 +608,20 @@ separate.
   inflates both readings and stays green, which is exactly what an absolute
   budget cannot do (Issue #530). Compare two readings of the same work; never
   a reading against a constant.
+- **Vet every regex on untrusted text, one hostile case per pattern.** Every
+  regex a change adds or edits that runs on untrusted or agent-written text
+  (an issue body, a PR summary, agent output) gets its own check, not one per
+  module. Read each pattern for two quantifiers that can match the same
+  characters with only optional tokens between them: `\s*:?\s*$`,
+  `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
+  overlap: trim the line first and drop the redundant quantifier, make the
+  pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
+  trailing whitespace, or cap the run. Then add one hostile case per pattern:
+  a long run of the shared character followed by a character the pattern
+  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
+  with the same defect, and #3160's hostile cases covered the inline form while
+  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
 - **Keep iteration counts honest** — do not shrink them to make a "performance
   test" fit inside a unit test. Write a proper benchmark and include the results
   in the PR summary.
@@ -686,18 +712,21 @@ message, in this shape:
 Depends on owner/repo#N
 ```
 
-In an issue run, the worker recognises that shape and **defers** the issue
-only while the branch has no commits and no uncommitted changes against the
-base: it stays open with its discovery label, `Depends on owner/repo#N` is
-recorded in its body, and the dependency gate skips it on every scan until
-that dependency closes. The release comment says
-`deferred: depends on owner/repo#N`. No human is paged and no work is lost.
-Once work is committed, change detection sends the issue run to the PR path
-and this shape is not read. Record the core deliverable as `missing` and
-name the blocking dependency beside the closing keyword. A CI-fix run is the
-exception: `prompts/ci_fix/prompt.md` "Base-branch failures" still ends with
-`Depends on owner/repo#N`, and that line defers a check that is already red
-on the base branch.
+In an issue run, the worker recognises that shape and **defers** the issue: it
+stays open with its discovery label, `Depends on owner/repo#N` is recorded in
+its body, and the dependency gate skips it on every scan until that dependency
+closes. The release comment says `deferred: depends on owner/repo#N`. No human
+is paged and no work is lost. After a commit this deferral is honoured only
+when the `Depends on` / `Blocked by` line names an issue the worker reads as
+still open; a closed or unreadable dependency does not defer, and the worker
+hands the issue to a human and raises no PR. A CI-fix run is the exception
+for a check already red on the base branch: `prompts/ci_fix/prompt.md`
+"Base-branch failures" still ends with
+`Depends on owner/repo#N`, and that line defers that check. That CI-fix
+deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
+or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
+(`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
+branch is red.
 
 Use a same-repo `Depends on #N` when the dependency lives in the repo you are
 working; use the full `owner/repo#N` form for any other repo. Name the
@@ -893,12 +922,25 @@ this **instead of looping**:
    For PR feedback or CI fix work, write the message to `.pr_response_message`
    in the working directory — the worker posts it as the PR reply. For issue
    work, post the message as a comment on the current issue — and stop there.
+   In an issue run, this free-text hand-off is honoured only when the run
+   leaves no commit and no uncommitted change. Decide before you edit any
+   file, because the worker commits and pushes the working tree periodically
+   and again at the end of the run. Once a file has changed, a free-text
+   hand-off is not read. In an issue run, if no open issue already blocks
+   the work, this is not a deferral. Do not file a follow-up and name it on
+   a `Depends on` line: that hands the issue to a human instead of deferring,
+   whether or not the branch has commits. A
+   bare `## Blocked:` heading does not defer, and the worker raises a PR
+   that closes the issue. A PR-feedback or CI-fix run
+   keeps using the `.pr_response_message` escape hatch above, including on a
+   branch that already has commits.
    **Do not close the issue yourself**: the `gh` guard refuses
    `gh issue close|reopen|delete|transfer|lock` on the issue you are working.
-   The worker releases its claim and hands the issue to a human
-   (`needs-human`) only while the branch has no commits and no uncommitted
-   changes against the base. Once work is committed, this free-text hand-off
-   is not read. A human decides whether to close the issue.
+   In an issue run, the worker releases its claim and hands the issue to a
+   human (`needs-human`) only while the branch has no commits and no
+   uncommitted changes against the base; once work is committed, an
+   issue-comment hand-off is not read. A human decides whether to close the
+   issue.
 4. Exit cleanly. Do not retry the original change.
 
 **Do not invoke this lightly.** Make a serious attempt first. Use the escape
@@ -981,6 +1023,10 @@ over a shared branch, rewrite published history, `rm -rf` a path you did not
 create, or post to a shared external system unless the task explicitly asks for
 it. When an irreversible step is genuinely required, do the reversible part
 first (branch, back up, or commit) and state plainly what you are about to do.
+These are commands you run. Code you write that deletes or replaces state at
+runtime — an `rm -rf`, a clone or `.git` swap, a `git reset --hard` — is held
+to **Code that deletes or replaces state proves everything it destroys is
+safe to lose** under Test Coverage Expectations.
 
 ## Commit Run-Id Trailer
 
@@ -1093,6 +1139,20 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A new test must go red without its change.** A test added to guard a
+change — a regression test a fix or a review asks for, a documentation-drift
+test, a growth guard — must go red when only that change is removed. A test
+whose input never reaches the failure passes either way: a fake that throws
+into a catch that returns the expected value, a fixture that a re-sort puts
+in order before the assertion runs, a phrase the section already held before
+the change. Remove the change on purpose (delete the clause, drop the cap,
+restore the old expression), run the test, see it fail, then restore it. A
+new test that stays green without its change is a blocking self-review
+finding. A test that only pins current behaviour — the fault was unreproduced
+or already fixed, and no production change was made — is expected green on
+base, and the Test Plan says so. **A negative test must be able to fail**
+below is this rule for an assertion that something does *not* happen.
+
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
 rather than stale — needs a fixture that contains the forbidden thing: a real
@@ -1102,6 +1162,20 @@ PR break the guard on purpose (remove the filter, invert the check, or fill
 from the wrong source), run the test, confirm it goes red, then restore the
 guard. A negative test that stays green without its guard is a blocking
 self-review finding.
+
+**A refusal test must be refused by the rule it names.** A test that
+expects an input to be refused, rejected or answered with `false` or an
+error must assert the specific error variant or rule, not only that an
+error occurred or which field it mentions. Its input must satisfy every
+other rule, so only the rule under test can refuse it: show that the same
+input with only the probed value made legal is accepted. A test that
+compares two refusers (schema against loader, client against server) must
+also assert that the on-target base value is accepted by both sides, so
+agreement on an unrelated refusal cannot pass. When a change adds a
+refusal that runs before an existing one (a new boundary check, a
+retired-field list, a stricter parse, a fake that throws), re-run the
+existing tests that expect the later refusal and confirm each still
+reaches it; one that now stops earlier is a blocking self-review finding.
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
@@ -1130,6 +1204,38 @@ List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
 
+**A new branch must be reachable by the input it exists for.** When you add
+a branch, guard, capture or hand-off below existing early exits in the same
+function or its caller (`return`, `continue`, `break`, `exit`, a retry or
+failure return), list each exit above the insertion point and what fires it.
+For each one, ask whether a realistic input for the new case can fire it
+first. Free-text heuristics, empty or short-input filters and "nothing to do"
+exits are the usual culprits. If one can, move the new branch above it, or
+state in the PR summary why that exit must win. A real infrastructure signal
+can justify that; a wording guess cannot. Then add a test whose input is the
+realistic case and also trips each earlier exit the new branch now precedes.
+Move the new branch back below that exit and confirm the test goes red. A
+new branch that a realistic input for its own case cannot reach is a
+blocking self-review finding (Issue #3167).
+
+**Code that deletes or replaces state proves everything it destroys is safe
+to lose.** When a change adds code that `rm -rf`s a directory, swaps a new
+clone or `.git` in for an old one, runs `git reset --hard` or `git clean -fdx`,
+or overwrites a file in place, first list everything the old copy holds that
+the replacement will not. For a git clone that is every `refs/heads/*` tip and
+its commits not contained in an origin ref, the stash, the reflogs, untracked
+and ignored files, and local config (branch upstreams, hooks, `extensions.*`).
+Proving only the state the change is about — the current branch equals
+`origin/<branch>` and the working tree is clean — says nothing about the rest.
+For each item, either prove it is safe to lose (for example, every local
+branch tip is an ancestor of an origin ref) or refuse the operation and report
+why. Before writing a new check, search the repo for an existing guard on a
+sibling destructive path (`git grep -n -e 'rm -rf' -e unpushed`) and call it
+rather than copying it. Add a test per refusal whose fixture holds that state
+and asserts it survives. List the inventory in the PR summary, with what is
+guarded and what is accepted as lost. A destructive operation that deletes
+state it never checked is a blocking self-review finding (Issue #3107).
+
 **Every changed call site needs a test that goes red without it.** When a
 change threads a new argument, flag or behaviour through more than one
 production caller, a test of the helper, or of some callers, does not cover
@@ -1141,6 +1247,19 @@ forcing a fallback path) does not count for that path. A changed call site
 whose revert leaves the suite green is a blocking self-review finding: add a
 test through that caller, ideally at the level the linked issue's Failure
 Detection names.
+
+**Narrowing a shared helper changes every caller.** Before a helper that
+other code already calls starts rejecting, throwing on or dropping a value it
+used to accept (a validator, type guard, allowed-value set, required field,
+ref/name check), list its existing callers and the real values each can
+receive. Check those values against the tool or API's actual output, not its
+documentation's happy path (see **Observe the real tool before you rely on
+it**). If any existing caller can legitimately pass a value the new rule
+rejects, keep the shared helper as it was and apply the stricter rule at the
+new call site. Otherwise add a test showing an existing caller still accepts
+its real inputs. List the callers checked in the PR summary. A narrowed shared
+helper with no callers-checked list is a blocking self-review finding
+(Issue #3100).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a

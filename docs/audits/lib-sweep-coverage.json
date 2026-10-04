@@ -741,6 +741,7 @@
         "worker/deno/lib/planning_run_aggregation.ts",
         "worker/deno/lib/planning_run_stats.ts",
         "worker/deno/lib/pr_body.ts",
+        "worker/deno/lib/pr_body_sync.ts",
         "worker/deno/lib/pr_branch_checkout.ts",
         "worker/deno/lib/pr_branch_update.ts",
         "worker/deno/lib/pr_check_contexts.ts",
@@ -2194,7 +2195,7 @@
     {
       "issue": 2688,
       "chunk": "top-up-2688",
-      "title": "top-up: worker work-on → planning hand-off",
+      "title": "top-up: worker work-on \u2192 planning hand-off",
       "ledger": "docs/audits/security-sweep-2839-top-up-delta.md",
       "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: planning_handoff.ts, planning_handoff_trust.ts (#2688)",
       "status": "swept",
@@ -2464,6 +2465,32 @@
       ]
     },
     {
+      "issue": 2998,
+      "chunk": "top-up-2998",
+      "title": "top-up: the milestone sync landing check and its per-PR budget",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2998",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_sync_landing.ts, milestone_sync_pr_budget.ts (#2998)",
+      "status": "claimed",
+      "sweptAt": "84b3700e047d33d75bffde20dcc1aa7127db5f43",
+      "paths": [
+        "worker/deno/lib/milestone_sync_landing.ts",
+        "worker/deno/lib/milestone_sync_pr_budget.ts"
+      ]
+    },
+    {
+      "issue": 2999,
+      "chunk": "top-up-2999",
+      "title": "top-up: the conflict takeover pass and its milestone-fix resolvers",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/2999",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_takeover.ts, conflict_takeover_resolvers.ts (#2999)",
+      "status": "claimed",
+      "sweptAt": "e6a89d49eb3ec840e1f661ee5c3a1326f43582ac",
+      "paths": [
+        "worker/deno/lib/conflict_takeover.ts",
+        "worker/deno/lib/conflict_takeover_resolvers.ts"
+      ]
+    },
+    {
       "issue": 3035,
       "chunk": "top-up-3035",
       "title": "top-up: the milestone-redo rebuild module",
@@ -2485,6 +2512,67 @@
       "sweptAt": "d2571a0755334c5a447be97ed673ce15c26b55ba",
       "paths": [
         "worker/deno/lib/docs_sweep_gate.ts"
+      ]
+    },
+    {
+      "issue": 3088,
+      "chunk": "top-up-3088",
+      "title": "top-up: declared-outcome hand-off on a commit-producing run",
+      "ledger": "docs/audits/security-sweep-3088-declared-handoff.md",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: phases/declared_handoff.ts, phases/declared_handoff_phase.ts (#3088)",
+      "status": "swept",
+      "sweptAt": "f2be890ba42f48401c7b94e0c35d87febdf888db",
+      "paths": [
+        "worker/deno/lib/phases/declared_handoff.ts",
+        "worker/deno/lib/phases/declared_handoff_phase.ts"
+      ]
+    },
+    {
+      "issue": 3124,
+      "chunk": "top-up-3124",
+      "title": "top-up: the result-placeholder summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3124",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: result_placeholder_gate.ts (#3124)",
+      "status": "claimed",
+      "sweptAt": "1317839ae5dbc3e89c11535bd5430cf838ee74ce",
+      "paths": [
+        "worker/deno/lib/result_placeholder_gate.ts"
+      ]
+    },
+    {
+      "issue": 3128,
+      "chunk": "top-up-3128",
+      "title": "top-up: the degraded-run guard's closure-entry criterion matcher",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3128",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: closure_criterion_match.ts (#3128)",
+      "status": "claimed",
+      "sweptAt": "521483190dca4eb2de4976ee494be7f1a7d0e6b1",
+      "paths": [
+        "worker/deno/lib/closure_criterion_match.ts"
+      ]
+    },
+    {
+      "issue": 3178,
+      "chunk": "top-up-3178",
+      "title": "top-up: the host-disk gate on heavy builds",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3178",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: heavy_build_gate.ts (#3178)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/heavy_build_gate.ts"
+      ]
+    },
+    {
+      "issue": 3172,
+      "chunk": "top-up-3172",
+      "title": "top-up: the docs-sweep term re-run at the head",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3172",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_hits.ts (#3172)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/docs_sweep_hits.ts"
       ]
     }
   ],

@@ -135,6 +135,12 @@ export interface PhaseState {
   repoPath: string;
   clarityStatus: "not_assessed" | "skipped" | "assessed_clear";
   claudeOutput: string;
+  /**
+   * Wall-clock start of the whole `work-on` run (Issue #3088). Set once when
+   * the state is built. A later execute attempt resets `executeStartTime`
+   * and must not move this.
+   */
+  runStartTime?: number;
   executeStartTime: number;
   baselineQualityPassed: boolean;
   baselineQualityOutput: string;
@@ -334,12 +340,16 @@ export interface PhaseState {
    * PR-summary rule verdicts observed during THIS run (Issue #2189), oldest
    * first — closure, independent review and reproduction alike.
    *
-   * The completion phase appends one entry per block that reached no PR. The
-   * first entry triggers the in-run recovery — one agent invocation carrying
-   * the gate's own remediation comment, then the quality gate and the
-   * completion gates again — so a documentation shortfall no longer costs a
-   * whole run. A second entry ends the run in `failure`, with the comment
-   * already on the thread.
+   * The completion phase appends the run's first entry whether or not a PR
+   * already exists for this run's branch — an agent-raised PR gets the same
+   * in-run recovery turn a no-PR run gets, rather than being finalised
+   * straight off that first block (Issue #3163). A second (or later) entry is
+   * appended only when there is still no PR; when a PR exists a later block
+   * finalises it instead. The first entry triggers the in-run recovery — one
+   * agent invocation carrying the gate's own remediation comment, then the
+   * quality gate and the completion gates again — so a documentation
+   * shortfall no longer costs a whole run. A second entry on a no-PR run ends
+   * the run in `failure`, with the comment already on the thread.
    */
   summaryRuleBlocks?: SummaryRuleRunVerdict[];
   /**

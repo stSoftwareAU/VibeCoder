@@ -65,6 +65,7 @@ import {
 import { assertPushTargetAllowed, resolvePreFlightSpec } from "./git_push.ts";
 import { buildPushArgs } from "./git_ref_args.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
+import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
 import {
@@ -73,10 +74,17 @@ import {
   parseLadderState,
 } from "./conflict_verdict_ladder.ts";
 import {
+  commentsAfterConflictPark,
+  CONFLICT_RESOLUTION_BUDGET,
+  conflictAttemptMarker,
+  conflictFailedMarker,
   type ConflictLadderRung,
   conflictNudgeMarker,
+  conflictResolvedMarker,
   conflictRungFailedMarker,
   isConflictHeadSha,
+  readResolutionAttempts,
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { ensureHistoryDepth } from "./git_history.ts";
@@ -117,13 +125,12 @@ import {
 } from "./conflict_milestone_rebuild.ts";
 import {
   clearMergeConflictLabel,
-  CONFLICT_ATTEMPT_MARKER,
-  CONFLICT_FAILED_MARKER,
-  CONFLICT_RESOLVED_MARKER,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
+  hasExhaustedConflictAttempts,
+  isConflictAttemptDue,
   recordConflictDecision,
 } from "./pr_merge_conflict_scan.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -215,7 +222,7 @@ export interface MergeConflictProcessorDeps {
   maxRateLimitRetries?: number;
   /** Unique worker identity for the cross-host PR lock. */
   workerId?: string;
-  /** Attempts allowed before the PR goes to abandon-and-redo (default 2). */
+  /** Attempts allowed before the PR goes to abandon-and-redo (default 3, shared across passes). */
   maxAttempts?: number;
   /** Per-repo config, used to resolve the pre-flight push gate. */
   repoConfigs?: Record<string, RepoConfig>;
@@ -279,6 +286,22 @@ export interface MergeConflictProcessorDeps {
    * seconds never reads a wall clock.
    */
   nowMsFn?: () => number;
+  /**
+   * Override the PR body refresh after a successful push (Issue #3089).
+   * Injected by tests; production leaves it undefined and gets
+   * {@link syncPrBodyFromSummary}.
+   */
+  syncPrBodyFn?: typeof syncPrBodyFromSummary;
+  /**
+   * Configured worker name, used in the refreshed PR body's footer
+   * (Issue #3089). Omitted → empty string.
+   */
+  workerName?: string;
+  /**
+   * The run's resolved worker GitHub login, used as the refreshed PR body's
+   * footer fallback (Issue #3089). Omitted → falls back to `GITHUB_USER`.
+   */
+  githubUser?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -441,10 +464,11 @@ export function buildAttemptComment(
   attemptNumber: number,
   maxAttempts: number,
   baseBranch: string,
+  headSha: string,
   disruptedCount: number = 0,
 ): string {
   const lines = [
-    `${CONFLICT_ATTEMPT_MARKER} n="${attemptNumber}" -->`,
+    conflictAttemptMarker(attemptNumber, "ladder", headSha),
     `🔀 **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts}**`,
     "",
     `This PR conflicts with \`${baseBranch}\`, so no CI can run on it. The ` +
@@ -587,6 +611,7 @@ export function buildRuleResolutionSection(
 export function buildResolvedComment(
   baseBranch: string,
   branchName: string,
+  headSha: string,
   detail?: string,
   ruleResolved: readonly ResolvedConflictFile[] = [],
   issueContext?: ConflictIssueContext | null,
@@ -596,7 +621,9 @@ export function buildResolvedComment(
     ? detail.trim()
     : `Merged \`${baseBranch}\` into \`${branchName}\` and pushed the result.`;
   return [
-    `${CONFLICT_RESOLVED_MARKER}\n✅ **Merge conflict resolved**`,
+    `${
+      conflictResolvedMarker("ladder", headSha)
+    }\n✅ **Merge conflict resolved**`,
     "",
     body,
     ...buildIntentOverrideSection(parseIntentOverrides(detail), issueContext),
@@ -630,6 +657,7 @@ export function buildFailedComment(
   attemptNumber: number,
   maxAttempts: number,
   baseBranch: string,
+  headSha: string,
   failureDetail: string,
   conflictedFiles: readonly string[],
   timings?: string,
@@ -638,7 +666,7 @@ export function buildFailedComment(
     ? ["", "Conflicted files:", ...conflictedFiles.map((f) => `- \`${f}\``)]
     : [];
   return [
-    `${CONFLICT_FAILED_MARKER} n="${attemptNumber}" -->`,
+    conflictFailedMarker(attemptNumber, "ladder", headSha),
     `❌ **Merge-conflict resolution — attempt ${attemptNumber} of ${maxAttempts} failed**`,
     "",
     `Merging \`${baseBranch}\` in did not produce a mergeable branch: ` +
@@ -989,7 +1017,23 @@ export async function processMergeConflict(
   }
 
   try {
-    return await resolveConflict(input, processorDeps);
+    let resolutionInput = input;
+    if (lockCommentId !== undefined) {
+      const fresh = await freshAttemptUnderLock(input, processorDeps);
+      if (fresh.kind === "stand-down") {
+        return {
+          ok: true,
+          value: {
+            processed: false,
+            merged: false,
+            escalated: false,
+            summary: fresh.summary,
+          },
+        };
+      }
+      resolutionInput = { ...input, attemptCount: fresh.attemptCount };
+    }
+    return await resolveConflict(resolutionInput, processorDeps);
   } finally {
     renewal?.stop();
     if (heartbeatHandle) await stopHeartbeat(heartbeatHandle);
@@ -997,6 +1041,85 @@ export async function processMergeConflict(
       await releaseLock({ repo, prNumber, lockCommentId });
     }
   }
+}
+
+/**
+ * Re-read the attempt thread once this pass holds the PR lock (Issue #2965).
+ *
+ * The scan's due-ness is from before the lock. A takeover can post its
+ * failure in that gap and release, and this pass would then spend a second
+ * attempt in the same window. Standing down posts no marker.
+ */
+async function freshAttemptUnderLock(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+): Promise<
+  | { kind: "proceed"; attemptCount: number }
+  | { kind: "stand-down"; summary: string }
+> {
+  const { repo, prNumber } = input;
+  const { logger } = processorDeps;
+  const gh = processorDeps.deps.github.runGhCommand;
+  const trusted = processorDeps.trustedAuthors ?? [];
+  let comments: unknown[];
+  let headSha: string | undefined;
+  try {
+    comments = await fetchIssueCommentPages(repo, prNumber, gh);
+    const view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid",
+      ]),
+    ) as { headRefOid?: unknown };
+    headSha = typeof view.headRefOid === "string" ? view.headRefOid : undefined;
+  } catch (error) {
+    logger.warn(
+      "Merge-conflict resolution: could not re-read the attempt thread " +
+        "under the lock — spending nothing",
+      {
+        repo,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    return {
+      kind: "stand-down",
+      summary: `PR #${prNumber} attempt thread could not be re-read under ` +
+        "the lock — no attempt spent",
+    };
+  }
+
+  // The scan starts a fresh budget after a park once the base has moved
+  // (Issue #2312). Counting the whole thread here would always find that
+  // spent budget and stand the retry down.
+  const trustedComments = partitionConflictComments(comments, trusted).trusted;
+  const attempts = readResolutionAttempts(
+    commentsAfterConflictPark(trustedComments),
+    (login) => isFleetAuthor(login, [...trusted]),
+  );
+  const now = processorDeps.nowMsFn?.() ?? Date.now();
+  const budget = processorDeps.maxAttempts ?? CONFLICT_RESOLUTION_BUDGET;
+  if (
+    hasExhaustedConflictAttempts(attempts, budget) ||
+    !isConflictAttemptDue(attempts, headSha, now)
+  ) {
+    logger.info(
+      "Merge-conflict resolution: the attempt is no longer due once the " +
+        "lock is held — spending nothing",
+      { repo, prNumber },
+    );
+    return {
+      kind: "stand-down",
+      summary: `PR #${prNumber} is no longer due once the lock is held — ` +
+        "no attempt spent",
+    };
+  }
+  return { kind: "proceed", attemptCount: spentConflictAttempts(attempts) };
 }
 
 async function resolveConflict(
@@ -1008,7 +1131,7 @@ async function resolveConflict(
     logger,
     deps,
     workDir,
-    maxAttempts = DEFAULT_MAX_CONFLICT_ATTEMPTS,
+    maxAttempts = CONFLICT_RESOLUTION_BUDGET,
   } = processorDeps;
   const run = deps.git.runGitCommand;
   const attemptNumber = input.attemptCount + 1;
@@ -1114,6 +1237,7 @@ async function resolveConflict(
     attemptNumber,
     maxAttempts,
     baseBranch,
+    headBeforeMerge,
     input.disruptedCount ?? 0,
   );
   let attemptCommentId: number | null = null;
@@ -1216,6 +1340,7 @@ async function resolveConflict(
         }`,
         attemptNumber,
         timer,
+        headBeforeMerge,
       );
     }
 
@@ -1303,6 +1428,7 @@ async function resolveConflict(
           agentOutcome.error.message,
           attemptNumber,
           timer,
+          headBeforeMerge,
         );
       }
       const { terminated, providerUnavailable } = agentOutcome.value;
@@ -1350,6 +1476,7 @@ async function resolveConflict(
         }`,
         attemptNumber,
         timer,
+        headBeforeMerge,
       );
     }
     if (await hasConflictMarkers(run, workDir, conflictedFiles)) {
@@ -1361,6 +1488,7 @@ async function resolveConflict(
         "the working tree still contains conflict markers",
         attemptNumber,
         timer,
+        headBeforeMerge,
       );
     }
   }
@@ -1397,6 +1525,7 @@ async function resolveConflict(
       `commit/push failed: ${finalise.error.message}`,
       attemptNumber,
       timer,
+      headBeforeMerge,
     );
   }
   if (finalise.value.finalUnpushedCount > 0) {
@@ -1430,6 +1559,7 @@ async function resolveConflict(
       }`,
       attemptNumber,
       timer,
+      headBeforeMerge,
     );
   }
 
@@ -1452,8 +1582,32 @@ async function resolveConflict(
         : `'${baseBranch}' is still not merged into '${branchName}'`,
       attemptNumber,
       timer,
+      headBeforeMerge,
     );
   }
+
+  // Refresh the PR body from a rewritten summary file (Issue #3089), now
+  // that the merge is verified on the PR's own branch. A failed sync must
+  // never fail an otherwise-resolved conflict.
+  const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
+  await runPrBodySync(
+    {
+      repo,
+      prNumber,
+      repoPath: workDir,
+      beforeSha: headBeforeMerge ?? undefined,
+      workerName: processorDeps.workerName ?? "",
+      githubUser: processorDeps.githubUser ??
+        Deno.env.get("GITHUB_USER") ?? "",
+      runId: getRunId(),
+    },
+    {
+      runGhCommand: deps.github.runGhCommand,
+      runGitCommand: run,
+      logger,
+    },
+    syncFn,
+  );
 
   const detail = await agentReply();
   try {
@@ -1464,6 +1618,7 @@ async function resolveConflict(
       buildResolvedComment(
         baseBranch,
         branchName,
+        headBeforeMerge,
         detail,
         ruleResolved,
         issueContext,
@@ -2205,6 +2360,22 @@ async function failNoCommonAncestor(
     { repo, prNumber, branchName, baseBranch, detail },
   );
 
+  const headSha = await readHeadSha(
+    processorDeps.deps.git.runGitCommand,
+    processorDeps.workDir,
+    logger,
+    repo,
+  );
+  if (headSha === null) {
+    return {
+      ok: false,
+      error: new Error(
+        `Cannot record the no-common-ancestor failure for PR #${prNumber}: ` +
+          "the current head SHA could not be read",
+      ),
+    };
+  }
+
   return await failAttempt(
     input,
     processorDeps,
@@ -2214,6 +2385,7 @@ async function failNoCommonAncestor(
       `${detail.split("\n")[0]?.trim() ?? detail}`,
     attemptNumber,
     timer,
+    headSha,
   );
 }
 
@@ -2222,7 +2394,7 @@ async function failNoCommonAncestor(
  *
  * GH013 is not a resolution the agent got wrong — the merge itself succeeded,
  * and the same refusal arrives on every run for as long as the rule stands.
- * Charging it spent the PR's two-attempt budget on a push that could never
+ * Charging it spent the PR's shared resolution budget on a push that could never
  * land and escalated a conflict nobody had failed to resolve. So this posts no
  * `CONFLICT_FAILED_MARKER` and deletes the attempt marker instead: the next
  * scan counts neither a concluded attempt nor an open one.
@@ -2304,7 +2476,7 @@ function cutShortByProvider(detail: string): CutShortCause {
  * principle the pass already applies to markers the fleet did not author.
  *
  * The attempt marker is deleted, so the next scan sees neither a concluded
- * attempt (which would spend the two-attempt budget) nor an open one (which
+ * attempt (which would spend the shared resolution budget) nor an open one (which
  * would spend the three-disruption budget). A marker that cannot be deleted
  * is left and said out loud: the PR then reads as disrupted on the next scan,
  * which is retried rather than judged, and that bound still holds.
@@ -2386,10 +2558,11 @@ async function failAttempt(
   failureDetail: string,
   attemptNumber: number,
   timer: ConflictStageTimer,
+  headSha: string,
 ): Promise<Result<MergeConflictResult>> {
   const { logger, deps } = processorDeps;
   const maxAttempts = processorDeps.maxAttempts ??
-    DEFAULT_MAX_CONFLICT_ATTEMPTS;
+    CONFLICT_RESOLUTION_BUDGET;
   const { repo, prNumber } = input;
 
   logger.warn("Merge-conflict attempt failed", {
@@ -2409,6 +2582,7 @@ async function failAttempt(
         attemptNumber,
         maxAttempts,
         input.baseBranch,
+        headSha,
         failureDetail,
         conflictedFiles,
         recordStageTimings(input, processorDeps, timer),

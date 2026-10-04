@@ -3549,6 +3549,10 @@ async function runRetryLadder(
  *   omit for the active provider.
  * @param agentBinaryPath - Explicit path to the agent binary (Issue #959);
  *   omit and the provider's binary name is resolved on `PATH`, as before.
+ * @param model - Explicit model to probe (Issue #2059); omit for the phase's
+ *   routed model.
+ * @param runner - Injectable agent runner (test seam, Issue #3180); defaults
+ *   to {@link runClaudeWithTimeout}.
  * @returns Health check result
  */
 export async function checkClaudeHealth(
@@ -3557,6 +3561,9 @@ export async function checkClaudeHealth(
   agentProvider?: AgentProviderSelector,
   agentBinaryPath?: string,
   model?: string,
+  runner: (
+    options: RunClaudeOptions,
+  ) => Promise<Result<ClaudeExecutionResult>> = runClaudeWithTimeout,
 ): Promise<HealthCheckResult> {
   // Resolve once, per call: the probe, the auth message and the log lines all
   // describe the same agent even while another provider is probed
@@ -3566,7 +3573,7 @@ export async function checkClaudeHealth(
     `Running ${provider.displayName} health check (${timeoutSeconds}s timeout)...`,
   );
 
-  const result = await runClaudeWithTimeout({
+  const result = await runner({
     prompt: "Respond with exactly: OK",
     timeoutSeconds,
     killAfterSeconds: 5,
@@ -3582,11 +3589,16 @@ export async function checkClaudeHealth(
   });
 
   if (!result.ok) {
-    return {
-      healthy: false,
-      exitCode: 1,
-      message: `Health check error: ${result.error.message}`,
-    };
+    // The run failed before the agent produced an exit code — e.g. the
+    // runner could not create its temp or prompt files on a read-only root
+    // filesystem. Log the cause here (Issue #3180): the non-zero-exit paths
+    // below log their details, and this one used to log nothing, leaving
+    // the operator only "health check failed — skipping cycle".
+    const message = `Health check error: ${result.error.message}`;
+    logger?.error(
+      `${provider.displayName} health check could not run: ${message}`,
+    );
+    return { healthy: false, exitCode: 1, message };
   }
 
   const { exitCode, output, stderr } = result.value;

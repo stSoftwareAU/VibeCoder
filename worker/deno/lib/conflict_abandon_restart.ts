@@ -22,6 +22,15 @@
  * **Preconditions are checked before anything is destroyed.** The order below
  * is the safety property, not an implementation detail:
  *
+ * 0. the shared {@link CONFLICT_RESOLUTION_BUDGET} has actually been spent —
+ *    `failedAttempts < CONFLICT_RESOLUTION_BUDGET` declines the abandon
+ *    outright, before anything else runs (Issue #3000). The stale-verdict
+ *    ladder's own rung-failed count used to be the only gate standing between
+ *    a single judged attempt and a close-and-redo; this reads the same
+ *    PR-side tally {@link spentConflictAttempts} does, so abandon-and-redo
+ *    never runs ahead of the budget it is supposed to follow. Exempt: a
+ *    `stalled` reason (the stall-repair pass's second trip, Issue #2802) is
+ *    not a conflict-resolution outcome at all and has its own two-trip bound;
  * 1. the PR's originating issue is known — and when it is not, the PR is still
  *    closed, but only after the `merge-fallback` flag issue has been filed as
  *    the re-do item, carrying `idle-task` and the PR's diff summary
@@ -85,8 +94,13 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
+  CONFLICT_RESOLUTION_BUDGET,
+  type ConflictResolutionAttempt,
   MERGE_CONFLICT_LABEL,
+  readResolutionAttempts,
+  spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
+import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   type ParsedStageTimings,
   parseStageTimingsLine,
@@ -225,6 +239,13 @@ export interface FailedAttemptHistory {
    * base side needs a clone to walk, and by now there is none.
    */
   consultedIssues: number[];
+  /**
+   * The shared-budget attempt history (Issue #2996, #3000), read back with
+   * {@link readResolutionAttempts} over the same trusted comments. This is
+   * what {@link renderAttemptTable} renders, and what the spent-budget guard
+   * in {@link abandonAndRestart} tallies with {@link spentConflictAttempts}.
+   */
+  resolutionAttempts: ConflictResolutionAttempt[];
 }
 
 /** Issues named in one attempt comment's consulted-issues section. */
@@ -255,9 +276,15 @@ function attemptNumberFrom(body: string): number | null {
  * The reasons are the failure comments' own words rather than a re-derivation:
  * the abandon comment must say what the fleet actually recorded, and only the
  * comments know that once the run that wrote them is gone.
+ *
+ * @param comments - The PR's thread, oldest first.
+ * @param trustedAuthors - Fleet logins (Issue #1247) — also what
+ *   {@link readResolutionAttempts} attributes {@link ConflictResolutionAttempt}
+ *   markers against for {@link FailedAttemptHistory.resolutionAttempts}.
  */
 export function summariseFailedAttempts(
   comments: readonly unknown[],
+  trustedAuthors: readonly string[],
 ): FailedAttemptHistory {
   const attempts: FailedAttemptSummary[] = [];
   const conflictedPaths: string[] = [];
@@ -309,6 +336,10 @@ export function summariseFailedAttempts(
     attempts,
     conflictedPaths: conflictedPaths.slice(0, MAX_CONFLICTED_PATHS),
     consultedIssues,
+    resolutionAttempts: readResolutionAttempts(
+      comments,
+      (login) => isFleetAuthor(login, [...trustedAuthors]),
+    ),
   };
 }
 
@@ -412,6 +443,68 @@ export function describeConcludedAttempts(
 }
 
 // ---------------------------------------------------------------------------
+// The attempt table (Issue #3000)
+// ---------------------------------------------------------------------------
+
+/** One PR's recorded attempts, as one link in a restart chain. */
+export interface RestartChainLink {
+  /** The PR number this link's attempts were recorded against. */
+  prNumber: number;
+  /** From {@link readResolutionAttempts}, oldest first. */
+  attempts: readonly ConflictResolutionAttempt[];
+}
+
+/** One attempt's time, as `YYYY-MM-DD HH:MM UTC`, or `unknown` when unset. */
+function attemptTimeCell(atMs: number | undefined): string {
+  if (atMs === undefined) return "unknown";
+  return `${new Date(atMs).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/** One attempt's outcome, as a table cell. */
+function attemptOutcomeCell(
+  outcome: ConflictResolutionAttempt["outcome"],
+): string {
+  return outcome === "open" ? "open (never concluded)" : outcome;
+}
+
+/**
+ * A markdown table of every resolution attempt across a restart chain
+ * (Issue #3000) — one row per attempt, counted from one within each PR.
+ *
+ * `repo` is config, not user-controlled text, and every other cell comes off
+ * a closed union ({@link ConflictResolutionPass}, the outcome word) or a
+ * formatted epoch ms — nothing here needs {@link sanitiseIssueText}.
+ *
+ * @param repo - Repository in `owner/repo` form, shared by every link.
+ * @param chain - Every PR's attempts, oldest PR first. A PR with no recorded
+ *   attempts still gets one row, saying so.
+ */
+export function renderAttemptTable(
+  repo: string,
+  chain: readonly RestartChainLink[],
+): string[] {
+  const rows: string[] = [
+    "| PR | Attempt | Pass | Time (UTC) | Outcome |",
+    "| --- | --- | --- | --- | --- |",
+  ];
+  for (const link of chain) {
+    const prCell = `${repo}#${link.prNumber}`;
+    if (link.attempts.length === 0) {
+      rows.push(`| ${prCell} | — | — | — | no attempt recorded |`);
+      continue;
+    }
+    link.attempts.forEach((attempt, index) => {
+      rows.push(
+        `| ${prCell} | ${index + 1} | ${attempt.pass} | ` +
+          `${attemptTimeCell(attempt.atMs)} | ` +
+          `${attemptOutcomeCell(attempt.outcome)} |`,
+      );
+    });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
 // Outcome taxonomy
 // ---------------------------------------------------------------------------
 
@@ -459,7 +552,17 @@ export type AbandonDeclineReason =
     claimCount: number;
   }
   /** The issue already has another PR of its own. */
-  | { kind: "other-open-pr"; issueNumber: number; prUrl: string };
+  | { kind: "other-open-pr"; issueNumber: number; prUrl: string }
+  /**
+   * The shared {@link CONFLICT_RESOLUTION_BUDGET} has not actually been
+   * spent (Issue #3000): abandon-and-redo runs only once every attempt the
+   * budget allows has been spent and failed — the stale-verdict ladder
+   * reached this rung with fewer failures than the budget allows. Not
+   * produced for a `stalled` {@link AbandonReason}: a stall repair's second
+   * trip is not a conflict-resolution outcome, and has its own two-trip
+   * bound.
+   */
+  | { kind: "attempts-not-spent"; failedAttempts: number; budget: number };
 
 /** The steps an abandon runs, in order. Named in the failure outcome. */
 export type AbandonStep =
@@ -619,6 +722,15 @@ export function exhaustedEscalationRoute(
         detail: `Issue #${reason.issueNumber} already has another open PR ` +
           `(${sanitiseIssueText(reason.prUrl)}), so re-queuing it would have ` +
           "raced that one.",
+      };
+    case "attempts-not-spent":
+      return {
+        kind: "abandon-declined",
+        detail: `This PR has ${reason.failedAttempts} failed merge-conflict ` +
+          `resolution attempt(s) recorded of the ${reason.budget} the shared ` +
+          "budget allows, so it was not abandoned: abandon-and-redo runs " +
+          "only after every attempt has been spent and failed. It stays " +
+          "open on `merge-conflict` for the next attempt.",
       };
   }
   const unhandled: never = reason;
@@ -1103,6 +1215,12 @@ export function buildRestartIssueComment(args: {
     "",
     ...paths,
     "",
+    "**Resolution attempts on this PR**",
+    "",
+    ...renderAttemptTable(request.repo, [
+      { prNumber: request.prNumber, attempts: history.resolutionAttempts },
+    ]),
+    "",
     whatHappensNow,
     "",
     `This is restart **${restartNumber}** for this issue. There is no cap: ` +
@@ -1379,7 +1497,7 @@ async function abandonWithoutOriginatingIssue(
   } catch (error) {
     return failed("pr-thread", error);
   }
-  const history = summariseFailedAttempts(comments);
+  const history = summariseFailedAttempts(comments, deps.trustedAuthors);
 
   // Best-effort context: a read that failed renders as `not recorded` in the
   // flag body rather than as a guess, and never stops the fallback.
@@ -1539,6 +1657,58 @@ export async function abandonAndRestart(
     };
   };
 
+  // --- Precondition 0: the shared budget has actually been spent
+  // (Issue #3000). Read once, at the very top, before anything else —
+  // including the originating-issue lookup — runs. A read failure here means
+  // nothing has changed yet, so it fails as `pr-thread` rather than reaching
+  // a later step under a half-read thread.
+  let trustedThread: readonly unknown[];
+  try {
+    trustedThread = partitionConflictComments(
+      request.prComments ?? await fetchIssueCommentPages(repo, prNumber, gh),
+      deps.trustedAuthors,
+    ).trusted;
+  } catch (error) {
+    return failed("pr-thread", error);
+  }
+
+  const attempts = readResolutionAttempts(
+    trustedThread,
+    (login) => isFleetAuthor(login, [...deps.trustedAuthors]),
+  );
+  const failedAttempts = spentConflictAttempts(attempts);
+  // A `stalled` reason is exempt (Issue #2802): the stall-repair pass's
+  // second trip is not a conflict-resolution outcome at all, and has its own
+  // two-trip bound — this guard only ever applies to the merge-conflict route.
+  //
+  // With no fleet identity resolved (`deps.trustedAuthors` empty),
+  // `partitionConflictComments` can never call anything "trusted" — so a
+  // computed `failedAttempts` of 0 would be a false "not spent yet" rather
+  // than a genuine read of the thread. Decline no earlier than the
+  // restart-marker check further down, which already declines an
+  // unattributable claim explicitly (Issue #1247) instead of silently
+  // reading it as a healthy zero.
+  if (
+    deps.trustedAuthors.length > 0 &&
+    request.reason?.kind !== "stalled" &&
+    failedAttempts < CONFLICT_RESOLUTION_BUDGET
+  ) {
+    logger?.info?.(
+      `PR #${prNumber} has ${failedAttempts} failed merge-conflict ` +
+        `resolution attempt(s) recorded of the ${CONFLICT_RESOLUTION_BUDGET} ` +
+        "the shared budget allows — not abandoned yet",
+      { repo, prNumber, failedAttempts, budget: CONFLICT_RESOLUTION_BUDGET },
+    );
+    return {
+      outcome: "declined",
+      reason: {
+        kind: "attempts-not-spent",
+        failedAttempts,
+        budget: CONFLICT_RESOLUTION_BUDGET,
+      },
+    };
+  }
+
   // --- Precondition 1: the originating issue. No issue, no *re-queue* — the
   // PR is still closed, against a flag issue filed as the re-do item in its
   // place (Issue #2310).
@@ -1563,7 +1733,7 @@ export async function abandonAndRestart(
     // becomes the re-do item, because a PR parked for a human who never comes
     // loses the work just as surely as closing one with no record.
     return await abandonWithoutOriginatingIssue(
-      request,
+      { ...request, prComments: trustedThread },
       deps,
       context.prSide.reason,
       failed,
@@ -1658,26 +1828,8 @@ export async function abandonAndRestart(
   // waiting on a label a person must apply is not re-queued at all.
   const requeueLabel = planRequeueLabel(snapshot.labels);
 
-  let history: FailedAttemptHistory;
-  try {
-    // Attributed here too (Issue #1247), whichever side supplied the thread:
-    // this comment is permanent and public, so quoting an outsider's text
-    // back as "what the attempts recorded" would publish a fabricated
-    // record — and the consulted-issue numbers it lists come from the same
-    // bodies. Idempotent when the caller already filtered.
-    history = summariseFailedAttempts(
-      partitionConflictComments(
-        request.prComments ??
-          await fetchIssueCommentPages(repo, prNumber, gh),
-        deps.trustedAuthors,
-      ).trusted,
-    );
-  } catch (error) {
-    // The abandon comment quotes this thread. Publishing "no failure comment
-    // survives" because the read failed would be a fabricated fact on a
-    // permanent comment, so the rung stops and the caller escalates.
-    return failed("pr-thread", error, issueNumber);
-  }
+  // Read once, at the top of this call (Issue #3000) — not re-fetched here.
+  const history = summariseFailedAttempts(trustedThread, deps.trustedAuthors);
 
   // --- Step 1: claim the restart on the issue, marker first. --------------
   try {

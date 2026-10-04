@@ -20,6 +20,7 @@ import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { deriveRunOutcome, type RunOutcome } from "../lib/run_outcome.ts";
 
 const SHA = "9a8b7c6d5e4f30291827364554637281900fedcb";
 const ISSUE = 518;
@@ -142,6 +143,52 @@ Did a little.
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
 `;
 
+/**
+ * Same as `SUMMARY_PARTIAL` but with no `## Standards Review` section, so the
+ * independent two-axis review gate (Issue #663) itself blocks — used to check
+ * that an existing-PR branch still runs the degraded-delivery guard ahead of
+ * that gate's own `reportSummaryRuleBlock` call (Issue #3092).
+ */
+const SUMMARY_PARTIAL_NO_STANDARDS_REVIEW = `## Summary
+
+Did half of it.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **missing** — the docs table lists opus — reviewer: missing — reason: ran out of turns
+
+**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+`;
+
+/**
+ * Same as `SUMMARY_PARTIAL` but the `missing` entry carries no `reason:`, so
+ * the acceptance-criteria closure gate (Issue #518) itself blocks — `##
+ * Standards Review` is intact, so only the closure gate fails. Used to check
+ * the same guard ordering against the closure gate (Issue #3092).
+ */
+const SUMMARY_PARTIAL_NO_CLOSURE_REASON = `## Summary
+
+Did half of it.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the router sends planning to opus — evidence: \`lib/config_defaults.ts\` — reviewer: met
+- **missing** — the docs table lists opus — reviewer: missing
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Australian English, TDD, fail-loud error handling
+
+**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+`;
+
 /** A minimal summary carrying only the Docs sweep line (Issue #3073). */
 const SUMMARY_MINIMAL_WITH_DOCS_SWEEP =
   `## Summary\n\nFinished the switch. Closes #${ISSUE}.\n\n**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits\n`;
@@ -170,6 +217,12 @@ interface Outcome {
   reason?: string;
   issueCreates: string[][];
   prBodies: string[];
+  recoverCalls: number;
+  prCreateCalls: number;
+  /** Set when the run recorded an existing PR on its state (Issue #2044). */
+  prUrl?: string;
+  prNumber?: number;
+  outcome: RunOutcome;
 }
 
 const EXISTING_PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/777";
@@ -181,6 +234,8 @@ async function runCompletion(opts: {
   failIssueCreate?: boolean;
   /** Issue #3085 review: the branch already has an open PR before this run. */
   prExistsForBranch?: boolean;
+  /** Issue #3121: override the URL `findExistingPrForBranch` reports. */
+  prUrl?: string;
 }): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   if (opts.summary !== null) {
@@ -195,6 +250,8 @@ async function runCompletion(opts: {
 
   const issueCreates: string[][] = [];
   const prBodies: string[] = [];
+  let recoverCalls = 0;
+  let prCreateCalls = 0;
 
   const ctx: IssueContext = {
     repo: "stSoftwareAU/VibeCoder",
@@ -237,6 +294,7 @@ async function runCompletion(opts: {
             );
         }
         if (args[0] === "pr" && args[1] === "create") {
+          prCreateCalls++;
           prBodies.push(args[args.indexOf("--body") + 1] ?? "");
         }
         if (args[0] === "pr" && args[1] === "view") {
@@ -269,7 +327,7 @@ async function runCompletion(opts: {
       findExistingPrForBranch: () =>
         Promise.resolve(
           opts.prExistsForBranch
-            ? { ok: true as const, value: EXISTING_PR_URL }
+            ? { ok: true as const, value: opts.prUrl ?? EXISTING_PR_URL }
             : { ok: false as const, error: new Error("none") },
         ),
       // Captures the body the recovery path writes back to the existing PR
@@ -281,6 +339,7 @@ async function runCompletion(opts: {
         _prUrl: string,
         body?: string,
       ) => {
+        recoverCalls++;
         prBodies.push(body ?? "");
         return Promise.resolve({ ok: true as const, value: "recovered" });
       },
@@ -290,13 +349,29 @@ async function runCompletion(opts: {
   const result = await workOnIssueCompletion(ctx, state, deps);
   await Deno.remove(repoPath, { recursive: true });
 
+  const reason = result.status === "failure" || result.status === "early_exit"
+    ? result.reason
+    : undefined;
+
   return {
     status: result.status,
-    reason: result.status === "failure" || result.status === "early_exit"
-      ? result.reason
-      : undefined,
+    reason,
     issueCreates,
     prBodies,
+    recoverCalls,
+    prCreateCalls,
+    prUrl: state.prUrl,
+    prNumber: state.prNumber,
+    // Issue #3121: the composition `workOnIssue` performs — the failed
+    // result, plus whatever PR fields the phase recorded on its state.
+    outcome: deriveRunOutcome({
+      success: false,
+      phase: "completion",
+      reason: reason ?? "",
+      prUrl: state.prUrl,
+      prNumber: state.prNumber,
+      elapsedSeconds: 42,
+    }),
   };
 }
 
@@ -439,6 +514,94 @@ Deno.test("completion - a degraded run whose follow-up cannot be filed raises no
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
 });
 
+Deno.test("completion - a degraded run that passes every summary gate still names an existing PR when the follow-up cannot be filed (Issue #3092)", async () => {
+  // All four summary gates pass (SUMMARY_PARTIAL), so this is completionBody's
+  // own guard call, not reportSummaryRuleBlock. The agent already opened a PR
+  // during execute. Filing the follow-up fails. The PR stays unfinalised, and
+  // the outcome must still name it.
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+    failIssueCreate: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertEquals(
+    outcome.prBodies.length,
+    0,
+    "the existing PR must not be recovered when the follow-up cannot be filed",
+  );
+  assertEquals(outcome.prUrl, EXISTING_PR_URL);
+  assertEquals(outcome.prNumber, 777);
+  const derived = deriveRunOutcome({
+    success: false,
+    phase: "completion",
+    reason: outcome.reason ?? "",
+    prUrl: outcome.prUrl,
+    prNumber: outcome.prNumber,
+  });
+  assertEquals(derived.kind, "pr");
+  if (derived.kind === "pr") {
+    assertEquals(derived.prNumber, 777);
+    assert(derived.blocked, "a live PR is recorded as blocked, not no_pr");
+  }
+});
+
+Deno.test("completion - a degraded run whose follow-up cannot be filed names the branch's open PR (Issue #3121)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    failIssueCreate: true,
+    prExistsForBranch: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.outcome.kind, "pr");
+  assert(outcome.outcome.kind === "pr", "narrowing");
+  assertEquals(outcome.outcome.prNumber, 777);
+  assertEquals(outcome.outcome.prUrl, EXISTING_PR_URL);
+  assertEquals(outcome.outcome.blocked?.phase, "completion");
+  assertStringIncludes(
+    outcome.outcome.blocked?.reason ?? "",
+    "follow-up",
+  );
+  assertEquals(outcome.recoverCalls, 0, "the PR must not be recovered");
+  assertEquals(outcome.prBodies.length, 0, "no PR body is ever written");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+});
+
+Deno.test("completion - a degraded run whose follow-up cannot be filed on a branch with no PR raises no PR (Issue #3121)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    failIssueCreate: true,
+    prExistsForBranch: false,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.outcome.kind, "no_pr");
+  assertEquals(outcome.recoverCalls, 0);
+});
+
+Deno.test("completion - a degraded run whose follow-up cannot be filed names no PR for an unnumberable PR URL (Issue #3121)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    failIssueCreate: true,
+    prExistsForBranch: true,
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/not-a-number",
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.outcome.kind, "no_pr");
+});
+
 Deno.test("completion - a docs-sweep block on an existing-PR branch still runs the degraded-delivery guard first (Issue #3085 review)", async () => {
   // The docs-sweep gate (Issue #3073) blocks this summary — it carries no
   // `Docs sweep` line. Previously that gate ran *before* the degraded-run
@@ -466,6 +629,149 @@ Deno.test("completion - a docs-sweep block on an existing-PR branch still runs t
     "the recovery path wrote the PR body back exactly once",
   );
   assertStringIncludes(outcome.prBodies[0]!, "Degraded run — partial delivery");
+});
+
+Deno.test("completion - an independent-review block on an existing-PR branch still runs the degraded-delivery guard first (Issue #3092)", async () => {
+  // The independent two-axis review gate (Issue #663) blocks this summary —
+  // it carries no `## Standards Review` section. The guard must still file
+  // the follow-up and prefix the PR body before `reportSummaryRuleBlock`
+  // recovers and finalises the existing PR.
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_STANDARDS_REVIEW,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+  });
+
+  assertEquals(outcome.status, "early_exit", outcome.reason);
+  assertEquals(
+    outcome.issueCreates.length,
+    1,
+    "the degraded-run follow-up is still filed even though the independent " +
+      "review gate blocks this summary",
+  );
+  assertEquals(
+    outcome.prBodies.length,
+    1,
+    "the recovery path wrote the PR body back exactly once",
+  );
+  assertStringIncludes(outcome.prBodies[0]!, "Degraded run — partial delivery");
+  assertStringIncludes(outcome.prBodies[0]!, "#900");
+});
+
+Deno.test("completion - a closure-gate block on an existing-PR branch still runs the degraded-delivery guard first (Issue #3092)", async () => {
+  // The acceptance-criteria closure gate (Issue #518) blocks this summary —
+  // its `missing` entry carries no `reason:`. `parseClosureEntries` (which
+  // `assessDegradedDelivery` uses) reads the entry's status regardless of
+  // whether the gate itself considers the entry well-formed, so this still
+  // yields a `missing` shortfall for the degraded assessment.
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_CLOSURE_REASON,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+  });
+
+  assertEquals(outcome.status, "early_exit", outcome.reason);
+  assertEquals(
+    outcome.issueCreates.length,
+    1,
+    "the degraded-run follow-up is still filed even though the closure " +
+      "gate blocks this summary",
+  );
+  assertEquals(
+    outcome.prBodies.length,
+    1,
+    "the recovery path wrote the PR body back exactly once",
+  );
+  assertStringIncludes(outcome.prBodies[0]!, "Degraded run — partial delivery");
+  assertStringIncludes(outcome.prBodies[0]!, "#900");
+});
+
+Deno.test("completion - a healthy run blocked by the independent-review gate on an existing-PR branch carries no Degraded run section", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_STANDARDS_REVIEW,
+    claudeRunStats: HEALTHY,
+    prExistsForBranch: true,
+  });
+
+  assertEquals(outcome.status, "early_exit", outcome.reason);
+  assertEquals(
+    outcome.issueCreates.length,
+    0,
+    "a healthy run files no follow-up",
+  );
+  assertEquals(outcome.prBodies.length, 1);
+  assert(!outcome.prBodies[0]!.includes("Degraded run"));
+});
+
+Deno.test("completion - a degraded run blocked by the independent-review gate whose follow-up cannot be filed fails the run without finalising the PR", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_STANDARDS_REVIEW,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+    failIssueCreate: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertEquals(
+    outcome.prBodies.length,
+    0,
+    "the PR must not be recovered/finalised when the follow-up cannot be filed",
+  );
+  assertEquals(outcome.prUrl, EXISTING_PR_URL);
+  assertEquals(outcome.prNumber, 777);
+  const derived = deriveRunOutcome({
+    success: false,
+    phase: "completion",
+    reason: outcome.reason ?? "",
+    prUrl: outcome.prUrl,
+    prNumber: outcome.prNumber,
+  });
+  assertEquals(derived.kind, "pr");
+  if (derived.kind === "pr") {
+    assertEquals(derived.prNumber, 777);
+    assert(derived.blocked, "a live PR is recorded as blocked, not no_pr");
+  }
+});
+
+Deno.test("completion - a degraded run blocked by the independent-review gate whose follow-up cannot be filed names no PR for an unnumberable PR URL (Issue #3136)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_STANDARDS_REVIEW,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: true,
+    failIssueCreate: true,
+    prUrl: "https://github.com/stSoftwareAU/VibeCoder/pull/not-a-number",
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertEquals(outcome.outcome.kind, "no_pr");
+  assertEquals(outcome.prUrl, undefined);
+  assertEquals(outcome.prNumber, undefined);
+  assertEquals(outcome.prBodies.length, 0);
+  assertEquals(outcome.recoverCalls, 0);
+});
+
+Deno.test("completion - a degraded run blocked by the independent-review gate on a branch with no PR files no follow-up", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_NO_STANDARDS_REVIEW,
+    claudeRunStats: DEGRADED,
+    prExistsForBranch: false,
+  });
+
+  assertEquals(outcome.status, "failure", outcome.reason);
+  assertEquals(
+    outcome.issueCreates.length,
+    0,
+    "the degraded-run guard must never run for a PR that does not yet exist",
+  );
+  assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
 });
 
 Deno.test("completion - a docs-sweep block on a branch with no PR files no follow-up, even after the one in-run recovery retry (Issue #3085 review)", async () => {

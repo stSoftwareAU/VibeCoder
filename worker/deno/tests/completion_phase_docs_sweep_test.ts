@@ -86,14 +86,25 @@ interface Scenario {
    * (Issue #3073 / #3085 review).
    */
   diffFails?: boolean;
+  /**
+   * What `git grep` over the head's docs answers for the Docs sweep line's
+   * terms (Issue #3172), in `git grep -n -z HEAD` shape. Omitted, no hit.
+   */
+  grepOutput?: string;
+  /** Exit code `git grep` returns; defaults to 0 with output, 1 without. */
+  grepCode?: number;
+  /** Ordered event log shared across the mocked deps, for assertion. */
+  events?: string[];
 }
 
 interface Outcome {
   status: string;
   reason?: string;
   claudeCalls: number;
+  claudePrompts: string[];
   prCreateCalls: number;
   comments: string[];
+  events: string[];
 }
 
 /** Drive the live completion phase over a (possibly) blocked docs-sweep gate. */
@@ -110,6 +121,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const comments: string[] = [];
   let prCreateCalls = 0;
   let claudeCalls = 0;
+  const claudePrompts: string[] = [];
+  const events = scenario.events ?? [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -140,7 +153,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     github: {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
-        if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
+        if (args[0] === "pr" && args[1] === "create") {
+          prCreateCalls++;
+          events.push("pr-create");
+        }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({ state: "OPEN" }));
         }
@@ -157,6 +173,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             value: { code: 0, stdout, stderr: "" },
           });
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
+        if (cmdArgs[0] === "grep") {
+          const stdout = scenario.grepOutput ?? "";
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              code: scenario.grepCode ?? (stdout === "" ? 1 : 0),
+              stdout,
+              stderr: "",
+            },
+          });
+        }
         // The 3-arg form (`diff --name-only <base>...HEAD`) is the call that
         // feeds the docs-sweep gate's `changedFiles`; the 4-arg form (with
         // `--diff-filter=ACMR`) feeds the unrelated changed-workflow gate and
@@ -181,8 +208,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     claude: {
-      runClaudeWithRetry: (_options: { prompt: string }) => {
+      runClaudeWithRetry: (options: { prompt: string }) => {
         claudeCalls++;
+        claudePrompts.push(options.prompt);
+        events.push("claude");
         if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath, scenario.retryWrites);
         }
@@ -213,13 +242,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ? { ok: true as const, value: PR_URL }
             : { ok: false as const, error: new Error("none") },
         ),
-      recoverExistingPr: () =>
-        Promise.resolve({ ok: true, value: "recovered" }),
-      finalisePr: () =>
-        Promise.resolve({
+      recoverExistingPr: () => {
+        events.push("recover");
+        return Promise.resolve({ ok: true, value: "recovered" });
+      },
+      finalisePr: () => {
+        events.push("finalise");
+        return Promise.resolve({
           ok: true,
           value: { result: AutoMergeResult.Enabled, message: "armed" },
-        }),
+        });
+      },
     },
   });
 
@@ -237,8 +270,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       ? result.reason
       : undefined,
     claudeCalls,
+    claudePrompts,
     prCreateCalls,
     comments,
+    events,
   };
 }
 
@@ -303,6 +338,125 @@ Deno.test(
   },
 );
 
+/**
+ * The 9 changed files from VibeCoder#3159 (PR #3159), joined as
+ * `git diff --name-only` would report them.
+ */
+const CHANGED_FILES_3159 = [
+  "DESIGN-PRINCIPLES.md",
+  "docs/archive/pr-summaries/pr-summary-3146.md",
+  "docs/workflows/issue-processing.md",
+  "prompts/coding_guidelines/prompt.md",
+  "prompts/issue/prompt.md",
+  "worker/deno/lib/analysis_only_handoff.ts",
+  "worker/deno/lib/phases/declared_handoff.ts",
+  "worker/deno/lib/phases/handle_no_changes_phase.ts",
+  "worker/deno/tests/handle_no_changes_blocked_deferral_test.ts",
+].join("\n");
+
+/**
+ * An excerpt of `docs/archive/pr-summaries/pr-summary-3146.md` — the Summary
+ * and the real Docs sweep bullet, verbatim (a full stop, not a `section:`
+ * field) — reproducing VibeCoder#3159, where this exact shape shipped with no
+ * in-run recovery because the agent had already raised its own PR.
+ */
+const SUMMARY_3159_WITHOUT_SECTION = `## Summary
+
+A no-changes run that files its own follow-up and then ends with
+\`## Blocked:\` / \`Depends on <that follow-up>\` no longer defers. It now hands
+off straight to the analysis-only hand-off, which adds \`needs-human\` —
+unconditionally, even when the same output also names a file to change, so a
+self-filed match can never fall through to the described-code-change retry or
+the short-output failure (both return a \`failure\` with no \`needs-human\`, and
+the *next* run would see the follow-up's \`createdAt\` fall outside the
+run-scoped self-filed window and defer onto it instead — Issue #3146 review
+of PR #3159). Closes #${ISSUE}.
+
+- [x] Red-first regression test
+- [x] Fix in \`handOffDeclaredOutcome\`
+- [x] Docs and prompt sweep
+- [x] \`./quality.sh\` green
+
+## Evidence
+
+- **Docs sweep.** Grepped for "filed during" / "this run filed" / "After a
+  commit, a". Updated:
+  - \`DESIGN-PRINCIPLES.md\`
+  - \`prompts/issue/prompt.md\` (the "Blocked" bullet; the later passage is
+    scoped to committed work and stays accurate)
+  - \`prompts/coding_guidelines/prompt.md\`
+
+  \`CODING-STANDARDS.md\` holds no copy of this rule. The related rules checked
+  were the #3088 committed-run deferral rules and the escape-hatch rule; they
+  now agree.
+
+## Test Plan
+
+- \`worker/deno/tests/completion_phase_docs_sweep_test.ts\`
+`;
+
+/** The same fixture once the recovery adds a \`section:\` field. */
+const SUMMARY_3159_WITH_SECTION = SUMMARY_3159_WITHOUT_SECTION.replace(
+  '- **Docs sweep.** Grepped for "filed during" / "this run filed" / ' +
+    '"After a\n  commit, a". Updated:',
+  "**Docs sweep** — grep: `filed during` / `this run filed` / " +
+    "`After a commit, a`; section: `DESIGN-PRINCIPLES.md`; updated:",
+);
+
+Deno.test(
+  "completion - a run whose agent already raised its PR (VibeCoder#3159) gets the one recovery turn before that PR is finalised, then raises nothing new",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_3159_WITHOUT_SECTION,
+      retryWrites: SUMMARY_3159_WITH_SECTION,
+      changedFiles: CHANGED_FILES_3159,
+      prExistsForBranch: true,
+      events: [],
+    });
+
+    assertEquals(outcome.status, "continue");
+    const retryPrompts = outcome.claudePrompts.filter((p) =>
+      p.includes("RETRY NOTICE")
+    );
+    assertEquals(retryPrompts.length, 1, "exactly one recovery invocation");
+    assertStringIncludes(retryPrompts[0]!, "Docs sweep missing");
+
+    // The recovery ran before any finalise/create — no `gh pr create` at all
+    // (the existing PR is updated, not recreated), and `recoverExistingPr`
+    // only after the claude call.
+    assertEquals(outcome.prCreateCalls, 0, "the existing PR is not recreated");
+    const claudeIndex = outcome.events.indexOf("claude");
+    const recoverIndex = outcome.events.indexOf("recover");
+    assertEquals(claudeIndex >= 0, true);
+    assertEquals(recoverIndex > claudeIndex, true);
+    assertEquals(outcome.events.includes("pr-create"), false);
+  },
+);
+
+Deno.test(
+  "completion - the VibeCoder#3159 fixture with no fix from the recovery ends as summary_incomplete, not a silent finalise",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_3159_WITHOUT_SECTION,
+      changedFiles: CHANGED_FILES_3159,
+      prExistsForBranch: true,
+      events: [],
+    });
+
+    assertEquals(outcome.status, "early_exit");
+    assertStringIncludes(outcome.reason ?? "", "Docs sweep");
+    const retryPrompts = outcome.claudePrompts.filter((p) =>
+      p.includes("RETRY NOTICE")
+    );
+    assertEquals(retryPrompts.length, 1, "recovery still entered exactly once");
+
+    const claudeIndex = outcome.events.indexOf("claude");
+    const finaliseIndex = outcome.events.indexOf("finalise");
+    assertEquals(claudeIndex >= 0, true);
+    assertEquals(finaliseIndex > claudeIndex, true);
+  },
+);
+
 Deno.test(
   "completion - an unreadable diff fails closed even with no Docs sweep line",
   async () => {
@@ -320,5 +474,90 @@ Deno.test(
     assertStringIncludes(outcome.reason ?? "", "Docs sweep");
     assertEquals(outcome.comments.length, 1);
     assertStringIncludes(outcome.comments[0]!, "section:");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #3172: the Docs sweep line's own grep terms are re-run at the head.
+// ---------------------------------------------------------------------------
+
+/** A hit of the line's own term (`BrokerBalance`) the diff did not change. */
+const STALE_HIT =
+  "HEAD:docs/reporting-api.md\u0000320\u0000BrokerBalance refuses a stale quote\n";
+
+/** The valid summary once the recovery names the hit as still true. */
+const SUMMARY_NAMING_HIT = SUMMARY_WITH_LINE.replace(
+  "; no hits",
+  "; `docs/reporting-api.md:320` — still true because the refusal stays",
+);
+
+Deno.test(
+  "completion - a stale hit of the Docs sweep's own term gets the one recovery turn, then the PR is raised once it is named",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      retryWrites: SUMMARY_NAMING_HIT,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertStringIncludes(
+      outcome.claudePrompts[0]!,
+      "docs/reporting-api.md:320",
+    );
+    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(
+      outcome.comments[0]!,
+      "BrokerBalance refuses a stale quote",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a stale hit the recovery leaves alone fails the run with no PR raised",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(outcome.reason ?? "", "docs/reporting-api.md:320");
+  },
+);
+
+Deno.test(
+  "completion - a grep that cannot run is logged as not checked and does not block the PR",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: "",
+      grepCode: 128,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 0);
+  },
+);
+
+Deno.test(
+  "completion - a docs-only diff never re-runs the terms",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "docs/guide.md",
+      grepOutput: STALE_HIT,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 0);
   },
 );

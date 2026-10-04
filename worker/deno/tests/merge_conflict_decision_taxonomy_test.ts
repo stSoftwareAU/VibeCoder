@@ -78,6 +78,12 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
   "scan-error": { kind: "scan-error", stage: "labels", message: "gh exploded" },
   "needs-human": { kind: "needs-human", label: "needs-human" },
   "budget-spent": { kind: "budget-spent", attemptsSpent: 2, maxAttempts: 2 },
+  // Issue #2996: budget left, just waiting out the owner-check spacing.
+  "owner-check-pending": {
+    kind: "owner-check-pending",
+    dueAt: "2026-08-20T14:00:00.000Z",
+    attemptsSpent: 1,
+  },
   // Issue #1115: the rung between a spent budget and a human.
   "abandoned-restarted": {
     kind: "abandoned-restarted",
@@ -139,6 +145,11 @@ Deno.test("conflictReasonOperands - each reason carries what makes it checkable"
     attemptsSpent: 2,
     maxAttempts: 2,
   });
+  // Issue #2996: the record names when the owner-check spacing clears.
+  assertEquals(conflictReasonOperands(SAMPLES["owner-check-pending"]), {
+    dueAt: "2026-08-20T14:00:00.000Z",
+    attemptsSpent: 1,
+  });
   // Issue #1115: the record names the issue the work was handed back to —
   // the abandoned PR is closed, so the issue is the only thread left to pull.
   assertEquals(conflictReasonOperands(SAMPLES["abandoned-restarted"]), {
@@ -180,6 +191,7 @@ Deno.test("isQueuedConflictReason - separates the queue from what never entered 
   assertEquals(isQueuedConflictReason("out-of-scope-author"), false);
   assertEquals(isQueuedConflictReason("queue-empty"), false);
   assertEquals(isQueuedConflictReason("budget-spent"), true);
+  assertEquals(isQueuedConflictReason("owner-check-pending"), true);
   assertEquals(isQueuedConflictReason("lock-held"), true);
   // Issue #1115: the PR was in the queue right up until it was closed.
   assertEquals(isQueuedConflictReason("abandoned-restarted"), true);
@@ -386,6 +398,7 @@ export function describe(reason: ConflictSkipReason): string {
     case "scan-error":
     case "needs-human":
     case "budget-spent":
+    case "owner-check-pending":
     case "abandoned-restarted":
     case "parked":
     case "disrupted-bound":

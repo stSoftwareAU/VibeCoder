@@ -10,6 +10,7 @@ import {
   isWipOnlyCommitLog,
 } from "../lib/wip_commit_marker.ts";
 import {
+  buildDeclaredHandoffWipCommitMessage,
   buildInterruptedWipCommitMessage,
   WIP_CHECKPOINT_COMMIT_MESSAGE,
   type WipPreservationCause,
@@ -28,6 +29,11 @@ Deno.test("wip_commit_marker - recognises every worker-authored WIP subject", ()
   // The messages the worker actually writes must be recognised — this is the
   // drift guard between the builders and the completion gate.
   assertEquals(isWipCommitSubject(WIP_CHECKPOINT_COMMIT_MESSAGE), true);
+  assertEquals(
+    isWipCommitSubject(buildDeclaredHandoffWipCommitMessage({ dirtyFiles: 2 })),
+    true,
+    "a declared hand-off commit must still read as parked work",
+  );
   for (const cause of CAUSES) {
     assertEquals(
       isWipCommitSubject(

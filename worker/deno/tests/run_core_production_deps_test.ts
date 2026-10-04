@@ -402,6 +402,39 @@ Deno.test("createProductionRunCoreDeps - accepts custom logger", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// checkClaudeHealth — the failure reason reaches the loop (Issue #3180)
+// ---------------------------------------------------------------------------
+
+Deno.test("checkClaudeHealth - an unhealthy probe carries its message to the loop (Issue #3180)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "health_reason_test_" });
+  try {
+    const options = createTestOptions({
+      workDir: tmpDir,
+      agentHealthCheck: () =>
+        Promise.resolve({
+          healthy: false,
+          exitCode: 1,
+          message: "Health check error: Read-only file system (os error 30)",
+        }),
+    });
+    const { deps } = await createProductionRunCoreDeps(options);
+
+    const health = await deps.checkClaudeHealth();
+
+    assertEquals(health, {
+      ok: true,
+      value: {
+        healthy: false,
+        exitCode: 1,
+        message: "Health check error: Read-only file system (os error 30)",
+      },
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // isRateLimitActive — integration tests (Issue #1181)
 // ---------------------------------------------------------------------------
 
