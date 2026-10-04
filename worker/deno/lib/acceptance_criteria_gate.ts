@@ -77,7 +77,10 @@ const ACCEPTED_SCOPE_HEADING_RE =
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
 
 // A top-level markdown list item: "- x", "* x", "1. x", optionally a checkbox.
-const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+(.*)$/;
+// The text is `([^\n]*)` with no `$`, not `(.*)$`: `.` stops at a lone `\r`,
+// and a failing tail split a padded item's spaces between `\s+` and `(.*)` in
+// every possible way — quadratic in the run (Issue #3186).
+const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+([^\n]*)/;
 
 // The leading checkbox of a task-list item, stripped from the criterion text.
 const CHECKBOX_RE = /^\[[ xX~]?\]\s*/;
@@ -202,9 +205,12 @@ function statusOf(entry: string): ClosureEntry["status"] | null {
 
 // Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
 // is a ReDoS surface Semgrep blocks on, and only these two labels exist.
+// The search is unanchored, so the value is `([^\n]*)` with no `$`: a `(.*)$`
+// tail that a lone `\r` made fail restarted at every later occurrence of the
+// label and rescanned to the end each time — quadratic (Issue #3186).
 const LABEL_PATTERNS = {
-  evidence: /evidence\s*[:\-—]\s*(.*)$/i,
-  reason: /reason\s*[:\-—]\s*(.*)$/i,
+  evidence: /evidence\s*[:\-—]\s*([^\n]*)/i,
+  reason: /reason\s*[:\-—]\s*([^\n]*)/i,
 } as const;
 
 /** Whether a labelled field (`evidence:`, `reason:`) is present and filled. */
