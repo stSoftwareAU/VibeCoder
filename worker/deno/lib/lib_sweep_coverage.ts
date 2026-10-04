@@ -32,9 +32,9 @@ export const LIB_SWEEP_LEDGER_PATH = "docs/audits/lib-sweep-coverage.json";
 export const LIB_SWEEP_TOP_UP_DIR = "docs/audits/lib-sweep-coverage";
 
 /**
- * The last issue whose top-up slice may still sit in the ledger file itself.
- * Slices for later issues go in {@link LIB_SWEEP_TOP_UP_DIR}, so the file only
- * shrinks or has its existing slices edited from here on.
+ * The last issue whose slice may still sit in the ledger file itself, whatever
+ * its chunk id. Slices for later issues go in {@link LIB_SWEEP_TOP_UP_DIR}, so
+ * the file only shrinks or has its existing slices edited from here on.
  */
 export const LEDGER_FILE_LAST_TOP_UP_ISSUE = 3200;
 
@@ -335,7 +335,14 @@ export async function readCoverageLedger(
     for await (
       const entry of Deno.readDir(`${repoRoot}/${LIB_SWEEP_TOP_UP_DIR}`)
     ) {
-      if (!entry.isFile) continue;
+      // A subdirectory or symlink would otherwise drop its slice out of the
+      // ledger unseen, so anything but a regular file fails loud.
+      if (!entry.isFile) {
+        throw new SweepLedgerError(
+          `${LIB_SWEEP_TOP_UP_DIR}/${entry.name}: not a regular file — only ` +
+            `top-up-<issue>.json files belong in this directory`,
+        );
+      }
       if (!entry.name.endsWith(".json")) {
         throw new SweepLedgerError(
           `${LIB_SWEEP_TOP_UP_DIR}/${entry.name}: only top-up-<issue>.json ` +
@@ -403,18 +410,21 @@ export function parseCoverageLedger(
     );
   }
   const inFile = slices.map(parseSlice);
+  // By issue, whatever the chunk id: a new slice copying the file's older
+  // letter shape (`12ah`) would bring the tail conflict back just the same.
   const late = inFile.filter((slice) =>
-    TOP_UP_CHUNK_RE.test(slice.chunk) &&
     slice.issue > LEDGER_FILE_LAST_TOP_UP_ISSUE
   );
   if (late.length > 0) {
     throw new SweepLedgerError(
-      `${LIB_SWEEP_LEDGER_PATH}: top-up slice(s) for issues after ` +
+      `${LIB_SWEEP_LEDGER_PATH}: slice(s) for issues after ` +
         `#${LEDGER_FILE_LAST_TOP_UP_ISSUE} — ${
-          late.map((slice) => slice.chunk).join(", ")
-        }. Move each to its own file, ` +
-        `${LIB_SWEEP_TOP_UP_DIR}/<chunk>.json, so concurrent PRs do not ` +
-        `conflict on the ledger file.`,
+          late.map((slice) =>
+            `${slice.chunk} (#${slice.issue}) belongs in ` +
+            `${LIB_SWEEP_TOP_UP_DIR}/${topUpChunkId(slice.issue)}.json`
+          ).join(", ")
+        }. Move each to its own file, with chunk id top-up-<issue>, so ` +
+        `concurrent PRs do not conflict on the ledger file.`,
     );
   }
   const parsed = [...inFile, ...topUps.map(parseTopUpFile)];

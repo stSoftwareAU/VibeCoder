@@ -825,9 +825,10 @@ object, not a new entry at the end of `lib-sweep-coverage.json`: every PR that
 added a module used to append to that one array, so any two open PRs
 conflicted there, whereas two PRs adding two files never do.
 `readCoverageLedger` reads the ledger file plus every file in that directory;
-a file not named after its own issue fails, and the parser refuses a top-up
-slice for an issue after #3200 in the ledger file itself, naming the
-directory. Its `chunk` id is **`top-up-<issue>`**
+a file not named after its own issue fails, so does anything in that
+directory that is not a regular file (a subdirectory or a symlink), and the
+parser refuses any slice for an issue after #3200 in the ledger file itself,
+whatever its chunk id, naming the directory. Its `chunk` id is **`top-up-<issue>`**
 (`topUpChunkId` in `worker/deno/lib/lib_sweep_coverage.ts`), never the next
 letter after the ledger's tail: two runs working in parallel read the same
 tail and so choose the same next letter, which is how #1940 and #1943 both

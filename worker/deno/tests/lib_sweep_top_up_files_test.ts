@@ -128,3 +128,37 @@ Deno.test("readCoverageLedger - a top-up file reusing a ledger-file slice's issu
   );
   assert(err.message.includes("1219"), err.message);
 });
+
+Deno.test("readCoverageLedger - a subdirectory in the top-up directory fails naming it", async () => {
+  // A slice put in a nested folder must not drop out of the ledger unseen.
+  const root = await checkoutWith({ "top-up-3300.json": topUpJson(3300) });
+  await Deno.mkdir(`${root}/${LIB_SWEEP_TOP_UP_DIR}/nested`);
+  await Deno.writeTextFile(
+    `${root}/${LIB_SWEEP_TOP_UP_DIR}/nested/top-up-3301.json`,
+    topUpJson(3301),
+  );
+  const err = await assertRejects(
+    () => readCoverageLedger(root),
+    SweepLedgerError,
+  );
+  assert(err.message.includes(`${LIB_SWEEP_TOP_UP_DIR}/nested`), err.message);
+});
+
+Deno.test("readCoverageLedger - a symlink in the top-up directory fails naming it", async () => {
+  // A slice committed as a symlink must not drop out of the ledger unseen.
+  const root = await checkoutWith({ "top-up-3300.json": topUpJson(3300) });
+  const target = `${root}/elsewhere.json`;
+  await Deno.writeTextFile(target, topUpJson(3301));
+  await Deno.symlink(
+    target,
+    `${root}/${LIB_SWEEP_TOP_UP_DIR}/top-up-3301.json`,
+  );
+  const err = await assertRejects(
+    () => readCoverageLedger(root),
+    SweepLedgerError,
+  );
+  assert(
+    err.message.includes(`${LIB_SWEEP_TOP_UP_DIR}/top-up-3301.json`),
+    err.message,
+  );
+});

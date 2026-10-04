@@ -962,3 +962,20 @@ Deno.test("parseCoverageLedger - a new top-up slice in the ledger file itself is
     },
   ]));
 });
+
+Deno.test("parseCoverageLedger - a letter-chunk slice for a late issue in the ledger file is refused, naming the directory", () => {
+  // Copying the 12y..12ag letter shape still in the file must not get a new
+  // slice past the guard: the cut-off is by issue, whatever the chunk id.
+  const late = LEDGER_FILE_LAST_TOP_UP_ISSUE + 1;
+  const err = assertThrows(
+    () =>
+      parseCoverageLedger(ledgerJson([
+        { chunk: "12e", issue: 1219 },
+        { chunk: "12ah", issue: late },
+      ])),
+    SweepLedgerError,
+  );
+  assert(err.message.includes("12ah"), err.message);
+  assert(err.message.includes(LIB_SWEEP_TOP_UP_DIR), err.message);
+  assert(err.message.includes(`${topUpChunkId(late)}.json`), err.message);
+});
