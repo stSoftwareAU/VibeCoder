@@ -13,6 +13,7 @@ import {
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
 } from "./pr_body.ts";
+import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
 import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
@@ -140,6 +141,13 @@ export interface MergedPR {
    * collected — treat as no references, never as "no fix".
    */
   closingRefs?: number[];
+  /**
+   * The `missing` entries of the PR body's `## Acceptance Criteria` block
+   * (Issue #3177): a merged PR whose own summary marks a criterion missing
+   * does not close its issue. Absent on a cache entry written before this
+   * field was collected — treat as none.
+   */
+  missingCriteria?: string[];
 }
 
 /**
@@ -1799,14 +1807,15 @@ function parseMergedPrListing(output: string): MergedPR[] {
   for (const item of parsed) {
     if (!isRecord(item)) continue;
     if (typeof item.number !== "number") continue;
+    const body = typeof item.body === "string" ? item.body : "";
+    const missingCriteria = findMissingCriteria(body);
     prs.push({
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
-      closingRefs: extractClosingIssueNumbers(
-        typeof item.body === "string" ? item.body : "",
-      ),
+      closingRefs: extractClosingIssueNumbers(body),
+      ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
     });
   }
   return prs;

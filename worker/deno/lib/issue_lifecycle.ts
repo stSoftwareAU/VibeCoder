@@ -24,6 +24,10 @@ import { postMilestoneProgressComment } from "./milestone_progress.ts";
 import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
 import {
+  findMissingCriteria,
+  holdIssueOpenForMissingCriteria,
+} from "./missing_criterion_close_guard.ts";
+import {
   foreignMergedPrComment,
   mergedPrCompletesThisRun,
 } from "./pr_run_provenance.ts";
@@ -261,11 +265,12 @@ export async function ensureIssueClosedIfPrMerged(
       "--repo",
       repo,
       "--json",
-      "state,headRefName",
+      "state,headRefName,body",
     ]);
     const prState = JSON.parse(prOutput) as {
       state: string;
       headRefName?: string;
+      body?: string;
     };
 
     // Issue #174: provenance before closure. On VibeCoder#42 a human's
@@ -360,11 +365,12 @@ export async function ensureIssueClosedIfPrMerged(
       "--repo",
       repo,
       "--json",
-      "state,milestone",
+      "state,milestone,labels",
     ]);
     const issueData = JSON.parse(issueOutput) as {
       state: string;
       milestone?: { title: string } | null;
+      labels?: Array<{ name: string }>;
     };
 
     if (issueData.state !== "OPEN") {
@@ -373,6 +379,39 @@ export async function ensureIssueClosedIfPrMerged(
         value: {
           closed: false,
           reason: `Issue #${issueNumber} is already closed`,
+        },
+      };
+    }
+
+    // Issue #3177: the merged PR's own closure block marks a criterion
+    // missing, so the merge does not complete the issue. Leave it open for a
+    // human, naming what is missing, instead of closing it as completed.
+    const missing = findMissingCriteria(prState.body ?? "");
+    if (missing.length > 0) {
+      const held = await holdIssueOpenForMissingCriteria({
+        repo,
+        issueNumber,
+        prNumber,
+        baseRefName: landing.baseRefName,
+        missing,
+        issueLabels: (issueData.labels ?? []).map((l) => l.name),
+        ghCommandFn,
+      });
+      logger.warn(
+        "Not closing the issue: the merged PR marks acceptance criteria " +
+          "missing (Issue #3177)",
+        { repo, issueNumber, prNumber, missing: missing.length, held },
+      );
+      if (held === "held") {
+        await invalidatePostMutation(deps.cache, repo, issueNumber);
+      }
+      return {
+        ok: true,
+        value: {
+          closed: false,
+          reason: `PR #${prNumber} merged, but its own summary marks ` +
+            `${missing.length} acceptance criteria missing — issue left ` +
+            `open for a human (Issue #3177)`,
         },
       };
     }

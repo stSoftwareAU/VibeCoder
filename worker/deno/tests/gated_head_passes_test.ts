@@ -14,6 +14,9 @@
  * stand-down case — a fix PR already in flight — so a second attempt spends
  * no retry rather than raising a duplicate.
  *
+ * Issue #3031 did the same for the merge-conflict pass: a milestone head is
+ * handed to the conflict takeover in the same cycle rather than stood down.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
@@ -27,6 +30,7 @@ import {
   type MergeConflictProcessorDeps,
   processMergeConflict,
 } from "../lib/pr_merge_conflict_processor.ts";
+import type { ConflictTakeoverPr } from "../lib/conflict_takeover.ts";
 import { resetGatedHeadReportsForTest } from "../lib/gated_head_guard.ts";
 import { milestoneFixPrefixFor } from "../lib/milestone_fix_pr.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -36,6 +40,7 @@ import { isPrLiveStateRead } from "./support/pr_live_state_stub.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const GATED_HEAD = "milestone/4690-bug-sampler-enospc";
+const GATED_HEAD_SHA = "4690000000000000000000000000000000000abc";
 
 function makeSilentLogger(): Logger {
   const noop = () => {};
@@ -74,7 +79,11 @@ function makeDeps(observed: Observed) {
         );
       }
       if (joined.includes("pr view")) {
-        return Promise.resolve(JSON.stringify({ comments: [] }));
+        // Issue #3031: the merge-conflict pass reads the head sha it hands
+        // to the conflict takeover.
+        return Promise.resolve(
+          JSON.stringify({ comments: [], headRefOid: GATED_HEAD_SHA }),
+        );
       }
       // Issue #2907: the CI-fix pass looks for an already-open milestone-fix
       // PR before it stands down. Answering with one in flight (rather than
@@ -205,8 +214,8 @@ Deno.test("CI-fix pass - a gated head with a fix already in flight spends no ret
     assertEquals(wroteAnythingElse(observed), false);
     // Issue #2907: reusing an already-open fix PR stands down silently — the
     // fix PR itself carries the explanation, so no duplicate comment is
-    // posted on the milestone PR (unlike the spelling and merge-conflict
-    // passes above, which still post one).
+    // posted on the milestone PR (unlike the spelling pass above, which
+    // still posts one).
     assertEquals(standDownComments(observed).length, 0);
     assertEquals(renewals, 1, "the lock is taken and released as usual");
   } finally {
@@ -214,16 +223,18 @@ Deno.test("CI-fix pass - a gated head with a fix already in flight spends no ret
   }
 });
 
-Deno.test("merge-conflict pass - a milestone head opens no attempt (Issues #1679, #1772)", async () => {
-  // The merge-conflict pass now stands down on the branch name alone: a
-  // `milestone/**` head belongs to the milestone branch sync, gated or not
-  // (Issue #1772). The stand-down it records names the sync rather than the
-  // rule; the spelling and CI-fix passes above still read the ruleset.
+Deno.test("merge-conflict pass - a milestone head goes to the conflict takeover, never a stand-down (Issues #1679, #3031)", async () => {
+  // The merge-conflict pass no longer stands down on a `milestone/**` head
+  // (Issue #1772's stand-down is retired): it hands the PR to the conflict
+  // takeover in the same cycle, which resolves on a `milestone-fix/**`
+  // branch. The pass itself never checks the head out, runs its own agent,
+  // takes its own lock or posts a stand-down comment.
   resetGatedHeadReportsForTest();
   const tmpDir = await Deno.makeTempDir({ prefix: "vibe-gated-merge-" });
   try {
     const observed: Observed = { ghCalls: [], agentRuns: 0 };
     let lockAttempts = 0;
+    const takeovers: ConflictTakeoverPr[] = [];
 
     const result = await processMergeConflict({
       repo: "org/repo",
@@ -238,6 +249,7 @@ Deno.test("merge-conflict pass - a milestone head opens no attempt (Issues #1679
       workDir: tmpDir,
       workRoot: tmpDir,
       workerId: "worker-1",
+      trustedAuthors: ["vibe-bot"],
       acquireLockFn: (() => {
         lockAttempts++;
         return Promise.resolve({
@@ -245,31 +257,48 @@ Deno.test("merge-conflict pass - a milestone head opens no attempt (Issues #1679
           value: { acquired: true, lockCommentId: 1 },
         });
       }) as unknown as MergeConflictProcessorDeps["acquireLockFn"],
+      takeoverResolvers: {
+        resolveViaLadder: () => {
+          throw new Error("unused: the takeover is stubbed");
+        },
+        resolveOnFixBranch: () => {
+          throw new Error("unused: the takeover is stubbed");
+        },
+      },
+      takeoverFn: (pr) => {
+        takeovers.push(pr);
+        return Promise.resolve({
+          kind: "fix-pr-raised",
+          fixPr: {
+            number: 9100,
+            url: "https://github.com/org/repo/pull/9100",
+            opened: true,
+          },
+          fixBranch: `${milestoneFixPrefixFor(GATED_HEAD, 4702)}takeover-x`,
+        });
+      },
     });
 
     assertEquals(result.ok, true);
     if (result.ok) {
-      assertEquals(result.value.processed, false);
+      assertEquals(result.value.processed, true);
       assertEquals(result.value.merged, false);
       assertEquals(result.value.escalated, false);
     }
+    assertEquals(takeovers.length, 1);
+    assertEquals(takeovers[0]!.headRefName, GATED_HEAD);
+    assertEquals(takeovers[0]!.headSha, GATED_HEAD_SHA);
     assertEquals(observed.agentRuns, 0);
     assertEquals(wroteAnythingElse(observed), false);
     assertEquals(
       lockAttempts,
       0,
-      "the stand-down precedes the cross-host lock, so a gated PR churns no " +
-        "lock comment or heartbeat on every run",
+      "the takeover owns the cross-host lock, so the pass takes none of its own",
     );
-    // The stand-down comment is the only comment: no attempt marker was
-    // posted, so the attempt budget is intact for a real conflict.
-    const comments = standDownComments(observed);
-    assertEquals(comments.length, 1);
-    assertStringIncludes(comments[0]!, "milestone branch sync");
     assertEquals(
-      comments.some((body) => body.includes("Attempt")),
-      false,
-      "no merge-conflict attempt is opened on a milestone head",
+      standDownComments(observed),
+      [],
+      "no stand-down comment is posted on a milestone head",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

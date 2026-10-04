@@ -1033,6 +1033,46 @@ flowchart TD
     style B fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+### A `missing` criterion does not close the issue
+
+"A missing core deliverable is not a PR" used to be prose that only a reviewer
+enforced, and a PR into a milestone branch has no reviewer: it merges as soon
+as CI is green. GRQ-AutoTrader#2459 marked three of its four criteria
+`missing`, merged into its milestone and closed its issue as completed; #2307
+and #2370 did the same. The run had already said, in the closure block the
+gate parses, that the deliverable was absent. Since Issue #3177 the worker
+reads that signal at both ends
+([`missing_criterion_close_guard.ts`](../../worker/deno/lib/missing_criterion_close_guard.ts)):
+
+- **At PR creation.** When the summary's closure block has any `missing`
+  entry, `assemblePrBody` rewrites the summary's closing keywords for the
+  issue to `Part of #N`, adds a `## Not closing #N` section naming the missing
+  criteria, and appends no `Closes #N`. The same assembly runs when the PR
+  body is re-synced from the summary, so a later commit that finishes the
+  work (and marks the criteria `met`) restores the closing keyword.
+- **At merge.** A fleet PR's title still names its issue (`(Issue #N)`), and
+  the merged-PR closers read titles, so the PR body alone cannot hold the
+  issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
+  milestone auto-close) and `ensureIssueClosedIfPrMerged` (used by the
+  housekeeping sweep and the recovery path) — read the merged PR's closure
+  block. With a `missing` entry they leave the issue open, label it
+  `needs-human` and comment naming each missing criterion. An issue that
+  already carries `needs-human` is left alone, so the comment is posted once.
+
+```mermaid
+flowchart TD
+    S["PR summary closure block"] --> M{"Any entry<br/>missing?"}
+    M -->|no| C["PR body: Closes #N"]
+    M -->|yes| P["PR body: Part of #N<br/>+ Not closing #N section"]
+    C --> X["Merged: issue closed"]
+    P --> H["Merged: issue left open,<br/>needs-human + comment<br/>naming the missing criteria"]
+    style X fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style H fill:#e9c46a,stroke:#b08900,color:#000
+```
+
+A `partial` entry is unaffected: the PR still closes the issue and the
+Summary names the gap beside the closing keyword.
+
 ## 🔍 Independent review on two axes
 
 The closure block above says **which** criteria were met; Issue #663 added **who
@@ -1305,6 +1345,23 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Check where you insert (Issue #3194).** Fleet PRs added a new item or
+paragraph at a point that cut existing text off from what it describes.
+GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
+function's doc comment and that function, so rustdoc joined the two blocks
+and the new helper's doc opened with the other function's description.
+GRQ-AutoTrader#2478 put a new paragraph in front of a sentence reading
+"Both paragraphs above describe …", which then named the wrong paragraphs.
+The docs sweep did not catch either, because the sentence made wrong was not
+one the diff added or edited. `CODING-STANDARDS.md` and the guidelines
+(**A Code Change Owes a Docs Change**) now require reading the lines directly
+above and below every insertion point. A new item goes above an existing doc
+comment, attribute or decorator, never between it and its item. A following
+sentence that points back must still point at what it meant, or the insertion
+moves after it, or the sentence is reworded to name its subject. The first and
+last context lines of every hunk that adds a block are read in the diff. The
+issue prompt's PR-summary self-review list carries the same step.
+
 **Vet every regex on untrusted text, one hostile case per pattern
 (Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
 case for the one pattern the author had in mind, and shipped a sibling
@@ -1322,6 +1379,19 @@ every other regex in the same module. The same change fixed the
 `\s*:?\s*` heading tail in the acceptance-criteria, failure-detection,
 independent-review and reproduction-status parsers, and the trailing
 `/\s+$/` strip in the failure-detection repair.
+
+**A `(.*)$` tail can fail on a lone carriage return (Issue #3186).** The
+same gates read labelled values (`reason:`, `evidence:`, `symptom:`,
+`status:`, `test:`) and list items with a greedy `(.*)$`. `.` does not cross
+a lone `\r`, so on a line holding one the tail could not reach `$`: an
+unanchored label search restarted at every later occurrence of the label and
+rescanned to the end each time, and an anchored one split a run of spaces
+between `\s*` and `(.*)` in every possible way. Both are quadratic; at the
+200 000-character scan cap a single PR summary cost seconds to tens of
+seconds per call, and the closure gate has no cap. Each value is now read
+with `([^\n]*)` and no `$`, a tail that cannot fail, so the first labelled
+occurrence wins and a value after a lone `\r` is read rather than dropped.
+The regex-vetting rule names the shape.
 
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
@@ -1429,6 +1499,157 @@ is logged as not checked line by line, while its hits in files the diff
 touched are still listed. A grep or diff that cannot run, or an
 unresolvable base ref, is logged at ERROR as not checked and does not block
 the PR.
+
+## 🧪 Removed test assertions must be accounted for
+
+The issue prompt and `CODING-STANDARDS.md` have required (since Issue #3061)
+that a PR summary's Test Plan name every assertion the diff removes from an
+existing test, with the issue requirement that makes it untrue — but the
+rule was prose only, and nothing checked it. Sub-PR GRQ-AutoTrader#2370
+(Issue #2253) was raised with a summary that had no `## Test Plan` section
+at all, and its rewritten test dropped a still-true per-day check that a
+`BBB` row exists for every session; the change reached milestone PR
+GRQ-AutoTrader#2376.
+
+**The gate.**
+[`removed_assertion_gate.ts`](../../worker/deno/lib/removed_assertion_gate.ts)
+(`validateRemovedAssertions`, `findRemovedAssertions`,
+`buildRemovedAssertionGateComment`) runs as a summary-rule gate in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+whenever `git diff --name-only <base>...HEAD` lists a test file
+(`isTestFilePath`, shared with the security-fix and docs-sweep gates) — and
+also when that list cannot be read, fail closed. It then blocks a summary
+with no `## Test Plan` heading.
+
+It decides whether the gate applies from
+`git diff --name-status -z --find-renames <base>...HEAD` (NUL-separated, so
+a non-ASCII path is not quoted into a pathspec that matches nothing), not
+from the rename-collapsed `git diff --name-only` list. A rename or copy
+whose old or new path is a test file contributes both paths, so a test
+file renamed to `src/moved.rs` is still a test-file change. It then reads
+`git diff --unified=4000000 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
+Deleted test files are in that patch. A pathspec of only a rename's new
+name is not used: that would show the file as brand-new and hide the
+removed lines. The context is large enough that each test file's patch is
+one hunk holding the whole old file and the whole new file, so the gate
+sees every assertion in full and everything around it.
+
+On each side of each test file it lexes the source first, blanking
+comments and string contents (`//`, `/* */` and quotes for Rust and
+C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
+an assertion inside a comment or a string is not an assertion. In C-like
+files (TypeScript, JavaScript and the like) a regex literal is blanked as
+well: a `/` where an expression can begin — at the start of the file, after
+`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, after any other operator
+(including the `>` of an arrow, so `` => /`/.test(c) `` is a regex), or
+after a keyword such as `return` or `typeof` — opens a one-line regex that
+ends at an unescaped `/` outside a `[…]` class. So a quote or backtick
+inside a regex (`` /[*_`>]/g ``) does not open a string that hides the lines
+below it. A `/` with no closing `/` on its line is division. A template
+literal's `${…}` substitutions are lexed as code, with a stack of brace
+depths that resumes the template at the matching `}`, so a nested template
+or quote inside a substitution (`` `'${v.replaceAll("'", `'\\''`)}'` ``)
+does not close the outer template early. It then
+collects every assertion statement — `assert…(`, `assert_eq!(`,
+`assert.x(`, `expect(` not preceded by `.`, and Python/bats
+`assert`/`assert_x` commands; `debug_assert!` and a declaration such as
+`function assertNoEscalation(…) {` are not assertions — extending each
+over the following lines until its brackets close (up to 200 lines).
+
+An assertion on the old side counts as kept or moved only when the new
+side of some test file in the diff holds a copy with the same text,
+ignoring whitespace, **and** the same context:
+
+- **The same guards and skips around it.** Its enclosing lines are found
+  by indentation and by open `{`, so both formatted and unformatted code
+  are covered. Every enclosing line that does not just name a test, a test
+  group, a test function (`#[test]`, `test_…`) or a type or module is part
+  of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
+  callback such as `.forEach(`, a wrapper helper, or a helper function that
+  may never be called. A head wrapped over several lines is part of the
+  context whole, every line of its condition: `deno fmt`'s
+  `if (`…`) {`, black's `if (`…`):`, rustfmt's `if a` / `&& b` / `{`, an
+  Allman `{`, a Python `\` continuation, and a `for (` whose array of
+  cases spans lines. These are found as one logical line: lines inside an
+  open `(` or `[`, lines that lead with `&&`, `||`, `.` or `?`, and a bare
+  `{` all continue the line above. A head longer than 200 lines is
+  reported, since the gate cannot key it whole. When an enclosing line continues a chain — `else`,
+  `elif`, `} else if`, `except`, `catch`, `finally`, a `case`/`default:`
+  arm or a Rust match arm — the earlier heads of that chain back to its
+  opening `if`, `try`, `switch` or `match` are part of the context too. They
+  are found by brace (the `if (…) {` whose `{` a `} else {` closes) and by
+  indentation (same-indent heads above, skipping their bodies). So changing
+  the `if` condition above an `else` assertion is a removal. When no brace
+  links a branch to its head and the walk back passes 400 lines, the
+  assertion is reported, because the gate cannot see the head. So are skip
+  markers on the enclosing test:
+  `it.skip(`, `Deno.test.ignore(`, `xit(`, `ignore: true`, `#[ignore]`,
+  `#[should_panic]`, a non-test `#[cfg(…)]`, `@pytest.mark.skip`,
+  `@unittest.skip`, `pytestmark`.
+- **The same early exits before it** in its innermost function: `return`,
+  `continue`, `break`, `throw`, `raise`, `panic!`, `pytest.skip(`,
+  `t.Skip(` and the like, outside a closure opened on the same line. An
+  exit inside a function or closure body that closed before the assertion
+  is not counted: a `{` opened by `=> {`, `function (…) {`, `|x| {` or an
+  object method such as `async run(args) {`, or a nested Python `def`. A
+  `return` in a mock or callback cannot stop a later assertion from
+  running, so changing it does not mark that assertion removed. An exit in
+  a closed `if` or loop block still counts.
+
+Copies are counted, so deleting one of two identical assertions is a
+removal. Everything else is removed: an edit to any line of a multi-line
+assertion (a `.any(` predicate losing a condition, an expected value
+changing), an assertion commented out or deleted, and a copy re-added
+under a new condition, into a skipped test or after a new early exit. An
+unchanged assertion whose guard, skip or preceding exit changed is
+removed too, and so is one whose brackets never close within 200 lines
+when the file changes at or after it, because the gate cannot tell where
+it ends. A re-wrap, a re-indent, or a move to another test or another
+test file with nothing new around it still counts as moved. As a backstop
+for a lexer mistake, a removed line that opens an assertion but that the
+lexer entered already inside a carried-over string or block comment is
+always reported, even when the same text is re-added: the gate cannot read
+its context, so it fails closed. An assertion-shaped line in a multi-line
+template literal or block comment that the diff removes or moves must
+therefore be named in the Test Plan too. Valid source never ends inside a
+string, template, `${…}` substitution or block comment, so when either
+side's lexer reaches the end of a file still inside one, it has lost its
+place. If the file changes at or after the line where that literal opened,
+every assertion-shaped line of the old side from that line on is reported.
+A copy on such a new side from that line on cannot vouch for a move.
+
+Each remaining removed assertion must appear, ignoring whitespace, in the
+Test Plan section; otherwise PR creation is blocked and the notice lists
+every unaccounted assertion. The gate checks only that the assertion is
+named — whether the stated requirement truly makes it untrue is left to the
+Standards reviewer, whose brief now asks it to list every assertion the diff
+removes from an existing test and return a `violation` for any that has none.
+When the test-file patch itself cannot be read, or it reaches the
+8,000,000-character read cap, only the heading rule applies and a warning
+is logged. The patch is not scanned after a silent cut.
+
+Like the docs-sweep and result-placeholder gates, its verdict is computed
+early and folded into an earlier summary gate's own notice (closure,
+independent review, reproduction status) when one of those blocks first, and
+it gets the same single
+[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn — a
+second block fails the run, and a branch that already carries a PR instead
+finalises as `summary_incomplete`. Among the standalone gates it runs after
+the docs sweep and before the placeholder-token gate.
+
+```mermaid
+flowchart TD
+  A["Diff touches a test file?"] -->|No| Z["Continue"]
+  A -->|Yes / unreadable| B["Summary has ## Test Plan heading?"]
+  B -->|No| X["Block PR"]
+  B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
+  C -->|No| Z
+  C -->|Yes| D["Each named in the Test Plan?"]
+  D -->|Yes| Z
+  D -->|No| X
+  style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style X fill:#c45858,stroke:#6b2020,color:#fff
+```
 
 ## 🚫 A leftover placeholder token blocks the summary
 
@@ -1539,7 +1760,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the six summary gates above, a finding
+Like the security-fix gate and unlike the seven summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1577,10 +1798,10 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the six summary-rule gates — closure,
-independent review, reproduction status, docs sweep, the placeholder-token
-gate and the branch-outcomes gate — still pre-empts the
-guard: a follow-up filed there would promise "that run's PR still
+with **no** PR yet, each of the seven summary-rule gates — closure,
+independent review, reproduction status, docs sweep, removed test
+assertions, the placeholder-token gate and the branch-outcomes gate — still
+pre-empts the guard: a follow-up filed there would promise "that run's PR still
 completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
 runs. On an existing-PR branch the guard instead runs from inside
@@ -1589,7 +1810,7 @@ comment is posted but before that gate's recovery finalises the PR. Before
 Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
-six gates pass, `completionBody` runs the same guard once more — via the
+seven gates pass, `completionBody` runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -1650,7 +1871,10 @@ flowchart TD
   an unrelated finding.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
-  survives the merge in the follow-up instead.
+  survives the merge in the follow-up instead. The one exception is a summary
+  that marks a criterion `missing`: that PR is raised as `Part of #N` and its
+  merge hands the issue to a human (Issue #3177, see
+  [A `missing` criterion does not close the issue](#a-missing-criterion-does-not-close-the-issue)).
 - **A healthy run is untouched**, whatever its summary says. A degraded run
   that showed every scope item `met` is left alone only when it reported no
   unmatched `partial` or `missing` entry. An unmatched entry like that is
@@ -1669,10 +1893,11 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The six summary gates above — acceptance-criteria closure, independent review,
-reproduction status, docs sweep, the placeholder-token gate and the
-branch-outcomes gate — sit at the completion phase's PR-creation chokepoint, so
-blocking one normally costs the next attempt a rewrite and nothing else. The
+The seven summary gates above — acceptance-criteria closure, independent review,
+reproduction status, docs sweep, removed test assertions, the
+placeholder-token gate and the branch-outcomes gate — sit at the completion
+phase's PR-creation chokepoint, so blocking one normally costs the next
+attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
 recovery path for exactly that.
@@ -1866,11 +2091,11 @@ takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before: finalised as `summary_incomplete`
 when a PR exists, failed when none does.
 
-All six summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521), docs sweep (#3073), the placeholder-token
-gate (#3124) and the branch-outcomes gate (#3147). The two exceptions above
-do not — the security-fix and changed-workflow gates report defects in the
-change, not
+All seven summary gates route through it: closure (#518), independent review
+(#663), reproduction status (#521), docs sweep (#3073), removed test
+assertions (#3131), the placeholder-token gate (#3124) and the
+branch-outcomes gate (#3147). The two exceptions above do not — the
+security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.
 
 **Implementation.**

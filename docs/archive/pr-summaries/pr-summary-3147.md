@@ -240,6 +240,39 @@ This inserted ~56 lines ahead of the Branch-outcomes-related lines this
 summary cites in `completion_phase.ts`; every citation into that file below
 is updated to the post-merge line number.
 
+### Second merge (PR #3160 conflicting with `main` again)
+
+`main` had since merged Issue #3131 (the removed-assertion gate), which
+generalised the two-verdict fold above into a `LateSummaryVerdict`
+interface/array (`docsSweepVerdict`, `removedAssertionsVerdict`,
+`placeholderVerdict`) and a cascading chain of standalone gate blocks
+(docs sweep → removed assertions → placeholder, each folding the ones after
+it). This PR's `branchOutcomesBlocked` verdict and its own
+`foldInLateSummaryGates` helper conflicted with that generalisation at the
+same lines.
+
+Resolved by extending `main`'s array-based design rather than keeping this
+PR's separate three-way `if`: `branchOutcomesVerdict` joins the
+`LateSummaryVerdict` array as the fourth entry, and the three call sites that
+used this PR's `foldInLateSummaryGates` name now call `main`'s
+`foldInLateSummaryVerdicts` instead (same behaviour, one name). The late-gate
+chain itself is now four cascading standalone blocks — docs sweep, removed
+assertions, result placeholder, branch outcomes, in that order — each
+folding every still-blocked gate named after it into its own comment, so a
+summary failing more than one still gets told about all of them in one
+recovery turn. Both sides' gate logic (and their own `logger.warn` detail
+fields) survive; only the two different "collect N verdicts then report
+once" mechanisms were unified into one.
+
+`docs/workflows/issue-processing.md` and
+`worker/deno/tests/completion_phase_head_reconcile_test.ts` conflicted the
+same way: the doc's "six summary gates" became "seven" (closure, independent
+review, reproduction status, docs sweep, removed test assertions, the
+placeholder-token gate, the branch-outcomes gate) in the three places that
+list them, and the test fixture's PR-summary text now carries both main's
+`## Test Plan` section and this PR's `**Branch outcomes:** none added` line,
+so it still satisfies both gates.
+
 ## Test Plan
 
 - `worker/deno/tests/branch_outcomes_gate_test.ts`: parsing, validation and
