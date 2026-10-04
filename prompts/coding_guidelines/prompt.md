@@ -226,8 +226,16 @@ not after a reviewer finds it weeks later.
   setting or endpoint while keeping its name also owes a docs change — the
   rename rule alone misses it, because there is no old name to grep for.
 - Grep for the **unchanged name**, then re-read every hit — including the doc
-  comment directly above the changed code and the prose beside any example you
-  updated — and fix any that still describe the old behaviour.
+  comment directly above the changed code, the doc comments on the definitions
+  and callers of what changed, wherever they live, and the prose beside any
+  example you updated — and fix any that still describe the old behaviour.
+- **Doc comments outside the diff go stale too.** Grep source files, not only
+  the manuals: for each name the change removes or whose behaviour it changes,
+  and for the shared constants, types and helpers the changed code defines or
+  calls. Read every doc comment and module doc a hit lands in, and fix any
+  sentence the change makes false, including in a file the diff does not
+  otherwise touch. A constant's definition, a reader's safety argument and a
+  helper's list of callers are where these go stale.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
 - When the change adds or changes a **rule** in a prompt template, coding

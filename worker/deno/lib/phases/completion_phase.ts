@@ -2269,7 +2269,8 @@ async function completionBody(
   let docsSweepComment = buildDocsSweepGateComment(docsSweep);
 
   // Issue #3172: once the line itself passes, re-run the grep terms it
-  // quotes over the head's docs. A hit outside every line the diff changed,
+  // quotes over the head's docs, and over the comment lines of its source
+  // files (Issue #3219). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
   // and left — it blocks through the same single recovery turn. A grep or
   // diff that cannot run is logged as not checked, never read as clean.

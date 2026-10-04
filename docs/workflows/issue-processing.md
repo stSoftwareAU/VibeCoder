@@ -1516,6 +1516,25 @@ touched are still listed. A grep or diff that cannot run, or an
 unresolvable base ref, is logged at ERROR as not checked and does not block
 the PR.
 
+**Doc comments in source files are swept too (Issue #3219).** Fleet PRs fixed
+the manuals and the comment directly above the code they edited, and left doc
+comments elsewhere describing the removed behaviour: on a shared constant, a
+reader, a helper the code calls, or a sibling module, in files the diff did
+not touch (stSoftwareAU/VibeCoder#3215, GRQ-AutoTrader#2460, #2393). The
+prompts now extend the grep to source files: for each name the change removes
+or whose behaviour it changes, and for the shared constants, types and helpers
+the changed code defines or calls, the agent reads every doc comment and
+module doc a hit lands in and fixes any sentence the change makes false.
+`checkDocsSweepTerms` re-runs the same terms over source files outside `docs/`
+(`SOURCE_COMMENT_PATHSPECS`: `*.ts`, `*.rs`, `*.py`, `*.go`, `*.sh` and the
+other common source extensions) and keeps only hits on a whole comment line
+(`isSourceCommentLine`: `//`, `/*`, a `*` continuation, or `#` and a space).
+A code line, or a comment trailing code, is not read. Those hits are cleared
+the same way — a line the diff changed, or `file:line` in the Docs sweep line
+— and block through the same recovery turn. The broad-term limit of 10 is
+counted for source comments apart from docs, so a term common in comments
+never sets aside its doc hits.
+
 ## 🧪 Removed test assertions must be accounted for
 
 The issue prompt and `CODING-STANDARDS.md` have required (since Issue #3061)

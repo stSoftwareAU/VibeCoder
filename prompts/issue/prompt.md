@@ -175,15 +175,23 @@ guessing — the analysis-only hand-off then routes it to a human.
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
    never by the file's topic.
+   Grep **source files** too, not only the manuals: for each name you
+   removed or whose behaviour you changed, and for the shared constants,
+   types and helpers the changed code defines or calls. Read every doc
+   comment and module doc a hit lands in — a constant's definition, a
+   reader's safety argument, a helper's list of callers — and fix any
+   sentence the change makes false, including in a file the diff does not
+   otherwise touch.
    Grep for the **stem** of a behavioural claim, not one inflection
    (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
    list as updated, read every passage that mentions the changed surface,
    not only the section you edited. Then re-run every grep **on the final
    head, after editing**, and record each hit you leave in place in the
    Docs sweep line as `file:line — still true because …`. The worker
-   re-runs the line's quoted terms over the head's docs itself: a hit
-   outside the lines your diff changed that the line does not name as
-   `file:line` blocks the PR the same way a missing line does.
+   re-runs the line's quoted terms over the head's docs itself, and over
+   the comment lines of its source files: a hit outside the lines your diff
+   changed that the line does not name as `file:line` blocks the PR the
+   same way a missing line does.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is

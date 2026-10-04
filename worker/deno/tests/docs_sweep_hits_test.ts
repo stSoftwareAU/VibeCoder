@@ -25,10 +25,12 @@ import {
   type DocsSweepGitRunner,
   extractGrepTerms,
   extractNamedLines,
+  isSourceCommentLine,
   MAX_REPORTED_HITS,
   MAX_UNTOUCHED_HITS_PER_TERM,
   parseChangedLines,
   parseGitGrepOutput,
+  SOURCE_COMMENT_PATHSPECS,
   termToGitGrepPattern,
 } from "../lib/docs_sweep_hits.ts";
 import { parseDocsSweepLine } from "../lib/docs_sweep_gate.ts";
@@ -245,9 +247,14 @@ interface StubCall {
   args: string[];
 }
 
-/** A git stub: `grep` answers per pattern, `diff` answers with one patch. */
+/**
+ * A git stub: `grep` answers per pattern — the docs pass from `grep`, the
+ * source-comment pass (Issue #3219) from `sourceGrep` — and `diff` answers
+ * with one patch.
+ */
 function stubGit(opts: {
   grep?: Record<string, string>;
+  sourceGrep?: Record<string, string>;
   grepCode?: number;
   diff?: string;
   diffCode?: number;
@@ -257,7 +264,10 @@ function stubGit(opts: {
     opts.calls?.push({ args });
     if (args.includes("grep")) {
       const pattern = args[args.indexOf("-e") + 1]!;
-      const stdout = opts.grep?.[pattern] ?? "";
+      const answers = args.includes(":(exclude)docs")
+        ? opts.sourceGrep
+        : opts.grep;
+      const stdout = answers?.[pattern] ?? "";
       const code = opts.grepCode ?? (stdout === "" ? 1 : 0);
       return Promise.resolve({ code, stdout, stderr: "" });
     }
@@ -516,6 +526,159 @@ Deno.test("checkDocsSweepTerms - malformed grep output is not_checked", async ()
 });
 
 // ---------------------------------------------------------------------------
+// Source doc comments outside the diff (Issue #3219)
+// ---------------------------------------------------------------------------
+
+Deno.test("isSourceCommentLine - reads line, block, doc and hash comments as comments", () => {
+  for (
+    const line of [
+      "// the park is re-recorded",
+      "  /// helper shared by both callers",
+      "//! module doc",
+      "/** Marker posted when a PR is parked */",
+      " * the gated-head and park waits both write one",
+      " */",
+      "# shared by the two callers",
+      "#",
+    ]
+  ) {
+    assert(isSourceCommentLine(line), `expected a comment: ${line}`);
+  }
+});
+
+Deno.test("isSourceCommentLine - code, strings, attributes and directives are not comments", () => {
+  for (
+    const line of [
+      'export const CONFLICT_PARKED_MARKER = "<!-- parked -->";',
+      "  const total = a * b; // trailing note",
+      "#[derive(Debug)]",
+      "#!/usr/bin/env bash",
+      "#include <stdio.h>",
+      "*ptr = 0;",
+      "",
+    ]
+  ) {
+    assertEquals(isSourceCommentLine(line), false, line);
+  }
+});
+
+Deno.test("checkDocsSweepTerms - greps source files outside docs/ for comment lines (Issue #3219)", async () => {
+  const calls: StubCall[] = [];
+  await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({ calls }),
+  });
+  const greps = calls.filter((c) => c.args.includes("grep"));
+  assertEquals(greps.length, 2, "one docs pass and one source pass per term");
+  const source = greps[1]!;
+  assertEquals(source.args.slice(source.args.indexOf("--") + 1), [
+    ...SOURCE_COMMENT_PATHSPECS,
+  ]);
+  assert(SOURCE_COMMENT_PATHSPECS.includes("*.ts"));
+  assert(SOURCE_COMMENT_PATHSPECS.includes("*.rs"));
+  assert(SOURCE_COMMENT_PATHSPECS.includes(":(exclude)docs"));
+  assert(source.args.includes("HEAD") && source.args.includes("-i"));
+});
+
+/** The VibeCoder#3215 replay: the park marker's writer went, its docs stayed. */
+const REPLAY_3215_SOURCE_GREP = [
+  "HEAD:worker/deno/lib/merge_conflict_markers.ts\u0000220\u0000 * Marker posted when a PR is parked after the second restart.",
+  'HEAD:worker/deno/lib/merge_conflict_markers.ts\u0000234\u0000export const CONFLICT_PARKED_MARKER = "<!-- vibe-parked -->";',
+  "HEAD:worker/deno/lib/merge_conflict_markers.ts\u0000307\u0000 * the park is re-recorded on the next restart.",
+  "HEAD:worker/deno/lib/merge_conflict_stall_watchdog.ts\u000017\u0000// the gated-head and park waits both write one",
+  "HEAD:worker/deno/lib/merge_conflict_restart.ts\u000040\u0000// park the PR (removed): no longer written",
+  "",
+].join("\n");
+
+Deno.test("checkDocsSweepTerms - replay of VibeCoder#3215: a stale doc comment in an untouched source file blocks", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `park`; section: `docs/workflows/merge-conflicts.md`",
+    base: "origin/main",
+    runGit: stubGit({
+      sourceGrep: { park: REPLAY_3215_SOURCE_GREP },
+      diff: [
+        "--- a/worker/deno/lib/merge_conflict_restart.ts",
+        "+++ b/worker/deno/lib/merge_conflict_restart.ts",
+        "@@ -38,9 +38,3 @@",
+        "",
+      ].join("\n"),
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(
+    check.staleHits.map((h) => `${h.path}:${h.line}`),
+    [
+      "worker/deno/lib/merge_conflict_markers.ts:220",
+      "worker/deno/lib/merge_conflict_markers.ts:307",
+      "worker/deno/lib/merge_conflict_stall_watchdog.ts:17",
+    ],
+    "code lines are not read; the diff's own changed comment is cleared",
+  );
+});
+
+Deno.test("checkDocsSweepTerms - a source comment named as file:line still true is cleared", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`; " +
+      "`lib/a.ts:7` — still true because Foo stays",
+    base: "main",
+    runGit: stubGit({
+      sourceGrep: { Foo: "HEAD:lib/a.ts\u00007\u0000// Foo does X\n" },
+    }),
+  });
+  assertEquals(check.status === "checked" && check.staleHits, []);
+});
+
+Deno.test("checkDocsSweepTerms - the broad-term cap counts source comments apart from docs", async () => {
+  const comments = Array.from(
+    { length: MAX_UNTOUCHED_HITS_PER_TERM + 1 },
+    (_, i) => `HEAD:lib/m${i}.ts\u00001\u0000// Foo note ${i}\n`,
+  ).join("");
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      grep: { Foo: "HEAD:docs/a.md\u00005\u0000Foo does the old thing\n" },
+      sourceGrep: { Foo: comments },
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(check.broadTerms, ["Foo"]);
+  assertEquals(
+    check.staleHits.map((h) => `${h.path}:${h.line}`),
+    ["docs/a.md:5"],
+    "the docs hit is still listed when the term is broad only in source",
+  );
+});
+
+Deno.test("checkDocsSweepTerms - the diff spans source files as well as docs", async () => {
+  const calls: StubCall[] = [];
+  await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`",
+    base: "main",
+    runGit: stubGit({
+      calls,
+      sourceGrep: { Foo: "HEAD:lib/a.ts\u00001\u0000// Foo\n" },
+    }),
+  });
+  const diff = calls.find((c) => c.args.includes("diff"))!;
+  const pathspecs = diff.args.slice(diff.args.indexOf("--") + 1);
+  for (const spec of ["docs", "README.md", "*.ts", ":(exclude)docs/archive"]) {
+    assert(pathspecs.includes(spec), `diff pathspecs miss ${spec}`);
+  }
+  assertEquals(pathspecs.includes(":(exclude)docs"), false);
+});
+
+Deno.test("buildDocsSweepHitsComment - names source comment lines as part of the re-run", () => {
+  const comment = buildDocsSweepHitsComment([
+    { path: "lib/a.ts", line: 3, text: "// Foo", term: "Foo" },
+  ]);
+  assertStringIncludes(comment, "comment lines in source files");
+});
+
+// ---------------------------------------------------------------------------
 // buildDocsSweepHitsComment
 // ---------------------------------------------------------------------------
 
@@ -609,6 +772,10 @@ Deno.test("checkDocsSweepTerms - real git: finds the missed line and the inflect
       "Entries are replaced or removed by the guard.\n",
     );
     await Deno.writeTextFile(`${repo}/code.rs`, "fn main() {}\n");
+    await Deno.writeTextFile(
+      `${repo}/web/helper.ts`,
+      "// Caps the maximum trade per buy.\nconst maximumTrade = 1; // maximum trade\n",
+    );
     await realGit(repo, ["add", "-A"]);
     await realGit(repo, ["commit", "-q", "-m", "base"]);
     await realGit(repo, ["checkout", "-q", "-b", "feature"]);
@@ -633,7 +800,7 @@ Deno.test("checkDocsSweepTerms - real git: finds the missed line and the inflect
     assertEquals(
       check.status === "checked" &&
         check.staleHits.map((h) => `${h.path}:${h.line}`).sort(),
-      ["docs/manual.md:7", "web/README.md:1"],
+      ["docs/manual.md:7", "web/README.md:1", "web/helper.ts:1"],
     );
   } finally {
     await Deno.remove(repo, { recursive: true });
