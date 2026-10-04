@@ -1425,6 +1425,157 @@ touched are still listed. A grep or diff that cannot run, or an
 unresolvable base ref, is logged at ERROR as not checked and does not block
 the PR.
 
+## 🧪 Removed test assertions must be accounted for
+
+The issue prompt and `CODING-STANDARDS.md` have required (since Issue #3061)
+that a PR summary's Test Plan name every assertion the diff removes from an
+existing test, with the issue requirement that makes it untrue — but the
+rule was prose only, and nothing checked it. Sub-PR GRQ-AutoTrader#2370
+(Issue #2253) was raised with a summary that had no `## Test Plan` section
+at all, and its rewritten test dropped a still-true per-day check that a
+`BBB` row exists for every session; the change reached milestone PR
+GRQ-AutoTrader#2376.
+
+**The gate.**
+[`removed_assertion_gate.ts`](../../worker/deno/lib/removed_assertion_gate.ts)
+(`validateRemovedAssertions`, `findRemovedAssertions`,
+`buildRemovedAssertionGateComment`) runs as a summary-rule gate in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+whenever `git diff --name-only <base>...HEAD` lists a test file
+(`isTestFilePath`, shared with the security-fix and docs-sweep gates) — and
+also when that list cannot be read, fail closed. It then blocks a summary
+with no `## Test Plan` heading.
+
+It decides whether the gate applies from
+`git diff --name-status -z --find-renames <base>...HEAD` (NUL-separated, so
+a non-ASCII path is not quoted into a pathspec that matches nothing), not
+from the rename-collapsed `git diff --name-only` list. A rename or copy
+whose old or new path is a test file contributes both paths, so a test
+file renamed to `src/moved.rs` is still a test-file change. It then reads
+`git diff --unified=4000000 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
+Deleted test files are in that patch. A pathspec of only a rename's new
+name is not used: that would show the file as brand-new and hide the
+removed lines. The context is large enough that each test file's patch is
+one hunk holding the whole old file and the whole new file, so the gate
+sees every assertion in full and everything around it.
+
+On each side of each test file it lexes the source first, blanking
+comments and string contents (`//`, `/* */` and quotes for Rust and
+C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
+an assertion inside a comment or a string is not an assertion. In C-like
+files (TypeScript, JavaScript and the like) a regex literal is blanked as
+well: a `/` where an expression can begin — at the start of the file, after
+`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, after any other operator
+(including the `>` of an arrow, so `` => /`/.test(c) `` is a regex), or
+after a keyword such as `return` or `typeof` — opens a one-line regex that
+ends at an unescaped `/` outside a `[…]` class. So a quote or backtick
+inside a regex (`` /[*_`>]/g ``) does not open a string that hides the lines
+below it. A `/` with no closing `/` on its line is division. A template
+literal's `${…}` substitutions are lexed as code, with a stack of brace
+depths that resumes the template at the matching `}`, so a nested template
+or quote inside a substitution (`` `'${v.replaceAll("'", `'\\''`)}'` ``)
+does not close the outer template early. It then
+collects every assertion statement — `assert…(`, `assert_eq!(`,
+`assert.x(`, `expect(` not preceded by `.`, and Python/bats
+`assert`/`assert_x` commands; `debug_assert!` and a declaration such as
+`function assertNoEscalation(…) {` are not assertions — extending each
+over the following lines until its brackets close (up to 200 lines).
+
+An assertion on the old side counts as kept or moved only when the new
+side of some test file in the diff holds a copy with the same text,
+ignoring whitespace, **and** the same context:
+
+- **The same guards and skips around it.** Its enclosing lines are found
+  by indentation and by open `{`, so both formatted and unformatted code
+  are covered. Every enclosing line that does not just name a test, a test
+  group, a test function (`#[test]`, `test_…`) or a type or module is part
+  of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
+  callback such as `.forEach(`, a wrapper helper, or a helper function that
+  may never be called. A head wrapped over several lines is part of the
+  context whole, every line of its condition: `deno fmt`'s
+  `if (`…`) {`, black's `if (`…`):`, rustfmt's `if a` / `&& b` / `{`, an
+  Allman `{`, a Python `\` continuation, and a `for (` whose array of
+  cases spans lines. These are found as one logical line: lines inside an
+  open `(` or `[`, lines that lead with `&&`, `||`, `.` or `?`, and a bare
+  `{` all continue the line above. A head longer than 200 lines is
+  reported, since the gate cannot key it whole. When an enclosing line continues a chain — `else`,
+  `elif`, `} else if`, `except`, `catch`, `finally`, a `case`/`default:`
+  arm or a Rust match arm — the earlier heads of that chain back to its
+  opening `if`, `try`, `switch` or `match` are part of the context too. They
+  are found by brace (the `if (…) {` whose `{` a `} else {` closes) and by
+  indentation (same-indent heads above, skipping their bodies). So changing
+  the `if` condition above an `else` assertion is a removal. When no brace
+  links a branch to its head and the walk back passes 400 lines, the
+  assertion is reported, because the gate cannot see the head. So are skip
+  markers on the enclosing test:
+  `it.skip(`, `Deno.test.ignore(`, `xit(`, `ignore: true`, `#[ignore]`,
+  `#[should_panic]`, a non-test `#[cfg(…)]`, `@pytest.mark.skip`,
+  `@unittest.skip`, `pytestmark`.
+- **The same early exits before it** in its innermost function: `return`,
+  `continue`, `break`, `throw`, `raise`, `panic!`, `pytest.skip(`,
+  `t.Skip(` and the like, outside a closure opened on the same line. An
+  exit inside a function or closure body that closed before the assertion
+  is not counted: a `{` opened by `=> {`, `function (…) {`, `|x| {` or an
+  object method such as `async run(args) {`, or a nested Python `def`. A
+  `return` in a mock or callback cannot stop a later assertion from
+  running, so changing it does not mark that assertion removed. An exit in
+  a closed `if` or loop block still counts.
+
+Copies are counted, so deleting one of two identical assertions is a
+removal. Everything else is removed: an edit to any line of a multi-line
+assertion (a `.any(` predicate losing a condition, an expected value
+changing), an assertion commented out or deleted, and a copy re-added
+under a new condition, into a skipped test or after a new early exit. An
+unchanged assertion whose guard, skip or preceding exit changed is
+removed too, and so is one whose brackets never close within 200 lines
+when the file changes at or after it, because the gate cannot tell where
+it ends. A re-wrap, a re-indent, or a move to another test or another
+test file with nothing new around it still counts as moved. As a backstop
+for a lexer mistake, a removed line that opens an assertion but that the
+lexer entered already inside a carried-over string or block comment is
+always reported, even when the same text is re-added: the gate cannot read
+its context, so it fails closed. An assertion-shaped line in a multi-line
+template literal or block comment that the diff removes or moves must
+therefore be named in the Test Plan too. Valid source never ends inside a
+string, template, `${…}` substitution or block comment, so when either
+side's lexer reaches the end of a file still inside one, it has lost its
+place. If the file changes at or after the line where that literal opened,
+every assertion-shaped line of the old side from that line on is reported.
+A copy on such a new side from that line on cannot vouch for a move.
+
+Each remaining removed assertion must appear, ignoring whitespace, in the
+Test Plan section; otherwise PR creation is blocked and the notice lists
+every unaccounted assertion. The gate checks only that the assertion is
+named — whether the stated requirement truly makes it untrue is left to the
+Standards reviewer, whose brief now asks it to list every assertion the diff
+removes from an existing test and return a `violation` for any that has none.
+When the test-file patch itself cannot be read, or it reaches the
+8,000,000-character read cap, only the heading rule applies and a warning
+is logged. The patch is not scanned after a silent cut.
+
+Like the docs-sweep and result-placeholder gates, its verdict is computed
+early and folded into an earlier summary gate's own notice (closure,
+independent review, reproduction status) when one of those blocks first, and
+it gets the same single
+[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn — a
+second block fails the run, and a branch that already carries a PR instead
+finalises as `summary_incomplete`. Among the standalone gates it runs after
+the docs sweep and before the placeholder-token gate.
+
+```mermaid
+flowchart TD
+  A["Diff touches a test file?"] -->|No| Z["Continue"]
+  A -->|Yes / unreadable| B["Summary has ## Test Plan heading?"]
+  B -->|No| X["Block PR"]
+  B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
+  C -->|No| Z
+  C -->|Yes| D["Each named in the Test Plan?"]
+  D -->|Yes| Z
+  D -->|No| X
+  style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style X fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🚫 A leftover placeholder token blocks the summary
 
 A fleet PR could leave a literal fill-in-later token — e.g.
@@ -1492,7 +1643,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the five summary gates above, a finding
+Like the security-fix gate and unlike the six summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1530,9 +1681,9 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the five summary-rule gates — closure,
-independent review, reproduction status, docs sweep and the placeholder-token
-gate — still pre-empts the
+with **no** PR yet, each of the six summary-rule gates — closure,
+independent review, reproduction status, docs sweep, removed test
+assertions and the placeholder-token gate — still pre-empts the
 guard: a follow-up filed there would promise "that run's PR still
 completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
@@ -1542,7 +1693,7 @@ comment is posted but before that gate's recovery finalises the PR. Before
 Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
-five gates pass, `completionBody` runs the same guard once more — via the
+six gates pass, `completionBody` runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -1622,8 +1773,9 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The five summary gates above — acceptance-criteria closure, independent review,
-reproduction status, docs sweep and the placeholder-token gate — sit at the completion phase's PR-creation chokepoint, so
+The six summary gates above — acceptance-criteria closure, independent review,
+reproduction status, docs sweep, removed test assertions and the
+placeholder-token gate — sit at the completion phase's PR-creation chokepoint, so
 blocking one normally costs the next attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
@@ -1722,7 +1874,7 @@ closes a `security`-labelled finding without its vulnerability-fix evidence stop
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
 otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all five.
+evidence, so the security gate is now evaluated ahead of all six.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
@@ -1818,9 +1970,10 @@ takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before: finalised as `summary_incomplete`
 when a PR exists, failed when none does.
 
-All five summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521), docs sweep (#3073) and the placeholder-token
-gate (#3124). The two exceptions above do not — the
+All six summary gates route through it: closure (#518), independent review
+(#663), reproduction status (#521), docs sweep (#3073), removed test
+assertions (#3131) and the placeholder-token gate (#3124). The two
+exceptions above do not — the
 security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.
 

@@ -137,7 +137,10 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    edited test files). Each one needs an issue requirement that makes it
    untrue, recorded in the PR summary. An assertion removed without one is a
    blocking self-review finding: restore it, or move it to a test that still
-   covers the behaviour and say where.
+   covers the behaviour and say where. The worker enforces this at PR
+   creation (`removed_assertion_gate.ts`, Issue #3131): the removed
+   assertion must be named in the summary's Test Plan, and the Standards
+   reviewer is asked to judge each one.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
