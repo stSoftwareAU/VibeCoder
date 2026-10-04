@@ -5,7 +5,10 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { neutraliseAgentMarkers } from "../lib/agent_marker_neutralisation.ts";
+import {
+  neutraliseAgentMarkers,
+  neutraliseCommentDelimiters,
+} from "../lib/agent_marker_neutralisation.ts";
 import {
   buildCiFixAttemptMarker,
   parseCiFixAttemptMarkers,
@@ -46,6 +49,29 @@ Deno.test("neutraliseAgentMarkers - a longer dash run cannot re-form a delimiter
   const result = neutraliseAgentMarkers("<!--- vibe-ci-fix-attempt --->");
   assertEquals(result.text.includes("<!--"), false);
   assertEquals(result.text.includes("-->"), false);
+});
+
+Deno.test("neutraliseAgentMarkers - the `--!>` closer is neutralised too", () => {
+  // HTML parsers close a comment on `--!>` as well as `-->` (CodeQL
+  // js/bad-tag-filter), so a filter that misses it leaves a closer intact.
+  const result = neutraliseAgentMarkers("<!-- vibe-ci-fix-attempt --!>");
+  assertEquals(result.neutralised, 2);
+  assertEquals(result.text.includes("--!>"), false);
+  assertEquals(result.text.includes("-->"), false);
+});
+
+Deno.test("neutraliseCommentDelimiters - every opener and closer becomes inert", () => {
+  const text = neutraliseCommentDelimiters(
+    "a <!-- b --> c --!> d <!--- e --->",
+  );
+  assertEquals(text.includes("<!--"), false);
+  assertEquals(text.includes("-->"), false);
+  assertEquals(text.includes("--!>"), false);
+});
+
+Deno.test("neutraliseCommentDelimiters - delimiter-free text is unchanged", () => {
+  const text = "Map<string, number> -- fine -> ok";
+  assertEquals(neutraliseCommentDelimiters(text), text);
 });
 
 Deno.test("neutraliseAgentMarkers - an unclosed delimiter is neutralised on its own", () => {

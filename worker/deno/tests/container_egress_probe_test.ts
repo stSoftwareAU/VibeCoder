@@ -12,6 +12,7 @@
 import {
   assert,
   assertEquals,
+  assertNotMatch,
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
@@ -228,7 +229,7 @@ Deno.test("containerProbeArgs - a throwaway container reaching a literal address
   assert(args.includes("vibe-coder:abc"));
   assertStringIncludes(args[args.length - 1]!, "/dev/tcp/1.1.1.1/443");
   // No name to resolve anywhere in the probe (Issue #997).
-  assert(!args.join(" ").includes("github.com"));
+  assertNotMatch(args.join(" "), /github\.com/);
 });
 
 Deno.test("baseImageFromContainerfile - reads the pinned base image", () => {
