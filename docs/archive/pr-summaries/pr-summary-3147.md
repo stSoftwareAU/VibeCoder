@@ -110,6 +110,54 @@ fixed:
   closes that gap and is confirmed red with the ternary removed (see Test
   Plan and Branch outcomes below).
 
+A sixth PR #3160 review round found four problems with the fifth round's
+fix, all now fixed:
+
+- An invented test still passed in two more ordinary layouts: a header
+  followed by a blank line, a `#### path/to/file.ts` grouping sub-heading,
+  and then the list (`scanRegionText` and `collectEntries` both stopped at
+  *any* heading, including one nested under the header's own section); and a
+  `**Branch outcomes:** none added this round; the earlier rounds' arms:`
+  header followed by a list (`startsWithNone` matched any body starting with
+  the word `none`, so the header's whole region — list included — was
+  skipped). A fixed `isNoneBody` (`branch_outcomes_gate.ts:135-138`) now
+  recognises only an exact `none`/`none added` (plus trailing punctuation) as
+  an honest negative; everything else, including `none added; existing
+  worker/deno/tests/gone_test.ts covers it`, falls through to the normal
+  scan. A new `SECTION_HEADING_MAX_LEVEL` (3) lets `scanRegionText`
+  (`branch_outcomes_gate.ts:211-227`) and `collectEntries`
+  (`branch_outcomes_gate.ts:236-292`) skip over a deeper grouping heading
+  instead of stopping there, while a real document-section heading (`##
+  Summary`, `## Test Plan` — the levels this repository's own PR summaries
+  use) still ends the scan, confirmed against the pre-existing
+  `...stops at the next markdown heading` test. The now-dead
+  `!record.noneDeclared &&` guards in `namedTestPaths` (then lines 298-299)
+  are deleted: once `isNoneBody` only matches an honest negative, `body` and
+  `scanText` never hold anything but that negative when `noneDeclared` is
+  true, so the guard could never fire differently (see Test Plan).
+- Three of this round's own parser arms had no test reaching them: the
+  `bodyExtra` push (`branch_outcomes_gate.ts:183`), the entry-reset `sawBlank
+  = false;` after a list item (`branch_outcomes_gate.ts:268`), and the
+  `indent > headerIndent` continuation guard (`branch_outcomes_gate.ts:273`).
+  Four new cases pin them, each confirmed red with its arm mutated (see Test
+  Plan and Branch outcomes below).
+- `completion_phase.ts:2192-2195` (before this round) said "The HEAD lookup
+  only runs when the gate is applicable and the summary actually names a
+  test path". Reading the call site (`completion_phase.ts:2204-2208`, where
+  `branchOutcomesNamedTests` is computed from `prBody` directly and passed
+  to `lookupTestsAtHead` unconditionally): the call happens for whatever
+  paths `namedTestPaths` finds in the PR body, regardless of
+  `branchOutcomes.applicable` or `changedFilesKnown` — it is
+  `lookupTestsAtHead` itself (`branch_outcomes_gate.ts:622`) that skips
+  calling `git` when there are zero paths, not the surrounding code skipping
+  the call. The comment (now `completion_phase.ts:2192-2198`) is rewritten
+  to describe the unconditional call.
+- This file's Branch outcomes list is regenerated below from the current
+  head, covering every arm in `parseBranchOutcomes`, `scanRegionText` and
+  `collectEntries` (the sixth round's own finding: the fifth round's
+  enumeration had missed six of them) as well as the other gate functions,
+  each with the line it is at today and the flip result seen on this head.
+
 Closes #3147.
 
 ## Test Plan
@@ -231,150 +279,260 @@ Closes #3147.
   not-applicable either way — the new case (naming a *missing* test) is the
   one that actually distinguishes fail-closed from not-applicable, and is
   confirmed red with the ternary removed (see Branch outcomes below).
+- A sixth PR #3160 review round added, to `branch_outcomes_gate_test.ts`:
+  `a sub-heading grouping between the header and its list still names the
+  invented test` and `a 'none added this round' header followed by a list
+  still names the invented test` reproduce the review's two repro cases
+  directly against `validateBranchOutcomes`; both were confirmed `valid:
+  true, missingTests: []` by swapping the base commit's
+  `branch_outcomes_gate.ts` (b95abe7) into this tree and running the two
+  review repro cases against it directly, and are `valid: false,
+  missingTests: [...]` on this head. `a 'none added; existing <test> covers
+  it' body naming an invented test blocks` pins the same `isNoneBody` fix
+  for the body-citation variant the finding also named. Running the whole
+  `branch_outcomes_gate_test.ts` suite against that same base-commit gate
+  gave 54 passed, 7 failed — the seven sixth-round cases named in this
+  bullet (two `parseBranchOutcomes` `isNoneBody` cases, the three
+  `validateBranchOutcomes` repro/body cases above, and the two
+  `collectEntries`/`scanRegionText` isolation cases below). `a heading-form
+  header with a deep grouping sub-heading
+  still finds its list` isolates `collectEntries`' own deeper-heading skip
+  (`branch_outcomes_gate.ts:256-257`) from `scanRegionText`'s copy of the
+  same fix, using a heading-form header (empty inline body) so the "names
+  no outcomes" check depends only on `entries`; confirmed red (blocked
+  instead of valid) with that skip reverted to stop at any heading.
+  `a sub-heading before a markdown table still names the invented test`
+  isolates `scanRegionText`'s own skip (`branch_outcomes_gate.ts:216`) the
+  same way, using the fifth round's markdown-table layout (never collected
+  into `entries`) so only `scanText` can carry the citation; confirmed red
+  with that skip reverted. Two more `parseBranchOutcomes` cases pin two of
+  this round's own `collectEntries` arms that had no test: `a continuation
+  line after a loose list item joins the newest entry` pins the
+  entry-reset `sawBlank = false;` (`branch_outcomes_gate.ts:268`), confirmed
+  red (`["a", "b"]` instead of `["a", "b cont"]`) with it removed; `an
+  unindented lazy line is not joined onto a list-item header's entry` pins
+  the `indent > headerIndent` continuation guard
+  (`branch_outcomes_gate.ts:273`), confirmed red (the lazy line merged into
+  the entry) with that condition dropped. Two `validateBranchOutcomes`
+  cases (`a bare header followed by a wrapped prose line naming an existing
+  test passes` and `...followed by 'none added' on the next line passes`)
+  pin the `bodyExtra` push (`branch_outcomes_gate.ts:183`): both confirmed
+  red (blocked as "names no outcomes" instead of valid) with that push
+  removed. To `completion_phase.ts`: the stale "HEAD lookup only runs when
+  the gate is applicable" comment (then lines 2192-2195) is rewritten to
+  describe the unconditional call (see Summary).
 - `deno test --allow-all tests/branch_outcomes_gate_test.ts
   tests/completion_phase_branch_outcomes_test.ts
-  tests/branch_outcomes_record_3147_test.ts` (final head, after the fifth
-  PR #3160 review round): 66 passed, 0 failed.
-- `deno fmt` and `deno lint` on the three touched files: clean.
-- `./quality.sh` (final head, fifth PR #3160 review round): PASSED (with
+  tests/branch_outcomes_record_3147_test.ts` (final head, after the sixth
+  PR #3160 review round): 77 passed, 0 failed.
+- `deno fmt` and `deno lint` on the four touched files: clean.
+- `./quality.sh` (final head, sixth PR #3160 review round): PASSED (with
   skipped checks — `config integration` skipped, deno/`.config.json`
   unavailable in this environment).
 
-**Branch outcomes:** regenerated from the head for the fifth PR #3160 review
+**Branch outcomes:** regenerated from the head for the sixth PR #3160 review
 round — every line below gives the current `path:line`, the outcome, the
 test that reaches it, and the flip result seen on this head (not carried
-over from an earlier round):
+over from an earlier round). Every arm of `parseBranchOutcomes`,
+`scanRegionText` and `collectEntries` has its own line this round (the
+sixth round's own finding against the fifth round's enumeration):
 
-- `worker/deno/lib/phases/completion_phase.ts:2207` — `changedFiles:
+- `worker/deno/lib/phases/completion_phase.ts:2210` — `changedFiles:
   changedFilesKnown ? changedFiles : null` passed into
   `validateBranchOutcomes` —
-  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - an unreadable changed-files diff with a Branch outcomes list naming a missing test blocks PR creation`
-  (new this round). The pre-existing sibling test (naming an *existing*
-  test) stayed green under this line's removal — `changedFiles` defaults to
-  `[]` on an unreadable diff, which reads as a code-free diff either way, so
-  it never actually pinned this line. Flipped this line to always pass the
-  plain `changedFiles` array (never `null`): the new test's status changed
-  from `failure` to `continue` (`prCreateCalls` from 0 to 1) — the gate
-  became not-applicable instead of fail-closed, so a named test that does
-  not exist at HEAD was never checked.
-- `completion_phase.ts:2241-2246` — `branchOutcomesBlocked` folded into an
+  `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - an unreadable changed-files diff with a Branch outcomes list naming a missing test blocks PR creation`.
+  The pre-existing sibling test (naming an *existing* test) stays green
+  under this line's removal — `changedFiles` defaults to `[]` on an
+  unreadable diff, which reads as a code-free diff either way, so it never
+  actually pins this line. Flipped this line to always pass the plain
+  `changedFiles` array (never `null`): the test's status changed from
+  `failure` to `continue` (`prCreateCalls` from 0 to 1) — the gate became
+  not-applicable instead of fail-closed, so a named test that does not
+  exist at HEAD was never checked.
+- `completion_phase.ts:2244-2248` — `branchOutcomesBlocked` folded into an
   earlier (closure/independent-review/reproduction-status) gate's
   comment/reason —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a bug issue missing BOTH the Reproduction block and the Branch outcomes list names both in one block`.
   Flipped the `if (branchOutcomesBlocked)` guard to `if (false)`: the test's
   assertion that the one comment also names "Branch outcomes" failed (only
   the Reproduction-status message was present).
-- `completion_phase.ts:2400-2409` — the late-gate block's own
+- `completion_phase.ts:2403-2412` — the late-gate block's own
   `branchOutcomesBlocked` arm (single-gate failure, outside the fold) —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a code diff with no Branch outcomes list blocks PR creation`.
   Flipped the `if (branchOutcomesBlocked)` guard to `if (false)`: the test
   failed (a downstream retry-prompt builder threw on the now-empty
   `reasons` array, rather than the summary ever being retried).
-- `worker/deno/lib/branch_outcomes_gate.ts:418` —
-  `validateBranchOutcomes` with `changedFiles === null` —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - changedFiles null is applicable (fail closed)`.
-  Flipped the guard to `if (false)`: the downstream `codeChangingFiles(null)`
-  call threw (`Cannot read properties of null (reading 'filter')`), failing
-  the test as a crash rather than a flipped boolean.
-- `branch_outcomes_gate.ts:423` — `codeFiles.length === 0` → not
-  applicable —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a non-code diff (docs + test files only) is not applicable`.
-  Flipped `=== 0` to `>= 0`: `result.applicable` became `false` for a diff
-  that does change code too, caught by a second case in the same test file
-  that asserts `applicable === true` for a code-changing diff.
-- `branch_outcomes_gate.ts:450` — `!record.present` → problem —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - missing list blocks when the diff changes code`.
-  Flipped to `if (false)`: `result.valid` became `true` instead of `false`.
-- `branch_outcomes_gate.ts:457` — empty entries and empty body → problem —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an empty list blocks`.
-  Flipped the condition to `false`: `result.valid` became `true`.
-- `branch_outcomes_gate.ts:461` — bare placeholder → problem —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare placeholder blocks`.
-  Flipped the condition to `false`: `result.valid` became `true`.
-- `branch_outcomes_gate.ts:465` — named tests present, `testsAtHead ===
-  null` → problem (fail closed) —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - testsAtHead null with named tests blocks (fail closed)`.
-  Flipped the condition to `false`: `result.valid` became `true`.
-- `branch_outcomes_gate.ts:469-471` — a named test missing at HEAD →
-  problem —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a test absent from testsAtHead blocks and is named in missingTests`;
-  all present → valid —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - all named tests present passes`.
-  Flipped `if (!testsAtHead.has(path))` to `if (false)`: the missing-test
-  case's `missingTests` became `[]` and `result.valid` became `true`.
-- `branch_outcomes_gate.ts:281` — `./`-prefix stripped by `normaliseToken` —
+- `worker/deno/lib/branch_outcomes_gate.ts:168` — `isNoneBody(body)` (then
+  `startsWithNone`) → header's region skipped, treated as an honest
+  negative —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - 'none added' is recognised as an honest negative`.
+  Flipped to `if (false)`: `record.noneDeclared` became `false` for a bare
+  `none added` body.
+- `branch_outcomes_gate.ts:135` — `NONE_BODY_RE`'s exact-match requirement
+  (sixth round: was `/^none\b/i`, a prefix match) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - 'none added this round; ...' is not an honest negative`
+  and
+  `...'none added; existing <test> covers it' is not an honest negative`.
+  Reverted to `/^none\b/i`: both became `noneDeclared: true` instead of
+  `false` (confirmed against the base commit directly — see Test Plan).
+- `branch_outcomes_gate.ts:175-177` — `headerIndent` ternary (list-item
+  header's own indent, or `-1` for every other header shape) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - header as a list item with nested entries does not swallow a sibling bullet`.
+  Flipped to always `-1`: the sibling bullet `Docs sweep — section: none`
+  was wrongly collected as a third entry instead of ending the scan.
+- `branch_outcomes_gate.ts:183` — `collected.bodyExtra` push (sixth round:
+  no test reached it) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare header followed by a wrapped prose line naming an existing test passes`
+  and
+  `...a bare header followed by 'none added' on the next line passes`.
+  Removing the push: both became blocked ("names no outcomes") instead of
+  valid, because `record.body` stayed empty with no list to populate
+  `record.entries` either.
+- `branch_outcomes_gate.ts:211-227` — `scanRegionText`, scanned into
+  `BranchOutcomesRecord.scanText` and read unconditionally by
+  `namedTestPaths` (lines 349-350) — fixes the gap the fifth round's
+  finding named: a header with inline text and zero collected entries let
+  an invented test slip through in three layouts —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a Test Plan bullet header with sibling bullets still names the invented test`,
+  `...a markdown table naming the test still names the invented test`, and
+  `...a loose list broken by an indented paragraph still names the invented test`.
+  The function's own two stopping points are pinned by
+  `...the test-path scan stops at a later Branch outcomes header` and
+  `...the test-path scan stops at the next markdown heading`, each confirmed
+  red with its stop condition removed.
+- `branch_outcomes_gate.ts:216` — `scanRegionText`'s deeper-grouping-heading
+  skip (sixth round: a `#### path/to/file.ts` sub-heading used to stop the
+  scan like any other heading) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a sub-heading before a markdown table still names the invented test`.
+  Reverted to stop at any heading: `result.valid` became `true` instead of
+  `false` (the markdown-table row with the invented path is never collected
+  into `entries` either, so only `scanText` can carry it — isolates this
+  line from `collectEntries`' copy of the same fix below).
+- `branch_outcomes_gate.ts:243` — `sawBlank` initial state and reset on a
+  blank line —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - prose after a blank line is not merged into the last entry`
+  (exercises the combination with the guard at line 273).
+- `branch_outcomes_gate.ts:256-257` — `collectEntries`' own
+  deeper-grouping-heading skip (sixth round: same gap as line 216, in the
+  sibling function) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a heading-form header with a deep grouping sub-heading still finds its list`.
+  Reverted to stop at any heading: `result.valid` became `false` instead of
+  `true` — a heading-form header's empty inline body means the "names no
+  outcomes" check depends only on `entries`, so `scanText` cannot paper
+  over the now-empty list (isolates this line from `scanRegionText`'s copy
+  of the same fix above).
+- `branch_outcomes_gate.ts:261` — the list-item header's own
+  `indent <= headerIndent` stop —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - header as a list item with nested entries does not swallow a sibling bullet`
+  (same test as line 175-177 above; flipped `<=` to `<` here specifically:
+  the sibling bullet at the header's own indent was wrongly collected).
+- `branch_outcomes_gate.ts:268` — the entry-reset `sawBlank = false;` after
+  a list-marker line (sixth round: no test reached it) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - a continuation line after a loose list item joins the newest entry`.
+  Removing the reset: `record.entries` became `["a", "b"]` instead of
+  `["a", "b cont"]` — the continuation line after entry `b` was dropped
+  because `sawBlank` was still `true` from the earlier blank line.
+- `branch_outcomes_gate.ts:273` — the continuation branch's `!sawBlank &&
+  entries.length > 0` guard —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - prose after a blank line is not merged into the last entry`.
+  Dropped `!sawBlank &&`: `record.entries` became
+  `["entry one trailing prose not part of entry one"]` instead of
+  `["entry one"]`.
+- `branch_outcomes_gate.ts:273` — the same branch's `indent > headerIndent`
+  guard (sixth round: no test reached it) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - an unindented lazy line is not joined onto a list-item header's entry`.
+  Dropped the condition: `record.entries` became
+  `["entry one lazy sibling text"]` instead of `["entry one"]` — an
+  unindented line following a list-item header's nested entry was wrongly
+  merged onto it instead of ending the scan.
+- `branch_outcomes_gate.ts:282` — the `&& wrapping` guard —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare heading with blank-separated prose and no list blocks`.
+  Dropped `&& wrapping`: `result.valid` became `true` instead of `false`.
+- `branch_outcomes_gate.ts:287` — the `entries.length === 0` fallthrough —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - prose between two blank lines does not stop the scan before a later list`.
+  Changed `continue` to `break`: `record.entries` became `[]` instead of
+  `["entry one"]`.
+- `branch_outcomes_gate.ts:324` — `./`-prefix stripped by `normaliseToken` —
   `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - a ./-prefixed citation is normalised, dropping the ./`.
   Flipped the strip off: `namedTestPaths` returned `[]` instead of the path.
-- `branch_outcomes_gate.ts:309-310` — post-normalisation absolute-path
+- `branch_outcomes_gate.ts:361` — post-normalisation absolute-path
   token dropped —
   `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - an absolute-path token is not returned`
   and
   `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - a .//-prefixed citation normalises to an absolute path and is dropped`.
   Loosened the guard to `if (!token) continue;`: both tests failed
   (36 passed, 2 failed, see fourth-round note above).
-- `branch_outcomes_gate.ts:308` — `MAX_TOKEN_CHARS` cap —
+- `branch_outcomes_gate.ts:359` — `MAX_TOKEN_CHARS` cap —
   `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - a token over 300 chars is skipped`.
   Flipped `>` to `> 100_000`: the over-length token was returned, failing the
   `assertEquals(namedTestPaths(record), ["worker/deno/tests/foo_test.ts"])`.
-- `branch_outcomes_gate.ts:316` — `MAX_NAMED_TEST_PATHS` cap —
+- `branch_outcomes_gate.ts:367` — `MAX_NAMED_TEST_PATHS` cap —
   `worker/deno/tests/branch_outcomes_gate_test.ts::namedTestPaths - more than 50 named test paths are capped at 50`.
   Flipped `>=` to `>= 1_000`: the result length became 60 instead of 50.
-- `branch_outcomes_gate.ts:150` — `MAX_ENTRIES` cap (the one that remains
+- `branch_outcomes_gate.ts:180` — `MAX_ENTRIES` cap (the one that remains
   after the redundant inner check in `collectEntries` was deleted — see
-  Summary) —
+  fifth-round Summary note) —
   `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - more than 100 entries are capped at 100`
   and
   `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - MAX_ENTRIES caps the combined total across two headers, not just one list`.
   Removed the check: the single-header test's length became 105; the
   two-header test's length became 120.
-- `branch_outcomes_gate.ts:239` — the `&& wrapping` guard —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare heading with blank-separated prose and no list blocks`.
-  Dropped `&& wrapping`: `result.valid` became `true` instead of `false`.
-- `branch_outcomes_gate.ts:230` — the `!sawBlank &&` guard —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - prose after a blank line is not merged into the last entry`.
-  Dropped `!sawBlank &&`: `record.entries` became
-  `["entry one trailing prose not part of entry one"]` instead of
-  `["entry one"]`.
-- `branch_outcomes_gate.ts:244` — the `entries.length === 0` fallthrough —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - prose between two blank lines does not stop the scan before a later list`.
-  Changed `continue` to `break`: `record.entries` became `[]` instead of
-  `["entry one"]`.
-- `branch_outcomes_gate.ts:177-192` — new `scanRegionText`, scanned into
-  `BranchOutcomesRecord.scanText` and read by `namedTestPaths`
-  (lines 298-299) — fixes the gap this round's finding named: a header with
-  inline text and zero collected entries let an invented test slip through
-  in three layouts —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a Test Plan bullet header with sibling bullets still names the invented test`,
-  `...a markdown table naming the test still names the invented test`, and
-  `...a loose list broken by an indented paragraph still names the invented test`.
-  Confirmed red against the pre-fix parser (no `scanText`): 3 failed,
-  47 passed. The function's own two stopping points are pinned by
-  `...the test-path scan stops at a later Branch outcomes header` and
-  `...the test-path scan stops at the next markdown heading`, each confirmed
-  red with its stop condition removed (the unrelated-later-mention path
-  reads as named instead of `[]`).
-- `branch_outcomes_gate.ts:298` — the inline body is scanned when
-  `!record.noneDeclared && record.body` —
+- `branch_outcomes_gate.ts:349-350` — `namedTestPaths` scans `record.body`
+  and `record.scanText` unconditionally (sixth round: the
+  `!record.noneDeclared &&` guards on both lines were deleted as dead code
+  — see Summary) —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline body naming a missing test blocks (Issue #3160)`
   and
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline body naming an existing test passes (Issue #3160)`.
-  Removing the clause drops the invented path from `namedTests`, so the
-  first test's `missingTests` becomes `[]` instead of naming it.
-- `branch_outcomes_gate.ts:571` — `lookupTestsAtHead` with `paths.length
+  `...an inline body naming an existing test passes (Issue #3160)`.
+  Removing either `if` guard drops the invented path from `namedTests`, so
+  the first test's `missingTests` becomes `[]` instead of naming it.
+- `branch_outcomes_gate.ts:622` — `lookupTestsAtHead` with `paths.length
   === 0` → empty set, no git call —
   `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - empty paths returns an empty set without calling git`.
   Removing the early return calls `runGit` even for an empty list: the
   test's `assertEquals(called, false)` fails.
-- `branch_outcomes_gate.ts:583` — `!result.ok` or non-zero exit → `null`
+- `branch_outcomes_gate.ts:634` — `!result.ok` or non-zero exit → `null`
   (fail closed) —
   `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - a failed git invocation returns null`
   and `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - a non-zero exit returns null`.
   Flipped to `if (false)`: both tests' `assertEquals(result, null)` fail
   (the parse of empty `stdout` runs instead, returning an empty set).
-- `branch_outcomes_gate.ts:585-592` — success → parsed path set —
+- `branch_outcomes_gate.ts:636-641` — success → parsed path set —
   `worker/deno/tests/branch_outcomes_gate_test.ts::lookupTestsAtHead - parses stdout lines into the returned set`.
   Returning `new Set()` unconditionally instead: the test's two expected
   paths are missing from the result.
+- `branch_outcomes_gate.ts:469` —
+  `validateBranchOutcomes` with `changedFiles === null` —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - changedFiles null is applicable (fail closed)`.
+  Flipped the guard to `if (false)`: the downstream `codeChangingFiles(null)`
+  call threw (`Cannot read properties of null (reading 'filter')`), failing
+  the test as a crash rather than a flipped boolean.
+- `branch_outcomes_gate.ts:474` — `codeFiles.length === 0` → not
+  applicable —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a non-code diff (docs + test files only) is not applicable`.
+  Flipped `=== 0` to `>= 0`: `result.applicable` became `false` for a diff
+  that does change code too, caught by a second case in the same test file
+  that asserts `applicable === true` for a code-changing diff.
+- `branch_outcomes_gate.ts:501` — `!record.present` → problem —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - missing list blocks when the diff changes code`.
+  Flipped to `if (false)`: `result.valid` became `true` instead of `false`.
+- `branch_outcomes_gate.ts:508` — empty entries and empty body → problem —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an empty list blocks`.
+  Flipped the condition to `false`: `result.valid` became `true`.
+- `branch_outcomes_gate.ts:512` — bare placeholder → problem —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare placeholder blocks`.
+  Flipped the condition to `false`: `result.valid` became `true`.
+- `branch_outcomes_gate.ts:516` — named tests present, `testsAtHead ===
+  null` → problem (fail closed) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - testsAtHead null with named tests blocks (fail closed)`.
+  Flipped the condition to `false`: `result.valid` became `true`.
+- `branch_outcomes_gate.ts:520-522` — a named test missing at HEAD →
+  problem —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a test absent from testsAtHead blocks and is named in missingTests`;
+  all present → valid —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - all named tests present passes`.
+  Flipped `if (!testsAtHead.has(path))` to `if (false)`: the missing-test
+  case's `missingTests` became `[]` and `result.valid` became `true`.
 
 ## Evidence
 

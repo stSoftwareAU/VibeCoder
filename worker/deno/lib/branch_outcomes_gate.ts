@@ -44,8 +44,26 @@ const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
 
-/** A markdown heading. */
-const HEADING_RE = /^\s{0,3}#{1,6}\s/;
+/** A markdown heading, capturing its `#` run so the level can be read off. */
+const HEADING_RE = /^\s{0,3}(#{1,6})\s/;
+
+/** The heading level (1-6) of a raw line, or 0 when it is not a heading. */
+function headingLevel(line: string): number {
+  const match = line.match(HEADING_RE);
+  return match ? match[1]!.length : 0;
+}
+
+/**
+ * Heading depth at which a heading reads as a document section boundary
+ * rather than a grouping sub-heading nested under one — e.g. a `####
+ * path/to/file.ts` label grouping entries under a `**Branch outcomes:**`
+ * paragraph is a level-4 heading, while `## Summary`/`## Test Plan` (the
+ * sections PR summaries in this repository actually use) sit at level 1-2.
+ * A heading at or shallower than this level ends a Branch-outcomes scan; a
+ * deeper one is skipped over so the entries or text nested under it are
+ * still read (PR #3160 review, sixth round).
+ */
+const SECTION_HEADING_MAX_LEVEL = 3;
 
 /** The `Branch outcomes` prefix once markdown decoration is stripped. */
 const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
@@ -84,27 +102,39 @@ function leadingIndent(raw: string): number {
 export interface BranchOutcomesRecord {
   /** Whether a `Branch outcomes` header was found at all. */
   present: boolean;
-  /** Whether the header's inline body begins with the word `none`. */
+  /** Whether the header's inline body is an honest `none`/`none added` declaration. */
   noneDeclared: boolean;
   /** The inline body after the header's separator (`""` for a heading form). */
   body: string;
   /** Parsed list entries (empty when `noneDeclared`, a heading, or no list follows). */
   entries: string[];
   /**
-   * Every line between the header and the next heading (or the next
-   * `Branch outcomes` header, or the end of the document), scanned for
-   * named test paths only — independent of the list-shaped `entries`/`body`
-   * parsing above. A sibling bullet, a markdown table, or a loose list broken
-   * by an indented paragraph all stop `collectEntries` before a test path
-   * further down is ever added to `entries` or `body`; a header with inline
-   * text still has this field cover that text (PR #3160 review).
+   * Every line between the header and the next section-boundary heading (or
+   * the next `Branch outcomes` header, or the end of the document), scanned
+   * for named test paths only — independent of the list-shaped
+   * `entries`/`body` parsing above. A sibling bullet, a markdown table, or a
+   * loose list broken by an indented paragraph all stop `collectEntries`
+   * before a test path further down is ever added to `entries` or `body`; a
+   * header with inline text still has this field cover that text (PR #3160
+   * review). A deeper grouping heading (e.g. a `#### path/to/file.ts` label
+   * directly below a `**Branch outcomes:**` paragraph) does not end the scan
+   * (PR #3160 review, sixth round).
    */
   scanText: string;
 }
 
-/** Whether a (decoration-stripped) body starts with the word `none`. */
-function startsWithNone(body: string): boolean {
-  return /^none\b/i.test(body.trim());
+/**
+ * Whether a (decoration-stripped) body is an honest `none` declaration:
+ * exactly `none` or `none added`, plus trailing punctuation — never a prefix
+ * match. `none added this round; the earlier rounds' arms: ...` or
+ * `none added; existing worker/deno/tests/gone_test.ts covers it` both carry
+ * real content after the word `none` and must fall through to the normal
+ * scan below, or the list (or test citation) that follows is never checked
+ * (PR #3160 review, sixth round).
+ */
+const NONE_BODY_RE = /^none(?:\s+added)?\s*[.:;!]*$/i;
+function isNoneBody(body: string): boolean {
+  return NONE_BODY_RE.test(body.trim());
 }
 
 /**
@@ -135,7 +165,7 @@ export function parseBranchOutcomes(
     const body = inlineMatch
       ? stripped.slice(inlineMatch[0].length).trim()
       : "";
-    if (startsWithNone(body)) {
+    if (isNoneBody(body)) {
       if (body) bodyParts.push(body);
       continue;
     }
@@ -165,20 +195,25 @@ export function parseBranchOutcomes(
 }
 
 /**
- * Every line from `startIndex` to the next heading, the next `Branch
- * outcomes` header, or the end of the document — scanned (decoration
- * stripped) for `namedTestPaths` only. Deliberately independent of
- * `collectEntries`: that function's list-shaped parsing legitimately stops
- * on a sibling bullet, a table row, or prose after a blank line, any of
- * which can still name a test the header logically covers (PR #3160
- * review). Stopping at the next header keeps every header's scan disjoint,
- * so the combined cost across a whole PR summary stays linear.
+ * Every line from `startIndex` to the next section-boundary heading (level
+ * at or above `SECTION_HEADING_MAX_LEVEL`), the next `Branch outcomes`
+ * header, or the end of the document — scanned (decoration stripped) for
+ * `namedTestPaths` only. Deliberately independent of `collectEntries`: that
+ * function's list-shaped parsing legitimately stops on a sibling bullet, a
+ * table row, or prose after a blank line, any of which can still name a test
+ * the header logically covers (PR #3160 review). A deeper grouping heading
+ * (e.g. a `#### path/to/file.ts` label nested under a `**Branch
+ * outcomes:**` paragraph) does not end the scan (PR #3160 review, sixth
+ * round). Stopping at the next header, or a section-boundary heading, keeps
+ * every header's scan disjoint, so the combined cost across a whole PR
+ * summary stays linear.
  */
 function scanRegionText(lines: string[], startIndex: number): string {
   const parts: string[] = [];
   for (let j = startIndex; j < lines.length; j++) {
     const line = lines[j]!;
-    if (HEADING_RE.test(line)) break;
+    const lvl = headingLevel(line);
+    if (lvl > 0 && lvl <= SECTION_HEADING_MAX_LEVEL) break;
     const stripped = stripDecoration(line);
     if (
       BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
@@ -191,7 +226,13 @@ function scanRegionText(lines: string[], startIndex: number): string {
   return parts.join(" ");
 }
 
-/** Entries and wrapped body text that follow one `Branch outcomes` header. */
+/**
+ * Entries and wrapped body text that follow one `Branch outcomes` header. A
+ * heading deeper than `SECTION_HEADING_MAX_LEVEL` is skipped over rather
+ * than ending the scan, so a `#### path/to/file.ts` grouping heading
+ * between the header and its list does not hide that list from `entries`
+ * (PR #3160 review, sixth round).
+ */
 function collectEntries(
   lines: string[],
   startIndex: number,
@@ -211,7 +252,9 @@ function collectEntries(
       wrapping = false;
       continue;
     }
-    if (HEADING_RE.test(line)) break;
+    const lvl = headingLevel(line);
+    if (lvl > 0 && lvl <= SECTION_HEADING_MAX_LEVEL) break;
+    if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
     const indent = leadingIndent(line);
     if (LIST_MARKER_RE.test(line)) {
@@ -284,8 +327,16 @@ function normaliseToken(token: string): string {
 }
 
 /**
- * The test file paths named across a branch-outcomes record's entries (and
- * its inline body, when not `none added`).
+ * The test file paths named across a branch-outcomes record's entries, body
+ * and scanned region text.
+ *
+ * No `noneDeclared` guard here: `isNoneBody` only recognises an exact `none`
+ * / `none added` (plus punctuation) as a genuine negative, so whenever
+ * `record.noneDeclared` is true, `body` and `scanText` hold nothing but that
+ * honest declaration — a guard against scanning them was dead code once a
+ * body that names real content (`none added; existing worker/deno/tests/
+ * gone_test.ts covers it`) stopped being misread as `none` (PR #3160 review,
+ * sixth round).
  *
  * Only paths shaped like, and recognised as, a test file are returned — a
  * branch-location citation such as `worker/deno/lib/foo.ts:42` is not a test
@@ -295,8 +346,8 @@ function normaliseToken(token: string): string {
  */
 export function namedTestPaths(record: BranchOutcomesRecord): string[] {
   const texts = [...record.entries];
-  if (!record.noneDeclared && record.body) texts.push(record.body);
-  if (!record.noneDeclared && record.scanText) texts.push(record.scanText);
+  if (record.body) texts.push(record.body);
+  if (record.scanText) texts.push(record.scanText);
 
   const found: string[] = [];
   const seen = new Set<string>();

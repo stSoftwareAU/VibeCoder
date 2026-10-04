@@ -2190,9 +2190,12 @@ async function completionBody(
   // add needs a test that reaches it" list (rule #3069) missing, empty, or
   // naming a test that does not exist must be told about all of it in the
   // one recovery turn `recoverFromSummaryRuleBlock` grants. The HEAD lookup
-  // only runs when the gate is applicable and the summary actually names a
-  // test path — otherwise there is nothing to confirm and an empty set is
-  // used, which is `valid` for a record with no named tests.
+  // runs unconditionally for whatever test paths the summary names — it is
+  // not gated on `branchOutcomes.applicable` or `changedFilesKnown`, so it
+  // also runs for a docs-only diff if the summary happens to name a test.
+  // It only skips calling git when there are zero named paths, in which
+  // case an empty set is used, which is `valid` for a record with no named
+  // tests.
   // ---------------------------------------------------------------------
   // The not-applicable `: []` arm and the empty-list `new Set()` arm both
   // left the suite green when removed. `lookupTestsAtHead` already returns

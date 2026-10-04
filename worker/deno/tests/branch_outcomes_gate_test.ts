@@ -73,6 +73,24 @@ Deno.test("parseBranchOutcomes - 'none added' is recognised as an honest negativ
   assertEquals(record.entries, []);
 });
 
+// PR #3160 review (sixth round): `isNoneBody` (then `startsWithNone`) matched
+// any body starting with the word `none`, so a body with real content after
+// it — a list reference, or a named test — was wrongly treated as an honest
+// negative and its region was never scanned for a named test.
+Deno.test("parseBranchOutcomes - 'none added this round; ...' is not an honest negative", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** none added this round; the earlier rounds' arms:\n",
+  );
+  assertEquals(record.noneDeclared, false);
+});
+
+Deno.test("parseBranchOutcomes - 'none added; existing <test> covers it' is not an honest negative", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** none added; existing worker/deno/tests/gone_test.ts covers it\n",
+  );
+  assertEquals(record.noneDeclared, false);
+});
+
 Deno.test("parseBranchOutcomes - a later header is still collected", () => {
   const record = parseBranchOutcomes(
     "**Branch outcomes:** none added\n\n" +
@@ -129,6 +147,34 @@ Deno.test("parseBranchOutcomes - prose after a blank line is not merged into the
       "- entry one\n" +
       "\n" +
       "trailing prose not part of entry one\n",
+  );
+  assertEquals(record.entries, ["entry one"]);
+});
+
+// PR #3160 review (sixth round): `sawBlank = false;` inside the list-marker
+// branch had no test. Without it, a loose list's blank-line-separated entry
+// loses the continuation line that immediately follows it, because `sawBlank`
+// is left `true` from the earlier blank line.
+Deno.test("parseBranchOutcomes - a continuation line after a loose list item joins the newest entry", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n" +
+      "- a\n" +
+      "\n" +
+      "- b\n" +
+      "  cont\n",
+  );
+  assertEquals(record.entries, ["a", "b cont"]);
+});
+
+// PR #3160 review (sixth round): `indent > headerIndent` in the continuation
+// branch had no test. Without it, an unindented "lazy" line following a
+// list-item header's nested entry is wrongly merged onto that entry instead
+// of ending the scan.
+Deno.test("parseBranchOutcomes - an unindented lazy line is not joined onto a list-item header's entry", () => {
+  const record = parseBranchOutcomes(
+    "- Branch outcomes:\n" +
+      "  - entry one\n" +
+      "lazy sibling text\n",
   );
   assertEquals(record.entries, ["entry one"]);
 });
@@ -445,6 +491,116 @@ Deno.test("validateBranchOutcomes - a loose list broken by an indented paragraph
   });
   assertEquals(result.valid, false);
   assertEquals(result.missingTests, [INVENTED]);
+});
+
+// PR #3160 review (sixth round): a header with inline text and zero
+// collected entries also slipped an invented test through in two more
+// ordinary layouts a sub-heading grouping, and a "none added this round"
+// body that still carries a real list — both let `missingTests` stay empty
+// because `collectEntries`/`scanRegionText` stopped at the sub-heading, or
+// `startsWithNone` (now `isNoneBody`) skipped the header's region outright.
+
+// Isolates `collectEntries`' own deeper-heading skip (`branch_outcomes_gate.ts:257`)
+// from `scanRegionText`'s copy of the same fix: a heading-form header has an
+// empty inline `body`, so the "names no outcomes" check depends only on
+// `entries` — `scanText` (which `scanRegionText` still populates even under
+// the old stop-at-any-heading bug) cannot paper over a wrongly-empty
+// `entries` here.
+Deno.test("validateBranchOutcomes - a heading-form header with a deep grouping sub-heading still finds its list", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "#### Branch outcomes\n" +
+      "\n" +
+      "##### worker/deno/lib/foo.ts\n" +
+      "- worker/deno/tests/foo_test.ts::case\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+  assertEquals(result.missingTests, []);
+});
+
+// Isolates `scanRegionText`'s own deeper-heading skip (`branch_outcomes_gate.ts:216`)
+// from `collectEntries`' copy of the same fix: a markdown table's rows are
+// never collected into `entries` (fifth PR #3160 review round), so this
+// citation can only be found via `scanText` — `collectEntries` contributes
+// nothing here either way.
+Deno.test("validateBranchOutcomes - a sub-heading before a markdown table still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:** two arms added, both tested:\n" +
+      "\n" +
+      "#### worker/deno/lib/foo.ts\n" +
+      "\n" +
+      "| Outcome | Test |\n" +
+      "| --- | --- |\n" +
+      `| success | ${INVENTED} |\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a sub-heading grouping between the header and its list still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent:
+      "**Branch outcomes:** every arm this diff adds, grouped by file:\n" +
+      "\n" +
+      "#### worker/deno/lib/foo.ts\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a 'none added this round' header followed by a list still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent:
+      "**Branch outcomes:** none added this round; the earlier rounds' arms:\n" +
+      `- ${INVENTED}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a 'none added; existing <test> covers it' body naming an invented test blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent:
+      `**Branch outcomes:** none added; existing ${INVENTED} covers it\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+// PR #3160 review (sixth round): the `bodyExtra` push
+// (`branch_outcomes_gate.ts:183`) had no test — a bare header followed
+// directly by a wrapped prose line (no list) relies on it to avoid the
+// "names no outcomes" block. Both a real citation and an honest "none added"
+// on the wrapped line must still pass.
+
+Deno.test("validateBranchOutcomes - a bare header followed by a wrapped prose line naming an existing test passes", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "The arm at foo.ts:12 is reached by worker/deno/tests/foo_test.ts::case\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+  assertEquals(result.missingTests, []);
+});
+
+Deno.test("validateBranchOutcomes - a bare header followed by 'none added' on the next line passes", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:**\nnone added\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
 });
 
 Deno.test("validateBranchOutcomes - 'none added' passes", () => {
