@@ -70,6 +70,8 @@ Did half of it.
 - **clean** — Australian English, TDD, fail-loud error handling
 
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+
+**Branch outcomes:** none added
 `;
 
 /**
@@ -114,6 +116,8 @@ Did all of it.
 - **clean** — Australian English, TDD, fail-loud error handling
 
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+
+**Branch outcomes:** none added
 `;
 
 /** Issue #2695 (a): no `## Acceptance Criteria`, no accepted scope. */
@@ -141,6 +145,8 @@ Did a little.
 - **clean** — Australian English, TDD, fail-loud error handling
 
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+
+**Branch outcomes:** none added
 `;
 
 /**
@@ -161,6 +167,8 @@ Did half of it.
 - **missing** — the docs table lists opus — reviewer: missing — reason: ran out of turns
 
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+
+**Branch outcomes:** none added
 `;
 
 /**
@@ -187,11 +195,13 @@ Did half of it.
 - **clean** — Australian English, TDD, fail-loud error handling
 
 **Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits
+
+**Branch outcomes:** none added
 `;
 
 /** A minimal summary carrying only the Docs sweep line (Issue #3073). */
 const SUMMARY_MINIMAL_WITH_DOCS_SWEEP =
-  `## Summary\n\nFinished the switch. Closes #${ISSUE}.\n\n**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits\n`;
+  `## Summary\n\nFinished the switch. Closes #${ISSUE}.\n\n**Docs sweep** — grep: \`opus\`; section: \`docs/MODEL-AND-CACHING.md#planning\`; no hits\n\n**Branch outcomes:** none added\n`;
 
 const DEGRADED: PhaseClaudeResult[] = [{ fallbackModel: "haiku" }];
 const HEALTHY: PhaseClaudeResult[] = [];

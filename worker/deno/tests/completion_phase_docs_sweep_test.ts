@@ -46,6 +46,8 @@ Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - \`worker/deno/tests/completion_phase_docs_sweep_test.ts\`
@@ -203,6 +205,14 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         }
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok(scenario.changedFiles);
+        }
+        // The branch-outcomes gate (Issue #3147) confirms each named test
+        // exists at the head via `ls-tree`; a file the branch changed is
+        // there, so answer with the requested paths among `changedFiles`.
+        if (cmdArgs.includes("ls-tree")) {
+          const atHead = new Set(scenario.changedFiles.split("\n"));
+          const requested = cmdArgs.slice(cmdArgs.indexOf("--") + 1);
+          return ok(requested.filter((p) => atHead.has(p)).join("\n"));
         }
         return ok("");
       },
@@ -395,12 +405,24 @@ of PR #3159). Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_docs_sweep_test.ts\`
 `;
 
-/** The same fixture once the recovery adds a \`section:\` field. */
+/**
+ * The same fixture once the recovery answers the whole block it was handed:
+ * a \`section:\` field for the Docs sweep, and the \`Branch outcomes:\` list
+ * (Issue #3147) the same retry notice asks for, since this diff changes code.
+ * Answering only the Docs sweep would leave the branch-outcomes gate blocked
+ * and end the run \`summary_incomplete\` after the one recovery turn.
+ */
 const SUMMARY_3159_WITH_SECTION = SUMMARY_3159_WITHOUT_SECTION.replace(
   '- **Docs sweep.** Grepped for "filed during" / "this run filed" / ' +
     '"After a\n  commit, a". Updated:',
   "**Docs sweep** — grep: `filed during` / `this run filed` / " +
     "`After a commit, a`; section: `DESIGN-PRINCIPLES.md`; updated:",
+).replace(
+  "## Test Plan",
+  "**Branch outcomes:**\n\n" +
+    "- self-filed `Depends on` follow-up hands off to needs-human — " +
+    "`worker/deno/tests/handle_no_changes_blocked_deferral_test.ts`\n\n" +
+    "## Test Plan",
 );
 
 Deno.test(
@@ -420,6 +442,9 @@ Deno.test(
     );
     assertEquals(retryPrompts.length, 1, "exactly one recovery invocation");
     assertStringIncludes(retryPrompts[0]!, "Docs sweep missing");
+    // The same one turn also asks for the Branch outcomes list (Issue #3147),
+    // which this code diff lacks — the recovery must answer both to finalise.
+    assertStringIncludes(retryPrompts[0]!, "Branch outcomes not recorded");
 
     // The recovery ran before any finalise/create — no `gh pr create` at all
     // (the existing PR is updated, not recreated), and `recoverExistingPr`

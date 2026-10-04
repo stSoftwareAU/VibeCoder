@@ -995,18 +995,6 @@
       "sweptAt": "bc8002acde20d8766551f542ee262c08ac3a5c05"
     },
     {
-      "issue": 1846,
-      "chunk": "top-up-1846",
-      "title": "top-up: bot-authored PR lookup",
-      "ledger": "docs/audits/security-sweep-1846-pr-bot-lookup.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: pr_bot_lookup.ts (#1846)",
-      "status": "swept",
-      "paths": [
-        "worker/deno/lib/pr_bot_lookup.ts"
-      ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
-    },
-    {
       "issue": 1885,
       "chunk": "top-up-1885",
       "title": "top-up: the weekly Claude quota pace gate",
@@ -2573,6 +2561,18 @@
       "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
       "paths": [
         "worker/deno/lib/docs_sweep_hits.ts"
+      ]
+    },
+    {
+      "issue": 3147,
+      "chunk": "top-up-3147",
+      "title": "top-up: the branch-outcomes summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3147",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: branch_outcomes_gate.ts (#3147)",
+      "status": "claimed",
+      "sweptAt": "0310f44ea7c6b41f00b90574e315afa40361b844",
+      "paths": [
+        "worker/deno/lib/branch_outcomes_gate.ts"
       ]
     },
     {
