@@ -40,6 +40,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupRow,
@@ -198,8 +199,7 @@ export interface PrBranchFailureReport {
 
 /** Escape so git output cannot close our fence or forge a marker. */
 function bodySafe(text: string): string {
-  return text.replace(/<!--/g, "<!- -").replace(/-->/g, "- ->")
-    .replace(/```/g, "'''");
+  return neutraliseCommentDelimiters(text).replace(/```/g, "'''");
 }
 
 /** Issue body: marker first, then the diagnosis and what to do. */

@@ -33,6 +33,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import { escapeTableCell } from "./markdown_table.ts";
 import type { WorkerConfig } from "../types.ts";
 import type { CiFailureCategory } from "./ci_failure_classifier.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
@@ -293,6 +294,6 @@ export function buildAutoFixCapSummary(
 
 /** Escape a value for safe inclusion in a Markdown table cell. */
 function cell(value: string): string {
-  const text = value.trim().replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  const text = escapeTableCell(value.trim()).replace(/\r?\n/g, " ");
   return text.length > 0 ? text : "_not recorded_";
 }

@@ -197,6 +197,11 @@ export const prFeedbackProcessorCommand: Command = {
           workerId,
           // Issue #2103: the host switch for the Graft repo-context bundle.
           graftContextEnabled: isGraftContextEnabled(config),
+          // Issue #3205: whose comments count as owner direction.
+          ownerDirectionAuthors: {
+            allowedAuthors: config.allowedAuthors ?? [],
+            authorisedCommenters: config.authorisedCommenters ?? [],
+          },
         };
 
         const result = await processPrFeedback(input, processorDeps);

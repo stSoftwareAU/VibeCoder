@@ -13,12 +13,13 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
+import { escapeTableCell } from "./markdown_table.ts";
 import type { TabletopReport } from "./tabletop_harness.ts";
 import type { TabletopFixture } from "./tabletop_fixtures.ts";
 
 /** Escape the pipe and newline a markdown table cell cannot carry. */
 function cell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+  return escapeTableCell(value).replace(/\r?\n/g, " ");
 }
 
 /** Emoji-free verdict marker, so the table reads in a plain terminal too. */

@@ -36,6 +36,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import { expectedNoPrOutcome } from "./run_outcome.ts";
 import type { GitHubClient, Logger, Result } from "../types.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
@@ -118,13 +119,8 @@ export function sanitiseFlagField(
   maxLen = MAX_FIELD_LENGTH,
 ): string {
   if (!raw) return "";
-  let out = raw
-    // Neutralise HTML-comment terminators / openers (breakout). The
-    // replacements keep a space inside the token so a longer run such as
-    // `--->` cannot re-form `-->` from the surviving characters (CodeQL
-    // js/bad-tag-filter, Issue #4409 sweep).
-    .replace(/-->/g, "- ->")
-    .replace(/<!--/g, "<!- -")
+  // Neutralise HTML-comment terminators / openers (breakout).
+  let out = neutraliseCommentDelimiters(raw)
     // Drop code fences and backticks so the field cannot break markdown.
     .replace(/`+/g, "")
     // Replace control characters (incl. CR / LF / tab) with a space.
