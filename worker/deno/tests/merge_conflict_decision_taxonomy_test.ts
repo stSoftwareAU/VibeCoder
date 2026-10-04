@@ -84,11 +84,11 @@ const SAMPLES: Record<ConflictSkipReasonKind, ConflictSkipReason> = {
     issueNumber: 16,
     attemptsSpent: 2,
   },
-  // Issue #2312: the rung after the restarts are spent — a wait, not a human.
+  // Issue #2312: a legacy park marker on an unmoved base — a wait, not a
+  // human. No pass writes one any more (Issue #3166).
   "parked": {
     kind: "parked",
     base: "1111111111111111111111111111111111111111",
-    flagIssueNumber: 900,
   },
   "disrupted-bound": {
     kind: "disrupted-bound",
