@@ -44,7 +44,7 @@ GRQ-AutoTrader#2506, VibeCoder#3156).
   true. The summary PR body still gains the `### ⏸️ Held: pending
   dependencies` section. The not-planned section is added after it, and the
   new section below documents it.
-- The new `docs/workflows/milestones.md` section (lines 286-305) was checked
+- The new `docs/workflows/milestones.md` section (lines 286-305, ending before `## 🔄 Periodic milestone branch sync`) was checked
   against `milestone_not_planned_refs.ts`. Its claims hold at the head:
   `Depends on`/`Blocked by` (the `extractDependencyReferences` pattern), the
   compare is read only when a candidate exists, `#N` and `owner/repo#N` for
@@ -53,7 +53,7 @@ GRQ-AutoTrader#2506, VibeCoder#3156).
 - `docs/INTERNALS.md:2895` ("`build_milestone_summary_body()` — list all
   closed issues") and `docs/INTERNALS.md:2911` (the `Closes #N` reference)
   are still true. The Milestone management table at
-  `docs/INTERNALS.md:5316` lists only some milestone modules, and none of
+  `docs/INTERNALS.md:5315` lists only some milestone modules, and none of
   its rows is made false.
 - The other "not planned" hits (`docs/LESSONS-LEARNT.md:70`,
   `docs/GITHUB-ACTIONS-AUDIT-SCAN.md:1184`) are unrelated uses of the phrase.
