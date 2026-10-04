@@ -500,6 +500,23 @@ real callee masks the contract it stands in for and is a finding. Run the test
 against a real checkout of the callee, or name the contract the stub mirrors in
 the PR summary with a source link to the callee's code or docs.
 
+**A fake mirrors the production implementation it stands in for.** The stub
+rule above covers another repository's binary; this covers the repository's
+own ports. When a test double replaces one of the repository's own ports (a
+trait or interface with a production implementation) and the change relies
+on a property of that port, read the production implementation first and
+confirm it has that property. Examples of such properties: which rows a read
+returns, a filter, ordering or paging, which value types a write accepts, or
+whether a conditional write can lose. If the fake behaves differently, fix
+whichever side is wrong. Then pin the two together with one contract test
+that runs against both, or against the production adapter's parsing of a
+recorded response, or test the behaviour at the production adapter itself. A
+fix to the fake is still held to **A red run counts only against the base
+branch**. In the PR summary, name the production implementation each
+load-bearing fake stands in for and the property the change relies on. A
+change whose only proof is a fake more permissive than its production
+implementation is a blocking self-review finding.
+
 **Observe the real tool before you rely on it.** When a decision depends on
 how git, `gh`, the GitHub API or another external tool behaves in a
 particular case (exit code, warnings on stderr, case-sensitivity, ordering,
