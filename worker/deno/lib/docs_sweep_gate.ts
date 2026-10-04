@@ -69,6 +69,12 @@ export interface DocsSweepLine {
   body: string;
   /** The value of the `section:` (or `sections:`) field, `""` when absent. */
   section: string;
+  /**
+   * The same entry with only list markers stripped — backticks, quotes and
+   * underscores intact — so the line's own grep terms and `file:line`
+   * references can be read back out of it (Issue #3172). `""` when absent.
+   */
+  rawBody: string;
 }
 
 /** A list marker leading a line, stripped before matching. */
@@ -135,12 +141,15 @@ export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
     // linear-scan case).
     if (firstBody === "") continue;
     const parts = [firstBody];
+    const rawParts = [lines[i]!.replace(LIST_MARKER_RE, "").trim()];
     for (let j = i + 1; j < lines.length; j++) {
       const next = lines[j]!;
       if (isEntryBoundary(next)) break;
       parts.push(stripDecoration(next));
+      rawParts.push(next.trim());
       if (parts.join(" ").length >= MAX_DOCS_SWEEP_ENTRY_CHARS) break;
     }
+    const rawBody = rawParts.join(" ").slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
     let body = parts.join(" ").trim();
     if (body.length > MAX_DOCS_SWEEP_ENTRY_CHARS) {
       body = body.slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
@@ -151,10 +160,10 @@ export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
     // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
     const sectionMatch = body.match(SECTION_FIELD_RE);
     const section = sectionMatch ? trimDecoration(sectionMatch[1]!) : "";
-    return { present: true, body, section };
+    return { present: true, body, section, rawBody };
   }
 
-  return { present: false, body: "", section: "" };
+  return { present: false, body: "", section: "", rawBody: "" };
 }
 
 /** Bare placeholder values for `section:` that name no manual (Issue #3073). */

@@ -43,7 +43,9 @@ import {
   findOtherPrsForIssue,
   mergeFallbackRunsFromHistory,
   planRequeueLabel,
+  renderAttemptTable,
   requeueLabelName,
+  type RestartChainLink,
   restartMarkerPrNumbers,
   summariseFailedAttempts,
 } from "../lib/conflict_abandon_restart.ts";
@@ -57,8 +59,11 @@ import type { LogContext, Logger, Result } from "../types.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_FAILED_MARKER,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
+import {
+  CONFLICT_RESOLUTION_BUDGET,
+  conflictResolvedMarker,
+} from "../lib/merge_conflict_markers.ts";
 import {
   abandonAndRebuildMilestone,
   listMergedSubPrs,
@@ -90,16 +95,21 @@ function comment(
   return { body, created_at: createdAt, user: { login } };
 }
 
-/** Two concluded failures, exactly as the processor writes them. */
+/**
+ * Concluded failures, exactly as the processor writes them — a full spent
+ * budget by default (Issue #3000), so the happy-path abandon tests reach the
+ * close without a separate attempts-not-spent fixture.
+ */
 function failedComments(
   login: string = FLEET,
+  count: number = CONFLICT_RESOLUTION_BUDGET,
 ): Array<{ body: string; created_at: string; user: { login: string } }> {
-  return [1, 2].map((n) => ({
+  return Array.from({ length: count }, (_, i) => i + 1).map((n) => ({
     user: { login },
     body: [
       `${CONFLICT_FAILED_MARKER} n="${n}" -->`,
       `❌ **Merge-conflict resolution — attempt ${n} of ` +
-      `${DEFAULT_MAX_CONFLICT_ATTEMPTS} failed**`,
+      `${CONFLICT_RESOLUTION_BUDGET} failed**`,
       "",
       "Merging `main` in did not produce a mergeable branch: the same " +
       `constant is set to two different values (attempt ${n}).`,
@@ -140,6 +150,12 @@ interface FakeState {
   prsByState: Record<string, Array<{ number: number; title: string }>>;
   /** Issue numbers `gh issue view --json number,title,state,body` knows. */
   issues: Record<number, { title: string; state: string; body: string }>;
+  /**
+   * Per-PR comment threads, keyed by PR number (Issue #3000) — consulted by
+   * `gh api repos/.../issues/<n>/comments` whenever `<n>` is not
+   * {@link ISSUE_NUMBER}, which always carries `issueComments` instead.
+   */
+  prThreads: Record<number, Array<{ body: string; user?: { login: string } }>>;
   /** Args prefix (joined with a space) whose call must throw. */
   failOn?: string;
 }
@@ -173,6 +189,7 @@ function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
         body: "The cap is too low.",
       },
     },
+    prThreads: {},
     ...overrides,
   };
   const calls: string[][] = [];
@@ -199,12 +216,31 @@ function makeFake(overrides: Partial<FakeState> = {}): FakeGh {
       }]));
     }
 
-    // Issue comment pages.
+    // Issue/PR comment pages — PRs and issues share `/issues/<n>/comments`
+    // (Issue #3000): `ISSUE_NUMBER` always reads `issueComments`; any other
+    // number — the PR itself, or an earlier PR in a restart chain — reads its
+    // own thread out of `prThreads`.
     if (args[0] === "api" && String(args[1]).includes("/comments")) {
       const page = /[?&]page=(\d+)/.exec(String(args[1]))?.[1] ?? "1";
-      return Promise.resolve(
-        page === "1" ? JSON.stringify(state.issueComments) : "[]",
+      if (page !== "1") return Promise.resolve("[]");
+      const number = Number(
+        /issues\/(\d+)\/comments/.exec(String(args[1]))?.[1] ?? NaN,
       );
+      const thread = number === ISSUE_NUMBER
+        ? state.issueComments
+        : (state.prThreads[number] ?? []);
+      return Promise.resolve(JSON.stringify(thread));
+    }
+
+    // `gh issue edit <n> --repo <repo> --remove-label <label>` — the
+    // provenance-checked rollback (Issue #2951, #3000).
+    if (
+      args[0] === "issue" && args[1] === "edit" &&
+      args.includes("--remove-label")
+    ) {
+      const label = args[args.indexOf("--remove-label") + 1];
+      state.issueLabels = state.issueLabels.filter((l) => l !== label);
+      return Promise.resolve("");
     }
 
     // Label add (REST primary of `addLabelToIssue`).
@@ -325,7 +361,10 @@ function assertNoNeedsHuman(fake: FakeGh): void {
 // ---------------------------------------------------------------------------
 
 Deno.test("summariseFailedAttempts - quotes each recorded failure and its paths", () => {
-  const history = summariseFailedAttempts(failedComments());
+  const history = summariseFailedAttempts(
+    failedComments(FLEET, 2),
+    FLEET_AUTHORS,
+  );
 
   assertEquals(history.attempts.length, 2);
   const [first, second] = history.attempts;
@@ -343,7 +382,7 @@ Deno.test("summariseFailedAttempts - a thread with no conclusions yields nothing
     { body: '<!-- vibe-coder:merge-conflict-attempt n="1" -->' },
     null,
     42,
-  ]);
+  ], FLEET_AUTHORS);
   assertEquals(history.attempts, []);
   assertEquals(history.conflictedPaths, []);
 });
@@ -351,7 +390,7 @@ Deno.test("summariseFailedAttempts - a thread with no conclusions yields nothing
 Deno.test("mergeFallbackRunsFromHistory - each run's analysis, timings and host (Issue #2310)", () => {
   // The run that measured the timings is long gone by the time a fallback
   // runs, so the conclusion comment is the only surviving source for them.
-  const comments = failedComments().map((raw, index) => ({
+  const comments = failedComments(FLEET, 2).map((raw, index) => ({
     ...raw,
     body: `${raw.body}\n\n${
       formatStageTimings(
@@ -364,7 +403,9 @@ Deno.test("mergeFallbackRunsFromHistory - each run's analysis, timings and host 
     }`,
   }));
 
-  const runs = mergeFallbackRunsFromHistory(summariseFailedAttempts(comments));
+  const runs = mergeFallbackRunsFromHistory(
+    summariseFailedAttempts(comments, FLEET_AUTHORS),
+  );
 
   assertEquals(runs.length, 2);
   assertEquals(runs[0]?.run, 1);
@@ -382,7 +423,7 @@ Deno.test("mergeFallbackRunsFromHistory - each run's analysis, timings and host 
 
 Deno.test("mergeFallbackRunsFromHistory - a run with no timings line still records its analysis", () => {
   const runs = mergeFallbackRunsFromHistory(
-    summariseFailedAttempts(failedComments()),
+    summariseFailedAttempts(failedComments(FLEET, 2), FLEET_AUTHORS),
   );
   assertEquals(runs.length, 2);
   assertEquals(runs[0]?.timings, undefined);
@@ -403,6 +444,197 @@ Deno.test("restartMarkerPrNumbers - names the PR each claim was made for", () =>
 
 Deno.test("restartMarkerPrNumbers - a thread with no claim records none", () => {
   assertEquals(restartMarkerPrNumbers([{ body: "hello" }, null, 7]), []);
+});
+
+// ---------------------------------------------------------------------------
+// The shared budget must actually be spent first (Issue #3000)
+// ---------------------------------------------------------------------------
+
+/** A logger that records every `info`/`warn`/`error` line, for assertions. */
+function makeCapturingLogger(): Logger & { lines: string[] } {
+  const lines: string[] = [];
+  const record = (message: string) => {
+    lines.push(message);
+  };
+  return {
+    lines,
+    info: (message: string, _context?: LogContext) => record(message),
+    warn: (message: string, _context?: LogContext) => record(message),
+    error: (message: string, _context?: LogContext) => record(message),
+    debug: (_message: string, _context?: LogContext) => {},
+    security: (_event: string, _details: string) => {},
+    skipReason: (_reasonCode: string, _details: string) => {},
+    timing: (
+      _operation: string,
+      _durationSeconds: number,
+      _details?: string,
+    ) => {},
+    scanSummary: (
+      _reposScanned: number,
+      _issuesFound: number,
+      _issuesSkipped: number,
+      _skipReasons?: string,
+    ) => {},
+    workerSummary: (_issuesProcessed: number, _durationSeconds: number) => {},
+  };
+}
+
+Deno.test("abandonAndRestart - two failed attempts of three declines, not abandons", async () => {
+  const fake = makeFake();
+  const logger = makeCapturingLogger();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ prComments: failedComments(FLEET, 2) }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS, logger },
+  );
+
+  assertEquals(outcome, {
+    outcome: "declined",
+    reason: {
+      kind: "attempts-not-spent",
+      failedAttempts: 2,
+      budget: CONFLICT_RESOLUTION_BUDGET,
+    },
+  });
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+  assertEquals(callsMatching(fake, "pr", "comment").length, 0);
+  assertEquals(callsMatching(fake, "issue", "comment").length, 0);
+  assert(
+    logger.lines.some((line) => line.includes("2") && line.includes("3")),
+    `expected a log line naming the failed count and the budget: ${
+      JSON.stringify(logger.lines)
+    }`,
+  );
+});
+
+Deno.test("abandonAndRestart - a full budget claims the restart before closing the PR", async () => {
+  const fake = makeFake();
+
+  await abandonAndRestart(
+    makeRequest({ prComments: failedComments() }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  const issueCommentIndex = indexOfCall(fake, "issue", "comment");
+  const closeIndex = indexOfCall(fake, "pr", "close");
+  assert(issueCommentIndex >= 0 && closeIndex >= 0);
+  assert(issueCommentIndex < closeIndex);
+});
+
+Deno.test("abandonAndRestart - a failed issue-comment post with a full budget does not close the PR", async () => {
+  const fake = makeFake({ failOn: "issue comment" });
+
+  const outcome = await abandonAndRestart(
+    makeRequest({ prComments: failedComments() }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assert(outcome.outcome === "failed");
+  assertEquals(outcome.step, "issue-comment");
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - a resolved marker resets the tally, so two failures after it decline", async () => {
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({
+      prComments: [
+        ...failedComments(),
+        comment(conflictResolvedMarker("ladder", "cafe123")),
+        ...failedComments(FLEET, 2),
+      ],
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(outcome, {
+    outcome: "declined",
+    reason: {
+      kind: "attempts-not-spent",
+      failedAttempts: 2,
+      budget: CONFLICT_RESOLUTION_BUDGET,
+    },
+  });
+  assertEquals(callsMatching(fake, "pr", "close").length, 0);
+});
+
+Deno.test("abandonAndRestart - a stalled request with no failures is not declined by the budget guard", async () => {
+  // Issue #2802: a stall repair's second trip is not a conflict-resolution
+  // outcome at all, and has its own two-trip bound — exempt from this guard.
+  const fake = makeFake();
+
+  const outcome = await abandonAndRestart(
+    makeRequest({
+      prComments: [],
+      reason: {
+        kind: "stalled",
+        detail: "has stalled: red CI",
+        tried: "sync-and-lane-rerun",
+      },
+    }),
+    { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
+  );
+
+  assertEquals(outcome.outcome, "abandoned");
+  assertEquals(callsMatching(fake, "pr", "close").length, 1);
+});
+
+Deno.test("renderAttemptTable - rows, unknown time, and a zero-attempt PR", () => {
+  const chain: RestartChainLink[] = [
+    {
+      prNumber: 31,
+      attempts: [
+        {
+          pass: "ladder",
+          atMs: Date.parse("2026-08-19T11:00:00Z"),
+          headSha: undefined,
+          outcome: "failed",
+        },
+        { pass: "sync", atMs: undefined, headSha: undefined, outcome: "open" },
+      ],
+    },
+    { prNumber: 32, attempts: [] },
+  ];
+
+  const rows = renderAttemptTable(REPO, chain);
+
+  assertStringIncludes(
+    rows.join("\n"),
+    "| PR | Attempt | Pass | Time (UTC) | Outcome |",
+  );
+  assertStringIncludes(
+    rows.join("\n"),
+    `| ${REPO}#31 | 1 | ladder | 2026-08-19 11:00 UTC | failed |`,
+  );
+  assertStringIncludes(
+    rows.join("\n"),
+    `| ${REPO}#31 | 2 | sync | unknown | open (never concluded) |`,
+  );
+  assertStringIncludes(
+    rows.join("\n"),
+    `| ${REPO}#32 | — | — | — | no attempt recorded |`,
+  );
+});
+
+Deno.test("exhaustedEscalationRoute - attempts-not-spent names the count and the budget", () => {
+  const route = exhaustedEscalationRoute({
+    outcome: "declined",
+    reason: {
+      kind: "attempts-not-spent",
+      failedAttempts: 1,
+      budget: CONFLICT_RESOLUTION_BUDGET,
+    },
+  });
+  assertEquals(route.kind, "abandon-declined");
+  assertStringIncludes(
+    route.kind === "abandon-declined" ? route.detail : "",
+    `1 failed merge-conflict`,
+  );
+  assertStringIncludes(
+    route.kind === "abandon-declined" ? route.detail : "",
+    `of the ${CONFLICT_RESOLUTION_BUDGET}`,
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -446,7 +678,17 @@ Deno.test("abandonAndRestart - closes the PR, re-queues the issue, keeps the bra
   // counts the attempts the thread actually recorded, because the ladder's own
   // abandon rung reaches this comment with none opened at all.
   assertStringIncludes(issueBody, "will not merge that branch into `main`");
-  assertStringIncludes(issueBody, "2 merge-conflict resolution attempts");
+  assertStringIncludes(
+    issueBody,
+    `${CONFLICT_RESOLUTION_BUDGET} merge-conflict resolution attempts`,
+  );
+  // The attempt table (Issue #3000) names this PR and every judged attempt.
+  assertStringIncludes(issueBody, "Resolution attempts on this PR");
+  assertStringIncludes(issueBody, `${REPO}#${PR_NUMBER} | 1 | ladder`);
+  assertStringIncludes(
+    issueBody,
+    `${REPO}#${PR_NUMBER} | ${CONFLICT_RESOLUTION_BUDGET} | ladder`,
+  );
 
   // The issue already carried the human-applied work label, so it is not
   // re-applied — and it was open, so it is not reopened.
@@ -680,7 +922,7 @@ Deno.test("abandonAndRestart - no originating issue: the PR is closed and the fl
   assertEquals(filing?.behindBy, 41);
   assertEquals(filing?.behindSince, "2026-08-18T09:30:00.000Z");
   assertEquals(filing?.conflictedFiles, ["worker/deno/lib/limits.ts"]);
-  assertEquals(filing?.runs?.length, 2);
+  assertEquals(filing?.runs?.length, CONFLICT_RESOLUTION_BUDGET);
 
   // Closed, not merged, and the branch is left where it is.
   const closes = callsMatching(fake, "pr", "close");
@@ -808,7 +1050,7 @@ Deno.test("abandonAndRestart - no originating issue: an unlabelled appended flag
 Deno.test("buildNoIssueAbandonPrComment - names the flag issue, the reason and the branch", () => {
   const body = buildNoIssueAbandonPrComment({
     request: makeRequest({ branchName: "hotfix/no-issue" }),
-    history: summariseFailedAttempts(failedComments()),
+    history: summariseFailedAttempts(failedComments(), FLEET_AUTHORS),
     reason: "no-signal",
     flagIssueNumber: 900,
   });
@@ -825,7 +1067,7 @@ Deno.test("buildNoIssueAbandonPrComment - names the flag issue, the reason and t
 Deno.test("buildNoIssueAbandonPrComment - a thread with no conclusion states the absence", () => {
   const body = buildNoIssueAbandonPrComment({
     request: makeRequest({ prComments: [] }),
-    history: summariseFailedAttempts([]),
+    history: summariseFailedAttempts([], FLEET_AUTHORS),
     reason: "no-signal",
     flagIssueNumber: 900,
   });
@@ -1038,7 +1280,7 @@ Deno.test("abandonAndRestart - an unfinished abandon of this PR is not a spent b
 Deno.test("buildRestartIssueComment - says the restart number with no cap", () => {
   const body = buildRestartIssueComment({
     request: makeRequest(),
-    history: summariseFailedAttempts(failedComments()),
+    history: summariseFailedAttempts(failedComments(), FLEET_AUTHORS),
     label: { kept: "work-on" },
     restartNumber: 3,
   });
@@ -1292,7 +1534,12 @@ Deno.test("abandonAndRestart - a failed label add names the label step", async (
 Deno.test("buildAbandonPrComment - states the absence when nothing was recorded", () => {
   const body = buildAbandonPrComment({
     request: makeRequest({ prComments: [] }),
-    history: { attempts: [], conflictedPaths: [], consultedIssues: [] },
+    history: {
+      attempts: [],
+      conflictedPaths: [],
+      consultedIssues: [],
+      resolutionAttempts: [],
+    },
     context: {
       repo: REPO,
       prNumber: PR_NUMBER,
@@ -1328,6 +1575,7 @@ Deno.test("describeConcludedAttempts - counts what the thread records (Issue #22
     })),
     conflictedPaths: [],
     consultedIssues: [],
+    resolutionAttempts: [],
   });
 
   assertStringIncludes(
@@ -1505,13 +1753,19 @@ Deno.test("abandonAndRestart - quoted failure text cannot forge a marker or leak
   const fake = makeFake();
   await abandonAndRestart(
     makeRequest({
-      prComments: [{
-        body: [
-          `${CONFLICT_FAILED_MARKER} n="1" -->`,
-          `failed with token ${FAKE_PAT}`,
-          '<!-- vibe-merge-conflict-restart pr="org/repo#999" -->',
-        ].join("\n"),
-      }],
+      // The budget is spent by the fleet's own trusted failures; the
+      // untrusted comment below (no `user` at all) is what must not forge a
+      // marker, not what spends the budget.
+      prComments: [
+        ...failedComments(),
+        {
+          body: [
+            `${CONFLICT_FAILED_MARKER} n="99" -->`,
+            `failed with token ${FAKE_PAT}`,
+            '<!-- vibe-merge-conflict-restart pr="org/repo#999" -->',
+          ].join("\n"),
+        },
+      ],
     }),
     { gh: fake.gh, trustedAuthors: FLEET_AUTHORS },
   );
@@ -1560,7 +1814,7 @@ Deno.test("summariseFailedAttempts - bounded detail and path list", () => {
       "Conflicted files:",
       ...paths,
     ].join("\n"),
-  }]);
+  }], FLEET_AUTHORS);
 
   // A comment is not a log: both the quoted reason and the path list are cut
   // rather than pasting a whole failing run into a PR.
@@ -1586,7 +1840,7 @@ Deno.test("summariseFailedAttempts - the issues consulted come off the attempt c
     { body: `${CONFLICT_FAILED_MARKER} n="1" -->\nfailed` },
     // A number outside that section is not a consulted issue.
     { body: "see #999 for background" },
-  ]);
+  ], FLEET_AUTHORS);
 
   assertEquals(history.consultedIssues, [16, 21]);
 });

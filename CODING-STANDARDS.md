@@ -183,7 +183,7 @@ Rule 5 bans keyword checks over documentation; this subsection is the one
 exception, and the `worker/deno/tests/*_docs_test.ts` suites are what it exists
 for. They are the only guard on a documented rule, switch name or rendered line
 drifting away from the code that produces it, so such a suite stays — but it
-earns its place by meeting all three conditions:
+earns its place by meeting all four conditions:
 
 1. **Section-scoped.** Read the page with `readRepoDoc` and narrow it with
    `section` from `worker/deno/tests/support/markdown_docs.ts`, which masks
@@ -200,6 +200,12 @@ earns its place by meeting all three conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
+4. **The pinned phrase occurs only in the rule being added.** A phrase the
+   section already held before the change stays green when the new rule is
+   deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
+   issue prompt already carried. Check the phrase is absent from the base
+   branch's version of that section, or delete the new rule and confirm the
+   test goes red.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
@@ -312,6 +318,20 @@ undiagnosed or already fixed and only pin the current behaviour. When the
 issue cites a logged error line, start the reproducing test from that exact
 input and quote the line in the PR summary.
 
+**A new test must go red without its change.** A test added to guard a
+change — a regression test a fix or a review asks for, a documentation-drift
+test, a growth guard — must go red when only that change is removed. A test
+whose input never reaches the failure passes either way: a fake that throws
+into a catch that returns the expected value, a fixture that a re-sort puts
+in order before the assertion runs, a phrase the section already held before
+the change. Remove the change on purpose (delete the clause, drop the cap,
+restore the old expression), run the test, see it fail, then restore it. A
+new test that stays green without its change is a blocking self-review
+finding. A test that only pins current behaviour — the fault was unreproduced
+or already fixed, and no production change was made — is expected green on
+base, and the Test Plan says so. **A negative test must be able to fail**
+below is this rule for an assertion that something does *not* happen.
+
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
 rather than stale — needs a fixture that contains the forbidden thing: a real
@@ -321,6 +341,20 @@ PR break the guard on purpose (remove the filter, invert the check, or fill
 from the wrong source), run the test, confirm it goes red, then restore the
 guard. A negative test that stays green without its guard is a blocking
 self-review finding.
+
+**A refusal test must be refused by the rule it names.** A test that
+expects an input to be refused, rejected or answered with `false` or an
+error must assert the specific error variant or rule, not only that an
+error occurred or which field it mentions. Its input must satisfy every
+other rule, so only the rule under test can refuse it: show that the same
+input with only the probed value made legal is accepted. A test that
+compares two refusers (schema against loader, client against server) must
+also assert that the on-target base value is accepted by both sides, so
+agreement on an unrelated refusal cannot pass. When a change adds a
+refusal that runs before an existing one (a new boundary check, a
+retired-field list, a stricter parse, a fake that throws), re-run the
+existing tests that expect the later refusal and confirm each still
+reaches it; one that now stops earlier is a blocking self-review finding.
 
 **Every changed call site needs a test that goes red without it.** When a
 change threads a new argument, flag or behaviour through more than one
@@ -333,6 +367,19 @@ forcing a fallback path) does not count for that path. A changed call site
 whose revert leaves the suite green is a blocking self-review finding: add a
 test through that caller, ideally at the level the linked issue's Failure
 Detection names.
+
+**Narrowing a shared helper changes every caller.** Before a helper that
+other code already calls starts rejecting, throwing on or dropping a value it
+used to accept (a validator, type guard, allowed-value set, required field,
+ref/name check), list its existing callers and the real values each can
+receive. Check those values against the tool or API's actual output, not its
+documentation's happy path (see **Observe the real tool before you rely on
+it**). If any existing caller can legitimately pass a value the new rule
+rejects, keep the shared helper as it was and apply the stricter rule at the
+new call site. Otherwise add a test showing an existing caller still accepts
+its real inputs. List the callers checked in the PR summary. A narrowed shared
+helper with no callers-checked list is a blocking self-review finding
+(Issue #3100).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
@@ -361,6 +408,38 @@ List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
 
+**A new branch must be reachable by the input it exists for.** When you add
+a branch, guard, capture or hand-off below existing early exits in the same
+function or its caller (`return`, `continue`, `break`, `exit`, a retry or
+failure return), list each exit above the insertion point and what fires it.
+For each one, ask whether a realistic input for the new case can fire it
+first. Free-text heuristics, empty or short-input filters and "nothing to do"
+exits are the usual culprits. If one can, move the new branch above it, or
+state in the PR summary why that exit must win. A real infrastructure signal
+can justify that; a wording guess cannot. Then add a test whose input is the
+realistic case and also trips each earlier exit the new branch now precedes.
+Move the new branch back below that exit and confirm the test goes red. A
+new branch that a realistic input for its own case cannot reach is a
+blocking self-review finding (Issue #3167).
+
+**Code that deletes or replaces state proves everything it destroys is safe
+to lose.** When a change adds code that `rm -rf`s a directory, swaps a new
+clone or `.git` in for an old one, runs `git reset --hard` or `git clean -fdx`,
+or overwrites a file in place, first list everything the old copy holds that
+the replacement will not. For a git clone that is every `refs/heads/*` tip and
+its commits not contained in an origin ref, the stash, the reflogs, untracked
+and ignored files, and local config (branch upstreams, hooks, `extensions.*`).
+Proving only the state the change is about — the current branch equals
+`origin/<branch>` and the working tree is clean — says nothing about the rest.
+For each item, either prove it is safe to lose (for example, every local
+branch tip is an ancestor of an origin ref) or refuse the operation and report
+why. Before writing a new check, search the repo for an existing guard on a
+sibling destructive path (`git grep -n -e 'rm -rf' -e unpushed`) and call it
+rather than copying it. Add a test per refusal whose fixture holds that state
+and asserts it survives. List the inventory in the PR summary, with what is
+guarded and what is accepted as lost. A destructive operation that deletes
+state it never checked is a blocking self-review finding (Issue #3107).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head. Before raising the PR,
@@ -369,7 +448,10 @@ blocking self-review finding — add the test or drop the claim, and never commi
 an anchor that references a test that does not exist. A test cited as evidence
 is also run on the final head and its result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
-untested is an over-claim (Issue #3058).
+untested is an over-claim (Issue #3058). An unresolved placeholder where a
+result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where
+`./quality.sh`'s outcome should be, say — counts as an unreported result and
+is itself a blocking self-review finding (Issue #3124).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
@@ -398,6 +480,52 @@ that is load-bearing must be load-bearing in the validator too, not only in
 the README or a code comment: an invariant documented but not validated is a
 blocking self-review finding (Issue #3021).
 
+### Writing a gate over text
+
+A deterministic gate over text — a PR summary, a Markdown file, a diff, a
+closure entry, or source code it counts or scans — fails in two ways its own
+tests rarely show: the matcher misses a realistic variant of the thing it
+exists to catch (or fires on a look-alike it should ignore), and input it
+cannot handle is skipped while the gate reports a clean pass. Fleet PRs have
+shipped both. VibeCoder#3148 counted a commented-out assertion as "moved"
+because its text was a substring of an added block. VibeCoder#3132 recognised
+only column-0 fences and paired inline code spans one line at a time, which a
+run over `docs/archive/pr-summaries/` would have exposed. VibeCoder#3134
+skipped every non-matching closure entry with `continue`, including the
+`partial`/`missing` entries that were the run's own evidence of a gap.
+VibeCoder#3157 counted `Deno.test(` inside string literals and counted
+`Deno.test.ignore` declarations, so it flagged correct Test Plan counts as
+stale. Before calling a gate done (Issue #3149):
+
+1. **Evasion table.** For each thing the gate must catch, add a test per
+   nearby variant an agent or human would plausibly produce — commented out,
+   wrapped in a condition (`if (false)`), loosened, re-wrapped across lines,
+   escaped, indented, moved to another file, deleted with its file, and
+   renamed — each asserting the gate still blocks. Run the table both ways:
+   for each look-alike the gate must ignore — the pattern inside a string or
+   template literal, a skipped or ignored declaration (`Deno.test.ignore`,
+   `it.skip`), an example inside a code block — add a test asserting it does
+   **not** fire. A gate that reads source code blanks out comments and
+   literals before it matches, or uses a tokeniser.
+2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
+   recent PR diffs, closure-verdict logs, the PR's own test files — run the
+   matcher across it and report the false-positive and false-negative counts
+   in the Test Plan. A counting gate compares its count with the tool's own
+   (the number of tests `deno test` reports it ran).
+3. **No silent pass on unread input.** Input the gate truncates, filters out,
+   cannot parse, or skips with `continue` either fails closed or is logged and
+   reported as not checked (for example `testDiffKnown=false`) — never a clean
+   pass, and a test pins that outcome. This is **Never Fail Silently — Fail
+   Loud** applied to a matcher, and each skip is an outcome under **Every
+   outcome of a branch you add needs a test that reaches it** above.
+4. **Compare like with like.** Normalise both sides of a comparison the same
+   way — escapes, whitespace, comments — and use equality on the normalised
+   forms rather than substring containment, unless containment is the
+   contract.
+
+A gate's matcher must also stay cheap on hostile input — see the ReDoS
+guidance under **Unit tests** below.
+
 ### Choosing assertions
 
 - **UI / PWA:** Prefer real/headless-browser user journeys and visible states
@@ -422,14 +550,19 @@ blocking self-review finding (Issue #3021).
   past the branch does not count — see **Every outcome of a branch you add
   needs a test that reaches it** above. A new early return or route to an
   outcome an existing path reaches keeps that path's guards — see **A new
-  path to an existing outcome keeps that outcome's guards** above.
+  path to an existing outcome keeps that outcome's guards** above. A test
+  for a new branch below existing early exits uses the realistic input for
+  its case, including one that trips each earlier exit it now precedes — see
+  **A new branch must be reachable by the input it exists for** above.
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
 explicit contract or leave it out. Ask a negative assertion the opposite
 question too: would it fail if the guard it protects were removed? If not,
 its fixture lacks the forbidden value — see **A negative test must be able to
-fail** above. See Playwright's
+fail** above. Ask every new test the same question of its change: would it
+fail if only that change were removed? See **A new test must go red without
+its change** above. See Playwright's
 [user-visible testing guidance](https://playwright.dev/docs/best-practices)
 and Testing Library's [guiding principles](https://testing-library.com/docs/guiding-principles/).
 
@@ -534,7 +667,11 @@ simply no longer waits out a stopwatch to do it.
   replaced it went red on a loaded laptop reading 30 ms against 355 ms for work
   that is linear. **A fleet of unlike machines under unlike loads has no budget
   and no ratio that means the same thing twice**, and a flaky gate teaches
-  everyone to re-run rather than read the result.
+  everyone to re-run rather than read the result. Whichever form guards it,
+  build the test from the input shape that was slow, and run it against the
+  unfixed pattern to see it hang or fail the growth check before counting it:
+  Issue #3085's growth test fed dots that ran to the end of the value, which
+  never backtracks, when the input that does is dots followed by `x`.
 - **If, and only if, no observable output distinguishes the two, guard by
   shape rather than by clock** — catastrophic backtracking has no wrong output,
   only a runtime one, so such a test must measure. Use
@@ -554,6 +691,20 @@ simply no longer waits out a stopwatch to do it.
   costing about twelve seconds on the largest input GitHub accepts, which
   stalls a planning close but finishes well inside a test timeout, so the
   ratio is the only detector it has (Issue #1245).
+- **Vet every regex on untrusted text, one hostile case per pattern.** Every
+  regex a change adds or edits that runs on untrusted or agent-written text
+  (an issue body, a PR summary, agent output) gets its own check, not one per
+  module. Read each pattern for two quantifiers that can match the same
+  characters with only optional tokens between them: `\s*:?\s*$`,
+  `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
+  overlap: trim the line first and drop the redundant quantifier, make the
+  pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
+  trailing whitespace, or cap the run. Then add one hostile case per pattern:
+  a long run of the shared character followed by a character the pattern
+  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
+  with the same defect, and #3160's hostile cases covered the inline form while
+  `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
 
 ### Integration tests
 
@@ -902,12 +1053,24 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   updated — and fix any that still describe the old behaviour.
 - Updating an example alone is not enough: if the surrounding prose still
   describes the old contract, the doc is still stale.
+- **Adding a member owes a docs change too.** When you add a field, enum
+  variant, kind, flag, column or row element to an existing set, grep for one
+  or two **existing sibling members**, not the new one — the new name is in no
+  doc yet, so a grep for it comes back clean. Every doc comment, module doc,
+  manual page or API description that lists the set names the new member in
+  the same change, or is reworded so it no longer reads as complete.
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
   UI copy, and the docs prose for those fields. Make each one true for **every
   case** the new behaviour produces, not only the common one. Grep for the
   variant or field name **and** for the old wording.
+- Grep for the **stem** of a behavioural claim, not one inflection
+  (`replac\w* or remov\w*`, not "replaces or removes"), and re-run it on the
+  final head after editing. In a file you update, read every passage that
+  mentions the changed surface, not only the section you edited. Each
+  remaining hit goes in the Docs sweep line by `file:line` with the reason it
+  is still true.
 
 ## A Contract a Deployed Extension Reads Is Additive-Only
 
@@ -962,6 +1125,10 @@ for every PR summary — containing:
    `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
    worker refuses to raise a PR whose diff changes code with no such line.
+   Re-run the grep on the final head and list each hit you leave in place as
+   `file:line — still true because …`, so the worker and the reviewer can
+   check it: the worker re-runs the line's quoted terms over the head's docs
+   and refuses a hit outside the diff that the line does not name.
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
@@ -981,19 +1148,52 @@ Standards-review violation the diff itself introduced is fixed before the PR
 is raised, never listed as standing, and a PR whose core deliverable is
 `missing` is not raised over a `Closes #<n>` — finish the work, except when
 the core deliverable is genuinely blocked on another open issue after work
-is committed: then record that criterion as `missing` and name the blocking
-dependency beside the closing keyword. In an issue run, a hand-off (the
-planning marker or the escape hatch) is honoured only while the branch has
-no commits and no uncommitted changes against the base; once work is
-committed the issue run is routed to the PR regardless of a planning or
-escape-hatch marker (Issue #3058). A CI-fix run is the exception: a check
+is committed: a `## Blocked:` heading followed by a `Depends on owner/repo#N`
+(or `Blocked by`) line naming an issue that is still open then defers the
+issue and raises no PR. A closed or unreadable dependency does not defer;
+the committed run hands off to a human and raises no PR.
+In an issue run, a hand-off (the planning marker, a time deferral, or a
+`## Blocked:` dependency) is honoured after a commit as well as before one.
+A free-text escape hatch is honoured only while the branch has no commits
+and no uncommitted changes against the base (Issue #3058, #3088). A CI-fix
+run is the exception: a check
 already red on the base branch still defers on a `Depends on owner/repo#N`
-line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). The Escape Hatch
+line (`prompts/ci_fix/prompt.md`, "Base-branch failures"). That CI-fix
+deferral never covers a dependency-audit check (`deno audit`, `cargo audit`,
+or a `GHSA-`/`RUSTSEC-` advisory): a CI-fix run fixes it in the PR
+(`prompts/ci_fix/prompt.md`, "Dependency audit failures"), even when the base
+branch is red. The Escape Hatch
 in `prompts/pr_feedback/prompt.md` and in `prompts/ci_fix/prompt.md` is also
 honoured on a committed PR branch when `.pr_response_message` names a
 follow-up issue. Any later commit on the branch — a
 review fix, a PR feedback, CI-fix or merge-conflict run — refreshes the summary
 in the same push when it changes what the summary says.
+
+**Prose about the PR's own change** is where that rule breaks most often: a
+sentence states the new behaviour more simply than the code implements it —
+it drops a condition the code checks, names a trigger the code does not have,
+or says a cost cannot happen when the code makes it happen. For each sentence
+the diff adds or edits in a doc, prompt, doc comment or PR summary that says
+**when** the change's behaviour happens or **what it costs**:
+
+1. Open the code that decides it and list every condition and every path that
+   reaches it. The sentence names each condition, or scopes itself explicitly
+   to the path it describes.
+2. An absolute word — "only", "never", "always", "any", "automatically",
+   "exactly as before" — needs a line of head code that guarantees it. With no
+   such line, rewrite the sentence.
+3. When the change moves a cost (a download, a retry, a push, a fallback) from
+   one path to another, the doc says where the cost now lands.
+4. A sentence about history ("before this fix, X skipped Y") is checked
+   against the base-branch code, not reconstructed from memory.
+
+Fleet PRs sent back for this: a doc said an 8.2 GB tarball "only reappears
+when the remote symlink moves", when the PR's own code downloads it again
+whenever the extracted tree is wiped (GRQ#5158); a prompt said a `## Blocked:`
+heading defers, when the code defers only on a `Depends on`/`Blocked by` line
+naming an issue it reads as open (VibeCoder#3095); a section said a script
+"runs automatically" after a fetch that never calls it (GRQ#5153)
+(Issue #3120).
 
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
@@ -1082,6 +1282,24 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+- **Scope a rule to the runs it is true for.**
+  `prompts/coding_guidelines/prompt.md` is rendered into every phase that
+  `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)
+  lists for its layer: every phase loads the core layer, and the `code`
+  layer reaches issue, CI-fix, PR-feedback, merge-conflict, custom PR and
+  workflow-setup runs alike, so a layer marker cannot say "issue runs only".
+  Before you add a sentence there about what the worker does (what it reads,
+  honours, defers or ignores), check it against the processor for each run
+  that loads it. If it holds for only some of them, name those runs in the
+  sentence ("In an issue run, …") or move the sentence to that run type's
+  own `prompts/<type>/prompt.md`. Two fleet PRs were sent back for this: one
+  told every run that a `Depends on owner/repo#N` hand-off is not read once
+  work is committed, while a CI-fix run always has commits and
+  `_resolveBaseBranchDeferral` in `worker/deno/lib/pr_ci_processor.ts` reads
+  it from `.pr_response_message` (#3075); one said the escape hatch is
+  honoured only when the run leaves no commit, while
+  `worker/deno/lib/pr_feedback_processor.ts` runs `detectEscapeHatch` on
+  `.pr_response_message` whatever the branch holds (#3095).
 
 ## Configuration
 

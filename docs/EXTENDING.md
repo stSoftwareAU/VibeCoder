@@ -617,6 +617,11 @@ phase needs it; mark it `code` or `commit` only when it governs editing,
 testing or committing. `worker/deno/tests/coding_guidelines_layers_2574_test.ts`
 pins which headings each phase gets.
 
+Because one layer spans several run types, a sentence about what the worker
+does must hold for every run that loads it — see **Scope a rule to the runs
+it is true for** in
+[CODING-STANDARDS.md](../CODING-STANDARDS.md#prompt-engineering-guidance).
+
 ### Per-model coding-guidelines overlays
 
 The shared `coding_guidelines` template is model-agnostic, so genuinely

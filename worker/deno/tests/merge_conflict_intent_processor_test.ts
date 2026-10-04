@@ -30,8 +30,8 @@ import {
 import {
   CONFLICT_ATTEMPT_MARKER,
   CONFLICT_RESOLVED_MARKER,
-  DEFAULT_MAX_CONFLICT_ATTEMPTS,
 } from "../lib/pr_merge_conflict_scan.ts";
+import { CONFLICT_RESOLUTION_BUDGET } from "../lib/merge_conflict_markers.ts";
 import type {
   ConflictIssueContext,
   OriginatingIssue,
@@ -400,7 +400,14 @@ Deno.test("processMergeConflict - the attempt records the issues consulted", asy
   assertStringIncludes(amended, CONFLICT_ATTEMPT_MARKER);
   assertStringIncludes(
     amended,
-    `attempt 1 of ${DEFAULT_MAX_CONFLICT_ATTEMPTS}`,
+    `attempt 1 of ${CONFLICT_RESOLUTION_BUDGET}`,
+  );
+  // Issue #2996: the attempt marker carries the pass that spent it and the
+  // head it ran against.
+  assertStringIncludes(amended, `pass="ladder"`);
+  assertStringIncludes(
+    amended,
+    `head="1111111111111111111111111111111111111111"`,
   );
   assertStringIncludes(amended, "Issues consulted");
   assertStringIncludes(amended, "#900");
@@ -457,6 +464,13 @@ Deno.test("processMergeConflict - the resolved comment names the override", asyn
   assertStringIncludes(resolved, "`SECURITY.md`");
   assertStringIncludes(resolved, "kept #900, superseded #812");
   assertStringIncludes(resolved, "60s default");
+  // Issue #2996: the resolved marker carries the pass and the head the
+  // attempt ran against.
+  assertStringIncludes(resolved, `pass="ladder"`);
+  assertStringIncludes(
+    resolved,
+    `head="1111111111111111111111111111111111111111"`,
+  );
 });
 
 // --- The guards are not relaxed by a justification ---

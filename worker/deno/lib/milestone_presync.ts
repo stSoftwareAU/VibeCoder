@@ -72,6 +72,7 @@ import {
   countCommitsAheadRepairingBrokenRef,
 } from "./git_issue_branches.ts";
 import { syncMilestoneBranchWithDefault } from "./git_pull.ts";
+import { heavyBuildDeferral } from "./heavy_build_gate.ts";
 import { bindMilestoneConflictAgent } from "./milestone_conflict_agent_binding.ts";
 import { runClaudeWithRetry } from "./claude_runner.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -164,6 +165,13 @@ export interface MilestonePresyncDeps {
     conflict: MilestoneConflictEscalation & { gateFailure: string },
     defaultSha: string | undefined,
   ) => Promise<GateRefusalConclusion>;
+  /**
+   * Must the merge wait for host disk (Issue #3178)? The merge is verified by
+   * the repository's own build and test, and below the host floor that build
+   * is what tips the host over. A reason defers; null proceeds. Absent:
+   * nothing is gated.
+   */
+  heavyBuildDeferral?: () => Promise<string | null>;
   log: (message: string) => void;
 }
 
@@ -294,6 +302,14 @@ export async function presyncMilestoneBranch(
   }
 
   const behindBy = behind.value;
+
+  // Issue #3178: below the host floor the merge's verification build is the
+  // one thing that must not run. Checked before the ledger, so a deferral
+  // charges and paces nothing.
+  if (deps.heavyBuildDeferral) {
+    const wait = await deps.heavyBuildDeferral();
+    if (wait !== null) return deferral(wait, behindBy);
+  }
 
   const streaks: SyncStreaks = streakPath
     ? await loadSyncStreaks(streakPath)
@@ -531,6 +547,11 @@ export interface IssueRunPresyncArgs {
   cycleDeadlineEpochMs?: number;
   /** Injected for tests; production passes the real implementations. */
   countCommitsAheadFn?: typeof countCommitsAhead;
+  /**
+   * The host-disk gate on the merge's verification build (Issue #3178).
+   * Defaults to `heavyBuildDeferral` against `cwd`.
+   */
+  heavyBuildDeferralFn?: () => Promise<string | null>;
   syncMilestoneBranchFn?: typeof syncMilestoneBranchWithDefault;
   runAgentFn?: typeof runClaudeWithRetry;
   runGitCommandFn?: typeof runGitCommand;
@@ -737,6 +758,8 @@ export async function presyncMilestoneBranchForIssueRun(
           },
         ),
       defaultTipSha: () => readLocalDefaultTip(defaultBranch, cwd),
+      heavyBuildDeferral: args.heavyBuildDeferralFn ??
+        (() => heavyBuildDeferral(cwd)),
       milestoneTipSha: () =>
         readRefSha(`origin/${milestoneBranch}`, cwd, gitFn),
       ...(ghFn
@@ -755,7 +778,7 @@ export async function presyncMilestoneBranchForIssueRun(
               conflict,
               ghFn,
               (message: string) => logger.info(message),
-            ),
+            ).then((report) => report.posted),
           reportGateWedge: (entry, conflict, tipSha) =>
             concludeGateRefusal(
               entry,

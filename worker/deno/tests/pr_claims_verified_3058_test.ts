@@ -45,10 +45,16 @@ Deno.test("Issue #3058 - issue prompt demands demonstrated criteria and finished
       "A missing core deliverable is not a PR",
       "git log <base>..HEAD",
       "git diff --stat HEAD",
-      "whatever planning, escape-hatch or blocked/deferral marker",
+      "a planning marker is still read after that commit",
+      "whether or not the branch already has commits",
       "suspicious-image flag is the exception",
       "hands it to a human only while the branch has no commits",
-      "record that criterion as `missing`",
+      "Depends on owner/repo#N",
+      "A closed or unreadable dependency does not defer",
+      "Do not file a follow-up and depend on it",
+      "A follow-up this run filed is not that dependency",
+      "A bare `## Blocked:` heading does not defer",
+      "The worker defers and raises no PR",
     ]
   ) {
     assertStringIncludes(body, required);
@@ -68,7 +74,7 @@ Deno.test("Issue #3058 - issue prompt holds docs the diff touches to the same ru
   }
 });
 
-Deno.test("Issue #3058 - coding guidelines scope Blocked and the escape hatch to an uncommitted branch", async () => {
+Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and keep the escape hatch uncommitted", async () => {
   const guidelines = normalise(
     await Deno.readTextFile(
       `${REPO_ROOT}prompts/coding_guidelines/prompt.md`,
@@ -77,11 +83,14 @@ Deno.test("Issue #3058 - coding guidelines scope Blocked and the escape hatch to
 
   for (
     const required of [
-      "defers** the issue only while the branch has no commits",
+      "After a commit this deferral is honoured only when the `Depends on` / `Blocked by` line names an issue the worker reads as still open",
       "In an issue run",
       "A CI-fix run is the exception",
       "Base-branch failures",
       "hands the issue to a human (`needs-human`) only while the branch has no commits",
+      "In an issue run, this free-text hand-off is honoured only when the run leaves no commit",
+      "A PR-feedback or CI-fix run keeps using the `.pr_response_message` escape hatch",
+      "Do not file a follow-up and name it on a `Depends on` line",
     ]
   ) {
     assertStringIncludes(guidelines, required);
@@ -101,7 +110,9 @@ Deno.test("Issue #3058 - CODING-STANDARDS.md carries the matching verification r
       "the diff itself introduced",
       "core deliverable is `missing`",
       "genuinely blocked on another open issue after work is committed",
-      "regardless of a planning or escape-hatch marker",
+      "Depends on owner/repo#N",
+      "A closed or unreadable dependency does not defer",
+      "honoured after a commit as well as before one",
       "In an issue run, a hand-off",
       "A CI-fix run is the exception",
       "prompts/pr_feedback/prompt.md",
