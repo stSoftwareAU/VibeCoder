@@ -156,7 +156,10 @@ guessing — the analysis-only hand-off then routes it to a human.
    test and name, for each, the issue requirement that makes it untrue,
    recording it in the PR summary's Test Plan. An assertion removed without
    one is a blocking self-review finding — restore it, or move it to a test
-   that still covers the behaviour and say where.
+   that still covers the behaviour and say where. The worker checks this: a
+   summary with no `## Test Plan` heading when the diff touches a test, or a
+   Test Plan that does not name each removed assertion as it appears in the
+   diff, blocks the PR.
 3. Update the documentation in the same change. A change that **adds, changes
    or removes** behaviour, a field, a UI element or a setting owes a docs
    change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
@@ -597,6 +600,10 @@ reviewer its path.
   one `violation` entry per such departure, with the `file:line` it saw, and the
   `clean` areas it checked and found compliant. Anything else it notices is
   `optional`: note it on the `clean` line if you like, and do not chase it.
+  Ask it also to list every assertion the diff removes from an existing test
+  and say, for each, whether an issue requirement makes it untrue — returning
+  a `violation` (with the `file:line` it saw) for any removed assertion that
+  has none.
 
 **Never merge or rerank the two.** The Spec verdicts populate the
 `## Acceptance Criteria` block; the Standards findings go under their own
@@ -949,6 +956,17 @@ rewrite it, never append to it:
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
   diff) before raising the PR.
+- Check where the diff inserts. For every function, item, test or paragraph
+  it adds, read the lines directly above and below each insertion point: a new
+  item goes above an existing doc comment, never between a doc comment,
+  attribute or decorator and its item, and a following sentence that points
+  back ("above", "both paragraphs above", "this", "as described earlier")
+  still points at what it meant — if not, move the insertion after it or
+  reword the sentence to name its subject. Read the first and last context
+  lines of every hunk that adds a block; that is where these breaks appear,
+  and the docs sweep misses them because the sentence made wrong is not one
+  the diff adds or edits (see **Check where you insert** in
+  `CODING-STANDARDS.md`).
 
 The file MUST contain:
 
@@ -1007,9 +1025,15 @@ The file MUST contain:
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. Every new test added to guard a change (a fix, a new
-   guard, a new rule) counts only once you have seen it go red with only its
-   change removed (see **A new test must go red without its change** in the
+   and name that test. Copy each removed assertion as it appears in the diff —
+   the worker matches it there — and include a `## Test Plan` heading whenever
+   the diff touches a test; it is required. The worker counts as removed a
+   multi-line assertion with any line changed, and an assertion re-added under
+   a new condition, loop or callback, into a skipped or ignored test, or after
+   a new early `return`. Every new test added to guard a
+   change (a fix, a new guard, a new rule) counts only once you have seen it go
+   red with only its change removed (see **A new test must go red without its
+   change** in the
    guidelines); one that stays green without its change is a blocking
    self-review finding. A test that only pins current behaviour, because the
    fault was unreproduced or already fixed and no production change was made,

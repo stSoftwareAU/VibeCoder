@@ -5,6 +5,11 @@
  * (#3001), conflict takeover (#2999) and abandon-and-redo (#3000) passes, to
  * check the reworked ladder now reaches MERGEABLE without a human.
  *
+ * Issue #3031: at the fixture's `milestone-head-stand-down` moment the
+ * merge-conflict pass no longer stands down. The replay runs the real
+ * `processMergeConflict` there, which takes the conflict over in that same
+ * cycle through a `milestone-fix/**` PR.
+ *
  * The fixture's two historical events (the human's push and the PR merging)
  * are deliberately never applied: the replay's own resolvers are what must
  * clear the conflict. Issue #3002, part of #2965.
@@ -16,11 +21,11 @@ import type { Logger } from "../types.ts";
 import {
   gatedHeadMarkerPrefix,
   guardGatedHead,
-  milestoneHeadMarkerPrefix,
   resetGatedHeadReportsForTest,
-  standDownMilestoneHead,
   takeoverAtMs,
 } from "../lib/gated_head_guard.ts";
+import { processMergeConflict } from "../lib/pr_merge_conflict_processor.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import {
   CONFLICT_OWNER_CHECK_HOURS,
   CONFLICT_RESOLUTION_BUDGET,
@@ -537,6 +542,8 @@ interface ReplayResult {
   abandonProbes: Array<{ atMs: number; outcome: AbandonRestartOutcome }>;
   abandonFromWatchdog: Array<{ atMs: number; outcome: AbandonRestartOutcome }>;
   syncReports: SyncReportRecord[];
+  /** What the merge-conflict pass reported at its first sighting (Issue #3031). */
+  passSummaries: string[];
 }
 
 interface ReplayOptions {
@@ -588,6 +595,7 @@ async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
     { atMs: number; outcome: AbandonRestartOutcome }
   > = [];
   const syncReports: SyncReportRecord[] = [];
+  const passSummaries: string[] = [];
 
   const watchdogAbandonRecorder = makeAbandonRecorder(
     repl,
@@ -617,15 +625,31 @@ async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
         return;
       }
       case "milestone-head-stand-down": {
+        // Historically a stand-down; since Issue #3031 the merge-conflict
+        // pass takes the milestone head over in this same cycle.
         if (repl.mergeableState() === "CONFLICTING") {
-          await standDownMilestoneHead({
-            repo,
-            prNumber,
-            branchName: fixture.pr.head,
-            logger: silentLogger,
-            runGhCommand: repl.gh,
-            nowMs: () => fake.nowMs,
-          });
+          const result = await processMergeConflict(
+            {
+              repo,
+              prNumber,
+              branchName: fixture.pr.head,
+              baseBranch: fixture.pr.base,
+              attemptCount: 0,
+            },
+            {
+              logger: silentLogger,
+              deps: createMockDeps({ github: { runGhCommand: repl.gh } }),
+              workDir: "/nonexistent-clone",
+              workRoot: "/nonexistent-root",
+              trustedAuthors: [workerLogin],
+              takeoverResolvers: {
+                resolveViaLadder: repl.resolveViaLadder,
+                resolveOnFixBranch,
+              },
+            },
+          );
+          if (!result.ok) throw result.error;
+          passSummaries.push(result.value.summary);
         }
         return;
       }
@@ -769,6 +793,7 @@ async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
     abandonProbes,
     abandonFromWatchdog,
     syncReports,
+    passSummaries,
   };
 }
 
@@ -784,7 +809,8 @@ function standDownComments(
   branch: string,
 ): Array<{ body: string; at: string }> {
   const prefixes = [
-    milestoneHeadMarkerPrefix(branch),
+    // The retired merge-conflict stand-down (Issue #3031) — must never appear.
+    `<!-- vibe-milestone-head branch="${branch}"`,
     gatedHeadMarkerPrefix(branch),
   ];
   return comments.filter((c) => prefixes.some((p) => c.body.includes(p)));
@@ -838,15 +864,19 @@ Deno.test(
     assert(result.firstMergeableAtMs !== undefined);
     assert(result.firstMergeableAtMs! < humanPushAtMs);
 
-    const firstStandDownEvent = fixture.events.find(
+    // Issue #3031: the merge-conflict pass takes the milestone head over in
+    // the cycle that first sees it, so the fix PR lands within a tick or two
+    // of that sighting — not after a two-hour stand-down.
+    const firstSightingEvent = fixture.events.find(
       (e) => e.kind === "milestone-head-stand-down",
     )!;
-    const firstStandDownAtMs = Date.parse(firstStandDownEvent.at);
-    const takeoverAt = takeoverAtMs(firstStandDownAtMs);
+    const firstSightingAtMs = Date.parse(firstSightingEvent.at);
     assert(
       result.firstMergeableAtMs! <=
-        takeoverAt + 2 * fixture.replay.tickMinutes * 60_000,
+        firstSightingAtMs + 2 * fixture.replay.tickMinutes * 60_000,
     );
+    assertEquals(result.passSummaries.length, 1);
+    assert(result.passSummaries[0]!.includes("fix PR"));
 
     // 2. Every push is the worker's, never the human's, never the historical sha.
     assert(repl.pushes.length >= 1);
@@ -856,11 +886,11 @@ Deno.test(
       assert(push.sha !== fixture.commits.humanPush);
     }
 
-    // 3. Stand-down comments all carry the owner/takeover-at shape.
+    // 3. No stand-down was posted: the conflict was resolved before the
+    // gated-head guard's event, and the milestone stand-down is gone.
     const issue = fake.issue(fixture.repo, fixture.pr.number);
     const standDowns = standDownComments(issue.comments, fixture.pr.head);
-    assert(standDowns.length >= 1);
-    assertStandDownShape(standDowns);
+    assertEquals(standDowns, []);
 
     // 4. The shared budget was touched, but never exceeded.
     const attempts = readResolutionAttempts(
@@ -893,13 +923,16 @@ Deno.test(
     }
     assertEquals(result.abandonFromWatchdog.length, 0);
 
-    // 7. The watchdog took over, and never jumped the 2-hour owner window.
-    const takeovers = result.watchdogActions.filter(
-      (a) => a.action === "taken-over",
+    // 7. Exactly one fix PR was opened, and the watchdog never needed to
+    // take over.
+    const fixPrs = [...fake.prs.values()].filter((pr) =>
+      pr.base === fixture.pr.head && pr.head.startsWith("milestone-fix/")
     );
-    assert(takeovers.length >= 1, "watchdog never took over");
-    const takeoverAtFirstStandDown = takeoverAtMs(firstStandDownAtMs);
-    assert(takeovers[0]!.atMs >= takeoverAtFirstStandDown);
+    assertEquals(fixPrs.length, 1);
+    assertEquals(
+      result.watchdogActions.filter((a) => a.action === "taken-over"),
+      [],
+    );
 
     // 8. The gated head was never pushed via the ladder directly.
     assertEquals(repl.resolveViaLadderCalls.length, 0);
@@ -913,11 +946,11 @@ Deno.test(
 );
 
 // ---------------------------------------------------------------------------
-// Test B — bounded at 3 attempts, abandons no earlier than 6h after stand-down
+// Test B — bounded at 3 attempts, abandons only once the third has failed
 // ---------------------------------------------------------------------------
 
 Deno.test(
-  "bounds the replay at 3 attempts and abandons no earlier than 6 hours after the first stand-down",
+  "bounds the replay at 3 attempts and abandons only once the third has failed",
   async () => {
     const result = await runReplay({
       resolveOnFixBranch: (repl) => repl.resolveOnFixBranchFails,
@@ -949,17 +982,24 @@ Deno.test(
       );
     }
 
-    // Both stand-down kinds fired and both carry the owner/takeover-at shape.
+    // Only the gated-head guard stood down; the milestone stand-down is gone
+    // (Issue #3031), and what is posted carries the owner/takeover-at shape.
     const standDowns = standDownComments(issue.comments, fixture.pr.head);
-    assertEquals(standDowns.length, 2);
+    assertEquals(standDowns.length, 1);
     assertStandDownShape(standDowns);
 
-    // Abandon ran, but not before the budget was genuinely spent: no earlier
-    // than 3 owner-check windows after the very first stand-down.
+    // The first attempt was the merge-conflict pass's own takeover, in the
+    // cycle that first saw the PR, and it counts as one failed attempt.
     const firstStandDownEvent = fixture.events.find(
       (e) => e.kind === "milestone-head-stand-down",
     )!;
     const firstStandDownAtMs = Date.parse(firstStandDownEvent.at);
+    assertEquals(attemptTimes[0], firstStandDownAtMs);
+    assertEquals(attempts[0]!.outcome, "failed");
+
+    // Abandon ran, but not before the budget was genuinely spent: no earlier
+    // than the third attempt, which the owner-check spacing puts at least
+    // two windows after that first sighting.
     const ranTimes = [
       ...result.abandonProbes.filter((p) => abandonRan(p.outcome)).map((p) =>
         p.atMs
@@ -970,10 +1010,12 @@ Deno.test(
     ];
     assert(ranTimes.length >= 1, "abandon never ran");
     const firstAbandonRanAtMs = Math.min(...ranTimes);
+    assert(firstAbandonRanAtMs >= attemptTimes[2]!);
     assert(
       firstAbandonRanAtMs >=
         firstStandDownAtMs +
-          CONFLICT_RESOLUTION_BUDGET * CONFLICT_OWNER_CHECK_HOURS * 3_600_000,
+          (CONFLICT_RESOLUTION_BUDGET - 1) * CONFLICT_OWNER_CHECK_HOURS *
+            3_600_000,
     );
 
     // No push ever landed, let alone a human one.

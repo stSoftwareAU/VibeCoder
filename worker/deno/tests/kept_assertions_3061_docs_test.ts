@@ -47,3 +47,25 @@ Deno.test("issue prompt - PR Summary Test Plan requires covering removed asserti
   );
   assertStringIncludes(text, "blocking self-review finding");
 });
+
+Deno.test("issue prompt - Standards reviewer must list removed assertions (Issue #3131)", async () => {
+  const text = flat(
+    section(
+      await issuePrompt(),
+      "Independent Review Before the PR — Spec and Standards on Separate Axes",
+    ),
+  );
+
+  assertStringIncludes(
+    text,
+    "list every assertion the diff removes from an existing test",
+  );
+  assertStringIncludes(
+    text,
+    "returning",
+  );
+  assertStringIncludes(
+    text,
+    "a `violation` (with the `file:line` it saw) for any removed assertion that",
+  );
+});

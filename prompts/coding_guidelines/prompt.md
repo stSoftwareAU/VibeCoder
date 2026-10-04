@@ -260,6 +260,22 @@ not after a reviewer finds it weeks later.
   mentions the changed surface, not only the section you edited. Each
   remaining hit goes in the Docs sweep line by `file:line` with the reason it
   is still true.
+- **Check where you insert.** Before adding a new function, item, test or
+  paragraph, read the lines directly above and below the insertion point. A
+  doc comment, attribute or decorator directly above belongs to the item
+  below it: insert above the doc comment, never between it and its item. A
+  following sentence that points back ("above", "both paragraphs above",
+  "this", "the rule above", "as described earlier") must still point at what
+  it meant; if it would not, insert after it, or reword it to name what it
+  means. In the diff, check the first and last context lines of every hunk
+  that adds a block, since that is where these breaks appear. The docs
+  sweep misses them, because the sentence made wrong is one the diff neither
+  adds nor edits, and no linter catches the Rust case: there is no blank
+  line for Clippy's `empty_line_after_doc_comments` to flag.
+  stSoftwareAU/GRQ-AutoTrader#2218 and #2413 each put a new function between
+  another function's doc comment and that function, so rustdoc opened the
+  new helper's doc with the other function's description, and #2478 put a
+  new paragraph in front of "Both paragraphs above describe …" (Issue #3194).
 
 ## Visual Documentation
 

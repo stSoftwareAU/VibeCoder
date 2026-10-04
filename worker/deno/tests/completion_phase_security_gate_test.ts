@@ -48,6 +48,10 @@ const BARE_SUMMARY = `## Summary
 Fixed the injection flaw. Closes #3939.
 
 **Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits
+
+## Test Plan
+
+- Manual check that the fix compiles.
 `;
 
 /** Diff body for a test file that genuinely adds the cited test. */
