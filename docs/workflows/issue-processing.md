@@ -1079,8 +1079,8 @@ on, but it does refuse every other way out: a `violation` whose reason neither
 opens with `fixed` (or `corrected` / `resolved`) nor links an issue (`#123`,
 `owner/repo#123` or an issue URL) blocks PR creation. "Stands" and "left for a
 follow-up" used to pass, and fleet review then sent the PR back for the breach
-its own summary admitted (Issue #3196: VibeCoder#3065, GRQ-AutoTrader#2210 and
-#2479).
+its own summary admitted (Issue #3196: VibeCoder#3065, GRQ-AutoTrader#2210
+and #2479).
 
 **The reviewer challenges; it does not silently win.** A reviewer that saw only
 the diff is sometimes wrong about a criterion satisfied by code it could not
