@@ -2,8 +2,9 @@
  * PR feedback processor (Issue #967).
  *
  * Handles responding to PR review comments by checking out the PR branch,
- * building a feedback prompt, running Claude to fix issues, committing
- * changes, pushing, and replying to the comment.
+ * building a feedback prompt, running Claude to fix issues, running a drift
+ * check on the push, committing changes, pushing, and replying to the
+ * comment.
  *
  * Migrated from work_on_pr_feedback() in issue_worker.sh.
  *
@@ -18,6 +19,8 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
 import { type CommentType, removeProcessedMark } from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
+import { fetchIssueData } from "./issue_data.ts";
+import { fetchPrOwnerDirection } from "./owner_direction.ts";
 import {
   buildPrFeedbackPrompt,
   type PrFeedbackPromptOptions,
@@ -46,6 +49,10 @@ import {
   readPrResponseMessage,
 } from "./pr_branch_preparation.ts";
 import { retryReplyPlaceholdersOnce } from "./result_placeholder_gate.ts";
+import {
+  DRIFT_CHECK_DISALLOWED_TOOLS,
+  runPrFeedbackDriftCheck,
+} from "./pr_feedback_drift_check.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -230,6 +237,21 @@ export interface PrFeedbackProcessorDeps {
    */
   trustedReviewBots?: readonly string[];
   /**
+   * The trust lists that decide whose comments on the linked issue and its
+   * milestone parent count as owner direction (Issue #3205). Omitted → no
+   * owner direction is fetched, and the prompt is as it was.
+   */
+  ownerDirectionAuthors?: {
+    allowedAuthors: readonly string[];
+    authorisedCommenters: readonly string[];
+  };
+  /**
+   * Override the owner-direction fetch (Issue #3205). Injected by tests;
+   * production leaves it undefined and gets {@link fetchPrOwnerDirection}
+   * over this run's `gh`.
+   */
+  fetchOwnerDirectionFn?: typeof fetchPrOwnerDirection;
+  /**
    * Per-repo configuration map, used to resolve the pre-flight enforcement
    * gate (Issue #3577). Omitted → no gate.
    */
@@ -270,6 +292,11 @@ export interface PrFeedbackProcessorDeps {
    * (Issue #3089). Omitted → empty string.
    */
   workerName?: string;
+  /**
+   * Override the post-agent drift check (Issue #3143). Injected by tests;
+   * production leaves it undefined and gets {@link runPrFeedbackDriftCheck}.
+   */
+  driftCheckFn?: typeof runPrFeedbackDriftCheck;
 }
 
 // ---------------------------------------------------------------------------
@@ -803,6 +830,23 @@ async function _processFeedbackWithHeartbeat(
     }
   }
 
+  // Owner direction posted after the branch began (Issue #3205): the
+  // trusted-author comments on the linked issue and its milestone parent, or
+  // on a milestone PR's tracking issue. A failed fetch yields no section.
+  const ownerDirection = processorDeps.ownerDirectionAuthors
+    ? await (processorDeps.fetchOwnerDirectionFn ?? fetchPrOwnerDirection)(
+      {
+        repo,
+        branchName: input.branchName,
+        ...processorDeps.ownerDirectionAuthors,
+        ...(processorDeps.githubUser
+          ? { workerLogin: processorDeps.githubUser }
+          : {}),
+      },
+      (r, n) => fetchIssueData(r, n, (args) => deps.github.runGhCommand(args)),
+    )
+    : "";
+
   // Build prompt
   const promptOptions: PrFeedbackPromptOptions = {
     repo,
@@ -817,6 +861,7 @@ async function _processFeedbackWithHeartbeat(
     additionalReviewComments: additionalReviewComments?.ok
       ? additionalReviewComments.value
       : undefined,
+    ...(ownerDirection ? { ownerDirection } : {}),
     promptsDir: processorDeps.promptsDir,
   };
 
@@ -977,6 +1022,67 @@ async function _processFeedbackWithHeartbeat(
       logger,
     },
   );
+
+  // Post-agent drift check (Issue #3143): review-fix pushes have kept
+  // leaving the PR summary (or a manual) contradicting the code they just
+  // changed — the prompt's own prose rules against this (#3114, #3117,
+  // #3120) go unchecked on this path. Run it here, before the commit-and-
+  // push below, so a recovery-turn edit rides the same push and a residual
+  // hit reaches the reply through `.pr_response_message`, read later by
+  // `readPrResponseMessage`. Wrapped so an unexpected throw never aborts an
+  // otherwise-successful run — the check is a backstop, not a gate.
+  try {
+    const driftCheck = processorDeps.driftCheckFn ?? runPrFeedbackDriftCheck;
+    const driftOutcome = await driftCheck(
+      { repo, prNumber, repoPath: processorDeps.workDir, beforeSha },
+      {
+        runGit: async (args: string[]) => {
+          const r = await deps.git.runGitCommand(args, {
+            cwd: processorDeps.workDir,
+          });
+          return r.ok ? r.value : null;
+        },
+        runGh: (args: string[]) => deps.github.runGhCommand(args),
+        runAgent: async (req: { prompt: string; readOnly: boolean }) => {
+          const r = await deps.claude.runClaudeWithRetry(
+            {
+              prompt: req.prompt,
+              timeoutSeconds: claudeTimeout,
+              noOutputTimeout: claudeNoOutputTimeout,
+              phase: "pr_feedback",
+              cwd: processorDeps.workDir,
+              logger,
+              ...(req.readOnly
+                ? { disallowedTools: [...DRIFT_CHECK_DISALLOWED_TOOLS] }
+                : { systemPrompt }),
+            },
+            { maxRetries: maxRateLimitRetries },
+          );
+          if (!r.ok) return { ok: false, error: r.error };
+          if (r.value.timedOut) {
+            return { ok: false, error: new Error("timed out") };
+          }
+          return { ok: true, output: r.value.output ?? "" };
+        },
+        logger,
+      },
+    );
+    logger.info("PR feedback drift check (Issue #3143)", {
+      repo,
+      prNumber,
+      status: driftOutcome.status,
+    });
+  } catch (error) {
+    logger.error(
+      "PR feedback drift check failed — continuing to commit and push " +
+        "without it (Issue #3143)",
+      {
+        repo,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
 
   // Mark comment as processed
   await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);

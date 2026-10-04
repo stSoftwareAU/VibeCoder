@@ -102,7 +102,13 @@ print the minted token, since tracing is suspended around the mint.
    checks, merge conflicts and drafts belong to the fleet, so leave them
    alone and post nothing. A PR whose only red checks are cancelled runs is
    infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
-   once per head, and it is left alone exactly like `ci-failed`.
+   once per head, and it is left alone exactly like `ci-failed`. **One
+   exception:** a red dependency-audit check (`audit` in its name) that
+   CI-fix has already replied to at the current head, with a fleet
+   `vibe-ci-fix-attempt` marker for that check, is sent back once with a
+   request for changes saying it must be fixed in this PR (an ignore entry
+   or a workflow edit does not count). Before CI-fix replies it is left
+   alone like any other `ci-failed`. A red audit is never approved.
 3. **Judge the safety net, not test count.** Read the target repository's
    canonical testing standard. New behaviour or a real bug fix usually needs
    a test that would fail on the regression, unless existing tests already
@@ -191,8 +197,13 @@ night costs no tokens.
 
 2. Do nothing until it finishes: you are re-invoked when it exits. Do not
    poll it, sleep, or schedule wake-ups.
-3. When it exits 0, read its one line of JSON, `{ ready: [...], skipped: {...} }`,
-   and review every `ready` PR (steps below).
+3. When it exits 0, read its one line of JSON,
+   `{ ready: [...], auditBlocked: [...], skipped: {...} }`. Post each
+   `auditBlocked` entry with no model run: write `{"pr": <the entry>,
+   "review": <its review>}` to a file in the scratchpad and run `post.ts`
+   on it (see [2. Post](#2-post)); its one finding makes `post.ts` request
+   changes, write the log record and notify. Then review every `ready` PR
+   (steps below). `run.sh` posts them the same way before its round.
 4. Start step 1 again, adding `--sleep-first`. The PRs just reviewed are now
    `already-reviewed` at their head commit, so the gate does not report them
    again; one whose review failed, or that was over the per-round limit, is

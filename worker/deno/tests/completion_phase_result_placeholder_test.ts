@@ -37,6 +37,8 @@ Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
 
+**Branch outcomes:** none added
+
 - Full \`./quality.sh\`: QUALITY_RESULT_PLACEHOLDER
 
 ## Test Plan
@@ -51,6 +53,8 @@ Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
 
+**Branch outcomes:** none added
+
 - Full \`./quality.sh\`: passed
 
 ## Test Plan
@@ -64,6 +68,8 @@ const SUMMARY_WITH_BACKTICK_ONLY_TOKEN = `## Summary
 Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+
+**Branch outcomes:** none added
 
 - Full \`./quality.sh\`: passed. The template placeholder for this line is \`QUALITY_RESULT_PLACEHOLDER\`, now filled in.
 
@@ -95,6 +101,8 @@ Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
 
+**Branch outcomes:** none added
+
 - Full \`./quality.sh\`: QUALITY_RESULT_PLACEHOLDER
 
 ## Test Plan
@@ -108,6 +116,8 @@ const SUMMARY_BUG_BOTH_FIXED = `## Summary
 Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+
+**Branch outcomes:** none added
 
 - Full \`./quality.sh\`: passed
 
@@ -128,6 +138,8 @@ const SUMMARY_WITH_BOTH_FIXED = `## Summary
 Changed the broker balance card. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+
+**Branch outcomes:** none added
 
 - Full \`./quality.sh\`: passed
 

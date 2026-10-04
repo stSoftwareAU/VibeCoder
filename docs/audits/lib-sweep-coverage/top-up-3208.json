@@ -1,0 +1,12 @@
+{
+  "issue": 3208,
+  "chunk": "top-up-3208",
+  "title": "top-up: shared RegExp literal escape",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/pull/3208",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: regexp_escape.ts (#3208)",
+  "status": "swept",
+  "paths": [
+    "worker/deno/lib/regexp_escape.ts"
+  ],
+  "sweptAt": "5d59c3bbc1dc69fbb28ce7a91870752a3f711df4"
+}

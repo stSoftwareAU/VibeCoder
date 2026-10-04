@@ -260,6 +260,22 @@ not after a reviewer finds it weeks later.
   mentions the changed surface, not only the section you edited. Each
   remaining hit goes in the Docs sweep line by `file:line` with the reason it
   is still true.
+- **Check where you insert.** Before adding a new function, item, test or
+  paragraph, read the lines directly above and below the insertion point. A
+  doc comment, attribute or decorator directly above belongs to the item
+  below it: insert above the doc comment, never between it and its item. A
+  following sentence that points back ("above", "both paragraphs above",
+  "this", "the rule above", "as described earlier") must still point at what
+  it meant; if it would not, insert after it, or reword it to name what it
+  means. In the diff, check the first and last context lines of every hunk
+  that adds a block, since that is where these breaks appear. The docs
+  sweep misses them, because the sentence made wrong is one the diff neither
+  adds nor edits, and no linter catches the Rust case: there is no blank
+  line for Clippy's `empty_line_after_doc_comments` to flag.
+  stSoftwareAU/GRQ-AutoTrader#2218 and #2413 each put a new function between
+  another function's doc comment and that function, so rustdoc opened the
+  new helper's doc with the other function's description, and #2478 put a
+  new paragraph in front of "Both paragraphs above describe …" (Issue #3194).
 
 ## Visual Documentation
 
@@ -616,9 +632,13 @@ separate.
   `\s*[:\-–—]\s*(.+)$`, or an unanchored `[.!\s]+$` or `\s+$`. Remove the
   overlap: trim the line first and drop the redundant quantifier, make the
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
-  trailing whitespace, or cap the run. Then add one hostile case per pattern:
-  a long run of the shared character followed by a character the pattern
-  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
+  trailing whitespace, or cap the run. A `(.*)$` tail can fail too, because
+  `.` stops at a lone `\r`: after an unanchored label such as `reason:`, the
+  search restarts at every later occurrence of the label and rescans to the
+  end each time, so read the value with `([^\n]*)` and no `$` (Issue #3186).
+  Then add one hostile case per pattern: a long run of the shared character
+  followed by a character the pattern rejects. A parser with several
+  patterns needs a case for each. stSoftwareAU/VibeCoder#3085
   capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
   with the same defect, and #3160's hostile cases covered the inline form while
   `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
@@ -1148,7 +1168,15 @@ in order before the assertion runs, a phrase the section already held before
 the change. Remove the change on purpose (delete the clause, drop the cap,
 restore the old expression), run the test, see it fail, then restore it. A
 new test that stays green without its change is a blocking self-review
-finding. A test that only pins current behaviour — the fault was unreproduced
+finding. For a documentation-drift test the check is per pinned phrase, not
+per test: one new pin turns a test red against the base and hides a vacuous
+pin beside it. Look for each phrase in the base branch's version of every
+section the test reads (`git show <base>:<doc>`, narrowed to the same section
+title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
+<doc> <section> <phrase>...` from `worker/deno` does this), and record in the
+Test Plan that each pinned phrase is absent from the base section; a phrase
+the base section already held is a blocking self-review finding. A test that
+only pins current behaviour — the fault was unreproduced
 or already fixed, and no production change was made — is expected green on
 base, and the Test Plan says so. **A negative test must be able to fail**
 below is this rule for an assertion that something does *not* happen.
@@ -1186,7 +1214,14 @@ other outcomes. Flip each outcome on purpose (return the lenient value
 instead of the error, treat "absent" as "failed"), run the tests, confirm at
 least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
-for it.
+for it. When the run writes or refreshes a PR summary, record the
+enumeration as a `Branch outcomes:` list in its Test Plan — one line per
+outcome naming `path:line`, the outcome, the test that reaches it, and that
+flipping it went red — or `Branch outcomes: none added` when the diff adds
+no branch; every test it names must exist at the head (see **A named test
+must exist**). A fix to an existing PR re-enumerates every branch its own
+commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1263,10 +1298,13 @@ helper with no callers-checked list is a blocking self-review finding
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
-file in the PR's diff or already tracked at the head. Before raising the PR,
-check each named path with `git ls-files <path>`; a named-but-absent test is a
-blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist.
+file in the PR's diff or already tracked at the head, named **relative to the
+repository root** — `worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`,
+even when the repository's own test command runs from a subdirectory such as
+`worker/deno`. Before raising the PR, check each named path with `git
+ls-files <path>` run **from the repository root**; a named-but-absent test
+is a blocking self-review finding — add the test or drop the claim, and
+never commit an anchor that references a test that does not exist.
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's

@@ -35,7 +35,7 @@
  * Exit statuses the worker itself can produce.
  *
  * Keep in step with `run_worker.ts` (0, 1, `QUOTA_PAUSE_EXIT_STATUS`,
- * `TOOLCHAIN_SELFCHECK_EXIT_STATUS`), the commands that name their own —
+ * `TOOLCHAIN_SELFCHECK_EXIT_STATUS`, `ROOT_FS_FAULT_EXIT_STATUS`), the commands that name their own —
  * `container_build_heal` and `container_reap` — and the entrypoint's
  * `EXTENSION_START_ABORT_EXIT_STATUS` (Issue #981).
  * Being wrong here costs a misleading sentence in an alert, so the wording
@@ -57,6 +57,7 @@ export function knownWorkerStatuses(
   extensionStartAbortStatus: number,
   hostEgressBlockedStatus: number,
   toolchainSelfCheckStatus: number,
+  rootFsFaultStatus: number,
 ): KnownWorkerStatuses {
   const table = new Map<number, string>([
     [0, "a clean run"],
@@ -88,6 +89,15 @@ export function knownWorkerStatuses(
     [
       toolchainSelfCheckStatus,
       "an image that failed its own toolchain self-check before claiming",
+    ],
+    // Issue #3179: the run found its container's root filesystem (scratch or
+    // a state volume) read-only or I/O-faulted and ended for a fresh
+    // container. The worker log carries the `[ROOT_FS_READ_ONLY]` line; a
+    // streak of these points at the host's disk, not at the worker.
+    [
+      rootFsFaultStatus,
+      "a container root filesystem that went read-only or I/O-faulted " +
+      "(a host fault; the next launch gets a fresh container)",
     ],
   ]);
   return {

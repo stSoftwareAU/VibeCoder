@@ -59,6 +59,13 @@
  *      claims no recovery, and re-probes at a fixed cadence — because the
  *      quota may be extended before its stated reset, and a host whose
  *      interval doubles every cycle would not notice.
+ *   7. **A read-only root relaunches promptly** (Issue #3179). A run whose
+ *      container root filesystem went read-only or I/O-faulted exits on
+ *      {@link ROOT_FS_FAULT_EXIT_STATUS}. Only a fresh container repairs that,
+ *      so the wait is the base cadence, never the grown backoff. It is still
+ *      a host fault: it counts on the failure streak and escalates at the
+ *      phase's threshold, because a host whose disk keeps faulting needs its
+ *      operator.
  *
  * Every action is also emitted as a structured self-heal event so recoveries
  * show up in `self-heal-summary` rather than only in a host log.
@@ -82,6 +89,7 @@ import {
 } from "./quota_pause.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "./container_extension_start.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "./toolchain_selfcheck.ts";
+import { ROOT_FS_FAULT_EXIT_STATUS } from "./root_filesystem_fault.ts";
 import { escalationHostId } from "./host_escalation.ts";
 import type { CallbackInvocation, CallbackStatus } from "./run_callbacks.ts";
 import {
@@ -378,6 +386,8 @@ export type LauncherOutcomeKind =
   | "network_unavailable"
   | "another_worker_running"
   | "terminated"
+  /** The container's root filesystem went read-only (Issue #3179). */
+  | "root_fs_fault"
   | "failure";
 
 /**
@@ -440,6 +450,9 @@ export function classifyLauncherOutcome(
   if (exitStatus === ANOTHER_WORKER_RUNNING_STATUS) {
     return "another_worker_running";
   }
+  // Issue #3179: the run's own declaration that its root filesystem went
+  // read-only. A host fault, but one a fresh container clears.
+  if (exitStatus === ROOT_FS_FAULT_EXIT_STATUS) return "root_fs_fault";
   // A run stopped from outside is not this host failing (Issue #1072). The
   // status cannot say so — it belongs to the runtime client, which reports 255
   // when its container is stopped under it — so the launcher's own declaration
@@ -759,7 +772,11 @@ export function nextContainerRestartDecision(
   // (Issue #997): the fault is host networking state the worker cannot change,
   // so the ladder's first rungs are spent re-discovering it. The wait goes
   // straight to the ceiling and stays there until the condition clears.
-  const backoffSeconds = phase === "container_egress"
+  // A read-only root (Issue #3179) is the opposite: the fresh container the
+  // next launch builds is the repair, so it relaunches at the base cadence.
+  const backoffSeconds = kind === "root_fs_fault"
+    ? config.baseSleepSeconds
+    : phase === "container_egress"
     ? config.maxBackoffSeconds
     : computeBackoffSeconds(consecutiveFailures, config);
 
@@ -1108,6 +1125,8 @@ export function buildContainerEscalationParams(
         // The refused claim of Issue #1956, for the same reason: the worker
         // chose this status when the image failed its toolchain self-check.
         TOOLCHAIN_SELFCHECK_EXIT_STATUS,
+        // Issue #3179: the run's own read-only-root declaration.
+        ROOT_FS_FAULT_EXIT_STATUS,
       ),
     ),
     `Next attempt after a ${input.backoffSeconds}s backoff`,
@@ -1630,6 +1649,26 @@ export async function recordContainerRestartOutcome(
         unavailableSlotSeconds: capacity.unavailable?.slotSeconds ?? 0,
         slots: capacity.slots,
         slotUtilisation: capacityLine,
+      },
+    }, { workDir: options.workDir });
+  }
+
+  // Issue #3179: named as what it is, so `self-heal-summary` reads "the
+  // container's filesystem went read-only" rather than a generic crash.
+  if (decision.kind === "root_fs_fault") {
+    await emitSelfHealEvent({
+      module: SELF_HEAL_MODULE,
+      action: "root_fs_fault",
+      reason: "the container's root filesystem went read-only or " +
+        "I/O-faulted — relaunching into a fresh container in " +
+        `${decision.backoffSeconds}s (${decision.state.consecutiveFailures} ` +
+        "consecutive host fault(s); Issue #3179)",
+      result: "failed",
+      details: {
+        phase: decision.phase,
+        exitStatus: options.exitStatus,
+        consecutiveFailures: decision.state.consecutiveFailures,
+        backoffSeconds: decision.backoffSeconds,
       },
     }, { workDir: options.workDir });
   }

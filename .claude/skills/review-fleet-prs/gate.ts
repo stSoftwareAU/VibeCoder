@@ -4,7 +4,9 @@
 // VibeCoder .config.json that are ready for a model review: into the default
 // branch, CI green, no conflict, not a draft, and not yet reviewed at their
 // head commit, and not sent back awaiting a fix whose only new commits are
-// base-branch merges. It never posts anything itself.
+// base-branch merges. It never posts anything itself; a red dependency audit
+// CI-fix could not clear is reported in `auditBlocked` with a ready-made
+// review for post.ts (Issue #3142).
 //
 // One GraphQL search (about 2 points a page) covers every repo, so polling
 // every few minutes stays cheap. With --watch=<seconds> the gate keeps polling
@@ -18,8 +20,8 @@
 //          [--sleep-first]
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
-// Output: one line of JSON, { ready: [...], skipped: { <reason>: count },
-// upkeep: [...] }. Unlike the review itself, each pass also does the
+// Output: one line of JSON, { ready: [...], auditBlocked: [...],
+// skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each pass also does the
 // Dependabot upkeep in dependabot.ts (rebase requests, arming auto-merge);
 // --dry-run reports that upkeep without doing it. A failed upkeep action is
 // reported in `upkeep` too, and is not retried at the same head commit.
@@ -29,6 +31,7 @@
 const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
 
 import {
+  type FableReview,
   type Finding,
   migrateLegacyStateDir,
   previousFindings,
@@ -41,6 +44,11 @@ import {
   writeSummary,
 } from "./review_log.ts";
 import { dependabotAction } from "./dependabot.ts";
+import { isDependencyAuditCheck } from "../../../worker/deno/lib/dependency_audit_check.ts";
+import {
+  type CiFixMarkerComment,
+  collectFleetCiFixMarkers,
+} from "../../../worker/deno/lib/ci_fix_attempt_markers.ts";
 
 // Every review body the skill posts ends with this marker, so a comment-only
 // "held for the owner" review still counts as this commit's review.
@@ -86,6 +94,13 @@ export interface ReadyPr {
   previousFindings: Finding[];
 }
 
+// A PR whose dependency audit is still red after CI-fix replied at its head
+// (Issue #3142): post.ts sends it back with `review`, no model run.
+export interface AuditBlockedPr extends ReadyPr {
+  check: string;
+  review: FableReview;
+}
+
 export interface Review {
   author: { login: string } | null;
   state: string;
@@ -100,6 +115,10 @@ export interface RollupContextNode {
   conclusion?: string | null;
   /** Present on `StatusContext` nodes. */
   state?: string | null;
+  /** The check's name, on `CheckRun` nodes (Issue #3142). */
+  name?: string | null;
+  /** The status's name, on `StatusContext` nodes (Issue #3142). */
+  context?: string | null;
 }
 
 export interface SearchPr {
@@ -418,6 +437,51 @@ function isRedContext(node: RollupContextNode): boolean {
   return false;
 }
 
+/** Names of the red contexts that are dependency audits (Issue #3142). */
+export function redAuditChecks(nodes: RollupContextNode[]): string[] {
+  return nodes.filter(isRedContext)
+    .map((n) => n.name ?? n.context ?? "")
+    .filter((name) => name !== "" && isDependencyAuditCheck(name, ""));
+}
+
+/**
+ * The red audit check CI-fix has already replied to at `head`, if any: a
+ * fleet-authored `vibe-ci-fix-attempt` marker for that check at that head.
+ */
+export function auditCheckCiFixReplied(
+  checks: readonly string[],
+  comments: readonly CiFixMarkerComment[],
+  fleet: readonly string[],
+  head: string,
+): string | undefined {
+  const attempts = [
+    ...collectFleetCiFixMarkers(comments, fleet).attempts.values(),
+  ].flat();
+  return checks.find((check) =>
+    attempts.some((a) => a.checkName === check && a.head === head)
+  );
+}
+
+/** The ready-made send-back for a red audit (Issue #3142). */
+export function auditSendBack(check: string): FableReview {
+  return {
+    summary: "Sent back without a model review: this dependency audit is " +
+      "still red after CI-fix replied at this head commit.",
+    findings: [{
+      file: check.replaceAll("`", ""),
+      line: 0,
+      problem: "The dependency audit is red. It must be fixed in this PR, " +
+        "by upgrading or replacing the vulnerable dependency.",
+      fix: "Upgrade or replace the flagged dependency in this PR. An ignore " +
+        "entry for the advisory, or a workflow edit that skips or weakens " +
+        "the audit, does not count as a fix.",
+    }],
+    testChanges: "none",
+    testChangeNotes: [],
+    unrelatedIssues: [],
+  };
+}
+
 /** True when at least one context is red and every red one is CANCELLED. */
 function everyRedCheckCancelled(nodes: RollupContextNode[]): boolean {
   let sawRed = false;
@@ -496,7 +560,7 @@ query($q: String!, $after: String) {
       }
       author { login }
       commits(last: 1) { nodes { commit { statusCheckRollup { state
-        contexts(first: 100) { nodes { __typename ... on CheckRun { conclusion } ... on StatusContext { state } } }
+        contexts(first: 100) { nodes { __typename ... on CheckRun { name conclusion } ... on StatusContext { context state } } }
       } } } }
       reviews(last: 20) { nodes { author { login } state body commit { oid } } }
     } }
@@ -622,6 +686,7 @@ export async function pass(
   const owners = [...new Set([...repos].map((r) => r.split("/")[0]!))];
   const logins = ["app/dependabot", ...fleet];
   const ready: ReadyPr[] = [];
+  const auditBlocked: AuditBlockedPr[] = [];
   const skipped: Record<string, number> = {};
   const open = new Set<string>();
   const upkeep: string[] = [];
@@ -714,6 +779,30 @@ export async function pass(
         ownDiffUnchanged(callGh, repo, pr.baseRefName, since, pr.headRefOid),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
     );
+    // Rule 2's one exception (Issue #3142): a red dependency audit CI-fix
+    // has already replied to at this head is sent back once, never approved.
+    const auditCheck = skip === "ci-failed"
+      ? await auditBlockedCheck(pr, reviewer, fleet, callGh)
+      : undefined;
+    if (auditCheck !== undefined) {
+      auditBlocked.push({
+        repo,
+        number: pr.number,
+        title: pr.title,
+        url: pr.url,
+        author: pr.author!.login,
+        kind,
+        headSha: pr.headRefOid,
+        baseRef: pr.baseRefName,
+        // No file list is read: the send-back is about the audit alone.
+        testChanges: { removed: [], edited: [] },
+        noTestAdded: false,
+        previousFindings: previousFindings(log, repo, pr.number),
+        check: auditCheck,
+        review: auditSendBack(auditCheck),
+      });
+      continue;
+    }
     if (skip) {
       skipped[skip] = (skipped[skip] ?? 0) + 1;
       continue;
@@ -744,7 +833,44 @@ export async function pass(
   if (repos.size > 1) await writeSummary(dir, open);
   await writeMemory(dir, REBASE_FILE, rebaseAsked);
   await writeMemory(dir, FAILED_FILE, failed);
-  return { ready, skipped, upkeep };
+  return { ready, auditBlocked, skipped, upkeep };
+}
+
+// The red audit check to send this PR back over, or undefined to leave it
+// `ci-failed`. Comments are read only for a red audit not yet reviewed at
+// this head.
+async function auditBlockedCheck(
+  pr: SearchPr,
+  reviewer: string,
+  fleet: ReadonlySet<string>,
+  gh: (args: string[]) => Promise<string>,
+): Promise<string | undefined> {
+  const checks = redAuditChecks(
+    pr.commits.nodes[0]?.commit.statusCheckRollup?.contexts?.nodes ?? [],
+  );
+  if (checks.length === 0) return undefined;
+  if (reviewedAtHead(pr.reviews.nodes, reviewer, pr.headRefOid)) {
+    return undefined;
+  }
+  const raw: {
+    id: number;
+    user: { login: string } | null;
+    body: string | null;
+    created_at: string;
+  }[] = JSON.parse(
+    await gh([
+      "api",
+      `repos/${pr.repository.nameWithOwner}/issues/${pr.number}/comments`,
+      "--paginate",
+    ]),
+  );
+  const comments: CiFixMarkerComment[] = raw.map((c) => ({
+    id: c.id,
+    author: c.user?.login ?? null,
+    body: c.body,
+    createdAt: c.created_at,
+  }));
+  return auditCheckCiFixReplied(checks, comments, [...fleet], pr.headRefOid);
 }
 
 async function main() {
@@ -770,7 +896,10 @@ async function main() {
     try {
       const result = await pass(repos, fleet, reviewer);
       failures = 0;
-      if (result.ready.length > 0 || watchSeconds <= 0) {
+      if (
+        result.ready.length > 0 || result.auditBlocked.length > 0 ||
+        watchSeconds <= 0
+      ) {
         console.log(JSON.stringify(result));
         return;
       }

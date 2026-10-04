@@ -48,6 +48,7 @@ import {
   resolveFleetMaintenanceAuthorSet,
 } from "./fleet_authors.ts";
 import { partitionConflictComments } from "./conflict_marker_trust.ts";
+import { isMilestoneHead } from "./gated_head_guard.ts";
 import { isCiFixEscalationOnly } from "./conflict_needs_human_gate.ts";
 import { listOpenPrs, type PrEntry } from "./pr_maintenance.ts";
 import {
@@ -1572,6 +1573,35 @@ export async function findConflictingPr(
     // have drawn never landed (Issue #395): the label check above let the PR
     // through, so nobody owns it and it would stall unowned for ever.
     if (hasExhaustedConflictAttempts(attempts, maxAttempts)) {
+      // Issue #3036: a `milestone/**` head's redo is the milestone rebuild,
+      // which needs the clone only the processor has. The single-issue
+      // abandon below would close the milestone PR and drop every sub-PR's
+      // work with it, so the PR goes to the processor instead.
+      if (isMilestoneHead(pr.headRefName)) {
+        logger.warn(
+          `PR #${pr.number} spent its ${maxAttempts} merge-conflict ` +
+            `attempts on milestone head '${pr.headRefName}' — handed to the ` +
+            "processor to rebuild it from its base",
+          {
+            repo,
+            prNumber: pr.number,
+            attempts: spentConflictAttempts(attempts),
+            maxAttempts,
+          },
+        );
+        return {
+          outcome: "attempted",
+          pr: {
+            repo,
+            prNumber: pr.number,
+            branchName: pr.headRefName,
+            // allow-hardcoded-branch — safe fallback when the listing omits it
+            baseBranch: pr.baseRefName || "main",
+            attemptCount: spentConflictAttempts(attempts),
+            disruptedCount: history.disruptedCount,
+          },
+        };
+      }
       // Issue #1115: a human is not the next rung. A branch that has defeated
       // two concluded merges is usually cheaper to redo than to reconcile, so
       // the PR is closed, its issue re-queued for a fresh PR off the current

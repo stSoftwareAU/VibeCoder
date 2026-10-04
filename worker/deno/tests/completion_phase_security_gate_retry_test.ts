@@ -50,6 +50,8 @@ Fixed the injection flaw. Closes #${ISSUE}.
   trigger is closed with no trivial bypass.
 
 **Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits
+
+**Branch outcomes:** none added
 `;
 
 /**

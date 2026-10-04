@@ -480,9 +480,20 @@ export async function runGhCommand(args: string[]): Promise<string> {
  */
 export function hasVisibleContent(body: string): boolean {
   if (typeof body !== "string") return false;
-  // Strip HTML comments (including multi-line) before checking for visible text.
-  const stripped = body.replace(/<!--[\s\S]*?-->/g, "");
-  return stripped.trim().length > 0;
+  // Walk the body comment by comment rather than stripping comments with a
+  // replace: a single replace can re-form a comment from what it leaves
+  // behind (CodeQL js/incomplete-multi-character-sanitization). An unclosed
+  // `<!--` hides the rest of the body on GitHub, and `--!>` closes a comment
+  // as well as `-->`.
+  let rest = body;
+  for (;;) {
+    const open = rest.indexOf("<!--");
+    if (open === -1) return rest.trim().length > 0;
+    if (rest.slice(0, open).trim().length > 0) return true;
+    const close = /--!?>/.exec(rest.slice(open + 4));
+    if (close === null) return false;
+    rest = rest.slice(open + 4 + close.index + close[0].length);
+  }
 }
 
 /**

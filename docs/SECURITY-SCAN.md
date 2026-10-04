@@ -773,6 +773,8 @@ queue for the worker.
 **Bounded-sweep visibility.** After a tracker names chunks that were not
 reached, the coverage ledger at
 [`docs/audits/lib-sweep-coverage.json`](audits/lib-sweep-coverage.json)
+(with one file per top-up slice in
+[`docs/audits/lib-sweep-coverage/`](audits/lib-sweep-coverage/))
 is what tells a follow-up scan *which modules those chunks already read*,
 and at which commit. `deno run … mod.ts sweep-drift` prints, for every
 slice, the modules added or modified since that slice's `sweptAt` — the
@@ -817,7 +819,16 @@ flowchart LR
 
 **Adding a top-up slice.** A module that enters the ledger roots after the
 chunk-12 slices recorded their coverage gets its own slice, with its own
-written record under `docs/audits/`. Its `chunk` id is **`top-up-<issue>`**
+written record under `docs/audits/`. The slice is **its own file,
+`docs/audits/lib-sweep-coverage/top-up-<issue>.json`**, holding one slice
+object, not a new entry at the end of `lib-sweep-coverage.json`: every PR that
+added a module used to append to that one array, so any two open PRs
+conflicted there, whereas two PRs adding two files never do.
+`readCoverageLedger` reads the ledger file plus every file in that directory;
+a file not named after its own issue fails, so does anything in that
+directory that is not a regular file (a subdirectory or a symlink), and the
+parser refuses any slice for an issue after #3200 in the ledger file itself,
+whatever its chunk id, naming the directory. Its `chunk` id is **`top-up-<issue>`**
 (`topUpChunkId` in `worker/deno/lib/lib_sweep_coverage.ts`), never the next
 letter after the ledger's tail: two runs working in parallel read the same
 tail and so choose the same next letter, which is how #1940 and #1943 both

@@ -46,6 +46,7 @@
  * Australian English spelling used throughout (behaviour, normalise).
  */
 
+import { escapeTableCell } from "./markdown_table.ts";
 import { parseHttpStatus } from "./alert_feeds/code_scanning_alerts.ts";
 import { runGitCommand } from "./git_timeout.ts";
 import { runWithTimeout } from "./subprocess_timeout.ts";
@@ -1460,7 +1461,7 @@ export function formatLocation(row: SweepCluster): string {
 
 /** Escape a Markdown table cell (untrusted scanner text). */
 function cell(text: string): string {
-  return text.replace(/\r?\n/g, " ").replace(/\|/g, "\\|").trim();
+  return escapeTableCell(text.replace(/\r?\n/g, " ")).trim();
 }
 
 /** Render the deterministic Markdown report. */

@@ -62,10 +62,14 @@ import {
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
   CONFLICT_RESOLUTION_BUDGET,
+  conflictFailedMarker,
   conflictResolvedMarker,
+  readResolutionAttempts,
+  spentConflictAttempts,
 } from "../lib/merge_conflict_markers.ts";
 import {
   abandonAndRebuildMilestone,
+  buildMilestoneRebuildPrComment,
   listMergedSubPrs,
   type MilestoneRebuildDeps,
   type MilestoneRebuilt,
@@ -2204,6 +2208,39 @@ Deno.test(
     }
   },
 );
+
+Deno.test("buildMilestoneRebuildPrComment - a rebuild restarts the shared budget, so the redo gets its own (Issue #3036)", () => {
+  const rebuilt: MilestoneRebuilt = {
+    outcome: "milestone-rebuilt",
+    milestoneBranch: "milestone/7-example",
+    baseBranch: "main",
+    baseSha: BASE_SHA,
+    rebuildSha: REBUILD_SHA,
+    replayed: [],
+    skipped: [],
+    requeued: [],
+    delivery: { kind: "pushed" },
+  };
+  const fleet = (body: string) => ({
+    body,
+    user: { login: "vibe-bot" },
+    created_at: "2026-10-01T00:00:00Z",
+  });
+  const thread = [
+    ...Array.from(
+      { length: CONFLICT_RESOLUTION_BUDGET },
+      (_, i) => fleet(conflictFailedMarker(i + 1, "takeover", BASE_SHA)),
+    ),
+    fleet(buildMilestoneRebuildPrComment(rebuilt)),
+  ];
+
+  const attempts = readResolutionAttempts(
+    thread,
+    (login) => login === "vibe-bot",
+  );
+
+  assertEquals(spentConflictAttempts(attempts), 0);
+});
 
 Deno.test(
   "abandonAndRebuildMilestone - a ruleset-refused push lands through the sync PR",

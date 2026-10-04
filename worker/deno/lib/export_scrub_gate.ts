@@ -70,6 +70,7 @@
  * Australian English spelling used throughout (behaviour, organisation).
  */
 
+import { escapeRegExp } from "./regexp_escape.ts";
 import {
   decodeTextOrNull,
   topLevelDirectory,
@@ -157,10 +158,6 @@ export interface ParsedIdentifiers {
   /** The full repository policy (public / placeholder / private / unknown). */
   repoPolicy: RepoPolicy;
   errors: string[];
-}
-
-function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /**
