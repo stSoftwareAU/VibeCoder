@@ -71,6 +71,24 @@ The label priority order is therefore: `top-priority` > `work-on` > `low-priorit
 
 The global guarantee for `low-priority` follows from the cross-repo collection in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts): every scannable repo contributes its candidates before [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) picks a tier. A single eligible `top-priority` issue in repo A will suppress every `work-on` and `low-priority` issue across repos B, C, … That keeps `low-priority` strictly idle-time work — backlog items the worker only reaches when there is genuinely nothing else to do anywhere.
 
+### Conflict redo first in its repo (Issue #3034)
+
+An issue re-queued by merge-conflict abandon-and-redo (see
+[merge-conflicts.md](merge-conflicts.md)) is a **conflict redo** once its
+comments carry a fleet-authored restart marker (author-checked, so an
+outsider's marker is ignored), it has no open fleet PR, and no PR referencing
+it was raised after the abandoned one. The tier ladder above still decides
+**which repo** wins, unchanged; once a repo is chosen, a conflict-redo
+candidate in that repo is returned ahead of every other candidate there —
+`top-priority` included — whatever pickup label the redo itself carries.
+Several redos in the same repo pick the oldest restart claim first, redos are
+exempt from the per-repo `low-priority`/`idle-task` suppression, and a redo
+never displaces another repo's candidate; week-pace (Issue #1885) still blocks
+`low-priority`/`idle-task` redos. This is ordering, not a label —
+`label_security` strips a worker-applied `top-priority` — and every selection
+of this kind is logged as `[issue-finder] selected repo=<repo> issue=#<n>
+reason=conflict-redo source=<tier> restarted-at=<iso>`.
+
 ```mermaid
 flowchart TD
     A[All repos scanned] --> B[Collect candidates per tier]
@@ -1270,6 +1288,25 @@ applies before the outcome, keeping each on the new path or stating why it
 does not apply, and proving each kept guard with a test that goes red when
 the new branch is moved ahead of it.
 
+**A new branch must be reachable by the input it exists for (Issue #3167).**
+The mirror of the #3087 rule: fleet PRs inserted a new branch below an
+existing early exit that a realistic input for the new case fires first,
+and tested it with a fixture that never tripped that exit. GRQ#5105 placed
+the run-start test-mode guard after the roster loop's `exit 0` paths, so a
+leaked test-mode flag on an opted-out team or empty roster exited 0 with no
+refusal; VibeCoder#3134 placed the unassigned-gap capture below
+`if (subjectWordSet.size === 0) continue;`, dropping a `partial` or
+`missing` entry with no subject words; and VibeCoder#3159's
+self-filed-dependency hand-off sat first below the described-code-change
+retry and short-output failure, then — after one review-fix round — still
+below `detectRunInterrupted`, a wording guess that matches ordinary blocked
+prose. The guidelines, the issue prompt's Test Plan step and the
+PR-feedback prompt now require listing each exit above the insertion point
+and what fires it, moving the new branch above any exit its realistic input
+can fire first (or stating why a real infrastructure signal must win), and
+a test whose realistic input trips each earlier exit and goes red when the
+branch is moved back below it.
+
 **Code that deletes or replaces state proves everything it destroys is
 safe to lose (Issue #3107).** Fleet PRs wrote clone swaps that checked
 only the state they were about. GRQ#5153's promisor path in
@@ -1304,6 +1341,24 @@ Documentation-drift tests gained a fourth condition: the pinned phrase
 occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
+
+**Vet every regex on untrusted text, one hostile case per pattern
+(Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
+case for the one pattern the author had in mind, and shipped a sibling
+pattern in the same module with the same quadratic backtracking:
+VibeCoder#3085 capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE`,
+which cost a third review round, and VibeCoder#3160's
+`BRANCH_OUTCOMES_HEADING_RE` took about a minute per call on a heading
+padded with spaces. The guidelines now require every regex a change adds
+or edits that runs on untrusted or agent-written text to be read for two
+quantifiers that can match the same characters with only optional tokens
+between them, to have that overlap removed, and to get its own hostile
+case: a long run of the shared character followed by a character the
+pattern rejects. The pr_feedback prompt sends a backtracking finding to
+every other regex in the same module. The same change fixed the
+`\s*:?\s*` heading tail in the acceptance-criteria, failure-detection,
+independent-review and reproduction-status parsers, and the trailing
+`/\s+$/` strip in the failure-detection repair.
 
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to

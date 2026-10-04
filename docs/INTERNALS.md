@@ -2798,7 +2798,10 @@ happening.
 While the host disk is low and reclaim did not heal it, this sweep alone is
 skipped for the cycle (the handler's `pausesOnHostDiskLow` flag). Every other
 pass, lane or serial, keeps running because those passes land the PRs already
-open (Issue #226). See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
+open (Issue #226) — but a milestone sync that would run the repository's own
+build or test defers that branch until the host recovers (Issue #3178, see
+[HOST_DISK_LOW defers maintenance builds](CONTAINER.md#host_disk_low-defers-maintenance-builds-issue-3178)).
+See [HOST_DISK_LOW pauses the shared-clone ref sweep](CONTAINER.md#host_disk_low-pauses-the-shared-clone-ref-sweep-issue-2889)
 in CONTAINER.md.
 
 ```mermaid

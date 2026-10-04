@@ -903,6 +903,27 @@ cycle for the whole window.
 Look for `USAGE_LIMIT` / `RATE_LIMIT` security-log lines and `Rate limit signal
 active — pausing until reset …` in the worker log.
 
+## 🩺 `Claude health check failed — skipping cycle`
+
+Before each cycle the worker runs a trivial prompt against the agent; a failed
+probe skips the cycle and re-probes after `sleep_interval`. The line carries the
+reason after a colon (Issue #3180), so `worker.log` alone says what went wrong:
+
+```
+ERROR: Claude health check failed — skipping cycle: Health check error: Read-only file system (os error 30) …
+```
+
+- `Health check error: …` — the agent never started: the runner failed before
+  spawning it, typically because it could not write its temp or prompt files
+  (a read-only or full root filesystem). The same cause is also logged as
+  `<agent> health check could not run: …` just above.
+- `Claude CLI exited <N>: …` — the agent ran and failed; the preceding
+  `Health check details: exit=… stderr=… stdout=…` line has the evidence.
+- An authentication message — run the login it names (see
+  [the credential preflight section](#-the-worker-exits-on-a-credential-preflight-error)).
+- A rate or usage limit — see
+  [Rate limits and subscription usage limits](#-rate-limits-and-subscription-usage-limits).
+
 ## 🔌 Circuit breaker activated (worker backing off)
 
 The worker includes a rate-limit circuit breaker that activates

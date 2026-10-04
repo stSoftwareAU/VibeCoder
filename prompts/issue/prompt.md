@@ -1037,7 +1037,17 @@ The file MUST contain:
    excluded with its reason, and a kept guard counts only once a named test
    reaches the new path with the guard's trigger holding and goes red when
    the new branch is moved ahead of the guard; a new path that skips a guard
-   with no stated reason is a blocking self-review finding. Likewise, code
+   with no stated reason is a blocking self-review finding. Likewise, a
+   branch, guard, capture or hand-off the diff adds below existing early
+   exits must be reachable by the input it exists for (see **A new branch
+   must be reachable by the input it exists for** in the guidelines): list
+   each exit above the insertion point and what fires it, move the new
+   branch above any exit a realistic input for its case can fire first (or
+   state why that exit must win — a real infrastructure signal, never a
+   wording guess), and name a test whose realistic input also trips each
+   earlier exit the new branch now precedes and goes red when the branch is
+   moved back below it; a new branch that a realistic input for its own
+   case cannot reach is a blocking self-review finding. Likewise, code
    the diff adds that deletes or replaces state — an `rm -rf`, a clone or
    `.git` swap, a `git reset --hard` or `git clean -fdx` — proves everything
    it destroys is safe to lose (see **Code that deletes or replaces state
