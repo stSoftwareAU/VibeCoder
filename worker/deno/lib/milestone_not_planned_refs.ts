@@ -291,9 +291,8 @@ export async function findNotPlannedDocReferences(
   for (const member of sortedMembers) {
     const deps = extractDependencyReferences(member.body ?? "");
     for (const dep of deps) {
-      if (dep === member.number) continue;
+      // Members (self included) are already scanned; outside deps are cached below.
       if (memberNumbers.has(dep)) continue;
-      if (candidates.has(dep)) continue;
 
       let looked = lookupCache.get(dep);
       if (looked === undefined) {
