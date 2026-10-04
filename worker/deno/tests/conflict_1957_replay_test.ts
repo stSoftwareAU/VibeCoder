@@ -12,17 +12,16 @@
  *
  * The fixture's two historical events (the human's push and the PR merging)
  * are deliberately never applied: the replay's own resolvers are what must
- * clear the conflict. Issue #3002, part of #2965.
+ * clear the conflict. Issue #3002, part of #2965. The fixture shape and
+ * {@link ReplayGitHub} live in `fixtures/conflict_replay_driver.ts`, shared
+ * with the GRQ-AutoTrader#2028 replay (Issue #3036).
  */
 
 import { assert, assertEquals } from "@std/assert";
 import { FakeGitHub } from "./fixtures/fake_github.ts";
-import type { Logger } from "../types.ts";
 import {
-  gatedHeadMarkerPrefix,
   guardGatedHead,
   resetGatedHeadReportsForTest,
-  takeoverAtMs,
 } from "../lib/gated_head_guard.ts";
 import { processMergeConflict } from "../lib/pr_merge_conflict_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -32,7 +31,6 @@ import {
   readResolutionAttempts,
 } from "../lib/merge_conflict_markers.ts";
 import {
-  type ConflictStallObservation,
   detectConflictQueueStall,
   repairConflictQueueStall,
 } from "../lib/merge_conflict_stall_watchdog.ts";
@@ -42,485 +40,24 @@ import type {
 } from "../lib/conflict_takeover.ts";
 import {
   abandonAndRestart,
-  type AbandonRestartDeps,
   type AbandonRestartOutcome,
-  type AbandonRestartRequest,
 } from "../lib/conflict_abandon_restart.ts";
 import {
   type ActiveMilestone,
   escalateSyncConflict,
 } from "../lib/milestone_branch_sync.ts";
 import type { MilestoneSyncConflict } from "../lib/milestone_sync_conflict.ts";
-
-// ---------------------------------------------------------------------------
-// The fixture
-// ---------------------------------------------------------------------------
-
-interface FixtureEvent {
-  at: string;
-  kind: string;
-  historical?: boolean;
-  mergeSha?: string;
-  landed?: boolean;
-  ruleTypes?: string[];
-}
-
-interface Fixture {
-  source: string;
-  repo: string;
-  workerLogin: string;
-  humanLogin: string;
-  milestoneIssue: number;
-  milestoneTitle: string;
-  pr: {
-    number: number;
-    head: string;
-    base: string;
-    headCommittedAt: string;
-  };
-  commits: {
-    baseRoot: string;
-    baseTip: string;
-    initialHead: string;
-    syncMerge: string;
-    humanPush: string;
-  };
-  events: FixtureEvent[];
-  replay: { tickMinutes: number; endAt: string };
-}
-
-const HEX_SHA = /^[0-9a-f]{40}$/;
-
-function validateFixture(raw: unknown): Fixture {
-  const f = raw as Fixture;
-  if (!f || typeof f !== "object") {
-    throw new Error("fixture: not an object");
-  }
-  for (
-    const key of [
-      "baseRoot",
-      "baseTip",
-      "initialHead",
-      "syncMerge",
-      "humanPush",
-    ] as const
-  ) {
-    const sha = f.commits?.[key];
-    if (typeof sha !== "string" || !HEX_SHA.test(sha)) {
-      throw new Error(`fixture: commits.${key} is not a 40-hex sha`);
-    }
-  }
-  if (!Array.isArray(f.events) || f.events.length === 0) {
-    throw new Error("fixture: events missing");
-  }
-  for (const event of f.events) {
-    if (typeof event.at !== "string" || Number.isNaN(Date.parse(event.at))) {
-      throw new Error(`fixture: event has an unparseable 'at': ${event.at}`);
-    }
-    if (typeof event.kind !== "string") {
-      throw new Error("fixture: event missing 'kind'");
-    }
-  }
-  if (!f.pr || typeof f.pr.number !== "number" || !f.pr.head || !f.pr.base) {
-    throw new Error("fixture: pr block missing or incomplete");
-  }
-  if (
-    typeof f.pr.headCommittedAt !== "string" ||
-    Number.isNaN(Date.parse(f.pr.headCommittedAt))
-  ) {
-    throw new Error("fixture: pr.headCommittedAt is not a parseable date");
-  }
-  if (
-    !f.replay || typeof f.replay.tickMinutes !== "number" || !f.replay.endAt
-  ) {
-    throw new Error("fixture: replay block missing or incomplete");
-  }
-  return f;
-}
-
-async function loadFixture(): Promise<Fixture> {
-  const raw = await Deno.readTextFile(
-    new URL("./fixtures/grq_autotrader_1957_timeline.json", import.meta.url),
-  );
-  return validateFixture(JSON.parse(raw));
-}
-
-// ---------------------------------------------------------------------------
-// A no-op logger
-// ---------------------------------------------------------------------------
-
-const silentLogger: Logger = {
-  info: () => {},
-  warn: () => {},
-  error: () => {},
-  debug: () => {},
-  security: () => {},
-  skipReason: () => {},
-  timing: () => {},
-  scanSummary: () => {},
-  workerSummary: () => {},
-};
-
-// ---------------------------------------------------------------------------
-// A tiny commit graph, plus a ReplayGitHub composing FakeGitHub
-// ---------------------------------------------------------------------------
-
-interface Commit {
-  parents: string[];
-  subject: string;
-}
-
-interface PushRecord {
-  actor: string;
-  branch: string;
-  sha: string;
-  atMs: number;
-}
-
-/** `gh` arguments helpers, mirroring `fake_github.ts`'s own. */
-function flagVal(args: string[], name: string): string | undefined {
-  const i = args.indexOf(name);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
-/** The first non-flag positional argument to `gh api`, i.e. the REST path. */
-function apiPath(args: string[]): string {
-  const valued = new Set([
-    "-X",
-    "--method",
-    "-f",
-    "-F",
-    "--field",
-    "--raw-field",
-    "-H",
-    "--header",
-    "--jq",
-    "-q",
-    "--input",
-  ]);
-  for (let i = 1; i < args.length; i++) {
-    const a = args[i]!;
-    if (valued.has(a)) {
-      i++;
-      continue;
-    }
-    if (!a.startsWith("-")) return a;
-  }
-  return "";
-}
-
-class ReplayGitHub {
-  readonly fake: FakeGitHub;
-  readonly commits = new Map<string, Commit>();
-  readonly branches = new Map<string, string>();
-  readonly pushes: PushRecord[] = [];
-  readonly resolveViaLadderCalls: ConflictTakeoverPr[] = [];
-  private readonly autoMergeArmed = new Map<number, string>();
-  private commitSeq = 0;
-  headChangedAtMs: number;
-  labelledAtMs: number | undefined;
-
-  constructor(
-    fake: FakeGitHub,
-    private readonly fixture: Fixture,
-  ) {
-    this.fake = fake;
-    const c = fixture.commits;
-    this.commits.set(c.baseRoot, { parents: [], subject: "root" });
-    this.commits.set(c.baseTip, {
-      parents: [c.baseRoot],
-      subject: "Develop tip",
-    });
-    this.commits.set(c.initialHead, {
-      parents: [c.baseRoot],
-      subject: "PR head",
-    });
-    this.commits.set(c.syncMerge, {
-      parents: [c.initialHead, c.baseTip],
-      subject: "sync merge (never landed)",
-    });
-    this.branches.set(fixture.pr.base, c.baseTip);
-    this.branches.set(fixture.pr.head, c.initialHead);
-    this.headChangedAtMs = Date.parse(fixture.pr.headCommittedAt);
-  }
-
-  private newSha(): string {
-    this.commitSeq++;
-    return `c0ffee${this.commitSeq.toString(16)}`.padStart(40, "0");
-  }
-
-  newCommit(parents: string[], subject: string): string {
-    const sha = this.newSha();
-    this.commits.set(sha, { parents, subject });
-    return sha;
-  }
-
-  ancestryContains(sha: string, ancestor: string): boolean {
-    if (sha === ancestor) return true;
-    const seen = new Set<string>();
-    const stack = [sha];
-    while (stack.length > 0) {
-      const cur = stack.pop()!;
-      if (seen.has(cur)) continue;
-      seen.add(cur);
-      if (cur === ancestor) return true;
-      const commit = this.commits.get(cur);
-      if (commit) stack.push(...commit.parents);
-    }
-    return false;
-  }
-
-  headTip(): string {
-    return this.branches.get(this.fixture.pr.head)!;
-  }
-
-  baseTip(): string {
-    return this.branches.get(this.fixture.pr.base)!;
-  }
-
-  mergeableState(): "MERGEABLE" | "CONFLICTING" {
-    return this.ancestryContains(this.headTip(), this.baseTip())
-      ? "MERGEABLE"
-      : "CONFLICTING";
-  }
-
-  /** Merge any OPEN fix PR whose auto-merge is armed into its base. */
-  settle(): void {
-    for (const [prNumber, armedBy] of [...this.autoMergeArmed.entries()]) {
-      const pr = this.fake.prs.get(`${this.fixture.repo}#${prNumber}`);
-      if (!pr || pr.state !== "OPEN") continue;
-      const baseTip = this.branches.get(pr.base);
-      const fixTip = this.branches.get(pr.head);
-      if (baseTip === undefined || fixTip === undefined) continue;
-      const merged = this.newCommit(
-        [baseTip, fixTip],
-        `merge ${pr.head} into ${pr.base}`,
-      );
-      this.branches.set(pr.base, merged);
-      this.pushes.push({
-        actor: armedBy,
-        branch: pr.base,
-        sha: merged,
-        atMs: this.fake.nowMs,
-      });
-      if (pr.base === this.fixture.pr.head) {
-        this.headChangedAtMs = this.fake.nowMs;
-      }
-      this.fake.mergePr(this.fixture.repo, prNumber);
-      this.autoMergeArmed.delete(prNumber);
-    }
-  }
-
-  /** The gated-head resolver that always lands the fix (test A). */
-  resolveOnFixBranchSucceeds = (
-    pr: ConflictTakeoverPr,
-    fixBranch: string,
-  ): Promise<TakeoverResolution> => {
-    const headTip = this.branches.get(pr.headRefName)!;
-    const baseTip = this.branches.get(pr.baseRefName)!;
-    const fixTip = this.newCommit(
-      [headTip, baseTip],
-      `resolve conflict on ${fixBranch}`,
-    );
-    this.branches.set(fixBranch, fixTip);
-    this.pushes.push({
-      actor: this.fake.actor,
-      branch: fixBranch,
-      sha: fixTip,
-      atMs: this.fake.nowMs,
-    });
-    return Promise.resolve({
-      resolved: true,
-      detail: "merged the default branch into the fix branch and resolved it",
-    });
-  };
-
-  /** The gated-head resolver that never lands the fix (test B). */
-  resolveOnFixBranchFails = (
-    _pr: ConflictTakeoverPr,
-    _fixBranch: string,
-  ): Promise<TakeoverResolution> =>
-    Promise.resolve({
-      resolved: false,
-      detail: "conflict could not be resolved",
-    });
-
-  /** Marker-free contract seam: must never run for this gated head. */
-  resolveViaLadder = (pr: ConflictTakeoverPr): Promise<TakeoverResolution> => {
-    this.resolveViaLadderCalls.push(pr);
-    return Promise.resolve({
-      resolved: false,
-      detail: "ladder must not push a gated head",
-    });
-  };
-
-  observation(repo: string, prNumber: number): ConflictStallObservation {
-    const issue = this.fake.issue(repo, prNumber);
-    return {
-      repo,
-      prNumber,
-      labels: [...issue.labels],
-      ...(this.labelledAtMs !== undefined
-        ? { labelledAtMs: this.labelledAtMs }
-        : {}),
-      comments: issue.comments.map((c) => ({
-        body: c.body,
-        created_at: c.at,
-        user: { login: c.author },
-      })),
-      mergeableState: this.mergeableState(),
-      baseRefOid: this.baseTip(),
-      headRefOid: this.headTip(),
-      headChangedAtMs: this.headChangedAtMs,
-    };
-  }
-
-  /** The combined `gh` seam: a handful of intercepts, else the fake. */
-  gh = async (args: string[]): Promise<string> => {
-    const handled = await this.dispatch(args);
-    if (handled !== undefined) return handled;
-    return this.fake.gh(args);
-  };
-
-  private async dispatch(args: string[]): Promise<string | undefined> {
-    const [a0, a1] = args;
-    const repo = flagVal(args, "--repo") ?? "";
-
-    if (a0 === "pr" && a1 === "view") {
-      const n = Number(args[2]);
-      const jq = flagVal(args, "--jq");
-      const jsonFields = (flagVal(args, "--json") ?? "").split(",");
-      if (jsonFields.includes("comments")) {
-        const issue = this.fake.issue(repo, n);
-        return JSON.stringify({
-          comments: issue.comments.map((c) => ({ body: c.body })),
-        });
-      }
-      if (jq === ".labels[].name") {
-        const issue = this.fake.issue(repo, n);
-        return issue.labels.join("\n");
-      }
-      if (n === this.fixture.pr.number) {
-        const issue = this.fake.issue(repo, n);
-        return JSON.stringify({
-          headRefName: this.fixture.pr.head,
-          baseRefName: this.fixture.pr.base,
-          headRefOid: this.headTip(),
-          mergeable: this.mergeableState(),
-          labels: issue.labels.map((name) => ({ name })),
-        });
-      }
-      return undefined;
-    }
-
-    if (a0 === "pr" && a1 === "comment") {
-      const n = Number(args[2]);
-      const body = flagVal(args, "--body") ?? "";
-      const issue = this.fake.issue(repo, n);
-      issue.comments.push({
-        author: this.fake.actor,
-        body,
-        at: this.fake.now(),
-      });
-      return `https://github.com/${repo}/issues/${n}#issuecomment-${issue.comments.length}`;
-    }
-
-    if (a0 === "pr" && a1 === "create") {
-      const base = flagVal(args, "--base") ?? "";
-      const head = flagVal(args, "--head") ?? "";
-      const title = flagVal(args, "--title") ?? "";
-      const body = flagVal(args, "--body") ?? "";
-      const pr = this.fake.openPr({
-        repo,
-        title,
-        body,
-        author: this.fake.actor,
-        head,
-        base,
-      });
-      return `https://github.com/${repo}/pull/${pr.number}`;
-    }
-
-    if (a0 === "pr" && a1 === "merge") {
-      const n = Number(args[2]);
-      this.autoMergeArmed.set(n, this.fake.actor);
-      return "";
-    }
-
-    if (a0 === "api") {
-      const method = (flagVal(args, "-X") ?? "GET").toUpperCase();
-      const path = apiPath(args);
-
-      const rules = path.match(/^repos\/[^/]+\/[^/]+\/rules\/branches\/(.+)$/);
-      if (rules) {
-        const branch = rules[1]!;
-        return branch.startsWith("milestone/")
-          ? JSON.stringify([{ type: "pull_request" }])
-          : "[]";
-      }
-
-      const commit = path.match(/^repos\/[^/]+\/[^/]+\/commits\/(.+)$/);
-      if (commit) {
-        const ref = commit[1]!;
-        const sha = this.branches.get(ref) ??
-          (this.commits.has(ref) ? ref : undefined);
-        if (sha === undefined) {
-          throw new Error(`replay: unknown ref '${ref}'`);
-        }
-        const found = this.commits.get(sha)!;
-        return `${sha} ${found.subject}`;
-      }
-
-      const compare = path.match(
-        /^repos\/[^/]+\/[^/]+\/compare\/([^.]+)\.\.\.(.+)$/,
-      );
-      if (compare) {
-        const a = compare[1]!;
-        const b = compare[2]!;
-        let status: string;
-        if (a === b) status = "identical";
-        else if (this.ancestryContains(b, a)) status = "ahead";
-        else if (this.ancestryContains(a, b)) status = "behind";
-        else status = "diverged";
-        return JSON.stringify({ status });
-      }
-
-      const reviewers = path.match(
-        /^repos\/[^/]+\/[^/]+\/pulls\/(\d+)\/requested_reviewers$/,
-      );
-      if (reviewers && method === "GET") {
-        return JSON.stringify({ users: [], teams: [] });
-      }
-    }
-
-    return undefined;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Abandon-ran classification
-// ---------------------------------------------------------------------------
-
-function abandonRan(outcome: AbandonRestartOutcome): boolean {
-  return !(
-    outcome.outcome === "declined" &&
-    outcome.reason.kind === "attempts-not-spent"
-  );
-}
-
-function makeAbandonRecorder(
-  repl: ReplayGitHub,
-  sink: Array<{ atMs: number; outcome: AbandonRestartOutcome }>,
-): (
-  request: AbandonRestartRequest,
-  deps: AbandonRestartDeps,
-) => Promise<AbandonRestartOutcome> {
-  return async (request, deps) => {
-    const outcome = await abandonAndRestart(request, deps);
-    sink.push({ atMs: repl.fake.nowMs, outcome });
-    return outcome;
-  };
-}
+import {
+  abandonRan,
+  assertStandDownShape,
+  type Fixture,
+  type FixtureEvent,
+  loadFixture,
+  makeAbandonRecorder,
+  ReplayGitHub,
+  silentLogger,
+  standDownComments,
+} from "./fixtures/conflict_replay_driver.ts";
 
 // ---------------------------------------------------------------------------
 // The replay
@@ -558,7 +95,7 @@ interface ReplayOptions {
 
 async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
   resetGatedHeadReportsForTest();
-  const fixture = await loadFixture();
+  const fixture = await loadFixture("grq_autotrader_1957_timeline.json");
   const { repo, workerLogin } = fixture;
   const prNumber = fixture.pr.number;
   const endAtMs = Date.parse(options.endAt ?? fixture.replay.endAt);
@@ -797,40 +334,6 @@ async function runReplay(options: ReplayOptions): Promise<ReplayResult> {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Shared stand-down comment checks
-// ---------------------------------------------------------------------------
-
-const STAND_DOWN_TIME_PATTERN =
-  /\*\*Owner:\*\* `(milestone sync|conflict takeover)`[\s\S]*?\*\*Takeover at (\S+Z)\*\* \(UTC\)/;
-
-function standDownComments(
-  comments: Array<{ body: string; at: string }>,
-  branch: string,
-): Array<{ body: string; at: string }> {
-  const prefixes = [
-    // The retired merge-conflict stand-down (Issue #3031) — must never appear.
-    `<!-- vibe-milestone-head branch="${branch}"`,
-    gatedHeadMarkerPrefix(branch),
-  ];
-  return comments.filter((c) => prefixes.some((p) => c.body.includes(p)));
-}
-
-function assertStandDownShape(
-  comments: Array<{ body: string; at: string }>,
-): void {
-  for (const comment of comments) {
-    const match = STAND_DOWN_TIME_PATTERN.exec(comment.body);
-    assert(
-      match !== null,
-      `stand-down comment missing owner/takeover-at shape: ${comment.body}`,
-    );
-    const takeoverIso = match![2]!;
-    const expected = takeoverAtMs(Date.parse(comment.at));
-    assertEquals(Date.parse(takeoverIso), expected);
-  }
-}
-
 /**
  * No sync report may claim a merge that is not on the milestone tip or in a
  * sync PR — i.e. every posted report's landing kind is "tip" or "sync-pr".
@@ -912,8 +415,10 @@ Deno.test(
     assertEquals(syncRun.posted, false);
     assertEquals(syncRun.landingKind, "unconfirmed");
     const milestoneIssue = fake.issue(fixture.repo, fixture.milestoneIssue);
+    const syncMerge = fixture.commits.syncMerge;
+    assert(syncMerge !== undefined, "the 1957 fixture records its sync merge");
     for (const comment of milestoneIssue.comments) {
-      assert(!comment.body.includes(fixture.commits.syncMerge));
+      assert(!comment.body.includes(syncMerge));
     }
     assertSyncReportsConfirmed(result);
 
@@ -1047,10 +552,16 @@ Deno.test(
       assertEquals(probe.outcome.reason.kind, "attempts-not-spent");
     }
 
-    // The watchdog itself routed to abandon once the budget was spent.
+    // Issue #3036: once the budget is spent the watchdog never hands this
+    // milestone head to the single-issue abandon, which would close the
+    // milestone PR. It declines, and the merge-conflict pass rebuilds the
+    // branch from its base instead.
+    assertEquals(result.abandonFromWatchdog, []);
     assert(
-      result.abandonFromWatchdog.length >= 1,
-      "watchdog never routed to abandon",
+      result.watchdogActions.some((a) =>
+        a.action === "abandon-declined" && a.atMs >= attemptTimes[2]!
+      ),
+      "the watchdog never declined the spent milestone head",
     );
 
     assertSyncReportsConfirmed(result);

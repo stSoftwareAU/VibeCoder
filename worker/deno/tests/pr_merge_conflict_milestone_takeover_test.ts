@@ -23,9 +23,14 @@ import {
 import type { TakeoverResolution } from "../lib/conflict_takeover.ts";
 import {
   CONFLICT_ATTEMPT_MARKER,
+  CONFLICT_RESOLUTION_BUDGET,
+  conflictAttemptMarker,
+  conflictFailedMarker,
   readResolutionAttempts,
   spentConflictAttempts,
 } from "../lib/merge_conflict_markers.ts";
+import type { AbandonRestartRequest } from "../lib/conflict_abandon_restart.ts";
+import type { MilestoneRebuildOutcome } from "../lib/conflict_milestone_rebuild.ts";
 import type { BranchUpdateLockResult } from "../lib/pr_branch_lock.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { LogContext, Logger, Result } from "../types.ts";
@@ -328,4 +333,104 @@ Deno.test("processMergeConflict - a milestone head with no takeover resolvers fa
   assert(!result.ok);
   assertStringIncludes(result.error.message, "takeoverResolvers");
   assertEquals(h.gh.comments, []);
+});
+
+/** Seed the thread with a spent budget: every attempt opened and failed. */
+function spendBudget(gh: FakeGh): void {
+  for (let n = 1; n <= CONFLICT_RESOLUTION_BUDGET; n++) {
+    for (
+      const body of [
+        conflictAttemptMarker(n, "takeover", HEAD_SHA),
+        conflictFailedMarker(n, "takeover", HEAD_SHA),
+      ]
+    ) {
+      gh.comments.push({
+        id: n * 10 + gh.comments.length,
+        body,
+        user: { login: FLEET },
+        created_at: "2026-10-01T00:00:00Z",
+      });
+    }
+  }
+}
+
+function rebuildRecorder(outcome: MilestoneRebuildOutcome) {
+  const requests: AbandonRestartRequest[] = [];
+  return {
+    requests,
+    milestoneRebuildFn: (request: AbandonRestartRequest) => {
+      requests.push(request);
+      return Promise.resolve(outcome);
+    },
+  };
+}
+
+Deno.test("processMergeConflict - a milestone PR with its budget spent is rebuilt from its base, not left declined (Issue #3036)", async () => {
+  const rebuild = rebuildRecorder({
+    outcome: "milestone-rebuilt",
+    milestoneBranch: MILESTONE_HEAD,
+    baseBranch: "Develop",
+    baseSha: "b".repeat(40),
+    rebuildSha: "c".repeat(40),
+    replayed: [{ prNumber: 12, issueNumber: 7, sha: "d".repeat(40) }],
+    skipped: [],
+    requeued: [],
+    delivery: { kind: "sync-pr", branch: "sync/x", opened: true },
+  });
+  const h = makeHarness({
+    overrides: { milestoneRebuildFn: rebuild.milestoneRebuildFn },
+  });
+  spendBudget(h.gh);
+
+  const result = await h.run();
+
+  assert(result.ok);
+  assertEquals(rebuild.requests.length, 1);
+  assertEquals(rebuild.requests[0]!.branchName, MILESTONE_HEAD);
+  assertEquals(rebuild.requests[0]!.baseBranch, "Develop");
+  assertEquals(result.value.processed, true);
+  assertEquals(result.value.escalated, false);
+  assertStringIncludes(result.value.summary, "Rebuilt");
+  assertEquals(h.fixBranches, [], "no takeover runs on a spent budget");
+  assertNoStandDown(h.gh);
+});
+
+Deno.test("processMergeConflict - a failed milestone rebuild is reported for the next pass, never handed to a human (Issue #3036)", async () => {
+  const rebuild = rebuildRecorder({
+    outcome: "failed",
+    step: "milestone-push",
+    message: "push refused",
+  });
+  const h = makeHarness({
+    overrides: { milestoneRebuildFn: rebuild.milestoneRebuildFn },
+  });
+  spendBudget(h.gh);
+
+  const result = await h.run();
+
+  assert(result.ok);
+  assertEquals(rebuild.requests.length, 1);
+  assertEquals(result.value.escalated, false);
+  assertStringIncludes(result.value.summary, "milestone-push");
+  assert(
+    !h.gh.calls.some((call) => call.some((arg) => arg.includes("needs-human"))),
+    "a failed rebuild must never ask a human",
+  );
+});
+
+Deno.test("processMergeConflict - the milestone takeover reads the processor's clock, not the wall clock (Issue #3036)", async () => {
+  const seen: Array<number | undefined> = [];
+  const h = makeHarness({
+    overrides: {
+      nowMsFn: () => Date.parse("2026-10-01T13:38:53Z"),
+      takeoverFn: (_pr, deps) => {
+        seen.push(deps.nowMs);
+        return Promise.resolve({ kind: "no-longer-due" });
+      },
+    },
+  });
+
+  await h.run();
+
+  assertEquals(seen, [Date.parse("2026-10-01T13:38:53Z")]);
 });

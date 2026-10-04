@@ -126,6 +126,7 @@ import {
 } from "./conflict_abandon_restart.ts";
 import {
   abandonAndRebuildMilestone,
+  describeMilestoneRebuild,
   type MilestoneRebuildOutcome,
   type MilestoneRebuilt,
 } from "./conflict_milestone_rebuild.ts";
@@ -1122,6 +1123,11 @@ async function takeOverMilestoneConflict(
         ...(processorDeps.deadlineEpochMs !== undefined
           ? { deadlineEpochMs: processorDeps.deadlineEpochMs }
           : {}),
+        // The same injected clock the stage timings read (Issue #3036), so
+        // the takeover's due-ness check and this pass agree on "now".
+        ...(processorDeps.nowMsFn !== undefined
+          ? { nowMs: processorDeps.nowMsFn() }
+          : {}),
       },
     );
   } catch (error) {
@@ -1175,10 +1181,10 @@ async function takeOverMilestoneConflict(
         `open fix PR #${outcome.fixPr.number} reused — no second fix PR opened`,
       );
     case "declined-budget":
-      return notRun(
-        `shared budget already spent (${outcome.attemptsSpent}/` +
-          `${CONFLICT_RESOLUTION_BUDGET}) — no takeover attempted`,
-      );
+      // Issue #3036: a spent budget is where the milestone redo starts. The
+      // branch is rebuilt from its base tip with its merged sub-PRs replayed;
+      // this pass is the one with a clone to do it in.
+      return await rebuildSpentMilestone(input, processorDeps, summary);
     case "declined-time":
       return notRun("the cycle's time left cannot cover a takeover agent");
     case "no-longer-due":
@@ -1228,6 +1234,57 @@ async function takeOverMilestoneConflict(
     default:
       return assertNever(outcome);
   }
+}
+
+/**
+ * Rebuild a `milestone/**` head whose shared budget is spent (Issue #3036).
+ *
+ * The milestone's abandon-and-redo: {@link runAbandonRestart} routes a
+ * milestone head to {@link abandonAndRebuildMilestone}, which never closes the
+ * milestone PR. A failed rebuild is reported and left for the next pass — no
+ * human is asked (Issue #3032).
+ */
+async function rebuildSpentMilestone(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  summary: (text: string) => string,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber } = input;
+  const { logger } = processorDeps;
+  const rebuild = await runAbandonRestart(input, processorDeps);
+  if (rebuild.outcome === "milestone-rebuilt") {
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        rung: "abandon",
+        summary: summary(
+          `shared budget spent — ${describeMilestoneRebuild(rebuild)}`,
+        ),
+      },
+    };
+  }
+  const detail = rebuild.outcome === "failed"
+    ? `failed at ${rebuild.step}: ${rebuild.message}`
+    : `ended ${rebuild.outcome}`;
+  logger.warn(
+    `Milestone rebuild for PR #${prNumber} ${detail} — left for the next pass`,
+    { repo, prNumber },
+  );
+  return {
+    ok: true,
+    value: {
+      processed: true,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      rung: "abandon",
+      summary: summary(`shared budget spent — milestone rebuild ${detail}`),
+    },
+  };
 }
 
 /**
