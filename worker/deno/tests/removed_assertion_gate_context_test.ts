@@ -616,6 +616,42 @@ Deno.test("cannot tell: an assertion whose brackets never close is reported when
   assertEquals(texts(findRemovedAssertions(patch)), ["assertEquals(a,"]);
 });
 
+Deno.test("cannot tell: a Python `else:` assertion more than 400 lines below its `if` is reported", async () => {
+  const body = Array.from({ length: 420 }, (_, i) => `        step(${i})`);
+  const chain = (tail: string) =>
+    src(
+      "def test_rows():",
+      "    if len(rows) > 5:",
+      ...body,
+      "    else:",
+      "        assert a == b",
+      `    ${tail}`,
+    );
+  const patch = await gatePatch({
+    "tests/test_rows.py": [chain("done()"), chain("done(1)")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assert a == b"]);
+});
+
+Deno.test("no flag: a TS `} else {` more than 400 lines below its `if` is linked by brace", async () => {
+  const body = Array.from({ length: 420 }, (_, i) => `    step(${i});`);
+  const chain = (tail: string) =>
+    src(
+      'Deno.test("x", () => {',
+      "  if (rows.length > 5) {",
+      ...body,
+      "  } else {",
+      "    assertEquals(a, b);",
+      "  }",
+      `  ${tail}`,
+      "});",
+    );
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [chain("done();"), chain("done(1);")],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
 Deno.test("cannot tell: a removed assertion the lexer hides is still reported by the raw-line backstop", () => {
   // A regex literal holding a backtick makes the lexer open a template
   // literal, so the assertion below it is blanked from the lexed scan.
@@ -631,6 +667,332 @@ Deno.test("cannot tell: a removed assertion the lexer hides is still reported by
     "",
   ].join("\n");
   assertEquals(texts(findRemovedAssertions(diff)), ["assertEquals(a, b);"]);
+});
+
+Deno.test("cannot tell: an assertion line inside a carried-over template literal is reported even when moved", async () => {
+  // A line that starts inside a multi-line string has no context the gate
+  // can read, so a verbatim copy in another file does not vouch for it.
+  const fixture = src("const fixture = `", "assertEquals(a, b);", "`;");
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [
+      fixture + 'Deno.test("x", () => {});\n',
+      'Deno.test("x", () => {});\n',
+    ],
+    "worker/deno/tests/bar_test.ts": [
+      'Deno.test("y", () => {});\n',
+      'Deno.test("y", () => {});\n' + fixture,
+    ],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assertEquals(a, b);"]);
+});
+
+// --- A regex literal holding a backtick (PR #3148 review) -------------------
+
+/**
+ * The line from coding_guidelines_layers_2574_test.ts that opened a phantom
+ * template literal and hid every guard, skip and inner-line edit below it.
+ */
+const BACKTICK_REGEX_HELPER = src(
+  "function words(text: string): string[] {",
+  '  return text.replace(/[*_`>]/g, " ").split(/\\s+/).filter(Boolean);',
+  "}",
+  "",
+);
+
+/** The Test Plan a careless agent writes: it names no removed assertion. */
+const VAGUE_PLAN = "## Test Plan\n\n- edited a test\n";
+
+Deno.test("regex: below `/[*_`>]/g`, an assertion wrapped in a multi-line `if (false) { }` is removed", async () => {
+  const path = "worker/deno/tests/foo_test.ts";
+  const patch = await gatePatch({
+    [path]: [
+      BACKTICK_REGEX_HELPER + src(
+        'Deno.test("words", () => {',
+        '  assertEquals(words("a b").length, 2);',
+        "});",
+      ),
+      BACKTICK_REGEX_HELPER + src(
+        'Deno.test("words", () => {',
+        "  if (false) {",
+        '    assertEquals(words("a b").length, 2);',
+        "  }",
+        "});",
+      ),
+    ],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals(words("a b").length, 2);',
+  ]);
+  assertFalse(
+    validateRemovedAssertions({
+      changedFiles: [path],
+      testDiff: patch,
+      prSummaryContent: VAGUE_PLAN,
+    }).valid,
+  );
+});
+
+Deno.test("regex: below `/[*_`>]/g`, an inner-line edit of a wrapped `assertEquals(` is removed", async () => {
+  const path = "worker/deno/tests/foo_test.ts";
+  const wrapped = (expected: string) =>
+    BACKTICK_REGEX_HELPER + src(
+      'Deno.test("outcome", () => {',
+      "  assertEquals(",
+      "    decide(words(text)),",
+      `    "${expected}",`,
+      "  );",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [wrapped("failure"), wrapped("continue")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals( decide(words(text)), "failure", );',
+  ]);
+  assertFalse(
+    validateRemovedAssertions({
+      changedFiles: [path],
+      testDiff: patch,
+      prSummaryContent: VAGUE_PLAN,
+    }).valid,
+  );
+});
+
+Deno.test("regex: below `/[*_`>]/g`, an assertion moved into `Deno.test.ignore(` is removed", async () => {
+  const path = "worker/deno/tests/foo_test.ts";
+  const patch = await gatePatch({
+    [path]: [
+      BACKTICK_REGEX_HELPER + src(
+        'Deno.test("words", () => {',
+        '  assertEquals(words("a b").length, 2);',
+        "});",
+      ),
+      BACKTICK_REGEX_HELPER + src(
+        'Deno.test("words", () => {});',
+        "",
+        'Deno.test.ignore("words later", () => {',
+        '  assertEquals(words("a b").length, 2);',
+        "});",
+      ),
+    ],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assertEquals(words("a b").length, 2);',
+  ]);
+  assertFalse(
+    validateRemovedAssertions({
+      changedFiles: [path],
+      testDiff: patch,
+      prSummaryContent: VAGUE_PLAN,
+    }).valid,
+  );
+});
+
+Deno.test("no flag: below `/[*_`>]/g`, an assertion moved to a live test in another file is moved", async () => {
+  // The regex closes where it should: the lines after it are lexed as code,
+  // so a plain move is matched with its context rather than failed closed.
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [
+      BACKTICK_REGEX_HELPER + src(
+        'Deno.test("a", () => {',
+        '  assertEquals(words("a b").length, 2);',
+        "});",
+      ),
+      BACKTICK_REGEX_HELPER + src('Deno.test("a", () => {});'),
+    ],
+    "worker/deno/tests/bar_test.ts": [
+      BACKTICK_REGEX_HELPER + src('Deno.test("b", () => {});'),
+      BACKTICK_REGEX_HELPER + src(
+        'Deno.test("b", () => {',
+        '  assertEquals(words("a b").length, 2);',
+        "});",
+      ),
+    ],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+Deno.test("no flag: a division is not lexed as a regex literal", async () => {
+  // `total / 2` follows an operand, so the `/` is division; lexing it as a
+  // regex would blank `/ 2; const tick = ` and open the backtick below.
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [
+      src(
+        'Deno.test("x", () => {',
+        "  const half = total / 2; const note = `/`;",
+        "  assertEquals(half, 1);",
+        "});",
+      ),
+      src(
+        'Deno.test("x", () => {',
+        "  const half = total / 2; const note = `/`;",
+        "  const spare = 0;",
+        "  assertEquals(half, 1);",
+        "});",
+      ),
+    ],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
+});
+
+// --- An else / elif branch depends on the `if` head (PR #3148 review) -------
+
+Deno.test("chain: a TS `} else {` assertion whose leading `if` condition changes is removed", async () => {
+  const path = "worker/deno/tests/foo_test.ts";
+  const chain = (condition: string) =>
+    src(
+      'Deno.test("x", () => {',
+      `  if (${condition}) {`,
+      "    skipped();",
+      "  } else {",
+      "    assertEquals(a, b);",
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    [path]: [chain("rows.length > 5"), chain("true")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assertEquals(a, b);"]);
+  assertFalse(
+    validateRemovedAssertions({
+      changedFiles: [path],
+      testDiff: patch,
+      prSummaryContent: VAGUE_PLAN,
+    }).valid,
+  );
+});
+
+Deno.test("chain: a TS `} else if (…) {` assertion whose leading `if` condition changes is removed", async () => {
+  const chain = (condition: string) =>
+    src(
+      'Deno.test("x", () => {',
+      `  if (${condition}) {`,
+      "    skipped();",
+      "  } else if (ready) {",
+      "    assertEquals(a, b);",
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [
+      chain("rows.length > 5"),
+      chain(
+        "rows.length > 0",
+      ),
+    ],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assertEquals(a, b);"]);
+});
+
+Deno.test("chain: an unindented brace `} else {` is tied to its `if` by brace, not indentation", async () => {
+  const chain = (condition: string) =>
+    src(
+      'Deno.test("x", () => {',
+      `if (${condition}) {`,
+      "skipped();",
+      "} else {",
+      "assertEquals(a, b);",
+      "}",
+      "});",
+    );
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [chain("rows.length > 5"), chain("true")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assertEquals(a, b);"]);
+});
+
+Deno.test("chain: a one-line TS `if … else` assertion whose `if` condition changes is removed", async () => {
+  const chain = (condition: string) =>
+    src(
+      'Deno.test("x", () => {',
+      `  if (${condition}) { skipped(); } else { assertEquals(a, b); }`,
+      "});",
+    );
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [chain("rows.length > 5"), chain("true")],
+  });
+  assertEquals(findRemovedAssertions(patch).length, 1);
+});
+
+Deno.test("chain: a Python `elif` assertion whose leading `if` condition changes is removed", async () => {
+  const path = "tests/test_rows.py";
+  const chain = (condition: string) =>
+    src(
+      "def test_rows():",
+      `    if ${condition}:`,
+      "        skipped()",
+      "    elif ready:",
+      "        assert a == b",
+    );
+  const patch = await gatePatch({
+    [path]: [chain("len(rows) > 5"), chain("True")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assert a == b"]);
+  assertFalse(
+    validateRemovedAssertions({
+      changedFiles: [path],
+      testDiff: patch,
+      prSummaryContent: VAGUE_PLAN,
+    }).valid,
+  );
+});
+
+Deno.test("chain: a Python `else:` assertion whose leading `if` condition changes is removed", async () => {
+  const chain = (condition: string) =>
+    src(
+      "def test_rows():",
+      `    if ${condition}:`,
+      "        skipped()",
+      "    elif ready:",
+      "        pass",
+      "    else:",
+      "        assert a == b",
+    );
+  const patch = await gatePatch({
+    "tests/test_rows.py": [chain("len(rows) > 5"), chain("True")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), ["assert a == b"]);
+});
+
+Deno.test("chain: a Rust match-arm assertion whose earlier arm becomes a catch-all is removed", async () => {
+  const chain = (firstArm: string) =>
+    src(
+      "#[test]",
+      "fn rows() {",
+      "    match load() {",
+      `        ${firstArm} => {}`,
+      "        Some(row) => {",
+      '            assert_eq!(row.name, "BBB");',
+      "        }",
+      "    }",
+      "}",
+    );
+  const patch = await gatePatch({
+    "tests/rows_test.rs": [chain("None"), chain("_")],
+  });
+  assertEquals(texts(findRemovedAssertions(patch)), [
+    'assert_eq!(row.name, "BBB");',
+  ]);
+});
+
+Deno.test("no flag: an edit inside the `if` branch body leaves the `else` assertion kept", async () => {
+  const chain = (body: string) =>
+    src(
+      'Deno.test("x", () => {',
+      "  if (rows.length > 5) {",
+      `    ${body}`,
+      "  } else {",
+      "    assertEquals(a, b);",
+      "  }",
+      "});",
+    );
+  const patch = await gatePatch({
+    "worker/deno/tests/foo_test.ts": [
+      chain("skipped();"),
+      chain("skipped(1);"),
+    ],
+  });
+  assertEquals(findRemovedAssertions(patch), []);
 });
 
 // --- Linear time on hostile input (ReDoS / nesting guidance) ----------------

@@ -333,11 +333,11 @@ function canonicalise(statement: string): string {
     : result;
 }
 
-/** A removed or added content block: consecutive `-`/`+` lines in one hunk. */
+/** A removed content block: consecutive `-` lines in one hunk. */
 interface DiffBlock {
   file: string;
   lines: string[];
-  /** Index in the file's old side of the block's first line (removed blocks). */
+  /** Index in the file's old side of the block's first line. */
   start: number;
 }
 
@@ -357,14 +357,13 @@ interface FilePatch {
   oldLines: SideLine[];
   newLines: SideLine[];
   removedBlocks: DiffBlock[];
-  addedBlocks: DiffBlock[];
   /** `seq` of the last `-`/`+` line in the patch, or -1 when none. */
   lastChangeSeq: number;
 }
 
 /**
  * Parse a unified diff into the test files it touches, each with its old
- * and new side and its removed and added blocks. Header lines (`--- `/`+++ `)
+ * and new side and its removed blocks. Header lines (`--- `/`+++ `)
  * are only read while in header mode, so a hunk line like `-- comment`
  * (rendered `--- comment`) is never mistaken for a file header.
  */
@@ -384,7 +383,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
 
   let removedBlock: string[] = [];
   let removedStart = 0;
-  let addedBlock: string[] = [];
 
   const currentFile = () =>
     newPath !== null && newPath !== "/dev/null" ? newPath : (oldPath ?? "");
@@ -399,12 +397,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
     }
     removedBlock = [];
   };
-  const flushAdded = () => {
-    if (addedBlock.length > 0 && patch) {
-      patch.addedBlocks.push({ file: patch.file, lines: addedBlock, start: 0 });
-    }
-    addedBlock = [];
-  };
   const startPatch = () => {
     if (patch || !isTestFile) return;
     const file = currentFile();
@@ -414,7 +406,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
       oldLines: [],
       newLines: [],
       removedBlocks: [],
-      addedBlocks: [],
       lastChangeSeq: -1,
     };
     patches.push(patch);
@@ -423,7 +414,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
   for (const line of lines) {
     if (DIFF_HEADER_RE.test(line)) {
       flushRemoved();
-      flushAdded();
       oldPath = null;
       newPath = null;
       isTestFile = false;
@@ -452,7 +442,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
         inHeader = false;
         inHunk = true;
         flushRemoved();
-        flushAdded();
         startPatch();
       }
       continue;
@@ -460,7 +449,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
 
     if (HUNK_RE.test(line)) {
       flushRemoved();
-      flushAdded();
       inHunk = true;
       startPatch();
       continue;
@@ -474,7 +462,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
     }
 
     if (line.startsWith("-")) {
-      flushAdded();
       if (removedBlock.length === 0) removedStart = current.oldLines.length;
       removedBlock.push(line.slice(1));
       current.oldLines.push({ raw: line.slice(1), changed: true, seq });
@@ -484,7 +471,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
     }
     if (line.startsWith("+")) {
       flushRemoved();
-      addedBlock.push(line.slice(1));
       current.newLines.push({ raw: line.slice(1), changed: true, seq });
       current.lastChangeSeq = seq;
       seq++;
@@ -492,7 +478,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
     }
 
     flushRemoved();
-    flushAdded();
     if (line.startsWith(" ")) {
       const raw = line.slice(1);
       current.oldLines.push({ raw, changed: false, seq });
@@ -501,7 +486,6 @@ function parseTestFilePatches(diffText: string): FilePatch[] {
     }
   }
   flushRemoved();
-  flushAdded();
 
   return patches;
 }
@@ -559,16 +543,22 @@ function isIdentChar(ch: string | undefined): boolean {
 /**
  * Lex a side's lines with a manual character loop (linear time, no regex
  * over the whole text). Line comments, block comments and string contents
- * are blanked in `code`; comments alone are removed in `stripped`.
- * Lexing is a heuristic — a regex literal or an exotic string form can
- * mislead it — so {@link findRemovedAssertions} keeps the raw-line scan of
- * removed lines as a backstop for any assertion line it hides.
+ * are blanked in `code`; comments alone are removed in `stripped`. In the
+ * C-like rules a JS/TS regex literal is blanked like a string, so a quote
+ * or backtick inside it does not open a phantom string that hides the
+ * lines below (PR #3148 review).
+ * Lexing is a heuristic — an exotic string form can still mislead it — so
+ * {@link findRemovedAssertions} fails closed on any removed assertion line
+ * the lexer entered inside a carried-over string or block comment.
  */
 function lexLines(lines: readonly SideLine[], lang: Lang): LexedLine[] {
   const out: LexedLine[] = [];
   let inBlockComment = false;
   let open: OpenString | null = null;
   const slashComments = lang === "rust" || lang === "c";
+  // The last significant code token, carried across lines so a `/` that
+  // opens a line continuing an expression (`a\n  / b`) stays division.
+  let prev: PrevToken = { char: "", word: "" };
 
   for (const { raw } of lines) {
     let code = "";
@@ -603,6 +593,7 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedLine[] {
           stripped += open.close;
           i += open.close.length;
           open = null;
+          prev = OPERAND;
           continue;
         }
         code += " ";
@@ -628,6 +619,17 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedLine[] {
         sawComment = true;
         break;
       }
+      if (lang === "c" && ch === "/" && regexCanStart(prev)) {
+        const end = regexLiteralEnd(raw, i);
+        if (end !== -1) {
+          sawCode = true;
+          code += "/" + " ".repeat(end - i - 2) + "/";
+          stripped += raw.slice(i, end);
+          i = end;
+          prev = OPERAND;
+          continue;
+        }
+      }
       const opened = openStringAt(raw, i, lang);
       if (opened) {
         sawCode = true;
@@ -635,9 +637,23 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedLine[] {
         stripped += raw.slice(i, i + opened.length);
         i += opened.length;
         open = opened.string;
+        prev = OPERAND;
         continue;
       }
-      if (!/\s/.test(ch)) sawCode = true;
+      if (!/\s/.test(ch)) {
+        sawCode = true;
+        let word = "";
+        if (isIdentChar(ch)) {
+          // Capped: no keyword is longer, and a long identifier stays linear.
+          const cont = i > 0 && isIdentChar(raw[i - 1]);
+          word = !cont
+            ? ch
+            : prev.word.length > 10
+            ? prev.word
+            : prev.word + ch;
+        }
+        prev = { char: ch, word };
+      }
       code += ch;
       stripped += ch;
       i++;
@@ -651,6 +667,89 @@ function lexLines(lines: readonly SideLine[], lang: Lang): LexedLine[] {
     });
   }
   return out;
+}
+
+/** The last significant code character, and the identifier it ends. */
+interface PrevToken {
+  char: string;
+  word: string;
+}
+
+/** A token after which a `/` is division: a closed string, regex or operand. */
+const OPERAND: PrevToken = { char: ")", word: "" };
+
+/** Punctuation after which an expression — so a regex literal — can begin. */
+const REGEX_PRECEDERS = new Set([
+  "(",
+  ",",
+  "=",
+  ":",
+  "[",
+  "!",
+  "&",
+  "|",
+  "?",
+  "{",
+  "}",
+  ";",
+]);
+
+/** Keywords after which an expression — so a regex literal — can begin. */
+const REGEX_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "instanceof",
+  "in",
+  "of",
+  "new",
+  "delete",
+  "void",
+  "throw",
+  "case",
+  "do",
+  "else",
+  "yield",
+  "await",
+]);
+
+/**
+ * Whether a `/` after `prev` opens a regex literal rather than dividing:
+ * at the start of the file, after an operator or opening punctuation, or
+ * after a keyword such as `return` or `typeof`.
+ */
+function regexCanStart(prev: PrevToken): boolean {
+  if (prev.char === "") return true;
+  if (REGEX_PRECEDERS.has(prev.char)) return true;
+  return prev.word !== "" && REGEX_KEYWORDS.has(prev.word);
+}
+
+/**
+ * The index just past a single-line regex literal opening at `raw[i]` (its
+ * closing `/` and any flags), or -1 when none closes on the line — then the
+ * `/` is division after all, since a regex literal cannot span lines. A `/`
+ * inside a `[…]` class or escaped with a backslash does not close it. `//`
+ * and `/*` are comments, matched before this is called.
+ */
+function regexLiteralEnd(raw: string, i: number): number {
+  let inClass = false;
+  for (let j = i + 1; j < raw.length; j++) {
+    const ch = raw[j];
+    if (ch === "\\") {
+      j++;
+      continue;
+    }
+    if (inClass) {
+      if (ch === "]") inClass = false;
+      continue;
+    }
+    if (ch === "[") inClass = true;
+    else if (ch === "/") {
+      let end = j + 1;
+      while (end < raw.length && /[a-z]/i.test(raw[end]!)) end++;
+      return end;
+    }
+  }
+  return -1;
 }
 
 /** A string literal opening at `raw[i]`: how many chars open it, and its rules. */
@@ -855,6 +954,17 @@ function isDeclLine(trimmedCode: string): boolean {
 const CALLBACK_OPENER_RE =
   /^(?:async\s+)?(?:\([^()]*\)|[\w$]+)\s*(?::\s*[\w$.<>[\], ]+)?=>\s*\{$|^(?:async\s+)?function\s*\*?\s*\([^()]*\)\s*\{$/;
 
+/** A line continuing an `if`/`try`/`switch`/`match` chain (see `chainLink`). */
+const CHAIN_LINK_RE =
+  /^(?:\}\s*)?(?:else|elif|elsif|except|catch|finally|rescue|ensure)\b|^(?:case\b|default\s*:)/;
+
+/** A line opening a chain: Python's `for`/`while` take an `else:` too. */
+const CHAIN_HEAD_RE =
+  /^(?:if|unless|try|switch|match|select|when|for|while|begin)\b/;
+
+/** A line holding only closing brackets (`}` before an uncuddled `else`). */
+const CLOSERS_ONLY_RE = /^[)}\]]+[;,]?$/;
+
 /** An assertion statement found on one side of a test file's patch. */
 interface SideStatement {
   /** Index of the statement's first and last line on its side. */
@@ -871,6 +981,12 @@ interface SideStatement {
   key: string;
   /** True when the statement's brackets never closed within the cap. */
   unclosed: boolean;
+  /**
+   * True when the walk back to the opening `if`/`try`/`match` of an
+   * enclosing `else`/`elif`/arm ran out of budget, so a changed head the
+   * walk did not reach could hide behind an unchanged key.
+   */
+  chainCut: boolean;
 }
 
 /**
@@ -883,8 +999,11 @@ class LineFacts {
   readonly #flags = new Map<string, Uint8Array>();
   readonly #keys: (string | undefined)[] = [];
 
-  constructor(lexed: readonly LexedLine[]) {
+  readonly #lang: Lang;
+
+  constructor(lexed: readonly LexedLine[], lang: Lang) {
     this.#lexed = lexed;
+    this.#lang = lang;
   }
 
   #flag(name: string, i: number, test: (trimmed: string) => boolean) {
@@ -917,6 +1036,23 @@ class LineFacts {
   }
   callback(i: number): boolean {
     return this.#flag("callback", i, (t) => CALLBACK_OPENER_RE.test(t));
+  }
+  /**
+   * Whether line `i` continues a chain whose earlier heads decide whether
+   * it runs: `else`, `elif`, `} else if`, `except`, `catch`, `finally`, a
+   * `case`/`default:` arm, or a Rust match arm (`Some(x) => {`).
+   */
+  chainLink(i: number): boolean {
+    return this.#flag(
+      "chainLink",
+      i,
+      (t) =>
+        CHAIN_LINK_RE.test(t) || (this.#lang === "rust" && t.includes("=>")),
+    );
+  }
+  /** Whether line `i` opens a chain: `if`, `try`, `switch`, `match`, a loop. */
+  chainHead(i: number): boolean {
+    return this.#flag("chainHead", i, (t) => CHAIN_HEAD_RE.test(t));
   }
   /**
    * Whether line `i`, enclosing an assertion, only names its scope: a test
@@ -983,7 +1119,13 @@ function analyseSide(
     }
   }
 
-  const facts = new LineFacts(lexed);
+  const facts = new LineFacts(lexed, lang);
+  /**
+   * For a line that continues a brace chain (`} else {`), the line whose
+   * `{` its leading `}` closes — the `if (…) {` or `} else if (…) {` it
+   * follows — however the code is indented.
+   */
+  const chainPrev = new Map<number, number>();
   /** Indices of the exit lines seen so far, ascending. */
   const exitLines: number[] = [];
   const indentStack: number[] = [];
@@ -1025,6 +1167,7 @@ function analyseSide(
         lexed,
         facts,
         exitLines,
+        chainPrev,
         i,
         ancestors,
         deep ? [...fileMarks, "N:…"] : fileMarks,
@@ -1035,10 +1178,15 @@ function analyseSide(
 
     if (indented) indentStack.push(i);
     if (facts.exit(i)) exitLines.push(i);
+    let firstClosed = -1;
     for (let c = 0; c < code.length; c++) {
       if (code[c] === "{") braceStack.push(i);
-      else if (code[c] === "}") braceStack.pop();
+      else if (code[c] === "}") {
+        const closed = braceStack.pop();
+        if (firstClosed === -1 && closed !== undefined) firstClosed = closed;
+      }
     }
+    if (firstClosed !== -1 && facts.chainLink(i)) chainPrev.set(i, firstClosed);
   }
   return { statements, lexed };
 }
@@ -1049,6 +1197,7 @@ function buildStatement(
   lexed: readonly LexedLine[],
   facts: LineFacts,
   exitLines: readonly number[],
+  chainPrev: ReadonlyMap<number, number>,
   start: number,
   ancestors: readonly number[],
   fileMarks: readonly string[],
@@ -1081,6 +1230,7 @@ function buildStatement(
   }
 
   const context: string[] = [...fileMarks];
+  let chainCut = false;
   let scopeStart = -1;
   let walked = 0;
   for (let k = 0; k < ancestors.length; k++) {
@@ -1089,6 +1239,16 @@ function buildStatement(
     const isDecl = facts.scope(a, k > 0 ? ancestors[k - 1]! : -1);
     if (isSkip) context.push("S:" + facts.key(a));
     else if (!isDecl) context.push("G:" + facts.key(a));
+    // An `else`/`elif`/`catch`/arm runs only as its earlier heads allow, so
+    // they are part of the context too (PR #3148 review): walk back through
+    // the chain by brace and by indentation to the opening `if`/`try`.
+    if (!isDecl && facts.chainLink(a)) {
+      const parent = k > 0 ? ancestors[k - 1]! : -1;
+      for (const head of chainHeads(lines, facts, chainPrev, a, parent)) {
+        if (head === -1) chainCut = true;
+        else context.push("C:" + facts.key(head));
+      }
+    }
     // Early exits are scanned from the innermost function of any kind —
     // a helper too — since an exit above it cannot skip its body.
     if (isDecl || facts.decl(a)) scopeStart = a;
@@ -1148,7 +1308,59 @@ function buildStatement(
     canonical: canonicalise(joined),
     key: canonicaliseUncapped(joined) + "\u0001" + context.join("\u0002"),
     unclosed,
+    chainCut,
   };
+}
+
+/**
+ * The earlier heads of the chain that line `link` continues, nearest first
+ * (with `-1` last when the walk ran out of budget):
+ * by brace (each `} else {` names the line whose `{` it closes) and by
+ * indentation (same-indent `if`/`elif`/`case` lines above it, skipping
+ * their deeper bodies). Each walk stops at the chain's opening head. A
+ * walk that runs past its budget ends the list with `-1`; the caller then
+ * reports the assertion (fail closed) rather than trust a partial key.
+ */
+function chainHeads(
+  lines: readonly SideLine[],
+  facts: LineFacts,
+  chainPrev: ReadonlyMap<number, number>,
+  link: number,
+  parent: number,
+): number[] {
+  const heads = new Set<number>();
+  let budget = MAX_SIBLING_WALK_LINES;
+
+  let at = chainPrev.get(link);
+  while (at !== undefined && !heads.has(at) && --budget > 0) {
+    heads.add(at);
+    // The brace walk reached the opening `if (…) {`: the chain is whole.
+    if (!facts.chainLink(at) && facts.chainHead(at)) return sortedHeads(heads);
+    at = facts.chainLink(at) ? chainPrev.get(at) : undefined;
+  }
+
+  const linkIndent = indentOf(lines[link]!.raw);
+  for (let s = link - 1; s > parent && --budget > 0; s--) {
+    const t = facts.trimmed(s);
+    if (t === "") continue;
+    const indent = indentOf(lines[s]!.raw);
+    if (indent > linkIndent) continue;
+    if (indent < linkIndent) break;
+    if (CLOSERS_ONLY_RE.test(t)) continue;
+    if (facts.chainLink(s)) {
+      heads.add(s);
+      continue;
+    }
+    if (facts.chainHead(s)) heads.add(s);
+    break;
+  }
+  const result = sortedHeads(heads);
+  return budget > 0 ? result : [...result, -1];
+}
+
+/** Chain heads, nearest first. */
+function sortedHeads(heads: ReadonlySet<number>): number[] {
+  return [...heads].sort((x, y) => y - x);
 }
 
 /** Removed assertion statements within a single removed block, by raw line. */
@@ -1212,13 +1424,20 @@ function extractAssertionsFromBlock(
  *   - an assertion re-added under a new guard, into a skipped test, or after
  *     a new early exit (its context differs);
  *   - an unchanged assertion whose guard, skip or preceding exit changed;
+ *   - an unchanged assertion in an `else`/`elif`/`catch` branch or match
+ *     arm whose earlier chain head (the leading `if` condition) changed;
  *   - an assertion whose brackets never close within the line cap, when the
- *     file changes at or after it (the gate cannot tell where it ends).
+ *     file changes at or after it (the gate cannot tell where it ends);
+ *   - an assertion in a chain branch whose walk back to the opening head
+ *     passes the 400-line budget, when no `{` links it to that head (the
+ *     gate cannot see the head).
  *
  * As a backstop for a lexer mistake, a removed line that opens an assertion
  * but that the lexer entered already inside a carried-over string or block
- * comment is still reported, unless it is re-added verbatim (the earlier
- * raw-line scan).
+ * comment is always reported, even when the same text is re-added: the gate
+ * cannot read its context, so it fails closed. An assertion-shaped line in a
+ * multi-line template literal or block comment that the diff removes or
+ * moves therefore has to be named in the Test Plan too.
  */
 export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
   const patches = parseTestFilePatches(diffText);
@@ -1235,20 +1454,8 @@ export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
   const newCounts = new Map<string, number>();
   for (const { newStatements } of analysed) {
     for (const statement of newStatements) {
-      if (statement.unclosed) continue;
+      if (statement.unclosed || statement.chainCut) continue;
       newCounts.set(statement.key, (newCounts.get(statement.key) ?? 0) + 1);
-    }
-  }
-
-  // Backstop "moved" set: assertions re-extracted from the added lines,
-  // compared by canonical *equality* — never substring containment, which
-  // let `// assertEquals(a, b);` "contain" the removed assertion.
-  const rawAddedCanonicals = new Set<string>();
-  for (const { patch } of analysed) {
-    for (const block of patch.addedBlocks) {
-      for (const assertion of extractAssertionsFromBlock(block)) {
-        rawAddedCanonicals.add(assertion.canonical);
-      }
     }
   }
 
@@ -1272,6 +1479,10 @@ export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
         }
         continue;
       }
+      if (statement.chainCut) {
+        report(patch.file, statement.text, statement.canonical);
+        continue;
+      }
       const count = newCounts.get(statement.key) ?? 0;
       if (count > 0) {
         newCounts.set(statement.key, count - 1);
@@ -1287,12 +1498,8 @@ export function findRemovedAssertions(diffText: string): RemovedAssertion[] {
         // string or comment that opens on its own line is not an assertion.
         if (covered.has(candidate.index)) continue;
         if (!oldLexed[candidate.index]?.startsInside) continue;
-        if (
-          candidate.canonical !== "" &&
-          rawAddedCanonicals.has(candidate.canonical)
-        ) {
-          continue;
-        }
+        // Such a line has no context the gate can read, so a copy re-added
+        // elsewhere cannot vouch for it: fail closed (PR #3148 review).
         report(candidate.file, candidate.text, candidate.canonical);
       }
     }

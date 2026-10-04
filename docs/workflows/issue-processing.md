@@ -1383,7 +1383,14 @@ sees every assertion in full and everything around it.
 On each side of each test file it lexes the source first, blanking
 comments and string contents (`//`, `/* */` and quotes for Rust and
 C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
-an assertion inside a comment or a string is not an assertion. It then
+an assertion inside a comment or a string is not an assertion. In C-like
+files (TypeScript, JavaScript and the like) a regex literal is blanked as
+well: a `/` where an expression can begin — at the start of the file, after
+`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, or after a keyword such as
+`return` or `typeof` — opens a one-line regex that ends at an unescaped `/`
+outside a `[…]` class. So a quote or backtick inside a regex (`` /[*_`>]/g ``)
+does not open a string that hides the lines below it. A `/` with no closing
+`/` on its line is division. It then
 collects every assertion statement — `assert…(`, `assert_eq!(`,
 `assert.x(`, `expect(` not preceded by `.`, and Python/bats
 `assert`/`assert_x` commands; `debug_assert!` and a declaration such as
@@ -1400,7 +1407,16 @@ ignoring whitespace, **and** the same context:
   group, a test function (`#[test]`, `test_…`) or a type or module is part
   of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
   callback such as `.forEach(`, a wrapper helper, or a helper function that
-  may never be called. So are skip markers on the enclosing test:
+  may never be called. When an enclosing line continues a chain — `else`,
+  `elif`, `} else if`, `except`, `catch`, `finally`, a `case`/`default:`
+  arm or a Rust match arm — the earlier heads of that chain back to its
+  opening `if`, `try`, `switch` or `match` are part of the context too. They
+  are found by brace (the `if (…) {` whose `{` a `} else {` closes) and by
+  indentation (same-indent heads above, skipping their bodies). So changing
+  the `if` condition above an `else` assertion is a removal. When no brace
+  links a branch to its head and the walk back passes 400 lines, the
+  assertion is reported, because the gate cannot see the head. So are skip
+  markers on the enclosing test:
   `it.skip(`, `Deno.test.ignore(`, `xit(`, `ignore: true`, `#[ignore]`,
   `#[should_panic]`, a non-test `#[cfg(…)]`, `@pytest.mark.skip`,
   `@unittest.skip`, `pytestmark`.
@@ -1420,7 +1436,10 @@ it ends. A re-wrap, a re-indent, or a move to another test or another
 test file with nothing new around it still counts as moved. As a backstop
 for a lexer mistake, a removed line that opens an assertion but that the
 lexer entered already inside a carried-over string or block comment is
-reported unless it is re-added verbatim.
+always reported, even when the same text is re-added: the gate cannot read
+its context, so it fails closed. An assertion-shaped line in a multi-line
+template literal or block comment that the diff removes or moves must
+therefore be named in the Test Plan too.
 
 Each remaining removed assertion must appear, ignoring whitespace, in the
 Test Plan section; otherwise PR creation is blocked and the notice lists
