@@ -98,11 +98,17 @@ export interface IndependentReviewResult {
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
-/** A `## Acceptance Criteria` heading, any level. */
-const SPEC_HEADING_RE = /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*:?\s*$/i;
+/**
+ * A `## Acceptance Criteria` heading, any level. Both heading tails are
+ * `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace runs with only an optional
+ * `:` between them backtrack quadratically on a heading padded with spaces and
+ * then any other character (Issue #3164).
+ */
+const SPEC_HEADING_RE = /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*(?::\s*)?$/i;
 
 /** A `## Standards Review` heading, any level. */
-const STANDARDS_HEADING_RE = /^\s{0,3}#{1,6}\s+standards\s+review\s*:?\s*$/i;
+const STANDARDS_HEADING_RE =
+  /^\s{0,3}#{1,6}\s+standards\s+review\s*(?::\s*)?$/i;
 
 /** Any markdown heading — the section boundary. */
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;

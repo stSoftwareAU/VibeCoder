@@ -61,14 +61,17 @@ export interface AcceptanceClosureResult {
 }
 
 // A markdown heading reading "Acceptance Criteria" (any heading level).
+// Every heading tail here is `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace
+// runs with only an optional `:` between them backtrack quadratically on a
+// heading padded with spaces and then any other character (Issue #3164).
 const ACCEPTANCE_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*(?::\s*)?$/i;
 
 // A grill-me "Accepted scope so far" heading (Issue #2562). Grill-me states the
 // scope it settled under this heading rather than "Acceptance Criteria", so an
 // issue refined by grill-me carried no criteria as far as this gate could see.
 const ACCEPTED_SCOPE_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*(?::\s*)?$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;

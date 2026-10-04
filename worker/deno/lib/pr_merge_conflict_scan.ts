@@ -71,7 +71,6 @@ import {
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
   exhaustedEscalationRoute,
-  MAX_RESTARTS_PER_ISSUE,
   mergeFallbackRunsFromHistory,
   requeueLabelName,
   summariseFailedAttempts,
@@ -85,8 +84,6 @@ import {
 } from "./merge_fallback_issue.ts";
 import { orderByPreference, preferredRepos } from "./conflict_queue_order.ts";
 import { addLabelToIssue, ensureLabelExists } from "./label_operations.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import {
   getLabelColour,
   getLabelDescription,
@@ -591,12 +588,10 @@ export interface FindConflictingPrOptions {
   cache?: IssueCache;
   /** Optional repo shuffler so no repo is starved. */
   shuffleRepos?: (repos: string[]) => string[];
-  /** Attempts allowed before the PR is left to a human. */
+  /** Attempts allowed before the budget is spent and abandon-restart decides. */
   maxAttempts?: number;
-  /** Disrupted attempts allowed before the PR is escalated (Issue #395). */
+  /** Disrupted attempts allowed before the PR is left queued and logged loudly (Issue #395). */
   maxDisruptedAttempts?: number;
-  /** Label applied on escalation. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
   /**
    * Fleet logins whose marker comments count (Issue #1247).
    *
@@ -608,8 +603,8 @@ export interface FindConflictingPrOptions {
    */
   trustedAuthors?: readonly string[];
   /**
-   * Abandon-and-restart seam (Issue #1115) — the rung between a spent budget
-   * and `needs-human`. Defaults to {@link abandonAndRestart}.
+   * Abandon-and-restart seam (Issue #1115) — the rung a spent budget is
+   * handed to. Defaults to {@link abandonAndRestart}.
    */
   abandonRestart?: (
     request: AbandonRestartRequest,
@@ -771,31 +766,6 @@ export function hasExhaustedDisruptedAttempts(
   return disruptedCount >= maxDisrupted;
 }
 
-/** Why a repeatedly disrupted conflict is being handed to a human. */
-export function buildDisruptionEscalationReason(
-  prNumber: number,
-  disruptedCount: number,
-): string {
-  return [
-    `${disruptedCount} merge-conflict resolution attempts on PR #${prNumber} ` +
-    "were disrupted before they reached a conclusion — each posted an " +
-    "attempt comment and then went silent, so the conflict itself was never " +
-    "judged.",
-    "",
-    "That points at the worker running the attempt (a restart, a swept " +
-    "heartbeat, a timeout or an exhausted run budget), not at the conflict. " +
-    "The branch was left exactly as its author pushed it, so no change has " +
-    "been lost.",
-  ].join("\n");
-}
-
-/** What the human must do about a repeatedly disrupted conflict. */
-export const DISRUPTED_CONFLICT_NEXT_STEP =
-  "Check the worker logs for why the resolution runs are being cut short, " +
-  "then either merge the base branch into the PR branch by hand — keeping " +
-  "both sides' changes — or remove the `needs-human` label to let the " +
-  "worker try again.";
-
 /*
  * A spent budget used to end at `needs-human` from here, with
  * `buildExhaustedEscalationReason` and `EXHAUSTED_CONFLICT_NEXT_STEP` writing
@@ -803,7 +773,8 @@ export const DISRUPTED_CONFLICT_NEXT_STEP =
  * asks a person any more. The budget-spent branch closes the PR, re-queues the
  * work and files the `merge-fallback` flag; a hand-applied `needs-human` is
  * still honoured as a veto (a human who labels a PR owns it), and the
- * disruption bound below is not a conflict outcome and still escalates.
+ * disruption bound below is logged loudly and leaves the PR queued rather
+ * than escalating (Issue #3032) — neither path ever applies `needs-human`.
  */
 
 /**
@@ -1054,62 +1025,6 @@ async function fetchMergeableStates(
 }
 
 /**
- * Hand a conflicting PR the scan will not act on to a human (Issue #395).
- *
- * Runs from the scan rather than the processor on purpose: both cases it
- * covers — repeated disruption, and a budget spent without the processor's
- * escalation landing — are cases where the processor could not finish, so the
- * escalation must not depend on getting a clone and reaching it. Best-effort
- * — a failure here is logged loudly and the PR stays in the queue.
- */
-async function escalateConflictingPr(args: {
-  repo: string;
-  prNumber: number;
-  heading: string;
-  reason: string;
-  nextStep: string;
-  dedupKey: string;
-  needsHumanLabel: string;
-  ghCommandFn: (args: string[]) => Promise<string>;
-  logger: Logger;
-}): Promise<void> {
-  const { repo, prNumber, logger } = args;
-
-  const escalation = await escalateToHuman({
-    ghClient: createGhEscalationClient(args.ghCommandFn),
-    repo,
-    target: { kind: "pr", number: prNumber },
-    needsHumanLabel: args.needsHumanLabel,
-    heading: args.heading,
-    reason: args.reason,
-    nextStep: args.nextStep,
-    dedupKey: args.dedupKey,
-    deps: {
-      github: {
-        ensureLabelExists: (
-          labelRepo: string,
-          labelName: string,
-          colour?: string,
-          description?: string,
-        ) =>
-          ensureLabelExists(labelRepo, labelName, colour, description, {
-            ghCommandFn: args.ghCommandFn,
-          }),
-      },
-    },
-    logger,
-  });
-  if (!escalation.ok) {
-    logger.error("Failed to escalate a conflicting PR from the scan", {
-      repo,
-      prNumber,
-      heading: args.heading,
-      error: escalation.error.message,
-    });
-  }
-}
-
-/**
  * File the `merge-fallback` flag for a PR this pass just abandoned, and link it
  * from the PR (Issue #2310, part of #2298).
  *
@@ -1329,11 +1244,8 @@ export function buildParkedPrComment(args: {
     conflictParkedMarker(args.base, args.standDownAtMs),
     "⏸️ **Parked on `merge-conflict` until the base moves**",
     "",
-    `Issue #${args.issueNumber} has had its ` +
-    `${MAX_RESTARTS_PER_ISSUE} restarts: this work has already been closed ` +
-    "and redone off the current base twice, and both replacements conflicted " +
-    "again. A third redo of the same work against the same base is not a " +
-    "different experiment, so this PR is **left open** rather than closed.",
+    `Issue #${args.issueNumber} declined a further restart of this work, ` +
+    "so this PR is **left open** rather than closed.",
     "",
     `It keeps the \`${MERGE_CONFLICT_LABEL}\` label and stays in the queue, ` +
     `but no further resolution attempt is started while \`${args.baseBranch}\` ` +
@@ -1422,9 +1334,8 @@ async function parkConflictingPr(
 
   logger.warn(
     `PR #${prNumber} was parked on \`${MERGE_CONFLICT_LABEL}\` — issue ` +
-      `#${args.issueNumber} has spent its ${MAX_RESTARTS_PER_ISSUE} restarts, ` +
-      `so nothing is attempted until \`${args.baseBranch}\` moves off ` +
-      `${args.base}`,
+      `#${args.issueNumber} declined a further restart, so nothing is ` +
+      `attempted until \`${args.baseBranch}\` moves off ${args.base}`,
     {
       repo,
       prNumber,
@@ -1533,9 +1444,10 @@ function prAuthorLogin(pr: PrEntry): string | undefined {
  * already carrying `needs-human` or already at its attempt cap is labelled
  * but not returned.
  *
- * A PR whose attempts keep being disrupted before they conclude is escalated
- * here rather than handed on (Issue #395) — the processor may be exactly what
- * cannot finish, so the escalation must not depend on reaching it.
+ * A PR whose attempts keep being disrupted before they conclude is not
+ * escalated (Issue #3032) — it is logged loudly and left queued, since the
+ * processor may be exactly what cannot finish, so nothing here depends on
+ * reaching it.
  *
  * Every PR the pass decides on gets one {@link ConflictPrDecision} — attempted,
  * or skipped for exactly one {@link ConflictSkipReason} — recorded through the
@@ -1564,7 +1476,6 @@ export async function findConflictingPr(
     shuffleRepos,
     maxAttempts = CONFLICT_RESOLUTION_BUDGET,
     maxDisruptedAttempts = DEFAULT_MAX_DISRUPTED_ATTEMPTS,
-    needsHumanLabel = NEEDS_HUMAN_LABEL,
     exclude,
     prefer,
     nowMs = Date.now,
@@ -1749,15 +1660,15 @@ export async function findConflictingPr(
     // thread is read first so a trusted CI-fix marker can be seen; the lane's
     // own escalation still stops it, and the budget, disruption bound, park
     // and abandon below apply unchanged.
-    if (labels.includes(needsHumanLabel)) {
+    if (labels.includes(NEEDS_HUMAN_LABEL)) {
       if (!isCiFixEscalationOnly(prComments)) {
         return {
           outcome: "skipped",
-          reason: { kind: "needs-human", label: needsHumanLabel },
+          reason: { kind: "needs-human", label: NEEDS_HUMAN_LABEL },
         };
       }
       logger.info(
-        `PR #${pr.number} carries '${needsHumanLabel}' from a CI-fix ` +
+        `PR #${pr.number} carries '${NEEDS_HUMAN_LABEL}' from a CI-fix ` +
           "escalation — resolving its merge conflict anyway",
         { repo, prNumber: pr.number },
       );
@@ -1905,9 +1816,9 @@ export async function findConflictingPr(
             standDownAtMs: nowMs(),
             fallbackAction: `Left ${repo}#${pr.number} ` +
               `(\`${pr.headRefName}\`) open on \`${MERGE_CONFLICT_LABEL}\`. ` +
-              `Issue #${abandon.reason.issueNumber} has spent its ` +
-              `${MAX_RESTARTS_PER_ISSUE} restarts, so the PR is parked at ` +
-              `base \`${base}\` and re-attempted only when that tip moves.`,
+              `Issue #${abandon.reason.issueNumber} declined a further ` +
+              `restart, so the PR is parked at base \`${base}\` and ` +
+              "re-attempted only when that tip moves.",
             trustedAuthors,
             ...(options.fileFallbackFlag !== undefined
               ? { fileFallbackFlag: options.fileFallbackFlag }
@@ -1965,26 +1876,17 @@ export async function findConflictingPr(
     // flight (Issue #395) — there is no cooldown left to wait out before
     // saying so (Issue #2305), and the cross-host PR lock is what keeps two
     // hosts off one PR. It does not spend the merge budget, but repeated
-    // disruption is its own failure and is escalated rather than retried
-    // silently forever.
+    // disruption is its own failure. It is not escalated (Issue #3032): the
+    // worker, not the conflict, is the problem, so the fix is loud logs for a
+    // human to find, not a label asking one to act.
     const disruptedCount = countDisruptedAttempts(history);
     if (hasExhaustedDisruptedAttempts(disruptedCount, maxDisruptedAttempts)) {
       logger.warn(
-        `PR #${pr.number} has had ${disruptedCount} merge-conflict attempts ` +
-          "disrupted before any conclusion — escalating to a human",
+        `PR #${pr.number} disrupted ${disruptedCount} times before any ` +
+          "conclusion — left queued for the next pass; no label added, no " +
+          "human asked (Issue #3032)",
         { repo, prNumber: pr.number, disruptedCount },
       );
-      await escalateConflictingPr({
-        repo,
-        prNumber: pr.number,
-        heading: "Merge-conflict resolution keeps being disrupted",
-        reason: buildDisruptionEscalationReason(pr.number, disruptedCount),
-        nextStep: DISRUPTED_CONFLICT_NEXT_STEP,
-        dedupKey: `merge-conflict-disrupted-${pr.number}`,
-        needsHumanLabel,
-        ghCommandFn,
-        logger,
-      });
       return {
         outcome: "skipped",
         reason: {
