@@ -684,7 +684,7 @@ simply no longer waits out a stopwatch to do it.
   pieces disjoint (`\s*(?::\s*)?$`), call `trimEnd()` instead of matching
   trailing whitespace, or cap the run. Then add one hostile case per pattern:
   a long run of the shared character followed by a character the pattern
-  rejects. A parser with several patterns needs a case for each. VibeCoder#3085
+  rejects. A parser with several patterns needs a case for each. stSoftwareAU/VibeCoder#3085
   capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE` in the same file
   with the same defect, and #3160's hostile cases covered the inline form while
   `BRANCH_OUTCOMES_HEADING_RE` took about a minute per call (Issue #3164).
