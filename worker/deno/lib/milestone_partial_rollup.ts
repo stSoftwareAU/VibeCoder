@@ -54,9 +54,18 @@ const LIST_LIMIT = 100;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 /** A title embedded in the HTML-comment marker must not break out of it. */
 const TITLE_PATTERN = /^[^"<>\r\n]{1,255}$/;
-/** GitHub closing keywords followed by an issue reference or issue URL. */
+/**
+ * GitHub closing keywords followed by an issue reference or issue URL.
+ *
+ * The body carries branch names of any length, so no two quantifiers here may
+ * share characters across an optional token (Issue #3206). The separator is
+ * `\s*(?::\s*)?`, and each side of `owner/repo#N` is capped at 100 characters
+ * (a GitHub owner is at most 39, a repository name at most 100): uncapped,
+ * `[\w.-]*\/?[\w.-]*` split a long name in every way before the missing `#`,
+ * and a branch repeating `fix.` rescanned to its end from every keyword.
+ */
 const CLOSING_KEYWORD_PATTERN =
-  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]*\/?[\w.-]*#\d+|https?:\/\/\S+\/issues\/\d+)/i;
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*(?::\s*)?(?:(?:[\w.-]{0,100}\/)?[\w.-]{0,100}#\d+|https?:\/\/\S+\/issues\/\d+)/i;
 
 /** The body marker identifying the partial rollup of `milestoneTitle`. */
 export function partialRollupMarker(milestoneTitle: string): string {
