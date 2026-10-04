@@ -35,6 +35,7 @@ import {
   spentConflictAttempts,
 } from "../lib/pr_merge_conflict_scan.ts";
 import {
+  type AbandonRestartOutcome,
   type AbandonRestartRequest,
   type AbandonStep,
   CONFLICT_RESTART_MARKER,
@@ -2008,7 +2009,7 @@ Deno.test("findConflictingPr - a moved base offers a parked PR again with a fres
 function declinedAbandon(
   issueNumber: number,
   restartCount: number,
-) {
+): () => Promise<AbandonRestartOutcome> {
   return () =>
     Promise.resolve({
       outcome: "declined",
@@ -2020,7 +2021,6 @@ function declinedAbandon(
       },
     });
 }
-
 
 Deno.test("findConflictingPr - a park whose marker cannot be posted is not a park (Issue #2312)", async () => {
   // The comment is what makes the park real: without it nothing records the
