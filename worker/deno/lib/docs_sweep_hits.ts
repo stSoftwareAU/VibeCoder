@@ -132,11 +132,12 @@ export function extractGrepTerms(rawBody: string): string[] {
 }
 
 /**
- * A `file:line` or `file:start-end` reference to a documentation file.
- * Bounded character classes only, so the scan stays linear.
+ * A `file:line` or `file:start-end` reference to any file with an
+ * extension — `docs/` can hold JSON, YAML or images as well as Markdown,
+ * and the grep hits all of them. Bounded character classes only.
  */
 const NAMED_LINE_RE =
-  /([A-Za-z0-9_.\/-]+\.(?:md|mdx|markdown|rst|adoc|txt)):(\d{1,7})(?:\s?[-–]\s?(\d{1,7}))?/g;
+  /([A-Za-z0-9_.\/-]+\.[A-Za-z0-9]{1,10}):(\d{1,7})(?:\s?[-–]\s?(\d{1,7}))?/g;
 
 /**
  * The lines a Docs sweep line names as left alone, by path, as inclusive

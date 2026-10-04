@@ -118,6 +118,16 @@ Deno.test("extractNamedLines - reads file:line and file:start-end references", (
   assertEquals(named.get("README.md"), [[12, 12]]);
 });
 
+Deno.test("extractNamedLines - names a non-Markdown file under docs/ too (grep hits any file there)", () => {
+  const named = extractNamedLines(
+    "`docs/audits/lib-sweep-coverage.json:2496-2500` — still true",
+  );
+  assertEquals(named.get("docs/audits/lib-sweep-coverage.json"), [[
+    2496,
+    2500,
+  ]]);
+});
+
 Deno.test("extractNamedLines - strips a leading ./ from the path", () => {
   assertEquals(extractNamedLines("./docs/a.md:3").get("docs/a.md"), [[3, 3]]);
 });
