@@ -942,6 +942,17 @@ rewrite it, never append to it:
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
   diff) before raising the PR.
+- Check where the diff inserts. For every function, item, test or paragraph
+  it adds, read the lines directly above and below each insertion point: a new
+  item goes above an existing doc comment, never between a doc comment,
+  attribute or decorator and its item, and a following sentence that points
+  back ("above", "both paragraphs above", "this", "as described earlier")
+  still points at what it meant — if not, move the insertion after it or
+  reword the sentence to name its subject. Read the first and last context
+  lines of every hunk that adds a block; that is where these breaks appear,
+  and the docs sweep misses them because the sentence made wrong is not one
+  the diff adds or edits (see **Check where you insert** in
+  `CODING-STANDARDS.md`).
 
 The file MUST contain:
 

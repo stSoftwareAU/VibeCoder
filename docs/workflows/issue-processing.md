@@ -1302,6 +1302,23 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Check where you insert (Issue #3194).** Fleet PRs added a new item or
+paragraph at a point that cut existing text off from what it describes.
+GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
+function's doc comment and that function, so rustdoc joined the two blocks
+and the new helper's doc opened with the other function's description.
+GRQ-AutoTrader#2478 put a new paragraph in front of a sentence reading
+"Both paragraphs above describe …", which then named the wrong paragraphs.
+The docs sweep did not catch either, because the sentence made wrong was not
+one the diff added or edited. `CODING-STANDARDS.md` and the guidelines
+(**A Code Change Owes a Docs Change**) now require reading the lines directly
+above and below every insertion point. A new item goes above an existing doc
+comment, attribute or decorator, never between it and its item. A following
+sentence that points back must still point at what it meant, or the insertion
+moves after it, or the sentence is reworded to name its subject. The first and
+last context lines of every hunk that adds a block are read in the diff. The
+issue prompt's PR-summary self-review list carries the same step.
+
 **Vet every regex on untrusted text, one hostile case per pattern
 (Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
 case for the one pattern the author had in mind, and shipped a sibling
