@@ -89,6 +89,76 @@ Deno.test("parseBranchOutcomes - absent header reports not present", () => {
 });
 
 // ---------------------------------------------------------------------------
+// collectEntries arms (PR #3160 fifth review round): each of the three
+// branches below passed all 173 gate-related tests when mutated alone, so
+// none was actually pinned.
+// ---------------------------------------------------------------------------
+
+// Pins the `continue` at the "entries.length === 0" fallthrough: a prose
+// line between two blank lines, with no entries yet, must not stop the scan
+// before a later list. Mutating it to `break` loses "entry one".
+Deno.test("parseBranchOutcomes - prose between two blank lines does not stop the scan before a later list", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** header text\n" +
+      "\n" +
+      "some prose line\n" +
+      "\n" +
+      "- entry one\n",
+  );
+  assertEquals(record.entries, ["entry one"]);
+});
+
+// Pins the `&& wrapping` guard: once a blank line has been seen, prose with
+// no list anywhere must not be captured into the body, or a header with
+// trailing prose and no real list wrongly looks non-empty.
+Deno.test("validateBranchOutcomes - a bare heading with blank-separated prose and no list blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "#### Branch outcomes\n\ntrailing prose with no list\n",
+    testsAtHead: new Set(),
+  });
+  assertEquals(result.valid, false);
+  assertStringIncludes(result.problems[0]!, "names no outcomes");
+});
+
+// Pins the `!sawBlank &&` guard: prose after the list's blank line must not
+// be merged onto the last entry.
+Deno.test("parseBranchOutcomes - prose after a blank line is not merged into the last entry", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:**\n" +
+      "- entry one\n" +
+      "\n" +
+      "trailing prose not part of entry one\n",
+  );
+  assertEquals(record.entries, ["entry one"]);
+});
+
+// ---------------------------------------------------------------------------
+// scanRegionText boundaries — the new text-only scan `namedTestPaths` also
+// reads (below) must stay scoped to the header it belongs to, or it
+// attributes an unrelated later mention to the wrong (or no) header.
+// ---------------------------------------------------------------------------
+
+Deno.test("parseBranchOutcomes - the test-path scan stops at a later Branch outcomes header", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** first arm, no test named yet.\n" +
+      "\n" +
+      "**Branch outcomes:** none added\n" +
+      "Unrelated later prose mentions worker/deno/tests/unrelated_test.ts only in passing.\n",
+  );
+  assertEquals(namedTestPaths(record), []);
+});
+
+Deno.test("parseBranchOutcomes - the test-path scan stops at the next markdown heading", () => {
+  const record = parseBranchOutcomes(
+    "**Branch outcomes:** first arm, no test named yet.\n" +
+      "## Unrelated section\n" +
+      "Mentions worker/deno/tests/unrelated_test.ts only in passing.\n",
+  );
+  assertEquals(namedTestPaths(record), []);
+});
+
+// ---------------------------------------------------------------------------
 // namedTestPaths
 // ---------------------------------------------------------------------------
 
@@ -166,6 +236,24 @@ Deno.test("parseBranchOutcomes - more than 100 entries are capped at 100", () =>
     (_, i) => `- worker/deno/tests/foo_test.ts::case${i}`,
   ).join("\n");
   const record = parseBranchOutcomes(`**Branch outcomes:**\n${lines}\n`);
+  assertEquals(record.entries.length, 100);
+});
+
+// PR #3160 review (fifth round): the single-header case above stays at 100
+// whichever of the two MAX_ENTRIES checks is removed, because the other one
+// still applies — neither was pinned on its own. Two headers whose lists are
+// each under 100 (so collectEntries' own list can never hit a per-call cap)
+// but together exceed it isolates parseBranchOutcomes' own copy-loop cap.
+Deno.test("parseBranchOutcomes - MAX_ENTRIES caps the combined total across two headers, not just one list", () => {
+  const listOf60 = (offset: number) =>
+    Array.from(
+      { length: 60 },
+      (_, i) => `- worker/deno/tests/foo_test.ts::case${offset + i}`,
+    ).join("\n");
+  const record = parseBranchOutcomes(
+    `**Branch outcomes:**\n${listOf60(0)}\n` +
+      `#### Branch outcomes\n${listOf60(60)}\n`,
+  );
   assertEquals(record.entries.length, 100);
 });
 
@@ -308,6 +396,51 @@ Deno.test("validateBranchOutcomes - an earlier Branch outcomes bullet does not h
       "## Test Plan\n" +
       "**Branch outcomes:**\n" +
       `- ${INVENTED}::name — flip red\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+// PR #3160 fifth review round: a header with inline text but zero collected
+// entries let an invented test slip through in three ordinary layouts —
+// each blocked `namedTestPaths` from ever seeing the citation named below
+// the header, even though the empty-header-body form of the same layout was
+// already blocked.
+
+Deno.test("validateBranchOutcomes - a Test Plan bullet header with sibling bullets still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "- **Branch outcomes:** each new arm and its test:\n" +
+      `- ${INVENTED}::case — flip red\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a markdown table naming the test still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:** two arms added, both tested:\n" +
+      "\n" +
+      "| Outcome | Test |\n" +
+      "| --- | --- |\n" +
+      `| success | ${INVENTED} |\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a loose list broken by an indented paragraph still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- first outcome, success\n" +
+      "\n" +
+      "  an indented paragraph describing more about the first outcome\n" +
+      `- ${INVENTED}::case — flip red\n`,
     testsAtHead: new Set<string>(),
   });
   assertEquals(result.valid, false);

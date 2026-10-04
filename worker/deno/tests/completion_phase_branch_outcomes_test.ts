@@ -147,9 +147,9 @@ interface Scenario {
   /**
    * Make the plain `diff --name-only <base>...HEAD` call fail (non-zero
    * exit) while the changed-workflow gate's own
-   * `--diff-filter=ACMR` diff still succeeds — the one scenario that
-   * exercises the `!changedFilesKnown` arm of `branchOutcomesApplicable`
-   * (PR #3160 review).
+   * `--diff-filter=ACMR` diff still succeeds — the one scenario where
+   * `changedFilesKnown` is false, so `completion_phase.ts` passes
+   * `changedFiles: null` into `validateBranchOutcomes` (PR #3160 review).
    */
   changedFilesDiffFails?: boolean;
   /** Issue labels. Defaults to a non-bug enhancement. */
@@ -483,14 +483,12 @@ Deno.test(
   },
 );
 
-// (j) PR #3160 review: deleting the `!changedFilesKnown ||` arm of
-// `branchOutcomesApplicable` left all pre-existing tests here green, because
-// every fixture's plain diff succeeds. Only an unreadable changed-files diff
-// reaches that arm, and the gate must still pass a summary that names a real
-// test — `validateBranchOutcomes` treats `changedFiles: null` as always
-// applicable regardless of this outer short-circuit, so without the arm the
-// HEAD lookup it depends on is skipped and every named test reads as
-// missing.
+// (j) PR #3160 review: `completion_phase.ts` passes `changedFiles:
+// changedFilesKnown ? changedFiles : null` into `validateBranchOutcomes`,
+// which treats `null` as always applicable (fail closed). Every other
+// fixture's plain diff succeeds, so only an unreadable changed-files diff
+// reaches the `null` branch — and the gate must still pass a summary that
+// names a real test, confirming the HEAD lookup still runs on that path.
 Deno.test(
   "completion - an unreadable changed-files diff with a Branch outcomes list naming an existing test still raises the PR",
   async () => {
@@ -504,5 +502,28 @@ Deno.test(
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.comments.length, 0);
+  },
+);
+
+// PR #3160 fifth review round: the test above passes a summary naming an
+// EXISTING test, which stays green even if `changedFiles: changedFiles` were
+// passed unconditionally instead of the `changedFilesKnown ? changedFiles :
+// null` ternary — when the diff is unreadable, the plain `changedFiles`
+// array defaults to `[]`, which reads as a code-free diff (not applicable)
+// either way, for the same wrong reason the ternary exists to avoid: nothing
+// got checked. Naming a MISSING test is the one case that tells the two
+// paths apart: fail-closed (null, always applicable) blocks; the plain array
+// ([], not applicable) would wrongly let it through.
+Deno.test(
+  "completion - an unreadable changed-files diff with a Branch outcomes list naming a missing test blocks PR creation",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_MISSING_TEST,
+      changedFiles: "crates/report/src/decisions.rs",
+      changedFilesDiffFails: true,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
   },
 );

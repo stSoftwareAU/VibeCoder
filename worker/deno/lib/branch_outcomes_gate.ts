@@ -90,6 +90,16 @@ export interface BranchOutcomesRecord {
   body: string;
   /** Parsed list entries (empty when `noneDeclared`, a heading, or no list follows). */
   entries: string[];
+  /**
+   * Every line between the header and the next heading (or the next
+   * `Branch outcomes` header, or the end of the document), scanned for
+   * named test paths only — independent of the list-shaped `entries`/`body`
+   * parsing above. A sibling bullet, a markdown table, or a loose list broken
+   * by an indented paragraph all stop `collectEntries` before a test path
+   * further down is ever added to `entries` or `body`; a header with inline
+   * text still has this field cover that text (PR #3160 review).
+   */
+  scanText: string;
 }
 
 /** Whether a (decoration-stripped) body starts with the word `none`. */
@@ -110,6 +120,7 @@ export function parseBranchOutcomes(
   const lines = raw.split(LINE_TERMINATOR_RE);
   const entries: string[] = [];
   const bodyParts: string[] = [];
+  const scanTextParts: string[] = [];
   let present = false;
   let onlyNone = true;
 
@@ -140,6 +151,7 @@ export function parseBranchOutcomes(
       entries.push(entry);
     }
     if (collected.bodyExtra) bodyParts.push(collected.bodyExtra);
+    scanTextParts.push(scanRegionText(lines, i + 1));
     i = collected.nextIndex - 1;
   }
 
@@ -148,7 +160,35 @@ export function parseBranchOutcomes(
     noneDeclared: present && onlyNone,
     body: bodyParts.join(" "),
     entries,
+    scanText: scanTextParts.join(" "),
   };
+}
+
+/**
+ * Every line from `startIndex` to the next heading, the next `Branch
+ * outcomes` header, or the end of the document — scanned (decoration
+ * stripped) for `namedTestPaths` only. Deliberately independent of
+ * `collectEntries`: that function's list-shaped parsing legitimately stops
+ * on a sibling bullet, a table row, or prose after a blank line, any of
+ * which can still name a test the header logically covers (PR #3160
+ * review). Stopping at the next header keeps every header's scan disjoint,
+ * so the combined cost across a whole PR summary stays linear.
+ */
+function scanRegionText(lines: string[], startIndex: number): string {
+  const parts: string[] = [];
+  for (let j = startIndex; j < lines.length; j++) {
+    const line = lines[j]!;
+    if (HEADING_RE.test(line)) break;
+    const stripped = stripDecoration(line);
+    if (
+      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
+      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
+    ) {
+      break;
+    }
+    if (stripped) parts.push(stripped);
+  }
+  return parts.join(" ");
 }
 
 /** Entries and wrapped body text that follow one `Branch outcomes` header. */
@@ -177,7 +217,10 @@ function collectEntries(
     if (LIST_MARKER_RE.test(line)) {
       if (indent <= headerIndent) break;
       wrapping = false;
-      if (entries.length >= MAX_ENTRIES) break;
+      // No MAX_ENTRIES cap here: parseBranchOutcomes' copy loop always
+      // trims the merged result to MAX_ENTRIES regardless of how many
+      // entries this call collects, so a cap here is never independently
+      // observable — it was removed as dead weight (PR #3160 review).
       entries.push(capEntry(stripDecoration(line)));
       sawBlank = false;
       continue;
@@ -253,6 +296,7 @@ function normaliseToken(token: string): string {
 export function namedTestPaths(record: BranchOutcomesRecord): string[] {
   const texts = [...record.entries];
   if (!record.noneDeclared && record.body) texts.push(record.body);
+  if (!record.noneDeclared && record.scanText) texts.push(record.scanText);
 
   const found: string[] = [];
   const seen = new Set<string>();
