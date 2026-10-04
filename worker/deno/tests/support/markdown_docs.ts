@@ -85,3 +85,105 @@ export function withoutSection(markdown: string, title: string): string {
 export function flat(text: string): string {
   return text.replace(/\s+/g, " ");
 }
+
+/**
+ * The pinned phrases the base branch's version of a section already held
+ * (Issue #3193). Such a pin stays green when the new rule is deleted, so it
+ * guards nothing — CODING-STANDARDS.md § Documentation-drift tests,
+ * condition 4. The check is per phrase on purpose: a test that pins several
+ * phrases goes red against the base as soon as one of them is new, which
+ * hides a vacuous pin beside it.
+ *
+ * `baseMarkdown` is the whole document at the base ref, or `undefined` when
+ * the base never had it; a missing doc or section holds no pins. Phrases are
+ * matched as the drift tests match them, against the `flat()` section text.
+ */
+export function pinsAlreadyInSection(
+  baseMarkdown: string | undefined,
+  title: string,
+  phrases: readonly string[],
+): string[] {
+  if (baseMarkdown === undefined) return [];
+  const lines = baseMarkdown.split("\n");
+  const levels = headingLevels(lines);
+  const hasSection = lines.some((line, index) =>
+    (levels[index] ?? 0) >= 2 && line.includes(title)
+  );
+  if (!hasSection) return [];
+  const text = flat(section(baseMarkdown, title));
+  return phrases.filter((phrase) => text.includes(flat(phrase)));
+}
+
+/** The `deno task` that runs the per-phrase check from the command line. */
+export const DRIFT_PINS_TASK = "drift-pins-on-base";
+
+/** What `pinsAlreadyOnBase` checks: one doc section at one base ref. */
+export interface BasePinCheck {
+  /** Repo-relative path of the doc, as `readRepoDoc` takes it. */
+  doc: string;
+  /** The same title the drift test passes to `section()`. */
+  title: string;
+  /** Every phrase the drift test pins in that section. */
+  phrases: readonly string[];
+  /** The base ref, e.g. `origin/main`. */
+  baseRef: string;
+  /** Repository to read from; defaults to this repo's root. */
+  repo?: string;
+}
+
+/** Run git in `cwd`, returning its exit code and stdout. */
+async function runGit(
+  args: string[],
+  cwd: string | URL,
+): Promise<{ code: number; stdout: string }> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "null",
+  }).output();
+  return { code: out.code, stdout: new TextDecoder().decode(out.stdout) };
+}
+
+/**
+ * The pinned phrases already present in `doc`'s `title` section at
+ * `baseRef` — each one is a vacuous pin. Throws when `baseRef` does not
+ * resolve, so a mistyped ref cannot pass as "nothing on base".
+ */
+export async function pinsAlreadyOnBase(
+  check: BasePinCheck,
+): Promise<string[]> {
+  const repo = check.repo ?? REPO_ROOT;
+  const ref = await runGit(
+    ["rev-parse", "--verify", "--quiet", `${check.baseRef}^{commit}`],
+    repo,
+  );
+  if (ref.code !== 0) {
+    throw new Error(`base ref "${check.baseRef}" does not resolve in ${repo}`);
+  }
+  const shown = await runGit(["show", `${check.baseRef}:${check.doc}`], repo);
+  const markdown = shown.code === 0 ? shown.stdout : undefined;
+  return pinsAlreadyInSection(markdown, check.title, check.phrases);
+}
+
+/**
+ * Command line: `deno task drift-pins-on-base <base-ref> <doc> <section>
+ * <phrase>...` prints each phrase with whether the base section already held
+ * it, and exits 1 when any did — the per-phrase check, run rather than
+ * eyeballed.
+ */
+if (import.meta.main) {
+  const [baseRef, doc, title, ...phrases] = Deno.args;
+  if (!baseRef || !doc || !title || phrases.length === 0) {
+    console.error(
+      `usage: ${DRIFT_PINS_TASK} <base-ref> <doc> <section> <phrase>...`,
+    );
+    Deno.exit(2);
+  }
+  const vacuous = await pinsAlreadyOnBase({ doc, title, phrases, baseRef });
+  for (const phrase of phrases) {
+    const held = vacuous.includes(phrase);
+    console.log(`${held ? "ALREADY ON BASE" : "absent on base"}: ${phrase}`);
+  }
+  if (vacuous.length > 0) Deno.exit(1);
+}

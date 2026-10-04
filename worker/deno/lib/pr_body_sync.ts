@@ -40,6 +40,11 @@ import {
 } from "./pr_evidence.ts";
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
+import {
+  buildMissingCriteriaPrNote,
+  findMissingCriteria,
+  withholdIssueClose,
+} from "./missing_criterion_close_guard.ts";
 
 /** Relative path of the PR summary file inside a repo checkout. */
 function prSummaryPath(issueNumber: number): string {
@@ -55,6 +60,11 @@ function prSummaryPath(issueNumber: number): string {
  * order), the worker footer, then the idempotency marker. The result is run
  * through `ensureReferences` last, exactly as PR creation runs it through
  * `ensurePrReferencesIssue`.
+ *
+ * Issue #3177: a summary whose `## Acceptance Criteria` block marks any
+ * criterion `missing` does not close the issue. Its closing keywords for the
+ * issue become `Part of #N`, a `## Not closing #N` section names the missing
+ * criteria, and `ensureReferences` is skipped so no `Closes #N` is appended.
  */
 export function assemblePrBody(input: {
   summaryContent: string;
@@ -67,9 +77,15 @@ export function assemblePrBody(input: {
   let body = input.summaryContent
     ? input.summaryContent + "\n\n"
     : `## Summary\n\nCloses #${input.issueNumber}.\n\n`;
+  const missing = findMissingCriteria(input.summaryContent);
+  if (missing.length > 0) {
+    body = withholdIssueClose(body, input.issueNumber) +
+      buildMissingCriteriaPrNote(input.issueNumber, missing) + "\n";
+  }
   body += input.extraSections;
   body += input.footer;
   body += buildIdempotencyMarker(input.issueNumber);
+  if (missing.length > 0) return body;
   return ensureReferences(body, input.issueNumber);
 }
 

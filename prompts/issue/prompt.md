@@ -625,7 +625,7 @@ the summary says who judged it:
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: <fixed here, or why it stands>
+- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: fixed in this diff
 - **clean** — <the areas the reviewer checked and found compliant>
 ```
 
@@ -649,8 +649,15 @@ the summary says who judged it:
   `reason:` line is the record, and it is what a human reads. Reaching for
   `unrequested` because the reviewer was unclear is the one wrong answer — say
   `missing` and explain, so the doubt is visible rather than dismissed.
-- **Every `violation` names evidence and a reason** — the `file:line`, and
-  whether you fixed it in this diff or why it stands.
+- **Every `violation` names evidence and one of two reasons** — the
+  `file:line`, then `reason: fixed in this diff`, or, only for a breach the
+  Standards reviewer saw in unchanged context already on the base branch,
+  `reason: pre-existing, filed #<n>` linking the follow-up issue you filed.
+  A breach in a line this diff adds or changes may not be deferred: "stands",
+  "left for a follow-up" and "out of scope" are not reasons, and the gate
+  blocks PR creation on any reason that neither records a fix nor links an
+  issue. Fleet review reads your Standards Review, and an admitted breach in
+  your own lines sends the PR straight back.
 - **Never fabricate a verdict.** If a reviewer sub-agent genuinely cannot be
   dispatched, quote the exact error in your final message and stop. Writing the
   marker for a review you did not run is the over-claim this gate exists to
@@ -666,9 +673,9 @@ broken.
 the gate.** A doc comment the change made wrong, a test the summary cites that
 exists neither in the diff nor at the head, a standard breached in a line this
 PR wrote: fix it in this diff before you raise the PR, never list it as
-standing. Only a departure that predates the diff, or one the issue itself
-requires, may stand, and its
-`reason:` says which.
+standing. Only a departure that predates the diff may stand, and its `reason:`
+links the follow-up issue you filed for it (`pre-existing, filed #<n>`); one
+the issue itself requires names that issue (`required by #<n>`).
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
@@ -717,14 +724,25 @@ one is broken:
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
 
-Two more rules no gate parses — a reviewer sends the PR back for either:
+One more rule no gate parses — a reviewer sends the PR back for it:
 
 - **Demonstrate a criterion; do not assert it.** A test named as evidence must
   exist in the diff (or at the head) and must have been run on the final head;
   a coverage claim — "every branch", "all rejections" — names the branches its
   tests exercise, and one untested branch makes it `partial`.
+
+The worker enforces the next rule itself, because a PR into a milestone branch
+merges on green CI with no reviewer:
+
 - **A missing core deliverable is not a PR.** When the thing the issue asks for
-  is `missing`, finish it. A free-text escape hatch is honoured only while
+  is `missing`, finish it. Any `missing` entry in your `## Acceptance Criteria`
+  block means the PR does not close the issue: the worker rewrites
+  `Closes #{{ISSUE_NUMBER}}` to `Part of #{{ISSUE_NUMBER}}`, adds a
+  `## Not closing #{{ISSUE_NUMBER}}` section naming the missing criteria, and,
+  when the PR merges, leaves the issue open, labels it `needs-human` and
+  comments naming what is missing (Issue #3177). Never relabel a `missing`
+  criterion `partial` or `met` to avoid this; the Spec reviewer's verdict
+  records the departure. A free-text escape hatch is honoured only while
   the branch has no commits and no uncommitted changes — the worker's change
   detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
   when `git log <base>..HEAD` lists any commit (including one a later revert
@@ -734,7 +752,7 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   a planning marker is still read after that commit: the worker defers or
   hands off and raises no PR (the suspicious-image flag is the exception: it
   always stops the run, committed work or not). A bare `## Blocked:` heading
-  does not defer. Otherwise the PR body gets
+  does not defer. Otherwise, when no criterion is `missing`, the PR body gets
   `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
   When the core deliverable is genuinely blocked on another open issue and
   work is already committed, end with a `## Blocked:` heading followed by a
@@ -744,8 +762,8 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   not that dependency: depending on it after a commit hands the issue to a
   human and raises no PR. The worker defers and raises
   no PR when the dependency is open.
-  When a lesser criterion stays `partial` or `missing`, the Summary names it
-  beside the closing keyword instead of describing the issue as resolved.
+  When a lesser criterion stays `partial`, the Summary names it beside the
+  closing keyword instead of describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -1028,7 +1046,14 @@ The file MUST contain:
    red with only its change removed (see **A new test must go red without its
    change** in the
    guidelines); one that stays green without its change is a blocking
-   self-review finding. A test that only pins current behaviour, because the
+   self-review finding. For a documentation-drift test that check is per
+   pinned phrase, not per test: look for each phrase in the base branch's
+   version of the section the test reads (`git show <base>:<doc>`, narrowed
+   to the same section title; in the Vibe Coder repository, `deno task
+   drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
+   `worker/deno` does this), and record here that each pinned phrase is
+   absent from the base section; a phrase the base section already held is a
+   blocking self-review finding. A test that only pins current behaviour, because the
    fault was unreproduced or already fixed and no production change was made,
    is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard

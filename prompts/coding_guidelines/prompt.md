@@ -1168,7 +1168,15 @@ in order before the assertion runs, a phrase the section already held before
 the change. Remove the change on purpose (delete the clause, drop the cap,
 restore the old expression), run the test, see it fail, then restore it. A
 new test that stays green without its change is a blocking self-review
-finding. A test that only pins current behaviour — the fault was unreproduced
+finding. For a documentation-drift test the check is per pinned phrase, not
+per test: one new pin turns a test red against the base and hides a vacuous
+pin beside it. Look for each phrase in the base branch's version of every
+section the test reads (`git show <base>:<doc>`, narrowed to the same section
+title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
+<doc> <section> <phrase>...` from `worker/deno` does this), and record in the
+Test Plan that each pinned phrase is absent from the base section; a phrase
+the base section already held is a blocking self-review finding. A test that
+only pins current behaviour — the fault was unreproduced
 or already fixed, and no production change was made — is expected green on
 base, and the Test Plan says so. **A negative test must be able to fail**
 below is this rule for an assertion that something does *not* happen.
