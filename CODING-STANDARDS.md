@@ -1268,6 +1268,31 @@ naming an issue it reads as open (VibeCoder#3095); a section said a script
 "runs automatically" after a fetch that never calls it (GRQ#5153)
 (Issue #3120).
 
+**Behaviour another issue delivers is not described as present.** A doc,
+prompt or code comment may name work that another issue owns — a sibling
+sub-issue of the same epic or milestone, or a follow-up — only as planned
+("not yet: #N will …"), and only while #N is open. Before writing a sentence
+that names or depends on another issue, run `gh issue view N` and grep the
+head for its deliverable: the binary, script, workflow step or check. When
+that code is not at the head, the sentence describes what ships today (for
+example "written by hand, see Step 1"), not the plan; when #N was closed as
+not planned, the forward reference goes. When the issue's plan says a sibling
+will do X, grep the docs the diff touches for that sibling's `#N`, and make
+each present-tense hit either backed by head code or reworded as planned.
+This adds to the rule that every doc assertion must match the head code; it
+does not relax it. Milestone sub-PRs merge into the milestone branch on green
+CI without review, so a sibling dropped later leaves its forward references
+there until the milestone's summary PR is reviewed; that PR's body lists
+every Markdown line the milestone adds that names an issue closed as not
+planned (see [Milestones](docs/workflows/milestones.md)). Fleet PRs sent back
+for this: docs described a `policy-check` binary and schema-drift test owned
+by sibling GRQ-AutoTrader#2301 that were not on the branch
+(GRQ-AutoTrader#2464); three runbooks said the deploy's publish step (#2303)
+writes the policy after #2303 was closed as not planned
+(GRQ-AutoTrader#2506); two docs called a red dependency audit "never
+deferred" while the refusal that makes it true was still-open sibling #3141
+(VibeCoder#3156) (Issue #3223).
+
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
 GitHub and often tells the story better than prose.
