@@ -37,8 +37,8 @@ A red audit blocks every PR in the repo until one PR fixes it. If every PR defer
 
 ## Evidence
 
-- **Red run against unchanged docs:** run in an `origin/main` worktree with only the new test added, `deno test tests/ci_fix_audit_in_pr_3116_test.ts` gave **7/7 FAILED**. The same test passes 7/7 on this branch.
-- **Docs sweep:** grepped for "Dependency audit failures", "Base-branch failures", "A CI-fix run is the exception", `RUSTSEC` and `Depends on`. Updated `prompts/ci_fix/prompt.md`, `prompts/coding_guidelines/prompt.md`, `CODING-STANDARDS.md`, `docs/security-advisory-triage.md`, `docs/workflows/ci-fix.md` (section: Base-branch failure) and `docs/PROMPTS.md` (the ci_fix row). Both manuals now link the prompt's Dependency audit failures section.
+- **Red run against unchanged docs:** run in an `origin/main` worktree with only the new test added, `deno test tests/ci_fix_audit_in_pr_3116_test.ts` gave **7/7 FAILED**. The same test (now 10 cases) passes 10/10 on this branch.
+- **Docs sweep:** grepped for "Dependency audit failures", "Base-branch failures", "A CI-fix run is the exception", `RUSTSEC` and `Depends on`. Updated `prompts/ci_fix/prompt.md`, `prompts/coding_guidelines/prompt.md`, `CODING-STANDARDS.md`, `docs/security-advisory-triage.md`, `docs/workflows/ci-fix.md` (section: Base-branch failure) and `docs/PROMPTS.md` (the ci_fix row). All three manuals (`docs/workflows/ci-fix.md`, `docs/PROMPTS.md`, `docs/security-advisory-triage.md`) now link the prompt's Dependency audit failures section and describe the audit exception as the prompt's own instruction to the agent — the worker itself does not yet enforce it, pending stSoftwareAU/VibeCoder#3141.
 
 ## Acceptance Criteria
 
@@ -71,7 +71,7 @@ No material departures found. Checked: rule consistency across prompts, pairing 
 
 ## Test Plan
 
-- [x] `deno test tests/ci_fix_audit_in_pr_3116_test.ts`: 9 passed. The extra two pin the audit exception in `docs/workflows/ci-fix.md` and `docs/PROMPTS.md`, and the tracking test now requires the commit message and the summary path.
+- [x] `deno task test:unit tests/ci_fix_audit_in_pr_3116_test.ts`: 10 passed. The extra three pin the audit exception in `docs/workflows/ci-fix.md`, `docs/PROMPTS.md` and `docs/security-advisory-triage.md`, and the tracking test now requires the commit message and the summary path.
 - [x] Related tests (`pr_claims_verified_3058`, `2574`, `ci_fix_prompt_v4`): 26 passed
 - [x] `./quality.sh < /dev/null`: exit 0, PASSED (deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep). The config integration step was skipped with "deno or .config.json not available".
 - [x] New test shown red (7/7) against `origin/main` docs
