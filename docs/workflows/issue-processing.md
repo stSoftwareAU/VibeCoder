@@ -1342,6 +1342,23 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Check where you insert (Issue #3194).** Fleet PRs added a new item or
+paragraph at a point that cut existing text off from what it describes.
+GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
+function's doc comment and that function, so rustdoc joined the two blocks
+and the new helper's doc opened with the other function's description.
+GRQ-AutoTrader#2478 put a new paragraph in front of a sentence reading
+"Both paragraphs above describe …", which then named the wrong paragraphs.
+The docs sweep did not catch either, because the sentence made wrong was not
+one the diff added or edited. `CODING-STANDARDS.md` and the guidelines
+(**A Code Change Owes a Docs Change**) now require reading the lines directly
+above and below every insertion point. A new item goes above an existing doc
+comment, attribute or decorator, never between it and its item. A following
+sentence that points back must still point at what it meant, or the insertion
+moves after it, or the sentence is reworded to name its subject. The first and
+last context lines of every hunk that adds a block are read in the diff. The
+issue prompt's PR-summary self-review list carries the same step.
+
 **Vet every regex on untrusted text, one hostile case per pattern
 (Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
 case for the one pattern the author had in mind, and shipped a sibling
@@ -1359,6 +1376,19 @@ every other regex in the same module. The same change fixed the
 `\s*:?\s*` heading tail in the acceptance-criteria, failure-detection,
 independent-review and reproduction-status parsers, and the trailing
 `/\s+$/` strip in the failure-detection repair.
+
+**A `(.*)$` tail can fail on a lone carriage return (Issue #3186).** The
+same gates read labelled values (`reason:`, `evidence:`, `symptom:`,
+`status:`, `test:`) and list items with a greedy `(.*)$`. `.` does not cross
+a lone `\r`, so on a line holding one the tail could not reach `$`: an
+unanchored label search restarted at every later occurrence of the label and
+rescanned to the end each time, and an anchored one split a run of spaces
+between `\s*` and `(.*)` in every possible way. Both are quadratic; at the
+200 000-character scan cap a single PR summary cost seconds to tens of
+seconds per call, and the closure gate has no cap. Each value is now read
+with `([^\n]*)` and no `$`, a tail that cannot fail, so the first labelled
+occurrence wins and a value after a lone `\r` is read rather than dropped.
+The regex-vetting rule names the shape.
 
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
