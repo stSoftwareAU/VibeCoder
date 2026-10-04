@@ -27,6 +27,8 @@ Added the gitleaks workflow. Closes #10.
 
 **Docs sweep** — grep: \`gitleaks\`; section: \`docs/EXTENDING.md#workflows\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 - Ran the workflow locally with act.
 `;

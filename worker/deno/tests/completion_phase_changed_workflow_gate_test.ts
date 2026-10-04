@@ -24,6 +24,8 @@ Added a unit-test workflow. Closes #1859.
 
 **Docs sweep** — grep: \`unit-test workflow\`; section: \`docs/EXTENDING.md#workflows\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - CI runs the new workflow on every PR
