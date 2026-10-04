@@ -375,17 +375,26 @@ retired-field list, a stricter parse, a fake that throws), re-run the
 existing tests that expect the later refusal and confirm each still
 reaches it; one that now stops earlier is a blocking self-review finding.
 
-**Every changed call site needs a test that goes red without it.** When a
-change threads a new argument, flag or behaviour through more than one
-production caller, a test of the helper, or of some callers, does not cover
-the others. For each call site the diff changes, revert only that caller's
-change (pass the old value, drop the new argument, restore the old filter)
-and confirm at least one test goes red. A test double that bypasses the
-production path (for example, a stub that ignores the filter it is passed, or
-forcing a fallback path) does not count for that path. A changed call site
-whose revert leaves the suite green is a blocking self-review finding: add a
-test through that caller, ideally at the level the linked issue's Failure
-Detection names.
+**Every changed call site needs a test that goes red without it.** This
+covers every new or changed wiring between an entry point and the code it
+drives, including a single caller: a CLI command or task, an HTTP route or
+handler, a scheduled job, a UI control's event handler, and each production
+caller a new argument, flag or behaviour is threaded through. A test of the
+helper, or of some callers, does not cover the others. For each call site
+or entry point the diff changes, revert only that caller's change (restore
+its old wiring, pass the old value, drop the new argument, restore the old
+filter, or point the handler at a no-op) and confirm at least one test goes
+red. For a new or changed UI control, a test must invoke the control's
+handler (press the button or submit the form, as the repo's UI test style
+does it) and assert what it sends or changes; when the linked issue states
+an acceptance criterion as a user action ("pressing X requests Y"), a test
+of the helper behind X does not cover that criterion. A test double that
+bypasses the production path (for example, a stub that ignores the filter
+it is passed, or forcing a fallback path) does not count for that path.
+List each entry point checked in the PR summary. A changed call site
+whose revert leaves the suite green is a blocking self-review finding: add
+a test through that caller, ideally at the level the linked issue's
+Failure Detection names.
 
 **Narrowing a shared helper changes every caller.** Before a helper that
 other code already calls starts rejecting, throwing on or dropping a value it

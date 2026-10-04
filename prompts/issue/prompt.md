@@ -1076,13 +1076,16 @@ The file MUST contain:
    refusal test must be refused by the rule it names** in the
    guidelines); when the diff adds a refusal that runs before an existing
    one, re-run the existing tests that expect the later refusal, and one
-   that now stops earlier is a blocking self-review finding. Likewise,
-   each call site the diff changes needs a
-   test that goes red when only that caller's change is reverted (see
-   **Every changed call site needs a test that goes red without it** in the
-   guidelines); a changed call site whose revert leaves the suite green is a
-   blocking self-review finding. Likewise, every outcome of a branch the diff
-   adds — each new condition, match arm, exit code and interface default —
+   that now stops earlier is a blocking self-review finding.
+   Likewise, each call site or entry point the diff changes — a single CLI
+   command, route, scheduled job or UI control's handler included — needs a
+   test that goes red when only that caller's change is reverted (see **Every
+   changed call site needs a test that goes red without it** in the
+   guidelines); for a UI control that test invokes the handler, the Test Plan
+   lists each entry point checked, and a changed call site whose revert leaves
+   the suite green is a blocking self-review finding. Likewise, every
+   outcome of a branch the diff adds — each new condition, match arm, exit
+   code and interface default —
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a

@@ -1271,6 +1271,20 @@ argument. The guidelines and the issue prompt's Test Plan step now require
 reverting each changed call site on its own and seeing a test go red; a call
 site whose revert leaves the suite green is a blocking self-review finding.
 
+**A single entry point counts too (Issue #3222).** The rule above read as
+covering only a change threaded through more than one production caller, so
+fleet PRs that wired a behaviour into one CLI command or UI control tested the
+helper behind it and left the wiring unreached: VibeCoder#3203 switched
+`sweep_drift.ts` to `readCoverageLedger(repoRoot)` but its fixture wrote only
+the ledger file, so restoring the old read kept every test green;
+GRQ-AutoTrader#2560 tested `loadOlderDecisions` directly and no test pressed
+the Load older decisions or Retry button. The rule now covers every new or
+changed wiring between an entry point (a CLI command or task, an HTTP route or
+handler, a scheduled job, a UI control's event handler) and the code it
+drives, including a single caller; a new or changed UI control needs a test
+that invokes its handler and asserts what it sends or changes, and the PR
+summary lists each entry point checked.
+
 **Narrowing a shared helper changes every caller (Issue #3100).** A
 stricter validator added for one new call site also rejects values its
 existing callers legitimately pass. Fleet PRs narrowed a shared helper and
