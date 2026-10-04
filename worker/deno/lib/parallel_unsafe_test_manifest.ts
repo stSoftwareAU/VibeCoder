@@ -176,6 +176,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the capped, linear scan from the quadratic regex it replaced
   // (Issue #3085 review).
   "tests/docs_sweep_gate_test.ts",
+  // The branch-outcomes heading regex scans a PR-summary line an agent
+  // (steered by an untrusted issue body) writes; only a growth measurement
+  // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
+  // replaced (PR #3160 review).
+  "tests/branch_outcomes_gate_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).

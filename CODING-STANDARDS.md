@@ -409,7 +409,14 @@ other outcomes. Flip each outcome on purpose (return the lenient value
 instead of the error, treat "absent" as "failed"), run the tests, confirm at
 least one goes red, then restore it. An outcome with no test, or one whose
 flip leaves the suite green, is a blocking self-review finding: add a test
-for it.
+for it. When the run writes or refreshes a PR summary, record the
+enumeration as a `Branch outcomes:` list in its Test Plan — one line per
+outcome naming `path:line`, the outcome, the test that reaches it, and that
+flipping it went red — or `Branch outcomes: none added` when the diff adds
+no branch; every test it names must exist at the head (see **A named test
+must exist**). A fix to an existing PR re-enumerates every branch its own
+commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -461,11 +468,15 @@ state it never checked is a blocking self-review finding (Issue #3107).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
-file in the PR's diff or already tracked at the head. Before raising the PR,
-check each named path with `git ls-files <path>`; a named-but-absent test is a
-blocking self-review finding — add the test or drop the claim, and never commit
-an anchor that references a test that does not exist. A test cited as evidence
-is also run on the final head and its result reported, and a coverage claim
+file in the PR's diff or already tracked at the head, named **relative to the
+repository root** — `worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`,
+even when the repository's own test command runs from a subdirectory such as
+`worker/deno` (Issue #3160). Before raising the PR, check each named path
+with `git ls-files <path>` run **from the repository root**; a
+named-but-absent test is a blocking self-review finding — add the test or
+drop the claim, and never commit an anchor that references a test that does
+not exist. A test cited as evidence is also run on the final head and its
+result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
 untested is an over-claim (Issue #3058). An unresolved placeholder where a
 result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where
