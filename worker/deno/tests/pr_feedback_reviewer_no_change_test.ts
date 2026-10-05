@@ -120,8 +120,15 @@ function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
 interface Scenario {
   input: PrFeedbackInput;
   /** Per-call behaviour: index 0 is the first run, index 1 the retry. */
-  runBehaviours: Array<"nothing" | "rebuttal">;
+  runBehaviours: Array<"nothing" | "rebuttal" | "fail">;
   branchHeadChangedOverride?: GitDeps["branchHeadChanged"];
+  runGitCommandOverride?: GitDeps["runGitCommand"];
+}
+
+interface CapturedLogError {
+  message: string;
+  // deno-lint-ignore no-explicit-any
+  context?: Record<string, any>;
 }
 
 interface ScenarioResult {
@@ -129,11 +136,13 @@ interface ScenarioResult {
   prompts: string[];
   callCount: number;
   result: Awaited<ReturnType<typeof processPrFeedback>>;
+  loggerErrors: CapturedLogError[];
 }
 
 async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
   const captured: CapturedGh = { comments: [], labelsAdded: [] };
   const prompts: string[] = [];
+  const loggerErrors: CapturedLogError[] = [];
   let callCount = 0;
 
   const workDir = await Deno.makeTempDir();
@@ -149,6 +158,9 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
             `Rebuttal for ${scenario.input.commentId}: the finding does not apply — ` +
               "ran `deno test` and it passes.",
           );
+        }
+        if (behaviour === "fail") {
+          return { ok: false, error: new Error("boom") };
         }
         return {
           ok: true,
@@ -171,6 +183,9 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
     if (scenario.branchHeadChangedOverride) {
       gitOverrides.branchHeadChanged = scenario.branchHeadChangedOverride;
     }
+    if (scenario.runGitCommandOverride) {
+      gitOverrides.runGitCommand = scenario.runGitCommandOverride;
+    }
 
     const deps = createMockDeps({
       claude: mockClaude,
@@ -178,16 +193,23 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
       git: gitOverrides,
     });
 
+    const logger: Logger = {
+      ...makeSilentLogger(),
+      error: (message: string, context?: Record<string, unknown>) => {
+        loggerErrors.push({ message, context });
+      },
+    };
+
     const processorDeps: PrFeedbackProcessorDeps = {
       promptsDir: PROMPTS_DIR,
-      logger: makeSilentLogger(),
+      logger,
       deps,
       workDir,
       workRoot: workDir,
     };
 
     const result = await processPrFeedback(scenario.input, processorDeps);
-    return { captured, prompts, callCount, result };
+    return { captured, prompts, callCount, result, loggerErrors };
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
@@ -286,6 +308,52 @@ Deno.test("reviewer no-change: head-moved probe unreadable — no retry, still e
   }
   assertEquals(captured.labelsAdded.includes("needs-human"), true);
   assertEquals(result.ok, true);
+});
+
+Deno.test("reviewer no-change: retry call itself fails — still escalates, exit code -1, failure logged", async () => {
+  const { captured, callCount, result, loggerErrors } = await runScenario({
+    input: makeInput(),
+    runBehaviours: ["nothing", "fail"],
+  });
+
+  assertEquals(callCount, 2);
+  for (const comment of captured.comments) {
+    assertEquals(comment.includes("could not identify a code change"), false);
+  }
+  assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  const escalationComment = captured.comments.find((c) => c.includes("rv-555"));
+  assertEquals(escalationComment !== undefined, true);
+  assertStringIncludes(escalationComment ?? "", "exit code -1");
+  assertEquals(result.ok, true);
+
+  // The failed-retry block's only observable effect beyond `lastAttempt` is
+  // this error log line (Issue #3246) — assert it fired with the failure.
+  const retryFailureLog = loggerErrors.find((e) =>
+    e.message.includes("re-run on the request-changes review failed")
+  );
+  assertEquals(retryFailureLog !== undefined, true);
+  assertEquals(retryFailureLog?.context?.error, "boom");
+});
+
+Deno.test("reviewer no-change: dirty working tree answers — no retry", async () => {
+  const { callCount } = await runScenario({
+    input: makeInput(),
+    runBehaviours: ["nothing"],
+    runGitCommandOverride: ((args: string[]) => {
+      if (args[0] === "status" && args[1] === "--porcelain") {
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: " M src/foo.ts", stderr: "" },
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        value: { code: 0, stdout: "", stderr: "" },
+      });
+    }) as unknown as GitDeps["runGitCommand"],
+  });
+
+  assertEquals(callCount, 1);
 });
 
 Deno.test("reviewer no-change: plain review comment is unaffected — neutral reply, no retry", async () => {

@@ -991,8 +991,8 @@ async function _processFeedbackWithHeartbeat(
   // In-run retry for an unanswered request-changes review (Issue #3246). A
   // `pr_review` claim dismisses the review, and a dismissal cannot be
   // undone, so a later cycle can never retry it — give the agent a second
-  // run inside this one before the worker falls back to the neutral reply
-  // or escalates.
+  // run inside this one before the worker posts the agent's rebuttal or
+  // escalates to `needs-human`.
   let reviewerAttempts = 1;
   let lastAttempt = {
     exitCode: claudeResult.value.exitCode,
