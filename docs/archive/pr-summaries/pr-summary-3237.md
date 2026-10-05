@@ -83,9 +83,36 @@ Result: 73 passed, 0 failed. `deno fmt --check` is clean.
 Quality gate: `./quality.sh` PASSED on the final head (20 of 21 checks; the
 `config integration` check was skipped — it needs a live config).
 
-**Docs sweep:** grep: `second miss`, `blocks`, `recovery turn`,
-`Docs sweep incomplete`, `stale hit`, `buildDocsSweepHitsComment`;
-section: `docs/workflows/issue-processing.md#-docs-sweep-on-a-code-change`.
+**Docs sweep:** grep: `second miss`, `recovery turn`,
+`Docs sweep incomplete`, `stale hit`, `term hit`,
+`buildDocsSweepHitsComment`;
+section: `docs/workflows/issue-processing.md#-docs-sweep-on-a-code-change`;
+remaining hits:
+`docs/workflows/issue-processing.md:2170-2175` — still true because it
+describes the #3163 summary-rule recovery, which this change does not touch;
+`docs/workflows/pr-feedback.md:291-310` and `docs/INTERNALS.md:5171` — still
+true because their "recovery turn" is the pr_feedback drift-check recovery;
+`worker/deno/lib/phases/completion_phase.ts:589`,
+`worker/deno/lib/phases/completion_phase.ts:2284-2288`,
+`worker/deno/lib/phases/completion_phase.ts:2361`,
+`worker/deno/lib/phases/completion_phase.ts:2383`,
+`worker/deno/lib/phases/completion_phase.ts:2402` and
+`worker/deno/lib/phases/completion_phase.ts:2626` — still true because they
+describe the one shared summary-rule recovery turn, which the #3073 gate
+still uses;
+`worker/deno/tests/completion_phase_docs_sweep_test.ts:456` — still true
+because it is about the #3147 branch-outcomes recovery fixture;
+`worker/deno/lib/docs_sweep_hits.ts:343` — still true because it describes
+the broad-term cap, which this change keeps;
+`worker/deno/tests/docs_sweep_hits_test.ts:682` — still true because it is a
+section header naming the function under test.
+
+`blocks` was dropped from the terms: it hits about 700 doc and comment lines,
+almost all about other gates. Instead, every line in
+`docs/workflows/issue-processing.md` that names the #3172 or #3219 re-run, or
+lists "docs sweep" among the blocking gates, was read. The gate lists
+(`:1720-1723`, `:1785-1789`, `:1885-1891`, `:1980-1984`, `:2178-2183`) are
+still true because they mean the #3073 missing-line gate, which still blocks.
 
 - Updated:
   - `prompts/issue/prompt.md:193-194`
@@ -214,6 +241,17 @@ Removed assertions, quoted verbatim:
 
   The test now asserts `continue`, PR raised, and the hit named in the one PR
   comment.
+- Removed from `worker/deno/tests/completion_phase_docs_sweep_test.ts`:
+  `assertStringIncludes( outcome.comments[0]!, "BrokerBalance refuses a stale quote", );`
+  — #3237 moves the hit from the gate's block comment to the advisory PR
+  comment. The same text is now asserted on `prPosts[0]!.body` in "a stale
+  hit of the Docs sweep's own term is advisory (#3237)", so it is checked on
+  the PR and not on the issue.
+- Removed from `worker/deno/tests/completion_phase_docs_sweep_test.ts`:
+  `assertStringIncludes( outcome.comments[0] ?? "", "BrokerBalance is shared by the two old callers", );`
+  — same reason. It is now asserted on `prPosts[0]!.body` in "a stale doc
+  comment in an untouched source file is advisory like a manual hit (#3237,
+  Issue #3219)".
 
 Branch outcomes:
 
