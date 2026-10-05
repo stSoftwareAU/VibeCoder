@@ -19,7 +19,14 @@
  *      that needs no model call: it finds a quoted behaviour attached to a
  *      named test file in the summary's `## Test Plan` section and checks,
  *      by matching significant words, whether any test declaration in that
- *      file actually looks like it covers the claim.
+ *      file — or its preamble, the text before the first declaration, where
+ *      a fixture shared by more than one test tends to live (Issue #3257
+ *      corpus run against pr-summary-1549/3222) — actually looks like it
+ *      covers the claim. A quote only attaches to a test-file reference when
+ *      no other backtick span (a command, a path, an error message) sits
+ *      between them in the block (Issue #3257 corpus run against
+ *      pr-summary-3178/599); a quote that qualifies on neither side is not a
+ *      test-coverage claim and is ignored.
  *   2. One constrained, read-only model question ({@link
  *      buildSummaryClaimQuestionPrompt}), reusing {@link
  *      renderDriftVerdictQuestion} and {@link parseDriftVerdict} from
@@ -291,13 +298,28 @@ function quoteCoveredBy(
  * multiline regex covering the shapes this backstop recognises across
  * languages. Each segment runs from one declaration start to the next (or
  * the end of the file), so its body text is available for word-matching.
+ * The file's preamble — everything before the first declaration — is kept
+ * separately: a shared fixture (a module-level constant quoted by more than
+ * one test, Issue #3257 corpus run against pr-summary-1549/3222) lives there
+ * rather than inside any single segment, and is checked as one more
+ * candidate alongside the segments.
  */
 const TEST_DECLARATION_RE =
   /\bDeno\.test\b|^[ \t]*(?:it|test)(?:\.(?:only|skip|ignore|each))?\s*\(|#\[(?:tokio::)?test\]|^[ \t]*(?:async\s+)?def\s+test_|^[ \t]*func\s+Test|^[ \t]*@test\b/gm;
 
-function splitIntoTestSegments(content: string): string[] {
+/** A test file's source, split for the Test Plan backstop's coverage check. */
+interface TestFileSplit {
+  /** One segment per declaration, declaration start to the next (or EOF). */
+  segments: string[];
+  /** Text before the first declaration — shared fixtures live here. */
+  preamble: string;
+}
+
+function splitIntoTestSegments(content: string): TestFileSplit {
   const matches = [...content.matchAll(TEST_DECLARATION_RE)];
-  if (matches.length === 0) return [];
+  if (matches.length === 0) return { segments: [], preamble: "" };
+  const firstStart = matches[0]!.index ?? 0;
+  const preamble = content.slice(0, firstStart);
   const segments: string[] = [];
   for (let i = 0; i < matches.length; i++) {
     const start = matches[i]!.index ?? 0;
@@ -306,12 +328,17 @@ function splitIntoTestSegments(content: string): string[] {
       : content.length;
     segments.push(content.slice(start, end));
   }
-  return segments;
+  return { segments, preamble };
 }
 
-/** A test-file reference found inside backticks, at its position in the block. */
-interface TestFileRef {
-  pos: number;
+/** A span of a backtick-fenced run inside a Test Plan block. */
+interface Span {
+  start: number;
+  end: number;
+}
+
+/** A test-file reference found inside backticks, at its span in the block. */
+interface TestFileRef extends Span {
   path: string;
 }
 
@@ -322,48 +349,84 @@ const QUOTE_SPAN_RE = /"([^"\n]{1,300})"|“([^”\n]{1,300})”/g;
 /**
  * Find test-file references inside backtick spans and blank those spans out
  * (same length, so later positions still align), so a quoted phrase sitting
- * inside backticks is never read as a behaviour claim.
+ * inside backticks is never read as a behaviour claim. Every backtick span's
+ * extent is kept too — not only the ones that resolve to a test file — so
+ * {@link attachQuoteToRef} can tell whether an unrelated backtick-fenced
+ * token (a shell command, a path, an error message) sits between a
+ * candidate reference and the quote.
  */
 function findRefsAndBlank(
   block: string,
-): { refs: TestFileRef[]; blanked: string } {
+): { refs: TestFileRef[]; spans: Span[]; blanked: string } {
   const refs: TestFileRef[] = [];
+  const spans: Span[] = [];
   let blanked = "";
   let last = 0;
   for (const m of block.matchAll(BACKTICK_SPAN_RE)) {
     const full = m[0];
     const inner = m[1] ?? "";
     const start = m.index ?? 0;
+    const end = start + full.length;
+    spans.push({ start, end });
     blanked += block.slice(last, start) + " ".repeat(full.length);
-    last = start + full.length;
+    last = end;
 
     let candidate = inner;
     const doubleColon = candidate.indexOf("::");
     if (doubleColon >= 0) candidate = candidate.slice(0, doubleColon);
     candidate = candidate.replace(/:\d+(?::\d+)?$/, "");
     if (!/\s/.test(candidate) && isTestFilePath(candidate)) {
-      refs.push({ pos: start, path: candidate });
+      refs.push({ start, end, path: candidate });
     }
   }
   blanked += block.slice(last);
-  return { refs, blanked };
+  return { refs, spans, blanked };
 }
 
-/** The nearest preceding ref, or else the nearest following one, if any. */
+/** Whether no span in `spans` lies strictly between `fromEnd` and `toStart`. */
+function noSpanBetween(
+  fromEnd: number,
+  toStart: number,
+  spans: readonly Span[],
+): boolean {
+  if (toStart <= fromEnd) return true;
+  return !spans.some((span) => span.start >= fromEnd && span.end <= toStart);
+}
+
+/**
+ * Attach a quote to the nearest preceding test-file reference, or else the
+ * nearest following one — but only when no other backtick span (a command,
+ * a path, an error message) lies between the quote and that reference in
+ * the block (Issue #3257 corpus run against pr-summary-3178/599). A quote
+ * that qualifies on neither side is not a test-coverage claim.
+ */
 function attachQuoteToRef(
-  pos: number,
+  quoteStart: number,
+  quoteEnd: number,
   refs: readonly TestFileRef[],
+  spans: readonly Span[],
 ): TestFileRef | undefined {
   let preceding: TestFileRef | undefined;
-  let following: TestFileRef | undefined;
   for (const ref of refs) {
-    if (ref.pos < pos) {
-      if (!preceding || ref.pos > preceding.pos) preceding = ref;
-    } else if (ref.pos > pos) {
-      if (!following || ref.pos < following.pos) following = ref;
+    if (ref.end <= quoteStart) {
+      if (!preceding || ref.end > preceding.end) preceding = ref;
     }
   }
-  return preceding ?? following;
+  if (preceding && noSpanBetween(preceding.end, quoteStart, spans)) {
+    return preceding;
+  }
+
+  let following: TestFileRef | undefined;
+  for (const ref of refs) {
+    if (ref.start >= quoteEnd) {
+      if (!following || ref.start < following.start) following = ref;
+    }
+  }
+  if (following && noSpanBetween(quoteEnd, following.start, spans)) {
+    return following;
+  }
+
+  return undefined;
 }
 
 type ResolvedRef =
@@ -402,12 +465,12 @@ export async function findTestPlanClaimProblems(opts: {
   const blocks = logicalBlocks(section);
   const problems: TestPlanClaimProblem[] = [];
   const notChecked: string[] = [];
-  const segmentCache = new Map<string, string[] | null>();
+  const segmentCache = new Map<string, TestFileSplit | null>();
   let claimsChecked = 0;
   let claimsSkipped = 0;
 
   for (const block of blocks) {
-    const { refs, blanked } = findRefsAndBlank(block);
+    const { refs, spans, blanked } = findRefsAndBlank(block);
     if (refs.length === 0) continue;
 
     for (const m of blanked.matchAll(QUOTE_SPAN_RE)) {
@@ -417,7 +480,9 @@ export async function findTestPlanClaimProblems(opts: {
       const uniqueWords = [...new Set(quoteWords)];
       if (uniqueWords.length < 2) continue;
 
-      const ref = attachQuoteToRef(m.index ?? 0, refs);
+      const quoteStart = m.index ?? 0;
+      const quoteEnd = quoteStart + m[0].length;
+      const ref = attachQuoteToRef(quoteStart, quoteEnd, refs, spans);
       if (!ref) continue;
 
       if (claimsChecked >= MAX_TEST_PLAN_CLAIMS) {
@@ -456,7 +521,7 @@ export async function findTestPlanClaimProblems(opts: {
           segments = null;
         } else {
           const split = splitIntoTestSegments(content);
-          if (split.length === 0) {
+          if (split.segments.length === 0) {
             notChecked.push(
               `\`${path}\` names no test declaration this check ` +
                 "recognises, so its Test Plan claims were not checked",
@@ -470,9 +535,9 @@ export async function findTestPlanClaimProblems(opts: {
       }
       if (segments === null) continue;
 
-      const covered = segments.some((segment) =>
+      const covered = segments.segments.some((segment) =>
         quoteCoveredBy(uniqueWords, significantWords(segment, 3))
-      );
+      ) || quoteCoveredBy(uniqueWords, significantWords(segments.preamble, 3));
       if (!covered) {
         problems.push({
           line: block,

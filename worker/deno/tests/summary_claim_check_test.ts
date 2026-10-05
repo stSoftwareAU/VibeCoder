@@ -28,7 +28,7 @@ import {
   summaryClaimCheckBlocked,
   type SummaryClaimCheckResult,
 } from "../lib/summary_claim_check.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
+import { assertLinearGrowth, growthAllowanceMs } from "./support/growth.ts";
 import type { Logger, Result } from "../types.ts";
 
 function makeLogger(): Pick<Logger, "info" | "warn" | "error"> & {
@@ -102,7 +102,10 @@ Deno.test("findTestPlanClaimProblems - a missing file is a missing-file problem"
   });
   assertEquals(result.problems.length, 1);
   assertEquals(result.problems[0]?.kind, "missing-file");
-  assertEquals(result.problems[0]?.testFile, "worker/deno/tests/nonexistent_test.ts");
+  assertEquals(
+    result.problems[0]?.testFile,
+    "worker/deno/tests/nonexistent_test.ts",
+  );
 });
 
 Deno.test("findTestPlanClaimProblems - a bare basename resolves by unique suffix", async () => {
@@ -151,7 +154,9 @@ Deno.test("findTestPlanClaimProblems - a quoted phrase inside backticks is not r
     summary,
     trackedFiles: ["worker/deno/tests/foo_test.ts"],
     readFile: async () => {
-      throw new Error("must not be read — no quoted behaviour outside backticks");
+      throw new Error(
+        "must not be read — no quoted behaviour outside backticks",
+      );
     },
   });
   assertEquals(result.problems, []);
@@ -167,7 +172,9 @@ Deno.test("findTestPlanClaimProblems - a one-significant-word quote is ignored",
     summary,
     trackedFiles: ["worker/deno/tests/foo_test.ts"],
     readFile: async () => {
-      throw new Error("must not be read — quote has fewer than 2 significant words");
+      throw new Error(
+        "must not be read — quote has fewer than 2 significant words",
+      );
     },
   });
   assertEquals(result.problems, []);
@@ -203,8 +210,84 @@ Deno.test("findTestPlanClaimProblems - a cap of 50 claims reports the unchecked 
   });
   assertEquals(result.problems.length, 50);
   assert(
-    result.notChecked.some((n) => /\b1\b.*not checked|not checked.*\b1\b/.test(n)),
-    `expected a note about 1 unchecked claim, got ${JSON.stringify(result.notChecked)}`,
+    result.notChecked.some((n) =>
+      /\b1\b.*not checked|not checked.*\b1\b/.test(n)
+    ),
+    `expected a note about 1 unchecked claim, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a shared fixture in the file's preamble confirms the claim (pr-summary-1549/3222-shaped)", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/unfenced_untrusted_text_test.ts",
+    "rejects a comment carrying unfenced untrusted text",
+  );
+  const preambleFixture =
+    'const UNFENCED_SAMPLE = "rejects a comment carrying unfenced untrusted text";\n\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/unfenced_untrusted_text_test.ts"],
+    readFile: async () =>
+      `${preambleFixture}Deno.test("does something unrelated entirely", () => {});\n`,
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `expected the preamble fixture to confirm the claim, got ${
+      JSON.stringify(result.problems)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - an error message across an intervening backtick span must not attach to the preceding test file (pr-summary-3178-shaped)", async () => {
+  const summary = "## Test Plan\n\n" +
+    '- `milestone_presync_git_test.ts` "#1780 - covers the presync guard" ' +
+    "but refuses `git checkout -B topic` " +
+    '("Cannot update paths and switch to branch")\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["milestone_presync_git_test.ts"],
+    readFile: async () =>
+      `Deno.test("covers presync guard for issue 1780", () => {});\n`,
+  });
+  assertEquals(
+    result.problems,
+    [],
+    "the git-error quote sits across the `git checkout -B topic` backtick " +
+      "span from the test file and must not attach to it, and the first " +
+      `quote is covered by the test name, got ${
+        JSON.stringify(result.problems)
+      }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a quote across intervening backtick spans must not attach to the preceding test file (pr-summary-599-shaped)", async () => {
+  const summary = "## Test Plan\n\n" +
+    "- `tests/service_account_env_test.ts` (writes to `/tmp` and reads " +
+    '`.container-state/gh-config`) and the GraphQL "API rate limit ' +
+    'already exceeded" errors in `tests/run_core_test.ts`\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: [
+      "tests/service_account_env_test.ts",
+      "tests/run_core_test.ts",
+    ],
+    readFile: async (path) => {
+      if (path === "tests/service_account_env_test.ts") {
+        return `Deno.test("writes the container state to a temp path", () => {});\n`;
+      }
+      return `Deno.test("something unrelated to rate limiting", () => {});\n`;
+    },
+  });
+  assertFalse(
+    result.problems.some(
+      (p) => p.testFile === "tests/service_account_env_test.ts",
+    ),
+    `the rate-limit quote must not attach to service_account_env_test.ts, got ${
+      JSON.stringify(result.problems)
+    }`,
   );
 });
 
@@ -304,7 +387,9 @@ Deno.test("runSummaryClaimCheck - #3252-shaped confirmed finding blocks", async 
     {
       runGit: okGit(""),
       askQuestion: async () =>
-        okResult(`${DRIFT_VERDICT_OPEN}\n${verdict}\n<!-- /vibe-drift-verdict -->`),
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${verdict}\n<!-- /vibe-drift-verdict -->`,
+        ),
       logger,
     },
   );
@@ -314,7 +399,8 @@ Deno.test("runSummaryClaimCheck - #3252-shaped confirmed finding blocks", async 
 });
 
 Deno.test("runSummaryClaimCheck - a misquoted sentence is unconfirmed, not blocked", async () => {
-  const summaryContent = "## Summary\n\n`phraseAnywhere()` does something else.\n";
+  const summaryContent =
+    "## Summary\n\n`phraseAnywhere()` does something else.\n";
   const verdict = JSON.stringify({
     findings: [
       {
@@ -336,7 +422,9 @@ Deno.test("runSummaryClaimCheck - a misquoted sentence is unconfirmed, not block
     {
       runGit: okGit(""),
       askQuestion: async () =>
-        okResult(`${DRIFT_VERDICT_OPEN}\n${verdict}\n<!-- /vibe-drift-verdict -->`),
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${verdict}\n<!-- /vibe-drift-verdict -->`,
+        ),
       logger: makeLogger(),
     },
   );
@@ -368,7 +456,9 @@ Deno.test("runSummaryClaimCheck - a finding naming another file is unconfirmed",
     {
       runGit: okGit(""),
       askQuestion: async () =>
-        okResult(`${DRIFT_VERDICT_OPEN}\n${verdict}\n<!-- /vibe-drift-verdict -->`),
+        okResult(
+          `${DRIFT_VERDICT_OPEN}\n${verdict}\n<!-- /vibe-drift-verdict -->`,
+        ),
       logger: makeLogger(),
     },
   );
@@ -398,7 +488,9 @@ Deno.test("runSummaryClaimCheck - askQuestion error is notChecked, not blocked",
   assertFalse(summaryClaimCheckBlocked(result));
   assert(
     result.notChecked.some((n) => n.includes("could not be launched")),
-    `expected the askQuestion error recorded, got ${JSON.stringify(result.notChecked)}`,
+    `expected the askQuestion error recorded, got ${
+      JSON.stringify(result.notChecked)
+    }`,
   );
   assert(logger.errors.length > 0);
 });
@@ -439,7 +531,8 @@ Deno.test("runSummaryClaimCheck - a reply with no verdict block is notChecked", 
     },
     {
       runGit: okGit(""),
-      askQuestion: async () => okResult("I looked and found nothing worth noting."),
+      askQuestion: async () =>
+        okResult("I looked and found nothing worth noting."),
       logger: makeLogger(),
     },
   );
@@ -464,7 +557,7 @@ Deno.test("buildSummaryClaimGateComment - includes the sentence, the Test Plan p
     unconfirmedFindings: [],
     testPlanProblems: [
       {
-        line: "- `foo_test.ts` covers \"the thing\"",
+        line: '- `foo_test.ts` covers "the thing"',
         testFile: "worker/deno/tests/foo_test.ts",
         quote: "the thing",
         kind: "no-matching-test",
@@ -473,7 +566,7 @@ Deno.test("buildSummaryClaimGateComment - includes the sentence, the Test Plan p
     notChecked: [],
   };
   const comment = buildSummaryClaimGateComment(result);
-  assertStringIncludes(comment, "parseRow() escapes the phrase.");
+  assertStringIncludes(comment, "`parseRow()` escapes the phrase.");
   assertStringIncludes(
     comment,
     describeTestPlanClaimProblem(result.testPlanProblems[0]!),
@@ -494,9 +587,11 @@ Deno.test("summaryClaimBlockReason - starts with the expected prefix", () => {
     summaryClaimBlockReason(result),
     "PR summary describes named code wrongly",
   );
-  assert(summaryClaimBlockReason(result).startsWith(
-    "PR summary describes named code wrongly",
-  ));
+  assert(
+    summaryClaimBlockReason(result).startsWith(
+      "PR summary describes named code wrongly",
+    ),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -534,12 +629,49 @@ Deno.test("findTestPlanClaimProblems - a hostile unterminated quote run scales l
   );
 });
 
+// `findTestPlanClaimProblems` only reaches the declaration splitter after an
+// `await opts.readFile(...)`, so `assertLinearGrowth`'s synchronous `run`
+// cannot time the work: calling an async function whose first await has not
+// settled returns before the splitter ever runs. This helper measures across
+// the `await` instead, reusing growth.ts's own allowance maths
+// (`growthAllowanceMs`) so the tolerance matches the rest of the suite.
+async function assertLinearGrowthAsync<T>(
+  label: string,
+  build: (chars: number) => string,
+  run: (input: string) => Promise<T>,
+  baseChars: number,
+  sizeFactor = 4,
+): Promise<T> {
+  const baseInput = build(baseChars);
+  const scaledInput = build(baseChars * sizeFactor);
+  const actualFactor = scaledInput.length / baseInput.length;
+
+  const t0 = performance.now();
+  await run(baseInput);
+  const baseMs = performance.now() - t0;
+
+  const t1 = performance.now();
+  const output = await run(scaledInput);
+  const scaledMs = performance.now() - t1;
+
+  const allowedMs = growthAllowanceMs(baseMs, actualFactor);
+  assert(
+    scaledMs <= allowedMs,
+    `${label}: ${baseInput.length} chars took ${
+      baseMs.toFixed(0)
+    } ms but ${scaledInput.length} chars (${actualFactor.toFixed(1)}x) took ${
+      scaledMs.toFixed(0)
+    } ms, over the ${allowedMs.toFixed(0)} ms a linear rule allows`,
+  );
+  return output;
+}
+
 Deno.test("findTestPlanClaimProblems - a hostile test-file body scales linearly in the declaration splitter", async () => {
   const summary = SUMMARY_WITH_COVERAGE_CLAIM(
     "worker/deno/tests/foo_test.ts",
     "a distinct behaviour claim here",
   );
-  await assertLinearGrowth(
+  await assertLinearGrowthAsync(
     "test-declaration splitter",
     (chars) => `${"a".repeat(chars)}\nDeno.test(`,
     (input) =>
@@ -548,6 +680,6 @@ Deno.test("findTestPlanClaimProblems - a hostile test-file body scales linearly 
         trackedFiles: ["worker/deno/tests/foo_test.ts"],
         readFile: async () => input,
       }),
-    { baseChars: 10_000 },
+    10_000,
   );
 });

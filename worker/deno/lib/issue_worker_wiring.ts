@@ -316,6 +316,13 @@ export interface PrDeps {
 export interface ClaudeDeps {
   runClaudeWithRetry: typeof runClaudeWithRetry;
   /**
+   * The read-only question the completion phase asks about the PR summary's
+   * claims about named code (Issue #3257) — a seam separate from
+   * `runClaudeWithRetry` so a test can script the verdict without the
+   * question counting as an agent turn in tests that count recovery turns.
+   */
+  runSummaryClaimQuestion: typeof runClaudeWithRetry;
+  /**
    * Build or refresh the run's CodeGraph index (Issue #2159, part of #2145).
    *
    * Sits beside the agent invocation because that is what it serves: the
@@ -664,6 +671,7 @@ export function createDefaultDeps(
 
     claude: {
       runClaudeWithRetry,
+      runSummaryClaimQuestion: runClaudeWithRetry,
       prepareCodegraphContext,
       prepareRtkRun,
       rtkProviderId,
@@ -1143,6 +1151,18 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         ok: true,
         value: { exitCode: 0, output: "mock", timedOut: false },
       })
+    ),
+    // Not scripted by default (Issue #3257): the completion phase then logs
+    // the summary claim check's model pass as not checked, so a test that
+    // says nothing about it is unaffected.
+    runSummaryClaimQuestion: mockFn<ClaudeDeps["runSummaryClaimQuestion"]>(
+      () =>
+        Promise.resolve({
+          ok: false,
+          error: new Error(
+            "summary claim question not scripted in this mock (Issue #3257)",
+          ),
+        }),
     ),
     // Off by default (Issue #2159): a test that says nothing about CodeGraph
     // gets the switched-off behaviour and spawns nothing.

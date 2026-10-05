@@ -28,6 +28,13 @@ import { assemblePrBody, finalisePrBodyImages } from "../pr_body_sync.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
+import {
+  buildSummaryClaimGateComment,
+  runSummaryClaimCheck,
+  summaryClaimBlockReason,
+  summaryClaimCheckBlocked,
+} from "../summary_claim_check.ts";
+import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
 import type { WorkerConfig } from "../../types.ts";
@@ -693,8 +700,9 @@ async function reportSummaryRuleBlock(
  * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
  * because that gate ran after the guard; the closure, independent-review
  * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all four gates pass, whether the PR is
- * then raised or recovered.
+ * in `completionBody` runs once all five late-summary gates (Issue #3257
+ * added the summary claim check as the fifth) pass, whether the PR is then
+ * raised or recovered.
  *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
  *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
@@ -1825,11 +1833,16 @@ async function completionBody(
 
   const summaryResult = await loadPrSummary(state.repoPath, issueNumber);
   let summaryContent: string;
+  // The summary file's repo-relative path, set only when a summary with
+  // content was actually loaded — used by the claim check below to name the
+  // file it questions the model about (Issue #3257).
+  let summarySource: string | null = null;
   if (summaryResult.ok && summaryResult.value.content) {
     logger.info("Loaded PR summary file", {
       source: summaryResult.value.source,
     });
     summaryContent = summaryResult.value.content;
+    summarySource = summaryResult.value.source;
   } else {
     if (!summaryResult.ok) {
       logger.warn("Error reading PR summary file", {
@@ -2392,10 +2405,74 @@ async function completionBody(
       branchOutcomes.problems[0] ?? "Branch outcomes list missing"
     }`;
 
+  // ---------------------------------------------------------------------
+  // Summary claim check, computed early alongside the other late-summary
+  // verdicts (Issue #3257).
+  //
+  // The #3143 drift check (`pr_feedback_drift_check.ts`) catches a PR summary
+  // that quotes a function, file, test, regex or pattern and describes it
+  // wrongly — but it runs only on a review-fix push, never on the very first
+  // turn that writes the summary and raises the PR, and a first-run summary
+  // has repeatedly described named code wrongly (VibeCoder#3252, #3132). This
+  // runs the first-run counterpart here, before the summary is raised, for
+  // the same reason the other late verdicts are computed early: so it folds
+  // into whichever summary gate blocks first and shares the one recovery
+  // turn `recoverFromSummaryRuleBlock` grants, rather than costing a second,
+  // never-recovered block of its own. A model pass or file read that cannot
+  // run is logged as not checked (by `runSummaryClaimCheck` itself), never
+  // read as clean, and does not block.
+  //
+  // Skipped entirely when no summary file with content was loaded — with no
+  // summary there are no claims about named code to check.
+  // ---------------------------------------------------------------------
+  const claimCheck = summarySource === null ? null : await runSummaryClaimCheck(
+    {
+      repo,
+      issueNumber,
+      repoPath: state.repoPath,
+      baseRef: comparableBase.ok ? comparableBase.value : null,
+      summaryPath: summarySource,
+      summaryContent,
+    },
+    {
+      runGit: async (args) => {
+        const r = await deps.git.runGitCommand(args, { cwd: state.repoPath });
+        return r.ok ? r.value : null;
+      },
+      askQuestion: async (prompt) => {
+        const r = await deps.claude.runSummaryClaimQuestion(
+          {
+            prompt,
+            phase: "issue",
+            repo,
+            issueNumber,
+            timeoutSeconds: config.claudeTimeout,
+            killAfterSeconds: config.claudeKillAfter,
+            model: config.claudeModel || undefined,
+            cwd: state.repoPath,
+            logger,
+            disallowedTools: [...DRIFT_CHECK_DISALLOWED_TOOLS],
+          },
+          { maxRetries: config.maxRateLimitRetries },
+        );
+        if (!r.ok) return r;
+        recordClaudeRunStats(state, r.value);
+        return { ok: true, value: r.value.output ?? "" };
+      },
+      logger,
+    },
+  );
+  if (claimCheck === null) {
+    logger.info(
+      "Summary claim check skipped: no PR summary file loaded (Issue #3257)",
+    );
+  }
+
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, then branch outcomes (Issue #3147 added the last one). One
+   * placeholder, branch outcomes, then the summary claim check (Issue #3147
+   * added branch outcomes; Issue #3257 added the claim check last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
    */
@@ -2428,17 +2505,24 @@ async function completionBody(
     reason: branchOutcomesReason,
     comment: () => buildBranchOutcomesGateComment(branchOutcomes),
   };
+  const claimCheckVerdict: LateSummaryVerdict = {
+    blocked: claimCheck !== null && summaryClaimCheckBlocked(claimCheck),
+    reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
+    comment: () =>
+      claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
     docsSweepVerdict,
     removedAssertionsVerdict,
     placeholderVerdict,
     branchOutcomesVerdict,
+    claimCheckVerdict,
   ];
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes — in that order) other than those in `skip`
-   * into an earlier gate's block.
+   * placeholder, branch outcomes, summary claim check — in that order) other
+   * than those in `skip` into an earlier gate's block.
    */
   function foldInLateSummaryVerdicts(
     reason: string,
@@ -2566,23 +2650,26 @@ async function completionBody(
 
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
-  // (Issue #3131), result placeholder (Issue #3124), and branch outcomes
-  // (Issue #3147) — in that order.
+  // (Issue #3131), result placeholder (Issue #3124), branch outcomes
+  // (Issue #3147), and the summary claim check (Issue #3257) — in that
+  // order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
   // term-only grep sweep still missed the manual for the changed surface,
   // some PRs carried no Docs sweep line at all, a dropped test assertion
   // went unaccounted for, and fleet PRs shipped a new branch with no test
-  // reaching it (or named a test that did not exist). When the diff changes
-  // a non-test, non-doc file, the summary must name the manual `section:`
+  // reaching it (or named a test that did not exist), and a first-run
+  // summary described named code wrongly. When the diff changes a
+  // non-test, non-doc file, the summary must name the manual `section:`
   // that documents the surface, account for every removed assertion, carry
-  // no unfilled result placeholder, and carry a `Branch outcomes:` list
-  // whose every named test exists at the head.
+  // no unfilled result placeholder, carry a `Branch outcomes:` list whose
+  // every named test exists at the head, and get its claims about named
+  // code right.
   //
   // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
   // delivery guard itself, against the existing PR, before it recovers and
-  // finalises that PR — so every summary-rule gate, these four included,
+  // finalises that PR — so every summary-rule gate, these five included,
   // records the degraded follow-up before an existing PR is finalised, and
   // none of them needs to run after the guard or short-circuit around it for
   // the no-PR case: either way `reportSummaryRuleBlock` does the right thing
@@ -2688,8 +2775,9 @@ async function completionBody(
   // The fleet's PR-summary contract now also asks for a `Branch outcomes:`
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
-  // reaching it, or named a test that did not exist at the head. Last in
-  // the late-summary chain, so there is nothing further to fold in.
+  // reaching it, or named a test that did not exist at the head. Folds in
+  // the summary claim check (Issue #3257), the one late verdict still named
+  // below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
     logger.warn("Branch-outcomes gate blocked PR creation", {
@@ -2698,9 +2786,43 @@ async function completionBody(
       missingTests: branchOutcomes.missingTests,
       problems: branchOutcomes.problems,
     });
-    return await reportSummaryRuleBlock(
+    const folded = foldInLateSummaryVerdicts(
       branchOutcomesReason,
       buildBranchOutcomesGateComment(branchOutcomes),
+      [
+        docsSweepVerdict,
+        removedAssertionsVerdict,
+        placeholderVerdict,
+        branchOutcomesVerdict,
+      ],
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Summary claim check gate (Issue #3257).
+  //
+  // A first-run PR summary that quotes a function, file, test, regex or
+  // pattern and gets it wrong (VibeCoder#3252, #3132) — the one the #3143
+  // drift check cannot reach because it only runs on a review-fix push.
+  // Last in the late-summary chain, so there is nothing further to fold in.
+  // ---------------------------------------------------------------------
+  if (claimCheckVerdict.blocked && claimCheck !== null) {
+    logger.warn("Summary claim check blocked PR creation", {
+      findings: claimCheck.findings.length,
+      testPlanProblems: claimCheck.testPlanProblems.length,
+      notChecked: claimCheck.notChecked.length,
+    });
+    return await reportSummaryRuleBlock(
+      claimCheckVerdict.reason,
+      claimCheckVerdict.comment(),
       ctx,
       state,
       prBody,
