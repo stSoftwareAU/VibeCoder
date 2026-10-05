@@ -194,9 +194,11 @@ earns its place by meeting all four conditions:
    is not a documentation-drift test: it still passes on a page that moved the
    rule into an unrelated section, or deleted the context that gave it meaning.
 
-   The type system now enforces this: `section()` returns a branded
-   `DocSection`, and `flat()` accepts nothing else, so a whole-file
-   `flat(body)` fails `deno check`. `flatWholeFile` is the named exception for
+   `deno check` now rejects a whole-file `flat(body)`: `section()` returns a
+   branded `DocSection`, and `flat()` accepts nothing else. The type does not
+   see a raw `includes` over a whole page, or a test's own
+   whitespace-collapsing helper, so those are still review findings.
+   `flatWholeFile` is the named exception for
    text that is not a section of a page: a pinned-phrase literal, text a
    module holds, or a whole file read for an absence check. A positive pin
    over a page's text through `flatWholeFile(body)` is a finding.

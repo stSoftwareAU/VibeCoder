@@ -23,8 +23,10 @@
  *
  * The suite dogfoods its own rule: every positive pin below is scoped to a
  * named section with `section()` rather than run over a whole file. Only the
- * two absence checks read the whole prompt, through `flatWholeFile`, because
- * an absence must hold in every section.
+ * two absence checks read the whole prompt, because an absence must hold in
+ * every section: the helper-path check is a raw `includes` (the path has no
+ * whitespace to collapse), and the sentence check goes through
+ * `flatWholeFile`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -155,9 +157,10 @@ Deno.test("documentation drift - the auditor exempts the pattern it still flags 
 Deno.test("documentation drift - the pattern the carve-out protects is real (Issue #2429)", async () => {
   // The carve-out is only worth having while the suites it protects exist and
   // use the mechanism it names — so call it rather than grep for it.
-  assertStringIncludes(
+  // `section()` throws when the heading is missing or renamed.
+  section(
     await readRepoDoc("CODING-STANDARDS.md"),
-    "## Test-Driven Development (TDD)",
+    "Test-Driven Development (TDD)",
   );
 
   const docsSuites: string[] = [];

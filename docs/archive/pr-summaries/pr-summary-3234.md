@@ -2,7 +2,9 @@
 
 Issue #3234: documentation-drift tests kept pinning phrases against whole
 files despite condition 1 of CODING-STANDARDS.md § Documentation-drift tests.
-The type system now makes that rule hold.
+`deno check` now rejects the commonest form, a whole-file `flat(body)`. A raw
+`includes` over a whole page, or a test's own whitespace-collapsing helper, is
+not visible to the type and stays a review finding.
 
 - `worker/deno/tests/support/markdown_docs.ts`: `section()` and
   `withoutSection()` return a branded `DocSection`, and `flat()` accepts only a
@@ -17,7 +19,9 @@ The type system now makes that rule hold.
   `documentation_drift_policy_test.ts` used to read the whole prompt through
   `loadPrompt`. They now read only the named heading (`PR Summary File`,
   `Making Changes`, `Source-text greps used as assertions`).
-- `CODING-STANDARDS.md` condition 1 now says the type enforces the rule.
+- `CODING-STANDARDS.md` condition 1 now says `deno check` rejects a
+  whole-file `flat(body)`, and that a raw whole-page `includes` or a local
+  whitespace-collapsing helper is still a review finding.
 - New `worker/deno/tests/doc_section_type_3234_test.ts`: its
   `@ts-expect-error` lines are the contract that `flat(wholeFile)` and
   `flat(rawSlice)` do not type-check.
@@ -116,3 +120,28 @@ section-scoped, unchanged.
   tests/doc_section_type_3234_test.ts tests/test_audit_unit_suite_checks_943_test.ts
   tests/drift_pins_on_base_3193_test.ts`: 40 passed, 0 failed.
 - `deno fmt --check`, `deno lint`, `deno check` on the touched file: clean.
+
+## Review round — the standards sentence and the drift-policy header
+
+A later review found two claims broader than the code:
+
+- `CODING-STANDARDS.md` condition 1 said "The type system now enforces this".
+  The brand only constrains `flat()`. A raw `includes` over a whole page and a
+  test's own `.replace(/\s+/g, " ")` helper still pass `deno check`. The
+  sentence now names what `deno check` rejects and says the other two forms
+  are still review findings.
+- The header of `documentation_drift_policy_test.ts` said every positive pin
+  was section-scoped and that both absence checks went through
+  `flatWholeFile`. Fixed both ways round. The header now says the helper-path
+  check is a raw `includes` and only the sentence check uses `flatWholeFile`.
+  The one positive whole-file pin, on the `## Test-Driven Development (TDD)`
+  heading in `CODING-STANDARDS.md`, is now `section(…, "Test-Driven
+  Development (TDD)")`. That throws when the heading is missing or renamed.
+- Changed assertion, quoted:
+  `assertStringIncludes( await readRepoDoc("CODING-STANDARDS.md"), "## Test-Driven Development (TDD)", );`
+  is replaced by the `section()` call above. Renaming the heading in a scratch
+  copy turned the test red, so the check still bites.
+- `deno task test:unit tests/documentation_drift_policy_test.ts
+  tests/doc_section_type_3234_test.ts tests/test_audit_unit_suite_checks_943_test.ts
+  tests/drift_pins_on_base_3193_test.ts`: 40 passed, 0 failed. Every test file
+  that pins condition 1 or `flatWholeFile` (39 files): 139 passed, 0 failed.
