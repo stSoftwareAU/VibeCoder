@@ -57,17 +57,16 @@ async function timingSection(doc: string, title: string): Promise<string> {
 }
 
 /**
- * Escapes `phrase` and joins its words with `\s+`, so the result matches the
- * phrase anywhere in a raw (unflattened) file regardless of line wrapping.
- * Used only for whole-file absence checks, which must not be narrowed to one
- * section and must not run against `flat()`'s collapsed whole-file text
- * (Issue #3240 makes `flat()` refuse whole-file input).
+ * True if `phrase` appears in `text` regardless of line wrapping: both are
+ * collapsed to single-spaced whitespace before the substring check, so no
+ * regex construction is needed. Used only for whole-file absence checks,
+ * which must not be narrowed to one section and must not run against
+ * `flat()`'s collapsed whole-file text (Issue #3240 makes `flat()` refuse
+ * whole-file input).
  */
-function phraseAnywhere(phrase: string): RegExp {
-  const words = phrase.trim().split(/\s+/).map((word) =>
-    word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  );
-  return new RegExp(words.join("\\s+"));
+function phraseAnywhere(text: string, phrase: string): boolean {
+  const normalize = (value: string) => value.trim().replace(/\s+/g, " ");
+  return normalize(text).includes(normalize(phrase));
 }
 
 Deno.test("timing policy - all three surfaces state the same rule (Issue #786)", async () => {
@@ -106,9 +105,7 @@ Deno.test("timing policy - the guidelines no longer ban measuring outright (Issu
   // section.
   const whole = await readRepoDoc(GUIDELINES_SECTION.doc);
   assertEquals(
-    phraseAnywhere("Do not measure performance inside unit tests").test(
-      whole,
-    ),
+    phraseAnywhere(whole, "Do not measure performance inside unit tests"),
     false,
     "coding_guidelines still carries the flat ban, which forbids the ratio " +
       "assertions CODING-STANDARDS.md requires",
@@ -133,9 +130,7 @@ Deno.test("timing policy - the auditor exempts ratio assertions (Issue #786)", a
   // section.
   const whole = await readRepoDoc(AUDIT_SECTION.doc);
   assertEquals(
-    phraseAnywhere("Flag any wall-clock comparison inside a unit test").test(
-      whole,
-    ),
+    phraseAnywhere(whole, "Flag any wall-clock comparison inside a unit test"),
     false,
     "test_audit still flags every comparison without exception",
   );
