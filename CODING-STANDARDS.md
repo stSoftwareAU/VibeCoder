@@ -1300,8 +1300,11 @@ This adds to the rule that every doc assertion must match the head code; it
 does not relax it. Milestone sub-PRs merge into the milestone branch on green
 CI without review, so a sibling dropped later leaves its forward references
 there until the milestone's summary PR is reviewed; that PR's body lists
-every Markdown line the milestone adds that names an issue closed as not
-planned (see [Milestones](docs/workflows/milestones.md)). Fleet PRs sent back
+each Markdown line the milestone adds that names a milestone issue, or an
+issue one declares with `Depends on` or `Blocked by`, closed as not planned
+(see [Milestones](docs/workflows/milestones.md)); a follow-up named only in
+the prose is not scanned, so the review still reads those lines. Fleet PRs
+sent back
 for this: docs described a `policy-check` binary and schema-drift test owned
 by sibling GRQ-AutoTrader#2301 that were not on the branch
 (GRQ-AutoTrader#2464); three runbooks said the deploy's publish step (#2303)
