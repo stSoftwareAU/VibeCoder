@@ -229,8 +229,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    rewritten; a change that moves a cost (a download, a retry, a push, a
    fallback) says where the cost now lands; and a sentence about history
    ("before this fix, X skipped Y") is checked against the base-branch code
-   (see **Prose about the PR's own change** in `CODING-STANDARDS.md`). Before
-   adding or changing a rule in
+   (see **Prose about the PR's own change** in `CODING-STANDARDS.md`).
+   Behaviour another issue delivers — a sibling sub-issue, a milestone's
+   planned issue, a follow-up — is not described as present: name it only as
+   planned ("not yet: #N will …"), and only while #N is open. Before writing
+   a sentence that names or depends on another issue, run `gh issue view N`
+   and grep the head for its deliverable (the binary, script, workflow step
+   or check); when that code is not at the head, the sentence describes what
+   ships today, not the plan. When the issue's plan says a sibling will do
+   X, grep the docs the diff touches for that sibling's `#N`: each
+   present-tense hit is backed by head code or reworded as planned (see
+   **Behaviour another issue delivers is not described as present** in
+   `CODING-STANDARDS.md`). Before adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and
