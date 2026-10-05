@@ -263,15 +263,24 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Three checks run, each only when it applies:
+Four checks run, each only when it applies:
 
-1. **Model drift pass** — only when the push changes a code file (neither a
-   test nor documentation, the same rule as the docs-sweep gate below). A
-   read-only question (file-writing, sub-agent, web and plan-mode tools
+1. **Model drift pass** — runs on every push that changed a file, whether
+   code, a test or documentation (Issue #3244 widened this past the earlier
+   code-file-only gate, which meant VibeCoder#3236's round-2 push — a
+   standards doc, the summary and a test file, no code — never got a pass).
+   A read-only question (file-writing, sub-agent, web and plan-mode tools
    denied, the same list as the closure-verdict question) is asked over the
    PR summary and every doc/prompt/README the PR diff touches against its
-   base (capped at 40 files): list every sentence the code change makes
-   false or leaves incomplete, quoted verbatim.
+   base (capped at 40 files), fenced together with the change request this
+   run is answering — the review or comment body — as untrusted text: list
+   every sentence the change makes false or leaves incomplete, quoted
+   verbatim; confirm that every sentence the change request quotes from the
+   summary, a doc or the PR body has been rewritten or removed at the head
+   (one still present, even with a correction appended after it, is drift);
+   and report a sentence that a later sentence in the same file corrects,
+   supersedes or contradicts — for example an earlier-round paragraph
+   followed by a "PR-feedback round N" correction.
 2. **Deterministic Test Plan recount** — whenever the PR diff carries a
    summary, the worker counts top-level `Deno.test(` / `it(` declarations
    at the head for every test file the PR diff adds or edits, and flags a
@@ -287,23 +296,40 @@ Three checks run, each only when it applies:
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.
+4. **Deterministic quoted-sentence check** (Issue #3244) — for each finding
+   in the change request whose file is a
+   `docs/archive/pr-summaries/pr-summary-*.md` (findings are read in the
+   `**\`file:line\`**: problem` format the fleet reviewer writes,
+   `.claude/skills/review-fleet-prs/review_log.ts`; the `**Fix:**` text and
+   the review's closing summary are not read), the worker takes every
+   quoted span of four or more words from the finding's problem text —
+   straight, curly and single quotes; a span is split at an ellipsis; a span
+   never crosses a line break — and flags each one still present in that
+   summary at the head, compared after normalising case, whitespace,
+   Markdown emphasis/backticks/underscores and quote style. A named summary
+   that cannot be read inside the checkout — missing, or a symlink
+   resolving outside it — is reported as not checked. This runs on every
+   non-skipped push, whether or not the push changed code.
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
-rewrite the listed sentences, recount the Test Plan and fix the Docs sweep
-line, without changing code. The checks are then re-run; a prose finding
-counts as fixed only when its quoted sentence was present before the
-recovery turn and is gone after it — a finding whose file was not one of
-the files the question was asked about is never read back, so it stays
-reported regardless of the recovery turn. A model pass that returns no
-verdict is not a hit and does not trigger a recovery turn on its own; it
-goes straight to the reply note. Whatever remains after the recovery turn —
-plus a model pass that returned no verdict — is appended to
-`.pr_response_message` under `### Drift check (Issue #3143)`, so it reaches
-the PR reply instead of being pushed silently.
+rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
+line, and rewrite or remove each quoted sentence the quoted-sentence check
+flagged as still present in the summary — not append a correction below it,
+which leaves the sentence standing — without changing code. The checks are
+then re-run, including the quoted-sentence check; a prose finding counts as
+fixed only when its quoted sentence was present before the recovery turn and
+is gone after it — a finding whose file was not one of the files the
+question was asked about is never read back, so it stays reported regardless
+of the recovery turn. A model pass that returns no verdict is not a hit and
+does not trigger a recovery turn on its own; it goes straight to the reply
+note. Whatever remains after the recovery turn — plus a model pass that
+returned no verdict — is appended to `.pr_response_message` under
+`### Drift check (Issue #3143)`, so it reaches the PR reply instead of being
+pushed silently.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
