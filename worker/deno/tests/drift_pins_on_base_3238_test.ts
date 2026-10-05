@@ -39,21 +39,26 @@ Deno.test("resolveRepoDoc - rejects any path that escapes the repo root", async 
     await commitFile(clone, "doc.md", BASE_DOC, "doc");
     await Deno.mkdir(`${clone}/sub`);
 
-    await assertRejects(
+    const dotdotErr = await assertRejects(
       () => resolveRepoDoc("../doc.md", clone),
       Error,
-      '"../doc.md"',
+      'no ".." segments',
     );
-    await assertRejects(
+    assertStringIncludes((dotdotErr as Error).message, '"../doc.md"');
+
+    const subDotdotErr = await assertRejects(
       () => resolveRepoDoc("sub/../doc.md", clone),
       Error,
-      '"sub/../doc.md"',
+      'no ".." segments',
     );
-    await assertRejects(
+    assertStringIncludes((subDotdotErr as Error).message, '"sub/../doc.md"');
+
+    const absErr = await assertRejects(
       () => resolveRepoDoc("/abs/doc.md", clone),
       Error,
-      '"/abs/doc.md"',
+      'no ".." segments',
     );
+    assertStringIncludes((absErr as Error).message, '"/abs/doc.md"');
 
     assertEquals(await resolveRepoDoc("./doc.md", clone), "doc.md");
   } finally {
@@ -68,7 +73,7 @@ Deno.test("resolveRepoDoc - rejects a path missing from the working tree", async
     const err = await assertRejects(
       () => resolveRepoDoc("nope/missing.md", clone),
       Error,
-      '"nope/missing.md"',
+      "not found in the working tree",
     );
     assertStringIncludes((err as Error).message, `${clone}/nope/missing.md`);
   } finally {
@@ -91,12 +96,16 @@ Deno.test("resolveRepoDoc - rejects a path through a symlink", async () => {
     await assertRejects(
       () => resolveRepoDoc("link/doc.md", clone),
       Error,
-      '"link/doc.md"',
+      "goes through a symlink",
     );
     // The ".." rule catches this combined shape before the symlink check runs.
-    await assertRejects(
+    const missingLinkErr = await assertRejects(
       () => resolveRepoDoc("missing/../link/doc.md", clone),
       Error,
+      'no ".." segments',
+    );
+    assertStringIncludes(
+      (missingLinkErr as Error).message,
       '"missing/../link/doc.md"',
     );
 
@@ -105,7 +114,7 @@ Deno.test("resolveRepoDoc - rejects a path through a symlink", async () => {
     await assertRejects(
       () => resolveRepoDoc("alias.md", clone),
       Error,
-      '"alias.md"',
+      "goes through a symlink",
     );
   } finally {
     await fixture.cleanup();
@@ -131,6 +140,7 @@ Deno.test("driftPinsCli - an unresolvable doc path fails loud, prints nothing on
     assertEquals(code, 2);
     assertEquals(out, []);
     assertEquals(err.length, 1);
+    assertStringIncludes(err[0]!, 'no ".." segments');
     assertStringIncludes(err[0]!, "../doc.md");
   } finally {
     await fixture.cleanup();
