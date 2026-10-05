@@ -60,9 +60,9 @@ async function timingSection(doc: string, title: string): Promise<string> {
  * True if `phrase` appears in `text` regardless of line wrapping: both are
  * collapsed to single-spaced whitespace before the substring check, so no
  * regex construction is needed. Used only for whole-file absence checks,
- * which must not be narrowed to one section and must not run against
- * `flat()`'s collapsed whole-file text (Issue #3240 makes `flat()` refuse
- * whole-file input).
+ * which must not be narrowed to one section. Avoiding `flat()` here also
+ * keeps this test compatible if `flat()` later takes a `DocSection` brand
+ * and refuses whole-file input (not yet: PR #3240 for Issue #3234).
  */
 function phraseAnywhere(text: string, phrase: string): boolean {
   const normalize = (value: string) => value.trim().replace(/\s+/g, " ");

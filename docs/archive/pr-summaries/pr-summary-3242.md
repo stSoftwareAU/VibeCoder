@@ -31,8 +31,9 @@ rule's section, or survive elsewhere in the file, and the test stayed green.
 - **Absence checks stay whole-file.** "Do not measure performance inside unit
   tests" and "Flag any wall-clock comparison inside a unit test" must not
   appear anywhere in the file, so narrowing them would weaken them. They run
-  against the raw file through `phraseAnywhere()`. That helper escapes the
-  phrase and joins its words with `\s+`, so wrapped prose still matches.
+  against the raw file through `phraseAnywhere()`. That helper collapses
+  whitespace in both the file and the phrase before a substring check, so
+  wrapped prose still matches.
 
 ### Undiscoverable Facts
 
@@ -57,8 +58,8 @@ rule's section, or survive elsewhere in the file, and the test stayed green.
      `coding_guidelines`, outside the section, turned test 2 red. So the
      absence check is whole-file and tolerates line wrapping.
 - Docs sweep: no doc references the removed `promptCollapsed` or
-  `standardsCollapsed` helpers. The module and helper doc comments in the test
-  file were updated.
+  `standardsCollapsed` helpers. Only the helper doc comments in the test file
+  were updated; the module doc comment is unchanged.
   `worker/deno/tests/documentation_drift_policy_test.ts:50` has its own local
   `promptCollapsed`. It is still true for that file, and it is out of scope
   here (see Follow-up).
