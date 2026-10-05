@@ -191,8 +191,10 @@ themselves:
 - **Documentation-drift pins are checked one phrase at a time** — before
   raising a PR that adds or changes a drift test, run
   `cd worker/deno && deno task drift-pins-on-base origin/main <doc> <section> <phrase>...`
-  for each section it reads. It lists every pinned phrase the base section
-  already held and exits 1 when there is one; such a pin can never fail (see
+  for each section it reads, with `<doc>` relative to the repo root. It lists
+  every pinned phrase the base section already held and exits 1 when there is
+  one; such a pin can never fail. An unresolvable `<doc>` exits 2 naming the
+  path, and a doc the base never had prints one `doc not on base` line (see
   [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests),
   condition 4).
 - **Speed budget** — a unit test finishes within 10 seconds. It is a
