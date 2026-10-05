@@ -366,7 +366,7 @@ crate can meet several releases' worth of new lints at once. These
 checks cover what changed across 1.95 to 1.99 that alters what a
 reviewer should *look for* — not release trivia. 1.96 to 1.98 were
 mined when the pin moved to 1.98.0; 1.95 and 1.99 when it moved to
-1.99.0 (Issue #3258).
+1.99.0 (stSoftwareAU/VibeCoder#3258).
 
 Most of them are about lints that are **deny-by-default or
 warn-by-default**, or deprecations that now warn. Under a `-D warnings`
