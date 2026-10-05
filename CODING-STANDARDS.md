@@ -520,6 +520,21 @@ load-bearing fake stands in for and the property the change relies on. A
 change whose only proof is a fake more permissive than its production
 implementation is a blocking self-review finding.
 
+**A test of a third-party tool's input uses that tool's semantics.** The
+fake rule above covers the repository's own ports; this covers a pattern or
+config that an external tool reads — Renovate `matchStrings` or
+`managerFilePatterns`, Actions `branches` or `paths` filters, linter or
+scanner configs. When the tool's own validator or engine can run in the
+repository's CI (for example `renovate-config-validator`, or RE2 for a
+Renovate regex), run the test through it. When it cannot, test the in-repo
+stand-in against cases taken from the tool's documentation: the exact case
+the change relies on, and at least one input the tool rejects or does not
+match. For example, GitHub's `*/*` branch filter matches `milestone/foo`,
+and RE2 rejects a negative look-ahead that JavaScript's `RegExp` accepts.
+Name that documentation in the PR summary. A stand-in more permissive or
+more restrictive than the tool, so a test passes on input the tool rejects
+or fails on input it accepts, is a blocking self-review finding.
+
 **Observe the real tool before you rely on it.** When a decision depends on
 how git, `gh`, the GitHub API or another external tool behaves in a
 particular case (exit code, warnings on stderr, case-sensitivity, ordering,
@@ -537,7 +552,9 @@ workflow validator in the same PR, or add one when the repository has none,
 with a positive and a negative test for each new or changed invariant. A flag
 that is load-bearing must be load-bearing in the validator too, not only in
 the README or a code comment: an invariant documented but not validated is a
-blocking self-review finding (Issue #3021).
+blocking self-review finding (Issue #3021). A validator that emulates
+GitHub's glob or expression semantics is also held to **A test of a
+third-party tool's input uses that tool's semantics**.
 
 ### Writing a gate over text
 

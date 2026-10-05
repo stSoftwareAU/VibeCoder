@@ -1462,6 +1462,20 @@ issue prompt's Bugs/Enhancements requirement makes a change whose only
 proof is a fake more permissive than its production implementation a
 blocking self-review finding.
 
+**A test of a third-party tool's input uses that tool's semantics (Issue #3235).**
+The fake-mirrors rule covers the repository's own ports; fleet PRs instead
+tested config read by an external tool against an in-repo stand-in for that
+tool's engine. stSoftwareAU/TagsTS#93's hand-written glob matcher never
+matched `*` before `/`, so `milestone/foo` failed a `*/*` branch filter
+GitHub accepts; TagsTS#98 compiled a Renovate `matchStrings` look-ahead with
+JavaScript's `RegExp`, which accepts it, while Renovate's RE2 rejects the
+whole config. The guidelines now require running the tool's own validator or
+engine where CI can run it, and otherwise testing the stand-in against
+documented cases — the case the change relies on and one the tool rejects or
+does not match — naming that documentation in the PR summary. The
+workflow-validator rule links to it, so a validator that emulates GitHub's
+glob or expression semantics is held to the same bar.
+
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
 [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)
