@@ -203,6 +203,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // line by line; only a growth measurement separates its capped, anchored
   // scans from a backtracking pattern (Issue #3255).
   "tests/milestone_merge_gate_test.ts",
+  // The first-run summary claim check's Test Plan backstop scans an
+  // agent-written summary and a test file with bounded span and declaration
+  // regexes; only a growth measurement pins them (#3257).
+  "tests/summary_claim_check_test.ts",
 ];
 
 /**
