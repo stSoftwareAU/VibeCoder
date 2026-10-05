@@ -221,12 +221,17 @@ guessing — the analysis-only hand-off then routes it to a human.
    it addresses instead (see **Prompt Engineering Guidance** in
    `CODING-STANDARDS.md`). Hold prose about this PR's own change to the code
    that decides it: for each sentence the diff adds or edits that says
-   **when** the new behaviour happens or **what it costs**, list every
-   condition and every path in the head code that reaches it, and name each
-   condition or scope the sentence to the path it describes. An absolute
-   word ("only", "never", "always", "any", "automatically", "exactly as
-   before") needs a line of head code that guarantees it, or the sentence is
-   rewritten; a change that moves a cost (a download, a retry, a push, a
+   **when** the new behaviour happens, **what it costs** or **which inputs**
+   it covers, list every condition and every path in the head code that
+   reaches it, and name each condition or scope the sentence to the path it
+   describes. An absolute word ("only", "never", "always", "any", "every",
+   "all", "each", "automatically", "exactly as before", "no … is missed") or
+   a counted or closed list ("three things are …", "X, Y and Z are the …")
+   needs a line of head code that guarantees it, or the sentence is
+   rewritten; a claim about which inputs a scan, check, guardrail or test
+   list covers matches the code that builds the set (its candidate
+   selection, filter or allow-list, or the `Branch outcomes:` list) or is
+   scoped to it; a change that moves a cost (a download, a retry, a push, a
    fallback) says where the cost now lands; and a sentence about history
    ("before this fix, X skipped Y") is checked against the base-branch code
    (see **Prose about the PR's own change** in `CODING-STANDARDS.md`).

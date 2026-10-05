@@ -1282,16 +1282,28 @@ in the same push when it changes what the summary says.
 **Prose about the PR's own change** is where that rule breaks most often: a
 sentence states the new behaviour more simply than the code implements it —
 it drops a condition the code checks, names a trigger the code does not have,
-or says a cost cannot happen when the code makes it happen. For each sentence
-the diff adds or edits in a doc, prompt, doc comment or PR summary that says
-**when** the change's behaviour happens or **what it costs**:
+says a cost cannot happen when the code makes it happen, or says a scan or
+check covers a set its code does not select. For each sentence the diff adds
+or edits in a doc, prompt, doc comment or PR summary that says **when** the
+change's behaviour happens, **what it costs** or **which inputs** it covers:
 
 1. Open the code that decides it and list every condition and every path that
    reaches it. The sentence names each condition, or scopes itself explicitly
    to the path it describes.
-2. An absolute word — "only", "never", "always", "any", "automatically",
-   "exactly as before" — needs a line of head code that guarantees it. With no
-   such line, rewrite the sentence.
+2. An absolute word — "only", "never", "always", "any", "every", "all",
+   "each", "automatically", "exactly as before", "no … is missed" — or a
+   counted or closed list ("three things are …", "X, Y and Z are the …")
+   needs a line of head code that guarantees it. With no such line, rewrite
+   the sentence. For a claim about **which inputs** a scan, check, guardrail
+   or test list covers, open the code that builds the set — the candidate
+   selection, filter or allow-list, or the PR's own `Branch outcomes:` list —
+   and match it exactly or scope the sentence to it: "each Markdown line the
+   milestone adds that names a milestone issue, or an issue one declares as a
+   bare `#N` with `Depends on`/`Blocked by` (an `owner/repo#N` dependency is
+   not read, even when it names this repo), closed as not planned", not
+   "every Markdown line that names an issue closed as not planned". A
+   test-coverage claim is the same check: it names the branches its tests
+   exercise (**A named test must exist** above).
 3. When the change moves a cost (a download, a retry, a push, a fallback) from
    one path to another, the doc says where the cost now lands.
 4. A sentence about history ("before this fix, X skipped Y") is checked
@@ -1303,7 +1315,17 @@ whenever the extracted tree is wiped (GRQ#5158); a prompt said a `## Blocked:`
 heading defers, when the code defers only on a `Depends on`/`Blocked by` line
 naming an issue it reads as open (VibeCoder#3095); a section said a script
 "runs automatically" after a fetch that never calls it (GRQ#5153)
-(Issue #3120).
+(Issue #3120). Sent back for an "every" or a closed list the selecting code
+does not back: a standards paragraph said a milestone summary PR body lists
+"every Markdown line the milestone adds that names an issue closed as not
+planned", when `findNotPlannedDocReferences` checks only milestone members
+and the bare-`#N` `Depends on`/`Blocked by` targets they declare — a
+qualified `owner/repo#N` reference, even one naming this repo, is dropped
+before the lookup (VibeCoder#3231); a PR summary said "every arm" of three parsers had its own
+`Branch outcomes:` line when five branches had none (VibeCoder#3160); a
+script's header comments listed "three things" that are deliberately not
+faults when the script skips and allows several more (GRQ-AutoTrader#2479)
+(Issue #3232).
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling
@@ -1321,7 +1343,9 @@ does not relax it. Milestone sub-PRs merge into the milestone branch on green
 CI without review, so a sibling dropped later leaves its forward references
 there until the milestone's summary PR is reviewed; that PR's body lists
 each Markdown line the milestone adds that names a milestone issue, or an
-issue one declares with `Depends on` or `Blocked by`, closed as not planned
+issue one declares as a bare `#N` with `Depends on` or `Blocked by` (an
+`owner/repo#N` dependency is not read, even when it names this repo), closed
+as not planned
 (see [Milestones](docs/workflows/milestones.md)); a follow-up named only in
 the prose is not scanned, so the review still reads those lines. Fleet PRs
 sent back
