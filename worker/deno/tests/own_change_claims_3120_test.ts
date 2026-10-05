@@ -24,7 +24,12 @@
  */
 
 import { assert } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const STANDARDS_KEY_PHRASES = [
   "Prose about the PR's own change",
@@ -121,7 +126,7 @@ Deno.test("CODING-STANDARDS.md PR Summary and Evidence holds every/all and close
 
   for (const phrase of STANDARDS_SET_CLAIM_PHRASES) {
     assert(
-      text.includes(flat(phrase)),
+      text.includes(flatWholeFile(phrase)),
       `PR Summary and Evidence is missing "${phrase}": ${text}`,
     );
   }
@@ -144,7 +149,7 @@ Deno.test("issue prompt docs-change step holds every/all and closed-list claims 
 
   for (const phrase of ISSUE_PROMPT_SET_CLAIM_PHRASES) {
     assert(
-      text.includes(flat(phrase)),
+      text.includes(flatWholeFile(phrase)),
       `Instructions is missing "${phrase}": ${text}`,
     );
   }
@@ -170,7 +175,7 @@ Deno.test("pr_feedback prompt Making Changes holds every/all and closed-list cla
 
   for (const phrase of PR_FEEDBACK_PROMPT_SET_CLAIM_PHRASES) {
     assert(
-      text.includes(flat(phrase)),
+      text.includes(flatWholeFile(phrase)),
       `Making Changes is missing "${phrase}": ${text}`,
     );
   }
