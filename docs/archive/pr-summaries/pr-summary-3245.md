@@ -49,18 +49,50 @@ worker host without that config.
 `findNotPlannedDocReferences`, "not planned", "Depends on", "owner/repo#N";
 section: `docs/workflows/milestones.md` § "Docs citing issues closed as not
 planned"; updated: `docs/workflows/milestones.md`, the module doc in
-`worker/deno/lib/milestone_not_planned_refs.ts`.
-
-The remaining hits are still true, because none of them describes this scan's
-dependency forms:
-
-- `docs/INTERNALS.md:1674` and `:1689` describe the dependency checker.
-- `docs/TROUBLESHOOTING.md:682` and `:728` describe discovery.
-- `docs/LESSONS-LEARNT.md:70`, `docs/GITHUB-ACTIONS-AUDIT-SCAN.md:1184` and
-  `DESIGN-PRINCIPLES.md:2756` use "not planned" in another sense.
-- `docs/audits/lib-sweep-coverage/top-up-3223.json:6` and `:9` only name the
-  module file.
-- `docs/workflows/milestones.md:303` already lists both forms for doc lines.
+`worker/deno/lib/milestone_not_planned_refs.ts`. Left alone, each still true:
+docs/INTERNALS.md:3037-3039 — still true because the shared helpers
+`extractDependencyReferences` / `extractDependencyReferencesDetailed` are
+unchanged; docs/workflows/issue-processing.md:375 — still true because it
+describes discovery's dependency blocking, which this change does not touch;
+docs/audits/security-sweep-2495-chain-promotion-wiring.md:30 — still true
+because it audits chain promotion's use of the detailed helper, unchanged;
+docs/workflows/milestones.md:295 — still true because it only names the
+function, whose following sentence the diff updated;
+docs/workflows/milestones.md:286 and docs/workflows/milestones.md:290 — still
+true because the section heading and the not-planned premise are unchanged;
+docs/workflows/milestones.md:186, docs/workflows/milestones.md:263 and
+docs/workflows/milestones.md:283 — still true because they describe the
+cross-milestone hold and `milestone_dependency_hold.ts`, which keeps its
+bare-only helper; docs/workflows/milestones.md:303 — still true because doc
+lines already accepted both forms; docs/LESSONS-LEARNT.md:70,
+docs/GITHUB-ACTIONS-AUDIT-SCAN.md:1184 and DESIGN-PRINCIPLES.md:2756 — still
+true because they use "not planned" in another sense;
+docs/IDLE-TASK-FRAMEWORK.md:952 — still true because it describes the idle
+census's own resolution, not this scan;
+docs/audits/security-sweep-1880-ci-base-branch-check.md:55,
+docs/audits/security-sweep-2103-pr-title-read.md:37,
+docs/audits/security-sweep-3088-declared-handoff.md:23,
+docs/workflows/ci-fix.md:168 and docs/workflows/issue-processing.md:1424 — still
+true because they use `owner/repo#N` for other features (CI deferral, PR title
+reads, declared handoff, the partial-rollup guard);
+worker/deno/lib/apply_chain_promotions.ts:90,
+worker/deno/lib/blocked_outcome.ts:204, worker/deno/lib/blocked_outcome.ts:234,
+worker/deno/lib/blocked_outcome.ts:270,
+worker/deno/lib/content_approval_tracker.ts:205,
+worker/deno/lib/issue_dependencies.ts:403,
+worker/deno/tests/dependency_code_span_regression_test.ts:9 and
+worker/deno/tests/issue_dependencies_test.ts:305 — still true because they
+describe the shared dependency helpers, which this change does not modify;
+worker/deno/lib/milestone_not_planned_refs.ts:55,
+worker/deno/tests/milestone_completion_test.ts:1158 and
+worker/deno/tests/milestone_not_planned_refs_test.ts:26 — still true because
+they only name the function; worker/deno/lib/milestone_not_planned_refs.ts:6,
+worker/deno/lib/milestone_not_planned_refs.ts:34,
+worker/deno/lib/milestone_not_planned_refs.ts:77 and
+worker/deno/lib/milestone_not_planned_refs.ts:226 — still true because they say
+what "not planned" means, not which dependency forms are read;
+worker/deno/lib/milestone_not_planned_refs.ts:153 — still true because it
+documents the doc-line matcher, which already accepted both forms.
 
 Related existing rules checked: none. The change adds no prompt or standard
 rule.
