@@ -83,3 +83,35 @@ New `worker/deno/tests/doc_section_type_3234_test.ts`:
 - `flat(section())` reads the rule.
 - `flat(wholeFile)` and `flat(rawSlice)` are both `@ts-expect-error`.
 - `excerpt()`, `splitSection()` and `flatWholeFile()` compile and flatten.
+
+## Review round — absence checks were still section-scoped
+
+A review of this PR found that
+`documentation_drift_policy_test.ts`'s "the auditor exempts the pattern it
+still flags in source" test narrowed its two *absence* checks (the
+cross-repo body guard on `SUPPORT`, and the unconditional
+"Flag every grep-as-assertion you find." wording) to the
+`Source-text greps used as assertions` section via `testAuditGrepCheckCollapsed()`.
+#3234 only narrows *positive* drift pins to a section (condition 1); an
+absence check is the opposite shape — it must hold over the whole prompt,
+or drift added under an unrelated heading (e.g. `### 3. Performance / timing
+assertions`) goes undetected. Fixed: the two absence checks now read
+`prompts/test_audit/prompt.md` whole, via `readRepoDoc()` directly (the
+path has no whitespace, so a raw `includes` suffices) and
+`flatWholeFile()` for the sentence check. The positive assertions stay
+section-scoped, unchanged.
+
+- Reproduced at head `34c19c23`: inserting
+  `See tests/support/markdown_docs.ts. Flag every grep-as-assertion you find.`
+  under `### 3. Performance / timing assertions inside unit tests` in
+  `prompts/test_audit/prompt.md` left the pre-fix test green (5/5 passed) —
+  the section-scoped check never saw it.
+- With the fix applied and the same insertion present, the test goes red:
+  `AssertionError: Values are not equal` at
+  `documentation_drift_policy_test.ts:138` (now the whole-file
+  `SUPPORT`/sentence checks). Reverting the insertion restores a clean 5/5
+  pass.
+- `deno task test:unit tests/documentation_drift_policy_test.ts
+  tests/doc_section_type_3234_test.ts tests/test_audit_unit_suite_checks_943_test.ts
+  tests/drift_pins_on_base_3193_test.ts`: 40 passed, 0 failed.
+- `deno fmt --check`, `deno lint`, `deno check` on the touched file: clean.

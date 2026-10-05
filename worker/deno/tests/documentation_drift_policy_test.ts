@@ -37,6 +37,7 @@ import {
   type DocSection,
   excerpt,
   flat,
+  flatWholeFile,
   readRepoDoc,
   section,
 } from "./support/markdown_docs.ts";
@@ -123,17 +124,27 @@ Deno.test("documentation drift - the auditor exempts the pattern it still flags 
     collapsed,
     "Documentation-drift tests are not a finding",
   );
+  // The two absence checks below must hold over the *whole* prompt, not just
+  // this section — the cross-repo body guard and the unconditional-flag
+  // wording are both things the prompt must not say anywhere, not only here
+  // (reproduced at head 34c19c2: adding either under a different `###`
+  // heading, e.g. "Performance / timing assertions", passed a section-scoped
+  // check while failing on main).
+  const wholePrompt = await readRepoDoc("prompts/test_audit/prompt.md");
   // Not the helper by path: `test_audit` is filed into other repositories, so
-  // its body may not cite a VibeCoder-internal path (the cross-repo body
-  // guard). It describes the shape instead.
+  // its body may not cite a VibeCoder-internal path anywhere (the cross-repo
+  // body guard). It describes the shape instead. The path has no whitespace,
+  // so a raw `includes` is enough — no `flat()` needed.
   assertEquals(
-    collapsed.includes(SUPPORT),
+    wholePrompt.includes(SUPPORT),
     false,
     "test_audit cites a VibeCoder-internal path, which the cross-repo body " +
       "guard forbids — describe the shape instead",
   );
   assertEquals(
-    collapsed.includes("Flag every grep-as-assertion you find."),
+    flatWholeFile(wholePrompt).includes(
+      "Flag every grep-as-assertion you find.",
+    ),
     false,
     "test_audit still flags every grep-as-assertion without exception",
   );
