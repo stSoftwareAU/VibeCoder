@@ -15,6 +15,9 @@ Closes #3237
 - [x] Stop stale term hits from setting the block (`completion_phase.ts`)
 - [x] Post stale hits once as an advisory PR comment, on both the new-PR and
       recovered-PR paths
+- [x] Keep the advisory when GitHub's secondary rate limit defers the PR: it
+      is parked in the `DeferredPrRecord` (`advisoryComment`) and the
+      next cycle's drain posts it on the PR it raises
 - [x] Reword `buildDocsSweepHitsComment` as advisory and drop "a second miss
       fails the run"
 - [x] Reword the prompt and docs, and update the drift tests
@@ -31,6 +34,8 @@ flowchart TD
     H -- yes --> W["logger.warn +<br/>buildDocsSweepHitsComment"]
     W --> P
     P --> C["postDocsSweepHitsComment<br/>(once, best-effort,<br/>failure logged non-fatal)"]
+    P -. "secondary limit<br/>defers create" .-> D["DeferredPrRecord<br/>.advisoryComment"]
+    D --> E["drainDeferredPrs posts it<br/>on the PR it raises"]
 ```
 
 ## Spec
@@ -82,10 +87,27 @@ flowchart TD
 Tests (run from `worker/deno`): `deno task test:unit
 tests/completion_phase_docs_sweep_test.ts tests/docs_sweep_hits_test.ts
 tests/prompt_docs_sweep_3172_test.ts tests/prompt_docs_sweep_3073_test.ts`.
-Result: 73 passed, 0 failed. `deno fmt --check` is clean.
+Result: 75 passed, 0 failed. `deno fmt --check` is clean.
 
-Quality gate: `./quality.sh` PASSED on the final head (20 of 21 checks; the
-`config integration` check was skipped — it needs a live config).
+Deferral path (`deno task test:unit tests/deferred_pr_drain_test.ts
+tests/deferred_pr_store_test.ts tests/completion_phase_secondary_limit_test.ts
+tests/deferred_pr_dispatch_test.ts`): 32 passed, 0 failed.
+
+Quality gate: `./quality.sh < /dev/null` on the final head: `Result: FAILED`.
+Every check that ran passed except `deno tests` (26011 passed, 53 failed, 11
+ignored); `config integration`, `markdownlint` and `semgrep` were skipped
+(no live config, and those tools were not installed where the gate ran). None of
+the 53 failures is in a file this PR changes:
+
+- 51 are in 19 real-git test files (`git_branch_test.ts`,
+  `pr_branch_checkout_test.ts`, `git_pull_conflict_test.ts` and 16 others).
+  The same 51 tests failed in the same container on a branch without this
+  change, so they come from that container's git setup.
+- 2 are in `cache_secret_redaction_1261_test.ts`. They assert their scratch
+  directory, made under the current directory, is not under shared `/tmp`, and
+  that checkout lived under `/tmp`.
+
+CI's Quality workflow runs the full suite on the pushed head.
 
 **Docs sweep:** grep: `second miss`, `recovery turn`,
 `Docs sweep incomplete`, `stale hit`, `term hit`,
@@ -149,8 +171,8 @@ No rule now conflicts.
 **Callers checked** (`recoverAndFinaliseExistingPr` gained an optional
 parameter):
 
-- `completion_phase.ts:655` (`reportSummaryRuleBlock`, uses the default);
-- `completion_phase.ts:2838` and `:2972` (pass `docsSweepHitsComment`);
+- `completion_phase.ts:658` (`reportSummaryRuleBlock`, uses the default);
+- `completion_phase.ts:2849` and `:2984` (pass `docsSweepHitsComment`);
 - the 5 calls in `worker/deno/tests/completion_phase_merged_pr_closure_test.ts`
   (use the default).
 
@@ -262,29 +284,43 @@ Removed assertions, quoted verbatim:
 
 Branch outcomes:
 
-- `completion_phase.ts:2348-2354`, stale hits → WARN plus advisory comment,
+- `completion_phase.ts:2351-2358`, stale hits → WARN plus advisory comment,
   no block.
   - Reached by "a stale hit of the Docs sweep's own term is advisory (#3237)"
     and "a stale doc comment in an untouched source file is advisory".
   - Flipped: restoring the block turned 3 tests red.
-- `completion_phase.ts:2302`, no stale hits → empty comment, nothing posted.
+- `completion_phase.ts:2306`, no stale hits → empty comment, nothing posted.
   - Reached by "a summary with a valid line raises the PR with no comment".
-- `completion_phase.ts:791-805`, empty comment or no PR number → return
+- `completion_phase.ts:795-810`, empty comment or no PR number → return
   without posting.
   - Reached by "a summary with a valid line raises the PR with no comment".
-- `completion_phase.ts:3095`, post on the new-PR path.
+- `completion_phase.ts:3108`, post on the new-PR path.
   - Reached by "a stale hit of the Docs sweep's own term is advisory (#3237)".
   - Flipped: removing the call → red.
-- `completion_phase.ts:887`, post on the recovered-PR path.
+- `completion_phase.ts:891`, post on the recovered-PR path.
   - Reached by "a stale hit on a recovered existing PR gets the advisory
     comment posted there (#3237)".
   - Flipped: removing the call → red.
-- `completion_phase.ts:798-803`, post throws → WARN, run continues.
+- `completion_phase.ts:803-809`, post throws → WARN, run continues.
   - Reached by "a failed advisory comment post does not fail the run (#3237)".
   - Flipped: removing the try/catch turned this test red on the WARN
     assertion. The outer "Post-PR finalisation error (non-fatal)" handler kept
     the status assertions green.
-- `completion_phase.ts:2295`, #3073 missing line → still blocks.
+- `completion_phase.ts:2931` and `:2998` (`deferPrCreation`) carry
+  `advisoryComment`.
+  - Reached by "a stale hit on a PR deferred by the secondary limit is parked
+    with the PR, not lost (Issue #3237)" (the `gh pr create` deferral site).
+  - Flipped: dropping the field → red.
+- `deferred_pr_drain.ts`, advisory present and PR raised → post on the PR.
+  - Reached by "deferred drain - a parked advisory comment is posted on the PR
+    it raises (Issue #3237)". Flipped: skipping the post → red.
+  - No advisory → only the PR-raised note on the issue: "deferred drain - a
+    record with no advisory posts only the PR-raised note (Issue #3237)".
+- `deferred_pr_store.ts` `isDeferredPrRecord`, `advisoryComment` absent,
+  string, or other type.
+  - Reached by "deferred PR - an advisory comment round-trips, and a
+    non-string one is refused (Issue #3237)" and the existing round-trip test.
+- `completion_phase.ts:2299`, #3073 missing line → still blocks.
   - Reached by "code-changing diff without the line recovers once in-run and
     then raises the PR" and "the recovery not adding the line fails with no PR
     raised".
@@ -297,8 +333,10 @@ or recovered, and only adds a comment.
   been already, and no attempt is charged.
 - The degraded-run, freshness and summary gates all run before it, so it adds
   no route around them.
-- It does not double-post, because each path posts once and the two paths are
-  exclusive.
+- It does not double-post, because each path posts once and the paths are
+  exclusive: new PR, recovered PR, or deferred PR (posted by the drain only
+  after its own create succeeds; a PR something else already opened is
+  dropped without posting).
 
 **Drift pins:** `deno task drift-pins-on-base origin/main <doc> <section>
 <phrase>...` reported each of the 6 new phrases in

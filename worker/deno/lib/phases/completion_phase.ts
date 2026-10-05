@@ -2933,6 +2933,7 @@ async function completionBody(
       body: prBody,
       base: baseBranch,
       reviewers: prReviewers,
+      advisoryComment: docsSweepHitsComment,
     });
   }
 
@@ -3009,6 +3010,7 @@ async function completionBody(
             body: prBody,
             base: baseBranch,
             reviewers: prReviewers,
+            advisoryComment: docsSweepHitsComment,
           },
         );
       } else {

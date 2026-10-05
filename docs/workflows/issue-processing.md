@@ -1555,7 +1555,10 @@ changed, or when the line names it as `file:line` or `file:start-end`. Any
 other hit is advisory (Issue #3237, because the re-run was failing fleet
 runs): it is posted once, as a PR comment for the reviewer, listing each
 `file:line` and its sentence (at most 20, then "and N more"), and logged at
-WARN. It never blocks the summary and triggers no recovery turn — fix it, or
+WARN. When GitHub's secondary rate limit defers the PR to the next cycle
+(Issue #1951), the comment is parked with the deferred PR record and the
+drain posts it on the PR it raises. It never blocks the summary and triggers
+no recovery turn — fix it, or
 name it as `file:line — still true because …`. A
 term with more than 10 such hits in doc files the diff did not touch is a
 locator word, not a removed claim: those hits are set aside and the term

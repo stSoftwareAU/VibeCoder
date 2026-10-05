@@ -18,11 +18,21 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  type DeferredPrRecord,
+  listDeferredPrs,
+} from "../lib/deferred_pr_store.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 3073;
 const PR_URL = `https://github.com/${REPO}/pull/4210`;
+
+/** GitHub's secondary (content-creation) rate-limit refusal of `gh pr create`. */
+const SECONDARY_LIMIT_ERROR =
+  "gh command failed (exit 1): HTTP 403: You have exceeded a secondary rate " +
+  "limit and have been temporarily blocked from content creation. Please " +
+  "retry your request again later.";
 
 const ISSUE_BODY = `## Problem
 
@@ -122,6 +132,12 @@ interface Scenario {
    * `postComment` succeeds as normal.
    */
   postCommentThrows?: boolean;
+  /**
+   * When true, `gh pr create` is refused by GitHub's secondary
+   * (content-creation) rate limit with no time left in the run, so the PR is
+   * parked for the next cycle's drain (Issue #1951).
+   */
+  prCreateRefusedBySecondaryLimit?: boolean;
 }
 
 interface Outcome {
@@ -136,6 +152,8 @@ interface Outcome {
   events: string[];
   /** `logger.warn` messages recorded while driving this run (Issue #3237). */
   warnLogs: string[];
+  /** PRs parked for the next cycle's drain when creation was deferred. */
+  deferred: DeferredPrRecord[];
 }
 
 /** Drive the live completion phase over a (possibly) blocked docs-sweep gate. */
@@ -159,6 +177,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
+  config.infraRetryBackoffMs = 1;
 
   const ctx: IssueContext = {
     repo: REPO,
@@ -169,6 +188,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     issueComments: "",
     githubUser: "testbot",
     config,
+    // No time left to wait out a secondary limit: the run defers at once.
+    ...(scenario.prCreateRefusedBySecondaryLimit
+      ? { handlerDeadlineEpochMs: Date.now() }
+      : {}),
   };
   const state: PhaseState = {
     branchName: `issue-${ISSUE}-docs-sweep`,
@@ -197,6 +220,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
           events.push("pr-create");
+          if (scenario.prCreateRefusedBySecondaryLimit) {
+            return Promise.reject(new Error(SECONDARY_LIMIT_ERROR));
+          }
         }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({ state: "OPEN" }));
@@ -308,8 +334,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   });
 
   let result;
+  let deferred: DeferredPrRecord[] = [];
   try {
     result = await workOnIssueCompletion(ctx, state, deps);
+    deferred = await listDeferredPrs(workDir);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
     await Deno.remove(workDir, { recursive: true });
@@ -327,6 +355,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     commentPosts,
     events,
     warnLogs,
+    deferred,
   };
 }
 
@@ -760,5 +789,29 @@ Deno.test(
     );
     assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
     assertStringIncludes(prPosts[0]!.body.toLowerCase(), "advisory");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #3237 review: a PR whose creation is deferred by GitHub's secondary
+// rate limit keeps the advisory, so the next cycle's drain can post it.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "completion - a stale hit on a PR deferred by the secondary limit is parked with the PR, not lost (Issue #3237)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      prCreateRefusedBySecondaryLimit: true,
+    });
+
+    assertEquals(outcome.status, "early_exit", outcome.reason);
+    assertEquals(outcome.deferred.length, 1, "the PR is parked for the drain");
+    assertStringIncludes(
+      outcome.deferred[0]!.advisoryComment ?? "",
+      "docs/reporting-api.md:320",
+    );
   },
 );
