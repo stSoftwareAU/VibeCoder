@@ -19,9 +19,10 @@
  *
  * A Cargo project's `cargo check` or `cargo test` step carries through the
  * same toolchain-gap detection as `milestone_merge_gate.ts`: a host `rustc`
- * older than the tree's `rust-version` is reported naming the container's
- * Rust pin, and skips the repair rounds built for a bad resolution rather
- * than a host limit (Issue #3255).
+ * older than a workspace package's `rust-version` is reported naming the
+ * container's Rust pin, and skips the repair rounds built for a bad
+ * resolution rather than a host limit (Issue #3255). A dependency-only
+ * refusal stays an ordinary failure a repair round may answer.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */

@@ -16,11 +16,14 @@
  * failure is not success, and a tree nobody verified is exactly the tree this
  * gate exists to keep off the branch.
  *
- * A `cargo check` can also fail for a reason no resolution change can answer:
- * the tree's `rust-version` is newer than the container's pinned `rustc`
- * (Issue #3255). That is reported as a {@link RustToolchainGap} rather than an
- * ordinary failure, so the repair rounds in `milestone_gate_repair.ts` are not
- * spent retrying a host toolchain limit as though it were a bad resolution.
+ * A `cargo check` can also fail because a workspace package's `rust-version`
+ * is newer than the container's pinned `rustc` (Issue #3255) — a refusal no
+ * resolution change can answer. That is reported as a {@link RustToolchainGap}
+ * rather than an ordinary failure, so the repair rounds in
+ * `milestone_gate_repair.ts` are not spent retrying a host toolchain limit as
+ * though it were a bad resolution. When only dependencies are too new, cargo
+ * itself names a `Cargo.lock` remedy (`cargo update --precise`), so that form
+ * stays an ordinary, repairable failure.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -92,9 +95,9 @@ export interface MergeGateOutcome {
   output: string;
   /**
    * Set only when a `cargo check` failed because the host's `rustc` is older
-   * than the `rust-version` the merged tree requires (Issue #3255) — an
-   * environment fault no resolution change can fix, so the caller must not
-   * spend a repair round on it.
+   * than the `rust-version` a workspace package of the merged tree requires
+   * (Issue #3255) — an environment fault no resolution change can fix, so the
+   * caller must not spend a repair round on it.
    */
   toolchainGap?: RustToolchainGap;
 }
@@ -350,6 +353,15 @@ const RUSTC_HEADER_RE = /^error: rustc ([0-9][0-9.]*) is not supported/;
  */
 const RUSTC_REQUIRES_RE = /^([^\s@]+)@([^\s@]+) requires rustc ([0-9][0-9.]*)/;
 
+/**
+ * The hint cargo appends only when every incompatible package is a
+ * dependency, never a workspace member (`local_incompatible` in cargo's
+ * `ops/cargo_compile/mod.rs`): the refusal is then fixable by selecting older
+ * dependency versions in `Cargo.lock`, which a resolution can do.
+ */
+const DEPENDENCY_ONLY_HINT =
+  "Either upgrade rustc or select compatible dependency versions";
+
 /** Numeric, dot-separated version comparison (`"1.99"` > `"1.98.0"`). */
 function compareVersions(a: string, b: string): number {
   const partsA = a.split(".").map(Number);
@@ -363,16 +375,19 @@ function compareVersions(a: string, b: string): number {
 }
 
 /**
- * Detect a cargo refusal caused by the host's `rustc` being older than the
- * merged tree's `rust-version` (Issue #3255).
+ * Detect a cargo refusal caused by the host's `rustc` being older than a
+ * workspace package's `rust-version` (Issue #3255).
  *
- * No resolution change can fix this — only raising the container's Rust pin
+ * No resolution change can fix that — only raising the container's Rust pin
  * (`container/tools.json`) can — so the caller treats it as an environment
  * fault rather than an ordinary check failure, and skips the repair rounds
- * built for a bad resolution.
+ * built for a bad resolution. A refusal carrying cargo's dependency-only hint
+ * ({@link DEPENDENCY_ONLY_HINT}) is not a gap: a `Cargo.lock` change can fix
+ * it, so it stays an ordinary failure that a repair round may answer.
  *
  * @param output - The raw `cargo check` output (untrimmed)
- * @returns The gap, or undefined when no "requires rustc" line is found
+ * @returns The gap, or undefined when no "requires rustc" line is found or
+ *   cargo says only dependencies are incompatible
  */
 export function detectRustToolchainGap(
   output: string,
@@ -405,7 +420,8 @@ export function detectRustToolchainGap(
     }
   }
 
-  return required ? { installed, required, packages } : undefined;
+  if (!required || output.includes(DEPENDENCY_ONLY_HINT)) return undefined;
+  return { installed, required, packages };
 }
 
 /**
@@ -422,8 +438,8 @@ export function describeRustToolchainGap(
       gap.installed ?? "(unknown)"
     } is older than the rust-version ${gap.required} that ` +
     `${gap.packages.join(", ")} require(s) — raise the container's Rust pin ` +
-    `(container/tools.json) to at least ${gap.required}; no change ` +
-    "to the resolution can fix this";
+    `(container/tools.json) to at least ${gap.required}; a workspace ` +
+    "package requires it, so no change to the resolution can fix this";
 }
 
 /** Spawn the repository's own check with a bounded timeout. */

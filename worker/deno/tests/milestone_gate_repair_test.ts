@@ -22,7 +22,10 @@ import {
   runGateWithRepair,
 } from "../lib/milestone_gate_repair.ts";
 import type { MilestoneConflictAgentFn } from "../lib/milestone_conflict_ladder.ts";
-import type { MergeGateOutcome } from "../lib/milestone_merge_gate.ts";
+import {
+  checkMergedTree,
+  type MergeGateOutcome,
+} from "../lib/milestone_merge_gate.ts";
 
 async function gitOk(args: string[], cwd: string): Promise<string> {
   const out = await new Deno.Command("git", {
@@ -607,6 +610,65 @@ Deno.test("runGateWithRepair - a failed verdict without a toolchain gap still of
     assertEquals(agentCalls, 1, "an ordinary failure still goes to the rung");
     assertEquals(result.repair?.status, "failed");
   } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("runGateWithRepair - cargo's dependency-only rustc refusal is still offered a repair (Issue #3255 review)", async () => {
+  const fx = await repo();
+  const cargoDir = await Deno.makeTempDir({ prefix: "issue-3255-dep-only-" });
+  try {
+    await Deno.writeTextFile(
+      `${cargoDir}/Cargo.toml`,
+      '[package]\nname = "x"\n',
+    );
+    // Cargo appends the `cargo update --precise` hint only when every
+    // incompatible package is a dependency, so a Cargo.lock change can fix it.
+    const output =
+      "error: rustc 1.98.0 is not supported by the following package:\n" +
+      "  some_dep@2.1.0 requires rustc 1.99\n" +
+      "Either upgrade rustc or select compatible dependency versions with\n" +
+      "`cargo update <name>@<current-ver> --precise <compatible-ver>`\n" +
+      "where `<compatible-ver>` is the latest version supporting rustc " +
+      "1.98.0\n";
+    let agentCalls = 0;
+    const agentFn: MilestoneConflictAgentFn = () => {
+      agentCalls++;
+      return Promise.resolve({
+        ok: false,
+        error: new Error("no repair available in this fixture"),
+      });
+    };
+    const result = await runGateWithRepair({
+      gate: () =>
+        checkMergedTree(
+          cargoDir,
+          () => Promise.resolve({ code: 101, output }),
+        ),
+      agentFn,
+      options: { cwd: fx.dir },
+      milestoneBranch: "milestone/3255",
+      defaultBranch: "main",
+      preMergeSha: fx.preMergeSha,
+      defaultRef: "HEAD",
+      resolutionMessage: "Merge main into milestone/3255",
+    });
+
+    assertEquals(result.firstGate.status, "failed");
+    assertEquals(
+      result.firstGate.status === "failed"
+        ? result.firstGate.toolchainGap
+        : undefined,
+      undefined,
+    );
+    assertEquals(
+      agentCalls,
+      1,
+      "a Cargo.lock-fixable refusal goes to the rung",
+    );
+    assertEquals(result.repair?.status, "failed");
+  } finally {
+    await Deno.remove(cargoDir, { recursive: true });
     await fx.cleanup();
   }
 });

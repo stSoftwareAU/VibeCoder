@@ -3953,13 +3953,17 @@ names the repaired files and the rung that repaired them.
 
 Not every red tree is a semantic conflict, though: a Cargo project's
 `cargo check` or `cargo test` can fail purely because the host's `rustc` is
-older than the tree's `rust-version`, which no resolution can ever fix. Both
-gates detect that shape of failure (`detectRustToolchainGap()` in
+older than a workspace package's `rust-version`, which no change to the
+resolution can fix. Both gates detect that shape of failure
+(`detectRustToolchainGap()` in
 [milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)) and
 name it as an environment fault — the installed and required versions, the
 packages that demand the newer one, and `container/tools.json` as the pin to
 raise — rather than sending it to the agent rung for a repair round it can
-never win (Issue #3255).
+never win (Issue #3255). When only dependencies are too new, cargo adds its
+own "Either upgrade rustc or select compatible dependency versions" hint: a
+`Cargo.lock` change can fix that, so it stays an ordinary failure and the
+repair round is still offered.
 
 ```mermaid
 flowchart TD

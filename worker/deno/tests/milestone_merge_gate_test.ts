@@ -322,6 +322,39 @@ Deno.test("checkMergedTree - an ordinary cargo failure carries no toolchain gap 
   });
 });
 
+/**
+ * Cargo's refusal when only dependencies are too new: it appends the
+ * `cargo update --precise` hint (`local_incompatible` false in cargo's
+ * `ops/cargo_compile/mod.rs`), so a `Cargo.lock` change can fix it.
+ */
+const DEPENDENCY_ONLY_REFUSAL =
+  "error: rustc 1.98.0 is not supported by the following package:\n" +
+  "  some_dep@2.1.0 requires rustc 1.99\n" +
+  "Either upgrade rustc or select compatible dependency versions with\n" +
+  "`cargo update <name>@<current-ver> --precise <compatible-ver>`\n" +
+  "where `<compatible-ver>` is the latest version supporting rustc 1.98.0\n";
+
+Deno.test("detectRustToolchainGap - a dependency-only refusal is not a gap: cargo names a Cargo.lock remedy (Issue #3255 review)", () => {
+  assertEquals(detectRustToolchainGap(DEPENDENCY_ONLY_REFUSAL), undefined);
+});
+
+Deno.test("checkMergedTree - a dependency-only rustc refusal stays an ordinary, repairable failure (Issue #3255 review)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 101, output: DEPENDENCY_ONLY_REFUSAL }),
+    );
+    assertEquals(outcome.status, "failed");
+    assertEquals(outcome.toolchainGap, undefined);
+    assertEquals(
+      outcome.detail,
+      "cargo check --workspace --all-targets in " +
+        `${dir} failed (exit 101)`,
+    );
+  });
+});
+
 Deno.test("detectRustToolchainGap - a header and a requirement line together report the installed and required versions (Issue #3255)", () => {
   const gap = detectRustToolchainGap(
     "error: rustc 1.70.0 is not supported by the following packages:\n" +

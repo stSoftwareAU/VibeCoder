@@ -6,8 +6,8 @@ The milestone sync gate on `stSoftwareAU/NEAT-AI-Discovery` kept refusing every 
 
 The gate now recognises this environment fault and says what it is:
 
-- **Detection.** `detectRustToolchainGap` (`worker/deno/lib/milestone_merge_gate.ts`) reads cargo's own MSRV refusal: the header `error: rustc X is not supported by the following packages:` and the lines `pkg@ver requires rustc Y`. It returns the installed version, the highest required version, and the packages that need it.
-- **Both gates name it.** `checkMergedTree` and the cargo test step of `verifyResolvedTree` (`milestone_resolution_gate.ts`) carry `toolchainGap` on the failed verdict. Their detail says the host's rustc is older than the tree's `rust-version` and that the container's Rust pin must be raised. It also says no change to the resolution can fix it.
+- **Detection.** `detectRustToolchainGap` (`worker/deno/lib/milestone_merge_gate.ts`) reads cargo's own MSRV refusal: the header `error: rustc X is not supported by the following packages:` and the lines `pkg@ver requires rustc Y`. It returns the installed version, the highest required version, and the packages that need it. When cargo adds its dependency-only hint ("Either upgrade rustc or select compatible dependency versions…"), which it prints only when no workspace package is incompatible, the refusal is not a gap: a `Cargo.lock` change can fix it, so it stays an ordinary failure and a repair round is still offered.
+- **Both gates name it.** `checkMergedTree` and the cargo test step of `verifyResolvedTree` (`milestone_resolution_gate.ts`) carry `toolchainGap` on the failed verdict. Their detail says the host's rustc is older than a workspace package's `rust-version` and that the container's Rust pin must be raised. It also says that, because a workspace package requires it, no change to the resolution can fix it.
 - **No pointless repair.** `runGateWithRepair` (`milestone_gate_repair.ts`) escalates a toolchain-gap verdict straight away, with repair status `not-attempted`, instead of spending an agent round on it.
 - **Readable output.** The gate's output tail collapses consecutive duplicate lines (`… requires rustc 1.99 (×40)`), so the reason is no longer buried under 40 copies of one line.
 
@@ -24,7 +24,8 @@ Closes #3255.
 
 ### Essential Design Decisions
 
-- Detection keys on cargo's own MSRV error text, not on `rust-toolchain.toml` or `Cargo.toml` parsing. That is the signal the gate already has in hand, and it holds however the requirement was declared, including a transitive dependency's `rust-version`.
+- Detection keys on cargo's own MSRV error text, not on `rust-toolchain.toml` or `Cargo.toml` parsing. That is the signal the gate already has in hand, and it holds however the requirement was declared.
+- A dependency-only refusal is not a gap. Cargo (`ops/cargo_compile/mod.rs`, `local_incompatible`) appends its `cargo update --precise` hint only when every incompatible package is a dependency. That case is fixable in `Cargo.lock`, which a conflict resolution edits, so skipping the repair round would wedge a milestone that one round could fix (review on this PR).
 - `toolchainGap` is an optional field on the existing verdict, not a new status. Every caller that only reads `status` behaves as before, and only the repair wrapper acts on it.
 - The parsing is line-wise. Each line is trimmed and capped at 4000 characters, and the regexes are anchored with disjoint character classes, so they run in linear time on agent-controlled output. Hostile-input tests pin that.
 - `describeRustToolchainGap` is the single source of the detail sentence, shared by both gates.
@@ -44,7 +45,7 @@ This is a backend change with no UI surface. The evidence is the reproduction an
 flowchart LR
     C["cargo check / test<br/>exit 101"] --> D{"detectRustToolchainGap"}
     D -->|"rustc X not supported /<br/>pkg requires rustc Y"| G["failed verdict<br/>+ toolchainGap"]
-    D -->|"anything else"| F["failed verdict<br/>(ordinary)"]
+    D -->|"anything else, incl.<br/>dependency-only hint"| F["failed verdict<br/>(ordinary)"]
     G --> E["escalate now — repair<br/>not-attempted, raise Rust pin"]
     F --> R["repair round (Issue #1965)"]
 ```
@@ -84,15 +85,18 @@ Tests added, all named "(Issue #3255)":
 
 - `worker/deno/tests/milestone_merge_gate_test.ts`:
   - `checkMergedTree` with and without a toolchain gap.
-  - Seven `detectRustToolchainGap` tests: header and requirement; requirement only; highest version wins with dedupe; malformed line; empty input; and three hostile linear-time inputs.
+  - `checkMergedTree` with cargo's dependency-only refusal (no gap, ordinary failure).
+  - Eight `detectRustToolchainGap` tests: header and requirement; requirement only; highest version wins with dedupe; malformed line; empty input; dependency-only refusal; and three hostile linear-time inputs.
   - One `collapseRepeatedLines` test.
 - `worker/deno/tests/milestone_resolution_gate_test.ts`: `verifyResolvedTree` with and without a toolchain gap.
-- `worker/deno/tests/milestone_gate_repair_test.ts`: `runGateWithRepair` with a gap verdict (no repair) and without one (repair still offered).
+- `worker/deno/tests/milestone_gate_repair_test.ts`: `runGateWithRepair` with a gap verdict (no repair), without one (repair still offered), and with cargo's dependency-only refusal fed through `checkMergedTree` (repair still offered).
+
+The three dependency-only tests are named "(Issue #3255 review)".
 
 Other checks:
 
 - Removed assertions: none. The existing repair tests are unchanged apart from fixture fields.
-- `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/milestone_gate_repair_test.ts < /dev/null`: 63 passed, 0 failed.
+- `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/milestone_gate_repair_test.ts < /dev/null`: 66 passed, 0 failed (36 in the parallel pass, 30 in the serial pass).
 - `deno task check:manifests < /dev/null`: 678 passed, 0 failed. The first full-gate run had failed only on the Issue #940 manifest test until the registration above was added.
 - `./quality.sh < /dev/null`: lint, type check, fmt, markdownlint, mermaid and semgrep all pass; `deno test` 26066 passed, 1 failed — `issue_cache - returns null for expired entry` (`worker/deno/tests/issue_cache_test.ts:41`), a TTL=0 timing test in a module this diff does not touch; rerun alone with `deno task test:unit tests/issue_cache_test.ts` it passes (7 passed, 0 failed), so it is an unrelated flake under full-suite load.
 
@@ -100,19 +104,20 @@ Other checks:
 
 Each outcome below was flipped by deleting or inverting its branch. The named test went red, and the branch was then restored.
 
-- `worker/deno/lib/milestone_gate_repair.ts:556`:
+- `worker/deno/lib/milestone_gate_repair.ts:557`:
   - Gap → escalate, `not-attempted`: `worker/deno/tests/milestone_gate_repair_test.ts::runGateWithRepair - a failed verdict carrying a toolchain gap is not offered a repair (Issue #3255)`. Flipped (short-circuit removed): red.
   - No gap → repair offered: `…::runGateWithRepair - a failed verdict without a toolchain gap still offers a repair (Issue #3255)`. Flipped (short-circuit made unconditional): red.
-- `worker/deno/lib/milestone_merge_gate.ts:514`:
+- `worker/deno/lib/milestone_merge_gate.ts:530`:
   - Gap → named detail plus `toolchainGap`: `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a host rustc older than the tree's rust-version is named as a toolchain gap, not an ordinary failure (Issue #3255)`. Flipped: red.
   - No gap → ordinary failure: `…::checkMergedTree - an ordinary cargo failure carries no toolchain gap (Issue #3255)`. Flipped: red.
-- `worker/deno/lib/milestone_resolution_gate.ts:309`:
+- `worker/deno/lib/milestone_resolution_gate.ts:310`:
   - Gap: `worker/deno/tests/milestone_resolution_gate_test.ts::verifyResolvedTree - a host rustc older than the tree's rust-version is named as a toolchain gap, not an ordinary failure (Issue #3255)`. Flipped: red.
   - No gap: `…::verifyResolvedTree - an ordinary cargo test failure carries no toolchain gap (Issue #3255)`. Flipped: red.
-- `worker/deno/lib/milestone_merge_gate.ts:408`:
+- `worker/deno/lib/milestone_merge_gate.ts:423`:
   - Required version found → gap: `worker/deno/tests/milestone_merge_gate_test.ts::detectRustToolchainGap - a header and a requirement line together report the installed and required versions (Issue #3255)`. Flipped (detection removed): red.
   - No required version → `undefined`: `…::detectRustToolchainGap - a malformed requirement line (no version, no package) is not a gap (Issue #3255)` and `…::detectRustToolchainGap - empty output is not a gap (Issue #3255)`. Flipped: red.
-- `worker/deno/lib/milestone_merge_gate.ts:317`:
+  - Dependency-only hint → `undefined`: `worker/deno/tests/milestone_merge_gate_test.ts::detectRustToolchainGap - a dependency-only refusal is not a gap: cargo names a Cargo.lock remedy (Issue #3255 review)`, `…::checkMergedTree - a dependency-only rustc refusal stays an ordinary, repairable failure (Issue #3255 review)` and `worker/deno/tests/milestone_gate_repair_test.ts::runGateWithRepair - cargo's dependency-only rustc refusal is still offered a repair (Issue #3255 review)`. Flipped (hint check removed): all three red.
+- `worker/deno/lib/milestone_merge_gate.ts:320`:
   - Run > 1 → `(×N)` suffix; run of 1 → line unchanged: `worker/deno/tests/milestone_merge_gate_test.ts::collapseRepeatedLines - consecutive duplicates collapse, non-consecutive duplicates do not, single lines are unchanged (Issue #3255)`. Flipped: red.
 
 ## Pre-PR security self-check

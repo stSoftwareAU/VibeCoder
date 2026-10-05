@@ -21,9 +21,10 @@
  * they are, never as a pass.
  *
  * A gate failure carrying a {@link RustToolchainGap} (Issue #3255) is not
- * offered a repair at all: the host's `rustc` being older than the merged
- * tree's `rust-version` is an environment fault, and no agent editing the
- * tree can change what toolchain the container runs.
+ * offered a repair at all: the host's `rustc` being older than a workspace
+ * package's `rust-version` is an environment fault, and no agent editing the
+ * tree can change what toolchain the container runs. A dependency-only
+ * refusal carries no gap, so it is offered a repair like any other failure.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
