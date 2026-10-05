@@ -291,6 +291,81 @@ Deno.test("findTestPlanClaimProblems - a quote across intervening backtick spans
   );
 });
 
+Deno.test("findTestPlanClaimProblems - readFile returning undefined for a tracked file is notChecked, no problem", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "handles the empty input case correctly",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => undefined,
+  });
+  assertEquals(result.problems, []);
+  assert(
+    result.notChecked.some((n) => n.includes("could not be read")),
+    `expected a could-not-be-read note, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a test file over MAX_TEST_FILE_CHARS is notChecked, no problem", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "handles the empty input case correctly",
+  );
+  const oversized =
+    `Deno.test("handles the empty input case correctly", () => {});\n` +
+    " ".repeat(1_000_001);
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => oversized,
+  });
+  assertEquals(result.problems, []);
+  assert(
+    result.notChecked.some((n) => n.includes("could not be read")),
+    `expected a could-not-be-read note for the oversized file, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - contrast: the same claim against a small matching file has no notChecked", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "handles the empty input case correctly",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () =>
+      `Deno.test("handles the empty input case correctly", () => {});\n`,
+  });
+  assertEquals(result.problems, []);
+  assertEquals(result.notChecked, []);
+});
+
+Deno.test("findTestPlanClaimProblems - a tracked test file with no recognised test declaration is notChecked, no problem", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "handles the empty input case correctly",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => "export const x = 1;\n",
+  });
+  assertEquals(result.problems, []);
+  assert(
+    result.notChecked.some((n) => n.includes("names no test declaration")),
+    `expected a no-test-declaration note, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
 // ---------------------------------------------------------------------------
 // buildSummaryClaimQuestionPrompt
 // ---------------------------------------------------------------------------
@@ -342,6 +417,46 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on an unrecognised summary p
   );
 });
 
+Deno.test("buildSummaryClaimQuestionPrompt - throws on a zero issue number", () => {
+  const err = assertThrows(() =>
+    buildSummaryClaimQuestionPrompt({
+      repo: "acme/widgets",
+      issueNumber: 0,
+      baseRef: "origin/main",
+      summaryPath: ".pr_summary",
+    })
+  );
+  assertStringIncludes(
+    err instanceof Error ? err.message : String(err),
+    "positive integer issue number",
+  );
+});
+
+Deno.test("buildSummaryClaimQuestionPrompt - throws on a non-integer issue number", () => {
+  const err = assertThrows(() =>
+    buildSummaryClaimQuestionPrompt({
+      repo: "acme/widgets",
+      issueNumber: 1.5,
+      baseRef: "origin/main",
+      summaryPath: ".pr_summary",
+    })
+  );
+  assertStringIncludes(
+    err instanceof Error ? err.message : String(err),
+    "positive integer issue number",
+  );
+});
+
+Deno.test("buildSummaryClaimQuestionPrompt - the same args with a valid issue number do not throw", () => {
+  const prompt = buildSummaryClaimQuestionPrompt({
+    repo: "acme/widgets",
+    issueNumber: 7,
+    baseRef: "origin/main",
+    summaryPath: ".pr_summary",
+  });
+  assertStringIncludes(prompt, "acme/widgets#7");
+});
+
 // ---------------------------------------------------------------------------
 // runSummaryClaimCheck
 // ---------------------------------------------------------------------------
@@ -359,6 +474,100 @@ function errResult(message: string): Result<string> {
 }
 
 const SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-7.md";
+
+const SUMMARY_WITH_MISSING_FILE_CLAIM = SUMMARY_WITH_COVERAGE_CLAIM(
+  "worker/deno/tests/nonexistent_test.ts",
+  "handles the empty input case correctly",
+);
+
+Deno.test("runSummaryClaimCheck - runGit returning null skips the Test Plan backstop but still asks the model question", async () => {
+  let askQuestionCalled = false;
+  const result = await runSummaryClaimCheck(
+    {
+      repo: "acme/widgets",
+      issueNumber: 7,
+      repoPath: "/does/not/matter",
+      baseRef: "origin/main",
+      summaryPath: SUMMARY_PATH,
+      summaryContent: SUMMARY_WITH_MISSING_FILE_CLAIM,
+    },
+    {
+      runGit: async () => null,
+      askQuestion: async () => {
+        askQuestionCalled = true;
+        return okResult("no findings worth noting");
+      },
+      logger: makeLogger(),
+    },
+  );
+  assert(
+    result.notChecked.some((n) =>
+      n.includes("tracked files could not be listed")
+    ),
+    `expected the ls-files failure recorded, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+  assertEquals(result.testPlanProblems, []);
+  assert(askQuestionCalled, "expected the model question to still be asked");
+});
+
+Deno.test("runSummaryClaimCheck - a non-zero ls-files exit code skips the Test Plan backstop but still asks the model question", async () => {
+  let askQuestionCalled = false;
+  const result = await runSummaryClaimCheck(
+    {
+      repo: "acme/widgets",
+      issueNumber: 7,
+      repoPath: "/does/not/matter",
+      baseRef: "origin/main",
+      summaryPath: SUMMARY_PATH,
+      summaryContent: SUMMARY_WITH_MISSING_FILE_CLAIM,
+    },
+    {
+      runGit: async () => ({
+        code: 1,
+        stdout: "",
+        stderr: "fatal: not a git repo",
+      }),
+      askQuestion: async () => {
+        askQuestionCalled = true;
+        return okResult("no findings worth noting");
+      },
+      logger: makeLogger(),
+    },
+  );
+  assert(
+    result.notChecked.some((n) =>
+      n.includes("tracked files could not be listed")
+    ),
+    `expected the ls-files failure recorded, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+  assertEquals(result.testPlanProblems, []);
+  assert(askQuestionCalled, "expected the model question to still be asked");
+});
+
+Deno.test("runSummaryClaimCheck - contrast: ls-files succeeding yields the missing-file problem the above two tests skip", async () => {
+  const result = await runSummaryClaimCheck(
+    {
+      repo: "acme/widgets",
+      issueNumber: 7,
+      repoPath: "/does/not/matter",
+      baseRef: "origin/main",
+      summaryPath: SUMMARY_PATH,
+      summaryContent: SUMMARY_WITH_MISSING_FILE_CLAIM,
+    },
+    {
+      runGit: okGit(""),
+      askQuestion: async () => okResult("no findings worth noting"),
+      logger: makeLogger(),
+    },
+  );
+  assertEquals(result.testPlanProblems.length, 1);
+  assertEquals(result.testPlanProblems[0]?.kind, "missing-file");
+  assert(summaryClaimCheckBlocked(result));
+});
 
 Deno.test("runSummaryClaimCheck - #3252-shaped confirmed finding blocks", async () => {
   const summaryContent =
