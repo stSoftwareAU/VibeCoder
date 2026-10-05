@@ -49,19 +49,15 @@ flowchart LR
     F --> R["repair round (Issue #1965)"]
 ```
 
-**Docs sweep** — grep: `toolchainGap`, "toolchain gap", `repair round`, `1.98`, `rust-version`, `milestone_gate_repair`, `milestone_merge_gate`, `milestone_resolution_gate`; section: `docs/INTERNALS.md` § "The merge-down happens on the cycle the tip moves, and a conflict is reported that day" (milestone gate repair rung) and `docs/CONTAINER-IMAGE.md#rust-toolchain`; updated: `docs/INTERNALS.md`, `docs/CONTAINER-IMAGE.md`
+**Docs sweep** — grep: `detectRustToolchainGap`, `describeRustToolchainGap`, `RustToolchainGap`, `toolchainGap`, `collapseRepeatedLines`, "toolchain gap"; section: `docs/INTERNALS.md` § "The merge-down happens on the cycle the tip moves, and a conflict is reported that day" and `docs/CONTAINER-IMAGE.md` § "Rust toolchain"; updated: `docs/INTERNALS.md`, `docs/CONTAINER-IMAGE.md`
 
 Sweep detail:
 
-- Greps: `toolchainGap`, "toolchain gap", `repair round`, `1.98`, `rust-version`.
+- Each term was grepped over the repository, excluding `docs/archive/`, at the head. Every hit falls in a file this diff changes: the three gate modules, their three test files, `docs/INTERNALS.md` and `docs/CONTAINER-IMAGE.md`. No hit lies outside the diff.
 - Updated:
   - `docs/INTERNALS.md`: the paragraph after the repair-rung narrative, the decision node in the repair flowchart, and the `milestone_gate_repair.ts` row of the module table. That table was re-padded by `deno fmt` to fit the longer row, which is a whitespace-only change.
   - `docs/CONTAINER-IMAGE.md`: the Rust section says that an older pin surfaces as a named toolchain gap.
-- Still true:
-  - `docs/CONTAINER.md:89` and `:117` (Rust 1.98.0): the pin is unchanged in this PR.
-  - `docs/CONTAINER.md:1260` and `:1270`: these describe the HOST_DISK_LOW deferral of the verification and its repair rounds, which is untouched.
-  - `docs/workflows/milestones.md:523`: timing attribution of a repair round, which is unchanged.
-  - `docs/workflows/merge-conflicts.md:215`: the type-check gate "with its repair round" is still the milestone gate. The exception for a toolchain gap is documented in INTERNALS.
+- The Rust pin (1.98.0) is unchanged here, so the docs that state it stay true. Raising it is follow-up #3258.
 
 **Related existing rules checked:** none found that govern toolchain detection. This change adds no prompt or standards rule.
 
