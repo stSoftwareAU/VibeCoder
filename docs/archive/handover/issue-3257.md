@@ -9,7 +9,7 @@ host, one conversation or one agent provider.
 
 ## This attempt
 
-- 2026-10-05T20:14:34Z — execute hit the Claude subscription usage limit after 1571s; 0 uncommitted file(s) preserved; 3 commit(s) added to the branch
+- 2026-10-05T20:14:38Z — execute hit the Claude subscription usage limit after 1576s; 0 uncommitted file(s) preserved; 4 commit(s) added to the branch
 - Branch: `issue-3257-first-run-pr-summaries-describe-named-code-wrongly`
 - Wind-down notice: not delivered — the interruption arrived without warning
 
@@ -17,6 +17,7 @@ host, one conversation or one agent provider.
 
 Commits this run added to the branch, newest first:
 
+- wip: handover note for the interrupted run on issue #3257 (Issue #769) Vibe-Coder-Run-Id: vibe-muvnc2ag-fccffc
 - WIP checkpoint: periodic agent progress snapshot (Issue #4170)
 - WIP checkpoint: periodic agent progress snapshot (Issue #4170)
 - WIP checkpoint: periodic agent progress snapshot (Issue #4170)
@@ -26,9 +27,9 @@ already committed on this branch.
 
 ## What remains
 
-The run was interrupted after 1571s, so it never reported completion: whatever the issue still asks for beyond the changes above is outstanding.
+The run was interrupted after 1576s, so it never reported completion: whatever the issue still asks for beyond the changes above is outstanding.
 
-Diff `issue-3257-first-run-pr-summaries-describe-named-code-wrongly` against its base branch to see the 3 commit(s) and 0 preserved file(s) named above, continue from them, and do not revert them unless they are wrong.
+Diff `issue-3257-first-run-pr-summaries-describe-named-code-wrongly` against its base branch to see the 4 commit(s) and 0 preserved file(s) named above, continue from them, and do not revert them unless they are wrong.
 
 The closing deliverables are outstanding too unless the list above names them: completion reads `docs/archive/pr-summaries/pr-summary-3257.md` — with its `## Acceptance Criteria` closure block when the issue states criteria — and a run that finishes without it fails at the gate however complete the code is.
 
@@ -36,3 +37,9 @@ The closing deliverables are outstanding too unless the list above names them: c
 
 None were recorded. The run was stopped by the interruption named above,
 not by a blocker it reported.
+
+## Previous attempts
+
+Earlier runs on this issue were interrupted too:
+
+- 2026-10-05T20:14:34Z — execute hit the Claude subscription usage limit after 1571s; 0 uncommitted file(s) preserved; 3 commit(s) added to the branch
