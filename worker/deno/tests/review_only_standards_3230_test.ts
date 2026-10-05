@@ -95,7 +95,7 @@ Deno.test("Issue #3230 - issue-processing.md documents the review-enforced rule 
 
 Deno.test("Issue #3230 - MODEL-AND-CACHING.md documents the review-enforced-rule exception", async () => {
   const body = await readRepoDoc("docs/MODEL-AND-CACHING.md");
-  const text = flat(body);
+  const text = flat(section(body, "Reviewer sub-agents (issue phase)"));
 
   assertStringIncludes(text, "only review enforces");
 });
