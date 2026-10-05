@@ -23,6 +23,21 @@
 /** Repo-relative path of the ledger this module reads. */
 export const LIB_SWEEP_LEDGER_PATH = "docs/audits/lib-sweep-coverage.json";
 
+/**
+ * Repo-relative directory holding one `top-up-<issue>.json` file per top-up
+ * slice. Every PR that adds a module used to append its slice to the end of
+ * the one ledger file, so any two open PRs conflicted there; two PRs adding
+ * two different files cannot.
+ */
+export const LIB_SWEEP_TOP_UP_DIR = "docs/audits/lib-sweep-coverage";
+
+/**
+ * The last issue whose slice may still sit in the ledger file itself, whatever
+ * its chunk id. Slices for later issues go in {@link LIB_SWEEP_TOP_UP_DIR}, so
+ * the file only shrinks or has its existing slices edited from here on.
+ */
+export const LEDGER_FILE_LAST_TOP_UP_ISSUE = 3200;
+
 /** Repo-relative directory the original ledger covered. */
 export const LIB_SWEEP_ROOT = "worker/deno/lib";
 
@@ -266,6 +281,88 @@ export function duplicateSliceIds(
   };
 }
 
+/** One `top-up-<issue>.json` file from {@link LIB_SWEEP_TOP_UP_DIR}. */
+export interface TopUpFile {
+  /** File name within the directory, e.g. `top-up-3147.json`. */
+  readonly name: string;
+  /** Raw file text: a single slice object. */
+  readonly json: string;
+}
+
+function parseTopUpFile(file: TopUpFile): SweepSlice {
+  const where = `${LIB_SWEEP_TOP_UP_DIR}/${file.name}`;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(file.json);
+  } catch (error) {
+    throw new SweepLedgerError(
+      `${where}: not valid JSON — ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  let slice: SweepSlice;
+  try {
+    slice = parseSlice(raw, 0);
+  } catch (error) {
+    throw new SweepLedgerError(
+      `${where}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (file.name !== `${topUpChunkId(slice.issue)}.json`) {
+    throw new SweepLedgerError(
+      `${where}: a top-up file must be named ${
+        topUpChunkId(slice.issue)
+      }.json after its own issue`,
+    );
+  }
+  return slice;
+}
+
+/**
+ * Read the whole ledger from a checkout: the ledger file plus every top-up
+ * file in {@link LIB_SWEEP_TOP_UP_DIR}.
+ *
+ * @param repoRoot - Checkout root.
+ * @throws {SweepLedgerError} When any part is not well formed.
+ */
+export async function readCoverageLedger(
+  repoRoot: string,
+): Promise<SweepCoverageLedger> {
+  const json = await Deno.readTextFile(`${repoRoot}/${LIB_SWEEP_LEDGER_PATH}`);
+  const topUps: TopUpFile[] = [];
+  try {
+    for await (
+      const entry of Deno.readDir(`${repoRoot}/${LIB_SWEEP_TOP_UP_DIR}`)
+    ) {
+      // A subdirectory or symlink would otherwise drop its slice out of the
+      // ledger unseen, so anything but a regular file fails loud.
+      if (!entry.isFile) {
+        throw new SweepLedgerError(
+          `${LIB_SWEEP_TOP_UP_DIR}/${entry.name}: not a regular file — only ` +
+            `top-up-<issue>.json files belong in this directory`,
+        );
+      }
+      if (!entry.name.endsWith(".json")) {
+        throw new SweepLedgerError(
+          `${LIB_SWEEP_TOP_UP_DIR}/${entry.name}: only top-up-<issue>.json ` +
+            `files belong in this directory`,
+        );
+      }
+      topUps.push({
+        name: entry.name,
+        json: await Deno.readTextFile(
+          `${repoRoot}/${LIB_SWEEP_TOP_UP_DIR}/${entry.name}`,
+        ),
+      });
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  topUps.sort((a, b) => a.name.localeCompare(b.name));
+  return parseCoverageLedger(json, topUps);
+}
+
 /**
  * Parse the ledger's JSON text.
  *
@@ -275,11 +372,15 @@ export function duplicateSliceIds(
  * claimant is a slice some merge resolved by hand, and the record it points at
  * no longer names it unambiguously (Issue #1968).
  *
- * @param json - Raw file text.
+ * @param json - Raw text of the ledger file.
+ * @param topUps - The top-up files from {@link LIB_SWEEP_TOP_UP_DIR}.
  * @returns The parsed ledger.
  * @throws {SweepLedgerError} When the text is not a well-formed ledger.
  */
-export function parseCoverageLedger(json: string): SweepCoverageLedger {
+export function parseCoverageLedger(
+  json: string,
+  topUps: readonly TopUpFile[] = [],
+): SweepCoverageLedger {
   let raw: unknown;
   try {
     raw = JSON.parse(json);
@@ -308,7 +409,25 @@ export function parseCoverageLedger(json: string): SweepCoverageLedger {
       `${LIB_SWEEP_LEDGER_PATH}: "slices" must be a non-empty array`,
     );
   }
-  const parsed = slices.map(parseSlice);
+  const inFile = slices.map(parseSlice);
+  // By issue, whatever the chunk id: a new slice copying the file's older
+  // letter shape (`12ah`) would bring the tail conflict back just the same.
+  const late = inFile.filter((slice) =>
+    slice.issue > LEDGER_FILE_LAST_TOP_UP_ISSUE
+  );
+  if (late.length > 0) {
+    throw new SweepLedgerError(
+      `${LIB_SWEEP_LEDGER_PATH}: slice(s) for issues after ` +
+        `#${LEDGER_FILE_LAST_TOP_UP_ISSUE} — ${
+          late.map((slice) =>
+            `${slice.chunk} (#${slice.issue}) belongs in ` +
+            `${LIB_SWEEP_TOP_UP_DIR}/${topUpChunkId(slice.issue)}.json`
+          ).join(", ")
+        }. Move each to its own file, with chunk id top-up-<issue>, so ` +
+        `concurrent PRs do not conflict on the ledger file.`,
+    );
+  }
+  const parsed = [...inFile, ...topUps.map(parseTopUpFile)];
   const duplicates = duplicateSliceIds(parsed);
   if (duplicates.chunks.length > 0) {
     throw new SweepLedgerError(
@@ -707,7 +826,8 @@ export function describeCoverageDiff(diff: CoverageDiff): string | null {
   if (diff.unswept.length > 0) {
     parts.push(
       `${diff.unswept.length} module(s) under the ledger roots are claimed by no sweep slice — ` +
-        `read them for the shapes in ${LIB_SWEEP_LEDGER_PATH}, then add them to a slice:\n` +
+        `read them for the shapes in ${LIB_SWEEP_LEDGER_PATH}, then add them to a slice ` +
+        `(a new top-up slice is its own file, ${LIB_SWEEP_TOP_UP_DIR}/top-up-<issue>.json):\n` +
         diff.unswept.map((p) => `  - ${p}`).join("\n"),
     );
   }

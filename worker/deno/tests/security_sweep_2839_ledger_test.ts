@@ -6,8 +6,7 @@
  */
 import { assert, assertEquals } from "@std/assert";
 import {
-  LIB_SWEEP_LEDGER_PATH,
-  parseCoverageLedger,
+  readCoverageLedger,
   unnamedSmallSliceModules,
 } from "../lib/lib_sweep_coverage.ts";
 import { sweepGitRunnerFor } from "../commands/sweep_drift.ts";
@@ -17,9 +16,7 @@ const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
 const RECORD = "docs/audits/security-sweep-2839-top-up-delta.md";
 const SWEPT_AT = "42c876e1aa6f8df81177cc19ddb807dd7912bf63";
 
-const ledger = parseCoverageLedger(
-  Deno.readTextFileSync(`${REPO_ROOT}${LIB_SWEEP_LEDGER_PATH}`),
-);
+const ledger = await readCoverageLedger(REPO_ROOT);
 const recordText = Deno.readTextFileSync(`${REPO_ROOT}${RECORD}`);
 
 /** `chunk → triage` for every row of the record's swept-slices table. */

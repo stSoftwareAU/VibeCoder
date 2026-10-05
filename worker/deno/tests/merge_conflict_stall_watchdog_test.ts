@@ -405,6 +405,7 @@ function fakeGitHub(
   prComments: Record<string, unknown>[] = [],
   mergeableState = "CONFLICTING",
   headRefOid = HEAD_SHA,
+  headRefName = "issue-7-branch",
 ) {
   const calls: string[][] = [];
   let nextCommentId = 1;
@@ -433,7 +434,7 @@ function fakeGitHub(
     if (verb === "pr" && noun === "view") {
       return Promise.resolve(
         JSON.stringify({
-          headRefName: "issue-7-branch",
+          headRefName,
           baseRefName: "main",
           headRefOid,
         }),
@@ -624,6 +625,46 @@ Deno.test("repairConflictQueueStall - budget spent: abandon is called with reaso
   assertEquals(request.reason, { kind: "merge-conflict" });
   assertNoEscalation(github.calls);
   assertNoNeedsHuman(github.calls);
+  assertEquals(abandon.released(), 1);
+});
+
+Deno.test("repairConflictQueueStall - budget spent on a milestone head: no single-issue abandon, the clock restarts (Issue #3036)", async () => {
+  // A milestone/** head carries many sub-PRs' work. Its redo is the
+  // milestone rebuild, which needs a clone — the merge-conflict pass runs it.
+  // The watchdog has no clone, and the single-issue abandon would close the
+  // milestone PR outright, so it leaves the redo to that pass.
+  const github = fakeGitHub(
+    budgetSpentComments.slice(),
+    "CONFLICTING",
+    HEAD_SHA,
+    "milestone/3013-fleet-lands-its-own",
+  );
+  const abandon = fakeAbandon();
+  const takeover = fakeTakeover();
+  const stall = detect(observation(10, budgetSpentComments));
+  assert(stall !== null);
+
+  const action = await repairConflictQueueStall(stall, {
+    ghCommandFn: github.gh,
+    logger,
+    isTrustedAuthor,
+    nowMs: NOW,
+    abandon: abandon.abandon,
+    acquireLease: abandon.acquireLease,
+    takeover: takeover.takeover,
+    takeoverResolvers,
+    trustedAuthors: [FLEET],
+  });
+
+  assertEquals(action, "abandon-declined");
+  assertEquals(abandon.abandoned, [], "the milestone PR is never closed");
+  assertEquals(takeover.calls, []);
+  assertEquals(
+    github.calls.filter((call) => call[0] === "pr" && call[1] === "close"),
+    [],
+  );
+  assertNoNeedsHuman(github.calls);
+  assertEquals(detect(observation(10, github.prComments)), null);
   assertEquals(abandon.released(), 1);
 });
 

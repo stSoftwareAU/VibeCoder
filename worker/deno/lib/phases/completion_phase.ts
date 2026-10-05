@@ -44,6 +44,7 @@ import {
   buildClosureGateComment,
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
+import { findMissingCriteria } from "../missing_criterion_close_guard.ts";
 import {
   buildIndependentReviewComment,
   validateIndependentReview,
@@ -57,9 +58,29 @@ import {
   validateDocsSweep,
 } from "../docs_sweep_gate.ts";
 import {
+  buildDocsSweepHitsComment,
+  checkDocsSweepTerms,
+  describeDocsSweepHits,
+} from "../docs_sweep_hits.ts";
+import {
   buildResultPlaceholderGateComment,
   findResultPlaceholders,
 } from "../result_placeholder_gate.ts";
+import {
+  buildBranchOutcomesGateComment,
+  lookupTestsAtHead,
+  namedTestPaths,
+  parseBranchOutcomes,
+  validateBranchOutcomes,
+} from "../branch_outcomes_gate.ts";
+import {
+  buildRemovedAssertionGateComment,
+  MAX_DIFF_CHARS as REMOVED_ASSERTION_MAX_DIFF_CHARS,
+  pathsFromRenameStatus,
+  removedAssertionDiffArgs,
+  removedAssertionRenameStatusArgs,
+  validateRemovedAssertions,
+} from "../removed_assertion_gate.ts";
 import {
   type BlockedGatePr,
   buildChangedWorkflowGateMessage,
@@ -103,6 +124,7 @@ import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
   hasSecurityLabel,
+  isTestFilePath,
   matchedTestDeclarations,
   referencesFindingId,
 } from "../security_fix_gate.ts";
@@ -449,22 +471,34 @@ async function lookupBlockedGatePr(
  * genuine ones.
  *
  * The rule is worth checking; reporting it as "the code did not work" is not.
- * So the outcome depends on whether the work reached a PR:
+ * So the outcome depends on whether this is the run's first summary-rule
+ * block, and whether the work already reached a PR (Issue #3163):
  *
- * - **no PR for this run's branch** — the verdict is recorded on the phase
- *   state and the gate blocks, which `workOnIssueCompletion` recovers from
- *   once inside the run (Issue #2189) before the failure stands;
- * - **a PR already exists** — the degraded-run delivery guard (Issue #2562)
- *   runs first, against this PR, before it is finalised: arming auto-merge
- *   on it ahead of that guard would close the issue with any undelivered
- *   scope recorded nowhere (Issue #3092). Only once the guard succeeds is
- *   the PR finalised the way the recovery path finalises it (body, labels,
- *   link, auto-merge), and the run reports `summary_incomplete`: the work is
- *   done, the summary is short, and the issue stays attached to its PR
- *   instead of going back in the queue. If the guard itself cannot file its
- *   follow-up, this reports `failure` instead and the PR is left
- *   unfinalised. An existing PR whose URL cannot be numbered also fails the
- *   run — before the PR is recovered or finalised (Issue #3139).
+ * - **the run's first block, no PR yet** — the verdict is recorded on the
+ *   phase state and the gate blocks `failure`, which `workOnIssueCompletion`
+ *   recovers from once inside the run (Issue #2189) before the failure
+ *   stands;
+ * - **the run's first block, a PR already exists** — the agent raised that
+ *   PR itself from inside the execute phase, often enough that finalising it
+ *   straight off this first block used to ship it with the gate's shortfall
+ *   unrepaired (#3155/#3158/#3159). The verdict is recorded the same way as
+ *   the no-PR case (carrying the PR's URL), and this also blocks `failure`
+ *   for `workOnIssueCompletion` to recover from in-run — the guard below is
+ *   *not* run and the PR is *not* finalised on this first block;
+ * - **a second (or later) block in the same run, with a PR** — the in-run
+ *   recovery already had its turn and failed to clear the gate, so this is
+ *   where the existing-PR path finalises: the degraded-run delivery guard
+ *   (Issue #2562) runs first, against this PR, before it is finalised:
+ *   arming auto-merge on it ahead of that guard would close the issue with
+ *   any undelivered scope recorded nowhere (Issue #3092). Only once the
+ *   guard succeeds is the PR finalised the way the recovery path finalises
+ *   it (body, labels, link, auto-merge), and the run reports
+ *   `summary_incomplete`: the work is done, the summary is short, and the
+ *   issue stays attached to its PR instead of going back in the queue. If
+ *   the guard itself cannot file its follow-up, this reports `failure`
+ *   instead and the PR is left unfinalised. An existing PR whose URL cannot
+ *   be numbered also fails the run — before the PR is recovered or
+ *   finalised (Issue #3139).
  *
  * On the no-PR branch the guard is *not* run here — a follow-up it files
  * would promise "that run's PR still completes #N on merge" for a PR that
@@ -481,8 +515,11 @@ async function lookupBlockedGatePr(
  *
  * @param reason - The phase-failure reason the gate would have reported.
  * @param comment - The gate's remediation comment for the issue thread.
- * @returns `failure` when no PR exists, `early_exit` carrying the
- *   `summary_incomplete` outcome when one does.
+ * @returns `failure` on the run's first block (PR or no PR, both recovered
+ *   in-run by `workOnIssueCompletion`), or on a later block whose follow-up
+ *   could not be filed, or whose PR URL cannot be numbered; `early_exit`
+ *   carrying the `summary_incomplete` outcome on a later block that reached
+ *   and finalised an existing PR.
  */
 async function reportSummaryRuleBlock(
   reason: string,
@@ -506,8 +543,16 @@ async function reportSummaryRuleBlock(
   // records the shortfall, not the number of attempts at it.
   const verdicts = state.summaryRuleBlocks ?? [];
   const alreadyOnThread = verdicts.some((v) => v.comment === comment);
-  if (!existingPr.ok) {
-    state.summaryRuleBlocks = [...verdicts, { reason, comment }];
+  const isFirstBlock = verdicts.length === 0;
+  if (!existingPr.ok || isFirstBlock) {
+    state.summaryRuleBlocks = [
+      ...verdicts,
+      {
+        reason,
+        comment,
+        ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
+      },
+    ];
   }
   if (alreadyOnThread) {
     logger.info(
@@ -539,6 +584,36 @@ async function reportSummaryRuleBlock(
 
   const prUrl = existingPr.value;
   const prNumber = prNumberFromUrl(prUrl);
+
+  if (isFirstBlock) {
+    // The run's FIRST summary-rule block gets the same in-run recovery turn
+    // whether or not a PR already exists (Issue #3163): finalising an
+    // existing PR straight off this block used to skip
+    // `recoverFromSummaryRuleBlock` entirely, so a PR the agent had already
+    // raised itself shipped with the gate's shortfall unrepaired. Naming the
+    // PR here (when its URL is numberable) is what lets a later failure on
+    // the retried attempt still name the live PR rather than reporting
+    // "no PR" over one (Issue #2044); an unnumberable URL names nothing
+    // (Issues #3136/#3139).
+    logger.warn(
+      "PR-summary rule broken on a run whose agent already raised its PR " +
+        "— giving the agent its one in-run recovery turn before that PR is " +
+        "finalised (Issue #3163)",
+      { repo, issueNumber, prUrl, reason },
+    );
+    if (prNumber > 0) {
+      state.prUrl = prUrl;
+      state.prNumber = prNumber;
+    } else {
+      logger.warn(
+        "Could not read a PR number from the existing PR URL — the " +
+          "summary-rule block names no PR rather than naming #0",
+        { repo, issueNumber, prUrl },
+      );
+    }
+    return { status: "failure", reason };
+  }
+
   logger.warn(
     "PR-summary rule broken on a run that had already raised its PR — " +
       "recording the shortfall against that PR instead of failing the run " +
@@ -1810,6 +1885,17 @@ async function completionBody(
     footer,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
+  // Issue #3177: `assemblePrBody` withholds the closing keyword when the
+  // summary marks a criterion `missing`. Say so, since the PR then leaves
+  // the issue open and the merged-PR closers hand it to a human.
+  const missingCriteria = findMissingCriteria(summaryContent);
+  if (missingCriteria.length > 0) {
+    logger.warn(
+      "PR summary marks acceptance criteria missing — the PR is raised as " +
+        "`Part of #N` and does not close the issue (Issue #3177)",
+      { issueNumber, missing: missingCriteria.length },
+    );
+  }
 
   // Issue #2985: Make evidence image links render in the PR description.
   //
@@ -2085,6 +2171,79 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
+  // Removed-assertion test-file patch, read early (Issue #3131).
+  //
+  // The removed-assertion gate below needs the unified diff of just the
+  // test files the branch touches, which no other gate needs — so it is
+  // only read when the gate could possibly apply (an unknown changed-files
+  // list fails closed and must apply regardless; a known list only applies
+  // when some changed file is a test file). When the changed-files list IS
+  // known, the diff is scoped to the test files via a pathspec, so a large
+  // unrelated hunk (a lockfile, a fixture, generated data) elsewhere in the
+  // branch can never push a test file's own patch past the read cap. That
+  // pathspec comes from `git diff --name-status -z --find-renames`, not the
+  // rename-collapsed `--name-only` list. `-z` leaves a non-ASCII path
+  // unquoted. When either side of a rename is a test file, both sides are
+  // in the pathspec so git can still pair the rename. The gate applies
+  // from those test-file sides, not from the quoted `--name-only` list.
+  // A patch that cannot be read — the git command failed, or the scoped
+  // patch still reached the cap — is not a silent pass: it is logged loudly
+  // and `testDiff` stays `null`, so `validateRemovedAssertions` still
+  // enforces the `## Test Plan` heading rule even though the per-assertion
+  // rule cannot run.
+  // ---------------------------------------------------------------------
+  let removedAssertionTestFiles: string[] = [];
+  let removedAssertionPathspec: string[] = [];
+  let removedAssertionSidesKnown = !changedFilesKnown;
+  if (comparableBase.ok && changedFilesKnown) {
+    const sidesResult = await deps.git.runGitCommand(
+      removedAssertionRenameStatusArgs(comparableBase.value),
+      { cwd: state.repoPath },
+    );
+    if (sidesResult.ok && sidesResult.value.code === 0) {
+      const parsed = pathsFromRenameStatus(sidesResult.value.stdout);
+      removedAssertionTestFiles = parsed.testFiles;
+      removedAssertionPathspec = parsed.pathspec;
+      removedAssertionSidesKnown = true;
+    } else {
+      logger.warn(
+        "Could not list both sides of renamed test files for the removed-assertion gate — only the Test Plan heading rule applies",
+      );
+    }
+  }
+  const removedAssertionGateCouldApply = !changedFilesKnown ||
+    removedAssertionTestFiles.length > 0 ||
+    (changedFilesKnown && changedFiles.some((file) => isTestFilePath(file)));
+  let testDiff: string | null = null;
+  if (
+    comparableBase.ok && removedAssertionGateCouldApply &&
+    removedAssertionSidesKnown
+  ) {
+    const testDiffResult = await deps.git.runGitCommand(
+      removedAssertionDiffArgs(
+        comparableBase.value,
+        removedAssertionPathspec,
+      ),
+      { cwd: state.repoPath },
+    );
+    if (testDiffResult.ok && testDiffResult.value.code === 0) {
+      if (
+        testDiffResult.value.stdout.length >= REMOVED_ASSERTION_MAX_DIFF_CHARS
+      ) {
+        logger.warn(
+          "The test-file diff for the removed-assertion gate reached the read cap — treating it as unreadable rather than scanning a silently truncated patch",
+        );
+      } else {
+        testDiff = testDiffResult.value.stdout;
+      }
+    } else {
+      logger.warn(
+        "Could not read the test-file diff for the removed-assertion gate — only the Test Plan heading rule applies",
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Docs-sweep verdict, computed early (Issue #3085 review).
   //
   // `recoverFromSummaryRuleBlock` only re-invokes the agent on a run's FIRST
@@ -2103,19 +2262,94 @@ async function completionBody(
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
   });
-  const docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
-  const docsSweepReason = `Docs sweep not recorded in the PR summary: ${
+  let docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
+  let docsSweepReason = `Docs sweep not recorded in the PR summary: ${
     docsSweep.problems[0] ?? "Docs sweep line missing"
   }`;
+  let docsSweepComment = buildDocsSweepGateComment(docsSweep);
+
+  // Issue #3172: once the line itself passes, re-run the grep terms it
+  // quotes over the head's docs, and over the comment lines of its source
+  // files (Issue #3219). A hit outside every line the diff changed,
+  // and not named in the line as `file:line`, is a sentence the sweep found
+  // and left — it blocks through the same single recovery turn. A grep or
+  // diff that cannot run is logged as not checked, never read as clean.
+  if (docsSweep.applicable && docsSweep.valid) {
+    const termCheck = comparableBase.ok
+      ? await checkDocsSweepTerms({
+        rawBody: docsSweep.line.rawBody,
+        base: comparableBase.value,
+        runGit: async (args) => {
+          const result = await deps.git.runGitCommand(args, {
+            cwd: state.repoPath,
+          });
+          if (!result.ok) throw result.error;
+          return result.value;
+        },
+      })
+      : {
+        status: "not_checked" as const,
+        reason: `base ref unresolvable: ${comparableBase.error.message}`,
+        terms: [],
+      };
+    if (termCheck.status === "not_checked") {
+      logger.error(
+        "Docs sweep terms not checked against the head — the line passed " +
+          "the gate but its grep terms could not be re-run (Issue #3172)",
+        { reason: termCheck.reason, terms: termCheck.terms.length },
+      );
+    } else if (termCheck.status === "skipped") {
+      logger.info("Docs sweep terms not re-run (Issue #3172)", {
+        reason: termCheck.reason,
+      });
+    }
+    if (termCheck.status === "checked" && termCheck.broadTerms.length > 0) {
+      logger.warn(
+        "Docs sweep terms too broad to check line by line outside the " +
+          "files the diff touched — not checked there (Issue #3172)",
+        { terms: termCheck.broadTerms },
+      );
+    }
+    if (termCheck.status === "checked" && termCheck.staleHits.length > 0) {
+      docsSweepBlocked = true;
+      docsSweepReason = `Docs sweep incomplete at the head: ${
+        describeDocsSweepHits(termCheck.staleHits)
+      }`;
+      docsSweepComment = buildDocsSweepHitsComment(termCheck.staleHits);
+    }
+  }
 
   // ---------------------------------------------------------------------
-  // Result-placeholder verdict, computed early alongside the docs-sweep one
-  // (Issue #3124), for the same reason: `recoverFromSummaryRuleBlock` only
+  // Removed-assertion verdict, computed early alongside the docs-sweep one
+  // (Issue #3131), for the same reason: `recoverFromSummaryRuleBlock` only
   // gets one recovery turn per run, so a summary that both fails an earlier
-  // gate AND still carries a fill-in-later token (e.g.
-  // `QUALITY_RESULT_PLACEHOLDER`) where a command's result belongs must be
-  // told about both in that one turn — `findResultPlaceholders` is pure, so
+  // gate AND leaves a removed test assertion unaccounted for must be told
+  // about both in that one turn — `validateRemovedAssertions` is pure, so
   // computing it here and folding it in costs nothing.
+  // ---------------------------------------------------------------------
+  const removedAssertions = validateRemovedAssertions({
+    changedFiles: changedFilesKnown
+      ? [...changedFiles, ...removedAssertionTestFiles]
+      : null,
+    testDiff,
+    prSummaryContent: prBody,
+  });
+  const removedAssertionsBlocked = removedAssertions.applicable &&
+    !removedAssertions.valid;
+  const removedAssertionsReason =
+    `Removed test assertions not accounted for in the PR summary's Test Plan: ${
+      removedAssertions.problems[0] ?? "Test Plan section missing"
+    }`;
+
+  // ---------------------------------------------------------------------
+  // Result-placeholder verdict, computed early alongside the docs-sweep and
+  // removed-assertion ones (Issue #3124), for the same reason:
+  // `recoverFromSummaryRuleBlock` only gets one recovery turn per run, so a
+  // summary that both fails an earlier gate AND still carries a
+  // fill-in-later token (e.g. `QUALITY_RESULT_PLACEHOLDER`) where a
+  // command's result belongs must be told about both in that one turn —
+  // `findResultPlaceholders` is pure, so computing it here and folding it
+  // in costs nothing.
   // ---------------------------------------------------------------------
   const placeholderTokens = findResultPlaceholders(prBody);
   const placeholderBlocked = placeholderTokens.length > 0;
@@ -2123,24 +2357,100 @@ async function completionBody(
     placeholderTokens.join(", ")
   }`;
 
-  /** Fold the docs-sweep and result-placeholder verdicts into an earlier gate's block, when either also fails. */
-  function foldInDocsSweep(
+  // ---------------------------------------------------------------------
+  // Branch-outcomes verdict, computed early alongside the docs-sweep,
+  // removed-assertions and result-placeholder ones (Issue #3147), for the
+  // same reason: a summary that fails an earlier gate AND leaves the "every
+  // outcome of a branch you add needs a test that reaches it" list (rule
+  // #3069) missing, empty, or naming a test that does not exist must be told
+  // about all of it in the one recovery turn `recoverFromSummaryRuleBlock`
+  // grants. The HEAD lookup runs unconditionally for whatever test paths the
+  // summary names — it is not gated on `branchOutcomes.applicable` or
+  // `changedFilesKnown`, so it also runs for a docs-only diff if the summary
+  // happens to name a test. It only skips calling git when there are zero
+  // named paths, in which case an empty set is used, which is `valid` for a
+  // record with no named tests.
+  // ---------------------------------------------------------------------
+  // The not-applicable `: []` arm and the empty-list `new Set()` arm both
+  // left the suite green when removed. `lookupTestsAtHead` already returns
+  // an empty set without calling git when there is nothing to confirm, and
+  // a docs-only diff is not applicable inside `validateBranchOutcomes`.
+  const branchOutcomesNamedTests = namedTestPaths(parseBranchOutcomes(prBody));
+  const testsAtHead = await lookupTestsAtHead(
+    branchOutcomesNamedTests,
+    (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
+  );
+  const branchOutcomes = validateBranchOutcomes({
+    changedFiles: changedFilesKnown ? changedFiles : null,
+    prSummaryContent: prBody,
+    testsAtHead,
+  });
+  const branchOutcomesBlocked = branchOutcomes.applicable &&
+    !branchOutcomes.valid;
+  const branchOutcomesReason =
+    `Branch outcomes not recorded in the PR summary: ${
+      branchOutcomes.problems[0] ?? "Branch outcomes list missing"
+    }`;
+
+  /**
+   * The late summary-rule verdicts, in the fixed order they are folded into
+   * an earlier gate's block: docs sweep, removed assertions, result
+   * placeholder, then branch outcomes (Issue #3147 added the last one). One
+   * source of truth for both the ordered fold below and the gates' own
+   * standalone blocks further down.
+   */
+  interface LateSummaryVerdict {
+    blocked: boolean;
+    reason: string;
+    comment: () => string;
+  }
+  const docsSweepVerdict: LateSummaryVerdict = {
+    blocked: docsSweepBlocked,
+    reason: docsSweepReason,
+    // Issue #3172: docsSweepComment may already have been overridden to the
+    // stale-hits comment above — read the variable, not a fresh rebuild from
+    // `docsSweep`, or a term re-run failure would be folded in silently as
+    // the generic "line missing" comment instead.
+    comment: () => docsSweepComment,
+  };
+  const removedAssertionsVerdict: LateSummaryVerdict = {
+    blocked: removedAssertionsBlocked,
+    reason: removedAssertionsReason,
+    comment: () => buildRemovedAssertionGateComment(removedAssertions),
+  };
+  const placeholderVerdict: LateSummaryVerdict = {
+    blocked: placeholderBlocked,
+    reason: placeholderReason,
+    comment: () => buildResultPlaceholderGateComment(placeholderTokens),
+  };
+  const branchOutcomesVerdict: LateSummaryVerdict = {
+    blocked: branchOutcomesBlocked,
+    reason: branchOutcomesReason,
+    comment: () => buildBranchOutcomesGateComment(branchOutcomes),
+  };
+  const lateSummaryVerdicts: LateSummaryVerdict[] = [
+    docsSweepVerdict,
+    removedAssertionsVerdict,
+    placeholderVerdict,
+    branchOutcomesVerdict,
+  ];
+
+  /**
+   * Fold every blocked late verdict (docs sweep, removed assertions, result
+   * placeholder, branch outcomes — in that order) other than those in `skip`
+   * into an earlier gate's block.
+   */
+  function foldInLateSummaryVerdicts(
     reason: string,
     comment: string,
+    skip: readonly LateSummaryVerdict[] = [],
   ): { reason: string; comment: string } {
     let foldedReason = reason;
     let foldedComment = comment;
-    if (docsSweepBlocked) {
-      foldedReason = `${foldedReason}; ${docsSweepReason}`;
-      foldedComment = `${foldedComment}\n\n---\n\n${
-        buildDocsSweepGateComment(docsSweep)
-      }`;
-    }
-    if (placeholderBlocked) {
-      foldedReason = `${foldedReason}; ${placeholderReason}`;
-      foldedComment = `${foldedComment}\n\n---\n\n${
-        buildResultPlaceholderGateComment(placeholderTokens)
-      }`;
+    for (const verdict of lateSummaryVerdicts) {
+      if (skip.includes(verdict) || !verdict.blocked) continue;
+      foldedReason = `${foldedReason}; ${verdict.reason}`;
+      foldedComment = `${foldedComment}\n\n---\n\n${verdict.comment()}`;
     }
     return { reason: foldedReason, comment: foldedComment };
   }
@@ -2163,7 +2473,7 @@ async function completionBody(
       criteria: closure.criteria.length,
       problems: closure.problems,
     });
-    const folded = foldInDocsSweep(
+    const folded = foldInLateSummaryVerdicts(
       `Acceptance criteria not closed out in the PR summary: ${
         closure.problems[0] ?? "closure block missing"
       }`,
@@ -2201,7 +2511,7 @@ async function completionBody(
       standardsEntries: review.standardsEntries.length,
       problems: review.problems,
     });
-    const folded = foldInDocsSweep(
+    const folded = foldInLateSummaryVerdicts(
       `Independent Spec/Standards review not reported in the PR summary: ${
         review.problems[0] ?? "review blocks missing"
       }`,
@@ -2238,7 +2548,7 @@ async function completionBody(
       status: reproduction.block.status,
       problems: reproduction.problems,
     });
-    const folded = foldInDocsSweep(
+    const folded = foldInLateSummaryVerdicts(
       `Reproduction status not recorded in the PR summary: ${
         reproduction.problems[0] ?? "`## Reproduction` block missing"
       }`,
@@ -2255,42 +2565,82 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
-  // Docs-sweep gate (Issue #3073).
+  // Late summary gates: docs sweep (Issue #3073), removed assertions
+  // (Issue #3131), result placeholder (Issue #3124), and branch outcomes
+  // (Issue #3147) — in that order.
   //
-  // The PR-summary contract already asked for a one-line Docs sweep entry,
-  // but nothing checked it: a term-only grep sweep still missed the manual
-  // for the changed surface, and some PRs carried no line at all. When the
-  // diff changes a non-test, non-doc file, the summary must name the manual
-  // `section:` that documents the surface — not merely that a grep ran.
+  // The PR-summary contract already asked for a one-line Docs sweep entry
+  // and now also a `Branch outcomes:` list, but nothing checked either: a
+  // term-only grep sweep still missed the manual for the changed surface,
+  // some PRs carried no Docs sweep line at all, a dropped test assertion
+  // went unaccounted for, and fleet PRs shipped a new branch with no test
+  // reaching it (or named a test that did not exist). When the diff changes
+  // a non-test, non-doc file, the summary must name the manual `section:`
+  // that documents the surface, account for every removed assertion, carry
+  // no unfilled result placeholder, and carry a `Branch outcomes:` list
+  // whose every named test exists at the head.
   //
   // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
   // delivery guard itself, against the existing PR, before it recovers and
-  // finalises that PR — so every summary-rule gate, docs sweep included,
+  // finalises that PR — so every summary-rule gate, these four included,
   // records the degraded follow-up before an existing PR is finalised, and
-  // this gate no longer needs to run after the guard or short-circuit around
-  // it for the no-PR case: either way `reportSummaryRuleBlock` does the
-  // right thing by branch below.
+  // none of them needs to run after the guard or short-circuit around it for
+  // the no-PR case: either way `reportSummaryRuleBlock` does the right thing
+  // by branch below. Each gate folds every later-named gate still blocked
+  // into its own comment, so a summary failing more than one of them is
+  // told about all of them in the one recovery turn it gets.
   // ---------------------------------------------------------------------
   if (docsSweepBlocked) {
     logger.warn("Docs-sweep gate blocked PR creation", {
       changedFilesKnown,
       codeFiles: docsSweep.codeFiles.length,
       problems: docsSweep.problems,
+      reason: docsSweepReason,
     });
-    // Issue #3124: fold the placeholder verdict in too, so a summary that
-    // fails both the docs sweep and the placeholder gate gets told about
-    // both in this one recovery turn, not just the one caught first.
-    const folded = placeholderBlocked
-      ? {
-        reason: `${docsSweepReason}; ${placeholderReason}`,
-        comment: `${buildDocsSweepGateComment(docsSweep)}\n\n---\n\n${
-          buildResultPlaceholderGateComment(placeholderTokens)
-        }`,
-      }
-      : {
-        reason: docsSweepReason,
-        comment: buildDocsSweepGateComment(docsSweep),
-      };
+    // Issue #3172: use the (possibly overridden) docsSweepComment variable,
+    // not a fresh rebuild from `docsSweep`, so a stale-hits comment survives.
+    const folded = foldInLateSummaryVerdicts(
+      docsSweepReason,
+      docsSweepComment,
+      [docsSweepVerdict],
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Removed-assertion gate (Issue #3131).
+  //
+  // The fleet's PR-summary contract already asked the agent to name, in the
+  // `## Test Plan`, every assertion a diff removes from an *existing* test —
+  // together with the issue requirement that makes it untrue — but nothing
+  // checked it. GRQ-AutoTrader#2370 raised a PR with no `## Test Plan` at
+  // all and silently dropped a still-true assertion, and it reached a
+  // milestone PR unnoticed. Blocked the same way as the docs-sweep gate
+  // immediately above: `reportSummaryRuleBlock` applies the degraded-run
+  // delivery guard itself against any existing PR before it recovers and
+  // finalises that PR, so this gate does not need to run after the guard
+  // either.
+  // ---------------------------------------------------------------------
+  if (removedAssertionsBlocked) {
+    logger.warn("Removed-assertion gate blocked PR creation", {
+      changedFilesKnown,
+      testFiles: removedAssertions.testFiles.length,
+      removed: removedAssertions.removed.length,
+      unaccounted: removedAssertions.unaccounted.length,
+      problems: removedAssertions.problems,
+    });
+    const folded = foldInLateSummaryVerdicts(
+      removedAssertionsReason,
+      buildRemovedAssertionGateComment(removedAssertions),
+      [docsSweepVerdict, removedAssertionsVerdict],
+    );
     return await reportSummaryRuleBlock(
       folded.reason,
       folded.comment,
@@ -2308,7 +2658,7 @@ async function completionBody(
   // summary where a command's actual result belongs reads as "the gate was
   // run" to anyone who does not know the fleet's internal scaffolding, when
   // nothing was actually reported. Blocked the same way as the docs-sweep
-  // gate immediately above: `reportSummaryRuleBlock` applies the
+  // and removed-assertion gates above: `reportSummaryRuleBlock` applies the
   // degraded-run delivery guard itself against any existing PR before it
   // recovers and finalises that PR, so this gate does not need to run after
   // the guard either.
@@ -2317,9 +2667,40 @@ async function completionBody(
     logger.warn("Result-placeholder gate blocked PR creation", {
       tokens: placeholderTokens,
     });
-    return await reportSummaryRuleBlock(
+    const folded = foldInLateSummaryVerdicts(
       placeholderReason,
       buildResultPlaceholderGateComment(placeholderTokens),
+      [docsSweepVerdict, removedAssertionsVerdict, placeholderVerdict],
+    );
+    return await reportSummaryRuleBlock(
+      folded.reason,
+      folded.comment,
+      ctx,
+      state,
+      prBody,
+      deps,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Branch-outcomes gate (Issue #3147).
+  //
+  // The fleet's PR-summary contract now also asks for a `Branch outcomes:`
+  // list naming, for every new branch, the test that reaches it — but
+  // nothing checked it: fleet PRs shipped a new branch with no test
+  // reaching it, or named a test that did not exist at the head. Last in
+  // the late-summary chain, so there is nothing further to fold in.
+  // ---------------------------------------------------------------------
+  if (branchOutcomesBlocked) {
+    logger.warn("Branch-outcomes gate blocked PR creation", {
+      changedFilesKnown,
+      codeFiles: branchOutcomes.codeFiles.length,
+      missingTests: branchOutcomes.missingTests,
+      problems: branchOutcomes.problems,
+    });
+    return await reportSummaryRuleBlock(
+      branchOutcomesReason,
+      buildBranchOutcomesGateComment(branchOutcomes),
       ctx,
       state,
       prBody,

@@ -61,20 +61,26 @@ export interface AcceptanceClosureResult {
 }
 
 // A markdown heading reading "Acceptance Criteria" (any heading level).
+// Every heading tail here is `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace
+// runs with only an optional `:` between them backtrack quadratically on a
+// heading padded with spaces and then any other character (Issue #3164).
 const ACCEPTANCE_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+acceptance\s+criteria\s*(?::\s*)?$/i;
 
 // A grill-me "Accepted scope so far" heading (Issue #2562). Grill-me states the
 // scope it settled under this heading rather than "Acceptance Criteria", so an
 // issue refined by grill-me carried no criteria as far as this gate could see.
 const ACCEPTED_SCOPE_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*(?::\s*)?$/i;
 
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
 
 // A top-level markdown list item: "- x", "* x", "1. x", optionally a checkbox.
-const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+(.*)$/;
+// The text is `([^\n]*)` with no `$`, not `(.*)$`: `.` stops at a lone `\r`,
+// and a failing tail split a padded item's spaces between `\s+` and `(.*)` in
+// every possible way — quadratic in the run (Issue #3186).
+const LIST_ITEM_RE = /^\s{0,1}(?:[-*+]|\d+[.)])\s+([^\n]*)/;
 
 // The leading checkbox of a task-list item, stripped from the criterion text.
 const CHECKBOX_RE = /^\[[ xX~]?\]\s*/;
@@ -199,9 +205,12 @@ function statusOf(entry: string): ClosureEntry["status"] | null {
 
 // Hardcoded per-label patterns — a `new RegExp(label…)` built from an argument
 // is a ReDoS surface Semgrep blocks on, and only these two labels exist.
+// The search is unanchored, so the value is `([^\n]*)` with no `$`: a `(.*)$`
+// tail that a lone `\r` made fail restarted at every later occurrence of the
+// label and rescanned to the end each time — quadratic (Issue #3186).
 const LABEL_PATTERNS = {
-  evidence: /evidence\s*[:\-—]\s*(.*)$/i,
-  reason: /reason\s*[:\-—]\s*(.*)$/i,
+  evidence: /evidence\s*[:\-—]\s*([^\n]*)/i,
+  reason: /reason\s*[:\-—]\s*([^\n]*)/i,
 } as const;
 
 /** Whether a labelled field (`evidence:`, `reason:`) is present and filled. */

@@ -50,6 +50,8 @@ Closed the loop. Closes #518.
 
 **Docs sweep** — grep: \`AcceptanceCriteria\`; section: \`docs/EXTENDING.md#acceptance-criteria\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - \`worker/deno/tests/acceptance_criteria_gate_test.ts\`
@@ -89,6 +91,8 @@ Closed the loop. Closes #518.
 - **clean** — Australian English, TDD, fail-loud error handling
 
 **Docs sweep** — grep: \`AcceptanceCriteria\`; section: \`docs/EXTENDING.md#acceptance-criteria\`; no hits
+
+**Branch outcomes:** none added
 
 ## Test Plan
 

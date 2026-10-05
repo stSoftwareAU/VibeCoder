@@ -99,6 +99,18 @@ Deno.test("the canary is shaped so the production redaction masks it", () => {
   );
 });
 
+Deno.test("the canary rejects bytes that would bias the alphabet", () => {
+  // 256 is not a multiple of the 62-character alphabet, so `byte % 62` makes
+  // the first eight characters likelier (CodeQL js/biased-cryptographic-
+  // random). A byte from the uneven tail must be redrawn, not wrapped.
+  let calls = 0;
+  const canary = mintCanary((buffer) => {
+    buffer.fill(calls++ === 0 ? 249 : 0);
+    return buffer;
+  });
+  assertEquals(canary, CANARY_PREFIX + "A".repeat(40));
+});
+
 Deno.test("each minted canary is unique", () => {
   const canaries = new Set(Array.from({ length: 50 }, () => mintCanary()));
   assertEquals(canaries.size, 50);

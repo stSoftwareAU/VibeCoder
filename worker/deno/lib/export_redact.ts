@@ -39,6 +39,7 @@
  * Uses Australian English throughout (behaviour, organisation).
  */
 
+import { escapeRegExp } from "./regexp_escape.ts";
 import {
   classifyRepoName,
   compileIdentifier,
@@ -177,10 +178,6 @@ export function applyRename(
     return rule.to;
   });
   return { text: out, count };
-}
-
-function escapeRegExp(literal: string): string {
-  return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 /** Options for {@link redactText}. */

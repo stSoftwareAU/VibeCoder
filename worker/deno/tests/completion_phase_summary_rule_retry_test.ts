@@ -65,6 +65,8 @@ Recovered in-run. Closes #${ISSUE}.
 
 **Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits
 
+**Branch outcomes:** none added
+
 ## Test Plan
 
 - \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts\`
@@ -92,6 +94,8 @@ Fixed the fault. Closes #${ISSUE}.
 - **regression test** — \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts::completion - a first summary-rule block re-invokes the agent once and the PR is raised\`
 
 **Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits
+
+**Branch outcomes:** none added
 
 ## Test Plan
 
@@ -486,17 +490,65 @@ Deno.test(
 );
 
 Deno.test(
-  "completion - a block on a run that already has a PR is not re-invoked",
+  "completion - a first block on a run whose agent already raised its PR gets the one recovery turn before the PR is finalised (Issue #3163)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_BLOCK,
+      retryWrites: SUMMARY_WITH_BLOCK,
+      prExistsForBranch: true,
+    });
+
+    // The run's first block gets the same in-run recovery turn a no-PR run
+    // gets, instead of finalising the agent's own PR straight off that first
+    // block with the gate's shortfall unrepaired.
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(outcome.qualityGateRuns, 1, "the quality gate re-runs");
+    assertEquals(
+      outcome.prCreateCalls,
+      0,
+      "the existing PR is updated, not recreated",
+    );
+  },
+);
+
+Deno.test(
+  "completion - an existing PR with no fix from the recovery is finalised as summary_incomplete",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITHOUT_BLOCK,
       prExistsForBranch: true,
     });
 
-    // Issue #1140's path is unchanged: the PR is finalised and the run reports
-    // the shortfall against it, with no agent invocation at all.
+    // The recovery turn ran once and the retried summary still fails the
+    // gate, so the second block takes the existing-PR path: the PR is
+    // finalised and the run reports the shortfall against it.
     assertEquals(outcome.status, "early_exit");
-    assertEquals(outcome.claudeCalls, 0, "no recovery invocation");
-    assertEquals(outcome.qualityGateRuns, 0);
+    assertEquals(
+      outcome.claudePrompts.filter((p) => p.includes("RETRY NOTICE")).length,
+      1,
+      "the recovery is entered exactly once",
+    );
+    assertEquals(outcome.prCreateCalls, 0, "the existing PR is not recreated");
+  },
+);
+
+Deno.test(
+  "completion - a recovery invocation that cannot be launched over an existing PR still finalises it (Issue #1140)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITHOUT_BLOCK,
+      prExistsForBranch: true,
+      retryInvocationFails: true,
+    });
+
+    // A bare failure here would release a PR the agent had already raised
+    // back into the claimable pool — the regression Issue #1140 exists to
+    // stop. The run instead re-runs completion, whose existing-PR path
+    // finalises the PR as `summary_incomplete`.
+    assertEquals(outcome.status, "early_exit");
+    assertEquals(outcome.claudeCalls, 1, "launched once, no second attempt");
+    assertEquals(outcome.qualityGateRuns, 0, "nothing changed to re-gate");
+    assertEquals(outcome.comments.length, 1);
   },
 );

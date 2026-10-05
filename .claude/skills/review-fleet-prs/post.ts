@@ -6,14 +6,17 @@
 // refreshes the summary, files an issue for each problem Fable noticed outside
 // the PR's scope (skipping one an open issue already covers), labels a held
 // PR `needs-human` and removes that label on a later approve/send-back only
-// when its log shows it added it, and raises a desktop notification when a PR
-// is sent back or held for the owner.
+// when its log shows it added it, brings an approved fleet PR that is behind
+// its base up to date (review first, then update: Issue #3225), and raises a
+// desktop notification when a PR is sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
-// Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?, reason? }.
+// Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
+// branchUpdated?, branchUpdateError?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
-// reported in `labelError`.
+// reported in `labelError`; a refused branch update likewise in
+// `branchUpdateError` (the next gate pass retries it).
 // Exit 2 when the review is malformed; nothing is posted and the PR comes
 // back on the next gate pass.
 
@@ -35,6 +38,7 @@ import {
   writeSummary,
 } from "./review_log.ts";
 import { type LabelError, syncNeedsHumanLabel } from "./needs_human.ts";
+import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
 
 interface Input {
   pr: {
@@ -43,6 +47,7 @@ interface Input {
     title: string;
     url: string;
     headSha: string;
+    kind?: "dependabot" | "fleet";
     testChanges: { removed: string[]; edited: string[] };
   };
   review: unknown;
@@ -133,13 +138,31 @@ export function postedResult(
   outcome: Outcome,
   filedIssues: readonly FiledIssue[],
   labelError?: LabelError,
+  branchUpdate?: BranchUpdateResult,
 ) {
   return {
     posted: true,
     outcome,
     filedIssues: filedIssues.map((i) => i.url),
     ...(labelError ? { labelError } : {}),
+    ...(branchUpdate?.updated === true ? { branchUpdated: true } : {}),
+    ...(branchUpdate?.updated === false
+      ? { branchUpdateError: branchUpdate.error }
+      : {}),
   };
+}
+
+// Review first, then up to date (Issue #3225): every fleet PR is armed with
+// auto-merge on CI green, approved and branch up to date, so an approval of
+// a PR that is behind its base would otherwise sit unmerged until something
+// else brought it up to date. Dependabot branches are never pushed to.
+export function shouldUpdateBranch(
+  outcome: Outcome,
+  kind: Input["pr"]["kind"],
+  mergeStateStatus: string | undefined,
+): boolean {
+  return outcome === "approved" && kind !== "dependabot" &&
+    mergeStateStatus === "BEHIND";
 }
 
 async function main() {
@@ -164,22 +187,26 @@ async function main() {
   // whether or not the PR has since moved or merged: file them before the
   // head check, or a PR that merges mid-review loses the bug Fable found.
   const filedIssues = await fileUnrelatedIssues(pr, review);
-  const now = await run("gh", [
-    "pr",
-    "view",
-    String(pr.number),
-    "-R",
-    pr.repo,
-    "--json",
-    "headRefOid,state",
-    "--jq",
-    '"\\(.headRefOid) \\(.state)"',
-  ]);
-  if (now !== `${pr.headSha} OPEN`) {
+  const live: {
+    headRefOid: string;
+    state: string;
+    mergeStateStatus?: string;
+  } = JSON.parse(
+    await run("gh", [
+      "pr",
+      "view",
+      String(pr.number),
+      "-R",
+      pr.repo,
+      "--json",
+      "headRefOid,state,mergeStateStatus",
+    ]),
+  );
+  if (live.headRefOid !== pr.headSha || live.state !== "OPEN") {
     console.log(
       JSON.stringify({
         posted: false,
-        reason: `now ${now}`,
+        reason: `now ${live.headRefOid} ${live.state}`,
         filedIssues: filedIssues.map((i) => i.url),
       }),
     );
@@ -226,6 +253,16 @@ async function main() {
     );
   }
 
+  let branchUpdate: BranchUpdateResult | undefined;
+  if (shouldUpdateBranch(outcome, pr.kind, live.mergeStateStatus)) {
+    branchUpdate = await updateBranch(pr, (args) => run("gh", args));
+    if (!branchUpdate.updated) {
+      console.error(
+        `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,
+      );
+    }
+  }
+
   const record: LogRecord = {
     at: new Date().toISOString(),
     repo: pr.repo,
@@ -263,7 +300,9 @@ async function main() {
     );
   }
   console.log(
-    JSON.stringify(postedResult(outcome, filedIssues, label.labelError)),
+    JSON.stringify(
+      postedResult(outcome, filedIssues, label.labelError, branchUpdate),
+    ),
   );
 }
 

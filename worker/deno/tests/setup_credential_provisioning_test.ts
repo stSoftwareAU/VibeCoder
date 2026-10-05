@@ -10,7 +10,7 @@
  * Australian English spelling throughout (behaviour, authorised).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { setupConfigEnv } from "./support/setup_config_env.ts";
 import {
   checkCredentialPreflight,
@@ -220,8 +220,9 @@ Deno.test("provision_vibe_credentials - no credential variables leaves nothing b
       output.includes("VIBE_LAUNCHAGENT_DEEPSEEK_API_KEY"),
       `expected the DeepSeek variable to be named, got: ${output}`,
     );
-    assert(
-      output.includes("platform.deepseek.com"),
+    assertStringIncludes(
+      output,
+      "platform.deepseek.com",
       `expected the warning to say where a DeepSeek key comes from: ${output}`,
     );
     // No login command is ever suggested here: the interactive fallback is

@@ -32,11 +32,11 @@
  *
  * The pass is bounded, and every attempt ends visibly (Issue #395): the
  * attempt is recorded on the PR *before* the merge runs, and each outcome —
- * merged, failed, escalated — posts its own conclusion marker. An attempt
- * that opened and never concluded was disrupted rather than judged, so it
- * does not spend the budget; the next attempt says so loudly on the PR. The
- * final *concluded* failure escalates with `needs-human` and a conflict
- * summary instead of retrying forever.
+ * merged or failed — posts its own conclusion marker. An attempt that opened
+ * and never concluded was disrupted rather than judged, so it does not spend
+ * the budget; the next attempt says so loudly on the PR. The final
+ * *concluded* failure hands the PR to abandon-and-redo (Issue #1115) instead
+ * of retrying forever — never to a human (Issue #3032).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -47,7 +47,13 @@ import {
   createMergeConflictReplyReader,
   runMergeConflictAgent,
 } from "./merge_conflict_agent.ts";
-import { standDownMilestoneHead } from "./gated_head_guard.ts";
+import { isMilestoneHead } from "./gated_head_guard.ts";
+import {
+  type ConflictTakeoverDeps,
+  type ConflictTakeoverOutcome,
+  type ConflictTakeoverPr,
+  runConflictTakeover,
+} from "./conflict_takeover.ts";
 import { assertNever } from "./assert_never.ts";
 import { isRuleViolationPush } from "./milestone_sync_pr.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
@@ -94,8 +100,6 @@ import {
   currentHost,
   formatStageTimings,
 } from "./conflict_stage_timer.ts";
-import { escalateToHuman } from "./needs_human_escalation.ts";
-import { createGhEscalationClient } from "./gh_escalation_client.ts";
 import { BOTH_INSERTED_RULE_NAME } from "./both_inserted_conflict_rule.ts";
 import {
   applyDependencyConflictRules,
@@ -117,10 +121,15 @@ import {
   type AbandonRestartOutcome,
   type AbandonRestartRequest,
   describeExhaustedRoute,
-  exhaustedEscalationDedupKey,
   exhaustedEscalationRoute,
   requeueLabelName,
 } from "./conflict_abandon_restart.ts";
+import {
+  abandonAndRebuildMilestone,
+  describeMilestoneRebuild,
+  type MilestoneRebuildOutcome,
+  type MilestoneRebuilt,
+} from "./conflict_milestone_rebuild.ts";
 import {
   clearMergeConflictLabel,
   DEFAULT_MAX_DISRUPTED_ATTEMPTS,
@@ -220,10 +229,8 @@ export interface MergeConflictProcessorDeps {
   maxRateLimitRetries?: number;
   /** Unique worker identity for the cross-host PR lock. */
   workerId?: string;
-  /** Attempts allowed before escalating (default {@link CONFLICT_RESOLUTION_BUDGET}). */
+  /** Attempts allowed before the PR goes to abandon-and-redo (default 3, shared across passes). */
   maxAttempts?: number;
-  /** Label applied on escalation. Defaults to `needs-human`. */
-  needsHumanLabel?: string;
   /** Per-repo config, used to resolve the pre-flight push gate. */
   repoConfigs?: Record<string, RepoConfig>;
   /** Override the prompts directory (tests). */
@@ -251,19 +258,28 @@ export interface MergeConflictProcessorDeps {
   gatherIssueContextFn?: typeof gatherConflictIssueContext;
   /**
    * Injectable abandon-and-restart rung (Issue #1115) — what the final
-   * concluded failure tries before a human. Defaults to
+   * concluded failure tries once the attempt budget is spent. Defaults to
    * {@link abandonAndRestart}.
    */
   abandonRestartFn?: (
     request: AbandonRestartRequest,
   ) => Promise<AbandonRestartOutcome>;
   /**
+   * Injectable milestone-redo rung (Issue #3035) — the route the abandon
+   * rung takes for a `milestone/**` head instead of {@link abandonRestartFn}.
+   * Defaults to {@link abandonAndRebuildMilestone}.
+   */
+  milestoneRebuildFn?: (
+    request: AbandonRestartRequest,
+  ) => Promise<MilestoneRebuildOutcome>;
+  /**
    * Fleet logins whose marker comments count (Issue #1247), passed through to
    * the abandon rung.
    *
    * Left empty, a restart claim on the originating issue cannot be
-   * attributed, so the rung declines and the conflict rests at `needs-human`
-   * naming that route — loud and non-destructive, never a silent close.
+   * attributed, so the rung declines and the conflict rests at this head,
+   * recorded on the PR — loud and non-destructive, never a silent close and
+   * never a human asked (Issue #3032).
    */
   trustedAuthors?: readonly string[];
   /**
@@ -293,13 +309,26 @@ export interface MergeConflictProcessorDeps {
    * footer fallback (Issue #3089). Omitted → falls back to `GITHUB_USER`.
    */
   githubUser?: string;
+  /**
+   * The two resolvers the conflict takeover needs for a `milestone/**` head
+   * (Issue #3031). Production binds them in `run_core_production_deps.ts`.
+   * Absent on a milestone head is a configuration error, reported loudly.
+   */
+  takeoverResolvers?: Pick<
+    ConflictTakeoverDeps,
+    "resolveViaLadder" | "resolveOnFixBranch"
+  >;
+  /** The takeover run. Defaults to {@link runConflictTakeover}; tests inject it. */
+  takeoverFn?: (
+    pr: ConflictTakeoverPr,
+    deps: ConflictTakeoverDeps,
+  ) => Promise<ConflictTakeoverOutcome>;
+  /**
+   * Handler deadline, handed to the takeover so a cycle that cannot cover an
+   * agent run declines with no marker (Issue #3031).
+   */
+  deadlineEpochMs?: number;
 }
-
-/** What the human must do when the worker gives up on a conflict. */
-export const CONFLICT_ESCALATION_NEXT_STEP =
-  "Merge the base branch into the PR branch by hand, keeping both sides' " +
-  "changes, run the repo's quality gate on the result, and push. Remove the " +
-  "`needs-human` label once the PR is mergeable again.";
 
 // ---------------------------------------------------------------------------
 // Git helpers
@@ -646,8 +675,9 @@ function buildStageTimingSection(timings?: string): string[] {
  *
  * This is the conclusion that turns an opened attempt into a spent one. Its
  * absence is what makes a disrupted attempt detectable on a later scan, so it
- * must be posted for every judged failure — including the last one, which
- * also escalates.
+ * must be posted for every judged failure — including the last one, which is
+ * also what the attempt budget is counted against when it goes to
+ * abandon-and-redo (Issue #3032).
  */
 export function buildFailedComment(
   attemptNumber: number,
@@ -778,32 +808,6 @@ export function buildRungFailedComment(
   ].join("\n");
 }
 
-/** Escalation reason naming what was tried and what is still conflicted. */
-export function buildConflictEscalationReason(
-  input: MergeConflictInput,
-  conflictedFiles: readonly string[],
-  failureDetail: string,
-  maxAttempts: number,
-): string {
-  const files = conflictedFiles.length > 0
-    ? conflictedFiles.map((f) => `- \`${f}\``).join("\n")
-    : "- (git reported no unmerged paths)";
-  return [
-    `The worker has spent its ${maxAttempts} merge-conflict attempts on ` +
-    `PR #${input.prNumber} without producing a mergeable branch, so it has ` +
-    "stopped rather than retrying.",
-    "",
-    `Merging \`${input.baseBranch}\` into \`${input.branchName}\` conflicted in:`,
-    "",
-    files,
-    "",
-    `Last failure: ${failureDetail}`,
-    "",
-    "The branch was left exactly as its author pushed it — the worker never " +
-    "side-picks a conflict (Issue #4373), so no change has been lost.",
-  ].join("\n");
-}
-
 /**
  * The comment id GitHub's own URL names, or `null` when it names none.
  *
@@ -925,33 +929,13 @@ export async function processMergeConflict(
     attemptCount: input.attemptCount,
   });
 
-  // Issue #1772: a `milestone/**` head belongs to the every-cycle milestone
-  // branch sync, which owns `default -> milestone/*` merges and already lands
-  // them through a sync PR when a ruleset refuses the direct push (#589).
-  // Running the ladder here too would duplicate that merge on the same branch
-  // and race its push — so stand down whether or not a rule is in force
-  // (#1679 stood down only on the gated case). Before the lock, the lock
-  // comment and the heartbeat, so the PR churns nothing on every run, and
-  // before the attempt marker below, so no attempt is spent.
-  if (
-    await standDownMilestoneHead({
-      repo,
-      prNumber,
-      branchName: input.branchName,
-      logger,
-      runGhCommand: processorDeps.deps.github.runGhCommand,
-    })
-  ) {
-    return {
-      ok: true,
-      value: {
-        processed: false,
-        merged: false,
-        escalated: false,
-        summary: `PR #${prNumber} head '${input.branchName}' is a milestone ` +
-          `branch — left to the milestone branch sync, no attempt spent`,
-      },
-    };
+  // Issue #3031: a `milestone/**` head is resolved through the conflict
+  // takeover in this same cycle — a `milestone-fix/**` PR into the milestone
+  // branch, or the open one reused — never a stand-down. The takeover takes
+  // the cross-host lock and spends from the shared budget itself, so it runs
+  // before this pass's own lock, heartbeat and attempt marker.
+  if (isMilestoneHead(input.branchName)) {
+    return await takeOverMilestoneConflict(input, processorDeps);
   }
 
   let lockCommentId: number | undefined;
@@ -1063,6 +1047,244 @@ export async function processMergeConflict(
       await releaseLock({ repo, prNumber, lockCommentId });
     }
   }
+}
+
+/**
+ * Resolve a conflicted `milestone/**` PR through the conflict takeover
+ * (Issue #3031).
+ *
+ * The takeover opens at most one `milestone-fix/**` PR per milestone PR — an
+ * open one is reused — stands down only while another host holds a live PR
+ * lock, and records a failed run as one failed attempt against
+ * {@link CONFLICT_RESOLUTION_BUDGET}. No stand-down comment is posted.
+ */
+async function takeOverMilestoneConflict(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber } = input;
+  const { logger, workerId } = processorDeps;
+  const gh = processorDeps.deps.github.runGhCommand;
+  const resolvers = processorDeps.takeoverResolvers;
+  if (resolvers === undefined) {
+    return {
+      ok: false,
+      error: new Error(
+        `processMergeConflict: ${repo}#${prNumber} has a milestone head ` +
+          `'${input.branchName}' but no takeoverResolvers were injected — ` +
+          "refusing to silently skip the milestone-fix takeover",
+      ),
+    };
+  }
+
+  const summary = (text: string): string =>
+    `PR #${prNumber} milestone head '${input.branchName}': ${text}`;
+
+  let outcome: ConflictTakeoverOutcome;
+  try {
+    const view = JSON.parse(
+      await gh([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "headRefOid",
+      ]),
+    ) as { headRefOid?: unknown };
+    if (typeof view.headRefOid !== "string") {
+      throw new Error("`gh pr view` returned no head sha");
+    }
+    const takeover = processorDeps.takeoverFn ?? runConflictTakeover;
+    outcome = await takeover(
+      {
+        repo,
+        number: prNumber,
+        headRefName: input.branchName,
+        baseRefName: input.baseBranch,
+        headSha: view.headRefOid,
+      },
+      {
+        gh,
+        trustedAuthors: [...(processorDeps.trustedAuthors ?? [])],
+        logger,
+        ...resolvers,
+        ...(workerId !== undefined ? { workerId } : {}),
+        ...(processorDeps.acquireLockFn
+          ? { acquireLockFn: processorDeps.acquireLockFn }
+          : {}),
+        ...(processorDeps.releaseLockFn
+          ? { releaseLockFn: processorDeps.releaseLockFn }
+          : {}),
+        ...(processorDeps.startLockRenewalFn
+          ? { startLockRenewalFn: processorDeps.startLockRenewalFn }
+          : {}),
+        ...(processorDeps.deadlineEpochMs !== undefined
+          ? { deadlineEpochMs: processorDeps.deadlineEpochMs }
+          : {}),
+        // The same injected clock the stage timings read (Issue #3036), so
+        // the takeover's due-ness check and this pass agree on "now".
+        ...(processorDeps.nowMsFn !== undefined
+          ? { nowMs: processorDeps.nowMsFn() }
+          : {}),
+      },
+    );
+  } catch (error) {
+    return {
+      ok: false,
+      error: new Error(
+        `Milestone-fix takeover failed for ${repo}#${prNumber}: ` +
+          (error instanceof Error ? error.message : String(error)),
+        { cause: error },
+      ),
+    };
+  }
+
+  const notRun = (text: string): Result<MergeConflictResult> => ({
+    ok: true,
+    value: {
+      processed: false,
+      merged: false,
+      escalated: false,
+      summary: summary(text),
+    },
+  });
+
+  switch (outcome.kind) {
+    case "lock-held": {
+      const age = outcome.lockAgeSeconds !== undefined
+        ? `${outcome.lockAgeSeconds}s`
+        : "unknown";
+      logger.info(
+        `Milestone-fix takeover skipped for PR #${prNumber}: host ` +
+          `${outcome.holder} holds a live lock (lock age ${age})`,
+        {
+          repo,
+          prNumber,
+          lockHolder: outcome.holder,
+          ...(outcome.lockAgeSeconds !== undefined
+            ? { lockAgeSeconds: outcome.lockAgeSeconds }
+            : {}),
+        },
+      );
+      recordConflictDecision(logger, {
+        repo,
+        prNumber,
+        outcome: "skipped",
+        reason: { kind: "lock-held", lockHolder: outcome.holder },
+      });
+      return notRun(`locked by ${outcome.holder} (lock age ${age})`);
+    }
+    case "fix-pr-reused":
+      return notRun(
+        `open fix PR #${outcome.fixPr.number} reused — no second fix PR opened`,
+      );
+    case "declined-budget":
+      // Issue #3036: a spent budget is where the milestone redo starts. The
+      // branch is rebuilt from its base tip with its merged sub-PRs replayed;
+      // this pass is the one with a clone to do it in.
+      return await rebuildSpentMilestone(input, processorDeps, summary);
+    case "declined-time":
+      return notRun("the cycle's time left cannot cover a takeover agent");
+    case "no-longer-due":
+      return notRun("the attempt tally changed under the lock — not due");
+    case "fix-pr-raised":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          summary: summary(`fix PR ${outcome.fixPr.url} raised`),
+        },
+      };
+    case "resolved":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: true,
+          escalated: false,
+          summary: summary("resolved by the takeover"),
+        },
+      };
+    case "failed":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          summary: summary(`takeover failed — ${outcome.detail}`),
+        },
+      };
+    case "disrupted":
+      return {
+        ok: true,
+        value: {
+          processed: true,
+          merged: false,
+          escalated: false,
+          summary: summary(`takeover cut short — ${outcome.detail}`),
+          attemptCharged: false,
+          runEnded: true,
+        },
+      };
+    default:
+      return assertNever(outcome);
+  }
+}
+
+/**
+ * Rebuild a `milestone/**` head whose shared budget is spent (Issue #3036).
+ *
+ * The milestone's abandon-and-redo: {@link runAbandonRestart} routes a
+ * milestone head to {@link abandonAndRebuildMilestone}, which never closes the
+ * milestone PR. A failed rebuild is reported and left for the next pass — no
+ * human is asked (Issue #3032).
+ */
+async function rebuildSpentMilestone(
+  input: MergeConflictInput,
+  processorDeps: MergeConflictProcessorDeps,
+  summary: (text: string) => string,
+): Promise<Result<MergeConflictResult>> {
+  const { repo, prNumber } = input;
+  const { logger } = processorDeps;
+  const rebuild = await runAbandonRestart(input, processorDeps);
+  if (rebuild.outcome === "milestone-rebuilt") {
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        rung: "abandon",
+        summary: summary(
+          `shared budget spent — ${describeMilestoneRebuild(rebuild)}`,
+        ),
+      },
+    };
+  }
+  const detail = rebuild.outcome === "failed"
+    ? `failed at ${rebuild.step}: ${rebuild.message}`
+    : `ended ${rebuild.outcome}`;
+  logger.warn(
+    `Milestone rebuild for PR #${prNumber} ${detail} — left for the next pass`,
+    { repo, prNumber },
+  );
+  return {
+    ok: true,
+    value: {
+      processed: true,
+      merged: false,
+      escalated: false,
+      attemptCharged: false,
+      rung: "abandon",
+      summary: summary(`shared budget spent — milestone rebuild ${detail}`),
+    },
+  };
 }
 
 /**
@@ -1197,20 +1419,24 @@ async function resolveConflict(
   // shallow clone whose tips have diverged fails with "refusing to merge
   // unrelated histories" — GitHub can see the ancestor; the clone cannot.
   // Deepen until the merge base is present (a no-op on a full clone) BEFORE
-  // the attempt is opened, so a clone problem never spends an attempt. A
-  // branch with no common ancestor even in full history is a human's
-  // problem — a re-initialised or rewritten branch — not a conflict the
-  // agent failed to resolve.
+  // the attempt is opened, so a clone problem does not open an attempt that
+  // then has to be withdrawn. A branch with no common ancestor even in full
+  // history — a re-initialised or rewritten branch — is not a conflict the
+  // agent failed to resolve, but it is still recorded as a failed attempt
+  // (Issue #3032): retried, then abandoned-and-redone once the budget is
+  // spent, never escalated to a human.
   const depth = await ensureHistoryDepth([`origin/${baseBranch}`, "HEAD"], {
     cwd: workDir,
     gitRunner: run,
   });
   timer.stop();
   if (!depth.ok) {
-    return await escalateNoCommonAncestor(
+    return await failNoCommonAncestor(
       input,
       processorDeps,
       depth.error.message,
+      attemptNumber,
+      timer,
     );
   }
 
@@ -1339,17 +1565,14 @@ async function resolveConflict(
       // deepen step, name the refusal for what it is rather than spend an
       // attempt on a generic "did not conflict but failed".
       if (/refusing to merge unrelated histories/i.test(merge.stderr)) {
-        await deleteAttemptMarker(
-          deps,
-          repo,
-          attemptCommentId,
-          logger,
-          "no common ancestor even in full history (Issue #1458)",
-        );
-        return await escalateNoCommonAncestor(
+        // The attempt marker opened above stays — this failure concludes it,
+        // rather than withdrawing it (Issue #3032).
+        return await failNoCommonAncestor(
           input,
           processorDeps,
           merge.stderr.trim(),
+          attemptNumber,
+          timer,
         );
       }
       return await failAttempt(
@@ -2064,20 +2287,45 @@ async function runNudgeRung(
 }
 
 /**
- * Run the abandon-and-restart rung, through its injected seam or for real.
+ * Run the abandon rung, through its injected seam or for real.
  *
  * One call site's shape for both callers of it — the spent attempt budget
  * (Issue #1115) and the exhausted stale-verdict ladder (Issue #2280) — so the
- * two can never drift into asking the rung for different things.
+ * two can never drift into asking the rung for different things. Both callers
+ * reach here only after the 3-failed-attempts guard (or the stale-verdict
+ * ladder's own climb) has already passed — this function does not re-check it.
+ *
+ * A `milestone/**` head takes a different route (Issue #3035): the unit that
+ * needs redoing is the whole collection branch, not one issue, so this calls
+ * {@link abandonAndRebuildMilestone} instead of the single-issue rung. Every
+ * other head keeps the existing {@link abandonAndRestart} path exactly.
  *
  * No thread is passed: the rung fetches its own, and fails loud if it cannot.
  * "No failure comment survives" must never be published because a read failed.
  */
-function runAbandonRestart(
+export function runAbandonRestart(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
-): Promise<AbandonRestartOutcome> {
+): Promise<AbandonRestartOutcome | MilestoneRebuilt> {
   const { logger, deps } = processorDeps;
+
+  if (isMilestoneHead(input.branchName)) {
+    const milestoneRung = processorDeps.milestoneRebuildFn ??
+      ((request: AbandonRestartRequest) =>
+        abandonAndRebuildMilestone(request, {
+          gh: deps.github.runGhCommand,
+          git: (args: string[]) =>
+            git(deps.git.runGitCommand, args, processorDeps.workDir),
+          logger,
+        }));
+    return milestoneRung({
+      repo: input.repo,
+      prNumber: input.prNumber,
+      branchName: input.branchName,
+      baseBranch: input.baseBranch,
+    });
+  }
+
   const rung = processorDeps.abandonRestartFn ??
     ((request: AbandonRestartRequest) =>
       abandonAndRestart(request, {
@@ -2105,11 +2353,11 @@ function runAbandonRestart(
  * (Issue #2277).
  *
  * **No route here applies `needs-human`**, to the PR or to its issue. The
- * budget-spent caller still escalates on a declined abandon, because there the
- * PR has failed every real merge the shared budget allows and has nowhere
- * left to go. Here nothing has been spent and nothing is broken — the
- * verdict is merely stale — so a
- * declined or failed rung records itself and stops at this head. The stall
+ * budget-spent caller leaves the PR open on a declined or failed abandon too
+ * (Issue #3032) — there the PR has failed two real merges and has nowhere
+ * left to go, but still no human is asked. Here nothing has been spent and
+ * nothing is broken — the verdict is merely stale — so a declined or failed
+ * rung records itself and stops at this head. The stall
  * watchdog (`merge_conflict_stall_watchdog.ts`, Issue #569) is the backstop,
  * and a later head or base move restarts the ladder at a real merge attempt.
  */
@@ -2122,6 +2370,41 @@ async function runAbandonRung(
   const { logger, deps } = processorDeps;
 
   const abandon = await runAbandonRestart(input, processorDeps);
+
+  if (abandon.outcome === "milestone-rebuilt") {
+    const requeuedText = abandon.requeued.length === 0
+      ? "none"
+      : abandon.requeued.map((r) => `#${r.issueNumber}`).join(", ");
+    logger.info(
+      `GitHub's merge verdict stayed stale through the whole ladder on ` +
+        `PR #${prNumber} — rebuilt the ${abandon.milestoneBranch} milestone ` +
+        `branch from ${abandon.baseBranch} instead of abandoning a single ` +
+        "issue",
+      {
+        repo,
+        prNumber,
+        branchName,
+        currentHead,
+        milestoneBranch: abandon.milestoneBranch,
+        requeued: requeuedText,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        attemptCharged: false,
+        rung: "abandon",
+        summary: `PR #${prNumber}: GitHub's merge verdict stayed stale ` +
+          `through the whole ladder — rebuilt ${abandon.milestoneBranch} ` +
+          `from ${abandon.baseBranch} and replayed ` +
+          `${abandon.replayed.length} sub-PR(s); re-queued sub-issue(s) ` +
+          `${requeuedText}, no attempt spent`,
+      },
+    };
+  }
 
   if (abandon.outcome === "abandoned") {
     const label = requeueLabelName(abandon.label);
@@ -2299,15 +2582,21 @@ async function deleteAttemptMarker(
 
 /**
  * The branch and its base share no common ancestor even in full history
- * (Issue #1458). That is not a conflict the agent failed to resolve, so no
- * attempt is spent: the PR is handed to a human with the ancestry named.
+ * (Issue #1458) — a re-initialised branch, a force-pushed rewrite, or a clone
+ * the worker cannot repair. That is not a conflict the agent failed to
+ * resolve, but Issue #3032 forbids escalating it to a human too: it is
+ * recorded as a failed attempt instead, so it is retried and, once the
+ * attempt budget is spent, handed to abandon-and-redo like any other
+ * exhausted conflict.
  */
-async function escalateNoCommonAncestor(
+async function failNoCommonAncestor(
   input: MergeConflictInput,
   processorDeps: MergeConflictProcessorDeps,
   detail: string,
+  attemptNumber: number,
+  timer: ConflictStageTimer,
 ): Promise<Result<MergeConflictResult>> {
-  const { logger, deps } = processorDeps;
+  const { logger } = processorDeps;
   const { repo, prNumber, branchName, baseBranch } = input;
 
   logger.warn(
@@ -2315,55 +2604,33 @@ async function escalateNoCommonAncestor(
     { repo, prNumber, branchName, baseBranch, detail },
   );
 
-  const escalation = await escalateToHuman({
-    ghClient: createGhEscalationClient(deps.github.runGhCommand),
-    repo,
-    target: { kind: "pr", number: prNumber },
-    needsHumanLabel: processorDeps.needsHumanLabel ?? "needs-human",
-    heading: "Merge conflict needs human attention",
-    reason: [
-      `\`${branchName}\` and \`origin/${baseBranch}\` share **no common ` +
-      `ancestor**, even after the worker fetched full history ` +
-      `(\`git fetch --unshallow\`). The branch does not descend from the ` +
-      `base — a re-initialised branch, a force-pushed rewrite, or a clone ` +
-      `the worker cannot repair — so there is no merge for the resolver to ` +
-      `attempt (Issue #1458).`,
-      "",
-      `git said: \`${detail.split("\n")[0]?.trim() ?? detail}\``,
-      "",
-      "No resolution attempt was spent on this.",
-    ].join("\n"),
-    nextStep: `Check the ancestry (\`git merge-base origin/${baseBranch} ` +
-      `${branchName}\`). Rebase or recreate the branch from ` +
-      `\`origin/${baseBranch}\`, then remove \`needs-human\` and ` +
-      `\`merge-conflict\` so the resolver can try again.`,
-    dedupKey: `merge-conflict-no-common-ancestor-${prNumber}`,
-    ensureLabelColour: "d4c5f9",
-    ensureLabelDescription:
-      "Worker could not produce a fix; human review required",
-    deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+  const headSha = await readHeadSha(
+    processorDeps.deps.git.runGitCommand,
+    processorDeps.workDir,
     logger,
-  });
-  if (!escalation.ok) {
+    repo,
+  );
+  if (headSha === null) {
     return {
       ok: false,
       error: new Error(
-        `Failed to escalate the missing common ancestor on PR #${prNumber}: ${escalation.error.message}`,
+        `Cannot record the no-common-ancestor failure for PR #${prNumber}: ` +
+          "the current head SHA could not be read",
       ),
     };
   }
 
-  return {
-    ok: true,
-    value: {
-      processed: true,
-      merged: false,
-      escalated: true,
-      summary: `PR #${prNumber}: no common ancestor between '${branchName}' ` +
-        `and 'origin/${baseBranch}' even in full history — escalated to a ` +
-        `human, no attempt spent (Issue #1458)`,
-    },
-  };
+  return await failAttempt(
+    input,
+    processorDeps,
+    [],
+    `no-common-ancestor: '${branchName}' and 'origin/${baseBranch}' share ` +
+      `no common ancestor even in full history (Issue #1458); git said: ` +
+      `${detail.split("\n")[0]?.trim() ?? detail}`,
+    attemptNumber,
+    timer,
+    headSha,
+  );
 }
 
 /**
@@ -2518,12 +2785,15 @@ async function withdrawCutShortAttempt(
 }
 
 /**
- * Record a failed attempt, escalating to a human when the budget is spent.
+ * Record a failed attempt, running abandon-and-redo when the budget is spent.
  *
  * The failure is always posted on the PR (Issue #395): it is the conclusion
  * that spends this attempt, and without it the attempt is indistinguishable
  * from one a dying worker abandoned. The branch is left exactly as its author
- * pushed it — the caller has already aborted any in-progress merge.
+ * pushed it — the caller has already aborted any in-progress merge. No path
+ * through here ever labels the PR `needs-human` (Issue #3032) — a spent
+ * budget goes to {@link runAbandonRestart}, and a declined or failed abandon
+ * leaves the PR open rather than escalating it.
  */
 async function failAttempt(
   input: MergeConflictInput,
@@ -2592,9 +2862,40 @@ async function failAttempt(
 
   // Issue #1115: a human is not the next rung any more. The budget is spent,
   // so the branch has defeated two real merges — usually cheaper to redo than
-  // to reconcile, and redoing it needs nobody. Only when that is declined or
-  // fails does the escalation below run, and it then says which route it took.
+  // to reconcile, and redoing it needs nobody. A declined or failed abandon
+  // still ends without a person: the branches below leave the PR open and
+  // unlabelled and log which route was taken.
   const abandon = await runAbandonRestart(input, processorDeps);
+
+  if (abandon.outcome === "milestone-rebuilt") {
+    const requeuedText = abandon.requeued.length === 0
+      ? "none"
+      : abandon.requeued.map((r) => `#${r.issueNumber}`).join(", ");
+    logger.info(
+      `Merge-conflict attempts exhausted on PR #${prNumber} — rebuilt the ` +
+        `${abandon.milestoneBranch} milestone branch from ` +
+        `${abandon.baseBranch} instead of abandoning a single issue`,
+      {
+        repo,
+        prNumber,
+        milestoneBranch: abandon.milestoneBranch,
+        requeued: requeuedText,
+        maxAttempts,
+      },
+    );
+    return {
+      ok: true,
+      value: {
+        processed: true,
+        merged: false,
+        escalated: false,
+        summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
+          `rebuilt ${abandon.milestoneBranch} from ${abandon.baseBranch} ` +
+          `and replayed ${abandon.replayed.length} sub-PR(s); re-queued ` +
+          `sub-issue(s) ${requeuedText}`,
+      },
+    };
+  }
 
   if (abandon.outcome === "abandoned") {
     // Issue #2277: the issue keeps the pickup label it already carried, or
@@ -2618,21 +2919,21 @@ async function failAttempt(
     };
   }
 
-  // Issue #2312: a spent *restart* budget is not a human's problem either. The
-  // issue has had its restarts, so this PR is parked on `merge-conflict` — and
-  // the scan owns that parking, because it is the pass that reads the base tip
-  // and offers the PR again when it moves. Escalating here would put
-  // `needs-human` on a PR the scan is still working, and that label is a
-  // cross-subsystem veto: it would remove the PR from the very lane that
-  // clears it.
+  // Issue #3033: the rung declines `already-restarted` only when a restart
+  // claim on the issue names *this* PR — an earlier abandon of it started and
+  // did not finish, and closing it twice is not a retry. Nobody is asked and
+  // nothing is parked: the PR is left open and unlabelled, the scan's own
+  // budget-spent WARN names the route on its next pass, and the stall
+  // watchdog (Issue #569) is the backstop for a claim nobody ever reads back.
   if (
     abandon.outcome === "declined" &&
     abandon.reason.kind === "already-restarted"
   ) {
     logger.warn(
-      `Merge-conflict attempts exhausted on PR #${prNumber} and issue ` +
-        `#${abandon.reason.issueNumber} has spent its restarts — left open ` +
-        "for the scan to park, no human asked",
+      `Merge-conflict attempts exhausted on PR #${prNumber} and a restart ` +
+        `claim on issue #${abandon.reason.issueNumber} names this PR — an ` +
+        "earlier abandon of it did not finish, so it is left open, no human " +
+        "asked",
       {
         repo,
         prNumber,
@@ -2649,55 +2950,42 @@ async function failAttempt(
         merged: false,
         escalated: false,
         summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
-          `issue #${abandon.reason.issueNumber} has spent its restarts, so ` +
-          "the PR is left open to be parked on `merge-conflict` until its " +
-          "base moves",
+          `a restart claim on issue #${abandon.reason.issueNumber} names ` +
+          "this PR, so it is left open and the scan's budget-spent WARN " +
+          "names the route",
       },
     };
   }
 
+  // Issue #3032: a declined or failed abandon still never escalates to a
+  // human. The budget is spent and abandon-and-redo did not run, so the PR
+  // is left exactly where it is — open, unlabelled — and the scan's own
+  // retry/park logic picks it up again. Loud in the log, since nothing is
+  // posted to the PR naming this outcome.
   const route = exhaustedEscalationRoute(abandon);
-  const escalation = await escalateToHuman({
-    ghClient: createGhEscalationClient(deps.github.runGhCommand),
-    repo,
-    target: { kind: "pr", number: prNumber },
-    needsHumanLabel: processorDeps.needsHumanLabel ?? "needs-human",
-    heading: "Merge conflict needs human attention",
-    reason: [
-      buildConflictEscalationReason(
-        input,
-        conflictedFiles,
-        failureDetail,
-        maxAttempts,
-      ),
-      "",
-      ...describeExhaustedRoute(route),
-    ].join("\n"),
-    nextStep: CONFLICT_ESCALATION_NEXT_STEP,
-    dedupKey: exhaustedEscalationDedupKey(prNumber, route),
-    ensureLabelColour: "d4c5f9",
-    ensureLabelDescription:
-      "Worker could not produce a fix; human review required",
-    deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
-    logger,
-  });
-  if (!escalation.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to escalate the merge conflict on PR #${prNumber}: ${escalation.error.message}`,
-      ),
-    };
-  }
+  logger.warn(
+    `Merge-conflict attempts exhausted on PR #${prNumber} and ` +
+      `abandon-and-redo did not run (${route.kind}) — left open, no label ` +
+      "added and no human asked",
+    {
+      repo,
+      prNumber,
+      maxAttempts,
+      failureDetail,
+      route: route.kind,
+      reason: describeExhaustedRoute(route).join(" "),
+    },
+  );
 
   return {
     ok: true,
     value: {
       processed: true,
       merged: false,
-      escalated: true,
-      summary:
-        `Merge-conflict attempts exhausted on PR #${prNumber} — escalated to a human`,
+      escalated: false,
+      summary: `Merge-conflict attempts exhausted on PR #${prNumber} — ` +
+        `abandon-and-redo did not run (${route.kind}) — left open, no label ` +
+        "added and no human asked",
     },
   };
 }

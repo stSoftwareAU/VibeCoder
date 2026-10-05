@@ -26,6 +26,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { neutraliseCommentDelimiters } from "./agent_marker_neutralisation.ts";
 import {
   ALERT_DEDUP_JSON_FIELDS,
   type AlertDedupRow,
@@ -217,10 +218,7 @@ export function formatRunFailureExcerpt(message: string): string {
   // public issue body, and the failure message quotes the agent's own output.
   const bounded = redactedTail(chosen, CI_FAILURE_EXCERPT_BYTES);
   // Never let the excerpt carry a marker of ours or close the fence.
-  return bounded.replace(/<!--/g, "<!- -").replace(/-->/g, "- ->").replace(
-    /```/g,
-    "'''",
-  );
+  return neutraliseCommentDelimiters(bounded).replace(/```/g, "'''");
 }
 
 /** Title for a class; stable so a human can find it, dedup never uses it. */

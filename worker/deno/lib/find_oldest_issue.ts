@@ -703,6 +703,17 @@ export async function findOldestIssue(
   if (selected) {
     diag.logFinalSelection(selected.repo, selected.number, selected.source);
 
+    // Issue #3034: a merge-conflict redo is the next pickup in its repo —
+    // say so once so the reorder is auditable without ISSUE_FINDER_DEBUG.
+    if (selected.conflictRedo) {
+      diag.logConflictRedoSelection({
+        repo: selected.repo,
+        number: selected.number,
+        source: selected.source,
+        restartedAt: selected.conflictRedo.restartedAt,
+      });
+    }
+
     // Issue #2009: when close-out lifted a leftover over a candidate that
     // would have opened a new stream, say so once so the choice is
     // auditable. A configured-label winner is never a close-out lift.

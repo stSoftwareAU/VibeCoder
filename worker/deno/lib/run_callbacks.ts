@@ -373,12 +373,19 @@ export type SessionLogAbsentReason =
   | "write_failed"
   | "file_missing";
 
-/** Why a scan cycle ended, for the per-cycle heartbeat (Issue #1955). */
+/**
+ * Why a scan cycle ended, for the per-cycle heartbeat (Issue #1955).
+ *
+ * `host_fault` (Issue #3179) is the container's own filesystem going
+ * read-only or I/O-faulted: the run ends for a fresh container, and the cause
+ * is the host, not an issue or a provider.
+ */
 export type CycleEndReason =
   | "no_eligible_work"
   | "quota_paused"
   | "rate_limited"
   | "shutdown"
+  | "host_fault"
   | "error";
 
 /**

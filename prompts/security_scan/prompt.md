@@ -230,8 +230,11 @@ Inventory the codebase and record:
 - **Prior sweep records** — what an earlier bounded sweep already
   covered, so this run does not re-declare a recorded tree unaudited.
   Look for `docs/audits/security-sweep-*.md`, a sweep coverage ledger
-  (in this repository `docs/audits/lib-sweep-coverage.json`, which maps
-  each module to the record that swept it; elsewhere whatever file the
+  (in this repository `docs/audits/lib-sweep-coverage.json` plus one
+  `docs/audits/lib-sweep-coverage/top-up-<issue>.json` per top-up slice,
+  which map each module to the record that swept it; a new top-up slice
+  is a new file there, never an entry appended to the JSON file;
+  elsewhere whatever file the
   repo keeps its swept-module list in), and closed
   `security-scan-overflow` issues
   (`gh issue list --label security-scan-overflow --state closed`). For

@@ -10,7 +10,7 @@
  * Australian English spelling throughout (behaviour, defence, authorised).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   checkWorkerCredentials,
   cleanupWaitSeconds,
@@ -37,6 +37,7 @@ import {
 } from "../lib/quota_pause.ts";
 import { CONTAINER_IMAGE_STAMP_ENV } from "../lib/container_stamp.ts";
 import { TOOLCHAIN_SELFCHECK_EXIT_STATUS } from "../lib/toolchain_selfcheck.ts";
+import { ROOT_FS_FAULT_EXIT_STATUS } from "../lib/root_filesystem_fault.ts";
 
 /** Recording harness capturing the order and arguments of every seam. */
 interface Recorder {
@@ -235,6 +236,36 @@ Deno.test("runWorker - an out-of-quota run exits on its own status and declares 
     "quota-pause",
     "cleanup",
   ]);
+});
+
+Deno.test("runWorker - a root-filesystem fault exits on its own status, not as a crash (Issue #3179)", async () => {
+  const rec = newRecorder();
+  const result = await runWorker(
+    baseOptions(),
+    stubDeps(rec, {
+      runMainLoop: () => {
+        rec.calls.push("loop");
+        return Promise.resolve({
+          // The loop ended through its planned-shutdown path, so the core
+          // reports success; the fault must still win over "completed".
+          success: true,
+          message: "Run complete: Root filesystem fault",
+          rootFilesystemFault: {
+            path: "/tmp",
+            detail: "Read-only file system (os error 30)",
+          },
+        });
+      },
+    }),
+  );
+
+  assertEquals(result.outcome, "root-fs-fault");
+  assertEquals(result.exitCode, ROOT_FS_FAULT_EXIT_STATUS);
+  assertStringIncludes(result.reason, "/tmp");
+  assertStringIncludes(result.reason, "Read-only file system");
+  // Not a quota pause, and cleanup still runs.
+  assertEquals(rec.quotaPause, undefined);
+  assertEquals(rec.calls.at(-1), "cleanup");
 });
 
 Deno.test("runWorker - a run that was not out of quota declares nothing", async () => {

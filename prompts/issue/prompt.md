@@ -156,7 +156,10 @@ guessing — the analysis-only hand-off then routes it to a human.
    test and name, for each, the issue requirement that makes it untrue,
    recording it in the PR summary's Test Plan. An assertion removed without
    one is a blocking self-review finding — restore it, or move it to a test
-   that still covers the behaviour and say where.
+   that still covers the behaviour and say where. The worker checks this: a
+   summary with no `## Test Plan` heading when the diff touches a test, or a
+   Test Plan that does not name each removed assertion as it appears in the
+   diff, blocks the PR.
 3. Update the documentation in the same change. A change that **adds, changes
    or removes** behaviour, a field, a UI element or a setting owes a docs
    change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
@@ -172,6 +175,23 @@ guessing — the analysis-only hand-off then routes it to a human.
    change; read that section through and fix every sentence the change makes
    false. A grep hit is cleared only after reading the sentence it is in,
    never by the file's topic.
+   Grep **source files** too, not only the manuals: for each name you
+   removed or whose behaviour you changed, and for the shared constants,
+   types and helpers the changed code defines or calls. Read every doc
+   comment and module doc a hit lands in — a constant's definition, a
+   reader's safety argument, a helper's list of callers — and fix any
+   sentence the change makes false, including in a file the diff does not
+   otherwise touch.
+   Grep for the **stem** of a behavioural claim, not one inflection
+   (`replac\w* or remov\w*`, not "replaces or removes"). In every file you
+   list as updated, read every passage that mentions the changed surface,
+   not only the section you edited. Then re-run every grep **on the final
+   head, after editing**, and record each hit you leave in place in the
+   Docs sweep line as `file:line — still true because …`. The worker
+   re-runs the line's quoted terms over the head's docs itself, and over
+   the comment lines of its source files: a hit outside the lines your diff
+   changed that the line does not name as `file:line` blocks the PR the
+   same way a missing line does.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is
@@ -201,8 +221,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    rewritten; a change that moves a cost (a download, a retry, a push, a
    fallback) says where the cost now lands; and a sentence about history
    ("before this fix, X skipped Y") is checked against the base-branch code
-   (see **Prose about the PR's own change** in `CODING-STANDARDS.md`). Before
-   adding or changing a rule in
+   (see **Prose about the PR's own change** in `CODING-STANDARDS.md`).
+   Behaviour another issue delivers — a sibling sub-issue, a milestone's
+   planned issue, a follow-up — is not described as present: name it only as
+   planned ("not yet: #N will …"), and only while #N is open. Before writing
+   a sentence that names or depends on another issue, run `gh issue view N`
+   and grep the head for its deliverable (the binary, script, workflow step
+   or check); when that code is not at the head, the sentence describes what
+   ships today, not the plan. When the issue's plan says a sibling will do
+   X, grep the docs the diff touches for that sibling's `#N`: each
+   present-tense hit is backed by head code or reworded as planned (see
+   **Behaviour another issue delivers is not described as present** in
+   `CODING-STANDARDS.md`). Before adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and
@@ -332,8 +362,9 @@ apply:
   defer; the worker hands the issue to a human and raises no PR. If there is
   no such issue, this is not a deferral: fix the root cause, or use the
   escape hatch while the branch has no commits. Do not file a follow-up and
-  depend on it. After a commit, a `Depends on` line that names the follow-up
-  this run filed hands the issue to a human and raises no PR. A bare
+  depend on it: a `Depends on` line that names the follow-up this run filed
+  hands the issue to a human instead of deferring, whether or not the
+  branch has commits. A bare
   `## Blocked:` heading
   does not defer, and the worker would raise a PR that closes this issue.
 
@@ -587,6 +618,10 @@ reviewer its path.
   one `violation` entry per such departure, with the `file:line` it saw, and the
   `clean` areas it checked and found compliant. Anything else it notices is
   `optional`: note it on the `clean` line if you like, and do not chase it.
+  Ask it also to list every assertion the diff removes from an existing test
+  and say, for each, whether an issue requirement makes it untrue — returning
+  a `violation` (with the `file:line` it saw) for any removed assertion that
+  has none.
 
 **Never merge or rerank the two.** The Spec verdicts populate the
 `## Acceptance Criteria` block; the Standards findings go under their own
@@ -608,7 +643,7 @@ the summary says who judged it:
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: <fixed here, or why it stands>
+- **violation** — <standard breached> — evidence: `lib/foo.ts:42` — reason: fixed in this diff
 - **clean** — <the areas the reviewer checked and found compliant>
 ```
 
@@ -632,8 +667,15 @@ the summary says who judged it:
   `reason:` line is the record, and it is what a human reads. Reaching for
   `unrequested` because the reviewer was unclear is the one wrong answer — say
   `missing` and explain, so the doubt is visible rather than dismissed.
-- **Every `violation` names evidence and a reason** — the `file:line`, and
-  whether you fixed it in this diff or why it stands.
+- **Every `violation` names evidence and one of two reasons** — the
+  `file:line`, then `reason: fixed in this diff`, or, only for a breach the
+  Standards reviewer saw in unchanged context already on the base branch,
+  `reason: pre-existing, filed #<n>` linking the follow-up issue you filed.
+  A breach in a line this diff adds or changes may not be deferred: "stands",
+  "left for a follow-up" and "out of scope" are not reasons, and the gate
+  blocks PR creation on any reason that neither records a fix nor links an
+  issue. Fleet review reads your Standards Review, and an admitted breach in
+  your own lines sends the PR straight back.
 - **Never fabricate a verdict.** If a reviewer sub-agent genuinely cannot be
   dispatched, quote the exact error in your final message and stop. Writing the
   marker for a review you did not run is the over-claim this gate exists to
@@ -649,9 +691,9 @@ broken.
 the gate.** A doc comment the change made wrong, a test the summary cites that
 exists neither in the diff nor at the head, a standard breached in a line this
 PR wrote: fix it in this diff before you raise the PR, never list it as
-standing. Only a departure that predates the diff, or one the issue itself
-requires, may stand, and its
-`reason:` says which.
+standing. Only a departure that predates the diff may stand, and its `reason:`
+links the follow-up issue you filed for it (`pre-existing, filed #<n>`); one
+the issue itself requires names that issue (`required by #<n>`).
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
@@ -700,14 +742,25 @@ one is broken:
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
 
-Two more rules no gate parses — a reviewer sends the PR back for either:
+One more rule no gate parses — a reviewer sends the PR back for it:
 
 - **Demonstrate a criterion; do not assert it.** A test named as evidence must
   exist in the diff (or at the head) and must have been run on the final head;
   a coverage claim — "every branch", "all rejections" — names the branches its
   tests exercise, and one untested branch makes it `partial`.
+
+The worker enforces the next rule itself, because a PR into a milestone branch
+merges on green CI with no reviewer:
+
 - **A missing core deliverable is not a PR.** When the thing the issue asks for
-  is `missing`, finish it. A free-text escape hatch is honoured only while
+  is `missing`, finish it. Any `missing` entry in your `## Acceptance Criteria`
+  block means the PR does not close the issue: the worker rewrites
+  `Closes #{{ISSUE_NUMBER}}` to `Part of #{{ISSUE_NUMBER}}`, adds a
+  `## Not closing #{{ISSUE_NUMBER}}` section naming the missing criteria, and,
+  when the PR merges, leaves the issue open, labels it `needs-human` and
+  comments naming what is missing (Issue #3177). Never relabel a `missing`
+  criterion `partial` or `met` to avoid this; the Spec reviewer's verdict
+  records the departure. A free-text escape hatch is honoured only while
   the branch has no commits and no uncommitted changes — the worker's change
   detection (`worker/deno/lib/phases/execute_phase.ts`) sends the run onward
   when `git log <base>..HEAD` lists any commit (including one a later revert
@@ -717,7 +770,7 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   a planning marker is still read after that commit: the worker defers or
   hands off and raises no PR (the suspicious-image flag is the exception: it
   always stops the run, committed work or not). A bare `## Blocked:` heading
-  does not defer. Otherwise the PR body gets
+  does not defer. Otherwise, when no criterion is `missing`, the PR body gets
   `Closes #{{ISSUE_NUMBER}}` appended automatically if your summary omits it.
   When the core deliverable is genuinely blocked on another open issue and
   work is already committed, end with a `## Blocked:` heading followed by a
@@ -727,8 +780,8 @@ Two more rules no gate parses — a reviewer sends the PR back for either:
   not that dependency: depending on it after a commit hands the issue to a
   human and raises no PR. The worker defers and raises
   no PR when the dependency is open.
-  When a lesser criterion stays `partial` or `missing`, the Summary names it
-  beside the closing keyword instead of describing the issue as resolved.
+  When a lesser criterion stays `partial`, the Summary names it beside the
+  closing keyword instead of describing the issue as resolved.
 
 ## Reproduction Status — Say How Far You Actually Reproduced the Bug
 
@@ -845,7 +898,17 @@ When creating the PR, include evidence based on the type of change:
   ran and the part of the output the code depends on, or cites the tool's
   documentation or source when the case cannot be observed safely. A fake
   built from the behaviour you expected rather than the behaviour you
-  observed is a blocking self-review finding.
+  observed is a blocking self-review finding. When the change relies on a
+  property of one of the repository's own ports — a broker, database or
+  store client with a production implementation — and its tests run on an
+  in-repo fake, read the production implementation first and confirm it has
+  that property: which rows a read returns, its filter, ordering or paging,
+  the value types a write accepts, or whether a conditional write can lose
+  (see **A fake mirrors the production implementation it stands in for** in
+  the guidelines). The PR summary's Evidence names the production
+  implementation each load-bearing fake stands in for and the property
+  relied on. A change whose only proof is a fake more permissive than its
+  production implementation is a blocking self-review finding.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
@@ -932,6 +995,17 @@ rewrite it, never append to it:
   diff does not carry, or a change the body describes differently from how the
   diff makes it — is a blocking self-review finding. Fix the summary (or the
   diff) before raising the PR.
+- Check where the diff inserts. For every function, item, test or paragraph
+  it adds, read the lines directly above and below each insertion point: a new
+  item goes above an existing doc comment, never between a doc comment,
+  attribute or decorator and its item, and a following sentence that points
+  back ("above", "both paragraphs above", "this", "as described earlier")
+  still points at what it meant — if not, move the insertion after it or
+  reword the sentence to name its subject. Read the first and last context
+  lines of every hunk that adds a block; that is where these breaks appear,
+  and the docs sweep misses them because the sentence made wrong is not one
+  the diff adds or edits (see **Check where you insert** in
+  `CODING-STANDARDS.md`).
 
 The file MUST contain:
 
@@ -956,7 +1030,7 @@ The file MUST contain:
    - For bug fixes/CLI changes: Reference the tests that verify the fix
    - Always: a one-line **Docs sweep** — the grep terms you searched, the
      manual section you found and checked, and the doc files you updated, or
-     `no hits` — e.g. **Docs sweep** — grep: `retryLimit`, "Retrying in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`
+     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -982,34 +1056,68 @@ The file MUST contain:
    a result. If a gate was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
-   under Evidence must exist at the head — in the diff or already tracked;
-   check each path with `git ls-files <path>` before raising the PR. A
+   under Evidence must exist at the head — in the diff or already tracked —
+   named relative to the repository root, not to the directory a test
+   command runs from; check each path with `git ls-files <path>` from the
+   repository root before raising the PR. A
    named-but-absent test is a blocking self-review finding: add the test or
    drop the claim, and never commit a code anchor or comment that references a
    test that does not exist. For every existing test the diff edits, list each
    assertion it removes with the issue requirement that makes it untrue; an
    assertion removed with no such requirement is a blocking self-review
    finding — restore it, or move it to a test that still covers the behaviour
-   and name that test. Every new test added to guard a change (a fix, a new
-   guard, a new rule) counts only once you have seen it go red with only its
-   change removed (see **A new test must go red without its change** in the
+   and name that test. Copy each removed assertion as it appears in the diff —
+   the worker matches it there — and include a `## Test Plan` heading whenever
+   the diff touches a test; it is required. The worker counts as removed a
+   multi-line assertion with any line changed, and an assertion re-added under
+   a new condition, loop or callback, into a skipped or ignored test, or after
+   a new early `return`. Every new test added to guard a
+   change (a fix, a new guard, a new rule) counts only once you have seen it go
+   red with only its change removed (see **A new test must go red without its
+   change** in the
    guidelines); one that stays green without its change is a blocking
-   self-review finding. A test that only pins current behaviour, because the
+   self-review finding. For a documentation-drift test that check is per
+   pinned phrase, not per test: look for each phrase in the base branch's
+   version of the section the test reads (`git show <base>:<doc>`, narrowed
+   to the same section title; in the Vibe Coder repository, `deno task
+   drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
+   `worker/deno` does this), and record here that each pinned phrase is
+   absent from the base section; a phrase the base section already held is a
+   blocking self-review finding. A test that only pins current behaviour, because the
    fault was unreproduced or already fixed and no production change was made,
    is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard
    broken on purpose (see **A negative test must be able to fail** in the
    guidelines); one that stays green without its guard is a blocking
-   self-review finding. Likewise, each call site the diff changes needs a
-   test that goes red when only that caller's change is reverted (see
-   **Every changed call site needs a test that goes red without it** in the
-   guidelines); a changed call site whose revert leaves the suite green is a
-   blocking self-review finding. Likewise, every outcome of a branch the diff
-   adds — each new condition, match arm, exit code and interface default —
+   self-review finding. Likewise, a refusal test — one expecting an input
+   to be refused, rejected or answered with `false` or an error — counts
+   only once it asserts the specific error variant or rule and the same
+   input with only the probed value made legal is accepted (see **A
+   refusal test must be refused by the rule it names** in the
+   guidelines); when the diff adds a refusal that runs before an existing
+   one, re-run the existing tests that expect the later refusal, and one
+   that now stops earlier is a blocking self-review finding.
+   Likewise, each call site or entry point the diff changes — a single CLI
+   command, route, scheduled job or UI control's handler included — needs a
+   test that goes red when only that caller's change is reverted (see **Every
+   changed call site needs a test that goes red without it** in the
+   guidelines); for a UI control that test invokes the handler, the Test Plan
+   lists each entry point checked, and a changed call site whose revert leaves
+   the suite green is a blocking self-review finding. Likewise, every
+   outcome of a branch the diff adds — each new condition, match arm, exit
+   code and interface default —
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. Likewise, a path the diff adds to an outcome
+   blocking self-review finding. The Test Plan carries this enumeration as a
+   `Branch outcomes:` list — one line per outcome naming `path:line`, the
+   outcome, the test that reaches it, and that flipping it went red — or
+   `Branch outcomes: none added` when the diff adds no branch. When the diff
+   changes non-test, non-doc files, the worker blocks PR creation without
+   that line: it asks for it once more if this is the run's first summary
+   block, or records the shortfall against a PR the run already raised. A
+   named test that does not exist at the head is the same blocking finding as
+   above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
    call that finalises a PR, publishes state, charges an attempt or ends a
    claim — keeps that path's guards (see **A new path to an existing outcome
@@ -1017,7 +1125,17 @@ The file MUST contain:
    excluded with its reason, and a kept guard counts only once a named test
    reaches the new path with the guard's trigger holding and goes red when
    the new branch is moved ahead of the guard; a new path that skips a guard
-   with no stated reason is a blocking self-review finding. Likewise, code
+   with no stated reason is a blocking self-review finding. Likewise, a
+   branch, guard, capture or hand-off the diff adds below existing early
+   exits must be reachable by the input it exists for (see **A new branch
+   must be reachable by the input it exists for** in the guidelines): list
+   each exit above the insertion point and what fires it, move the new
+   branch above any exit a realistic input for its case can fire first (or
+   state why that exit must win — a real infrastructure signal, never a
+   wording guess), and name a test whose realistic input also trips each
+   earlier exit the new branch now precedes and goes red when the branch is
+   moved back below it; a new branch that a realistic input for its own
+   case cannot reach is a blocking self-review finding. Likewise, code
    the diff adds that deletes or replaces state — an `rm -rf`, a clone or
    `.git` swap, a `git reset --hard` or `git clean -fdx` — proves everything
    it destroys is safe to lose (see **Code that deletes or replaces state
@@ -1099,4 +1217,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Test Plan
 
 - Added tests for button alignment in `tests/button.test.js`
+
+**Branch outcomes:**
+
+- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `tests/button.test.js::keeps the buttons in one row` — flipping `flex-wrap: nowrap` back to `wrap` turned it red
 ```

@@ -57,6 +57,7 @@ function bashSupervisor(...extraLines: string[]): string {
     "export VIBE_SUPERVISOR_RECORDS_OUTCOME=1",
     "readonly QUOTA_PAUSE_EXIT=75",
     "readonly ANOTHER_WORKER_RUNNING_EXIT=4",
+    "readonly ROOT_FS_FAULT_EXIT=74",
     'LOG_DIR="$(deno run --frozen --lock=deno.lock mod.ts log-dir)"',
     'trap "on_signal SIGTERM" SIGTERM',
     "while true; do",
@@ -67,6 +68,7 @@ function bashSupervisor(...extraLines: string[]): string {
     '  container exec "${name}" true || container kill "${name}"',
     '  [[ "${status}" -eq "${QUOTA_PAUSE_EXIT}" ]] && echo paused >&2',
     '  [[ "${status}" -eq "${ANOTHER_WORKER_RUNNING_EXIT}" ]] && echo busy',
+    '  [[ "${status}" -eq "${ROOT_FS_FAULT_EXIT}" ]] && echo relaunch',
     "  deno run --frozen --lock=deno.lock --allow-sys=hostname mod.ts",
     '    container-restart-backoff --launch-log "${LAUNCH_LOG}"',
     "  git pull",
@@ -85,6 +87,7 @@ function powershellSupervisor(...extraLines: string[]): string {
     '$env:VIBE_SUPERVISOR_RECORDS_OUTCOME = "1"',
     "$QuotaPauseExit = 75",
     "$AnotherWorkerRunningExit = 4",
+    "$RootFsFaultExit = 74",
     '$LogDir = & deno run "--frozen" "--lock=deno.lock" $WorkerMod "log-dir"',
     "while ($true) {",
     '    Get-ChildItem -Filter "launch-*.log" | Remove-Item',
@@ -92,6 +95,7 @@ function powershellSupervisor(...extraLines: string[]): string {
     '    & "$ScriptDir/run.ps1"',
     "    if ($status -eq $QuotaPauseExit) { }",
     "    if ($status -eq $AnotherWorkerRunningExit) { }",
+    "    if ($status -eq $RootFsFaultExit) { }",
     '    [Console]::Error.WriteLine("falling back")',
     '    & deno run "--frozen" "--lock=deno.lock" "--allow-sys=hostname"',
     '        $WorkerMod "container-restart-backoff" "--launch-log" $LaunchLog',
@@ -137,7 +141,11 @@ Deno.test("extractSupervisorContract - reads what a bash supervisor does", () =>
     freezesLockfile: true,
     honoursSleepOverride: true,
     reportsOnStderr: true,
-    distinguishedExitStatuses: ["another-worker-running", "quota-pause"],
+    distinguishedExitStatuses: [
+      "another-worker-running",
+      "quota-pause",
+      "root-fs-fault",
+    ],
     boundsRunDuration: true,
     reapsOrphans: true,
     probesControlPlane: true,
@@ -161,7 +169,11 @@ Deno.test("extractSupervisorContract - reads what a PowerShell supervisor does",
     freezesLockfile: true,
     honoursSleepOverride: true,
     reportsOnStderr: true,
-    distinguishedExitStatuses: ["another-worker-running", "quota-pause"],
+    distinguishedExitStatuses: [
+      "another-worker-running",
+      "quota-pause",
+      "root-fs-fault",
+    ],
     // The three the named exceptions cover.
     boundsRunDuration: false,
     reapsOrphans: false,
@@ -245,7 +257,9 @@ Deno.test("supervisorContractFaults - names every capability a bare loop is miss
 
   // Every fault the module can report except the two conditional ones, which
   // need a capability this supervisor does not have.
-  assertEquals(faults.length, 13, faults.join("\n"));
+  // One per shared exit status among them, so the root-fs-fault status of
+  // Issue #3179 is the fourteenth.
+  assertEquals(faults.length, 14, faults.join("\n"));
   for (
     const expected of [
       "container-restart-backoff",

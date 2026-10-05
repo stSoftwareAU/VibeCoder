@@ -56,6 +56,7 @@ import {
 } from "./issue_query.ts";
 import type { ClosedPR, OpenPR } from "./issue_query.ts";
 import type { IssueCandidate } from "./issue_priority.ts";
+import { classifyConflictRedo } from "./conflict_redo_candidate.ts";
 import { extractMilestonePriority } from "./milestone_priority.ts";
 import type { IssueFetcher } from "./issue_dependencies.ts";
 import {
@@ -434,6 +435,16 @@ export async function collectIdleTaskCandidates(
     }
 
     diag?.logIssueEligible(repo, issue.number);
+    // Issue #3034: a merge-conflict redo is the next pickup in its repo.
+    const conflictRedo = await classifyConflictRedo({
+      repo,
+      issue,
+      openPRs: repoPRs,
+      closedPRs: repoClosedPRs,
+      trustedAuthors: pushCapableAuthors,
+      ghFn,
+      cache: options.cache,
+    });
     candidates.push({
       repo,
       number: issue.number,
@@ -444,6 +455,7 @@ export async function collectIdleTaskCandidates(
       labelIndex: IDLE_TASK_LABEL_INDEX,
       source: "idle-task",
       milestonePriority: extractMilestonePriority(issue.labels),
+      ...(conflictRedo ? { conflictRedo } : {}),
     });
   }
 

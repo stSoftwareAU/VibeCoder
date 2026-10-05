@@ -24,12 +24,13 @@
  *
  * The container's own writable layer is **ephemeral** — its host allocation
  * (`containers/<id>`, 11–12 GB mid-cycle) is released at every relaunch — so
- * churn placed there costs nothing across cycles. When the launcher reports
- * `workVolumeTrimRefused` (host-disk.json, Issue #2077), the worker points
- * `CARGO_TARGET_DIR` at {@link EPHEMERAL_CARGO_TARGET_ROOT} on that layer for
- * every subprocess it runs against a checkout: the agent, the repository's
- * own quality gate, the milestone merge gate and the milestone resolution
- * gate. The persistent volume then keeps only clones, worktrees and state,
+ * churn placed there costs nothing across cycles. Within a cycle it is real
+ * host disk, which `heavy_build_gate.ts` bounds (Issue #3178). When the
+ * launcher reports `workVolumeTrimRefused` (host-disk.json, Issue #2077), the
+ * worker points `CARGO_TARGET_DIR` at {@link EPHEMERAL_CARGO_TARGET_ROOT} on
+ * that layer for every subprocess it runs against a checkout: the agent, the
+ * repository's own quality gate, the milestone merge gate and the milestone
+ * resolution gate. The persistent volume then keeps only clones, worktrees and state,
  * and the `Work volume:` telemetry's "build artefacts" figure reads 0.
  *
  * Three properties matter and are pinned by tests:
@@ -110,9 +111,14 @@ export interface CargoTargetDirOptions {
    * The container runs repository-supplied commands as a second unprivileged
    * account (`agent`, Issue #571), and a directory one account creates is not
    * writable by the other — cargo would fail outright the first time the two
-   * met in one directory. Each account therefore gets its own; the ephemeral
-   * layer is a 504 GB image released at every relaunch, so the duplication
-   * costs nothing that survives the cycle.
+   * met in one directory. Each account therefore gets its own. The ephemeral
+   * layer is released at every relaunch, so the duplication costs nothing
+   * that survives the cycle — but **within** a launch every byte written there
+   * is real host disk, backed by a sparse image the host must still have room
+   * for. That cost is bounded by the heavy-build gate (`heavy_build_gate.ts`,
+   * Issue #3178): no maintenance build below the host floor, a budget of
+   * floor plus headroom before a build starts, and a pass's target dirs
+   * released when it ends.
    */
   account?: string;
 }

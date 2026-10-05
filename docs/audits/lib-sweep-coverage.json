@@ -195,6 +195,8 @@
         "worker/deno/lib/config.ts",
         "worker/deno/lib/conflict_abandon_restart.ts",
         "worker/deno/lib/conflict_issue_context.ts",
+        "worker/deno/lib/conflict_redo_branch.ts",
+        "worker/deno/lib/conflict_redo_candidate.ts",
         "worker/deno/lib/container_extension_config.ts",
         "worker/deno/lib/container_image_prune.ts",
         "worker/deno/lib/container_manifest.ts",
@@ -991,18 +993,6 @@
         "worker/deno/lib/prompt_security_normalisation.ts"
       ],
       "sweptAt": "bc8002acde20d8766551f542ee262c08ac3a5c05"
-    },
-    {
-      "issue": 1846,
-      "chunk": "top-up-1846",
-      "title": "top-up: bot-authored PR lookup",
-      "ledger": "docs/audits/security-sweep-1846-pr-bot-lookup.md",
-      "definition": "modules added to worker/deno/lib/ after 12a-12m recorded their coverage: pr_bot_lookup.ts (#1846)",
-      "status": "swept",
-      "paths": [
-        "worker/deno/lib/pr_bot_lookup.ts"
-      ],
-      "sweptAt": "9395461966809ac1a5c7223dcf80b4e7cc1c324f"
     },
     {
       "issue": 1885,
@@ -2489,6 +2479,18 @@
       ]
     },
     {
+      "issue": 3035,
+      "chunk": "top-up-3035",
+      "title": "top-up: the milestone-redo rebuild module",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3035",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: conflict_milestone_rebuild.ts (#3035)",
+      "status": "claimed",
+      "sweptAt": "3a566abe0938798bf4996ebe8a6a183f51a20d51",
+      "paths": [
+        "worker/deno/lib/conflict_milestone_rebuild.ts"
+      ]
+    },
+    {
       "issue": 3073,
       "chunk": "top-up-3073",
       "title": "top-up: the docs-sweep manual gate",
@@ -2535,6 +2537,91 @@
       "sweptAt": "521483190dca4eb2de4976ee494be7f1a7d0e6b1",
       "paths": [
         "worker/deno/lib/closure_criterion_match.ts"
+      ]
+    },
+    {
+      "issue": 3178,
+      "chunk": "top-up-3178",
+      "title": "top-up: the host-disk gate on heavy builds",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3178",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: heavy_build_gate.ts (#3178)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/heavy_build_gate.ts"
+      ]
+    },
+    {
+      "issue": 3172,
+      "chunk": "top-up-3172",
+      "title": "top-up: the docs-sweep term re-run at the head",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3172",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: docs_sweep_hits.ts (#3172)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/docs_sweep_hits.ts"
+      ]
+    },
+    {
+      "issue": 3147,
+      "chunk": "top-up-3147",
+      "title": "top-up: the branch-outcomes summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3147",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: branch_outcomes_gate.ts (#3147)",
+      "status": "claimed",
+      "sweptAt": "0310f44ea7c6b41f00b90574e315afa40361b844",
+      "paths": [
+        "worker/deno/lib/branch_outcomes_gate.ts"
+      ]
+    },
+    {
+      "issue": 3143,
+      "chunk": "top-up-3143",
+      "title": "top-up: the review-fix drift and Test Plan recount checks",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3143",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_feedback_drift_check.ts, test_plan_recount.ts (#3143)",
+      "status": "claimed",
+      "sweptAt": "b169ace6d5399b89708d8b9b1815cce59bf402cc",
+      "paths": [
+        "worker/deno/lib/pr_feedback_drift_check.ts",
+        "worker/deno/lib/test_plan_recount.ts"
+      ]
+    },
+    {
+      "issue": 3131,
+      "chunk": "top-up-3131",
+      "title": "top-up: the removed-test-assertion summary gate",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3131",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: removed_assertion_gate.ts (#3131)",
+      "status": "claimed",
+      "sweptAt": "2559e3bfa65e8cbc65289259ecea5e129a35e028",
+      "paths": [
+        "worker/deno/lib/removed_assertion_gate.ts"
+      ]
+    },
+    {
+      "issue": 3177,
+      "chunk": "top-up-3177",
+      "title": "top-up: the missing-criterion close guard",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3177",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: missing_criterion_close_guard.ts (#3177)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/missing_criterion_close_guard.ts"
+      ]
+    },
+    {
+      "issue": 3179,
+      "chunk": "top-up-3179",
+      "title": "top-up: the container root-filesystem fault probe",
+      "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3179",
+      "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: root_filesystem_fault.ts (#3179)",
+      "status": "claimed",
+      "sweptAt": "a2588a442a6de08cd3385a0ec4ea2a6bcc635584",
+      "paths": [
+        "worker/deno/lib/root_filesystem_fault.ts"
       ]
     }
   ],

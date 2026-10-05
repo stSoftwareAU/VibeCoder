@@ -185,6 +185,10 @@ import {
   type GraphqlQuotaReading,
   graphqlSpendBetween,
 } from "./graphql_quota_probe.ts";
+import {
+  formatRootFilesystemFault,
+  type RootFilesystemFault,
+} from "./root_filesystem_fault.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -399,6 +403,13 @@ export interface RunCoreResult {
    */
   quotaResetEpochMs?: number;
   /**
+   * Issue #3179: the container's root filesystem (its scratch or a state
+   * volume) stopped being writable, so the run ended at the top of the cycle
+   * for the launcher to start a fresh container. A host fault — never an
+   * issue or provider failure. Absent on every other exit.
+   */
+  rootFilesystemFault?: RootFilesystemFault;
+  /**
    * Issue #2602: whether the most recent health checks (Claude + GitHub auth)
    * passed. Reported on the loop result so the caller can tell a healthy
    * exit from an unhealthy one — a worker that could not authenticate must
@@ -568,9 +579,15 @@ export interface RunCoreDeps {
   checkFeatureAvailability: () => Promise<void>;
 
   // Health checks
+  /**
+   * Agent health probe. An unhealthy value carries the probe's `message` so
+   * the skip-cycle line can say why (Issue #3180).
+   */
   checkClaudeHealth: (
     provider?: AgentProviderSelector,
-  ) => Promise<Result<{ healthy: boolean; exitCode?: number }>>;
+  ) => Promise<
+    Result<{ healthy: boolean; exitCode?: number; message?: string }>
+  >;
   /**
    * Fresh (uncached) agent auth re-probe for the mid-cycle auth-outage
    * breaker (Issue #4167). The cycle-start health gate passed, but a
@@ -1313,6 +1330,14 @@ export interface RunCoreDeps {
    * nothing new; the launcher repairs or recreates it next launch.
    */
   checkWorkVolumeFault?: () => { faulted: boolean; detail: string };
+  /**
+   * Container root-filesystem probe (Issue #3179), run at the top of every
+   * cycle: `/tmp`, `/var/tmp`, `TMPDIR` and the state volumes must accept a
+   * write, and no mount may be `emergency_ro`. A fault ends the run — a
+   * read-only root cannot recover inside the launch. Optional so test deps
+   * can omit it.
+   */
+  checkRootFilesystem?: () => Promise<RootFilesystemFault | null>;
   /**
    * Standing work-volume totals by category (Issue #244), logged at cycle
    * start beside the `Concurrency:` line and again at end of run. Returns
@@ -5503,6 +5528,27 @@ function activeProviderIdOrUndefined(): string | undefined {
 }
 
 /**
+ * Describe why a health probe failed, for the line that reports it
+ * (Issue #3180). A failed `Result` yields its error; an unhealthy value its
+ * message, or its exit code when the probe gave no message. Without this the
+ * operator saw only "health check failed — skipping cycle" and had to read
+ * `dmesg` to learn the root filesystem had gone read-only.
+ *
+ * @param health - The probe's result
+ * @returns A one-line reason, never empty
+ */
+export function describeHealthCheckFailure(
+  health: Result<{ healthy: boolean; exitCode?: number; message?: string }>,
+): string {
+  if (!health.ok) return health.error.message || String(health.error);
+  const message = health.value.message?.trim();
+  if (message) return message;
+  return health.value.exitCode === undefined
+    ? "no reason reported"
+    : `exit ${health.value.exitCode}, no reason reported`;
+}
+
+/**
  * Probe the configured fallback providers in order for a healthy one
  * (Issue #2055).
  *
@@ -5527,7 +5573,8 @@ async function probeHealthGateFallback(
     const probe = await deps.checkClaudeHealth(id);
     if (probe.ok && probe.value.healthy) return id;
     deps.logError(
-      `[provider-fallback] alternative ${id} is not healthy — ` +
+      `[provider-fallback] alternative ${id} is not healthy ` +
+        `(${describeHealthCheckFailure(probe)}) — ` +
         `trying the next configured alternative (Issue #2055)`,
     );
   }
@@ -5635,6 +5682,8 @@ export async function runCoreLoop(
   let quotaPaused = false;
   /** Reset the quota pause was waiting on, in Unix seconds (Issue #342). */
   let quotaResetEpochSeconds = 0;
+  /** Set when the root filesystem stopped being writable (Issue #3179). */
+  let rootFilesystemFault: RootFilesystemFault | null = null;
   /**
    * Why the fleet was idle this cycle (Issue #855). Set from the idle
    * census when the scan claimed nothing, and used to attribute the
@@ -5804,6 +5853,7 @@ export async function runCoreLoop(
       ...(quotaPaused && quotaResetEpochSeconds > 0
         ? { quotaResetEpochMs: quotaResetEpochSeconds * 1000 }
         : {}),
+      ...(rootFilesystemFault ? { rootFilesystemFault } : {}),
       lastHealthCheckPassed,
     };
   }
@@ -6032,6 +6082,23 @@ export async function runCoreLoop(
 
           // Touch PID file for proof of life
           await deps.touchPidFile();
+
+          // --- Root filesystem (Issue #3179) ---
+          // First, before anything that needs to write: a read-only or
+          // I/O-faulted root otherwise surfaces as a failed provider health
+          // check every cycle until the launch cap, and nothing inside this
+          // container can repair it. End the run under its own name and
+          // status so the launcher relaunches promptly into a fresh one.
+          if (deps.checkRootFilesystem) {
+            const fault = await deps.checkRootFilesystem();
+            if (fault) {
+              rootFilesystemFault = fault;
+              lastHealthCheckPassed = false;
+              deps.logError(formatRootFilesystemFault(fault));
+              await fireCycleCallback("host_fault");
+              break;
+            }
+          }
 
           // --- Trusted-author snapshot (Issue #253) ---
           // Fail-closed: a refresh failure skips every trust-dependent
@@ -6351,8 +6418,9 @@ export async function runCoreLoop(
                 const nowSec = Math.floor(deps.now() / 1000);
                 const resetEpoch = nowSec + remaining;
                 deps.logError(
-                  "Claude health check failed and no configured alternative " +
-                    "is healthy — pausing until the usage window reopens " +
+                  "Claude health check failed " +
+                    `(${describeHealthCheckFailure(claudeHealth)}) and no ` +
+                    "configured alternative is healthy — pausing until the usage window reopens " +
                     `${formatRateLimitReset(resetEpoch, nowSec)} rather than ` +
                     `re-probing every ${config.sleepInterval}s (Issue #2119)`,
                 );
@@ -6371,7 +6439,10 @@ export async function runCoreLoop(
                 }
                 continue;
               }
-              deps.logError("Claude health check failed — skipping cycle");
+              deps.logError(
+                "Claude health check failed — skipping cycle: " +
+                  describeHealthCheckFailure(claudeHealth),
+              );
               await deps.sleep(config.sleepInterval * 1000);
               continue;
             }
@@ -7063,7 +7134,9 @@ export async function runCoreLoop(
     deps.log("Run duration complete. Exiting for refresh.");
 
     return buildResult(
-      exitedOnFailures
+      rootFilesystemFault
+        ? "Root filesystem fault"
+        : exitedOnFailures
         ? "Consecutive failure threshold reached"
         : spendCeilingReached
         ? "Daily spend ceiling reached"
