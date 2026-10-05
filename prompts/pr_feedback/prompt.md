@@ -69,7 +69,7 @@ branch-outcome enumeration (see **Every outcome of a branch you add needs a
 test that reaches it** in the guidelines) over every branch the fix commit
 itself adds — a new refusal arm, a parse-failure path, an unreadable-file
 path — not only the one the finding named. Refresh the summary's
-`REMOVED_FOR_TEST` list to the head rather than leaving the first round's
+`Branch outcomes:` list to the head rather than leaving the first round's
 entries standing; every test it names must exist at the head, as a path
 relative to the repository root — not to the directory a test command runs
 from (see **A named test must exist** in the guidelines).
