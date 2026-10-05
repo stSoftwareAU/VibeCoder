@@ -174,7 +174,11 @@ export const DRIFT_PINS_TASK = "drift-pins-on-base";
 
 /** What `pinsAlreadyOnBase` checks: one doc section at one base ref. */
 export interface BasePinCheck {
-  /** Repo-relative path of the doc, as `readRepoDoc` takes it. */
+  /**
+   * Path to the doc, relative to the repo root, with no ".." segment — it
+   * must exist as a real file in the working tree (Issue #3238); see
+   * `resolveRepoDoc`.
+   */
   doc: string;
   /** The same title the drift test passes to `section()`. */
   title: string;
@@ -183,7 +187,65 @@ export interface BasePinCheck {
   /** The base ref, e.g. `origin/main`. */
   baseRef: string;
   /** Repository to read from; defaults to this repo's root. */
-  repo?: string;
+  repo?: string | URL;
+}
+
+/** The absolute filesystem path a repo root (string or `file:` URL) names. */
+function repoRootPath(repo: string | URL): string {
+  const path = repo instanceof URL ? decodeURIComponent(repo.pathname) : repo;
+  return path.replace(/\/+$/, "");
+}
+
+/**
+ * Normalise `doc` to a repo-relative path and confirm it names a real file
+ * in `repo`'s working tree, with no ".." escape and no symlink on the way
+ * (Issue #3238). `git show <ref>:<path>` misses silently on an unresolvable
+ * path — the drift-pins check must never read that miss as "doc new on
+ * base", so the path is validated before git ever sees it.
+ */
+export async function resolveRepoDoc(
+  doc: string,
+  repo: string | URL = REPO_ROOT,
+): Promise<string> {
+  const segments = doc.split(/[/\\]/);
+  const escapesRoot = doc === "" ||
+    /^[/\\]/.test(doc) ||
+    /^[A-Za-z]:/.test(doc) ||
+    segments.includes("..");
+  if (escapesRoot) {
+    throw new Error(
+      `doc path "${doc}" must be relative to the repo root with no ".." ` +
+        `segments (e.g. prompts/issue/prompt.md)`,
+    );
+  }
+  const normalised = segments.filter((part) => part !== "" && part !== ".")
+    .join("/");
+  const root = repoRootPath(repo);
+  const joined = `${root}/${normalised}`;
+
+  let stat: Deno.FileInfo | undefined;
+  try {
+    stat = await Deno.stat(joined);
+  } catch {
+    stat = undefined;
+  }
+  if (!stat || !stat.isFile) {
+    throw new Error(
+      `doc "${doc}" not found in the working tree at ${joined} — ${doc} is ` +
+        `relative to the repo root`,
+    );
+  }
+
+  // git reads the base tree by path and does not follow working-tree
+  // symlinks, so a symlinked path would silently miss there too.
+  const realJoined = await Deno.realPath(joined);
+  const realRoot = await Deno.realPath(root);
+  if (realJoined !== `${realRoot}/${normalised}`) {
+    throw new Error(
+      `doc "${doc}" goes through a symlink (resolves to ${realJoined})`,
+    );
+  }
+  return normalised;
 }
 
 /** Run git in `cwd`, returning its exit code and stdout. */
@@ -202,12 +264,16 @@ async function runGit(
 
 /**
  * The pinned phrases already present in `doc`'s `title` section at
- * `baseRef` — each one is a vacuous pin. Throws when `baseRef` does not
- * resolve, so a mistyped ref cannot pass as "nothing on base".
+ * `baseRef` — each one is a vacuous pin. `undefined` means `baseRef` never
+ * had `doc` at all (a genuinely new doc holds no pins). Throws when
+ * `baseRef` does not resolve, when `doc` cannot be resolved to a real file
+ * in the working tree (Issue #3238 — a bad path must never be read as "doc
+ * new on base"), or when git fails to read a path `cat-file -e` just
+ * confirmed exists.
  */
 export async function pinsAlreadyOnBase(
   check: BasePinCheck,
-): Promise<string[]> {
+): Promise<string[] | undefined> {
   const repo = check.repo ?? REPO_ROOT;
   const ref = await runGit(
     ["rev-parse", "--verify", "--quiet", `${check.baseRef}^{commit}`],
@@ -216,29 +282,61 @@ export async function pinsAlreadyOnBase(
   if (ref.code !== 0) {
     throw new Error(`base ref "${check.baseRef}" does not resolve in ${repo}`);
   }
-  const shown = await runGit(["show", `${check.baseRef}:${check.doc}`], repo);
-  const markdown = shown.code === 0 ? shown.stdout : undefined;
-  return pinsAlreadyInSection(markdown, check.title, check.phrases);
+  const path = await resolveRepoDoc(check.doc, repo);
+  const exists = await runGit(
+    ["cat-file", "-e", `${check.baseRef}:${path}`],
+    repo,
+  );
+  if (exists.code !== 0) return undefined;
+  const shown = await runGit(["show", `${check.baseRef}:${path}`], repo);
+  if (shown.code !== 0) {
+    throw new Error(
+      `git show ${check.baseRef}:${path} failed in ${repo} even though ` +
+        `cat-file -e reported it present`,
+    );
+  }
+  return pinsAlreadyInSection(shown.stdout, check.title, check.phrases);
 }
 
 /**
  * Command line: `deno task drift-pins-on-base <base-ref> <doc> <section>
  * <phrase>...` prints each phrase with whether the base section already held
- * it, and exits 1 when any did — the per-phrase check, run rather than
- * eyeballed.
+ * it. `<doc>` is relative to the repo root (no ".." segments) and must exist
+ * in the working tree. Exit codes: `0` nothing vacuous (or the doc was never
+ * on `<base-ref>`, reported as a single `doc not on base: <doc>` line), `1`
+ * at least one phrase is already on base, `2` bad arguments, a base ref that
+ * does not resolve, or a `<doc>` that cannot be resolved — never read as
+ * "absent on base".
  */
-if (import.meta.main) {
-  const [baseRef, doc, title, ...phrases] = Deno.args;
+export async function driftPinsCli(
+  args: readonly string[],
+  out: (line: string) => void,
+  err: (line: string) => void,
+  repo?: string | URL,
+): Promise<number> {
+  const [baseRef, doc, title, ...phrases] = args;
   if (!baseRef || !doc || !title || phrases.length === 0) {
-    console.error(
-      `usage: ${DRIFT_PINS_TASK} <base-ref> <doc> <section> <phrase>...`,
-    );
-    Deno.exit(2);
+    err(`usage: ${DRIFT_PINS_TASK} <base-ref> <doc> <section> <phrase>...`);
+    return 2;
   }
-  const vacuous = await pinsAlreadyOnBase({ doc, title, phrases, baseRef });
+  let vacuous: string[] | undefined;
+  try {
+    vacuous = await pinsAlreadyOnBase({ doc, title, phrases, baseRef, repo });
+  } catch (error) {
+    err(`error: ${error instanceof Error ? error.message : String(error)}`);
+    return 2;
+  }
+  if (vacuous === undefined) {
+    out(`doc not on base: ${doc}`);
+    return 0;
+  }
   for (const phrase of phrases) {
     const held = vacuous.includes(phrase);
-    console.log(`${held ? "ALREADY ON BASE" : "absent on base"}: ${phrase}`);
+    out(`${held ? "ALREADY ON BASE" : "absent on base"}: ${phrase}`);
   }
-  if (vacuous.length > 0) Deno.exit(1);
+  return vacuous.length > 0 ? 1 : 0;
+}
+
+if (import.meta.main) {
+  Deno.exit(await driftPinsCli(Deno.args, console.log, console.error));
 }
