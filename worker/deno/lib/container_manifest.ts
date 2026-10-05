@@ -1183,9 +1183,11 @@ export function findBrowserInstallViolations(
  * `CHROMIUM_PATH` resolves to a working browser (Issue #3250).
  *
  * Agents' e2e scripts find the baked browser with
- * `executablePath: Deno.env.get("CHROMIUM_PATH")`; this step is the only
- * place CI proves that path is executable, that `chromium` on PATH agrees
- * with it, and that a real Playwright launch succeeds through it.
+ * `executablePath: Deno.env.get("CHROMIUM_PATH")`; this step proves, against
+ * the built image, that the path is executable, that `chromium` on PATH
+ * resolves to it, and that a real Playwright launch succeeds through it. The
+ * Containerfile's build-time smoke test (`findBrowserInstallViolations`)
+ * separately launches through it during the build.
  *
  * @param workflowYaml - Raw `.github/workflows/container-build.yml` text.
  * @returns Human-readable violations; empty when every check is present.
