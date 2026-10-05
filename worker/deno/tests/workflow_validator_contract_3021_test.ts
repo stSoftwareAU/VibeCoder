@@ -22,7 +22,12 @@ import {
   buildIssueReviewerAgents,
   STANDARDS_REVIEWER_AGENT_NAME,
 } from "../lib/issue_executor_agents.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -82,7 +87,7 @@ Deno.test("Issue #3021 - issue prompt's workflow-files section requires extendin
 
 Deno.test("Issue #3021 - the standards-reviewer sub-agent prompt flags a documented-but-not-validated workflow invariant", () => {
   const reviewer = buildIssueReviewerAgents()[STANDARDS_REVIEWER_AGENT_NAME]!;
-  const text = flat(reviewer.prompt);
+  const text = flatWholeFile(reviewer.prompt);
 
   for (
     const required of [

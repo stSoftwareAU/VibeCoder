@@ -22,7 +22,12 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
-import { flat, section, withoutSection } from "./support/markdown_docs.ts";
+import {
+  flat,
+  section,
+  splitSection,
+  withoutSection,
+} from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const HEADING = "Long-Horizon Runs";
@@ -38,7 +43,9 @@ async function guidelines(): Promise<string> {
 
 /** Top-level bullets of the Long-Horizon Runs section, single-spaced. */
 async function bullets(): Promise<string[]> {
-  return section(await guidelines(), HEADING).split("\n- ").map(flat);
+  return splitSection(section(await guidelines(), HEADING), "\n- ").map((p) =>
+    flat(p)
+  );
 }
 
 /** The bullet that governs automatic compaction. */

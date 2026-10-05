@@ -18,18 +18,22 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  type DocSection,
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const RULE_NAME = "A new branch must be reachable by the input it exists for";
 const PARAGRAPH_START = `**${RULE_NAME}.**`;
 
-function reachableParagraph(sectionText: string, what: string): string {
+function reachableParagraph(sectionText: DocSection, what: string): string {
   const start = sectionText.indexOf(PARAGRAPH_START);
   assert(start >= 0, `could not locate the reachable-branch rule in ${what}`);
   const end = sectionText.indexOf("\n\n", start);
-  const paragraph = end >= 0
-    ? sectionText.slice(start, end)
-    : sectionText.slice(start);
+  const paragraph = excerpt(sectionText, start, end >= 0 ? end : undefined);
   return flat(paragraph).trim();
 }
 

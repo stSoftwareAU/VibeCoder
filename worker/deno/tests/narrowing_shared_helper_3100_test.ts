@@ -13,17 +13,24 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  type DocSection,
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const PARAGRAPH_START = "**Narrowing a shared helper changes every caller.**";
 
-function narrowingHelperParagraph(sectionText: string, what: string): string {
+function narrowingHelperParagraph(
+  sectionText: DocSection,
+  what: string,
+): string {
   const start = sectionText.indexOf(PARAGRAPH_START);
   assert(start >= 0, `could not locate the narrowing-helper rule in ${what}`);
   const end = sectionText.indexOf("\n\n", start);
-  const paragraph = end >= 0
-    ? sectionText.slice(start, end)
-    : sectionText.slice(start);
+  const paragraph = excerpt(sectionText, start, end >= 0 ? end : undefined);
   return flat(paragraph).trim();
 }
 
