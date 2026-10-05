@@ -2515,6 +2515,51 @@ Deno.test("findChromiumPathVerifyViolations - reports a missing executablePath l
   );
 });
 
+/** Comments out `line` within the fixture rather than deleting it. */
+function commentOutLine(workflow: string, needle: string): string {
+  return workflow
+    .split("\n")
+    .map((line) => line.includes(needle) ? `          # ${line.trim()}` : line)
+    .join("\n");
+}
+
+Deno.test("findChromiumPathVerifyViolations - reports test -x commented out (Issue #3254 review)", () => {
+  const commented = commentOutLine(CHROMIUM_VERIFY_WORKFLOW, "test -x");
+  const violations = findChromiumPathVerifyViolations(commented);
+  assert(violations.some((v) => v.includes("test -x")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports command -v chromium check commented out (Issue #3254 review)", () => {
+  const commented = commentOutLine(
+    CHROMIUM_VERIFY_WORKFLOW,
+    "command -v chromium",
+  );
+  const violations = findChromiumPathVerifyViolations(commented);
+  assert(violations.some((v) => v.includes("command -v chromium")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports executablePath launch commented out (Issue #3254 review)", () => {
+  const commented = commentOutLine(
+    CHROMIUM_VERIFY_WORKFLOW,
+    "executablePath: process.env.CHROMIUM_PATH",
+  );
+  const violations = findChromiumPathVerifyViolations(commented);
+  assert(
+    violations.some((v) =>
+      v.includes("executablePath: process.env.CHROMIUM_PATH")
+    ),
+  );
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports a loosened test -x || true (Issue #3254 review)", () => {
+  const loosened = CHROMIUM_VERIFY_WORKFLOW.replace(
+    'test -x "${CHROMIUM_PATH}"',
+    'test -x "${CHROMIUM_PATH}" || true',
+  );
+  const violations = findChromiumPathVerifyViolations(loosened);
+  assert(violations.some((v) => v.includes("test -x")));
+});
+
 Deno.test("findChromiumPathVerifyViolations - reports a workflow without the verify step", () => {
   const withoutStep = CHROMIUM_VERIFY_WORKFLOW.split("\n")
     .filter((line) =>

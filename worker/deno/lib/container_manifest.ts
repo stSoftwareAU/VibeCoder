@@ -1218,9 +1218,16 @@ export function findChromiumPathVerifyViolations(
       break;
     }
   }
-  const step = lines.slice(startIndex, endIndex).join("\n");
+  // Issue #3254 review: a `#` line inside the step's `bash -c '...'` block is
+  // a bash comment, and a raw substring match over the whole step text (the
+  // prior approach) is satisfied by a commented-out check. Strip comments the
+  // same way findBrowserInstallViolations does before matching.
+  const codeLines = lines
+    .slice(startIndex, endIndex)
+    .map(codeOf)
+    .filter((line) => line !== "" && !line.startsWith("#"));
 
-  if (!step.includes('test -x "${CHROMIUM_PATH}"')) {
+  if (!checksWithoutShortCircuit(codeLines, 'test -x "${CHROMIUM_PATH}"')) {
     violations.push(
       "container-build.yml's verify step never runs test -x " +
         '"${CHROMIUM_PATH}" (Issue #3250): a CHROMIUM_PATH that points at ' +
@@ -1229,8 +1236,8 @@ export function findChromiumPathVerifyViolations(
   }
 
   if (
-    !step.includes("command -v chromium") ||
-    !step.includes('= "${CHROMIUM_PATH}"')
+    !checksWithoutShortCircuit(codeLines, "command -v chromium") ||
+    !checksWithoutShortCircuit(codeLines, '= "${CHROMIUM_PATH}"')
   ) {
     violations.push(
       "container-build.yml's verify step never checks that " +
@@ -1239,7 +1246,12 @@ export function findChromiumPathVerifyViolations(
     );
   }
 
-  if (!step.includes("executablePath: process.env.CHROMIUM_PATH")) {
+  if (
+    !checksWithoutShortCircuit(
+      codeLines,
+      "executablePath: process.env.CHROMIUM_PATH",
+    )
+  ) {
     violations.push(
       "container-build.yml's verify step never launches Chromium through " +
         "executablePath: process.env.CHROMIUM_PATH (Issue #3250): a " +
@@ -1248,6 +1260,20 @@ export function findChromiumPathVerifyViolations(
   }
 
   return violations;
+}
+
+/**
+ * True when a code line runs `substring` without `|| true` nullifying its
+ * exit status (Issue #3254 review) — a loosened variant that would otherwise
+ * still satisfy a plain substring match.
+ */
+function checksWithoutShortCircuit(
+  codeLines: string[],
+  substring: string,
+): boolean {
+  return codeLines.some((line) =>
+    line.includes(substring) && !/\|\|\s*true\b/.test(line)
+  );
 }
 
 /** Manifest tool name carrying the pinned Playwright browser install. */
