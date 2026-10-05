@@ -65,7 +65,20 @@ because "any other departure" now follows the new bullet that makes
 review-enforced rules never `optional`; `worker/deno/lib/review_block_template.ts:58`
 — still true because the `clean` placeholder stays generic and the brief asks for
 the rule names; `docs/MODEL-AND-CACHING.md:694` — still true because the brief is
-still narrower than the inherited-reviewer one.
+still narrower than the inherited-reviewer one;
+`docs/MODEL-AND-CACHING.md:2733` — still true because "optional" there is the
+optional agent identity for the coding-guidelines overlay, not a review
+severity; `docs/PROMPTS.md:29` — still true because it describes the optional
+per-model coding-guidelines overlay, not a review severity;
+`docs/workflows/issue-processing.md:9` — still true because it describes the
+issue-selection label tiers, not a review severity;
+`docs/workflows/issue-processing.md:42` — still true because it lists Deno/Claude
+as optional actors; `docs/workflows/issue-processing.md:351` — still true
+because it describes the optional per-repo `nice` setting;
+`docs/workflows/issue-processing.md:1400` — still true because it describes
+regex quantifiers over optional tokens; `worker/deno/lib/export_redact.ts:240` —
+still true because "not chased" there is about secret redaction, not the
+reviewer brief.
 
 Related existing rules checked: the Standards reviewer bullet and the "Every
 `violation` names evidence and one of two reasons" rule in
