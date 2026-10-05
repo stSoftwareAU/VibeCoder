@@ -1298,8 +1298,9 @@ change's behaviour happens, **what it costs** or **which inputs** it covers:
    or test list covers, open the code that builds the set — the candidate
    selection, filter or allow-list, or the PR's own `Branch outcomes:` list —
    and match it exactly or scope the sentence to it: "each Markdown line the
-   milestone adds that names a milestone issue, or a same-repo issue one
-   declares with `Depends on`/`Blocked by`, closed as not planned", not
+   milestone adds that names a milestone issue, or an issue one declares as a
+   bare `#N` with `Depends on`/`Blocked by` (an `owner/repo#N` dependency is
+   not read, even when it names this repo), closed as not planned", not
    "every Markdown line that names an issue closed as not planned". A
    test-coverage claim is the same check: it names the branches its tests
    exercise (**A named test must exist** above).
@@ -1318,8 +1319,9 @@ naming an issue it reads as open (VibeCoder#3095); a section said a script
 does not back: a standards paragraph said a milestone summary PR body lists
 "every Markdown line the milestone adds that names an issue closed as not
 planned", when `findNotPlannedDocReferences` checks only milestone members
-and the same-repo `Depends on`/`Blocked by` targets they declare
-(VibeCoder#3231); a PR summary said "every arm" of three parsers had its own
+and the bare-`#N` `Depends on`/`Blocked by` targets they declare — a
+qualified `owner/repo#N` reference, even one naming this repo, is dropped
+before the lookup (VibeCoder#3231); a PR summary said "every arm" of three parsers had its own
 `Branch outcomes:` line when five branches had none (VibeCoder#3160); a
 script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
@@ -1340,9 +1342,10 @@ This adds to the rule that every doc assertion must match the head code; it
 does not relax it. Milestone sub-PRs merge into the milestone branch on green
 CI without review, so a sibling dropped later leaves its forward references
 there until the milestone's summary PR is reviewed; that PR's body lists
-each Markdown line the milestone adds that names a milestone issue, or a
-same-repo issue one declares with `Depends on` or `Blocked by`, closed as
-not planned
+each Markdown line the milestone adds that names a milestone issue, or an
+issue one declares as a bare `#N` with `Depends on` or `Blocked by` (an
+`owner/repo#N` dependency is not read, even when it names this repo), closed
+as not planned
 (see [Milestones](docs/workflows/milestones.md)); a follow-up named only in
 the prose is not scanned, so the review still reads those lines. Fleet PRs
 sent back

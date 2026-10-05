@@ -294,8 +294,10 @@ that still describes the dropped work as present.
 When `createMilestoneSummaryPr()` raises the summary PR,
 `findNotPlannedDocReferences()`
 ([milestone_not_planned_refs.ts](../../worker/deno/lib/milestone_not_planned_refs.ts))
-collects the milestone's issues and their declared same-repo
-`Depends on`/`Blocked by` issues closed as not planned. The compare diff is read only when at least
+collects the milestone's issues and their declared bare-`#N`
+`Depends on`/`Blocked by` issues closed as not planned (a qualified
+`owner/repo#N` dependency is not read, even when it names this repo). The
+compare diff is read only when at least
 one such not-planned issue exists; it then lists each added Markdown line
 naming such an issue (`#N` or `owner/repo#N` for this repo) in the PR body.
 Markdown files the compare API returns without diff text are listed as not

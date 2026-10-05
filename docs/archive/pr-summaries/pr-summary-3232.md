@@ -43,6 +43,21 @@ token `"each"` (with quotes). Re-ran with the quotes escaped for the shell
 (`'"each"'` / `'"all", "each"'`): **absent on base** in all three sections,
 so it is not vacuous. Added `'"all", "each"'` to all three phrase lists.
 
+**PR-feedback round 3:** the "same-repo" wording from round 1 was itself
+still broader than the code. `extractDependencyReferences()`
+(`worker/deno/lib/issue_dependencies.ts:408-411`) keeps only
+`ref.repo === undefined` — a bare `#N` with no repo prefix at all — so a
+same-repo dependency written in the qualified form
+(`Blocked by stSoftwareAU/VibeCoder#12`) is dropped before the lookup too,
+not just a cross-repo one. Narrowed the model sentence
+(`CODING-STANDARDS.md:1300-1303`), the VibeCoder#3231 historical note
+(`CODING-STANDARDS.md:1318-1323`), the restatement
+(`CODING-STANDARDS.md:1343-1347`) and `docs/workflows/milestones.md:297-300`
+from "same-repo issue" to "issue one declares as a bare `#N`", each noting
+that a qualified `owner/repo#N` dependency is not read even when it names
+this repo. Widening the code to accept qualified same-repo references was
+filed separately as VibeCoder#3245 and is out of this PR's scope.
+
 ## Spec
 
 ### Intent and Rationale
@@ -67,14 +82,20 @@ so it is not vacuous. Added `'"all", "each"'` to all three phrase lists.
   `worker/deno/lib/milestone_not_planned_refs.ts`:
   `findNotPlannedDocReferences` scans milestone members, then looks up each
   declared dependency with `repos/${repo}/issues/${dep}`, which only covers
-  same-repo targets.
-- Re-verified on the PR-feedback round: the same-repo scope comes from
+  bare-`#N` targets.
+- Re-verified on the PR-feedback round: the bare-`#N` scope comes from
   `extractDependencyReferences()`
   (`worker/deno/lib/issue_dependencies.ts:408-411`), which filters
   `.filter((ref) => ref.repo === undefined)` before
   `findNotPlannedDocReferences` (`milestone_not_planned_refs.ts:292`) ever
   sees the declared targets — a cross-repo `Depends on owner/other#5` is
   dropped before the lookup, not merely unresolved by it.
+- Re-verified again on PR-feedback round 3: that same filter also drops a
+  *same-repo* dependency written in the qualified form
+  (`Blocked by stSoftwareAU/VibeCoder#12`), because the filter keys on
+  `ref.repo === undefined`, not on whether `ref.repo` matches this repo. The
+  round-1/2 "same-repo" wording was therefore still an overstatement; only a
+  bare `#N` (no repo prefix at all) is read.
 
 ## Evidence
 
@@ -99,6 +120,13 @@ only gives examples ("a dropped condition, an absolute word …"), not the
 closed set this rule defines;
 `docs/audits/security-sweep-1220-setup-cli.md:169` — still true because it is
 an unrelated audit finding that happens to use the words "what it costs".
+PR-feedback round 3 added grep: `same-repo` across `CODING-STANDARDS.md`,
+`docs/workflows/milestones.md`, `prompts/issue/prompt.md` and
+`prompts/pr_feedback/prompt.md` — found and narrowed the three
+`CODING-STANDARDS.md` spots and the one in `docs/workflows/milestones.md` to
+"bare `#N`"; the two prompt files have no occurrence of "same-repo" for this
+rule (their nearby `Depends on`/`Blocked by` text is the unrelated deferral
+rule), so no change needed there.
 
 Related existing rules checked: `CODING-STANDARDS.md` **A named test must
 exist** (coverage claim names the branches its tests exercise, #3058);
@@ -156,6 +184,10 @@ wording, and none needed to change.
   that names a milestone issue…", matching the scan's own
   added-lines-only behaviour and the already-correct restatement at
   `CODING-STANDARDS.md:1343`.
+- PR-feedback round 3: narrowed "same-repo" to "bare `#N`" in the three
+  `CODING-STANDARDS.md` spots and `docs/workflows/milestones.md`; no phrase
+  list in `own_change_claims_3120_test.ts` pins the word "same-repo", so no
+  test file changed and no new pin to check against base.
 - `deno test --allow-read tests/own_change_claims_3120_test.ts` (from
   `worker/deno`): 6 passed, 0 failed (unchanged test count — same 6 tests,
   now asserting more phrases per test).
