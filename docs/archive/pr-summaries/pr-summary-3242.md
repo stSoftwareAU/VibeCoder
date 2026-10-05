@@ -76,8 +76,11 @@ rule's section, or survive elsewhere in the file, and the test stayed green.
   - `assertLinearGrowth` in `coding_guidelines`;
   - `compare two readings of the same work` in CODING-STANDARDS § Unit tests.
 
-  In `coding_guidelines`, the `RULE` regex matches through its
-  "another reading of the same work" alternative.
+  The case-insensitive `RULE` regex matches `coding_guidelines` through its
+  first alternative ("compare two readings of the same work", line 633 of
+  `prompts/coding_guidelines/prompt.md`), and matches `test_audit` through its
+  second alternative ("another reading of the same work", line 391 of
+  `prompts/test_audit/prompt.md`).
 - Branch outcomes: none added.
 - Removed from `worker/deno/tests/timing_assertion_policy_test.ts`:
   `` assertEquals(loaded.ok, true, `cannot load ${family}`); `` — #3242
