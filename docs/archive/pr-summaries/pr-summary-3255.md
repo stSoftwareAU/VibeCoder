@@ -49,7 +49,9 @@ flowchart LR
     F --> R["repair round (Issue #1965)"]
 ```
 
-**Docs sweep:**
+**Docs sweep** — grep: `toolchainGap`, "toolchain gap", `repair round`, `1.98`, `rust-version`, `milestone_gate_repair`, `milestone_merge_gate`, `milestone_resolution_gate`; section: `docs/INTERNALS.md` § "The merge-down happens on the cycle the tip moves, and a conflict is reported that day" (milestone gate repair rung) and `docs/CONTAINER-IMAGE.md#rust-toolchain`; updated: `docs/INTERNALS.md`, `docs/CONTAINER-IMAGE.md`
+
+Sweep detail:
 
 - Greps: `toolchainGap`, "toolchain gap", `repair round`, `1.98`, `rust-version`.
 - Updated:
@@ -65,7 +67,9 @@ flowchart LR
 
 ## Reproduction
 
-Status: **verified**
+- **symptom** — when the host's rustc (1.98.0) is older than the tree's `rust-version` (1.99), `cargo check` exits 101 and the milestone gate reports an ordinary build failure, then offers a repair round that changes nothing and can never pass, with the reason buried under ~40 repeated `requires rustc 1.99` lines
+- **status** — `verified` — the regression test was observed failing against the unfixed code and passing after the fix
+- **regression test** — `worker/deno/tests/milestone_gate_repair_test.ts::runGateWithRepair - a failed verdict carrying a toolchain gap is not offered a repair (Issue #3255)`; also `worker/deno/tests/milestone_merge_gate_test.ts::checkMergedTree - a host rustc older than the tree's rust-version is named as a toolchain gap, not an ordinary failure (Issue #3255)`
 
 The logged line from the issue was `neat_ai_discovery@0.74.279 requires rustc 1.99`, repeated about 40 times under `cargo check --workspace --all-targets --locked in /home/vibe/auto-issue-work/NEAT-AI-Discovery failed (exit 101)`.
 
