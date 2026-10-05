@@ -222,7 +222,13 @@ checksum. Since Issue #1594 that install lives in
 `container/toolchains/rust.sh`, which reads the version and all six checksums
 from `container/tools.json`. `QUALITY_SKIP_RUST_UPDATE=1` stops
 private-repo-9's gate running `rustup update stable` — the image owns its
-toolchain.
+toolchain. When this pin falls behind the `rust-version` of a monitored
+crate's own workspace package, the milestone merge and resolution gates name
+the gap — installed versus required rustc, the packages that demand the newer
+one, and `container/tools.json` as the pin to raise — rather than sending the
+failure to the agent rung for a repair round it can never win (Issue #3255).
+A refusal naming only dependencies is fixable in `Cargo.lock`, so it is still
+offered a repair round.
 
 ## semgrep
 
