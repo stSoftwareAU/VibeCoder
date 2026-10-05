@@ -29,6 +29,7 @@
 import {
   checkMergedTree,
   collapseRepeatedLines,
+  describeRustToolchainGap,
   detectRustToolchainGap,
   findProjectManifests,
   type MergeGateFn,
@@ -308,15 +309,7 @@ export async function verifyResolvedTree(
         if (gap) {
           return {
             status: "failed",
-            detail: `${where} failed (exit ${result.code}): the host's ` +
-              `rustc ${
-                gap.installed ?? "(unknown)"
-              } is older than the rust-version ${gap.required} that ` +
-              `${
-                gap.packages.join(", ")
-              } require(s) — raise the container's Rust pin ` +
-              `(container/tools.json) to at least ${gap.required}; no ` +
-              "change to the resolution can fix this",
+            detail: describeRustToolchainGap(where, result.code, gap),
             output: tail(result.output),
             toolchainGap: gap,
           };

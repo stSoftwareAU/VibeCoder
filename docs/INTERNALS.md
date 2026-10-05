@@ -3951,10 +3951,20 @@ edits whatever the check names — often not a conflicted file at all — and
 whatever it stages *or* commits is folded into the merge commit, which then
 names the repaired files and the rung that repaired them.
 
+Not every red tree is a semantic conflict, though: a Cargo project's
+`cargo check` or `cargo test` can fail purely because the host's `rustc` is
+older than the tree's `rust-version`, which no resolution can ever fix. Both
+gates detect that shape of failure (`detectRustToolchainGap()` in
+[milestone_merge_gate.ts](../worker/deno/lib/milestone_merge_gate.ts)) and
+name it as an environment fault — the installed and required versions, the
+packages that demand the newer one, and `container/tools.json` as the pin to
+raise — rather than sending it to the agent rung for a repair round it can
+never win (Issue #3255).
+
 ```mermaid
 flowchart TD
     G["resolution gate"] -->|passed| P["push"]
-    G -->|failed| R{"repair round<br/>left, and budget<br/>for one?"}
+    G -->|failed| R{"not a toolchain gap,<br/>a repair round left,<br/>and budget for one?"}
     R -->|"no"| E["escalate — both gate outputs,<br/>and why no repair ran"]
     R -->|"yes"| A["agent rung<br/>(gate output + merged commits)"]
     A --> F["fold into the merge commit"]
@@ -5329,7 +5339,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [milestone_conflict_git.ts](../worker/deno/lib/milestone_conflict_git.ts)                                         | Reads both sides out of the conflicted index, gathers the per-issue test evidence, union-merges a test file and stages what the triage decided                                        |
 |                             | [rust_use_union.ts](../worker/deno/lib/rust_use_union.ts)                                                         | Folds a textual union's duplicated Rust `use` declarations back into one before the resolution gate checks it (Issue #3007)                                                          |
 |                             | [milestone_conflict_ladder.ts](../worker/deno/lib/milestone_conflict_ladder.ts)                                   | Climbs the rungs the triage left: the dependency rules, then the resolution agent, naming the rung that settled each file                                        |
-|                             | [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)                                           | Offers a failed verification back to the agent rung — bounded repair rounds on the same clone, carrying the gate's output — before any human sees it (Issue #1965)                     |
+|                             | [milestone_gate_repair.ts](../worker/deno/lib/milestone_gate_repair.ts)                                           | Offers a failed verification back to the agent rung — bounded repair rounds on the same clone, carrying the gate's output — before any human sees it (Issue #1965); a Rust toolchain gap is escalated without one (Issue #3255) |
 |                             | [milestone_resolution_gate.ts](../worker/deno/lib/milestone_resolution_gate.ts)                                   | Verifies a resolution the worker made itself against the repo's own check, manifest check and unit suite before it can be pushed                                                      |
 |                             | [milestone_gate_wedge.ts](../worker/deno/lib/milestone_gate_wedge.ts)                                             | Concludes a gate refusal no retry can change: counts the repeat, holds the milestone's issues back until either tip moves, and files one worker diagnostic in VibeCoder (Issue #2388)  |
 |                             | [milestone_branch_self_heal.ts](../worker/deno/lib/milestone_branch_self_heal.ts)                                 | Recreate a deleted branch for an open milestone with open children, and retarget stranded child PRs                                                                                  |

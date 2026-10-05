@@ -553,7 +553,7 @@ export async function runGateWithRepair(
   // Issue #3255: a host `rustc` older than the merged tree's `rust-version`
   // is an environment fault, not a bad resolution — no repair round can
   // raise the container's Rust pin, so none is offered.
-  if (true) {
+  if (verdict.toolchainGap) {
     const repair: GateRepairOutcome = {
       status: "not-attempted",
       gate: verdict,

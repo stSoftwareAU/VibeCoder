@@ -571,7 +571,11 @@ Deno.test("runGateWithRepair - a failed verdict carrying a toolchain gap is not 
         result.repair.detail.includes("environment fault"),
       "the reason names the environment fault, not a bad resolution",
     );
-    assertEquals(agentCalls, 0, "the rung is never asked about a toolchain gap");
+    assertEquals(
+      agentCalls,
+      0,
+      "the rung is never asked about a toolchain gap",
+    );
   } finally {
     await fx.cleanup();
   }

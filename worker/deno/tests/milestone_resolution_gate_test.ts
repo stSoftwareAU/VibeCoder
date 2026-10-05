@@ -309,7 +309,8 @@ Deno.test("verifyResolvedTree - a host rustc older than the tree's rust-version 
   const dir = await Deno.makeTempDir({ prefix: "issue-3255-gate-" });
   try {
     await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
-    const output = "error: rustc 1.98.0 is not supported by the following packages:\n" +
+    const output =
+      "error: rustc 1.98.0 is not supported by the following packages:\n" +
       "  neat_ai_discovery@0.74.279 requires rustc 1.99\n".repeat(40);
     const outcome = await verifyResolvedTree(
       dir,

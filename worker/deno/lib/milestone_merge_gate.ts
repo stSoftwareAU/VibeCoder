@@ -408,6 +408,24 @@ export function detectRustToolchainGap(
   return required ? { installed, required, packages } : undefined;
 }
 
+/**
+ * One-line failure detail for a {@link RustToolchainGap} (Issue #3255),
+ * naming the installed and required rustc, the packages and the pin to raise.
+ */
+export function describeRustToolchainGap(
+  where: string,
+  code: number,
+  gap: RustToolchainGap,
+): string {
+  return `${where} failed (exit ${code}): the host's rustc ` +
+    `${
+      gap.installed ?? "(unknown)"
+    } is older than the rust-version ${gap.required} that ` +
+    `${gap.packages.join(", ")} require(s) — raise the container's Rust pin ` +
+    `(container/tools.json) to at least ${gap.required}; no change ` +
+    "to the resolution can fix this";
+}
+
 /** Spawn the repository's own check with a bounded timeout. */
 const spawnTypeCheck: TypeCheckRunner = async (project) => {
   const executable = project.kind === "cargo" ? "cargo" : Deno.execPath();
@@ -496,15 +514,7 @@ export async function checkMergedTree(
       if (gap) {
         return {
           status: "failed",
-          detail: `${where} failed (exit ${result.code}): the host's rustc ` +
-            `${
-              gap.installed ?? "(unknown)"
-            } is older than the rust-version ${gap.required} that ` +
-            `${
-              gap.packages.join(", ")
-            } require(s) — raise the container's Rust pin ` +
-            `(container/tools.json) to at least ${gap.required}; no change ` +
-            "to the resolution can fix this",
+          detail: describeRustToolchainGap(where, result.code, gap),
           output: tail(result.output),
           toolchainGap: gap,
         };
