@@ -109,6 +109,8 @@ no other callers.
 
 ## Test Plan
 
+- Removed from `worker/deno/tests/drift_pins_on_base_3193_test.ts`: `assertEquals( await pinsAlreadyOnBase({ doc: "missing.md", title: "Escalation", phrases: ["needs-human label"], baseRef: "base", repo: clone, }), [], );` — #3238 requires an unresolvable `<doc>` to fail loud instead of reading as an empty answer, so `missing.md` (absent from the working tree) now throws `not found in the working tree` rather than returning `[]`; that refusal is covered by `worker/deno/tests/drift_pins_on_base_3238_test.ts::resolveRepoDoc - rejects a path missing from the working tree`, and the "doc the base ref never had" case is replaced by the `new.md` assertion below, which expects `undefined`
+
 Changed assertion in `worker/deno/tests/drift_pins_on_base_3193_test.ts`,
 verbatim:
 
