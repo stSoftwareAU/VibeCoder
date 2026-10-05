@@ -56,6 +56,10 @@ flowchart TD
   `Docs sweep hits comment failed (non-fatal)`.
 - `recoverAndFinaliseExistingPr` gains an optional 6th parameter,
   `docsSweepHitsComment = ""`, so existing callers are unaffected.
+  `reportSummaryRuleBlock` gains the same optional parameter and forwards
+  it, so a run whose branch already has a PR and is blocked twice by another
+  summary gate (closure, independent review, branch outcomes and the rest)
+  still gets the one advisory comment when that path finalises the PR.
 - The re-run keeps its scope, including the 10-hit broad-term cap, as the
   issue assumes.
 
@@ -164,8 +168,11 @@ caller each, `completion_phase.ts:2352-2354`.
    - Both tests check: status `continue`, 0 recovery calls, PR raised.
 2. **One advisory PR comment.** Met.
    - The same tests, plus "a stale hit on a recovered existing PR gets the
-     advisory comment posted there", assert exactly one post to the PR number
-     and none to the issue.
+     advisory comment posted there" and "a stale hit on an existing PR blocked
+     twice by another summary gate is still posted to the PR", assert exactly
+     one post to the PR number and none to the issue. The last one went red
+     before `reportSummaryRuleBlock` forwarded the comment (0 posts) and green
+     after.
    - `docs_sweep_hits_test.ts` asserts that the comment says "advisory" and
      "do not block this PR" and contains no "second miss" or "fails the run".
 3. **#3073 still blocks.** Met. These existing tests are kept and pass:

@@ -528,6 +528,9 @@ async function reportSummaryRuleBlock(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
+  // Issue #3237: stale Docs sweep hits are advisory and reach the PR as one
+  // comment; the existing-PR finalise below is a path that posts it too.
+  docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
@@ -658,6 +661,7 @@ async function reportSummaryRuleBlock(
     state,
     guarded.prBody,
     deps,
+    docsSweepHitsComment,
   );
   if (recovered.status !== "continue") return recovered;
 
@@ -2521,6 +2525,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
@@ -2559,6 +2564,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
@@ -2596,6 +2602,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
@@ -2646,6 +2653,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
@@ -2683,6 +2691,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
@@ -2714,6 +2723,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
@@ -2740,6 +2750,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 

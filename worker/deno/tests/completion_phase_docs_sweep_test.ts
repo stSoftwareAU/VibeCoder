@@ -712,3 +712,53 @@ Deno.test(
     assertEquals(outcome.claudeCalls, 0);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Review of PR #3251: a later summary-rule block on a run whose branch already
+// has a PR finalises that PR through `reportSummaryRuleBlock`, and the
+// advisory comment must reach the PR on that path too.
+// ---------------------------------------------------------------------------
+
+/**
+ * A summary with a valid Docs sweep line but no `Branch outcomes:` list, on a
+ * code-changing diff — the branch-outcomes gate (Issue #3147) blocks it, the
+ * recovery turn leaves it unchanged, and the second verdict goes through
+ * `reportSummaryRuleBlock`.
+ */
+const SUMMARY_WITH_LINE_NO_OUTCOMES = SUMMARY_WITH_LINE.replace(
+  "**Branch outcomes:** none added\n",
+  "",
+);
+
+Deno.test(
+  "completion - a stale hit on an existing PR blocked twice by another summary gate is still posted to the PR (#3237)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE_NO_OUTCOMES,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      prExistsForBranch: true,
+    });
+
+    assertEquals(
+      outcome.claudeCalls,
+      1,
+      "the other gate spends its one recovery turn",
+    );
+    assertEquals(outcome.prCreateCalls, 0, "the existing PR is reused");
+    assertEquals(
+      outcome.events.includes("recover"),
+      true,
+      "the existing PR is recovered, not created",
+    );
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(
+      prPosts.length,
+      1,
+      "exactly one advisory comment reaches the existing PR",
+    );
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
+    assertStringIncludes(prPosts[0]!.body.toLowerCase(), "advisory");
+  },
+);
