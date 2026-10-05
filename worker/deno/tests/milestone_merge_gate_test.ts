@@ -14,11 +14,14 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildMergeGateEscalationComment,
   checkMergedTree,
+  collapseRepeatedLines,
+  detectRustToolchainGap,
   findTypeCheckProjects,
   isMergeGateFailure,
   mergeGateFailureError,
   type TypeCheckProject,
 } from "../lib/milestone_merge_gate.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 /** Write a file, creating its parent directory. */
 async function writeFile(path: string, contents: string): Promise<void> {
@@ -273,4 +276,160 @@ Deno.test("checkMergedTree - every project is checked, so a passing one cannot m
     assertStringIncludes(outcome.output, "onSlotIdle");
     assertEquals(seen.length, 2, "the passing project did not end the sweep");
   });
+});
+
+Deno.test("checkMergedTree - a host rustc older than the tree's rust-version is named as a toolchain gap, not an ordinary failure (Issue #3255)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const repeatedLine = "  neat_ai_discovery@0.74.279 requires rustc 1.99\n";
+    const output = "error: rustc 1.98.0 is not supported by the following " +
+      "packages:\n" + repeatedLine.repeat(40);
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 101, output }),
+    );
+    assertEquals(outcome.status, "failed");
+    assertStringIncludes(outcome.detail, "rustc 1.98.0");
+    assertStringIncludes(outcome.detail, "1.99");
+    assertStringIncludes(outcome.detail, "container/tools.json");
+    assertEquals(outcome.toolchainGap, {
+      installed: "1.98.0",
+      required: "1.99",
+      packages: ["neat_ai_discovery@0.74.279"],
+    });
+    assertStringIncludes(
+      outcome.output,
+      "neat_ai_discovery@0.74.279 requires rustc 1.99 (×40)",
+    );
+  });
+});
+
+Deno.test("checkMergedTree - an ordinary cargo failure carries no toolchain gap (Issue #3255)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const outcome = await checkMergedTree(dir, () =>
+      Promise.resolve({
+        code: 101,
+        output: "error[E0425]: cannot find value `synapse` in this scope",
+      }));
+    assertEquals(outcome.status, "failed");
+    assertEquals(outcome.toolchainGap, undefined);
+    assertEquals(
+      outcome.detail,
+      "cargo check --workspace --all-targets in " +
+        `${dir} failed (exit 101)`,
+    );
+  });
+});
+
+/**
+ * Cargo's refusal when only dependencies are too new: it appends the
+ * `cargo update --precise` hint (`local_incompatible` false in cargo's
+ * `ops/cargo_compile/mod.rs`), so a `Cargo.lock` change can fix it.
+ */
+const DEPENDENCY_ONLY_REFUSAL =
+  "error: rustc 1.98.0 is not supported by the following package:\n" +
+  "  some_dep@2.1.0 requires rustc 1.99\n" +
+  "Either upgrade rustc or select compatible dependency versions with\n" +
+  "`cargo update <name>@<current-ver> --precise <compatible-ver>`\n" +
+  "where `<compatible-ver>` is the latest version supporting rustc 1.98.0\n";
+
+Deno.test("detectRustToolchainGap - a dependency-only refusal is not a gap: cargo names a Cargo.lock remedy (Issue #3255 review)", () => {
+  assertEquals(detectRustToolchainGap(DEPENDENCY_ONLY_REFUSAL), undefined);
+});
+
+Deno.test("checkMergedTree - a dependency-only rustc refusal stays an ordinary, repairable failure (Issue #3255 review)", async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const outcome = await checkMergedTree(
+      dir,
+      () => Promise.resolve({ code: 101, output: DEPENDENCY_ONLY_REFUSAL }),
+    );
+    assertEquals(outcome.status, "failed");
+    assertEquals(outcome.toolchainGap, undefined);
+    assertEquals(
+      outcome.detail,
+      "cargo check --workspace --all-targets in " +
+        `${dir} failed (exit 101)`,
+    );
+  });
+});
+
+Deno.test("detectRustToolchainGap - a header and a requirement line together report the installed and required versions (Issue #3255)", () => {
+  const gap = detectRustToolchainGap(
+    "error: rustc 1.70.0 is not supported by the following packages:\n" +
+      "  foo@1.2.3 requires rustc 1.80\n",
+  );
+  assertEquals(gap, {
+    installed: "1.70.0",
+    required: "1.80",
+    packages: ["foo@1.2.3"],
+  });
+});
+
+Deno.test("detectRustToolchainGap - a requirement line without a header leaves installed undefined (Issue #3255)", () => {
+  const gap = detectRustToolchainGap("foo@1.2.3 requires rustc 1.80\n");
+  assertEquals(gap, {
+    installed: undefined,
+    required: "1.80",
+    packages: ["foo@1.2.3"],
+  });
+});
+
+Deno.test("detectRustToolchainGap - the highest required version wins, and packages are deduplicated in first-seen order (Issue #3255)", () => {
+  const gap = detectRustToolchainGap(
+    "foo@1.0.0 requires rustc 1.75\n" +
+      "bar@2.0.0 requires rustc 1.90\n" +
+      "foo@1.0.0 requires rustc 1.75\n" +
+      "baz@3.0.0 requires rustc 1.80\n",
+  );
+  assertEquals(gap?.required, "1.90");
+  assertEquals(gap?.packages, ["foo@1.0.0", "bar@2.0.0", "baz@3.0.0"]);
+});
+
+Deno.test("detectRustToolchainGap - a malformed requirement line (no version, no package) is not a gap (Issue #3255)", () => {
+  assertEquals(detectRustToolchainGap("foo requires rustc\n"), undefined);
+  assertEquals(detectRustToolchainGap("requires rustc 1.99\n"), undefined);
+});
+
+Deno.test("detectRustToolchainGap - empty output is not a gap (Issue #3255)", () => {
+  assertEquals(detectRustToolchainGap(""), undefined);
+});
+
+Deno.test("detectRustToolchainGap - a hostile header-shaped line returns in linear time (Issue #3255)", () => {
+  assertLinearGrowth(
+    "detectRustToolchainGap over a long near-header line",
+    (chars) => "error: rustc " + "1.".repeat(Math.floor(chars / 2)) + "x",
+    (line) => detectRustToolchainGap(line),
+    { baseChars: 10_000 },
+  );
+});
+
+Deno.test("detectRustToolchainGap - a hostile requirement-shaped line returns in linear time (Issue #3255)", () => {
+  assertLinearGrowth(
+    "detectRustToolchainGap over a long near-requirement line",
+    (chars) =>
+      "a@" + "b".repeat(Math.floor(chars / 2)) + " requires rustc " +
+      "1.".repeat(Math.floor(chars / 2)) + "!",
+    (line) => detectRustToolchainGap(line),
+    { baseChars: 10_000 },
+  );
+});
+
+Deno.test("detectRustToolchainGap - a hostile line with no space at all still returns (Issue #3255)", () => {
+  assertLinearGrowth(
+    "detectRustToolchainGap over a long package-shaped line with no space",
+    (chars) => "@".repeat(chars) + "!",
+    (line) => detectRustToolchainGap(line),
+    { baseChars: 10_000 },
+  );
+});
+
+Deno.test("collapseRepeatedLines - consecutive duplicates collapse, non-consecutive duplicates do not, single lines are unchanged (Issue #3255)", () => {
+  assertEquals(
+    collapseRepeatedLines("a\na\na\nb\na"),
+    "a (×3)\nb\na",
+  );
+  assertEquals(collapseRepeatedLines("x\ny\nz"), "x\ny\nz");
+  assertEquals(collapseRepeatedLines("only one line"), "only one line");
 });
