@@ -1277,11 +1277,12 @@ change's behaviour happens, **what it costs** or **which inputs** it covers:
    the sentence. For a claim about **which inputs** a scan, check, guardrail
    or test list covers, open the code that builds the set — the candidate
    selection, filter or allow-list, or the PR's own `Branch outcomes:` list —
-   and match it exactly or scope the sentence to it: "each Markdown line that
-   names a milestone issue, or a same-repo issue one declares with
-   `Depends on`/`Blocked by`, closed as not planned", not "every Markdown
-   line that names an issue closed as not planned". A test-coverage claim is the same check: it names
-   the branches its tests exercise (**A named test must exist** above).
+   and match it exactly or scope the sentence to it: "each Markdown line the
+   milestone adds that names a milestone issue, or a same-repo issue one
+   declares with `Depends on`/`Blocked by`, closed as not planned", not
+   "every Markdown line that names an issue closed as not planned". A
+   test-coverage claim is the same check: it names the branches its tests
+   exercise (**A named test must exist** above).
 3. When the change moves a cost (a download, a retry, a push, a fallback) from
    one path to another, the doc says where the cost now lands.
 4. A sentence about history ("before this fix, X skipped Y") is checked

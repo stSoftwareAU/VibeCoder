@@ -28,6 +28,22 @@ three new phrase lists now also pin "no … is missed" and "X, Y and Z are
 the …" (not "each", which `drift-pins-on-base` showed was already present
 on base in all three sections).
 
+**PR-feedback round 2:** two more gaps. (1) The item-2 model sentence
+(`CODING-STANDARDS.md:1280`) still said "each Markdown line that names a
+milestone issue…", claiming more lines than `findNotPlannedDocReferences`
+reads — its `for (const added of addedLines(file.patch))` loop
+(`worker/deno/lib/milestone_not_planned_refs.ts:387`) only scans lines the
+milestone branch **adds**, not every line that names an issue. Reworded to
+"each Markdown line the milestone adds that names a milestone issue…",
+matching the already-correct restatement eight lines below. (2) The round-1
+Test Plan said pinning `"each"` would be vacuous, but the
+`drift-pins-on-base` check that reported `ALREADY ON BASE: each` had passed
+the bare word `each` through the shell, which strips the surrounding quote
+marks — it tested the common prose word, not the rule's own list-member
+token `"each"` (with quotes). Re-ran with the quotes escaped for the shell
+(`'"each"'` / `'"all", "each"'`): **absent on base** in all three sections,
+so it is not vacuous. Added `'"all", "each"'` to all three phrase lists.
+
 ## Spec
 
 ### Intent and Rationale
@@ -133,10 +149,23 @@ wording, and none needed to change.
   — these are new array entries read by the existing three
   "...holds every/all and closed-list claims..." tests, so no net test-count
   change.
+- PR-feedback round 2: the round-1 `"each"` check above passed the bare word
+  through the shell, which strips its quote marks, so it tested common prose
+  rather than the rule's own quoted list-member token. Re-ran correctly:
+  `deno task drift-pins-on-base 97ebc723df6b38a787db105280ff0febf0ae34fa
+  CODING-STANDARDS.md "PR Summary and Evidence" '"all", "each"'` (and the
+  same for `prompts/issue/prompt.md` § Instructions and
+  `prompts/pr_feedback/prompt.md` § Making Changes) reported **absent on
+  base** for `"all", "each"` in all three sections — not vacuous. Added
+  `'"all", "each"'` to all three phrase lists (again new array entries, no
+  net test-count change). Also reworded the item-2 model sentence at
+  `CODING-STANDARDS.md:1280` to "each Markdown line the milestone adds that
+  names a milestone issue…", matching the scan's own added-lines-only
+  behaviour and the already-correct restatement at line ~1322.
 - `deno test --allow-read tests/own_change_claims_3120_test.ts` (from
-  `worker/deno`): 6 passed, 0 failed (unchanged from the first round — same
-  6 tests, now asserting more phrases per test).
-- `./quality.sh < /dev/null` on the final head: PASSED, with skipped checks
-  (config integration skipped).
+  `worker/deno`): 6 passed, 0 failed (unchanged test count — same 6 tests,
+  now asserting more phrases per test).
+- `./quality.sh < /dev/null` on the final head: see result in
+  `.pr_response_message`.
 
 **Branch outcomes:** none added
