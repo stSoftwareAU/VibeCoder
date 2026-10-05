@@ -783,11 +783,37 @@ async function applyDegradedDeliveryGuard(
 }
 
 /**
+ * Post the docs-sweep stale-hits comment to a PR, once, best-effort (Issue
+ * #3237: advisory only — it never blocks the gate or costs a recovery turn).
+ * Shared by the new-PR path and both `recoverAndFinaliseExistingPr` callers
+ * so the posting logic is not duplicated.
+ */
+async function postDocsSweepHitsComment(
+  repo: string,
+  prNumber: number,
+  comment: string,
+  deps: WorkerDeps,
+): Promise<void> {
+  if (comment.length === 0 || prNumber <= 0) return;
+  const logger = deps.logger;
+  try {
+    await deps.github.createClient(logger).postComment(repo, prNumber, comment);
+  } catch (err) {
+    logger.warn("Docs sweep hits comment failed (non-fatal)", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Recover an existing PR by updating its body and labels, then finalise (Issue #1189).
  *
  * Issue #1559: When the recovered PR is already merged, skip the redundant
  * "PR created" link comment and call `ensureIssueClosedIfPrMerged` so the
  * worker does not loop re-picking up an issue whose work is already shipped.
+ *
+ * Issue #3237: `docsSweepHitsComment`, when non-empty, is posted to the
+ * recovered PR once — advisory, best-effort, never affects the result.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -798,6 +824,7 @@ export async function recoverAndFinaliseExistingPr(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
+  docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
   const logger = deps.logger;
@@ -855,6 +882,9 @@ export async function recoverAndFinaliseExistingPr(
     if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
+
+    // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
+    await postDocsSweepHitsComment(repo, prNumber, docsSweepHitsComment, deps);
   } catch (err) {
     logger.warn("Post-recovery finalisation error (non-fatal)", {
       error: err instanceof Error ? err.message : String(err),
@@ -2262,18 +2292,22 @@ async function completionBody(
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
   });
-  let docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
-  let docsSweepReason = `Docs sweep not recorded in the PR summary: ${
+  const docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
+  const docsSweepReason = `Docs sweep not recorded in the PR summary: ${
     docsSweep.problems[0] ?? "Docs sweep line missing"
   }`;
-  let docsSweepComment = buildDocsSweepGateComment(docsSweep);
+  const docsSweepComment = buildDocsSweepGateComment(docsSweep);
+  // Issue #3237: a stale term hit is posted to the PR, once, but never
+  // blocks — this is the comment body for that advisory post, built below.
+  let docsSweepHitsComment = "";
 
   // Issue #3172: once the line itself passes, re-run the grep terms it
   // quotes over the head's docs, and over the comment lines of its source
   // files (Issue #3219). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
-  // and left — it blocks through the same single recovery turn. A grep or
-  // diff that cannot run is logged as not checked, never read as clean.
+  // and left — Issue #3237 made this advisory only: it is named in a PR
+  // comment, not blocked, and costs no recovery turn. A grep or diff that
+  // cannot run is logged as not checked, never read as clean.
   if (docsSweep.applicable && docsSweep.valid) {
     const termCheck = comparableBase.ok
       ? await checkDocsSweepTerms({
@@ -2311,11 +2345,13 @@ async function completionBody(
       );
     }
     if (termCheck.status === "checked" && termCheck.staleHits.length > 0) {
-      docsSweepBlocked = true;
-      docsSweepReason = `Docs sweep incomplete at the head: ${
-        describeDocsSweepHits(termCheck.staleHits)
-      }`;
-      docsSweepComment = buildDocsSweepHitsComment(termCheck.staleHits);
+      // Issue #3237: advisory only — named on the PR thread, never blocked.
+      logger.warn(
+        "Docs sweep terms still present at the head — posting advisory " +
+          "comment, not blocking (Issue #3237)",
+        { hits: describeDocsSweepHits(termCheck.staleHits) },
+      );
+      docsSweepHitsComment = buildDocsSweepHitsComment(termCheck.staleHits);
     }
   }
 
@@ -2407,10 +2443,9 @@ async function completionBody(
   const docsSweepVerdict: LateSummaryVerdict = {
     blocked: docsSweepBlocked,
     reason: docsSweepReason,
-    // Issue #3172: docsSweepComment may already have been overridden to the
-    // stale-hits comment above — read the variable, not a fresh rebuild from
-    // `docsSweep`, or a term re-run failure would be folded in silently as
-    // the generic "line missing" comment instead.
+    // Issue #3237: stale term hits no longer override `docsSweepComment` —
+    // they are advisory, posted separately via `docsSweepHitsComment`, and
+    // never fold into this gate's block.
     comment: () => docsSweepComment,
   };
   const removedAssertionsVerdict: LateSummaryVerdict = {
@@ -2597,8 +2632,8 @@ async function completionBody(
       problems: docsSweep.problems,
       reason: docsSweepReason,
     });
-    // Issue #3172: use the (possibly overridden) docsSweepComment variable,
-    // not a fresh rebuild from `docsSweep`, so a stale-hits comment survives.
+    // Issue #3237: `docsSweepComment` is the missing-line comment only — a
+    // stale term hit never reaches this branch, it is posted separately.
     const folded = foldInLateSummaryVerdicts(
       docsSweepReason,
       docsSweepComment,
@@ -2806,6 +2841,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
