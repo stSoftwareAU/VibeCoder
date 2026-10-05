@@ -79,6 +79,7 @@ Deno.test("pinsAlreadyOnBase - reads the doc at the base ref, not the work tree"
       ),
       "add rule",
     );
+    await commitFile(clone, "new.md", BASE_DOC, "new doc");
 
     assertEquals(
       await pinsAlreadyOnBase({
@@ -90,16 +91,16 @@ Deno.test("pinsAlreadyOnBase - reads the doc at the base ref, not the work tree"
       }),
       ["needs-human label"],
     );
-    // A doc the base ref never had holds no pins.
+    // A doc the base ref never had is reported as not on base.
     assertEquals(
       await pinsAlreadyOnBase({
-        doc: "missing.md",
+        doc: "new.md",
         title: "Escalation",
         phrases: ["needs-human label"],
         baseRef: "base",
         repo: clone,
       }),
-      [],
+      undefined,
     );
     // A base ref that does not resolve is an error, not an empty answer.
     await assertRejects(() =>

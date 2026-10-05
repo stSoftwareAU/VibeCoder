@@ -215,8 +215,11 @@ earns its place by meeting all four conditions:
    base section already held four times. Run
    `deno task drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
    `worker/deno` for each section a test reads: it lists every phrase the base
-   section already held and exits 1 when there is one. Record the result for
-   every pinned phrase in the PR's Test Plan.
+   section already held and exits 1 when there is one. `<doc>` is relative to
+   the repo root (`prompts/issue/prompt.md`, not `../../prompts/...`); a path
+   it cannot resolve exits 2 naming the path, and a doc the base never had
+   prints one `doc not on base` line. Record the result for every pinned
+   phrase in the PR's Test Plan.
 
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
