@@ -26,7 +26,12 @@ import {
   buildIssueReviewerAgents,
   STANDARDS_REVIEWER_AGENT_NAME,
 } from "../lib/issue_executor_agents.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -72,7 +77,9 @@ Deno.test("Issue #3230 - issue prompt's Instructions step 1 tells the agent to e
 
 Deno.test("Issue #3230 - the standards-reviewer sub-agent prompt names a review-enforced rule as always a violation", () => {
   const reviewer = buildIssueReviewerAgents()[STANDARDS_REVIEWER_AGENT_NAME]!;
-  const text = flat(reviewer.prompt);
+  // Text a module holds, not a section of a page: `flatWholeFile` is the
+  // named exception (CODING-STANDARDS § Documentation-drift tests, cond. 1).
+  const text = flatWholeFile(reviewer.prompt);
 
   for (
     const required of [
