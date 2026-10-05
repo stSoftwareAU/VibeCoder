@@ -1139,7 +1139,141 @@ export function findBrowserInstallViolations(
     );
   }
 
+  // Issue #3250: agents' e2e scripts resolve the browser with
+  // executablePath: Deno.env.get("CHROMIUM_PATH") — nothing else puts
+  // Chromium on PATH, so a missing ENV or a dangling/unused symlink leaves
+  // those scripts unable to find the baked binary.
+  const chromiumPathEnv = code.find((line) => CHROMIUM_PATH_ENV_RE.test(line));
+  if (!chromiumPathEnv) {
+    violations.push(
+      "Containerfile never sets ENV CHROMIUM_PATH: Issue #3250 — agents' " +
+        "e2e scripts resolve the baked browser with executablePath: " +
+        'Deno.env.get("CHROMIUM_PATH"), which would be unset',
+    );
+  }
+
+  const linksChromiumPath = code.some((line) =>
+    line.includes("ln -s") && line.includes('"${CHROMIUM_PATH}"')
+  );
+  if (chromiumPathEnv && !linksChromiumPath) {
+    violations.push(
+      "Containerfile sets ENV CHROMIUM_PATH but never links a baked " +
+        "Chromium binary to it (Issue #3250): agents' e2e scripts would " +
+        "resolve CHROMIUM_PATH to a path that does not exist",
+    );
+  }
+
+  const launchesThroughChromiumPath = code.some((line) =>
+    line.includes("executablePath: process.env.CHROMIUM_PATH")
+  );
+  if (!launchesThroughChromiumPath) {
+    violations.push(
+      "Containerfile's build-time smoke test never launches Chromium " +
+        "through process.env.CHROMIUM_PATH (Issue #3250): a working " +
+        "CHROMIUM_PATH would go unverified at build time",
+    );
+  }
+
   return violations;
+}
+
+/**
+ * Report every reason the container-build workflow's "Verify the baked
+ * Playwright and headless Chromium" step would not actually prove that
+ * `CHROMIUM_PATH` resolves to a working browser (Issue #3250).
+ *
+ * Agents' e2e scripts find the baked browser with
+ * `executablePath: Deno.env.get("CHROMIUM_PATH")`; this step proves, against
+ * the built image, that the path is executable, that `chromium` on PATH
+ * resolves to it, and that a real Playwright launch succeeds through it. The
+ * Containerfile's build-time smoke test (`findBrowserInstallViolations`)
+ * separately launches through it during the build.
+ *
+ * @param workflowYaml - Raw `.github/workflows/container-build.yml` text.
+ * @returns Human-readable violations; empty when every check is present.
+ */
+export function findChromiumPathVerifyViolations(
+  workflowYaml: string,
+): string[] {
+  const violations: string[] = [];
+
+  const lines = workflowYaml.split("\n");
+  const startIndex = lines.findIndex((line) =>
+    line.includes("- name:") &&
+    line.includes("Verify the baked Playwright and headless Chromium")
+  );
+  if (startIndex === -1) {
+    violations.push(
+      'container-build.yml has no "Verify the baked Playwright and ' +
+        'headless Chromium" step (Issue #3250): CHROMIUM_PATH would never ' +
+        "be checked in CI",
+    );
+    return violations;
+  }
+
+  let endIndex = lines.length;
+  for (let i = startIndex + 1; i < lines.length; i++) {
+    if (lines[i]!.includes("- name:")) {
+      endIndex = i;
+      break;
+    }
+  }
+  // Issue #3254 review: a `#` line inside the step's `bash -c '...'` block is
+  // a bash comment, and a raw substring match over the whole step text (the
+  // prior approach) is satisfied by a commented-out check. Strip comments the
+  // same way findBrowserInstallViolations does before matching.
+  const codeLines = lines
+    .slice(startIndex, endIndex)
+    .map(codeOf)
+    .filter((line) => line !== "" && !line.startsWith("#"));
+
+  if (!checksWithoutShortCircuit(codeLines, 'test -x "${CHROMIUM_PATH}"')) {
+    violations.push(
+      "container-build.yml's verify step never runs test -x " +
+        '"${CHROMIUM_PATH}" (Issue #3250): a CHROMIUM_PATH that points at ' +
+        "nothing executable would go unnoticed",
+    );
+  }
+
+  if (
+    !checksWithoutShortCircuit(codeLines, "command -v chromium") ||
+    !checksWithoutShortCircuit(codeLines, '= "${CHROMIUM_PATH}"')
+  ) {
+    violations.push(
+      "container-build.yml's verify step never checks that " +
+        '"$(command -v chromium)" = "${CHROMIUM_PATH}" (Issue #3250): ' +
+        "chromium could be on PATH at a different location than CHROMIUM_PATH",
+    );
+  }
+
+  if (
+    !checksWithoutShortCircuit(
+      codeLines,
+      "executablePath: process.env.CHROMIUM_PATH",
+    )
+  ) {
+    violations.push(
+      "container-build.yml's verify step never launches Chromium through " +
+        "executablePath: process.env.CHROMIUM_PATH (Issue #3250): a " +
+        "CHROMIUM_PATH that resolves but cannot launch would go unverified",
+    );
+  }
+
+  return violations;
+}
+
+/**
+ * True when a code line runs `substring` without `|| true` nullifying its
+ * exit status (Issue #3254 review) — a loosened variant that would otherwise
+ * still satisfy a plain substring match.
+ */
+function checksWithoutShortCircuit(
+  codeLines: string[],
+  substring: string,
+): boolean {
+  return codeLines.some((line) =>
+    line.includes(substring) && !/\|\|\s*true\b/.test(line)
+  );
 }
 
 /** Manifest tool name carrying the pinned Playwright browser install. */
@@ -1154,6 +1288,9 @@ const CHROMIUM_SHA_KEYS = ["chromium_amd64", "chromium_arm64"] as const;
 
 /** `ENV PLAYWRIGHT_BROWSERS_PATH=<value>`, capturing the (maybe quoted) value. */
 const BROWSERS_PATH_ENV_RE = /^ENV\s+PLAYWRIGHT_BROWSERS_PATH=(\S+)$/;
+
+/** `ENV CHROMIUM_PATH=<value>` (Issue #3250), capturing the (maybe quoted) value. */
+const CHROMIUM_PATH_ENV_RE = /^ENV\s+CHROMIUM_PATH=(\S+)$/;
 
 /** A build step that installs the Chromium browser. */
 const CHROMIUM_INSTALL_RE = /\binstall\b.*\bchromium\b/;

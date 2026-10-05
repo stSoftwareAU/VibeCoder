@@ -16,6 +16,7 @@ import {
 import {
   CONTAINER_TOOLS_ARG,
   findBrowserInstallViolations,
+  findChromiumPathVerifyViolations,
   findContainerfileViolations,
   findGraftRebuildViolations,
   findMissingRuntimePythonModules,
@@ -2282,11 +2283,14 @@ function browserManifestText(): string {
 /** A Containerfile that bakes the browser the way the image must. */
 const BROWSER_CONTAINERFILE = [
   `ENV PLAYWRIGHT_BROWSERS_PATH="${BROWSERS_PATH}"`,
+  'ENV CHROMIUM_PATH="/usr/local/bin/chromium"',
   "RUN set -eu; \\",
   '    npm install -g --ignore-scripts "${tarball}"; \\',
   '    echo "${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}  /tmp/chromium.zip" | sha256sum -c -; \\',
+  '    ln -s "${chrome_bin}" "${CHROMIUM_PATH}"; \\',
   "    playwright-core install --with-deps chromium chromium-headless-shell; \\",
-  '    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"',
+  '    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \\',
+  '    node -e "chromium.launch({executablePath: process.env.CHROMIUM_PATH})"',
 ].join("\n");
 
 Deno.test("findBrowserInstallViolations - a baked browser has none", () => {
@@ -2397,6 +2401,52 @@ Deno.test("findBrowserInstallViolations - reports a bake that never verifies the
   assert(violations.some((v) => v.includes("PLAYWRIGHT_SHA256_CHROMIUM")));
 });
 
+Deno.test("findBrowserInstallViolations - reports a build that never sets ENV CHROMIUM_PATH (Issue #3250)", () => {
+  const manifest = parseContainerManifest(browserManifestText());
+  const stripped = BROWSER_CONTAINERFILE.split("\n")
+    .filter((line) => !line.includes("ENV CHROMIUM_PATH"))
+    .join("\n");
+
+  const violations = findBrowserInstallViolations(
+    stripped,
+    manifest,
+    BROWSERS_PATH,
+  );
+  assert(violations.some((v) => v.includes("ENV CHROMIUM_PATH")));
+});
+
+Deno.test("findBrowserInstallViolations - reports a CHROMIUM_PATH that is never linked (Issue #3250)", () => {
+  const manifest = parseContainerManifest(browserManifestText());
+  const stripped = BROWSER_CONTAINERFILE.split("\n")
+    .filter((line) => !line.includes("ln -s"))
+    .join("\n");
+
+  const violations = findBrowserInstallViolations(
+    stripped,
+    manifest,
+    BROWSERS_PATH,
+  );
+  assert(violations.some((v) => v.includes("never links a baked")));
+});
+
+Deno.test("findBrowserInstallViolations - reports a build that never launches through CHROMIUM_PATH (Issue #3250)", () => {
+  const manifest = parseContainerManifest(browserManifestText());
+  const stripped = BROWSER_CONTAINERFILE.split("\n")
+    .filter((line) =>
+      !line.includes("executablePath: process.env.CHROMIUM_PATH")
+    )
+    .join("\n");
+
+  const violations = findBrowserInstallViolations(
+    stripped,
+    manifest,
+    BROWSERS_PATH,
+  );
+  assert(
+    violations.some((v) => v.includes("never launches Chromium through")),
+  );
+});
+
 Deno.test("container/ - the committed image bakes Playwright's headless Chromium", async () => {
   const manifest = parseContainerManifest(
     await Deno.readTextFile(new URL("container/tools.json", REPO_ROOT)),
@@ -2413,6 +2463,118 @@ Deno.test("container/ - the committed image bakes Playwright's headless Chromium
     ),
     [],
   );
+});
+
+/** A workflow fixture whose verify step carries every CHROMIUM_PATH check. */
+const CHROMIUM_VERIFY_WORKFLOW = [
+  "jobs:",
+  "  build:",
+  "    steps:",
+  "      - name: Verify the baked Playwright and headless Chromium",
+  "        run: |",
+  '          docker run --rm --entrypoint bash "${IMAGE}" -c \'',
+  '            test -x "${CHROMIUM_PATH}"',
+  '            test "$(command -v chromium)" = "${CHROMIUM_PATH}"',
+  '            node -e "chromium.launch({executablePath: process.env.CHROMIUM_PATH})"',
+  "          ' < /dev/null",
+  "      - name: Capture a screenshot with headless Chromium inside the image",
+  "        run: echo done",
+].join("\n");
+
+Deno.test("findChromiumPathVerifyViolations - a complete verify step has none", () => {
+  assertEquals(findChromiumPathVerifyViolations(CHROMIUM_VERIFY_WORKFLOW), []);
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports a missing test -x check", () => {
+  const stripped = CHROMIUM_VERIFY_WORKFLOW.split("\n")
+    .filter((line) => !line.includes("test -x"))
+    .join("\n");
+  const violations = findChromiumPathVerifyViolations(stripped);
+  assert(violations.some((v) => v.includes("test -x")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports a missing command -v chromium check", () => {
+  const stripped = CHROMIUM_VERIFY_WORKFLOW.split("\n")
+    .filter((line) => !line.includes("command -v chromium"))
+    .join("\n");
+  const violations = findChromiumPathVerifyViolations(stripped);
+  assert(violations.some((v) => v.includes("command -v chromium")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports a missing executablePath launch", () => {
+  const stripped = CHROMIUM_VERIFY_WORKFLOW.split("\n")
+    .filter((line) =>
+      !line.includes("executablePath: process.env.CHROMIUM_PATH")
+    )
+    .join("\n");
+  const violations = findChromiumPathVerifyViolations(stripped);
+  assert(
+    violations.some((v) =>
+      v.includes("executablePath: process.env.CHROMIUM_PATH")
+    ),
+  );
+});
+
+/** Comments out `line` within the fixture rather than deleting it. */
+function commentOutLine(workflow: string, needle: string): string {
+  return workflow
+    .split("\n")
+    .map((line) => line.includes(needle) ? `          # ${line.trim()}` : line)
+    .join("\n");
+}
+
+Deno.test("findChromiumPathVerifyViolations - reports test -x commented out (Issue #3254 review)", () => {
+  const commented = commentOutLine(CHROMIUM_VERIFY_WORKFLOW, "test -x");
+  const violations = findChromiumPathVerifyViolations(commented);
+  assert(violations.some((v) => v.includes("test -x")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports command -v chromium check commented out (Issue #3254 review)", () => {
+  const commented = commentOutLine(
+    CHROMIUM_VERIFY_WORKFLOW,
+    "command -v chromium",
+  );
+  const violations = findChromiumPathVerifyViolations(commented);
+  assert(violations.some((v) => v.includes("command -v chromium")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports executablePath launch commented out (Issue #3254 review)", () => {
+  const commented = commentOutLine(
+    CHROMIUM_VERIFY_WORKFLOW,
+    "executablePath: process.env.CHROMIUM_PATH",
+  );
+  const violations = findChromiumPathVerifyViolations(commented);
+  assert(
+    violations.some((v) =>
+      v.includes("executablePath: process.env.CHROMIUM_PATH")
+    ),
+  );
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports a loosened test -x || true (Issue #3254 review)", () => {
+  const loosened = CHROMIUM_VERIFY_WORKFLOW.replace(
+    'test -x "${CHROMIUM_PATH}"',
+    'test -x "${CHROMIUM_PATH}" || true',
+  );
+  const violations = findChromiumPathVerifyViolations(loosened);
+  assert(violations.some((v) => v.includes("test -x")));
+});
+
+Deno.test("findChromiumPathVerifyViolations - reports a workflow without the verify step", () => {
+  const withoutStep = CHROMIUM_VERIFY_WORKFLOW.split("\n")
+    .filter((line) =>
+      !line.includes("Verify the baked Playwright and headless Chromium")
+    )
+    .join("\n");
+  const violations = findChromiumPathVerifyViolations(withoutStep);
+  assert(violations.some((v) => v.includes('no "Verify the baked')));
+});
+
+Deno.test("container-build.yml - the committed verify step checks CHROMIUM_PATH (Issue #3250)", async () => {
+  const workflow = await Deno.readTextFile(
+    new URL(".github/workflows/container-build.yml", REPO_ROOT),
+  );
+  assertEquals(findChromiumPathVerifyViolations(workflow), []);
 });
 
 Deno.test("container/ - the baked browser matches the version the MCP server uses", async () => {

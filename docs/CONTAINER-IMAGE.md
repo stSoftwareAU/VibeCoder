@@ -329,6 +329,22 @@ it does not recognise a distribution, the build then launches the browser
 and renders a page: a missing library fails the build rather than the first
 screenshot.
 
+The image also exports `CHROMIUM_PATH=/usr/local/bin/chromium`, a symlink to
+the baked Chrome binary under `PLAYWRIGHT_BROWSERS_PATH` (Issue #3250):
+`chromium-<revision>`'s executable sits at a version-specific path, nothing
+else puts it on `PATH`, and agents' e2e scripts resolve the browser with
+`executablePath: Deno.env.get("CHROMIUM_PATH")` — without the symlink that
+call resolves to nothing. The Containerfile's own build-time smoke test and
+the `container-build.yml` "Verify the baked Playwright and headless
+Chromium" step both launch Chromium through
+`executablePath: process.env.CHROMIUM_PATH`, so a dangling or unset
+`CHROMIUM_PATH` fails the build or CI rather than the first e2e run. The gate
+is `findBrowserInstallViolations` in `worker/deno/lib/container_manifest.ts`,
+which fails when the `Containerfile` never sets `ENV CHROMIUM_PATH`, never
+links it to a baked binary, or never proves the link by launching through it;
+`findChromiumPathVerifyViolations` in the same module separately fails when
+the workflow's verify step drops any of its three CHROMIUM_PATH checks.
+
 ## Pre-warmed Deno cache
 
 The MCP server itself is launched as `deno run --no-config --no-lock
