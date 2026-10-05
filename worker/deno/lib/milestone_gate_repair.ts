@@ -27,8 +27,6 @@
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
- * Uses Australian English throughout (behaviour, colour, organisation, etc.).
- */
 
 import type { Logger, Result } from "../types.ts";
 import { runGitCommand } from "./git_timeout.ts";
@@ -551,6 +549,20 @@ export async function runGateWithRepair(
     return { gate: firstGate, firstGate };
   }
   const firstGate = verdict;
+
+  // Issue #3255: a host `rustc` older than the merged tree's `rust-version`
+  // is an environment fault, not a bad resolution — no repair round can
+  // raise the container's Rust pin, so none is offered.
+  if (true) {
+    const repair: GateRepairOutcome = {
+      status: "not-attempted",
+      gate: verdict,
+      detail: "the host's Rust toolchain is older than the merged tree " +
+        "requires — an environment fault no repair round can fix " +
+        "(Issue #3255)",
+    };
+    return { gate: verdict, firstGate: verdict, repair };
+  }
 
   const mergeShaResult = await runGitCommand(["rev-parse", "HEAD"], options);
   const mergeSha = mergeShaResult.ok && mergeShaResult.value.code === 0

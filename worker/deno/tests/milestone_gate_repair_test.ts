@@ -19,6 +19,7 @@ import {
   gateRepairBudgetExhausted,
   readMergedCommitSubjects,
   repairGatedResolution,
+  runGateWithRepair,
 } from "../lib/milestone_gate_repair.ts";
 import type { MilestoneConflictAgentFn } from "../lib/milestone_conflict_ladder.ts";
 import type { MergeGateOutcome } from "../lib/milestone_merge_gate.ts";
@@ -519,6 +520,88 @@ Deno.test("readMergedCommitSubjects - an unknown side or an unreadable log degra
       2,
       "both degradations are reported, not silent",
     );
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A toolchain gap is an environment fault, not a bad resolution — no repair
+// round is offered (Issue #3255)
+// ---------------------------------------------------------------------------
+
+const FAILURE_WITH_TOOLCHAIN_GAP: MergeGateOutcome = {
+  status: "failed",
+  detail: "cargo check in . failed (exit 101): the host's rustc 1.98.0 is " +
+    "older than the rust-version 1.99 that neat_ai_discovery@0.74.279 " +
+    "require(s) — raise the container's Rust pin (container/tools.json) " +
+    "to at least 1.99; no change to the resolution can fix this",
+  output: "neat_ai_discovery@0.74.279 requires rustc 1.99",
+  toolchainGap: {
+    installed: "1.98.0",
+    required: "1.99",
+    packages: ["neat_ai_discovery@0.74.279"],
+  },
+};
+
+Deno.test("runGateWithRepair - a failed verdict carrying a toolchain gap is not offered a repair (Issue #3255)", async () => {
+  const fx = await repo();
+  try {
+    let agentCalls = 0;
+    const agentFn: MilestoneConflictAgentFn = () => {
+      agentCalls++;
+      throw new Error("the agent rung must never be asked for a toolchain gap");
+    };
+    const result = await runGateWithRepair({
+      gate: () => Promise.resolve(FAILURE_WITH_TOOLCHAIN_GAP),
+      agentFn,
+      options: { cwd: fx.dir },
+      milestoneBranch: "milestone/3255",
+      defaultBranch: "main",
+      preMergeSha: fx.preMergeSha,
+      defaultRef: "HEAD",
+      resolutionMessage: "Merge main into milestone/3255",
+    });
+
+    assertEquals(result.gate, FAILURE_WITH_TOOLCHAIN_GAP);
+    assertEquals(result.firstGate, FAILURE_WITH_TOOLCHAIN_GAP);
+    assertEquals(result.repair?.status, "not-attempted");
+    assert(
+      result.repair?.status === "not-attempted" &&
+        result.repair.detail.includes("environment fault"),
+      "the reason names the environment fault, not a bad resolution",
+    );
+    assertEquals(agentCalls, 0, "the rung is never asked about a toolchain gap");
+  } finally {
+    await fx.cleanup();
+  }
+});
+
+Deno.test("runGateWithRepair - a failed verdict without a toolchain gap still offers a repair (Issue #3255)", async () => {
+  const fx = await repo();
+  try {
+    let agentCalls = 0;
+    const agentFn: MilestoneConflictAgentFn = () => {
+      agentCalls++;
+      return Promise.resolve({
+        ok: false,
+        error: new Error("no repair available in this fixture"),
+      });
+    };
+    const result = await runGateWithRepair({
+      gate: () => Promise.resolve(FAILURE),
+      agentFn,
+      options: { cwd: fx.dir },
+      milestoneBranch: "milestone/3255",
+      defaultBranch: "main",
+      preMergeSha: fx.preMergeSha,
+      defaultRef: "HEAD",
+      resolutionMessage: "Merge main into milestone/3255",
+    });
+
+    assertEquals(result.firstGate, FAILURE);
+    assertEquals(agentCalls, 1, "an ordinary failure still goes to the rung");
+    assertEquals(result.repair?.status, "failed");
   } finally {
     await fx.cleanup();
   }

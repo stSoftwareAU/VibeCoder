@@ -311,7 +311,7 @@ export function collapseRepeatedLines(output: string): string {
   const collapsed: string[] = [];
   let i = 0;
   while (i < lines.length) {
-    const line = lines[i];
+    const line = lines[i]!;
     let run = 1;
     while (i + run < lines.length && lines[i + run] === line) run++;
     collapsed.push(run > 1 ? `${line} (×${run})` : line);
@@ -348,8 +348,7 @@ const RUSTC_HEADER_RE = /^error: rustc ([0-9][0-9.]*) is not supported/;
  * disjoint from the literal `@` and ` ` that follow it, so neither capture
  * group can backtrack into the next.
  */
-const RUSTC_REQUIRES_RE =
-  /^([^\s@]+)@([^\s@]+) requires rustc ([0-9][0-9.]*)/;
+const RUSTC_REQUIRES_RE = /^([^\s@]+)@([^\s@]+) requires rustc ([0-9][0-9.]*)/;
 
 /** Numeric, dot-separated version comparison (`"1.99"` > `"1.98.0"`). */
 function compareVersions(a: string, b: string): number {
@@ -400,7 +399,7 @@ export function detectRustToolchainGap(
         seen.add(pkg);
         packages.push(pkg);
       }
-      if (!required || compareVersions(requiredVersion, required) > 0) {
+      if (!required || compareVersions(requiredVersion!, required) > 0) {
         required = requiredVersion;
       }
     }
