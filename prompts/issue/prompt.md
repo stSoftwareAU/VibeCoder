@@ -478,6 +478,15 @@ When things go wrong during implementation, follow these guidelines:
    `127.0.0.1`, or `file:///…`) and retry once. Only after a quoted failure
    may you fall back to describing what was tested and referencing test
    output as evidence.
+
+   **A browser check you did not run is not a safety net.** An `e2e/` (or
+   other browser) script you add or change must be run against the baked
+   Chromium — `$CHROMIUM_PATH`, also `chromium` on PATH — before you call it a
+   regression guard; quote the passing run and, for a regression guard, the
+   failing run with the fix reverted. If it genuinely cannot run, quote the
+   error, say so in the PR summary, and do not present it as the regression
+   guard. Do not conclude Chromium is missing from `which chromium` alone —
+   check `$CHROMIUM_PATH` and `$PLAYWRIGHT_BROWSERS_PATH`.
 4. **Git conflicts**: Rebase on the latest default branch to resolve conflicts.
    If conflicts cannot be resolved automatically, resolve them manually, re-run
    tests to confirm nothing broke, then continue.
