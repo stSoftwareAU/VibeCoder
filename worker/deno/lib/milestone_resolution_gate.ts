@@ -17,11 +17,19 @@
  * and the sync treats that as a refusal: a resolution that cannot be verified
  * is not a resolution.
  *
+ * A Cargo project's `cargo check` or `cargo test` step carries through the
+ * same toolchain-gap detection as `milestone_merge_gate.ts`: a host `rustc`
+ * older than the tree's `rust-version` is reported naming the container's
+ * Rust pin, and skips the repair rounds built for a bad resolution rather
+ * than a host limit (Issue #3255).
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import {
   checkMergedTree,
+  collapseRepeatedLines,
+  detectRustToolchainGap,
   findProjectManifests,
   type MergeGateFn,
   type MergeGateOutcome,
@@ -128,7 +136,7 @@ const MAX_OUTPUT_CHARS = 4000;
 
 /** Keep the tail — a task's failure sits at the end of its output. */
 function tail(output: string): string {
-  const lines = output.trim().split("\n");
+  const lines = collapseRepeatedLines(output.trim()).split("\n");
   const kept = lines.slice(-MAX_OUTPUT_LINES).join("\n");
   return kept.length > MAX_OUTPUT_CHARS ? kept.slice(-MAX_OUTPUT_CHARS) : kept;
 }
@@ -291,6 +299,28 @@ export async function verifyResolvedTree(
         };
       }
       if (result.code !== 0) {
+        // Issue #3255: `cargo test` fails the same way `cargo check` does
+        // when the host's rustc is older than the tree's rust-version — an
+        // environment fault, not a bad resolution, so it is named as such.
+        const gap = step.kind === "cargo"
+          ? detectRustToolchainGap(result.output)
+          : undefined;
+        if (gap) {
+          return {
+            status: "failed",
+            detail: `${where} failed (exit ${result.code}): the host's ` +
+              `rustc ${
+                gap.installed ?? "(unknown)"
+              } is older than the rust-version ${gap.required} that ` +
+              `${
+                gap.packages.join(", ")
+              } require(s) — raise the container's Rust pin ` +
+              `(container/tools.json) to at least ${gap.required}; no ` +
+              "change to the resolution can fix this",
+            output: tail(result.output),
+            toolchainGap: gap,
+          };
+        }
         return {
           status: "failed",
           detail: `${where} failed (exit ${result.code})`,

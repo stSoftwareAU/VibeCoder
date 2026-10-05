@@ -20,6 +20,13 @@
  * worker ended, and a grant too small to cover a run are all reported as what
  * they are, never as a pass.
  *
+ * A gate failure carrying a {@link RustToolchainGap} (Issue #3255) is not
+ * offered a repair at all: the host's `rustc` being older than the merged
+ * tree's `rust-version` is an environment fault, and no agent editing the
+ * tree can change what toolchain the container runs.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 

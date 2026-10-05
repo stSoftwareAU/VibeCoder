@@ -16,6 +16,12 @@
  * failure is not success, and a tree nobody verified is exactly the tree this
  * gate exists to keep off the branch.
  *
+ * A `cargo check` can also fail for a reason no resolution change can answer:
+ * the tree's `rust-version` is newer than the container's pinned `rustc`
+ * (Issue #3255). That is reported as a {@link RustToolchainGap} rather than an
+ * ordinary failure, so the repair rounds in `milestone_gate_repair.ts` are not
+ * spent retrying a host toolchain limit as though it were a bad resolution.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -84,6 +90,29 @@ export interface MergeGateOutcome {
   detail: string;
   /** Trimmed tail of the check output; empty when nothing ran. */
   output: string;
+  /**
+   * Set only when a `cargo check` failed because the host's `rustc` is older
+   * than the `rust-version` the merged tree requires (Issue #3255) — an
+   * environment fault no resolution change can fix, so the caller must not
+   * spend a repair round on it.
+   */
+  toolchainGap?: RustToolchainGap;
+}
+
+/**
+ * A `cargo` refusal that names a `rust-version` newer than the host's `rustc`.
+ *
+ * Cargo prints one "requires rustc X" line per affected target, so the same
+ * package can appear dozens of times for one gap (Issue #3255) — `packages`
+ * is deduplicated, and `required` is the highest version any line named.
+ */
+export interface RustToolchainGap {
+  /** The host's `rustc` version, when cargo's header line named it. */
+  installed?: string;
+  /** The highest `rust-version` any affected package required. */
+  required: string;
+  /** Distinct `name@version` packages that named the requirement, in order. */
+  packages: string[];
 }
 
 /** Gate signature injected into the sync, so tests can drive both verdicts. */
@@ -264,11 +293,120 @@ export async function findProjectManifests(
   return found;
 }
 
+/**
+ * Collapse consecutive identical lines into one line marked `(×N)`.
+ *
+ * Cargo's "requires rustc" refusal repeats the same line once per target —
+ * `neat_ai_discovery@0.74.279 requires rustc 1.99` forty times over — which
+ * pushed the one line that mattered for Issue #3255 out of the kept tail
+ * entirely. Only *consecutive* duplicates collapse: lines repeated with other
+ * output between them are a weaker signal of the same cause and are kept as
+ * they were.
+ *
+ * @param output - The raw check output, before it is trimmed to a tail
+ * @returns The same lines, with consecutive runs collapsed
+ */
+export function collapseRepeatedLines(output: string): string {
+  const lines = output.split("\n");
+  const collapsed: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    let run = 1;
+    while (i + run < lines.length && lines[i + run] === line) run++;
+    collapsed.push(run > 1 ? `${line} (×${run})` : line);
+    i += run;
+  }
+  return collapsed.join("\n");
+}
+
 /** Keep the tail of the output — the errors sit at the end of a check run. */
 function tail(output: string): string {
-  const lines = output.trim().split("\n");
+  const lines = collapseRepeatedLines(output.trim()).split("\n");
   const kept = lines.slice(-MAX_OUTPUT_LINES).join("\n");
   return kept.length > MAX_OUTPUT_CHARS ? kept.slice(-MAX_OUTPUT_CHARS) : kept;
+}
+
+/** Longest line considered for a toolchain-gap pattern (Issue #3255). */
+const MAX_GAP_LINE_CHARS = 4000;
+
+/**
+ * Cargo's "rustc X is not supported" header, naming the host's version.
+ *
+ * Anchored on a literal prefix before the numeric capture and a literal
+ * suffix after it, so the capture's `[0-9.]*` cannot backtrack against
+ * hostile input — each character is either a digit/dot (consumed by the
+ * class) or the first character of the literal suffix (which the class never
+ * matches), so the match is a single linear pass.
+ */
+const RUSTC_HEADER_RE = /^error: rustc ([0-9][0-9.]*) is not supported/;
+
+/**
+ * One cargo "package@version requires rustc X" line.
+ *
+ * The same anchoring reasoning as {@link RUSTC_HEADER_RE}: `[^\s@]+` is
+ * disjoint from the literal `@` and ` ` that follow it, so neither capture
+ * group can backtrack into the next.
+ */
+const RUSTC_REQUIRES_RE =
+  /^([^\s@]+)@([^\s@]+) requires rustc ([0-9][0-9.]*)/;
+
+/** Numeric, dot-separated version comparison (`"1.99"` > `"1.98.0"`). */
+function compareVersions(a: string, b: string): number {
+  const partsA = a.split(".").map(Number);
+  const partsB = b.split(".").map(Number);
+  const length = Math.max(partsA.length, partsB.length);
+  for (let i = 0; i < length; i++) {
+    const diff = (partsA[i] ?? 0) - (partsB[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * Detect a cargo refusal caused by the host's `rustc` being older than the
+ * merged tree's `rust-version` (Issue #3255).
+ *
+ * No resolution change can fix this — only raising the container's Rust pin
+ * (`container/tools.json`) can — so the caller treats it as an environment
+ * fault rather than an ordinary check failure, and skips the repair rounds
+ * built for a bad resolution.
+ *
+ * @param output - The raw `cargo check` output (untrimmed)
+ * @returns The gap, or undefined when no "requires rustc" line is found
+ */
+export function detectRustToolchainGap(
+  output: string,
+): RustToolchainGap | undefined {
+  let installed: string | undefined;
+  let required: string | undefined;
+  const packages: string[] = [];
+  const seen = new Set<string>();
+
+  for (const rawLine of output.split("\n")) {
+    const line = rawLine.trim().slice(0, MAX_GAP_LINE_CHARS);
+
+    const header = RUSTC_HEADER_RE.exec(line);
+    if (header) {
+      installed = header[1];
+      continue;
+    }
+
+    const requires = RUSTC_REQUIRES_RE.exec(line);
+    if (requires) {
+      const [, name, version, requiredVersion] = requires;
+      const pkg = `${name}@${version}`;
+      if (!seen.has(pkg)) {
+        seen.add(pkg);
+        packages.push(pkg);
+      }
+      if (!required || compareVersions(requiredVersion, required) > 0) {
+        required = requiredVersion;
+      }
+    }
+  }
+
+  return required ? { installed, required, packages } : undefined;
 }
 
 /** Spawn the repository's own check with a bounded timeout. */
@@ -353,6 +491,25 @@ export async function checkMergedTree(
       };
     }
     if (result.code !== 0) {
+      const gap = project.kind === "cargo"
+        ? detectRustToolchainGap(result.output)
+        : undefined;
+      if (gap) {
+        return {
+          status: "failed",
+          detail: `${where} failed (exit ${result.code}): the host's rustc ` +
+            `${
+              gap.installed ?? "(unknown)"
+            } is older than the rust-version ${gap.required} that ` +
+            `${
+              gap.packages.join(", ")
+            } require(s) — raise the container's Rust pin ` +
+            `(container/tools.json) to at least ${gap.required}; no change ` +
+            "to the resolution can fix this",
+          output: tail(result.output),
+          toolchainGap: gap,
+        };
+      }
       return {
         status: "failed",
         detail: `${where} failed (exit ${result.code})`,
