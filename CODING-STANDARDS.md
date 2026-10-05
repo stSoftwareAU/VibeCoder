@@ -616,6 +616,11 @@ guidance under **Unit tests** below.
   framework internals unless that appearance or structure is itself a stated
   contract. Use visual snapshots deliberately when appearance is the contract
   and the baseline can be reviewed. A restyle should not break a behaviour test.
+  A closed `visually-hidden` element keeps a 1×1 box, which Playwright counts
+  as visible, so assert the semantic closed state (`aria-expanded="false"`, or
+  the open-only class absent) rather than `toBeVisible()`/`isHidden()`.
+  Measure only after the UI has committed the change (await the state or the
+  next frame), never in the same synchronous `page.evaluate` as the click.
 - **APIs:** Check successful responses and schema/semantics, invalid inputs,
   authorisation, relevant boundaries, documented errors, and retry/idempotency
   where applicable. Incompatible supported contract changes need a new version
