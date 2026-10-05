@@ -13,6 +13,13 @@
  * line of head code for any absolute word, say where a moved cost lands,
  * and check history claims against the base-branch code.
  *
+ * Issue #3232 — the absolute-word list missed "every"/"all"/"each" and
+ * counted or closed lists, and the rule spoke only of when the behaviour
+ * happens and what it costs, not which inputs a scan covers
+ * (VibeCoder#3231, VibeCoder#3160, GRQ-AutoTrader#2479). The three surfaces
+ * must also carry those words and the "open the code that builds the set"
+ * check.
+ *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
@@ -85,6 +92,76 @@ Deno.test("pr_feedback prompt Making Changes requires checking claims about the 
   for (const phrase of PR_FEEDBACK_PROMPT_KEY_PHRASES) {
     assert(
       text.includes(phrase),
+      `Making Changes is missing "${phrase}": ${text}`,
+    );
+  }
+});
+
+const STANDARDS_SET_CLAIM_PHRASES = [
+  '"every", "all"',
+  "a counted or closed list",
+  "which inputs",
+  "the code that builds the set",
+  "VibeCoder#3231",
+  "VibeCoder#3160",
+  "GRQ-AutoTrader#2479",
+  "(Issue #3232)",
+];
+
+Deno.test("CODING-STANDARDS.md PR Summary and Evidence holds every/all and closed-list claims to the code that builds the set (Issue #3232)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "PR Summary and Evidence",
+    ),
+  );
+
+  for (const phrase of STANDARDS_SET_CLAIM_PHRASES) {
+    assert(
+      text.includes(flat(phrase)),
+      `PR Summary and Evidence is missing "${phrase}": ${text}`,
+    );
+  }
+});
+
+const ISSUE_PROMPT_SET_CLAIM_PHRASES = [
+  '"every", "all"',
+  "a counted or closed list",
+  "which inputs",
+  "the code that builds the set",
+];
+
+Deno.test("issue prompt docs-change step holds every/all and closed-list claims to the code that builds the set (Issue #3232)", async () => {
+  const text = flat(
+    section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
+  );
+
+  for (const phrase of ISSUE_PROMPT_SET_CLAIM_PHRASES) {
+    assert(
+      text.includes(flat(phrase)),
+      `Instructions is missing "${phrase}": ${text}`,
+    );
+  }
+});
+
+const PR_FEEDBACK_PROMPT_SET_CLAIM_PHRASES = [
+  '"every", "all"',
+  "a counted or closed list",
+  "which inputs",
+  "the code that builds the set",
+];
+
+Deno.test("pr_feedback prompt Making Changes holds every/all and closed-list claims to the code that builds the set (Issue #3232)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+  );
+
+  for (const phrase of PR_FEEDBACK_PROMPT_SET_CLAIM_PHRASES) {
+    assert(
+      text.includes(flat(phrase)),
       `Making Changes is missing "${phrase}": ${text}`,
     );
   }
