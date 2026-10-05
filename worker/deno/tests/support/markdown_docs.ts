@@ -112,6 +112,14 @@ export function excerpt(
   return text.slice(start, end) as DocSection;
 }
 
+/** A section split into pieces — each piece is still within that section. */
+export function splitSection(
+  text: DocSection,
+  separator: string | RegExp,
+): DocSection[] {
+  return text.split(separator) as DocSection[];
+}
+
 /**
  * One line, single-spaced — prose wrapped at 80 columns still matches.
  * Accepts only section-scoped text (`DocSection`), not a whole file; a

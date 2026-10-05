@@ -11,13 +11,14 @@
  * Australian English spelling used throughout (behaviour, recognised, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   excerpt,
   flat,
   flatWholeFile,
   readRepoDoc,
   section,
+  splitSection,
 } from "./support/markdown_docs.ts";
 
 Deno.test("flat(section()) reads the section-scoped drift-test rule", async () => {
@@ -43,6 +44,12 @@ Deno.test("flat() rejects a whole file, a raw slice, but accepts excerpt()", asy
     excerpt(section(doc, "Documentation-drift tests"), 0, 50),
   );
   assertEquals(typeof excerpted, "string");
+
+  const pieces = splitSection(
+    section(doc, "Documentation-drift tests"),
+    "\n\n",
+  ).map(flat);
+  assert(pieces.length > 0);
 });
 
 Deno.test("flatWholeFile() compiles on a whole file and collapses whitespace", async () => {
