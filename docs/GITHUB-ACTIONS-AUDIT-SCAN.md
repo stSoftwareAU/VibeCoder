@@ -1092,11 +1092,12 @@ nothing. Wording avoids the literal `secret_scanning*: value` and
 `id-token: write` pairs the outbound secret masker rewrites.
 
 A missing `SECURITY.md` is filed too, but deliberately outside that
-family: it is `BP-SECURITY-POLICY-MISSING`, not `BP-REPO-*`, because a
-repository-settings write is the one thing the worker cannot do itself,
-while adding a `SECURITY.md` is an ordinary file the worker can commit in
-a normal PR. The `BP-REPO-*` prefix is what the worker's admin-only
-triage (`isAdminOnlyRepoSettingsIssue`) matches to route a finding to
+family: it is `BP-SECURITY-POLICY-MISSING`, not `BP-REPO-*`, because the
+other findings each need a repository-settings write that the worker
+cannot make, while a missing `SECURITY.md` is an ordinary file the
+worker can add in a normal PR. The `BP-REPO-*` prefix is what the
+worker's admin-only triage (`isAdminOnlyRepoSettingsIssue`) matches to
+route a finding to
 `needs-human` before the agent ever runs; `BP-SECURITY-POLICY-MISSING`
 is left off that prefix on purpose so it goes through the normal agent
 flow and gets a PR instead.
