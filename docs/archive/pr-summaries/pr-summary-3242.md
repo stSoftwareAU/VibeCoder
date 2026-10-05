@@ -108,10 +108,15 @@ pins; condition 4, per-phrase base check). The change agrees with both.
 
 ## Follow-up
 
-About 31 other `*_test.ts` files still flatten inline with
+31 other `*_test.ts` files still flatten inline with
 `.replace(/\s+/g, " ")`, for example
-`worker/deno/tests/documentation_drift_policy_test.ts`. The optional lint
-against that pattern was skipped as out of scope, because it would fail on
-all of them. This overlaps #3234 and #3240.
+`worker/deno/tests/action_sha_pinning_policy_test.ts` and
+`worker/deno/tests/coding_guidelines_additive_member_3137_test.ts`. The
+optional lint against that pattern was skipped as out of scope, because it
+would fail on all of them. `worker/deno/tests/documentation_drift_policy_test.ts`
+has no inline flatten: it pins against a whole prompt through
+`flat(loaded.value)` in its `promptCollapsed()` helper, which an
+inline-pattern lint would not flag and which PR #3240 for Issue #3234
+touches. This overlaps #3234 and #3240.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
