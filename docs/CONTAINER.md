@@ -43,7 +43,7 @@ setting and [Containment](CONTAINMENT.md) for the boundary.
 | the coding-agent binaries (`claude`, …) | one `container/providers/<id>.sh` per id in `AGENT_PROVIDERS` | Version + SHA-256 per architecture |
 | the monitored-repository toolchains (below) | `toolchains` layers            | Version + SHA-256 per architecture |
 | `graft` (`@nanonets/graft`, worker runtime — the repo-context code graph) | npm tarball, then a rebuild of its seven native modules in the image | Version + SHA-256 (noarch tarball; the native modules are compiled, not downloaded) |
-| `playwright-core` + headless Chromium | npm tarball, then checksum-verified Chromium zip, then `install --with-deps` | Version + SHA-256 (noarch tarball + chromium_amd64 / chromium_arm64); apt deps residual |
+| `playwright-core` + headless Chromium | npm tarball, then checksum-verified Chromium, headless-shell and ffmpeg zips, then `install --with-deps` | Version + SHA-256 (noarch tarball + chromium_* / headless_shell_* / ffmpeg_*); apt deps residual |
 
 Every version lives in [`container/tools.json`](../container/tools.json);
 `container/Containerfile` only restates those values as build `ARG`s. Nothing
@@ -241,10 +241,13 @@ flowchart TD
 The worker captures PR evidence through the Playwright MCP server, and a
 contained worker has no host browser and no desktop session to borrow. So the
 image bakes Chromium at build time: `container/Containerfile`
-installs the checksum-verified `playwright-core` tarball, downloads the
-Chromium zip Playwright would have fetched, verifies it against the
-committed `chromium_amd64` / `chromium_arm64` digest (Issue #274), extracts
-it into `PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), then runs
+installs the checksum-verified `playwright-core` tarball, then downloads
+the Chromium, chromium-headless-shell and ffmpeg zips Playwright would
+otherwise fetch mid-install — `install chromium` resolves to all three,
+not just Chromium itself — verifies each against the committed
+`chromium_*` / `headless_shell_*` / `ffmpeg_*` digests in
+`container/tools.json` (Issues #274, #3256), and extracts them into
+`PLAYWRIGHT_BROWSERS_PATH` (`/opt/playwright-browsers`), then runs
 `playwright-core install --with-deps chromium` so apt still installs the
 system-library set. The tree is made readable to the non-root `vibe` user,
 and the build launches the browser once so a missing system library fails

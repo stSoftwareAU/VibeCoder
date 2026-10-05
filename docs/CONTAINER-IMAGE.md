@@ -314,14 +314,22 @@ not a free choice: it is exactly the version `@playwright/mcp` depends on,
 because Playwright resolves browsers as `chromium-<revision>` and each
 release pins its own revision; the gate fails when the pin drifts from
 `PLAYWRIGHT_INSTALLER_VERSION` in `worker/deno/setup/screenshot.ts`.
-The Chromium zip is a second artefact (Issue #274): Playwright 1.61 on
-Debian Trixie fetches Chrome for Testing on amd64 and its own chromium
-build on arm64. Those zips are downloaded, SHA-256 verified against
-`chromium_amd64` / `chromium_arm64` in `container/tools.json`, and extracted
-into `chromium-<revision>` *before* `playwright-core install --with-deps
-chromium` runs, so the installer sees `INSTALLATION_COMPLETE` and does not
-re-fetch the blob. `--with-deps` still apt-installs the system-library and
-font set Playwright itself declares. Those Debian packages stay unpinned:
+`install chromium` resolves to three artefacts, not one (Issues #274,
+#3256): the Chromium zip, the chromium-headless-shell zip — the binary a
+default `chromium.launch()` with no `executablePath` actually uses, as in
+`container-build.yml`'s "Capture a screenshot with headless Chromium
+inside the image" step — and ffmpeg, which Playwright installs with every
+browser, so `--no-shell` would not remove it. Playwright 1.61 on Debian
+Trixie fetches Chrome for Testing builds of Chromium and
+chromium-headless-shell on amd64, and its own chromium /
+chromium-headless-shell revisions on arm64. Each zip is downloaded,
+SHA-256 verified against `chromium_*`, `headless_shell_*` and `ffmpeg_*`
+in `container/tools.json`, and extracted into `chromium-<revision>`,
+`chromium_headless_shell-<revision>` and `ffmpeg-<revision>` respectively
+*before* `playwright-core install --with-deps chromium` runs, so the
+installer sees `INSTALLATION_COMPLETE` for each and downloads none of
+them. `--with-deps` still apt-installs the system-library and font set
+Playwright itself declares. Those Debian packages stay unpinned:
 the list is large, security updates move the versions, and pinning them
 would break the next point release. Residual risk is Debian's signed apt
 repos on the digest-pinned trixie base. Because Playwright only warns when

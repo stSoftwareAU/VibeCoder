@@ -2274,6 +2274,10 @@ function browserManifestText(): string {
       noarch: SHA_AMD64,
       chromium_amd64: SHA_AMD64,
       chromium_arm64: SHA_ARM64,
+      headless_shell_amd64: SHA_AMD64,
+      headless_shell_arm64: SHA_ARM64,
+      ffmpeg_amd64: SHA_AMD64,
+      ffmpeg_arm64: SHA_ARM64,
     },
     browsersPath: BROWSERS_PATH,
   });
@@ -2282,11 +2286,16 @@ function browserManifestText(): string {
 
 /** A Containerfile that bakes the browser the way the image must. */
 const BROWSER_CONTAINERFILE = [
+  "ARG PLAYWRIGHT_SHA256_CHROMIUM_AMD64",
+  "ARG PLAYWRIGHT_SHA256_HEADLESS_SHELL_AMD64",
+  "ARG PLAYWRIGHT_SHA256_FFMPEG_AMD64",
   `ENV PLAYWRIGHT_BROWSERS_PATH="${BROWSERS_PATH}"`,
   'ENV CHROMIUM_PATH="/usr/local/bin/chromium"',
   "RUN set -eu; \\",
   '    npm install -g --ignore-scripts "${tarball}"; \\',
   '    echo "${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}  /tmp/chromium.zip" | sha256sum -c -; \\',
+  '    echo "${PLAYWRIGHT_SHA256_HEADLESS_SHELL_AMD64}  /tmp/pw.zip" | sha256sum -c -; \\',
+  '    echo "${PLAYWRIGHT_SHA256_FFMPEG_AMD64}  /tmp/pw.zip" | sha256sum -c -; \\',
   '    ln -s "${chrome_bin}" "${CHROMIUM_PATH}"; \\',
   "    playwright-core install --with-deps chromium chromium-headless-shell; \\",
   '    chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \\',
@@ -2399,6 +2408,81 @@ Deno.test("findBrowserInstallViolations - reports a bake that never verifies the
     BROWSERS_PATH,
   );
   assert(violations.some((v) => v.includes("PLAYWRIGHT_SHA256_CHROMIUM")));
+});
+
+Deno.test("findBrowserInstallViolations - reports a playwright-core pin missing headless_shell_amd64 (Issue #3256)", () => {
+  const raw = JSON.parse(browserManifestText()) as {
+    tools: Array<{ name: string; sha256: Record<string, string> }>;
+  };
+  const pin = raw.tools.find((t) => t.name === "playwright-core")!;
+  delete pin.sha256.headless_shell_amd64;
+
+  const violations = findBrowserInstallViolations(
+    BROWSER_CONTAINERFILE,
+    parseContainerManifest(JSON.stringify(raw)),
+    BROWSERS_PATH,
+  );
+  assertEquals(violations, [
+    'container/tools.json "playwright-core" sha256 omits headless_shell_amd64: ' +
+    "the chromium-headless-shell browser blob would be fetched without a committed checksum",
+  ]);
+});
+
+Deno.test("findBrowserInstallViolations - reports a playwright-core pin missing ffmpeg_arm64 (Issue #3256)", () => {
+  const raw = JSON.parse(browserManifestText()) as {
+    tools: Array<{ name: string; sha256: Record<string, string> }>;
+  };
+  const pin = raw.tools.find((t) => t.name === "playwright-core")!;
+  delete pin.sha256.ffmpeg_arm64;
+
+  const violations = findBrowserInstallViolations(
+    BROWSER_CONTAINERFILE,
+    parseContainerManifest(JSON.stringify(raw)),
+    BROWSERS_PATH,
+  );
+  assertEquals(violations, [
+    'container/tools.json "playwright-core" sha256 omits ffmpeg_arm64: ' +
+    "the ffmpeg browser blob would be fetched without a committed checksum",
+  ]);
+});
+
+Deno.test("findBrowserInstallViolations - reports a bake that never verifies the headless-shell checksum (Issue #3256)", () => {
+  const manifest = parseContainerManifest(browserManifestText());
+  const unverified = BROWSER_CONTAINERFILE.split("\n")
+    .filter((line) =>
+      !(line.includes("PLAYWRIGHT_SHA256_HEADLESS_SHELL") &&
+        !/^ARG\b/.test(line))
+    )
+    .join("\n");
+
+  const violations = findBrowserInstallViolations(
+    unverified,
+    manifest,
+    BROWSERS_PATH,
+  );
+  assertEquals(violations, [
+    "Containerfile never verifies a PLAYWRIGHT_SHA256_HEADLESS_SHELL checksum: " +
+    "the chromium-headless-shell blob would be fetched without checking the committed digest",
+  ]);
+});
+
+Deno.test("findBrowserInstallViolations - reports a bake that never verifies the ffmpeg checksum (Issue #3256)", () => {
+  const manifest = parseContainerManifest(browserManifestText());
+  const unverified = BROWSER_CONTAINERFILE.split("\n")
+    .filter((line) =>
+      !(line.includes("PLAYWRIGHT_SHA256_FFMPEG") && !/^ARG\b/.test(line))
+    )
+    .join("\n");
+
+  const violations = findBrowserInstallViolations(
+    unverified,
+    manifest,
+    BROWSERS_PATH,
+  );
+  assertEquals(violations, [
+    "Containerfile never verifies a PLAYWRIGHT_SHA256_FFMPEG checksum: " +
+    "the ffmpeg blob would be fetched without checking the committed digest",
+  ]);
 });
 
 Deno.test("findBrowserInstallViolations - reports a build that never sets ENV CHROMIUM_PATH (Issue #3250)", () => {
