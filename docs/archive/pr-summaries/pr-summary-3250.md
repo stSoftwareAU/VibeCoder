@@ -80,7 +80,7 @@ flowchart LR
 - `worker/deno/tests/container_manifest_test.ts`:
   - `BROWSER_CONTAINERFILE` fixture extended with the `ENV CHROMIUM_PATH`, symlink and `executablePath` lines.
   - Three new `findBrowserInstallViolations` tests, one per removed line.
-  - Five `findChromiumPathVerifyViolations` fixture tests.
+  - Nine `findChromiumPathVerifyViolations` fixture tests (five original, plus four added for Issue #3254's review: comment-stripped and `|| true`-loosened cases).
   - `container-build.yml - the committed verify step checks CHROMIUM_PATH (Issue #3250)` against the real workflow.
 - `worker/deno/tests/e2e_browser_check_run_3250_test.ts` (new): pins the rule in the issue prompt's "Error Recovery" and pr_feedback's "Making Changes", and pins its position after the red-run paragraph. It went red with the two prompt edits reverted.
 - `worker/deno/tests/ui_assertion_closed_state_3250_test.ts` (new): pins the closed-state guidance in "Choosing assertions". It went red with the `CODING-STANDARDS.md` edit reverted.
@@ -89,7 +89,7 @@ flowchart LR
   - `prompts/issue/prompt.md` "Error Recovery", 5 phrases;
   - `prompts/pr_feedback/prompt.md` "Making Changes", 4 phrases;
   - `CODING-STANDARDS.md` "Choosing assertions": "1×1 box", `aria-expanded="false"`, "same synchronous `page.evaluate` as the click".
-- `deno task test:unit tests/container_manifest_test.ts tests/e2e_browser_check_run_3250_test.ts tests/ui_assertion_closed_state_3250_test.ts tests/new_test_must_go_red_3093_test.ts < /dev/null` — 146 passed, 0 failed on the final code head.
+- `deno task test:unit tests/container_manifest_test.ts tests/e2e_browser_check_run_3250_test.ts tests/ui_assertion_closed_state_3250_test.ts tests/new_test_must_go_red_3093_test.ts < /dev/null` — 150 passed, 0 failed on the final code head (four new `findChromiumPathVerifyViolations` tests added for Issue #3254's review).
 - `./quality.sh < /dev/null` passed on the final head.
 
 **Branch outcomes:**
