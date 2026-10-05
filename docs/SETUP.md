@@ -362,6 +362,12 @@ For each monitored repository, in order:
      `skipped: codeql-default-setup: advanced setup: …`. A 403 or 404 on the
      read is reported as skipped on that repository's line and does not fail
      the run;
+   - **private vulnerability reporting** is turned on for **public**
+     repositories only, behind the same visibility check as secret scanning
+     and CodeQL default setup: `PUT repos/{repo}/private-vulnerability-reporting`.
+     A private or internal repository has no equivalent GitHub feature to
+     enable, so the step is skipped there and its line says
+     `private vulnerability reporting: skipped — not a public repository`;
    - the default branch requires **one approving review** (Issue #2680), so
      fleet PRs wait for the `/review-fleet-prs` skill or the owner instead of
      auto-merging unreviewed. A `pull_request` rule below one is raised in

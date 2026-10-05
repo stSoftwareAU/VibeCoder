@@ -35,6 +35,7 @@ import {
   allowListCovers,
   needsPaidSecretProtection,
 } from "./repo_settings_harden.ts";
+import { isNotFoundError } from "./repo_rulesets.ts";
 import type {
   GhCommandFn,
   WorkflowFindingSeverity,

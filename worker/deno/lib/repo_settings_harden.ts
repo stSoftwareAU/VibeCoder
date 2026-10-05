@@ -24,6 +24,10 @@
  *    state is `not-configured`, with the `default` query suite; a repository
  *    already configured, on either suite, is left as it is, and one that runs
  *    its own CodeQL workflow (advanced setup) is reported, never written.
+ *  - private vulnerability reporting (Issue #3227) — public repositories
+ *    only, behind the same visibility gate: it is turned on when read as
+ *    off, and the skip is printed rather than read or written on a private
+ *    or internal repository.
  *  - one approving review on the default branch (GHA-PERM-004, Issue #2680)
  *    — by default: fleet PRs wait for `/review-fleet-prs` or the owner to
  *    approve instead of auto-merging unreviewed. A pull_request rule below
@@ -161,6 +165,11 @@ export interface RepoSettingsSnapshot {
    * `collaborators/{login}/permission` `.role_name`.
    */
   fleetPermissions?: FleetPermission[];
+  /**
+   * Private vulnerability reporting (Issue #3227), from
+   * `private-vulnerability-reporting`. Read on a public repository only.
+   */
+  privateVulnerabilityReporting?: { enabled?: boolean };
 }
 
 /** One fleet account's repository role (Issue #2690). */
@@ -193,6 +202,7 @@ export interface HardenStep {
     | "actions-allow-list"
     | "secret-scanning"
     | "codeql-default-setup"
+    | "private-vulnerability-reporting"
     | "ruleset-reviews"
     | "default-branch-approval"
     | "default-branch-squash-only"
@@ -503,6 +513,14 @@ export const CODE_SECURITY_SKIP_NOTE =
   "code scanning default setup: skipped — private repository needs " +
   "paid GitHub Code Security";
 
+/**
+ * The note printed for a private or internal repository (Issue #3227):
+ * private vulnerability reporting is a public-repository setting, and this
+ * says it was not checked there.
+ */
+export const PVR_SKIP_NOTE =
+  "private vulnerability reporting: skipped — not a public repository";
+
 /** The endpoint for CodeQL default setup, under `repos/{repo}/`. */
 const CODEQL_DEFAULT_SETUP = "code-scanning/default-setup";
 
@@ -538,6 +556,23 @@ function planCodeqlDefaultSetup(
     };
   }
   return [step];
+}
+
+/**
+ * Turn on private vulnerability reporting when it is off (Issue #3227).
+ * Planned only when the snapshot read it as `false`: an absent field (not
+ * read, because the repository is not public) or `true` plans nothing.
+ */
+function planPrivateVulnerabilityReporting(
+  snapshot: RepoSettingsSnapshot,
+): HardenStep[] {
+  if (snapshot.privateVulnerabilityReporting?.enabled !== false) return [];
+  return [{
+    kind: "private-vulnerability-reporting",
+    title: "Enable private vulnerability reporting",
+    method: "PUT",
+    endpoint: "private-vulnerability-reporting",
+  }];
 }
 
 /** Plan the writes that close each open setting; empty when hardened. */
@@ -662,6 +697,7 @@ export function planRepoSettingsHardening(
     }
   }
   steps.push(...planCodeqlDefaultSetup(snapshot));
+  steps.push(...planPrivateVulnerabilityReporting(snapshot));
   // The approval step comes first: when it adds the pull_request rule, the
   // code-owner step below re-reads the live ruleset and finds it there.
   const pullRequestSteps = planDefaultBranchPullRequest(
@@ -1752,6 +1788,8 @@ export interface HardenRepoOutcome {
   skipNote?: string;
   /** {@link CODE_SECURITY_SKIP_NOTE} on a private repository (Issue #2704). */
   codeqlSkipNote?: string;
+  /** {@link PVR_SKIP_NOTE} on a private or internal repository (Issue #3227). */
+  pvrSkipNote?: string;
   /** The allow-list's action coordinates (empty when the workflows were unreadable). */
   coordinates: string[];
   /** How many workflow `uses:` references fed the allow-list. */
@@ -1901,6 +1939,19 @@ async function hardenRepoInto(
       const codeql = await readCodeScanning(repo, gh);
       if ("value" in codeql) snapshot.codeScanning = codeql.value;
       else results.push(codeql.result);
+    }
+  }
+
+  // Private vulnerability reporting (Issue #3227): read on a public
+  // repository only, mirroring the CodeQL gate above.
+  if (repoInfo) {
+    if (needsPaidSecretProtection(repoInfo.visibility, repoInfo.private)) {
+      outcome.pvrSkipNote = PVR_SKIP_NOTE;
+    } else {
+      snapshot.privateVulnerabilityReporting = await read(
+        "private-vulnerability-reporting",
+        `repos/${repo}/private-vulnerability-reporting`,
+      );
     }
   }
 

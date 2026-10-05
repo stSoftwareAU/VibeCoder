@@ -13,6 +13,9 @@
  *    only (Issue #2704): written only when `not-configured`, never on a
  *    private repository (paid Code Security — not even read there), and
  *    never over a repository's own CodeQL workflow, which is reported;
+ *  - private vulnerability reporting (Issue #3227), on public repositories
+ *    only, behind the same visibility gate as CodeQL: turned on when read as
+ *    off, never read or written on a private or internal repository;
  *  - one approving review on the default branch (Issue #2680), so fleet PRs
  *    wait for `/review-fleet-prs` or the owner instead of auto-merging
  *    unreviewed. A branch that takes direct pushes gets no pull_request rule
@@ -146,6 +149,7 @@ const CHECKED_KINDS: readonly HardenStep["kind"][] = [
   "actions-allow-list",
   "secret-scanning",
   "codeql-default-setup",
+  "private-vulnerability-reporting",
   "default-branch-approval",
   "ruleset-reviews",
 ];
@@ -212,6 +216,11 @@ function tallyOutcome(outcome: HardenRepoOutcome): RepoTally {
     } else if (kind === "codeql-default-setup" && outcome.codeqlSkipNote) {
       tally.skipped++;
       tally.skips.push(outcome.codeqlSkipNote);
+    } else if (
+      kind === "private-vulnerability-reporting" && outcome.pvrSkipNote
+    ) {
+      tally.skipped++;
+      tally.skips.push(outcome.pvrSkipNote);
     } else {
       tally.unchanged++;
     }

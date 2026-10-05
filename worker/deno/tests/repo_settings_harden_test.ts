@@ -806,6 +806,7 @@ function hardenedRoutes(repo: string): Record<string, unknown> {
       state: "configured",
       query_suite: "default",
     },
+    [`repos/${repo}/private-vulnerability-reporting`]: { enabled: true },
   };
 }
 
