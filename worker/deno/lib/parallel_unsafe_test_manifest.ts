@@ -195,6 +195,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // walk on hostile nesting and unclosed brackets (#3148 review).
   "tests/removed_assertion_gate_context_test.ts",
   "tests/run_ps1_launcher_test.ts",
+  // The not-planned-refs issue/hunk scanners read an untrusted PR body and
+  // diff hunk; only a growth measurement separates their linear scans from
+  // the quadratic patterns they replaced (Issue #3223).
+  "tests/milestone_not_planned_refs_test.ts",
 ];
 
 /**
