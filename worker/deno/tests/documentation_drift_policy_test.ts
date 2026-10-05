@@ -21,8 +21,10 @@
  * is a grep. These cases pin that rule on both surfaces, pin the conditions the
  * carve-out attaches to it, and pin the mechanism it names.
  *
- * The suite dogfoods its own rule: every assertion below is scoped to a named
- * section with `section()` rather than run over a whole file.
+ * The suite dogfoods its own rule: every positive pin below is scoped to a
+ * named section with `section()` rather than run over a whole file. Only the
+ * two absence checks read the whole prompt, through `flatWholeFile`, because
+ * an absence must hold in every section.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */

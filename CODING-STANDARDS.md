@@ -197,7 +197,9 @@ earns its place by meeting all four conditions:
    The type system now enforces this: `section()` returns a branded
    `DocSection`, and `flat()` accepts nothing else, so a whole-file
    `flat(body)` fails `deno check`. `flatWholeFile` is the named exception for
-   text that is not a drift pin — a drift test reaching for it is a finding.
+   text that is not a section of a page: a pinned-phrase literal, text a
+   module holds, or a whole file read for an absence check. A positive pin
+   over a page's text through `flatWholeFile(body)` is a finding.
 2. **What it pins is a rule the code cannot express.** A promise about the
    worker's behaviour that no module holds as a value — "no worker flips it",
    "the trial runs for 10% of claims". There is nothing to import, so the prose

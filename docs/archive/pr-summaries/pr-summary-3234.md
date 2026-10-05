@@ -8,8 +8,9 @@ The type system now makes that rule hold.
   `withoutSection()` return a branded `DocSection`, and `flat()` accepts only a
   `DocSection`. A whole-file `flat(body)` therefore fails `deno check`.
   `excerpt()` and `splitSection()` cut a section into pieces and keep the
-  brand. `flatWholeFile()` is the named exception for text that is not a drift
-  pin.
+  brand. `flatWholeFile()` is the named exception for text that is not a
+  section of a page: a pinned-phrase literal, text a module holds, or a whole
+  file read for an absence check. A positive pin through it is a finding.
 - The drift tests that `flat()` a paragraph or bullet now take a
   `DocSection`, and they slice it with `excerpt()` instead of `.slice()`.
 - `branch_outcomes_record_3147_test.ts` and

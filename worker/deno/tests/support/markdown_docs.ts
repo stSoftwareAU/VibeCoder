@@ -132,10 +132,11 @@ export function flat(text: DocSection): string {
 
 /**
  * One line, single-spaced, for text that is not a section of a documentation
- * page — a pinned phrase itself, a filesystem-derived invariant, or a
- * rendered prompt checked by the code that produces it. A documentation-drift
- * test must not use this on a whole file; see CODING-STANDARDS.md §
- * Documentation-drift tests, condition 1.
+ * page — a pinned phrase itself, a filesystem-derived invariant, a rendered
+ * prompt checked by the code that produces it, or a whole file read for an
+ * absence check. A documentation-drift test must not use this for a positive
+ * pin over a whole file; see CODING-STANDARDS.md § Documentation-drift tests,
+ * condition 1.
  */
 export function flatWholeFile(text: string): string {
   return text.replace(/\s+/g, " ");
