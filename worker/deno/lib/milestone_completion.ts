@@ -59,6 +59,14 @@ import {
   findPendingMilestoneDependencies,
   renderPendingDependenciesSection,
 } from "./milestone_dependency_hold.ts";
+// Issue #3223: the summary PR body also lists any added Markdown line that
+// names a sibling issue closed as not planned, so a forward reference to
+// dropped work is surfaced to the reviewer.
+import {
+  findNotPlannedDocReferences,
+  NOT_PLANNED_DOCS_UNVERIFIED_NOTE,
+  renderNotPlannedDocSection,
+} from "./milestone_not_planned_refs.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -638,9 +646,11 @@ export async function hasNothingToMerge(
  * @param defaultBranch - The default branch name
  * @param closedIssues - List of closed issues in the milestone
  * @param trackingIssueNumber - Optional tracking issue number to reference
- * @param dependencyNote - Issue #3014: optional already-rendered markdown
- *   section (e.g. the pending-dependencies hold) appended after "Issues
- *   addressed" and before "Review notes"; omitted entirely when empty
+ * @param extraSections - Optional already-rendered markdown section(s)
+ *   appended after "Issues addressed" and before "Review notes"; omitted
+ *   entirely when empty. Carries the Issue #3014 pending-dependencies hold
+ *   and/or the Issue #3223 not-planned-docs section, joined with a blank
+ *   line when both are present.
  * @returns Markdown PR body
  */
 export function buildMilestoneSummaryBody(
@@ -648,7 +658,7 @@ export function buildMilestoneSummaryBody(
   defaultBranch: string,
   closedIssues: ClosedIssue[],
   trackingIssueNumber?: number,
-  dependencyNote?: string,
+  extraSections?: string,
 ): string {
   // Closed-issue titles are attacker-writable text quoted into a PR body the
   // worker signs, so they are scrubbed before interpolation (Issue #1249,
@@ -661,10 +671,11 @@ export function buildMilestoneSummaryBody(
     ? `\nCloses #${trackingIssueNumber}`
     : "";
 
-  // Issue #3014: an already-rendered section (e.g. pending declared
-  // dependencies) slotted between "Issues addressed" and "Review notes";
-  // byte-identical output when absent.
-  const dependencySection = dependencyNote ? `\n${dependencyNote}\n` : "";
+  // Issue #3014 / #3223: already-rendered section(s) — pending declared
+  // dependencies and/or not-planned doc references — slotted between
+  // "Issues addressed" and "Review notes"; byte-identical output when
+  // absent.
+  const dependencySection = extraSections ? `\n${extraSections}\n` : "";
 
   return `## Milestone: ${milestoneTitle}
 
@@ -988,12 +999,51 @@ async function createMilestoneSummaryPr(
       "them before merging and holds the PR while any is pending.";
   }
 
+  // Issue #3223: list every added Markdown line that names a sibling issue
+  // closed as not planned. Never blocks PR creation — a lookup or diff
+  // failure only swaps in a note saying it could not be checked.
+  let notPlannedNote: string | undefined;
+  const notPlannedResult = await findNotPlannedDocReferences({
+    repo,
+    milestoneNumber,
+    defaultBranch,
+    milestoneBranch,
+    ghCommandFn,
+  });
+  if (notPlannedResult.ok) {
+    if (
+      notPlannedResult.value.references.length > 0 ||
+      notPlannedResult.value.unchecked.length > 0
+    ) {
+      if (notPlannedResult.value.references.length > 0) {
+        log(
+          `WARNING: milestone '${milestoneTitle}' in ${repo} has ` +
+            `${notPlannedResult.value.references.length} Markdown line(s) ` +
+            `that name issues closed as not planned — listed in the ` +
+            `summary PR body (Issue #3223)`,
+        );
+      }
+      notPlannedNote = renderNotPlannedDocSection(notPlannedResult.value);
+    }
+  } else {
+    log(
+      `WARNING: could not check milestone '${milestoneTitle}' docs for ` +
+        `issues closed as not planned in ${repo}: ` +
+        `${notPlannedResult.error.message} (Issue #3223)`,
+    );
+    notPlannedNote = NOT_PLANNED_DOCS_UNVERIFIED_NOTE;
+  }
+
+  const extraSections = [dependencyNote, notPlannedNote]
+    .filter((note): note is string => Boolean(note))
+    .join("\n\n");
+
   const prBody = buildMilestoneSummaryBody(
     milestoneTitle,
     defaultBranch,
     closedIssues,
     trackingIssueNumber ?? undefined,
-    dependencyNote,
+    extraSections || undefined,
   );
 
   let prUrl: string;
