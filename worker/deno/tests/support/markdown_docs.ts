@@ -7,10 +7,25 @@
  * truncates every section carrying a shell example and lets the prose after it
  * say anything at all. One fence-aware implementation, used by both.
  *
+ * Section-scoped text carries the `DocSection` brand, so a whole-file drift
+ * pin is a `deno check` error rather than a silently-too-broad test
+ * (Issue #3234).
+ *
  * Australian English spelling used throughout (behaviour, recognised, etc.).
  */
 
 import { assert } from "@std/assert";
+
+declare const docSectionBrand: unique symbol;
+
+/**
+ * Text narrowed to one heading's section, as produced by `section()`. `flat()`
+ * accepts only this, so a whole-file drift pin — `flat(wholeDoc)` rather than
+ * `flat(section(wholeDoc, title))` — fails `deno check` instead of silently
+ * passing on a page that moved the rule elsewhere (CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 1; Issue #3234).
+ */
+export type DocSection = string & { readonly [docSectionBrand]: true };
 
 /** `tests/support/` → repo root is four levels up. */
 const REPO_ROOT = new URL("../../../../", import.meta.url);
@@ -64,25 +79,57 @@ function sectionBounds(
  * The body of the section introduced by the first heading containing `title`
  * (heading excluded), up to the next heading at the same or a higher level.
  */
-export function section(markdown: string, title: string): string {
+export function section(markdown: string, title: string): DocSection {
   const lines = markdown.split("\n");
   const { start, end } = sectionBounds(lines, title);
-  return lines.slice(start + 1, end).join("\n");
+  return lines.slice(start + 1, end).join("\n") as DocSection;
 }
 
 /**
  * The document with the section opened by the first heading containing
  * `title` removed entirely, heading included — the negative control for
- * `section()`: a predicate that still holds here pins nothing.
+ * `section()`: a predicate that still holds here pins nothing. Branded as a
+ * `DocSection` too, so this negative control can be flattened the same way
+ * as the section it stands in for.
  */
-export function withoutSection(markdown: string, title: string): string {
+export function withoutSection(markdown: string, title: string): DocSection {
   const lines = markdown.split("\n");
   const { start, end } = sectionBounds(lines, title);
-  return [...lines.slice(0, start), ...lines.slice(end)].join("\n");
+  return [...lines.slice(0, start), ...lines.slice(end)].join(
+    "\n",
+  ) as DocSection;
 }
 
-/** One line, single-spaced — prose wrapped at 80 columns still matches. */
-export function flat(text: string): string {
+/**
+ * A slice of a section is still within that section — for paragraph/bullet
+ * helpers that cut one rule out of a larger section.
+ */
+export function excerpt(
+  text: DocSection,
+  start: number,
+  end?: number,
+): DocSection {
+  return text.slice(start, end) as DocSection;
+}
+
+/**
+ * One line, single-spaced — prose wrapped at 80 columns still matches.
+ * Accepts only section-scoped text (`DocSection`), not a whole file; a
+ * whole-file drift pin is a type error (Issue #3234). Flattening a whole
+ * file that is not a drift pin is `flatWholeFile()`.
+ */
+export function flat(text: DocSection): string {
+  return text.replace(/\s+/g, " ");
+}
+
+/**
+ * One line, single-spaced, for text that is not a section of a documentation
+ * page — a pinned phrase itself, a filesystem-derived invariant, or a
+ * rendered prompt checked by the code that produces it. A documentation-drift
+ * test must not use this on a whole file; see CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 1.
+ */
+export function flatWholeFile(text: string): string {
   return text.replace(/\s+/g, " ");
 }
 
@@ -111,7 +158,7 @@ export function pinsAlreadyInSection(
   );
   if (!hasSection) return [];
   const text = flat(section(baseMarkdown, title));
-  return phrases.filter((phrase) => text.includes(flat(phrase)));
+  return phrases.filter((phrase) => text.includes(flatWholeFile(phrase)));
 }
 
 /** The `deno task` that runs the per-phrase check from the command line. */
