@@ -80,9 +80,8 @@ tests/completion_phase_docs_sweep_test.ts tests/docs_sweep_hits_test.ts
 tests/prompt_docs_sweep_3172_test.ts tests/prompt_docs_sweep_3073_test.ts`.
 Result: 73 passed, 0 failed. `deno fmt --check` is clean.
 
-Quality gate: `./quality.sh` PASSED. The `config integration` check was
-skipped. The gate ran before the non-fatal-post test was added; that file was
-re-run afterwards and passed (14 tests).
+Quality gate: `./quality.sh` PASSED on the final head (20 of 21 checks; the
+`config integration` check was skipped — it needs a live config).
 
 **Docs sweep:** grep: `second miss`, `blocks`, `recovery turn`,
 `Docs sweep incomplete`, `stale hit`, `buildDocsSweepHitsComment`;
