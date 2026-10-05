@@ -78,6 +78,24 @@ rule's section, or survive elsewhere in the file, and the test stayed green.
   In `coding_guidelines`, the `RULE` regex matches through its
   "another reading of the same work" alternative.
 - Branch outcomes: none added.
+- Removed from `worker/deno/tests/timing_assertion_policy_test.ts`:
+  `` assertEquals(loaded.ok, true, `cannot load ${family}`); `` — #3242
+  requires section-scoped pins, and `section()` needs the raw markdown
+  headings, so the `loadPrompt`-based `promptCollapsed` helper that held this
+  assertion is gone. The surfaces are now read with `readRepoDoc`, which
+  throws if the file is missing, so a load failure still turns the test red.
+- Removed from `worker/deno/tests/timing_assertion_policy_test.ts`:
+  `assertEquals( collapsed.includes("Do not measure performance inside unit tests"), false, "coding_guidelines still carries the flat ban, which forbids the ratio " + "assertions CODING-STANDARDS.md requires", );`
+  — #3242 narrows `collapsed` to the `Unit Tests vs Benchmarks` section, so
+  this check would now only cover that section. It is replaced in the same
+  test by a whole-file absence check (`phraseAnywhere` against the raw
+  `coding_guidelines` prompt), with the same message.
+- Removed from `worker/deno/tests/timing_assertion_policy_test.ts`:
+  `assertEquals( collapsed.includes("Flag any wall-clock comparison inside a unit test"), false, "test_audit still flags every comparison without exception", );`
+  — #3242 narrows `collapsed` to `test_audit` § 3, so this check would now
+  only cover that section. It is replaced in the same test by a whole-file
+  absence check (`phraseAnywhere` against the raw `test_audit` prompt), with
+  the same message.
 
 ## Related rules checked
 
