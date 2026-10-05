@@ -106,7 +106,17 @@ conflict). No existing rule on duplicate imports was found.
   `issue_prompt_v39_independent_review_test.ts`, `issue_executor_agents_test.ts`
   and `review_block_template_test.ts`: 44 passed, 0 failed. No existing
   assertion was removed.
-- `./quality.sh` — QUALITY_RESULT
+- `./quality.sh < /dev/null` on the final head (`57db10b1`): `Result: FAILED`.
+  Every check passed except `deno tests` (26009 passed, 51 failed, 11
+  ignored); `config integration` was skipped (no live config) and
+  `markdownlint` was skipped (not installed in that container; run
+  separately on the changed Markdown, no issues). All 51 failures are in 19
+  real-git test files this PR does not touch (`git_branch_test.ts`,
+  `pr_branch_checkout_test.ts`, `git_pull_conflict_test.ts` and 16 others).
+  The same 51 tests in the same 19 files failed when the gate ran in that
+  container on a branch without this change (25994 passed, 51 failed), so
+  they come from the container's git setup, not this diff. CI's Quality
+  workflow ran the full test suite on this head and its `gate` check passed.
 
 Branch outcomes: none added
 
