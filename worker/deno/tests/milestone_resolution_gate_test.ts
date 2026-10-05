@@ -301,6 +301,61 @@ Deno.test("verifyResolvedTree - a Cargo tree whose tests fail is refused with th
 });
 
 // ---------------------------------------------------------------------------
+// A host rustc older than the tree's rust-version is a toolchain gap, not an
+// ordinary cargo test failure (Issue #3255)
+// ---------------------------------------------------------------------------
+
+Deno.test("verifyResolvedTree - a host rustc older than the tree's rust-version is named as a toolchain gap, not an ordinary failure (Issue #3255)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-3255-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const output =
+      "error: rustc 1.98.0 is not supported by the following packages:\n" +
+      "  neat_ai_discovery@0.74.279 requires rustc 1.99\n".repeat(40);
+    const outcome = await verifyResolvedTree(
+      dir,
+      () => Promise.resolve({ code: 101, output }),
+      passingTypeCheck,
+    );
+    assertEquals(outcome.status, "failed");
+    assertStringIncludes(outcome.detail, "rustc 1.98.0");
+    assertStringIncludes(outcome.detail, "1.99");
+    assertStringIncludes(outcome.detail, "container/tools.json");
+    assertEquals(outcome.toolchainGap, {
+      installed: "1.98.0",
+      required: "1.99",
+      packages: ["neat_ai_discovery@0.74.279"],
+    });
+    assertStringIncludes(
+      outcome.output,
+      "neat_ai_discovery@0.74.279 requires rustc 1.99 (×40)",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("verifyResolvedTree - an ordinary cargo test failure carries no toolchain gap (Issue #3255)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "issue-3255-gate-" });
+  try {
+    await Deno.writeTextFile(`${dir}/Cargo.toml`, '[package]\nname = "x"\n');
+    const outcome = await verifyResolvedTree(
+      dir,
+      () =>
+        Promise.resolve({
+          code: 101,
+          output: "test prune::bias ... FAILED\ntest result: FAILED. 1 failed",
+        }),
+      passingTypeCheck,
+    );
+    assertEquals(outcome.status, "failed");
+    assertEquals(outcome.toolchainGap, undefined);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // A repository whose suite runs through `quality.sh` (Issue #2388)
 //
 // Live incident: a monitored repository's tests run through `./quality.sh`

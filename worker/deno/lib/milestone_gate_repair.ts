@@ -20,6 +20,12 @@
  * worker ended, and a grant too small to cover a run are all reported as what
  * they are, never as a pass.
  *
+ * A gate failure carrying a {@link RustToolchainGap} (Issue #3255) is not
+ * offered a repair at all: the host's `rustc` being older than a workspace
+ * package's `rust-version` is an environment fault, and no agent editing the
+ * tree can change what toolchain the container runs. A dependency-only
+ * refusal carries no gap, so it is offered a repair like any other failure.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -544,6 +550,20 @@ export async function runGateWithRepair(
     return { gate: firstGate, firstGate };
   }
   const firstGate = verdict;
+
+  // Issue #3255: a host `rustc` older than the merged tree's `rust-version`
+  // is an environment fault, not a bad resolution — no repair round can
+  // raise the container's Rust pin, so none is offered.
+  if (verdict.toolchainGap) {
+    const repair: GateRepairOutcome = {
+      status: "not-attempted",
+      gate: verdict,
+      detail: "the host's Rust toolchain is older than the merged tree " +
+        "requires — an environment fault no repair round can fix " +
+        "(Issue #3255)",
+    };
+    return { gate: verdict, firstGate: verdict, repair };
+  }
 
   const mergeShaResult = await runGitCommand(["rev-parse", "HEAD"], options);
   const mergeSha = mergeShaResult.ok && mergeShaResult.value.code === 0
