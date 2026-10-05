@@ -94,7 +94,7 @@ Other checks:
 - Removed assertions: none. The existing repair tests are unchanged apart from fixture fields.
 - `deno task test:unit tests/milestone_merge_gate_test.ts tests/milestone_resolution_gate_test.ts tests/milestone_gate_repair_test.ts < /dev/null`: 63 passed, 0 failed.
 - `deno task check:manifests < /dev/null`: 678 passed, 0 failed. The first full-gate run had failed only on the Issue #940 manifest test until the registration above was added.
-- `./quality.sh < /dev/null`: QUALITY_RESULT_PENDING
+- `./quality.sh < /dev/null`: lint, type check, fmt, markdownlint, mermaid and semgrep all pass; `deno test` 26066 passed, 1 failed — `issue_cache - returns null for expired entry` (`worker/deno/tests/issue_cache_test.ts:41`), a TTL=0 timing test in a module this diff does not touch; rerun alone with `deno task test:unit tests/issue_cache_test.ts` it passes (7 passed, 0 failed), so it is an unrelated flake under full-suite load.
 
 **Branch outcomes:**
 
