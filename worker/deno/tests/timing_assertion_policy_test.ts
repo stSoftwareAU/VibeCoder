@@ -26,10 +26,9 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 
 /** The ratio helper the policy exists to permit. */
 const HELPER = "assertLinearGrowth";
@@ -38,24 +37,49 @@ const HELPER = "assertLinearGrowth";
 const RULE =
   /compare two readings of the same work|another reading\s+of the same work/i;
 
-/** The text of one prompt family, collapsed for matching. */
-async function promptCollapsed(family: string): Promise<string> {
-  const loaded = await loadPrompt(family, PROMPTS_DIR);
-  assertEquals(loaded.ok, true, `cannot load ${family}`);
-  if (!loaded.ok) throw new Error(loaded.error.message);
-  return loaded.value.replace(/\s+/g, " ");
+/** The three (doc, heading) pairs each surface's timing rule lives under. */
+const GUIDELINES_SECTION = {
+  doc: "prompts/coding_guidelines/prompt.md",
+  title: "Unit Tests vs Benchmarks",
+} as const;
+const AUDIT_SECTION = {
+  doc: "prompts/test_audit/prompt.md",
+  title: "3. Performance / timing assertions inside unit tests",
+} as const;
+const STANDARDS_SECTION = {
+  doc: "CODING-STANDARDS.md",
+  title: "Unit tests",
+} as const;
+
+/** One surface's timing-rule section, flattened so wrapped prose still matches. */
+async function timingSection(doc: string, title: string): Promise<string> {
+  return flat(section(await readRepoDoc(doc), title));
 }
 
-/** `CODING-STANDARDS.md`, collapsed. */
-async function standardsCollapsed(): Promise<string> {
-  const text = await Deno.readTextFile(`${REPO_ROOT}CODING-STANDARDS.md`);
-  return text.replace(/\s+/g, " ");
+/**
+ * Escapes `phrase` and joins its words with `\s+`, so the result matches the
+ * phrase anywhere in a raw (unflattened) file regardless of line wrapping.
+ * Used only for whole-file absence checks, which must not be narrowed to one
+ * section and must not run against `flat()`'s collapsed whole-file text
+ * (Issue #3240 makes `flat()` refuse whole-file input).
+ */
+function phraseAnywhere(phrase: string): RegExp {
+  const words = phrase.trim().split(/\s+/).map((word) =>
+    word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  );
+  return new RegExp(words.join("\\s+"));
 }
 
 Deno.test("timing policy - all three surfaces state the same rule (Issue #786)", async () => {
-  const guidelines = await promptCollapsed("coding_guidelines");
-  const audit = await promptCollapsed("test_audit");
-  const standards = await standardsCollapsed();
+  const guidelines = await timingSection(
+    GUIDELINES_SECTION.doc,
+    GUIDELINES_SECTION.title,
+  );
+  const audit = await timingSection(AUDIT_SECTION.doc, AUDIT_SECTION.title);
+  const standards = await timingSection(
+    STANDARDS_SECTION.doc,
+    STANDARDS_SECTION.title,
+  );
 
   for (
     const [name, text] of [
@@ -73,9 +97,18 @@ Deno.test("timing policy - all three surfaces state the same rule (Issue #786)",
 });
 
 Deno.test("timing policy - the guidelines no longer ban measuring outright (Issue #786)", async () => {
-  const collapsed = await promptCollapsed("coding_guidelines");
+  const collapsed = await timingSection(
+    GUIDELINES_SECTION.doc,
+    GUIDELINES_SECTION.title,
+  );
+  // The absence check below covers the whole file on purpose: the flat ban
+  // must not survive anywhere in coding_guidelines, not just outside this
+  // section.
+  const whole = await readRepoDoc(GUIDELINES_SECTION.doc);
   assertEquals(
-    collapsed.includes("Do not measure performance inside unit tests"),
+    phraseAnywhere("Do not measure performance inside unit tests").test(
+      whole,
+    ),
     false,
     "coding_guidelines still carries the flat ban, which forbids the ratio " +
       "assertions CODING-STANDARDS.md requires",
@@ -85,7 +118,7 @@ Deno.test("timing policy - the guidelines no longer ban measuring outright (Issu
 });
 
 Deno.test("timing policy - the auditor exempts ratio assertions (Issue #786)", async () => {
-  const collapsed = await promptCollapsed("test_audit");
+  const collapsed = await timingSection(AUDIT_SECTION.doc, AUDIT_SECTION.title);
   // It still flags the real defect …
   assertStringIncludes(collapsed, "Absolute");
   assertStringIncludes(collapsed, "against a constant as a finding");
@@ -95,8 +128,14 @@ Deno.test("timing policy - the auditor exempts ratio assertions (Issue #786)", a
   // its body may not cite a VibeCoder-internal path (the cross-repo body
   // guard). It describes the shape instead.
   assertStringIncludes(collapsed, "times the same work at two input sizes");
+  // The absence check below covers the whole file on purpose: the unqualified
+  // ban must not survive anywhere in test_audit, not just outside this
+  // section.
+  const whole = await readRepoDoc(AUDIT_SECTION.doc);
   assertEquals(
-    collapsed.includes("Flag any wall-clock comparison inside a unit test"),
+    phraseAnywhere("Flag any wall-clock comparison inside a unit test").test(
+      whole,
+    ),
     false,
     "test_audit still flags every comparison without exception",
   );
