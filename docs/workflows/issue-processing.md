@@ -1526,8 +1526,8 @@ reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
 folded into that gate's own notice (Issue #3085 review), and only a summary
 that passes all three reaches the late summary gates' own block, which reports
-every one of docs sweep, the placeholder-token gate and the branch-outcomes
-gate that fails, at once (Issue #3147).
+every one of docs sweep, the placeholder-token gate, the branch-outcomes gate
+and the summary claim check that fails, at once (Issue #3147, #3257).
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
@@ -1820,18 +1820,31 @@ Two independent checks feed one result:
    only when it names the summary file and its sentence is found in the
    summary's own text; otherwise it is logged as unconfirmed and never acted
    on. A base ref that cannot be resolved, a question that cannot be
-   launched, or a reply with no readable verdict is logged as not checked and
-   never blocks — this check fails open, not loud, because a first-run
-   summary has no second chance before the PR exists.
+   launched, or a reply with no readable verdict is logged at error level,
+   recorded in `notChecked`, and never blocks on its own — an unreachable
+   model or an unreadable file is never reported as a clean check, but it
+   also never blocks a PR by itself.
 2. **A deterministic Test Plan backstop**
    (`findTestPlanClaimProblems`). In the `## Test Plan` section, a list item
    that names a test file in backticks and quotes a behaviour ("…" or
-   "…", at least two significant words) must point to a test in that file
-   (split at test declarations) whose name or body shares at least half of
-   the quote's significant words; a named test file not tracked at the head
-   blocks too. An ambiguous basename, an unreadable or oversized file, a file
-   with no recognised test declaration, or a claim past the 50-claim cap is
-   logged as not checked rather than blocking.
+   “…”, at least two significant words) attaches to the nearest preceding
+   test-file reference, provided no other backtick span (a command, a path,
+   an error message) lies between them — otherwise to the nearest following
+   one under the same condition, and otherwise it is not a coverage claim at
+   all. An attached claim must point to a test in that file (split at test
+   declarations) whose name or body, or the file's own preamble — the text
+   before the first declaration, where a fixture shared by more than one
+   test tends to live — shares at least half of the quote's significant
+   words; a named test file not tracked at the head blocks too. An ambiguous
+   basename, an unreadable or oversized file, a file with no recognised test
+   declaration, or a claim past the 50-claim cap is logged as not checked
+   rather than blocking. A corpus run of this backstop over the 875
+   summaries in `docs/archive/pr-summaries/` against today's head flagged 2
+   (pr-summary-658 and pr-summary-663, both quoting test names no longer
+   present in the named files); the adjacency and preamble rules above
+   removed four would-be false positives — pr-summary-1549 and -3222
+   (shared fixture constants) and pr-summary-599 and -3178 (quoted error
+   messages sitting beside other backtick spans).
 
 Either kind of hit is a summary-rule block, folded into whichever summary
 gate blocks first — it is last in the late-summary chain, after docs sweep,
