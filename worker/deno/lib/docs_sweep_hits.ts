@@ -15,8 +15,9 @@
  * head's `README.md`, every `*\/README.md` and `docs/` (excluding
  * `docs/archive/`). A hit is stale unless it sits in a line the branch's
  * diff added or changed, or the Docs sweep line names it as left alone by
- * `file:line` (or `file:start-end`). Stale hits block the summary through the
- * same one in-run recovery turn as the rest of the gate.
+ * `file:line` (or `file:start-end`). Stale hits are advisory (Issue #3237):
+ * the caller lists them in a PR comment for the reviewer and never blocks or
+ * fails the run on them.
  *
  * The same terms are also re-run over source files outside `docs/`
  * (`SOURCE_COMMENT_PATHSPECS`), keeping only hits on a whole comment line
@@ -507,7 +508,7 @@ function renderHitText(text: string): string {
     : flat;
 }
 
-/** The phase-failure reason for stale hits, naming the first few. */
+/** A one-line log summary of stale hits, naming the first few. */
 export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
   const named = hits.slice(0, 5).map((h) => `${h.path}:${h.line}`).join(", ");
   const extra = hits.length - 5;
@@ -518,8 +519,9 @@ export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
 }
 
 /**
- * Build the issue comment posted when the Docs sweep's own terms still hit
- * lines the branch neither changed nor named.
+ * Build the advisory PR comment posted when the Docs sweep's own terms still
+ * hit lines the branch neither changed nor named (Issue #3237: it informs the
+ * reviewer and never blocks or fails the run).
  */
 export function buildDocsSweepHitsComment(
   hits: readonly DocsSweepHit[],
@@ -531,24 +533,17 @@ export function buildDocsSweepHitsComment(
   const extra = hits.length - MAX_REPORTED_HITS;
   if (extra > 0) listed.push(`- … and ${extra} more`);
   return [
-    "⚠️ **Docs sweep terms still hit the head.** Re-running the grep terms " +
-    "your **Docs sweep** line quotes over `README.md`, `*/README.md` and " +
-    "`docs/` (excluding `docs/archive/`), and over the comment lines in source " +
-    "files outside `docs/`, at the head finds lines the diff did not change " +
-    "and the line does not name:",
+    "ℹ️ **Docs sweep terms still hit the head (advisory).** Re-running the " +
+    "grep terms the **Docs sweep** line quotes over `README.md`, " +
+    "`*/README.md` and `docs/` (excluding `docs/archive/`), and over the " +
+    "comment lines in source files outside `docs/`, at the head finds lines " +
+    "the diff did not change and the line does not name:",
     "",
     ...listed,
     "",
-    "For each one, read the sentence and either:",
-    "",
-    "1. fix it in this change, if the change makes it false — including in " +
-    "a file whose other section you already updated; or",
-    "2. name it in the Docs sweep line as `<file>:<line> — still true " +
-    "because <reason>`.",
-    "",
-    "Grep for the stem of a behavioural claim, not one inflection " +
-    '(`replac\\w* or remov\\w*`, not "replaces or removes"), and re-run the ' +
-    "grep on the final head after editing. The worker asks once; a second " +
-    "miss fails the run.",
+    "Reviewer: check whether any of these sentences is made false by this " +
+    "change. A hit that is still true needs nothing — it can be recorded in " +
+    "the Docs sweep line as `<file>:<line> — still true because <reason>`. " +
+    "This list is for review only; it does not block the PR.",
   ].join("\n");
 }

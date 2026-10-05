@@ -783,6 +783,31 @@ async function applyDegradedDeliveryGuard(
 }
 
 /**
+ * Post the Docs sweep term re-run's hits on the PR for the reviewer (Issue
+ * #3237). Advisory and best-effort: nothing to post, no PR number, or a
+ * failed post never affects the run.
+ */
+async function postDocsSweepAdvisory(
+  repo: string,
+  prNumber: number | undefined,
+  comment: string | null,
+  deps: WorkerDeps,
+): Promise<void> {
+  if (comment === null || !prNumber || prNumber <= 0) return;
+  try {
+    await deps.github.createClient(deps.logger).postComment(
+      repo,
+      prNumber,
+      comment,
+    );
+  } catch (err) {
+    deps.logger.warn("Docs sweep advisory comment failed (non-fatal)", {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
  * Recover an existing PR by updating its body and labels, then finalise (Issue #1189).
  *
  * Issue #1559: When the recovered PR is already merged, skip the redundant
@@ -2262,18 +2287,22 @@ async function completionBody(
     changedFiles: changedFilesKnown ? changedFiles : null,
     prSummaryContent: prBody,
   });
-  let docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
-  let docsSweepReason = `Docs sweep not recorded in the PR summary: ${
+  const docsSweepBlocked = docsSweep.applicable && !docsSweep.valid;
+  const docsSweepReason = `Docs sweep not recorded in the PR summary: ${
     docsSweep.problems[0] ?? "Docs sweep line missing"
   }`;
-  let docsSweepComment = buildDocsSweepGateComment(docsSweep);
 
   // Issue #3172: once the line itself passes, re-run the grep terms it
   // quotes over the head's docs, and over the comment lines of its source
-  // files (Issue #3219). A hit outside every line the diff changed,
-  // and not named in the line as `file:line`, is a sentence the sweep found
-  // and left — it blocks through the same single recovery turn. A grep or
-  // diff that cannot run is logged as not checked, never read as clean.
+  // files (Issue #3219). A hit outside every line the diff changed, and not
+  // named in the line as `file:line`, is a sentence the sweep may have left.
+  //
+  // Issue #3237: the re-run is advisory. A common term (a config key that
+  // still exists) returned dozens of lines to clear one by one, and a second
+  // miss failed the run — 34 fleet claims were released in a day. The hits
+  // are now posted on the PR for the reviewer and never block or fail the
+  // run. A grep or diff that cannot run is logged as not checked.
+  let docsSweepAdvisory: string | null = null;
   if (docsSweep.applicable && docsSweep.valid) {
     const termCheck = comparableBase.ok
       ? await checkDocsSweepTerms({
@@ -2311,11 +2340,12 @@ async function completionBody(
       );
     }
     if (termCheck.status === "checked" && termCheck.staleHits.length > 0) {
-      docsSweepBlocked = true;
-      docsSweepReason = `Docs sweep incomplete at the head: ${
-        describeDocsSweepHits(termCheck.staleHits)
-      }`;
-      docsSweepComment = buildDocsSweepHitsComment(termCheck.staleHits);
+      logger.warn(
+        "Docs sweep terms still hit the head — reported on the PR for the " +
+          "reviewer, not blocking (Issue #3237)",
+        { reason: describeDocsSweepHits(termCheck.staleHits) },
+      );
+      docsSweepAdvisory = buildDocsSweepHitsComment(termCheck.staleHits);
     }
   }
 
@@ -2407,11 +2437,7 @@ async function completionBody(
   const docsSweepVerdict: LateSummaryVerdict = {
     blocked: docsSweepBlocked,
     reason: docsSweepReason,
-    // Issue #3172: docsSweepComment may already have been overridden to the
-    // stale-hits comment above — read the variable, not a fresh rebuild from
-    // `docsSweep`, or a term re-run failure would be folded in silently as
-    // the generic "line missing" comment instead.
-    comment: () => docsSweepComment,
+    comment: () => buildDocsSweepGateComment(docsSweep),
   };
   const removedAssertionsVerdict: LateSummaryVerdict = {
     blocked: removedAssertionsBlocked,
@@ -2597,11 +2623,9 @@ async function completionBody(
       problems: docsSweep.problems,
       reason: docsSweepReason,
     });
-    // Issue #3172: use the (possibly overridden) docsSweepComment variable,
-    // not a fresh rebuild from `docsSweep`, so a stale-hits comment survives.
     const folded = foldInLateSummaryVerdicts(
       docsSweepReason,
-      docsSweepComment,
+      buildDocsSweepGateComment(docsSweep),
       [docsSweepVerdict],
     );
     return await reportSummaryRuleBlock(
@@ -2800,13 +2824,15 @@ async function completionBody(
         why: linkDecision.why,
       },
     );
-    return await recoverAndFinaliseExistingPr(
+    const recovered = await recoverAndFinaliseExistingPr(
       linkDecision.prUrl,
       ctx,
       state,
       prBody,
       deps,
     );
+    await postDocsSweepAdvisory(repo, state.prNumber, docsSweepAdvisory, deps);
+    return recovered;
   }
 
   // ---------------------------------------------------------------------
@@ -2933,13 +2959,20 @@ async function completionBody(
         logger.info("Found existing PR after creation error, recovering", {
           prUrl: existingPrFromError.value,
         });
-        return await recoverAndFinaliseExistingPr(
+        const recovered = await recoverAndFinaliseExistingPr(
           existingPrFromError.value,
           ctx,
           state,
           prBody,
           deps,
         );
+        await postDocsSweepAdvisory(
+          repo,
+          state.prNumber,
+          docsSweepAdvisory,
+          deps,
+        );
+        return recovered;
       } else if (isSecondaryRateLimitMessage(errorMsg)) {
         // The latch's own cool-down names both limits (Issue #1456), so it
         // takes the REST fallback above rather than the minute-scale wait.
@@ -3041,6 +3074,10 @@ async function completionBody(
         }
       }
     }
+
+    // Issue #3237: the Docs sweep term re-run is advisory — its hits go on
+    // the PR for the reviewer.
+    await postDocsSweepAdvisory(repo, prNumber, docsSweepAdvisory, deps);
 
     // Issue #2459: the rebase pass could not bring this branch forward, so say
     // so once — which paths diverged, and that the conflict ladder owns the PR

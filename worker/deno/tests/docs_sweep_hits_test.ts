@@ -682,7 +682,7 @@ Deno.test("buildDocsSweepHitsComment - names source comment lines as part of the
 // buildDocsSweepHitsComment
 // ---------------------------------------------------------------------------
 
-Deno.test("buildDocsSweepHitsComment - lists each file:line with its sentence and the two ways out", () => {
+Deno.test("buildDocsSweepHitsComment - lists each file:line with its sentence, advisory only (Issue #3237)", () => {
   const comment = buildDocsSweepHitsComment([
     {
       path: "docs/a.md",
@@ -695,7 +695,8 @@ Deno.test("buildDocsSweepHitsComment - lists each file:line with its sentence an
   assertStringIncludes(comment, "below the maximum trade fails");
   assertStringIncludes(comment, "maximum trade");
   assertStringIncludes(comment, "still true because");
-  assertStringIncludes(comment, "a second miss fails the run");
+  assertStringIncludes(comment, "does not block the PR");
+  assertEquals(comment.includes("fails the run"), false);
 });
 
 Deno.test("buildDocsSweepHitsComment - caps the list and says how many more", () => {

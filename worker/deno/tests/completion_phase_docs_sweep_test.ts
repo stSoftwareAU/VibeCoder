@@ -517,49 +517,70 @@ Deno.test(
 const STALE_HIT =
   "HEAD:docs/reporting-api.md\u0000320\u0000BrokerBalance refuses a stale quote\n";
 
-/** The valid summary once the recovery names the hit as still true. */
-const SUMMARY_NAMING_HIT = SUMMARY_WITH_LINE.replace(
-  "; no hits",
-  "; `docs/reporting-api.md:320` — still true because the refusal stays",
-);
-
 Deno.test(
-  "completion - a stale hit of the Docs sweep's own term gets the one recovery turn, then the PR is raised once it is named",
+  "completion - a stale hit of the Docs sweep's own term never blocks: the PR is raised and the hit posted for the reviewer (Issue #3237)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
-      retryWrites: SUMMARY_NAMING_HIT,
       changedFiles: "crates/report/src/decisions.rs",
       grepOutput: STALE_HIT,
     });
 
     assertEquals(outcome.status, "continue");
-    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
-    assertStringIncludes(
-      outcome.claudePrompts[0]!,
-      "docs/reporting-api.md:320",
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent on it");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is raised");
+    const advisory = outcome.comments.find((c) =>
+      c.includes("Docs sweep terms still hit the head")
     );
-    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(
-      outcome.comments[0]!,
-      "BrokerBalance refuses a stale quote",
-    );
+    assertStringIncludes(advisory ?? "", "`docs/reporting-api.md:320`");
+    assertStringIncludes(advisory ?? "", "BrokerBalance refuses a stale quote");
+    assertStringIncludes(advisory ?? "", "does not block the PR");
   },
 );
 
 Deno.test(
-  "completion - a stale hit the recovery leaves alone fails the run with no PR raised",
+  "completion - many stale hits in a touched file still raise the PR (Issue #3237, GRQ-AutoTrader#2485)",
   async () => {
+    const hits = Array.from(
+      { length: 75 },
+      (_, i) =>
+        `HEAD:docs/reporting-api.md\u0000${
+          i + 1
+        }\u0000BrokerBalance line ${i}\n`,
+    ).join("");
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs\ndocs/reporting-api.md",
+      grepOutput: hits,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0);
+    assertEquals(outcome.prCreateCalls, 1);
+  },
+);
+
+Deno.test(
+  "completion - a stale hit on an existing PR is posted on recovery and never fails the run (Issue #3237)",
+  async () => {
+    const events: string[] = [];
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
       changedFiles: "crates/report/src/decisions.rs",
       grepOutput: STALE_HIT,
+      prExistsForBranch: true,
+      events,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "docs/reporting-api.md:320");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0);
+    assertEquals(events.includes("recover"), true);
+    assertEquals(
+      outcome.comments.some((c) =>
+        c.includes("Docs sweep terms still hit the head")
+      ),
+      true,
+    );
   },
 );
 
@@ -603,7 +624,7 @@ const STALE_SOURCE_COMMENT =
   "HEAD:crates/report/src/balance.rs\u000042\u0000/// BrokerBalance is shared by the two old callers\n";
 
 Deno.test(
-  "completion - a stale doc comment in an untouched source file blocks like a manual hit (Issue #3219)",
+  "completion - a stale doc comment in an untouched source file is reported, not blocking (Issue #3219, #3237)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
@@ -611,14 +632,15 @@ Deno.test(
       sourceGrepOutput: STALE_SOURCE_COMMENT,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(
-      outcome.reason ?? "",
-      "crates/report/src/balance.rs:42",
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 0);
+    const advisory = outcome.comments.find((c) =>
+      c.includes("Docs sweep terms still hit the head")
     );
+    assertStringIncludes(advisory ?? "", "crates/report/src/balance.rs:42");
     assertStringIncludes(
-      outcome.comments[0] ?? "",
+      advisory ?? "",
       "BrokerBalance is shared by the two old callers",
     );
   },

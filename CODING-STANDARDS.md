@@ -1215,8 +1215,9 @@ for every PR summary — containing:
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
    check it: the worker re-runs the line's quoted terms over the head's docs
-   and the comment lines of its source files, and refuses a hit outside the
-   diff that the line does not name.
+   and the comment lines of its source files, and lists each hit outside the
+   diff that the line does not name in an advisory PR comment for the
+   reviewer (it never blocks the PR).
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the
