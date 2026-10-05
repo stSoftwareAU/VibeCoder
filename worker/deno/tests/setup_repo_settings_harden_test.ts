@@ -29,6 +29,7 @@ import {
   CODE_SECURITY_SKIP_NOTE,
   hardenRepo,
   type HardenRepoOptions,
+  PVR_SKIP_NOTE,
   SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
 import {
@@ -69,6 +70,11 @@ interface FakeRepo {
   collaborators?: Record<string, string>;
   /** CodeQL default setup (Issue #2704); an Error fails the read. */
   codeScanning?: { state: string; query_suite?: string } | Error;
+  /**
+   * Private vulnerability reporting (Issue #3227); an Error fails the read.
+   * Read on a public repository only, like `codeScanning`.
+   */
+  pvr?: { enabled: boolean } | Error;
 }
 
 /** The login the fake GitHub says the gh identity is. */
@@ -127,6 +133,7 @@ function driftedRepo(overrides: Partial<FakeRepo> = {}): FakeRepo {
     codeowners: ".github/CODEOWNERS",
     files: { ".github/workflows/ci.yml": CI_WORKFLOW },
     codeScanning: { state: "not-configured" },
+    pvr: { enabled: true },
     ...overrides,
   };
 }
@@ -225,6 +232,10 @@ function makeFakeGitHub(
         if (state.codeScanning instanceof Error) throw state.codeScanning;
         if (state.codeScanning) return state.codeScanning;
       }
+      if (endpoint === `${base}/private-vulnerability-reporting`) {
+        if (state.pvr instanceof Error) throw state.pvr;
+        if (state.pvr) return state.pvr;
+      }
       if (endpoint === `${base}/rulesets`) {
         return state.rulesets.map((r) => ({
           id: r["id"],
@@ -276,6 +287,13 @@ function makeFakeGitHub(
         endpoint === `${base}/code-scanning/default-setup`
       ) {
         state.codeScanning = body as { state: string };
+        return;
+      }
+      if (
+        method === "PUT" &&
+        endpoint === `${base}/private-vulnerability-reporting`
+      ) {
+        state.pvr = { enabled: true };
         return;
       }
       if (endpoint === `${base}/actions/permissions/workflow`) {
@@ -470,7 +488,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(state[repo]!.actions["sha_pinning_required"], true);
   assertStringIncludes(
     first.lines.join("\n"),
-    `${repo}: 6 applied, 1 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 6 applied, 2 unchanged, 0 skipped, 0 failed`,
   );
 
   writes.length = 0;
@@ -481,7 +499,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(writes, [], "a converged repo must see zero writes");
   assertStringIncludes(
     second.lines.join("\n"),
-    `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 0 applied, 8 unchanged, 0 skipped, 0 failed`,
   );
 });
 
@@ -499,7 +517,7 @@ Deno.test("runRepoSettingsHarden - a converged repo reads only, and the totals l
   const last = h.lines[h.lines.length - 1] ?? "";
   assertMatch(
     last,
-    /^Repo-settings hardening: 0 applied, 7 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
+    /^Repo-settings hardening: 0 applied, 8 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
   );
 });
 
@@ -579,7 +597,7 @@ Deno.test("runRepoSettingsHarden - a repo whose hardenRepo throws never stops th
   assertStringIncludes(out, "boom: rulesets unreachable");
   assertStringIncludes(
     out,
-    `${healthy}: 6 applied, 1 unchanged, 0 skipped, 0 failed`,
+    `${healthy}: 6 applied, 2 unchanged, 0 skipped, 0 failed`,
   );
   assertStringIncludes(out, "1 repo(s) failed");
 });
@@ -601,7 +619,7 @@ Deno.test("runRepoSettingsHarden - a failed step inside hardenRepo is never swal
   const out = [...h.lines, ...h.warnings].join("\n");
   assertStringIncludes(
     out,
-    `${repo}: 5 applied, 1 unchanged, 0 skipped, 1 failed`,
+    `${repo}: 5 applied, 2 unchanged, 0 skipped, 1 failed`,
   );
   assertStringIncludes(out, "workflow-token");
   assertStringIncludes(out, "HTTP 403: Resource not accessible");
@@ -645,9 +663,10 @@ Deno.test("runRepoSettingsHarden - a private repo gets no secret-scanning write 
     [],
   );
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "4 applied, 1 unchanged, 2 skipped, 0 failed");
+  assertStringIncludes(line, "4 applied, 1 unchanged, 3 skipped, 0 failed");
   assertStringIncludes(line, SECRET_PROTECTION_SKIP_NOTE);
   assertStringIncludes(line, CODE_SECURITY_SKIP_NOTE);
+  assertStringIncludes(line, PVR_SKIP_NOTE);
 });
 
 Deno.test("runRepoSettingsHarden - a public repo's secret-scanning write is made (Issue #2628)", async () => {
@@ -666,6 +685,82 @@ Deno.test("runRepoSettingsHarden - a public repo's secret-scanning write is made
         secret_scanning_push_protection: { status: "enabled" },
       },
     }],
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Private vulnerability reporting, public repositories only (Issue #3227)
+// ---------------------------------------------------------------------------
+
+Deno.test("runRepoSettingsHarden - a public repo with PVR off gets the PUT and the step returns true (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeFakeGitHub({
+    [repo]: driftedRepo({ pvr: { enabled: false } }),
+  });
+  const workDir = await makeWorkDir([repo]);
+
+  const ok = await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, workDir).deps,
+  );
+
+  assertEquals(ok, true);
+  assertEquals(
+    writes.filter((w) =>
+      w.method === "PUT" &&
+      w.endpoint === `repos/${repo}/private-vulnerability-reporting`
+    ).length,
+    1,
+  );
+});
+
+Deno.test("runRepoSettingsHarden - a refused PVR write is reported on the repo's line and the step returns false (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const { gh: inner } = makeFakeGitHub({
+    [repo]: driftedRepo({ pvr: { enabled: false } }),
+  });
+  const gh = (args: string[]) =>
+    args.includes("--method") &&
+      args.includes(`repos/${repo}/private-vulnerability-reporting`)
+      ? Promise.reject(new Error("HTTP 403: Resource not accessible"))
+      : inner(args);
+  const workDir = await makeWorkDir([repo]);
+  const h = harness(gh, workDir);
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(ok, false);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ??
+    h.warnings.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "private-vulnerability-reporting");
+  assertStringIncludes(line, "HTTP 403: Resource not accessible");
+});
+
+Deno.test("runRepoSettingsHarden - a private repo's line reports PVR skipped, and neither reads nor writes it (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes, reads } = makeFakeGitHub({
+    [repo]: driftedRepo({ visibility: "private" }),
+  });
+  const workDir = await makeWorkDir([repo]);
+  const h = harness(gh, workDir);
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(ok, true);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(
+    line,
+    "private vulnerability reporting: skipped — not a public repository",
+  );
+  assertEquals(
+    reads.filter((r) => r.includes("private-vulnerability-reporting")),
+    [],
+  );
+  assertEquals(
+    writes.filter((w) =>
+      w.endpoint.includes("private-vulnerability-reporting")
+    ),
+    [],
   );
 });
 
@@ -862,7 +957,7 @@ Deno.test("runRepoSettingsHarden - a dry run performs no write, runs no CODEOWNE
   assertEquals(h.codeownersCalls, [], "the CODEOWNERS writer writes a file");
   assertEquals(h.closerCalls, [], "the closer comments on and closes issues");
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "6 planned, 1 unchanged, 0 skipped, 0 failed");
+  assertStringIncludes(line, "6 planned, 2 unchanged, 0 skipped, 0 failed");
   assertStringIncludes(line, "workflow-token");
   assertStringIncludes(line, "codeowners: skipped (dry run)");
   assertStringIncludes(h.lines.join("\n"), "dry run");
@@ -1254,7 +1349,7 @@ Deno.test("runRepoSettingsHarden - a public repo gets CodeQL default setup once,
   assertEquals(writes, [], "CodeQL already configured: no write");
   assertStringIncludes(
     second.lines.join("\n"),
-    `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 0 applied, 8 unchanged, 0 skipped, 0 failed`,
   );
 });
 
@@ -1306,7 +1401,7 @@ Deno.test("runRepoSettingsHarden - a repo with its own CodeQL workflow is report
   assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
   assertEquals(codeqlWrites(writes), []);
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 2 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, "codeql-default-setup");
   assertStringIncludes(line, ".github/workflows/codeql.yml");
 });
@@ -1324,6 +1419,6 @@ Deno.test("runRepoSettingsHarden - a refused CodeQL read is reported on the repo
 
   assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 2 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, "HTTP 403");
 });

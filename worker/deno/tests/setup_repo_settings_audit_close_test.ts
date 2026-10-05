@@ -60,6 +60,8 @@ const HARDENED: Record<string, unknown> = {
     },
   },
   [`repos/${REPO}/contents/.github/CODEOWNERS`]: { name: "CODEOWNERS" },
+  [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: true },
+  [`repos/${REPO}/contents/.github/SECURITY.md`]: { name: "SECURITY.md" },
 };
 
 /** The workflow token still read-write — the re-scan reports it. */
@@ -453,6 +455,92 @@ Deno.test("a private repo whose secret scanning stays off (exempted) closes noth
   assertEquals(stub.closes, []);
 });
 
+const PVR_APPLIED = outcome([
+  {
+    step: step(
+      "private-vulnerability-reporting",
+      "Enable private vulnerability reporting",
+    ),
+    status: "applied",
+  },
+]);
+
+Deno.test("a fleet-filed BP-REPO-PVR-OFF issue closes when the re-read confirms enabled (Issue #3227)", async () => {
+  const stub = stubGh(HARDENED, [
+    {
+      number: 80,
+      body: marker("BP-REPO-PVR-OFF"),
+      author: "stservice",
+    },
+  ]);
+  const { result } = await run(stub, PVR_APPLIED);
+  assertEquals(result.closed, [80]);
+});
+
+Deno.test("a fleet-filed BP-REPO-PVR-OFF issue stays open when the re-read shows enabled:false (Issue #3227)", async () => {
+  const stillOff = {
+    ...HARDENED,
+    [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false },
+  };
+  const stub = stubGh(stillOff, [
+    {
+      number: 80,
+      body: marker("BP-REPO-PVR-OFF"),
+      author: "stservice",
+    },
+  ]);
+  const { result } = await run(stub, PVR_APPLIED);
+  assertEquals(result.closed, []);
+  assertEquals(stub.closes, []);
+});
+
+Deno.test("a fleet-filed BP-REPO-PVR-OFF issue stays open when the read-back is absent, even though the scanner is silent (Issue #3227)", async () => {
+  // A private repo: the scanner never reads private-vulnerability-reporting
+  // at all, so its silence alone must not be mistaken for a fix.
+  const privateRepo: Record<string, unknown> = { ...HARDENED };
+  privateRepo[`repos/${REPO}`] = {
+    visibility: "private",
+    private: true,
+    security_and_analysis: {
+      secret_scanning: { status: "disabled" },
+      secret_scanning_push_protection: { status: "disabled" },
+    },
+  };
+  delete privateRepo[`repos/${REPO}/private-vulnerability-reporting`];
+  const stub = stubGh(privateRepo, [
+    {
+      number: 80,
+      body: marker("BP-REPO-PVR-OFF"),
+      author: "stservice",
+    },
+  ]);
+  const { result } = await run(stub, PVR_APPLIED);
+  assertEquals(result.closed, []);
+  assertEquals(stub.closes, []);
+});
+
+Deno.test("a fleet-filed BP-REPO-PVR-OFF issue stays open when its step failed this run (Issue #3227)", async () => {
+  const stub = stubGh(HARDENED, [
+    {
+      number: 80,
+      body: marker("BP-REPO-PVR-OFF"),
+      author: "stservice",
+    },
+  ]);
+  const { result } = await run(
+    stub,
+    outcome([
+      {
+        step: step("private-vulnerability-reporting"),
+        status: "failed",
+        detail: "HTTP 500",
+      },
+    ]),
+  );
+  assertEquals(result.closed, []);
+  assertEquals(stub.closes, []);
+});
+
 Deno.test("a failed comment warns naming the issue and leaves it open", async () => {
   const stub = stubGh(
     HARDENED,
@@ -549,6 +637,7 @@ Deno.test("eligibleFindingIds - applied or absent kinds are eligible; failed, pl
     [
       "BP-REPO-ACTIONS-MAY-APPROVE-PRS",
       "BP-REPO-DEFAULT-TOKEN-WRITE",
+      "BP-REPO-PVR-OFF",
       "BP-REPO-RULESET-NO-REVIEW",
     ],
   );

@@ -15,6 +15,10 @@
  * — recognise the finding from its body and hand it to a human before cloning
  * the repo or running Claude.
  *
+ * The scanner's `BP-SECURITY-POLICY-MISSING` finding (a missing SECURITY.md,
+ * Issue #3227) is deliberately outside the `BP-REPO-*` family: a normal PR
+ * fixes it, so it is never treated as admin-only here.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 

@@ -27,10 +27,11 @@
  *     failed re-scan: nothing closes and one warning says so.
  *  3. **The re-scan no longer reports the id** — and, where the scanner's
  *     silence alone proves nothing, the read-back positively shows the fix:
- *     secret scanning / push protection must read `enabled` (a token without
- *     admin sees no `security_and_analysis`, and a private repo is exempted,
- *     both silently); ALLOW-LIST-INCOMPLETE needs the repo to be on a
- *     `selected` allow-list.
+ *     secret scanning / push protection and private vulnerability reporting
+ *     must read `enabled` (a token without admin sees no
+ *     `security_and_analysis`, a private repo is exempted and the PVR
+ *     endpoint is never read, both silently); ALLOW-LIST-INCOMPLETE needs the
+ *     repo to be on a `selected` allow-list.
  *
  * Only open issues carrying the finding's marker (parsed by the one
  * definition in `admin_only_finding.ts`) **and authored by a fleet login**
@@ -96,6 +97,7 @@ export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
   "BP-REPO-RULESET-NO-REVIEW": "default-branch-approval",
   "BP-REPO-SECRET-SCANNING-OFF": "secret-scanning",
   "BP-REPO-PUSH-PROTECTION-OFF": "secret-scanning",
+  "BP-REPO-PVR-OFF": "private-vulnerability-reporting",
 };
 
 /** Open issues read per repo; more than this is warned about, not paged. */
@@ -259,6 +261,9 @@ async function confirmFixed(
   const actions = seen.get(`repos/${repo}/actions/permissions`) as {
     allowed_actions?: string;
   } | undefined;
+  const pvr = seen.get(`repos/${repo}/private-vulnerability-reporting`) as {
+    enabled?: boolean;
+  } | undefined;
   // Where the scanner's silence proves nothing, the read-back must show it.
   const positive: Record<string, () => boolean> = {
     "BP-REPO-SECRET-SCANNING-OFF": () =>
@@ -267,6 +272,7 @@ async function confirmFixed(
       statusOf("secret_scanning_push_protection") === "enabled",
     "BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE": () =>
       actions?.allowed_actions === "selected",
+    "BP-REPO-PVR-OFF": () => pvr?.enabled === true,
   };
   const fixed = new Set<string>();
   for (const id of eligible) {

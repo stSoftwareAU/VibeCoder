@@ -2048,11 +2048,17 @@ async function hardenRepoInto(
   }
 }
 
-/** Where a repo's CODEOWNERS file is, as read from its default branch. */
-export type CodeownersLocation =
+/**
+ * Where a file lives on a repo's default branch, as read from its contents
+ * API (no `?ref=` — the contents endpoint reads the default branch itself).
+ */
+export type DefaultBranchFileLocation =
   | { state: "present"; path: string }
   | { state: "absent" }
   | { state: "error"; message: string };
+
+/** Where a repo's CODEOWNERS file is, as read from its default branch. */
+export type CodeownersLocation = DefaultBranchFileLocation;
 
 /** The locations GitHub reads CODEOWNERS from, in its precedence order. */
 const CODEOWNERS_PATHS = [
@@ -2062,18 +2068,19 @@ const CODEOWNERS_PATHS = [
 ] as const;
 
 /**
- * Find the CODEOWNERS file on the default branch (Issue #2626). Only a 404
- * at every location is `absent`; any other error is `error`, so a flaky read
- * is never mistaken for a missing file.
+ * Find the first of `paths` present on the repo's default branch (Issue
+ * #2626). Only a 404 at every location is `absent`; any other error is
+ * `error`, so a flaky read is never mistaken for a missing file.
  */
-export async function findCodeownersOnDefaultBranch(
+export async function findFileOnDefaultBranch(
   repo: string,
+  paths: readonly string[],
   ghCommandFn: GhCommandFn,
-): Promise<CodeownersLocation> {
+): Promise<DefaultBranchFileLocation> {
   if (!isValidRepoSlug(repo)) {
     return { state: "error", message: `invalid repo name: ${repo}` };
   }
-  for (const path of CODEOWNERS_PATHS) {
+  for (const path of paths) {
     try {
       await ghCommandFn(["api", `repos/${repo}/contents/${path}`]);
       return { state: "present", path };
@@ -2086,4 +2093,14 @@ export async function findCodeownersOnDefaultBranch(
     }
   }
   return { state: "absent" };
+}
+
+/**
+ * Find the CODEOWNERS file on the default branch (Issue #2626).
+ */
+export function findCodeownersOnDefaultBranch(
+  repo: string,
+  ghCommandFn: GhCommandFn,
+): Promise<CodeownersLocation> {
+  return findFileOnDefaultBranch(repo, CODEOWNERS_PATHS, ghCommandFn);
 }

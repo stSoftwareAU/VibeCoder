@@ -1076,22 +1076,30 @@ finding, see THREAT-MODEL R14), and
 secret scanning / push protection (`security_and_analysis`), and — on a
 public repository — whether private vulnerability reporting is enabled
 (`private-vulnerability-reporting`) and whether a `SECURITY.md` exists at
-the default branch's root, `.github/` or `docs/` (a presence check only;
-the scanner never commits the file). Each open
-setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
+`.github/SECURITY.md`, the default branch's root or `docs/` (a presence
+check only; the scanner never inspects the wording or commits the file).
+Each open setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
 `BP-REPO-SECRET-SCANNING-OFF`,
-`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`,
-`BP-REPO-SECURITY-POLICY-MISSING`, and — when the repository runs a "selected"
-allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
-workflows need that the list omits, composite steps included,)
-whose fix text says plainly that a
-repository admin must act — the worker cannot change settings; it makes
-the drift visible on the board instead of in a report. An unreadable
-endpoint is logged and yields nothing. Wording avoids the literal
-`secret_scanning*: value` and `id-token: write` pairs the outbound secret
-masker rewrites.
+`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`, and — when the repository
+runs a "selected" allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for
+any action the workflows need that the list omits, composite steps
+included,) whose fix text says plainly that a repository admin must act —
+the worker cannot change settings; it makes the drift visible on the board
+instead of in a report. An unreadable endpoint is logged and yields
+nothing. Wording avoids the literal `secret_scanning*: value` and
+`id-token: write` pairs the outbound secret masker rewrites.
+
+A missing `SECURITY.md` is filed too, but deliberately outside that
+family: it is `BP-SECURITY-POLICY-MISSING`, not `BP-REPO-*`, because a
+repository-settings write is the one thing the worker cannot do itself,
+while adding a `SECURITY.md` is an ordinary file the worker can commit in
+a normal PR. The `BP-REPO-*` prefix is what the worker's admin-only
+triage (`isAdminOnlyRepoSettingsIssue`) matches to route a finding to
+`needs-human` before the agent ever runs; `BP-SECURITY-POLICY-MISSING`
+is left off that prefix on purpose so it goes through the normal agent
+flow and gets a PR instead.
 
 **Secret scanning is exempt on a private repository (Issue #2225).**
 Secret scanning and push protection are free on a public repository, but
@@ -1113,14 +1121,18 @@ human to close; the audit never closes them.
 
 **Private vulnerability reporting and the security policy are public-only
 checks.** Unlike secret scanning, `BP-REPO-PVR-OFF` and
-`BP-REPO-SECURITY-POLICY-MISSING` are not filed on a private or internal
+`BP-SECURITY-POLICY-MISSING` are not filed on a private or internal
 repository at all — not because of a licence exemption, but because
 private vulnerability reporting has no equivalent GitHub feature off a
 public repository and a missing `SECURITY.md` is a doc gap, not a paid
-add-on. `BP-REPO-PVR-OFF` is closed by `repo-settings-harden`;
-`BP-REPO-SECURITY-POLICY-MISSING` is not — setup only checks for the file,
-it never writes one, so that finding stays open for a human to add
-`SECURITY.md`.
+add-on. On a private or internal repository neither endpoint nor path is
+read at all; the audit records the skip as skipped check `private
+vulnerability reporting / SECURITY.md` with reason `not a public
+repository — private vulnerability reporting applies to public
+repositories only`. `BP-REPO-PVR-OFF` is closed by `repo-settings-harden`
+once a read-back confirms it is on; `BP-SECURITY-POLICY-MISSING` is closed
+the ordinary way — by the PR that adds `SECURITY.md` to the repository,
+not by setup, which never writes the file itself.
 
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
@@ -1207,9 +1219,10 @@ is likewise planned on a **public** repository only; a private or internal
 one gets the line `private vulnerability reporting: skipped — not a
 public repository`. `BP-REPO-PVR-OFF` closes only once a read-back of
 that endpoint shows `enabled: true` — a step reported `applied` without
-that confirmation closes nothing. `BP-REPO-SECURITY-POLICY-MISSING` has no
+that confirmation closes nothing. `BP-SECURITY-POLICY-MISSING` has no
 matching step: `repo-settings-harden` never commits a `SECURITY.md`, so
-that finding is never closed by setup.
+that finding is never closed by setup — only by the PR that adds the
+file.
 One approving review on the default branch is part of the default plan
 (Issue #2680): fleet PRs wait for the `/review-fleet-prs` skill or the owner
 before they merge. A `pull_request` rule below one is raised in the ruleset

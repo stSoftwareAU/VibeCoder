@@ -20,6 +20,7 @@ import {
   CODE_SECURITY_SKIP_NOTE,
   COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
+  findFileOnDefaultBranch,
   hardenRepo,
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
@@ -1211,6 +1212,28 @@ Deno.test("findCodeownersOnDefaultBranch - an invalid repo is an error without a
   const result = await findCodeownersOnDefaultBranch("not a repo", gh);
   assertEquals(result.state, "error");
   assertEquals(reads, []);
+});
+
+Deno.test("findFileOnDefaultBranch - returns the first present path in the order given (Issue #3227)", async () => {
+  const repo = "harden-test/security-md";
+  const paths = [".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"];
+  const { gh } = makeGh({
+    [`repos/${repo}/contents/SECURITY.md`]: {
+      path: "SECURITY.md",
+      type: "file",
+    },
+    [`repos/${repo}/contents/docs/SECURITY.md`]: {
+      path: "docs/SECURITY.md",
+      type: "file",
+    },
+  });
+  // .github/SECURITY.md is a 404 (not stubbed); SECURITY.md comes next in
+  // the given order and is present, so it wins over docs/SECURITY.md even
+  // though both are stubbed as present.
+  assertEquals(await findFileOnDefaultBranch(repo, paths, gh), {
+    state: "present",
+    path: "SECURITY.md",
+  });
 });
 
 Deno.test("hardenRepo - an invalid repo is one failed result and no gh call (Issue #2626)", async () => {

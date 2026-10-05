@@ -11,7 +11,12 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { scanRepoSettings } from "../lib/repo_settings_scanner.ts";
+import {
+  PVR_AND_SECURITY_MD_SKIP_CHECK,
+  PVR_AND_SECURITY_MD_SKIP_REASON,
+  scanRepoSettings,
+} from "../lib/repo_settings_scanner.ts";
+import { isAdminOnlyRepoSettingsIssue } from "../lib/admin_only_finding.ts";
 
 /** A gh stub answering the four settings endpoints from a table. */
 function ghFor(
@@ -56,6 +61,8 @@ const HARDENED = {
       secret_scanning_push_protection: { status: "enabled" },
     },
   },
+  "private-vulnerability-reporting": { enabled: true },
+  "contents/.github/SECURITY.md": "# Security",
 };
 
 const OPEN = {
@@ -83,6 +90,10 @@ const OPEN = {
       secret_scanning_push_protection: { status: "disabled" },
     },
   },
+  // Kept hardened for these two (Issue #3227), so existing tests' exact
+  // finding-id lists stay unaffected by this unrelated section.
+  "private-vulnerability-reporting": { enabled: true },
+  "contents/.github/SECURITY.md": "# Security",
 };
 
 Deno.test("scanRepoSettings - a hardened repository yields no findings (Issues #4397 #4398 #4401)", async () => {
@@ -206,11 +217,15 @@ Deno.test("scanRepoSettings - a private repository files neither secret-scanning
   assert(!ids.includes("BP-REPO-PUSH-PROTECTION-OFF"), ids.join(", "));
   // Every other open setting is still reported.
   assert(ids.includes("BP-REPO-DEFAULT-TOKEN-WRITE"), ids.join(", "));
-  assertEquals(skips.length, 1, JSON.stringify(skips));
-  assertEquals(
-    skips[0],
-    "secret scanning / push protection: private repository — needs paid " +
-      "GitHub Secret Protection",
+  // A private repository is also exempt from the PVR/SECURITY.md check
+  // (Issue #3227), recorded as its own skip alongside this one.
+  assertEquals(skips.length, 2, JSON.stringify(skips));
+  assert(
+    skips.includes(
+      "secret scanning / push protection: private repository — needs paid " +
+        "GitHub Secret Protection",
+    ),
+    JSON.stringify(skips),
   );
 });
 
@@ -227,10 +242,11 @@ Deno.test("scanRepoSettings - an internal repository is exempt like a private on
   const ids = findings.map((f) => f.findingId);
   assert(!ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
   assert(!ids.includes("BP-REPO-PUSH-PROTECTION-OFF"), ids.join(", "));
-  assertEquals(skips.length, 1);
+  // Also exempt from the PVR/SECURITY.md check (Issue #3227).
+  assertEquals(skips.length, 2);
 });
 
-Deno.test("scanRepoSettings - a private repository with both settings already on records no skip (Issue #2225)", async () => {
+Deno.test("scanRepoSettings - a private repository with both settings already on records only the PVR/SECURITY.md skip (Issue #2225, #3227)", async () => {
   const skips: string[] = [];
   const findings = await scanRepoSettings(
     "org/repo",
@@ -248,7 +264,10 @@ Deno.test("scanRepoSettings - a private repository with both settings already on
     },
   );
   assertEquals(findings, []);
-  assertEquals(skips, []);
+  // The secret-scanning settings are already on, so that skip is not
+  // recorded; the PVR/SECURITY.md check is exempt on any private
+  // repository regardless (Issue #3227).
+  assertEquals(skips, [PVR_AND_SECURITY_MD_SKIP_CHECK]);
 });
 
 Deno.test("scanRepoSettings - a public repository still files both findings (Issue #2225)", async () => {
@@ -291,7 +310,8 @@ Deno.test("scanRepoSettings - the boolean private flag alone exempts the reposit
   );
   const ids = findings.map((f) => f.findingId);
   assert(!ids.includes("BP-REPO-SECRET-SCANNING-OFF"), ids.join(", "));
-  assertEquals(skips.length, 1);
+  // Also exempt from the PVR/SECURITY.md check (Issue #3227).
+  assertEquals(skips.length, 2);
 });
 
 // =============================================================================
@@ -379,4 +399,160 @@ Deno.test("scanRepoSettings - code-owner review with zero approvals is still a N
     defaultBranch: "Develop",
   });
   assertEquals(open.map((f) => f.findingId), ["BP-REPO-RULESET-NO-REVIEW"]);
+});
+
+// =============================================================================
+// Issue #3227 — private vulnerability reporting and SECURITY.md
+// =============================================================================
+
+Deno.test("scanRepoSettings - a public repository with PVR off files exactly one BP-REPO-PVR-OFF finding (Issue #3227)", async () => {
+  const fixture = {
+    ...HARDENED,
+    "private-vulnerability-reporting": { enabled: false },
+  };
+  const findings = await scanRepoSettings("org/repo", ghFor(fixture), {
+    defaultBranch: "Develop",
+  });
+  assertEquals(findings.map((f) => f.findingId), ["BP-REPO-PVR-OFF"]);
+});
+
+Deno.test("scanRepoSettings - a public repository with PVR on files no PVR finding (Issue #3227)", async () => {
+  const findings = await scanRepoSettings("org/repo", ghFor(HARDENED), {
+    defaultBranch: "Develop",
+  });
+  assert(!findings.some((f) => f.findingId === "BP-REPO-PVR-OFF"));
+});
+
+Deno.test("scanRepoSettings - a private or internal repository reads neither PVR nor SECURITY.md and records one skip (Issue #3227)", async () => {
+  for (const visibility of ["private", "internal"]) {
+    const skips: Array<[string, string]> = [];
+    const endpointsRead: string[] = [];
+    const fixture = {
+      ...OPEN,
+      "repos/org/repo": {
+        ...OPEN["repos/org/repo"],
+        visibility,
+        private: true,
+      },
+      // PVR off and no SECURITY.md so the test can fail if either is read.
+      "private-vulnerability-reporting": { enabled: false },
+    };
+    delete (fixture as Record<string, unknown>)["contents/.github/SECURITY.md"];
+    const findings = await scanRepoSettings(
+      "org/repo",
+      ghFor(fixture, (args) => endpointsRead.push(args[1] ?? "")),
+      {
+        defaultBranch: "Develop",
+        onCheckSkipped: (what, reason) => skips.push([what, reason]),
+      },
+    );
+    assert(
+      !endpointsRead.some((e) => e.includes("private-vulnerability-reporting")),
+      `${visibility}: PVR must not be read: ${endpointsRead.join(", ")}`,
+    );
+    assert(
+      !endpointsRead.some((e) => e.includes("/contents/")),
+      `${visibility}: SECURITY.md must not be read: ${
+        endpointsRead.join(", ")
+      }`,
+    );
+    const ids = findings.map((f) => f.findingId);
+    assert(!ids.includes("BP-REPO-PVR-OFF"), `${visibility}: ${ids}`);
+    assert(
+      !ids.includes("BP-SECURITY-POLICY-MISSING"),
+      `${visibility}: ${ids}`,
+    );
+    assertEquals(
+      skips.filter(([what]) => what === PVR_AND_SECURITY_MD_SKIP_CHECK),
+      [[PVR_AND_SECURITY_MD_SKIP_CHECK, PVR_AND_SECURITY_MD_SKIP_REASON]],
+      `${visibility}`,
+    );
+  }
+});
+
+Deno.test("scanRepoSettings - SECURITY.md absent at all three paths files BP-SECURITY-POLICY-MISSING; present at any one path is silent (Issue #3227)", async () => {
+  const notFound = () => new Error("HTTP 404 Not Found");
+  const absent = {
+    ...HARDENED,
+  };
+  delete (absent as Record<string, unknown>)["contents/.github/SECURITY.md"];
+  const missing = await scanRepoSettings(
+    "org/repo",
+    ghFor({
+      ...absent,
+      "contents/.github/SECURITY.md": notFound(),
+      "contents/SECURITY.md": notFound(),
+      "contents/docs/SECURITY.md": notFound(),
+    }),
+    { defaultBranch: "Develop" },
+  );
+  assertEquals(
+    missing.map((f) => f.findingId),
+    ["BP-SECURITY-POLICY-MISSING"],
+  );
+
+  for (
+    const path of [
+      "contents/.github/SECURITY.md",
+      "contents/SECURITY.md",
+      "contents/docs/SECURITY.md",
+    ]
+  ) {
+    const fixture: Record<string, unknown> = {
+      ...absent,
+      "contents/.github/SECURITY.md": notFound(),
+      "contents/SECURITY.md": notFound(),
+      "contents/docs/SECURITY.md": notFound(),
+    };
+    fixture[path] = "# Security";
+    const findings = await scanRepoSettings("org/repo", ghFor(fixture), {
+      defaultBranch: "Develop",
+    });
+    assertEquals(
+      findings.filter((f) => f.findingId === "BP-SECURITY-POLICY-MISSING"),
+      [],
+      path,
+    );
+  }
+});
+
+Deno.test("scanRepoSettings - a non-404 error reading SECURITY.md is reported, not a finding (Issue #3227)", async () => {
+  const failures: Array<[string, string]> = [];
+  const fixture: Record<string, unknown> = { ...HARDENED };
+  fixture["contents/.github/SECURITY.md"] = new Error(
+    "HTTP 500 Internal Server Error",
+  );
+  const findings = await scanRepoSettings("org/repo", ghFor(fixture), {
+    defaultBranch: "Develop",
+    onLookupFailure: (what, reason) => failures.push([what, reason]),
+  });
+  assert(!findings.some((f) => f.findingId === "BP-SECURITY-POLICY-MISSING"));
+  assertEquals(failures.length, 1);
+  assertEquals(failures[0]![0], "SECURITY.md");
+});
+
+Deno.test("scanRepoSettings - BP-SECURITY-POLICY-MISSING is not admin-only; BP-REPO-PVR-OFF is (Issue #3227)", async () => {
+  const notFound = () => new Error("HTTP 404 Not Found");
+  const fixture: Record<string, unknown> = {
+    ...HARDENED,
+    "private-vulnerability-reporting": { enabled: false },
+    "contents/.github/SECURITY.md": notFound(),
+    "contents/SECURITY.md": notFound(),
+    "contents/docs/SECURITY.md": notFound(),
+  };
+  const findings = await scanRepoSettings("org/repo", ghFor(fixture), {
+    defaultBranch: "Develop",
+  });
+  const bodyFor = (f: typeof findings[number]) =>
+    `<!-- finding-id: ${f.findingId} -->\n\n${f.suggestedFix}\n\n${f.whyItMatters}`;
+
+  const securityFinding = findings.find((f) =>
+    f.findingId === "BP-SECURITY-POLICY-MISSING"
+  )!;
+  assert(securityFinding, "expected BP-SECURITY-POLICY-MISSING to be filed");
+  assertEquals(isAdminOnlyRepoSettingsIssue(bodyFor(securityFinding)), false);
+
+  const pvrFinding = findings.find((f) => f.findingId === "BP-REPO-PVR-OFF")!;
+  assert(pvrFinding, "expected BP-REPO-PVR-OFF to be filed");
+  assertEquals(isAdminOnlyRepoSettingsIssue(bodyFor(pvrFinding)), true);
 });

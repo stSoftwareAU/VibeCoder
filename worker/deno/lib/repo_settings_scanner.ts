@@ -7,12 +7,14 @@
  * a read-write default `GITHUB_TOKEN` that may approve pull requests, no
  * allow-list of actions, platform SHA-pin enforcement off, a thoughtful
  * CODEOWNERS the Develop ruleset never consults, secret scanning and push
- * protection disabled, private vulnerability reporting off and no
- * SECURITY.md pointing a reporter at it. Only an admin can flip those; the
- * worker cannot. So the weekly audit reads them (read-only `gh api` calls)
- * and files one stable finding per open setting that says plainly a human
- * must act — drift becomes visible on the board instead of living in a
- * report.
+ * protection disabled, private vulnerability reporting off and no SECURITY.md
+ * security policy. Only an admin can flip most of those; the worker cannot —
+ * so the weekly audit reads them (read-only `gh api` calls) and files one
+ * stable finding per open setting that says plainly a human must act. The
+ * SECURITY.md finding is the exception: a missing file is fixed by a normal
+ * PR in the repository, so its finding id sits outside the `BP-REPO-*`
+ * family {@link isAdminOnlyRepoSettingsIssue} treats as admin-only. Either
+ * way, drift becomes visible on the board instead of living in a report.
  *
  * Failure policy: an unreadable endpoint is reported through
  * `onLookupFailure` and yields no finding for that endpoint — never a
@@ -38,9 +40,9 @@
 
 import {
   allowListCovers,
+  findFileOnDefaultBranch,
   needsPaidSecretProtection,
 } from "./repo_settings_harden.ts";
-import { isNotFoundError } from "./repo_rulesets.ts";
 import type {
   GhCommandFn,
   WorkflowFindingSeverity,
@@ -87,6 +89,16 @@ export const SECRET_PROTECTION_SKIP_CHECK = "secret scanning / push protection";
 /** Why it was skipped — rendered straight into the audit summary. */
 export const SECRET_PROTECTION_SKIP_REASON =
   "private repository — needs paid GitHub Secret Protection";
+/**
+ * How the private-vulnerability-reporting / SECURITY.md check is named in
+ * the audit's skipped-checks list (Issue #3227).
+ */
+export const PVR_AND_SECURITY_MD_SKIP_CHECK =
+  "private vulnerability reporting / SECURITY.md";
+/** Why it was skipped — rendered straight into the audit summary. */
+export const PVR_AND_SECURITY_MD_SKIP_REASON =
+  "not a public repository — private vulnerability reporting applies to " +
+  "public repositories only";
 const ADMIN =
   "Repository admin action — the worker cannot change repository settings.";
 
@@ -105,7 +117,7 @@ async function readJson<T>(
   }
 }
 
-/** Read the five settings surfaces and return one finding per open setting. */
+/** Read the settings surfaces and return one finding per open setting. */
 export async function scanRepoSettings(
   repo: string,
   ghCommandFn: GhCommandFn,
@@ -389,14 +401,20 @@ export async function scanRepoSettings(
         });
       }
 
-      const securityMd = await findSecurityMdOnDefaultBranch(
+      const securityMd = await findFileOnDefaultBranch(
         repo,
+        SECURITY_MD_PATHS,
         ghCommandFn,
-        options.onLookupFailure,
       );
-      if (securityMd === "absent") {
+      if (securityMd.state === "error") {
+        options.onLookupFailure?.("SECURITY.md", securityMd.message);
+      } else if (securityMd.state === "absent") {
+        // Id deliberately outside the BP-REPO-* family: a missing
+        // SECURITY.md is fixed by a normal PR in this repository, not an
+        // admin-only settings change, so isAdminOnlyRepoSettingsIssue must
+        // never treat it (or its suggestedFix) as one (Issue #3227).
         add({
-          findingId: "BP-REPO-SECURITY-POLICY-MISSING",
+          findingId: "BP-SECURITY-POLICY-MISSING",
           severity: "medium",
           title: "🟠 No SECURITY.md security policy",
           file: FILE,
@@ -405,9 +423,10 @@ export async function scanRepoSettings(
             "With no SECURITY.md a reporter has no documented, private way to disclose a vulnerability and may default " +
             "to a public issue instead (Issue #3227).",
           suggestedFix:
-            "Commit a SECURITY.md to the root, .github/ or docs/ of the default branch that points reporters at " +
+            "Commit a SECURITY.md to the .github/, root or docs/ of the default branch that points reporters at " +
             "private vulnerability reporting.",
-          evidence: "SECURITY.md not found at SECURITY.md, .github/SECURITY.md or docs/SECURITY.md",
+          evidence:
+            "SECURITY.md not found at .github/SECURITY.md, SECURITY.md or docs/SECURITY.md",
         });
       }
     }
@@ -416,41 +435,12 @@ export async function scanRepoSettings(
   return out;
 }
 
-/** The locations GitHub reads a SECURITY.md security policy from. */
+/**
+ * The locations GitHub reads a SECURITY.md security policy from, in its
+ * precedence order.
+ */
 const SECURITY_MD_PATHS = [
-  "SECURITY.md",
   ".github/SECURITY.md",
+  "SECURITY.md",
   "docs/SECURITY.md",
 ] as const;
-
-/**
- * Find a SECURITY.md on the default branch. Only a 404 at every location is
- * `"absent"`; any other error is reported through `onLookupFailure` and
- * yields `"error"` — never mistaken for a missing file (Issue #3227).
- */
-async function findSecurityMdOnDefaultBranch(
-  repo: string,
-  defaultBranch: string,
-  ghCommandFn: GhCommandFn,
-  onLookupFailure?: (what: string, reason: string) => void,
-): Promise<"present" | "absent" | "error"> {
-  for (const path of SECURITY_MD_PATHS) {
-    try {
-      await ghCommandFn([
-        "api",
-        `repos/${repo}/contents/${path}?ref=${
-          encodeURIComponent(defaultBranch)
-        }`,
-      ]);
-      return "present";
-    } catch (err) {
-      if (isNotFoundError(err)) continue;
-      onLookupFailure?.(
-        "SECURITY.md",
-        err instanceof Error ? err.message : String(err),
-      );
-      return "error";
-    }
-  }
-  return "absent";
-}
