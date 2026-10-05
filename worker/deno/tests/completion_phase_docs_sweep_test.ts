@@ -62,6 +62,7 @@ interface CommentPost {
 function stubClient(
   comments: string[],
   posts: CommentPost[] = [],
+  options: { postCommentThrows?: boolean } = {},
 ): GitHubClient {
   return {
     getIssue: () => {
@@ -71,6 +72,9 @@ function stubClient(
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
     postComment: (_repo: string, issue: number, body: string) => {
+      if (options.postCommentThrows) {
+        return Promise.reject(new Error("stub: postComment failed"));
+      }
       comments.push(body);
       posts.push({ number: issue, body });
       return Promise.resolve(undefined);
@@ -112,6 +116,12 @@ interface Scenario {
   grepCode?: number;
   /** Ordered event log shared across the mocked deps, for assertion. */
   events?: string[];
+  /**
+   * When true, the stub client's `postComment` rejects — exercising the
+   * advisory docs-sweep comment's own failure path (Issue #3237). Omitted,
+   * `postComment` succeeds as normal.
+   */
+  postCommentThrows?: boolean;
 }
 
 interface Outcome {
@@ -124,6 +134,8 @@ interface Outcome {
   /** Every comment posted, with the issue/PR number it targeted (Issue #3237). */
   commentPosts: CommentPost[];
   events: string[];
+  /** `logger.warn` messages recorded while driving this run (Issue #3237). */
+  warnLogs: string[];
 }
 
 /** Drive the live completion phase over a (possibly) blocked docs-sweep gate. */
@@ -143,6 +155,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let claudeCalls = 0;
   const claudePrompts: string[] = [];
   const events = scenario.events ?? [];
+  const warnLogs: string[] = [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -170,8 +183,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      warn: (message: string) => {
+        warnLogs.push(message);
+      },
+    },
     github: {
-      createClient: () => stubClient(comments, commentPosts),
+      createClient: () =>
+        stubClient(comments, commentPosts, {
+          postCommentThrows: scenario.postCommentThrows,
+        }),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
@@ -305,6 +326,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     comments,
     commentPosts,
     events,
+    warnLogs,
   };
 }
 
@@ -578,6 +600,33 @@ Deno.test(
       "exactly one comment posted to the existing PR",
     );
     assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
+  },
+);
+
+Deno.test(
+  "completion - a failed advisory comment post does not fail the run (#3237)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      postCommentThrows: true,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is still raised");
+    assertEquals(
+      outcome.commentPosts.length,
+      0,
+      "the failed post leaves no comment recorded",
+    );
+    const issuePosts = outcome.commentPosts.filter((p) => p.number === ISSUE);
+    assertEquals(issuePosts.length, 0, "no comment posted to the issue");
+    const warned = outcome.warnLogs.some((m) =>
+      m.includes("Docs sweep hits comment failed (non-fatal)")
+    );
+    assertEquals(warned, true, "the failure is logged as non-fatal");
   },
 );
 
