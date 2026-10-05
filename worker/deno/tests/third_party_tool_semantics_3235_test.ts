@@ -18,7 +18,14 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  DocSection,
+  excerpt,
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const FAKE_MIRRORS_START =
   "**A fake mirrors the production implementation it stands in for.**";
@@ -30,7 +37,7 @@ const WORKFLOW_VALIDATOR_START =
   "**A workflow behaviour change extends the workflow validator.**";
 
 function paragraphAt(
-  sectionText: string,
+  sectionText: DocSection,
   start: string,
   what: string,
 ): string {
@@ -38,8 +45,8 @@ function paragraphAt(
   assert(index >= 0, `could not locate "${start}" in ${what}`);
   const end = sectionText.indexOf("\n\n", index);
   const paragraph = end >= 0
-    ? sectionText.slice(index, end)
-    : sectionText.slice(index);
+    ? excerpt(sectionText, index, end)
+    : excerpt(sectionText, index);
   return flat(paragraph).trim();
 }
 
@@ -54,8 +61,8 @@ const KEY_PHRASES = [
 
 function surfaces(): Promise<
   readonly [
-    readonly ["CODING-STANDARDS.md", string],
-    readonly ["coding_guidelines", string],
+    readonly ["CODING-STANDARDS.md", DocSection],
+    readonly ["coding_guidelines", DocSection],
   ]
 > {
   return Promise.all([
@@ -83,7 +90,7 @@ Deno.test("both surfaces carry the third-party-tool-semantics rule (Issue #3235)
     const paragraph = paragraphAt(text, PARAGRAPH_START, surface);
     for (const phrase of KEY_PHRASES) {
       assert(
-        paragraph.includes(flat(phrase)),
+        paragraph.includes(flatWholeFile(phrase)),
         `${surface} is missing "${phrase}" from the third-party-tool-semantics rule: ${paragraph}`,
       );
     }
@@ -132,7 +139,7 @@ Deno.test("the workflow-validator paragraph links to the third-party-tool-semant
     const paragraph = paragraphAt(text, WORKFLOW_VALIDATOR_START, surface);
     assert(
       paragraph.includes(
-        flat(
+        flatWholeFile(
           "A validator that emulates GitHub's glob or expression semantics " +
             "is also held to **A test of a third-party tool's input uses " +
             "that tool's semantics**",
