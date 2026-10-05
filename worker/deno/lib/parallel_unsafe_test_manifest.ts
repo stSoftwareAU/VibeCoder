@@ -199,6 +199,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // diff hunk; only a growth measurement separates their linear scans from
   // the quadratic patterns they replaced (Issue #3223).
   "tests/milestone_not_planned_refs_test.ts",
+  // The rustc toolchain-gap detector reads agent-controlled cargo output
+  // line by line; only a growth measurement separates its capped, anchored
+  // scans from a backtracking pattern (Issue #3255).
+  "tests/milestone_merge_gate_test.ts",
 ];
 
 /**
