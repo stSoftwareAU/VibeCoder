@@ -653,11 +653,8 @@ function collect(
   return { mismatches, docsSweepProblems };
 }
 
-/**
- * Whitespace-normalised form used to compare a quoted sentence to file text.
- * Exported for reuse by `summary_claim_check.ts` (Issue #3257).
- */
-export function normaliseWhitespace(text: string): string {
+/** Whitespace-normalised form used to compare a quoted sentence to file text. */
+function normaliseWhitespace(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
