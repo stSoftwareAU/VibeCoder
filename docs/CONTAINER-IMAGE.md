@@ -314,9 +314,10 @@ not a free choice: it is exactly the version `@playwright/mcp` depends on,
 because Playwright resolves browsers as `chromium-<revision>` and each
 release pins its own revision; the gate fails when the pin drifts from
 `PLAYWRIGHT_INSTALLER_VERSION` in `worker/deno/setup/screenshot.ts`.
-`install chromium` resolves to three artefacts, not one (Issues #274,
-#3256): the Chromium zip, the chromium-headless-shell zip — the binary a
-default `chromium.launch()` with no `executablePath` actually uses, as in
+`install chromium` resolves to three artefacts, not one
+(Issues #274, #3256): the Chromium zip, the chromium-headless-shell
+zip — the binary a default `chromium.launch()` with no
+`executablePath` actually uses, as in
 `container-build.yml`'s "Capture a screenshot with headless Chromium
 inside the image" step — and ffmpeg, which Playwright installs with every
 browser, so `--no-shell` would not remove it. Playwright 1.61 on Debian
