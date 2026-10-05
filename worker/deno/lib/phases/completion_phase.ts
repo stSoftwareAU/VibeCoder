@@ -2975,6 +2975,7 @@ async function completionBody(
           state,
           prBody,
           deps,
+          docsSweepHitsComment,
         );
       } else if (isSecondaryRateLimitMessage(errorMsg)) {
         // The latch's own cool-down names both limits (Issue #1456), so it
@@ -3089,6 +3090,9 @@ async function completionBody(
         deps.github.createClient(logger).postComment(r, n, body),
       warn: (m: string) => logger.warn(m),
     });
+
+    // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
+    await postDocsSweepHitsComment(repo, prNumber, docsSweepHitsComment, deps);
   } catch (err) {
     // Post-PR finalisation is best-effort
     logger.warn("Post-PR finalisation error (non-fatal)", {

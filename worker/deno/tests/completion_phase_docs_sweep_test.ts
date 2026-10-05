@@ -53,7 +53,16 @@ Changed the broker balance card. Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_docs_sweep_test.ts\`
 `;
 
-function stubClient(comments: string[]): GitHubClient {
+/** One comment posted, with the issue/PR number it was posted to (Issue #3237). */
+interface CommentPost {
+  number: number;
+  body: string;
+}
+
+function stubClient(
+  comments: string[],
+  posts: CommentPost[] = [],
+): GitHubClient {
   return {
     getIssue: () => {
       throw new Error("stub");
@@ -61,8 +70,9 @@ function stubClient(comments: string[]): GitHubClient {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: (_repo: string, _issue: number, body: string) => {
+    postComment: (_repo: string, issue: number, body: string) => {
       comments.push(body);
+      posts.push({ number: issue, body });
       return Promise.resolve(undefined);
     },
     editIssue: () => Promise.resolve(),
@@ -111,6 +121,8 @@ interface Outcome {
   claudePrompts: string[];
   prCreateCalls: number;
   comments: string[];
+  /** Every comment posted, with the issue/PR number it targeted (Issue #3237). */
+  commentPosts: CommentPost[];
   events: string[];
 }
 
@@ -126,6 +138,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   await Deno.writeTextFile(summaryPath, scenario.summary);
 
   const comments: string[] = [];
+  const commentPosts: CommentPost[] = [];
   let prCreateCalls = 0;
   let claudeCalls = 0;
   const claudePrompts: string[] = [];
@@ -158,7 +171,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const deps = createMockDeps({
     github: {
-      createClient: () => stubClient(comments),
+      createClient: () => stubClient(comments, commentPosts),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
@@ -290,6 +303,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claudePrompts,
     prCreateCalls,
     comments,
+    commentPosts,
     events,
   };
 }
@@ -511,55 +525,59 @@ Deno.test(
 
 // ---------------------------------------------------------------------------
 // Issue #3172: the Docs sweep line's own grep terms are re-run at the head.
+// Issue #3237: stale hits are advisory (#3237) — posted once, never blocking.
 // ---------------------------------------------------------------------------
 
 /** A hit of the line's own term (`BrokerBalance`) the diff did not change. */
 const STALE_HIT =
   "HEAD:docs/reporting-api.md\u0000320\u0000BrokerBalance refuses a stale quote\n";
 
-/** The valid summary once the recovery names the hit as still true. */
-const SUMMARY_NAMING_HIT = SUMMARY_WITH_LINE.replace(
-  "; no hits",
-  "; `docs/reporting-api.md:320` — still true because the refusal stays",
-);
-
 Deno.test(
-  "completion - a stale hit of the Docs sweep's own term gets the one recovery turn, then the PR is raised once it is named",
+  "completion - a stale hit of the Docs sweep's own term is advisory (#3237): no recovery turn, the PR is still raised, one PR comment names the hit",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
-      retryWrites: SUMMARY_NAMING_HIT,
       changedFiles: "crates/report/src/decisions.rs",
       grepOutput: STALE_HIT,
     });
 
     assertEquals(outcome.status, "continue");
-    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is still raised");
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(prPosts.length, 1, "exactly one comment posted to the PR");
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
     assertStringIncludes(
-      outcome.claudePrompts[0]!,
-      "docs/reporting-api.md:320",
-    );
-    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(
-      outcome.comments[0]!,
+      prPosts[0]!.body,
       "BrokerBalance refuses a stale quote",
     );
+    assertStringIncludes(prPosts[0]!.body.toLowerCase(), "advisory");
+    const issuePosts = outcome.commentPosts.filter((p) => p.number === ISSUE);
+    assertEquals(issuePosts.length, 0, "no comment posted to the issue");
   },
 );
 
 Deno.test(
-  "completion - a stale hit the recovery leaves alone fails the run with no PR raised",
+  "completion - a stale hit on a recovered existing PR gets the advisory comment posted there (#3237)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
       changedFiles: "crates/report/src/decisions.rs",
       grepOutput: STALE_HIT,
+      prExistsForBranch: true,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "docs/reporting-api.md:320");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(
+      prPosts.length,
+      1,
+      "exactly one comment posted to the existing PR",
+    );
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
   },
 );
 
@@ -603,7 +621,7 @@ const STALE_SOURCE_COMMENT =
   "HEAD:crates/report/src/balance.rs\u000042\u0000/// BrokerBalance is shared by the two old callers\n";
 
 Deno.test(
-  "completion - a stale doc comment in an untouched source file blocks like a manual hit (Issue #3219)",
+  "completion - a stale doc comment in an untouched source file is advisory like a manual hit (#3237, Issue #3219)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
@@ -611,16 +629,22 @@ Deno.test(
       sourceGrepOutput: STALE_SOURCE_COMMENT,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is still raised");
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(prPosts.length, 1, "exactly one comment posted to the PR");
     assertStringIncludes(
-      outcome.reason ?? "",
+      prPosts[0]!.body,
       "crates/report/src/balance.rs:42",
     );
     assertStringIncludes(
-      outcome.comments[0] ?? "",
+      prPosts[0]!.body,
       "BrokerBalance is shared by the two old callers",
     );
+    const issuePosts = outcome.commentPosts.filter((p) => p.number === ISSUE);
+    assertEquals(issuePosts.length, 0, "no comment posted to the issue");
   },
 );
 
