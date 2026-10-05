@@ -9,7 +9,7 @@ host, one conversation or one agent provider.
 
 ## This attempt
 
-- 2026-10-05T20:14:38Z — execute hit the Claude subscription usage limit after 1576s; 0 uncommitted file(s) preserved; 4 commit(s) added to the branch
+- 2026-10-05T23:34:40Z — execute hit the Claude subscription usage limit after 2290s; 0 uncommitted file(s) preserved; 7 commit(s) added to the branch
 - Branch: `issue-3257-first-run-pr-summaries-describe-named-code-wrongly`
 - Wind-down notice: not delivered — the interruption arrived without warning
 
@@ -17,19 +17,22 @@ host, one conversation or one agent provider.
 
 Commits this run added to the branch, newest first:
 
-- wip: handover note for the interrupted run on issue #3257 (Issue #769) Vibe-Coder-Run-Id: vibe-muvnc2ag-fccffc
-- WIP checkpoint: periodic agent progress snapshot (Issue #4170)
-- WIP checkpoint: periodic agent progress snapshot (Issue #4170)
-- WIP checkpoint: periodic agent progress snapshot (Issue #4170)
+- Test the claim check's not-checked outcomes and issue-number guard (#3257)
+- Scope the claim-check wording to false claims it confirms (#3257)
+- Register summary_claim_check in the sweep ledger and wall-clock manifest (#3257)
+- Align the INTERNALS row for summary_claim_check.ts (#3257)
+- Drop an unused export and refresh docs for the summary claim check (#3257)
+- Merge origin/main into issue-3257 branch
+- Classify a Rust toolchain gap in the milestone gates instead of repairing it (#3255) (#3260)
 
 The working tree was clean at the interruption — the work above is
 already committed on this branch.
 
 ## What remains
 
-The run was interrupted after 1576s, so it never reported completion: whatever the issue still asks for beyond the changes above is outstanding.
+The run was interrupted after 2290s, so it never reported completion: whatever the issue still asks for beyond the changes above is outstanding.
 
-Diff `issue-3257-first-run-pr-summaries-describe-named-code-wrongly` against its base branch to see the 4 commit(s) and 0 preserved file(s) named above, continue from them, and do not revert them unless they are wrong.
+Diff `issue-3257-first-run-pr-summaries-describe-named-code-wrongly` against its base branch to see the 7 commit(s) and 0 preserved file(s) named above, continue from them, and do not revert them unless they are wrong.
 
 The closing deliverables are outstanding too unless the list above names them: completion reads `docs/archive/pr-summaries/pr-summary-3257.md` — with its `## Acceptance Criteria` closure block when the issue states criteria — and a run that finishes without it fails at the gate however complete the code is.
 
@@ -42,4 +45,5 @@ not by a blocker it reported.
 
 Earlier runs on this issue were interrupted too:
 
+- 2026-10-05T20:14:38Z — execute hit the Claude subscription usage limit after 1576s; 0 uncommitted file(s) preserved; 4 commit(s) added to the branch
 - 2026-10-05T20:14:34Z — execute hit the Claude subscription usage limit after 1571s; 0 uncommitted file(s) preserved; 3 commit(s) added to the branch
