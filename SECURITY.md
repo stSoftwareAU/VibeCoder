@@ -2020,15 +2020,22 @@ We take security seriously. If you discover a security vulnerability, please fol
 
 ### 🐛 Reporting a Vulnerability
 
-1. **Do not** open a public GitHub issue for security vulnerabilities
+1. **Do not** open a public GitHub issue for security vulnerabilities.
 
-2. **Email** the repository maintainers directly with:
+2. **Report it privately through GitHub**, the primary channel: open this
+   repository's **Security** tab → **Advisories** → **Report a
+   vulnerability** (GitHub's private vulnerability reporting). This opens a
+   private advisory visible only to you and the maintainers, with no public
+   trace until it is resolved.
+
+3. **If GitHub private vulnerability reporting is unavailable to you**,
+   email `security@stsoftware.com.au` instead, with:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
    - Any suggested fixes
 
-3. **Allow time** for us to investigate and fix before public disclosure (typically 90 days)
+4. **Allow time** for us to investigate and fix before public disclosure (typically 90 days)
 
 ### 📋 What to Include in Your Report
 

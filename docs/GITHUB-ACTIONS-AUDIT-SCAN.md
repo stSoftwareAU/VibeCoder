@@ -1073,12 +1073,17 @@ whether SHA pinning is enforced (`actions/permissions`), the default
 branch's pull-request rule (`rules/branches/<default>` — the approval
 count; code-owner review is deliberately off fleet-wide and never a
 finding, see THREAT-MODEL R14), and
-secret scanning / push protection (`security_and_analysis`). Each open
+secret scanning / push protection (`security_and_analysis`), and — on a
+public repository — whether private vulnerability reporting is enabled
+(`private-vulnerability-reporting`) and whether a `SECURITY.md` exists at
+the default branch's root, `.github/` or `docs/` (a presence check only;
+the scanner never commits the file). Each open
 setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
 `BP-REPO-SECRET-SCANNING-OFF`,
-`BP-REPO-PUSH-PROTECTION-OFF`, and — when the repository runs a "selected"
+`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`,
+`BP-REPO-SECURITY-POLICY-MISSING`, and — when the repository runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
 workflows need that the list omits, composite steps included,)
 whose fix text says plainly that a
@@ -1105,6 +1110,17 @@ scanning / push protection (private repository — needs paid GitHub Secret
 Protection)` and logged once at `WARNING`, never `ERROR`, because nothing
 failed. Findings already open on private repositories stay open for a
 human to close; the audit never closes them.
+
+**Private vulnerability reporting and the security policy are public-only
+checks.** Unlike secret scanning, `BP-REPO-PVR-OFF` and
+`BP-REPO-SECURITY-POLICY-MISSING` are not filed on a private or internal
+repository at all — not because of a licence exemption, but because
+private vulnerability reporting has no equivalent GitHub feature off a
+public repository and a missing `SECURITY.md` is a doc gap, not a paid
+add-on. `BP-REPO-PVR-OFF` is closed by `repo-settings-harden`;
+`BP-REPO-SECURITY-POLICY-MISSING` is not — setup only checks for the file,
+it never writes one, so that finding stays open for a human to add
+`SECURITY.md`.
 
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
@@ -1164,7 +1180,7 @@ flowchart TD
 ### Closing the settings findings: `repo-settings-harden`
 
 The settings pre-filer reports; `mod.ts repo-settings-harden --repo owner/name`
-closes. It reads the same four surfaces, plans only the writes that change
+closes. It reads the same surfaces, plans only the writes that change
 something (a hardened repository plans nothing), prints the plan by default
 and applies it under `--apply`: read-only default token and no approve-PRs;
 `sha_pinning_required`; `allowed_actions=selected` with GitHub-owned actions
@@ -1184,7 +1200,16 @@ on a **public** repository only — on a private or internal one the step is
 not planned at all and the plan carries one line, `secret scanning / push
 protection: skipped — private repository needs paid GitHub Secret
 Protection`, so `--apply` sends no `security_and_analysis` write
-(Issue #2225).
+(Issue #2225). Private vulnerability reporting
+(step kind `private-vulnerability-reporting`, "Enable private
+vulnerability reporting", `PUT repos/{repo}/private-vulnerability-reporting`)
+is likewise planned on a **public** repository only; a private or internal
+one gets the line `private vulnerability reporting: skipped — not a
+public repository`. `BP-REPO-PVR-OFF` closes only once a read-back of
+that endpoint shows `enabled: true` — a step reported `applied` without
+that confirmation closes nothing. `BP-REPO-SECURITY-POLICY-MISSING` has no
+matching step: `repo-settings-harden` never commits a `SECURITY.md`, so
+that finding is never closed by setup.
 One approving review on the default branch is part of the default plan
 (Issue #2680): fleet PRs wait for the `/review-fleet-prs` skill or the owner
 before they merge. A `pull_request` rule below one is raised in the ruleset

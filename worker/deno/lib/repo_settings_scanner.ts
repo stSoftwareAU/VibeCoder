@@ -1,16 +1,18 @@
 /**
  * Repository-settings pre-filer for the GitHub Actions audit (Issues #4397,
- * #4398, #4401 — GHA-PERM-002/003/004, GHA-MONITOR-004).
+ * #4398, #4401, #3227 — GHA-PERM-002/003/004, GHA-MONITOR-004).
  *
  * The workflow YAML can score perfectly on least privilege while the
  * repository settings underneath it are wide open — observed on this repo:
  * a read-write default `GITHUB_TOKEN` that may approve pull requests, no
  * allow-list of actions, platform SHA-pin enforcement off, a thoughtful
  * CODEOWNERS the Develop ruleset never consults, secret scanning and push
- * protection disabled. Only an admin can flip those; the worker cannot. So
- * the weekly audit reads them (read-only `gh api` calls) and files one
- * stable finding per open setting that says plainly a human must act —
- * drift becomes visible on the board instead of living in a report.
+ * protection disabled, private vulnerability reporting off and no
+ * SECURITY.md pointing a reporter at it. Only an admin can flip those; the
+ * worker cannot. So the weekly audit reads them (read-only `gh api` calls)
+ * and files one stable finding per open setting that says plainly a human
+ * must act — drift becomes visible on the board instead of living in a
+ * report.
  *
  * Failure policy: an unreadable endpoint is reported through
  * `onLookupFailure` and yields no finding for that endpoint — never a
@@ -19,9 +21,12 @@
  * Exemption: secret scanning and push protection need the paid GitHub
  * Secret Protection add-on on a private or internal repository, so neither
  * finding is filed there (Issue #2225) — a finding that only asks an admin
- * to spend money is closed by hand every run. The skip travels through
- * `onCheckSkipped`, not `onLookupFailure`, because nothing failed, and the
- * audit names it in its own summary rather than passing it as clean.
+ * to spend money is closed by hand every run. Private vulnerability
+ * reporting and the SECURITY.md presence check are exempted the same way:
+ * both apply to public repositories only (Issue #3227). Each skip travels
+ * through `onCheckSkipped`, not `onLookupFailure`, because nothing failed,
+ * and the audit names it in its own summary rather than passing it as
+ * clean.
  *
  * Wording note: the outbound secret masker rewrites `secret_scanning*`
  * key/value pairs and `id-token: write` to `***REDACTED***` in issue bodies
@@ -100,7 +105,7 @@ async function readJson<T>(
   }
 }
 
-/** Read the four settings surfaces and return one finding per open setting. */
+/** Read the five settings surfaces and return one finding per open setting. */
 export async function scanRepoSettings(
   repo: string,
   ghCommandFn: GhCommandFn,
@@ -347,5 +352,105 @@ export async function scanRepoSettings(
     }
   }
 
+  // 5. Private vulnerability reporting and a SECURITY.md pointing at it
+  // (Issue #3227). Both apply to public repositories only — the same
+  // exemption as section 4, recorded through `onCheckSkipped` rather than
+  // `onLookupFailure` because nothing failed.
+  if (repoInfo) {
+    const exempt = needsPaidSecretProtection(
+      repoInfo.visibility,
+      repoInfo.private,
+    );
+    if (exempt) {
+      options.onCheckSkipped?.(
+        PVR_AND_SECURITY_MD_SKIP_CHECK,
+        PVR_AND_SECURITY_MD_SKIP_REASON,
+      );
+    } else {
+      const pvr = await readJson<{ enabled?: boolean }>(
+        ghCommandFn,
+        `repos/${repo}/private-vulnerability-reporting`,
+        "private-vulnerability-reporting",
+        options.onLookupFailure,
+      );
+      if (pvr?.enabled === false) {
+        add({
+          findingId: "BP-REPO-PVR-OFF",
+          severity: "medium",
+          title: "🟠 Private vulnerability reporting is disabled",
+          file: FILE,
+          lines: 0,
+          whyItMatters:
+            "Without it, a security reporter on this public repository has no private channel to the maintainers and " +
+            "may disclose the vulnerability publicly instead (Issue #3227).",
+          suggestedFix:
+            `${ADMIN} Settings → Code security → Private vulnerability reporting → Enable.`,
+          evidence: `private-vulnerability-reporting enabled=${pvr.enabled}`,
+        });
+      }
+
+      const securityMd = await findSecurityMdOnDefaultBranch(
+        repo,
+        ghCommandFn,
+        options.onLookupFailure,
+      );
+      if (securityMd === "absent") {
+        add({
+          findingId: "BP-REPO-SECURITY-POLICY-MISSING",
+          severity: "medium",
+          title: "🟠 No SECURITY.md security policy",
+          file: FILE,
+          lines: 0,
+          whyItMatters:
+            "With no SECURITY.md a reporter has no documented, private way to disclose a vulnerability and may default " +
+            "to a public issue instead (Issue #3227).",
+          suggestedFix:
+            "Commit a SECURITY.md to the root, .github/ or docs/ of the default branch that points reporters at " +
+            "private vulnerability reporting.",
+          evidence: "SECURITY.md not found at SECURITY.md, .github/SECURITY.md or docs/SECURITY.md",
+        });
+      }
+    }
+  }
+
   return out;
+}
+
+/** The locations GitHub reads a SECURITY.md security policy from. */
+const SECURITY_MD_PATHS = [
+  "SECURITY.md",
+  ".github/SECURITY.md",
+  "docs/SECURITY.md",
+] as const;
+
+/**
+ * Find a SECURITY.md on the default branch. Only a 404 at every location is
+ * `"absent"`; any other error is reported through `onLookupFailure` and
+ * yields `"error"` — never mistaken for a missing file (Issue #3227).
+ */
+async function findSecurityMdOnDefaultBranch(
+  repo: string,
+  defaultBranch: string,
+  ghCommandFn: GhCommandFn,
+  onLookupFailure?: (what: string, reason: string) => void,
+): Promise<"present" | "absent" | "error"> {
+  for (const path of SECURITY_MD_PATHS) {
+    try {
+      await ghCommandFn([
+        "api",
+        `repos/${repo}/contents/${path}?ref=${
+          encodeURIComponent(defaultBranch)
+        }`,
+      ]);
+      return "present";
+    } catch (err) {
+      if (isNotFoundError(err)) continue;
+      onLookupFailure?.(
+        "SECURITY.md",
+        err instanceof Error ? err.message : String(err),
+      );
+      return "error";
+    }
+  }
+  return "absent";
 }

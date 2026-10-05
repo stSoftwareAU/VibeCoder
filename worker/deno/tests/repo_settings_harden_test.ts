@@ -25,6 +25,7 @@ import {
   MILESTONE_REF_PATTERN,
   needsPaidSecretProtection,
   planRepoSettingsHardening,
+  PVR_SKIP_NOTE,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
   SECRET_PROTECTION_SKIP_NOTE,
@@ -2398,5 +2399,185 @@ Deno.test("hardenRepo - an unreadable workflow tree holds CodeQL rather than ris
     report.results.filter((r) => r.step.kind === "codeql-default-setup")
       .map((r) => r.status),
     ["skipped"],
+  );
+});
+
+// =============================================================================
+// Issue #3227 — private vulnerability reporting enforced on public repos only
+// =============================================================================
+
+function pvrPlan(snapshot: RepoSettingsSnapshot) {
+  return planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    defaultBranch: "main",
+  }).filter((s) => s.kind === "private-vulnerability-reporting");
+}
+
+Deno.test("planRepoSettingsHardening - private vulnerability reporting off plans the exact PUT step (Issue #3227)", () => {
+  const plan = pvrPlan({ privateVulnerabilityReporting: { enabled: false } });
+  assertEquals(plan, [{
+    kind: "private-vulnerability-reporting",
+    title: "Enable private vulnerability reporting",
+    method: "PUT",
+    endpoint: "private-vulnerability-reporting",
+  }]);
+});
+
+Deno.test("planRepoSettingsHardening - private vulnerability reporting already on plans nothing (Issue #3227)", () => {
+  assertEquals(
+    pvrPlan({ privateVulnerabilityReporting: { enabled: true } }),
+    [],
+  );
+});
+
+Deno.test("planRepoSettingsHardening - private vulnerability reporting not read (field absent, e.g. a private repo) plans nothing (Issue #3227)", () => {
+  assertEquals(pvrPlan({}), []);
+});
+
+Deno.test("hardenRepo - a public repo with private vulnerability reporting off gets one PUT, applied (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, [{
+    method: "PUT",
+    endpoint: `repos/${repo}/private-vulnerability-reporting`,
+    body: undefined,
+  }]);
+  assertEquals(
+    report.results.map((r) => `${r.step.kind} ${r.status}`),
+    ["private-vulnerability-reporting applied"],
+  );
+});
+
+Deno.test("hardenRepo - private vulnerability reporting already on makes no call and plans nothing (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeGh(hardenedRoutes(repo));
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(
+    writes.filter((w) => w.endpoint.includes("private-vulnerability")),
+    [],
+  );
+  assertEquals(
+    report.results.filter((r) =>
+      r.step.kind === "private-vulnerability-reporting"
+    ),
+    [],
+  );
+});
+
+Deno.test("hardenRepo - a dry run plans private vulnerability reporting without writing (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: false,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(
+    report.results.map((r) => `${r.step.kind} ${r.status}`),
+    ["private-vulnerability-reporting planned"],
+  );
+});
+
+Deno.test("hardenRepo - a private repo never reads private vulnerability reporting and reports the skip (Issue #3227)", async () => {
+  for (const visibility of ["private", "internal"]) {
+    const repo = uniqueRepo();
+    const routes = hardenedRoutes(repo);
+    routes[`repos/${repo}`] = {
+      visibility,
+      private: true,
+      security_and_analysis: {
+        secret_scanning: { status: "enabled" },
+        secret_scanning_push_protection: { status: "enabled" },
+      },
+    };
+    // No private-vulnerability-reporting route at all: a read would 404 and
+    // this must never be attempted on a private or internal repository.
+    delete routes[`repos/${repo}/private-vulnerability-reporting`];
+    const { gh, writes, reads } = makeGh(routes);
+    const report = await hardenRepo(repo, {
+      apply: true,
+      ghCommandFn: gh,
+      defaultBranchCachePath: BRANCH_CACHE,
+    });
+    assertEquals(writes, []);
+    assertEquals(
+      reads.filter((r) => r.includes("private-vulnerability-reporting")),
+      [],
+      visibility,
+    );
+    assertEquals(
+      report.results.filter((r) =>
+        r.step.kind === "private-vulnerability-reporting"
+      ),
+      [],
+      visibility,
+    );
+    assertEquals(report.pvrSkipNote, PVR_SKIP_NOTE, visibility);
+  }
+});
+
+Deno.test("hardenRepo - a refused private vulnerability reporting PUT is a failed result, never a throw (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh: inner } = makeGh(routes);
+  const gh = (args: string[]) =>
+    args.includes("--method") &&
+      args[args.indexOf("--method") + 2] ===
+        `repos/${repo}/private-vulnerability-reporting`
+      ? Promise.reject(new Error("HTTP 403: Resource not accessible"))
+      : inner(args);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const pvr = report.results.filter((r) =>
+    r.step.kind === "private-vulnerability-reporting"
+  );
+  assertEquals(pvr.map((r) => r.status), ["failed"]);
+  assert(pvr[0]?.detail?.includes("HTTP 403"), pvr[0]?.detail);
+});
+
+Deno.test("hardenRepo - private vulnerability reporting failing to read with a non-404 error is reported as failed, never treated as enabled (Issue #3227)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = SERVER_ERROR();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  const pvr = report.results.filter((r) =>
+    r.step.kind === "private-vulnerability-reporting"
+  );
+  assertEquals(pvr.map((r) => r.status), ["failed"]);
+  assert(
+    pvr[0]?.detail?.includes(
+      `repos/${repo}/private-vulnerability-reporting`,
+    ),
+    pvr[0]?.detail,
   );
 });
