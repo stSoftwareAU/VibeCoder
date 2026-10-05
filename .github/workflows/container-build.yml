@@ -311,6 +311,12 @@ jobs:
             set -euo pipefail
             test "${PLAYWRIGHT_BROWSERS_PATH}" = "'"${browsers}"'"
             ls -1 "${PLAYWRIGHT_BROWSERS_PATH}" | grep -q "^chromium"
+            # Issue #3250: agents resolve the baked browser through
+            # CHROMIUM_PATH, not PLAYWRIGHT_BROWSERS_PATH — prove it both
+            # exists and agrees with what is on PATH, then prove it launches.
+            test -x "${CHROMIUM_PATH}"
+            test "$(command -v chromium)" = "${CHROMIUM_PATH}"
+            NODE_PATH="$(npm root -g)" node -e "const {chromium} = require(\"playwright-core\"); chromium.launch({executablePath: process.env.CHROMIUM_PATH, args: [\"--no-sandbox\"]}).then((b) => b.close()).catch((err) => { console.error(err); process.exit(1); })"
           ' < /dev/null
 
       - name: Capture a screenshot with headless Chromium inside the image
