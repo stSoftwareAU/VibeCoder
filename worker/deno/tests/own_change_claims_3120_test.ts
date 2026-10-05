@@ -99,7 +99,9 @@ Deno.test("pr_feedback prompt Making Changes requires checking claims about the 
 
 const STANDARDS_SET_CLAIM_PHRASES = [
   '"every", "all"',
+  "no … is missed",
   "a counted or closed list",
+  "X, Y and Z are the …",
   "which inputs",
   "the code that builds the set",
   "VibeCoder#3231",
@@ -126,7 +128,9 @@ Deno.test("CODING-STANDARDS.md PR Summary and Evidence holds every/all and close
 
 const ISSUE_PROMPT_SET_CLAIM_PHRASES = [
   '"every", "all"',
+  "no … is missed",
   "a counted or closed list",
+  "X, Y and Z are the …",
   "which inputs",
   "the code that builds the set",
 ];
@@ -146,7 +150,9 @@ Deno.test("issue prompt docs-change step holds every/all and closed-list claims 
 
 const PR_FEEDBACK_PROMPT_SET_CLAIM_PHRASES = [
   '"every", "all"',
+  "no … is missed",
   "a counted or closed list",
+  "X, Y and Z are the …",
   "which inputs",
   "the code that builds the set",
 ];

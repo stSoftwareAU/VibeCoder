@@ -1278,9 +1278,9 @@ change's behaviour happens, **what it costs** or **which inputs** it covers:
    or test list covers, open the code that builds the set — the candidate
    selection, filter or allow-list, or the PR's own `Branch outcomes:` list —
    and match it exactly or scope the sentence to it: "each Markdown line that
-   names a milestone issue, or one it declares with `Depends on`/`Blocked by`,
-   closed as not planned", not "every Markdown line that names an issue
-   closed as not planned". A test-coverage claim is the same check: it names
+   names a milestone issue, or a same-repo issue one declares with
+   `Depends on`/`Blocked by`, closed as not planned", not "every Markdown
+   line that names an issue closed as not planned". A test-coverage claim is the same check: it names
    the branches its tests exercise (**A named test must exist** above).
 3. When the change moves a cost (a download, a retry, a push, a fallback) from
    one path to another, the doc says where the cost now lands.
@@ -1319,8 +1319,9 @@ This adds to the rule that every doc assertion must match the head code; it
 does not relax it. Milestone sub-PRs merge into the milestone branch on green
 CI without review, so a sibling dropped later leaves its forward references
 there until the milestone's summary PR is reviewed; that PR's body lists
-each Markdown line the milestone adds that names a milestone issue, or an
-issue one declares with `Depends on` or `Blocked by`, closed as not planned
+each Markdown line the milestone adds that names a milestone issue, or a
+same-repo issue one declares with `Depends on` or `Blocked by`, closed as
+not planned
 (see [Milestones](docs/workflows/milestones.md)); a follow-up named only in
 the prose is not scanned, so the review still reads those lines. Fleet PRs
 sent back

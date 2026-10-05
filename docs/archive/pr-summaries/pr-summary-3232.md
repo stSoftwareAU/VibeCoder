@@ -12,6 +12,22 @@ added as examples. The issue and pr_feedback prompts restate the rule with
 the same wording, and the #3120 drift test now pins the new phrases.
 Closes #3232.
 
+**PR-feedback round:** two gaps found by review. (1) The model sentence in
+item 2 and its duplicate under "Behaviour another issue delivers is not
+described as present" both said "...or one it declares with
+`Depends on`/`Blocked by`, closed as not planned" with no same-repo scope —
+contradicting the correctly-scoped example eight lines below and the
+module's own cross-repo filter. Narrowed both to "a same-repo issue one
+declares with `Depends on`/`Blocked by`"; also narrowed the matching sentence
+in `docs/workflows/milestones.md`. (2) `prompts/pr_feedback/prompt.md`'s
+absolute-word list had not actually been updated to match
+`CODING-STANDARDS.md` and `prompts/issue/prompt.md` — it was missing
+"no … is missed" and the "X, Y and Z are the …" example, so the Summary's
+"same wording" claim above was false. Added both; the #3120 drift test's
+three new phrase lists now also pin "no … is missed" and "X, Y and Z are
+the …" (not "each", which `drift-pins-on-base` showed was already present
+on base in all three sections).
+
 ## Spec
 
 ### Intent and Rationale
@@ -37,6 +53,13 @@ Closes #3232.
   `findNotPlannedDocReferences` scans milestone members, then looks up each
   declared dependency with `repos/${repo}/issues/${dep}`, which only covers
   same-repo targets.
+- Re-verified on the PR-feedback round: the same-repo scope comes from
+  `extractDependencyReferences()`
+  (`worker/deno/lib/issue_dependencies.ts:408-411`), which filters
+  `.filter((ref) => ref.repo === undefined)` before
+  `findNotPlannedDocReferences` (`milestone_not_planned_refs.ts:292`) ever
+  sees the declared targets — a cross-repo `Depends on owner/other#5` is
+  dropped before the lookup, not merely unresolved by it.
 
 ## Evidence
 
@@ -48,7 +71,13 @@ all three places.
 about the PR", `exactly as before` in prompts and `worker/deno/lib`; section:
 `CODING-STANDARDS.md#pr-summary-and-evidence` (**Prose about the PR's own
 change**); updated: `CODING-STANDARDS.md`, `prompts/issue/prompt.md`,
-`prompts/pr_feedback/prompt.md`;
+`prompts/pr_feedback/prompt.md`. PR-feedback round added grep: `Depends
+on.*Blocked by|Blocked by.*Depends on` and `closed as not planned` across
+`CODING-STANDARDS.md`, `docs/workflows/milestones.md`,
+`prompts/issue/prompt.md` and `prompts/pr_feedback/prompt.md` — found and
+fixed the unscoped model sentence at two spots in `CODING-STANDARDS.md` and
+one in `docs/workflows/milestones.md`; no other copies of the unscoped
+sentence found;
 `worker/deno/lib/pr_feedback_drift_check.ts:278` — still true because it is a
 different check (it finds sentences a push makes false), and its word list
 only gives examples ("a dropped condition, an absolute word …"), not the
@@ -91,8 +120,22 @@ wording, and none needed to change.
   for `CODING-STANDARDS.md` § PR Summary and Evidence,
   `prompts/issue/prompt.md` § Instructions and `prompts/pr_feedback/prompt.md`
   § Making Changes. Each new test therefore goes red against the base docs.
+- PR-feedback round: added `"no … is missed"` and `"X, Y and Z are the …"`
+  to all three phrase lists (`STANDARDS_SET_CLAIM_PHRASES`,
+  `ISSUE_PROMPT_SET_CLAIM_PHRASES`, `PR_FEEDBACK_PROMPT_SET_CLAIM_PHRASES`)
+  rather than the review's suggested `"each"` — `deno task
+  drift-pins-on-base 97ebc723 <doc> <section> "each" "no … is missed" "X, Y
+  and Z are the …"` reported `ALREADY ON BASE: each` for every one of the
+  three sections (the merge-base of this branch with `origin/main`), so
+  pinning "each" would be a vacuous pin per **A new test must go red without
+  its change**; `"no … is missed"` and `"X, Y and Z are the …"` were both
+  reported `absent on base` for all three sections. No new `Deno.test` added
+  — these are new array entries read by the existing three
+  "...holds every/all and closed-list claims..." tests, so no net test-count
+  change.
 - `deno test --allow-read tests/own_change_claims_3120_test.ts` (from
-  `worker/deno`): 6 passed, 0 failed.
+  `worker/deno`): 6 passed, 0 failed (unchanged from the first round — same
+  6 tests, now asserting more phrases per test).
 - `./quality.sh < /dev/null` on the final head: PASSED, with skipped checks
   (config integration skipped).
 
