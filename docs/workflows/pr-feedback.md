@@ -201,6 +201,49 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
+#### A request-changes review is never answered with "no change" (Issue #3246)
+
+A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) dismisses
+the review, and a dismissal cannot be undone — so if the agent's run ends
+with nothing to show for it, no later cycle can rediscover the finding. The
+worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
+helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) now guards
+against that case:
+
+- If the run leaves no commit, no working-tree change and no
+  `.pr_response_message`, the worker re-runs the agent once, in the same
+  run, on the same review, with a note appended to the prompt. If the
+  worker cannot tell whether the run left anything — a git read failed — it
+  does not re-run.
+- After the run (or runs): if no fix was pushed and the agent wrote a
+  `.pr_response_message`, that message is posted as the reply — the
+  rebuttal — never the neutral "could not identify a code change" reply.
+- If no fix was pushed and there is no `.pr_response_message`, the worker
+  posts no neutral reply either: it labels the PR `needs-human` with a
+  comment naming the review id, the number of runs, the last run's exit
+  code and duration, and saying no fix or rebuttal was produced.
+- At most `MAX_REVIEWER_NO_CHANGE_ATTEMPTS` (2) agent runs are made for a
+  single claimed review.
+
+This only changes behaviour for a claimed request-changes review. A
+no-change run against an inline review comment or a top-level PR comment is
+unaffected: it still gets the neutral "could not identify a code change"
+reply.
+
+```mermaid
+flowchart TD
+    A["Agent run on claimed<br/>request-changes review"] --> L{"Left anything?<br/>(commit, working-tree<br/>change, or message)"}
+    L -- "can't tell (git read failed)" --> U["No re-run"]
+    L -- "no, and under the attempt cap" --> RR["Re-run once,<br/>same review, note appended"]
+    RR --> F
+    L -- yes --> F{"Pushed fix?"}
+    F -- yes --> OK["Reply describes the fix"]
+    F -- "no, has .pr_response_message" --> REB["Post it as the rebuttal"]
+    F -- "no, and no .pr_response_message" --> NH["Label needs-human;<br/>comment names review id,<br/>run count, exit code, duration"]
+    U --> F
+    P["Inline comment or<br/>top-level PR comment,<br/>no change found"] --> NEU["Neutral 'could not identify<br/>a code change' reply"]
+```
+
 #### Fix the defect everywhere it lives (Issues #3086, #3114)
 
 A finding's file, line, repro and suggested fix are one example of a defect,
@@ -675,6 +718,14 @@ flowchart TD
 - **Out-of-scope PR feedback:** The worker takes the **escape hatch** — files a
   follow-up issue, replies once naming it (mentioning `needs-human` if a person
   should triage), and exits cleanly rather than looping.
+- **No fix and no rebuttal on a request-changes review:** A claimed
+  `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
+  change and no `.pr_response_message` is re-run once (in the same worker
+  run, with a note appended) rather than answered with the neutral reply,
+  because dismissing the review cannot be undone; if the final run still has
+  neither a pushed fix nor a `.pr_response_message`, the worker labels the PR
+  `needs-human` instead of posting a reply (see **A request-changes review is
+  never answered with "no change"** above).
 
 ## 📚 Further reading
 
