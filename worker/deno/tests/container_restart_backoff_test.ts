@@ -70,6 +70,7 @@ import {
 } from "../lib/crash_notification.ts";
 import { summariseSelfHealEvents } from "../lib/self_heal_events.ts";
 import { EXTENSION_START_ABORT_EXIT_STATUS } from "../lib/container_extension_start.ts";
+import { ROOT_FS_FAULT_EXIT_STATUS } from "../lib/root_filesystem_fault.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 const TEST_FILE_PATH = new URL(import.meta.url).pathname;
@@ -236,6 +237,80 @@ Deno.test("recordContainerRestartOutcome - a genuine crash after a by-design sto
     assertEquals(crash.kind, "failure");
     assertEquals(crash.phase, "image_build");
     assertEquals(crash.consecutiveFailures, 1);
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A read-only root filesystem relaunches promptly (Issue #3179)
+// ---------------------------------------------------------------------------
+
+Deno.test("classifyLauncherOutcome - a root-filesystem fault is its own kind (Issue #3179)", () => {
+  assertEquals(
+    classifyLauncherOutcome(ROOT_FS_FAULT_EXIT_STATUS),
+    "root_fs_fault",
+  );
+  // The neighbours are untouched, and a declared pause still wins.
+  assertEquals(classifyLauncherOutcome(73), "failure");
+  assertEquals(classifyLauncherOutcome(QUOTA_PAUSE_EXIT_STATUS), "quota_pause");
+  assertEquals(
+    classifyLauncherOutcome(ROOT_FS_FAULT_EXIT_STATUS, quotaMarker()),
+    "quota_pause",
+  );
+});
+
+Deno.test("recordContainerRestartOutcome - a root-filesystem fault relaunches at the base cadence, never the grown backoff (Issue #3179)", async () => {
+  const harness = await setupHarness();
+  try {
+    // Two genuine crashes first, so an ordinary failure would now wait 40s.
+    await record(harness, 17, "container_run");
+    await record(harness, 17, "container_run");
+
+    const outcome = await record(
+      harness,
+      ROOT_FS_FAULT_EXIT_STATUS,
+      "container_run",
+    );
+    assertEquals(outcome.kind, "root_fs_fault");
+    assertEquals(outcome.backoffSeconds, FAST_CONFIG.baseSleepSeconds);
+    // Still a host fault on the streak, so a host that keeps faulting is
+    // escalated to its operator rather than relaunched quietly for ever.
+    assertEquals(outcome.phase, "worker_run");
+    assertEquals(outcome.consecutiveFailures, 3);
+    assertEquals(outcome.escalated, true);
+    assertStringIncludes(
+      harness.escalations[0]!.params.logTail,
+      "root filesystem",
+    );
+
+    const summary = await summariseSelfHealEvents({ workDir: harness.workDir });
+    const actions = summary.recent.map((e) => e.action);
+    assert(
+      actions.includes("root_fs_fault"),
+      `the fault must be named in the self-heal log, got: ${
+        actions.join(", ")
+      }`,
+    );
+  } finally {
+    await harness.cleanup();
+  }
+});
+
+Deno.test("recordContainerRestartOutcome - a single root-filesystem fault does not escalate (Issue #3179)", async () => {
+  const harness = await setupHarness();
+  try {
+    const outcome = await record(
+      harness,
+      ROOT_FS_FAULT_EXIT_STATUS,
+      "container_run",
+    );
+    assertEquals(outcome.consecutiveFailures, 1);
+    assertEquals(outcome.escalated, false);
+    assertEquals(harness.escalations.length, 0);
+    // A clean run afterwards is a recovery: the fresh container healed it.
+    const healed = await record(harness, 0, "container_run");
+    assertEquals(healed.recovered, true);
   } finally {
     await harness.cleanup();
   }

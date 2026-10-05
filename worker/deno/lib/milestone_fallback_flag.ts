@@ -180,8 +180,12 @@ export function describeFallbackAction(
     ? `Reverted newest-first so \`${defaultBranch}\` merges cleanly, and ` +
       `re-queued: ${reverted.join(", ") || "nothing to revert"}.`
     : `The roll-back could not make \`${defaultBranch}\` merge cleanly: ` +
-      `${outcome.reason ?? "roll-back did not merge"}. Nothing was left ` +
-      `reverted beyond ${reverted.join(", ") || "nothing"}.`;
+      `${outcome.reason ?? "roll-back did not merge"}. ` +
+      // Two sentences, not "beyond nothing" (Issue #3204): the operator reads
+      // this to learn what state the default branch was left in.
+      (reverted.length > 0
+        ? `Left reverted: ${reverted.join(", ")}.`
+        : "Nothing was left reverted.");
 }
 
 /** Everything one filing needs. */

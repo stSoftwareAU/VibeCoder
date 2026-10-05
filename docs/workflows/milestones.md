@@ -283,6 +283,27 @@ human action needed, once every pending dependency lands. A cross-milestone
 dependency cycle (milestone A's sub-issue depends on B's and vice versa) holds
 both summary PRs; a human can still merge one by hand.
 
+### ⚠️ Docs citing issues closed as not planned (Issue #3223)
+
+Milestone sub-PRs merge into the milestone branch on green CI with no
+review — review happens once, on the summary PR into the default branch. A
+sibling sub-issue can be closed as **not planned** after other sub-issues
+already documented its intended work, leaving a doc on the milestone branch
+that still describes the dropped work as present.
+
+When `createMilestoneSummaryPr()` raises the summary PR,
+`findNotPlannedDocReferences()`
+([milestone_not_planned_refs.ts](../../worker/deno/lib/milestone_not_planned_refs.ts))
+collects the milestone's issues and their declared `Depends on`/`Blocked by`
+issues closed as not planned. The compare diff is read only when at least
+one such not-planned issue exists; it then lists each added Markdown line
+naming such an issue (`#N` or `owner/repo#N` for this repo) in the PR body.
+Markdown files the compare API returns without diff text are listed as not
+checked, and a note says so when the response reaches the API's 300-file
+cap. A lookup failure swaps in a "not checked" note instead. It never blocks
+PR creation and is not re-checked at merge time — rewording each hit is left
+to the reviewer of the default-branch PR.
+
 ## 🔄 Periodic milestone branch sync
 
 Long-running milestones can drift significantly from the default branch, causing merge conflicts when the final summary PR is created. To prevent this, the worker periodically merges the default branch into active milestone branches at **priority 1.72** in the main event loop — after milestone completion checks (1.7) but before issue refinement (1.75).

@@ -389,6 +389,42 @@ Deno.test("closure verdict - an empty standards half is a shortfall", () => {
   assertStringIncludes(coverage.shortfalls.join("\n"), "Standards Review");
 });
 
+Deno.test("closure verdict - a violation left standing is a shortfall (Issue #3196)", () => {
+  const verdict = fullVerdict();
+  verdict.standards.push({
+    status: "violation",
+    finding: "a stale doc comment",
+    evidence: "lib/foo.ts:1",
+    reason: "stands, left for a follow-up",
+  });
+
+  const coverage = assessVerdictCoverage(verdict, CRITERIA);
+  assertEquals(coverage.complete, false);
+  assertStringIncludes(
+    coverage.shortfalls.join("\n"),
+    "neither fixed nor filed",
+  );
+});
+
+Deno.test("closure verdict - a pre-existing violation keeps its filed issue reference (Issue #3196)", () => {
+  const verdict = fullVerdict();
+  verdict.standards.push({
+    status: "violation",
+    finding: "a stale doc comment on an unchanged line",
+    evidence: "lib/foo.ts:1",
+    reason: "pre-existing, filed #123",
+  });
+
+  assertEquals(assessVerdictCoverage(verdict, CRITERIA).shortfalls, []);
+  const prSummaryContent = renderClosureBlocks(verdict);
+  assertStringIncludes(prSummaryContent, "filed #123");
+  assertEquals(
+    validateIndependentReview({ issueBody: ISSUE_BODY, prSummaryContent })
+      .problems,
+    [],
+  );
+});
+
 Deno.test("closure verdict - a dropped entry is reported as a shortfall", () => {
   const verdict = fullVerdict();
   verdict.dropped = ['entry 2 names no status: {"criterion":"b"}'];

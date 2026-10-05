@@ -86,11 +86,13 @@ Deno.test("Documentation-drift tests require a phrase new to the rule (Issue #30
     `Documentation-drift tests is missing the four-conditions requirement: ${text}`,
   );
   assert(
-    text.includes("The pinned phrase occurs only in the rule being added"),
+    text.includes("Every pinned phrase occurs only in the rule being added"),
     `Documentation-drift tests is missing the pinned-phrase condition: ${text}`,
   );
   assert(
-    text.includes("absent from the base branch's version of that section"),
+    text.includes(
+      "absent from the base branch's version of its scoped section",
+    ),
     `Documentation-drift tests is missing the base-branch check: ${text}`,
   );
 });

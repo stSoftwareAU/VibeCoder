@@ -14,6 +14,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
+import { escapeTableCell } from "./markdown_table.ts";
 import {
   planBranchProtectionForRepo,
   type SyncRepoOptions,
@@ -145,7 +146,7 @@ export async function auditDefaultBranchRulesets(
 // ---------------------------------------------------------------------------
 
 function cell(text: string): string {
-  return text.replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+  return escapeTableCell(text).replace(/\s+/g, " ").trim();
 }
 
 /** Render the rows as a GitHub-flavoured Markdown table. */

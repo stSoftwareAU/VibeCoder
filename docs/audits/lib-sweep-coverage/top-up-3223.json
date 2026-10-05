@@ -1,0 +1,12 @@
+{
+  "issue": 3223,
+  "chunk": "top-up-3223",
+  "title": "top-up: not-planned issue/hunk reference scanner",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/pull/3231",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: milestone_not_planned_refs.ts (#3223)",
+  "status": "swept",
+  "paths": [
+    "worker/deno/lib/milestone_not_planned_refs.ts"
+  ],
+  "sweptAt": "4924732d97780ea284fba6fa4ea91a1f64e1108c"
+}

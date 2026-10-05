@@ -4349,7 +4349,9 @@ Deno.test({
         true,
       );
       // It is cross-linked on the consuming issue, and it is not an escalation.
-      const linked = calls.postComment.find((c) => c.body.includes(prUrl));
+      const linked = calls.postComment.find((c) =>
+        c.body.split(prUrl).length > 1
+      );
       assertEquals(linked?.repo, ctx.repo);
       // The bridge itself did not escalate — the PR was opened, not stranded.
       assertEquals(

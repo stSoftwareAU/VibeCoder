@@ -71,6 +71,24 @@ The label priority order is therefore: `top-priority` > `work-on` > `low-priorit
 
 The global guarantee for `low-priority` follows from the cross-repo collection in [`find_oldest_issue.ts`](../../worker/deno/lib/find_oldest_issue.ts): every scannable repo contributes its candidates before [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) picks a tier. A single eligible `top-priority` issue in repo A will suppress every `work-on` and `low-priority` issue across repos B, C, … That keeps `low-priority` strictly idle-time work — backlog items the worker only reaches when there is genuinely nothing else to do anywhere.
 
+### Conflict redo first in its repo (Issue #3034)
+
+An issue re-queued by merge-conflict abandon-and-redo (see
+[merge-conflicts.md](merge-conflicts.md)) is a **conflict redo** once its
+comments carry a fleet-authored restart marker (author-checked, so an
+outsider's marker is ignored), it has no open fleet PR, and no PR referencing
+it was raised after the abandoned one. The tier ladder above still decides
+**which repo** wins, unchanged; once a repo is chosen, a conflict-redo
+candidate in that repo is returned ahead of every other candidate there —
+`top-priority` included — whatever pickup label the redo itself carries.
+Several redos in the same repo pick the oldest restart claim first, redos are
+exempt from the per-repo `low-priority`/`idle-task` suppression, and a redo
+never displaces another repo's candidate; week-pace (Issue #1885) still blocks
+`low-priority`/`idle-task` redos. This is ordering, not a label —
+`label_security` strips a worker-applied `top-priority` — and every selection
+of this kind is logged as `[issue-finder] selected repo=<repo> issue=#<n>
+reason=conflict-redo source=<tier> restarted-at=<iso>`.
+
 ```mermaid
 flowchart TD
     A[All repos scanned] --> B[Collect candidates per tier]
@@ -700,8 +718,8 @@ gitGraph
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
 - **Zero output — already-complete check:** If Claude produces no changes and no prior work is found on the remote branch, the worker runs a short follow-up Claude prompt asking "is this issue already complete in the current codebase?" If Claude confirms the work is done (e.g., completed via a different PR or branch), the issue is auto-closed with a comment. If not complete, normal failure handling continues.
-- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
-- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. An explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker still wins. See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
+- **Blocked on a dependency — deferral:** A run that produces no code changes because the work is blocked on **another issue** is deferred, not closed and not escalated. When the output opens a `Blocked` / `Depends on` section naming an issue other than the one being worked, the worker posts a deferral comment quoting the run's own reason, records `Depends on owner/repo#N` in the issue body inside a delimited machine-owned block (the form the dependency gate reads; the `blocked` label is the fallback when the body cannot be edited). The content-approval gate strips that block before hashing, so the worker's own bookkeeping write is not read as a content change after approval — the exemption covers the *edit*, not the author, and only lines matching `Depends on [owner/repo]#N` are ever ignored (Issue #1631), leaves the issue open with its discovery label — no `needs-human` — and releases the claim with the outcome `deferred: depends on owner/repo#N`. The next scan skips the issue until that dependency closes. A run that reports the **same** dependency a second time is not deferred again (the deferral comment carries a hidden marker, looked up across the issue's full comment thread rather than the budgeted prompt comments — Issue #2936): the gate did not hold, so the repeat falls through to the analysis-only hand-off and a human sees it rather than the worker spending an agent run per scan. A dependency this fleet filed during the same run (fleet author, `createdAt` at or after the run start) is not deferred either; the run hands off straight to the analysis-only hand-off rather than waiting on a dependency the run itself just created — bypassing the usage-limit and interrupted-run retries, the described-code-change retry, and the short-output failure on the no-changes path, each of which would otherwise return a `failure` with no `needs-human` and leave the next run to defer onto a follow-up nothing picks up (Issue #3146). See [`blocked_outcome.ts`](../../worker/deno/lib/blocked_outcome.ts) and [`blocked_deferral.ts`](../../worker/deno/lib/blocked_deferral.ts).
+- **Analysis-only / no-PR hand-off:** Some `work-on` issues have no PR deliverable — their outcome is a recommendation, a coverage matrix, or "populate the issue" analysis posted as a comment, with no code/prompt change. Because the pipeline treats a raised PR as its completion signal, a no-PR run used to read as "not done" and the issue was re-picked-up and re-run indefinitely (the loop seen in). Now, when Claude produces useful analysis but no code changes — **or** the issue body declares itself analysis-only up front via the `<!-- analysis-only -->` (or `<!-- no-pr -->`) marker — the worker posts the analysis once, hands the issue off to a human via `needs-human` (so discovery skips it), unassigns, and stops. This is a clean hand-off, **not** a failure — the issue is not marked `failed`. **Exception — a described code change is retried, not handed off:** when the run's output names files to change (for example "Implement fix in `worker/shared/x.sh`" or a RED/GREEN regression test in a named file) yet it committed nothing, that is a failed implementation, not analysis. The worker posts a `## Retry: make the code change` nudge — which the retry's prompt carries — and returns a `no_changes` failure, so the issue is retried within the normal `failed-once` → `failed` budget and never escalated as analysis-only. Two overrides still win over this retry: an explicit `<!-- analysis-only -->` / `<!-- no-pr -->` body marker, and a `## Blocked:` run whose `Depends on` names a follow-up this fleet filed during the run — that case hands off to `needs-human` on this same run instead of retrying (Issue #3146). See [`described_code_change.ts`](../../worker/deno/lib/described_code_change.ts) (Issue #2687). A human reviews the analysis, then adds `planning` to break it into sub-issues or re-adds `work-on` if a code change is genuinely expected. A loop guard sits beneath the clean hand-off: if a prior hand-off comment is already present (the hand-off did not stop the loop — e.g. the label was stripped), the worker escalates the repeat run through the `failed-once` → `failed` ladder so it can never spin forever. See [`handle_no_changes_phase.ts`](../../worker/deno/lib/phases/handle_no_changes_phase.ts) and [`analysis_only.ts`](../../worker/deno/lib/analysis_only.ts).
 - **Zero output — cooldown:** After a failure, the issue is skipped for a configurable cooldown period (default 10 minutes) so the worker can process other issues instead of immediately re-picking the same one. The cooldown is per-issue and resets on worker restart.
 - **Quality gate fails:** Treated as implementation failure (comment, labels, unassign).
 - **Push rejected:** Pull/rebase and retry push; if conflict, create fresh branch and retry (see [resilience-and-concurrency.md](resilience-and-concurrency.md)).
@@ -785,12 +803,18 @@ the same matrix plus an "unable to make code changes" note about five times).
 `## Blocked:` heading defers only when its `Depends on` or `Blocked by` line
 names a dependency the worker reads as open. A closed dependency, a missing
 `state`, or a lookup that fails does not defer; the run hands off to a human
-and raises no PR. A dependency filed during this run does not defer either:
-the worker reads that from the issue, when its author is this host's login or
-another fleet author and its `createdAt` is at or after the whole run
-started. A later execute attempt does not move that start. That committed
-run hands off to a human and raises no PR. Wording such as
-"out of scope" does not turn an older open dependency into that case. A bullet, or a heading with no declaration line, still
+and raises no PR. A dependency filed during this run does not defer
+either, on either path: the worker reads that from the issue, when its
+author is this host's login or another fleet author and its `createdAt`
+is at or after the whole run started. A later execute attempt does not
+move that start. A committed run hands off to a human and raises no PR; a
+no-changes run hands off the same way, straight to the analysis-only
+hand-off below — bypassing the usage-limit and interrupted-run retries, the
+described-code-change retry, and the short-output failure, each of which
+would otherwise return a `failure` with no `needs-human` and leave the next
+run to defer onto a follow-up nothing picks up (Issue #3146). Wording such as "out of scope" does not turn an older open
+dependency into that case. A bullet, or a heading with no declaration
+line, still
 continues and raises its PR. A
 `vibe-defer-until` time deferral and a `vibe-needs-planning` marker are still
 read after a commit, so the worker defers or hands to planning instead of
@@ -1009,6 +1033,46 @@ flowchart TD
     style B fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+### A `missing` criterion does not close the issue
+
+"A missing core deliverable is not a PR" used to be prose that only a reviewer
+enforced, and a PR into a milestone branch has no reviewer: it merges as soon
+as CI is green. GRQ-AutoTrader#2459 marked three of its four criteria
+`missing`, merged into its milestone and closed its issue as completed; #2307
+and #2370 did the same. The run had already said, in the closure block the
+gate parses, that the deliverable was absent. Since Issue #3177 the worker
+reads that signal at both ends
+([`missing_criterion_close_guard.ts`](../../worker/deno/lib/missing_criterion_close_guard.ts)):
+
+- **At PR creation.** When the summary's closure block has any `missing`
+  entry, `assemblePrBody` rewrites the summary's closing keywords for the
+  issue to `Part of #N`, adds a `## Not closing #N` section naming the missing
+  criteria, and appends no `Closes #N`. The same assembly runs when the PR
+  body is re-synced from the summary, so a later commit that finishes the
+  work (and marks the criteria `met`) restores the closing keyword.
+- **At merge.** A fleet PR's title still names its issue (`(Issue #N)`), and
+  the merged-PR closers read titles, so the PR body alone cannot hold the
+  issue open. Both closers — the priority-1.67 `closeIssuesForMergedPrs` (the
+  milestone auto-close) and `ensureIssueClosedIfPrMerged` (used by the
+  housekeeping sweep and the recovery path) — read the merged PR's closure
+  block. With a `missing` entry they leave the issue open, label it
+  `needs-human` and comment naming each missing criterion. An issue that
+  already carries `needs-human` is left alone, so the comment is posted once.
+
+```mermaid
+flowchart TD
+    S["PR summary closure block"] --> M{"Any entry<br/>missing?"}
+    M -->|no| C["PR body: Closes #N"]
+    M -->|yes| P["PR body: Part of #N<br/>+ Not closing #N section"]
+    C --> X["Merged: issue closed"]
+    P --> H["Merged: issue left open,<br/>needs-human + comment<br/>naming the missing criteria"]
+    style X fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style H fill:#e9c46a,stroke:#b08900,color:#000
+```
+
+A `partial` entry is unaffected: the PR still closes the issue and the
+Summary names the gap beside the closing keyword.
+
 ## 🔍 Independent review on two axes
 
 The closure block above says **which** criteria were met; Issue #663 added **who
@@ -1034,8 +1098,8 @@ each given the finished diff and nothing from the author's context:
   hand is not `met` (Issue #3084).
 - **Standards reviewer** — inputs the same diff and `CODING-STANDARDS.md`. Its
   findings go under a separate `## Standards Review` heading as `violation`
-  entries (with `file:line` and whether the violation was fixed) and the `clean`
-  areas it checked. Three departures are always a `violation` (Issues #3011,
+  entries (with `file:line` and `reason: fixed in this diff`, or
+  `reason: pre-existing, filed #<n>`) and the `clean` areas it checked. Three departures are always a `violation` (Issues #3011,
   #3021): a named-but-absent test — a comment, anchor or PR claim naming a
   test file that is not in the repository — a test stub for another
   repository's binary that is more permissive than the real callee, with no
@@ -1047,10 +1111,16 @@ each given the finished diff and nothing from the author's context:
 **A violation the diff introduced blocks the PR.** A Standards finding in a
 line this PR wrote — a doc comment the change made wrong, a cited test that
 exists neither in the diff nor at the head — is fixed in the same diff before
-the PR is raised; only a departure that predates the diff, or one the issue
-requires, may stand with a
-`reason:` saying which. The run enforces this rule itself; the gate does not
-parse it (Issue #3058).
+the PR is raised (Issue #3058). Only a departure that predates the diff may
+stand, and its `reason:` links the follow-up issue the run filed
+(`pre-existing, filed #<n>`); one the issue itself requires names that issue.
+The gate cannot see the diff, so it does not check which lines a finding sits
+on, but it does refuse every other way out: a `violation` whose reason neither
+opens with `fixed` (or `corrected` / `resolved`) nor links an issue (`#123`,
+`owner/repo#123` or an issue URL) blocks PR creation. "Stands" and "left for a
+follow-up" used to pass, and fleet review then sent the PR back for the breach
+its own summary admitted (Issue #3196: VibeCoder#3065, GRQ-AutoTrader#2210
+and #2479).
 
 **The reviewer challenges; it does not silently win.** A reviewer that saw only
 the diff is sometimes wrong about a criterion satisfied by code it could not
@@ -1063,7 +1133,8 @@ runs beside the closure gate at the same PR-creation chokepoint and blocks when
 the criteria block carries no `vibe-spec-review` provenance marker, when an entry
 names no `reviewer:` verdict, when a departure from that verdict carries no
 reason, when the `## Standards Review` section is absent, unsourced or empty,
-when a `violation` names no evidence or outcome, or when either axis carries the
+when a `violation` names no evidence or a reason that is neither
+`fixed in this diff` nor a linked follow-up issue, or when either axis carries the
 other's findings — never merged, never reranked, because a change can pass one
 axis and fail the other and reporting them together lets one mask the other.
 Issues with **no** acceptance criteria are unaffected: no reviewers, no blocks,
@@ -1156,6 +1227,23 @@ contains the forbidden thing and a run with the guard broken on purpose that
 goes red; a negative test that stays green without its guard is a blocking
 self-review finding.
 
+**A refusal test must be refused by the rule it names (Issue #3162).** A
+test that only checks *that* an input was refused passes on a refusal from
+any rule. Fleet PRs were sent back for exactly that: GRQ-AutoTrader#2386's
+schema/loader agreement test probed fields both sides refused for a
+missing companion field, so nothing was compared, and its review-fix push
+left an off-step probe refused by a cross-field rule, hiding a real
+`multipleOf` drift; GRQ-AutoTrader#2393 added a retired-field check that
+now refuses an untouched test's input at the write boundary before it
+reaches the `EquityRequired` rule the test is named for; and in
+VibeCoder#3079 a fake that threw led to the `false` the test expected. The
+guidelines, the issue prompt's Test Plan step and the pr_feedback prompt
+now require asserting the specific error variant or rule, an input that
+satisfies every other rule (the same input with only the probed value made
+legal is accepted, by both sides for a comparison test), and a re-run of
+the existing later-refusal tests whenever a change adds an earlier
+refusal.
+
 **Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
 also sent back for a new branch with one outcome no test reached: a
 stale-remote guard whose stubs all returned `ls-remote` exit 0, so
@@ -1167,6 +1255,9 @@ require each outcome of a branch the diff adds — condition, match arm, exit
 code, interface default — to have a named test that reaches it, checked by
 flipping the outcome on purpose and seeing the suite go red; a test double
 that overrides the default or always returns the same code does not count.
+The worker now checks this at completion time rather than trusting the
+prompt alone — see
+[A branch outcome with no recorded test blocks the summary](#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147).
 
 **Every changed call site needs a test that goes red without it (Issue #3067).**
 A test of a shared helper, or of some of its callers, does not cover the
@@ -1179,6 +1270,20 @@ caller kept every test green; GRQ-AutoTrader#2220 left the
 argument. The guidelines and the issue prompt's Test Plan step now require
 reverting each changed call site on its own and seeing a test go red; a call
 site whose revert leaves the suite green is a blocking self-review finding.
+
+**A single entry point counts too (Issue #3222).** The rule above read as
+covering only a change threaded through more than one production caller, so
+fleet PRs that wired a behaviour into one CLI command or UI control tested the
+helper behind it and left the wiring unreached: VibeCoder#3203 switched
+`sweep_drift.ts` to `readCoverageLedger(repoRoot)` but its fixture wrote only
+the ledger file, so restoring the old read kept every test green;
+GRQ-AutoTrader#2560 tested `loadOlderDecisions` directly and no test pressed
+the Load older decisions or Retry button. The rule now covers every new or
+changed wiring between an entry point (a CLI command or task, an HTTP route or
+handler, a scheduled job, a UI control's event handler) and the code it
+drives, including a single caller; a new or changed UI control needs a test
+that invokes its handler and asserts what it sends or changes, and the PR
+summary lists each entry point checked.
 
 **Narrowing a shared helper changes every caller (Issue #3100).** A
 stricter validator added for one new call site also rejects values its
@@ -1206,6 +1311,25 @@ prompt now require listing every guard and side effect the existing path
 applies before the outcome, keeping each on the new path or stating why it
 does not apply, and proving each kept guard with a test that goes red when
 the new branch is moved ahead of it.
+
+**A new branch must be reachable by the input it exists for (Issue #3167).**
+The mirror of the #3087 rule: fleet PRs inserted a new branch below an
+existing early exit that a realistic input for the new case fires first,
+and tested it with a fixture that never tripped that exit. GRQ#5105 placed
+the run-start test-mode guard after the roster loop's `exit 0` paths, so a
+leaked test-mode flag on an opted-out team or empty roster exited 0 with no
+refusal; VibeCoder#3134 placed the unassigned-gap capture below
+`if (subjectWordSet.size === 0) continue;`, dropping a `partial` or
+`missing` entry with no subject words; and VibeCoder#3159's
+self-filed-dependency hand-off sat first below the described-code-change
+retry and short-output failure, then — after one review-fix round — still
+below `detectRunInterrupted`, a wording guess that matches ordinary blocked
+prose. The guidelines, the issue prompt's Test Plan step and the
+PR-feedback prompt now require listing each exit above the insertion point
+and what fires it, moving the new branch above any exit its realistic input
+can fire first (or stating why a real infrastructure signal must win), and
+a test whose realistic input trips each earlier exit and goes red when the
+branch is moved back below it.
 
 **Code that deletes or replaces state proves everything it destroys is
 safe to lose (Issue #3107).** Fleet PRs wrote clone swaps that checked
@@ -1242,6 +1366,63 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Check where you insert (Issue #3194).** Fleet PRs added a new item or
+paragraph at a point that cut existing text off from what it describes.
+GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
+function's doc comment and that function, so rustdoc joined the two blocks
+and the new helper's doc opened with the other function's description.
+GRQ-AutoTrader#2478 put a new paragraph in front of a sentence reading
+"Both paragraphs above describe …", which then named the wrong paragraphs.
+The docs sweep did not catch either, because the sentence made wrong was not
+one the diff added or edited. `CODING-STANDARDS.md` and the guidelines
+(**A Code Change Owes a Docs Change**) now require reading the lines directly
+above and below every insertion point. A new item goes above an existing doc
+comment, attribute or decorator, never between it and its item. A following
+sentence that points back must still point at what it meant, or the insertion
+moves after it, or the sentence is reworded to name its subject. The first and
+last context lines of every hunk that adds a block are read in the diff. The
+issue prompt's PR-summary self-review list carries the same step.
+
+**Vet every regex on untrusted text, one hostile case per pattern
+(Issue #3164).** Fleet PRs added a parser for agent-written text with a hostile
+case for the one pattern the author had in mind, and shipped a sibling
+pattern in the same module with the same quadratic backtracking:
+VibeCoder#3085 capped `isBarePlaceholder` and left `DOCS_SWEEP_LINE_RE`,
+which cost a third review round, and VibeCoder#3160's
+`BRANCH_OUTCOMES_HEADING_RE` took about a minute per call on a heading
+padded with spaces. The guidelines now require every regex a change adds
+or edits that runs on untrusted or agent-written text to be read for two
+quantifiers that can match the same characters with only optional tokens
+between them, to have that overlap removed, and to get its own hostile
+case: a long run of the shared character followed by a character the
+pattern rejects. The pr_feedback prompt sends a backtracking finding to
+every other regex in the same module. The same change fixed the
+`\s*:?\s*` heading tail in the acceptance-criteria, failure-detection,
+independent-review and reproduction-status parsers, and the trailing
+`/\s+$/` strip in the failure-detection repair.
+
+**A `(.*)$` tail can fail on a lone carriage return (Issue #3186).** The
+same gates read labelled values (`reason:`, `evidence:`, `symptom:`,
+`status:`, `test:`) and list items with a greedy `(.*)$`. `.` does not cross
+a lone `\r`, so on a line holding one the tail could not reach `$`: an
+unanchored label search restarted at every later occurrence of the label and
+rescanned to the end each time, and an anchored one split a run of spaces
+between `\s*` and `(.*)` in every possible way. Both are quadratic; at the
+200 000-character scan cap a single PR summary cost seconds to tens of
+seconds per call, and the closure gate has no cap. Each value is now read
+with `([^\n]*)` and no `$`, a tail that cannot fail, so the first labelled
+occurrence wins and a value after a lone `\r` is read rather than dropped.
+The regex-vetting rule names the shape.
+
+**The same shapes outside the gates (Issue #3206).** Applying the rule found
+three more patterns on untrusted text. The commit-message issue reference in
+`issue_lifecycle.ts` and the sub-issue parent link in `planning_processor.ts`
+had `\s*:?\s*` separators (the parent link followed by a further `\s*`, so
+cubic). They now use `\s*(?::\s*)?`. The partial-rollup closing-keyword guard
+in `milestone_partial_rollup.ts` scans a body carrying branch names of any
+length, and its `[\w.-]*\/?[\w.-]*#` reference split a long name in every
+way; each side of `owner/repo#N` is now capped at 100 characters.
+
 **Observe the real tool before you rely on it (Issue #3082).** The
 stub-contract rule says a fake must match the real tool, but not how to
 learn what the real tool does, so fleet PRs guessed and built the fake from
@@ -1257,6 +1438,24 @@ command and the output relied on in the PR summary — or citing the tool's
 documentation or source when the case cannot be observed safely. The issue
 prompt's Bugs/Enhancements requirement makes a fake built from expected
 rather than observed behaviour a blocking self-review finding.
+
+**A fake mirrors the production implementation it stands in for (Issue #3224).**
+The stub-contract and observe-real-tool rules cover external callees —
+another repository's binary, git, `gh`, the GitHub API. Fleet
+PRs instead relied on a property of the repository's own port that only
+the in-repo fake had: GRQ-AutoTrader#2546 assumed `broker.open_orders()`
+lists hand-placed orders, as `FakeBroker` does, while `IbkrRest::reports`
+drops every order with no `order_ref`; #2460's newest-first early stop
+lived only in the DynamoDB client no test reached; and #2407's in-memory
+store never loses a conditional write. The guidelines now require reading
+the production implementation first and confirming it has the property
+the change relies on, fixing whichever side is wrong, pinning fake and
+production together with one contract test (or testing at the production
+adapter), and naming in the PR summary the production implementation
+each load-bearing fake stands in for and the property relied on. The
+issue prompt's Bugs/Enhancements requirement makes a change whose only
+proof is a fake more permissive than its production implementation a
+blocking self-review finding.
 
 **The gate.** [`reproduction_status_gate.ts`](../../worker/deno/lib/reproduction_status_gate.ts)
 parses the block and blocks PR creation in
@@ -1312,16 +1511,212 @@ computed once, early, so it stands beside — not strictly after — the
 reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
 folded into that gate's own notice (Issue #3085 review), and only a summary
-that passes all three reaches this gate's own, standalone block.
+that passes all three reaches the late summary gates' own block, which reports
+every one of docs sweep, the placeholder-token gate and the branch-outcomes
+gate that fails, at once (Issue #3147).
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
-agent one more turn before a block with no PR stands, and a branch that
-already carries a PR instead finalises as `summary_incomplete`. That one
-turn is shared: a summary missing both an earlier gate's requirement and the
-Docs sweep line is asked for both at once, in the earlier gate's notice,
-rather than losing the sweep to a second, unrecovered block (Issue #3085
-review).
+agent one more turn on the run's first block, whether or not the branch
+already carries a PR (Issue #3163); only a second block on an existing-PR
+branch finalises as `summary_incomplete`. That one turn is shared: a summary
+missing both an earlier gate's requirement and the Docs sweep line is asked
+for both at once, in the earlier gate's notice, rather than losing the sweep
+to a second, unrecovered block (Issue #3085 review).
+
+**The line's own terms are re-run at the head (Issue #3172).** A complete-looking
+line used to pass while hits of its own grep terms still stated the removed
+behaviour, often in a file it listed as updated — the agent fixed the section
+it named and stopped (GRQ-AutoTrader#2413), or grepped one inflection and
+missed another (#2405: "replaces or removes" against "replaced or removed").
+Once the line passes,
+[`docs_sweep_hits.ts`](../../worker/deno/lib/docs_sweep_hits.ts)
+(`checkDocsSweepTerms`) re-runs each term the line quotes after `grep:`
+(backticked or double-quoted) with `git grep -i` at `HEAD` over `README.md`,
+every `*/README.md` and `docs/` (excluding `docs/archive/`). Terms are
+literal, except that a `\w*` or `\w+` stem marker matches a run of word
+characters, so `replac\w*` finds both forms. A hit is cleared when it sits
+on a line the branch's `git diff --unified=0 <base>...HEAD` added or
+changed, or when the line names it as `file:line` or `file:start-end`. Any
+other hit blocks the summary with a notice listing each `file:line` and its
+sentence (at most 20, then "and N more"), through the same single in-run
+recovery turn: fix it, or name it as `file:line — still true because …`. A
+term with more than 10 such hits in doc files the diff did not touch is a
+locator word, not a removed claim: those hits are set aside and the term
+is logged as not checked line by line, while its hits in files the diff
+touched are still listed. A grep or diff that cannot run, or an
+unresolvable base ref, is logged at ERROR as not checked and does not block
+the PR.
+
+**Doc comments in source files are swept too (Issue #3219).** Fleet PRs fixed
+the manuals and the comment directly above the code they edited, and left doc
+comments elsewhere describing the removed behaviour: on a shared constant, a
+reader, a helper the code calls, or a sibling module, in files the diff did
+not touch (stSoftwareAU/VibeCoder#3215, GRQ-AutoTrader#2460, #2393). The
+prompts now extend the grep to source files: for each name the change removes
+or whose behaviour it changes, and for the shared constants, types and helpers
+the changed code defines or calls, the agent reads every doc comment and
+module doc a hit lands in and fixes any sentence the change makes false.
+`checkDocsSweepTerms` re-runs the same terms over source files outside `docs/`
+(`SOURCE_COMMENT_PATHSPECS`: `*.ts`, `*.rs`, `*.py`, `*.go`, `*.sh` and the
+other common source extensions) and keeps only hits on a whole comment line
+(`isSourceCommentLine`: `//`, `/*`, a `*` continuation, or `#` and a space).
+A code line, or a comment trailing code, is not read. Those hits are cleared
+the same way — a line the diff changed, or `file:line` in the Docs sweep line
+— and block through the same recovery turn. The broad-term limit of 10 is
+counted for source comments apart from docs, so a term common in comments
+never sets aside its doc hits.
+
+## 🧪 Removed test assertions must be accounted for
+
+The issue prompt and `CODING-STANDARDS.md` have required (since Issue #3061)
+that a PR summary's Test Plan name every assertion the diff removes from an
+existing test, with the issue requirement that makes it untrue — but the
+rule was prose only, and nothing checked it. Sub-PR GRQ-AutoTrader#2370
+(Issue #2253) was raised with a summary that had no `## Test Plan` section
+at all, and its rewritten test dropped a still-true per-day check that a
+`BBB` row exists for every session; the change reached milestone PR
+GRQ-AutoTrader#2376.
+
+**The gate.**
+[`removed_assertion_gate.ts`](../../worker/deno/lib/removed_assertion_gate.ts)
+(`validateRemovedAssertions`, `findRemovedAssertions`,
+`buildRemovedAssertionGateComment`) runs as a summary-rule gate in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+whenever `git diff --name-only <base>...HEAD` lists a test file
+(`isTestFilePath`, shared with the security-fix and docs-sweep gates) — and
+also when that list cannot be read, fail closed. It then blocks a summary
+with no `## Test Plan` heading.
+
+It decides whether the gate applies from
+`git diff --name-status -z --find-renames <base>...HEAD` (NUL-separated, so
+a non-ASCII path is not quoted into a pathspec that matches nothing), not
+from the rename-collapsed `git diff --name-only` list. A rename or copy
+whose old or new path is a test file contributes both paths, so a test
+file renamed to `src/moved.rs` is still a test-file change. It then reads
+`git diff --unified=4000000 --find-renames --diff-filter=AMRD <base>...HEAD -- <those paths>`.
+Deleted test files are in that patch. A pathspec of only a rename's new
+name is not used: that would show the file as brand-new and hide the
+removed lines. The context is large enough that each test file's patch is
+one hunk holding the whole old file and the whole new file, so the gate
+sees every assertion in full and everything around it.
+
+On each side of each test file it lexes the source first, blanking
+comments and string contents (`//`, `/* */` and quotes for Rust and
+C-like files; `#` and triple quotes for Python; `#` for shell and bats), so
+an assertion inside a comment or a string is not an assertion. In C-like
+files (TypeScript, JavaScript and the like) a regex literal is blanked as
+well: a `/` where an expression can begin — at the start of the file, after
+`(` `,` `=` `:` `[` `!` `&` `|` `?` `{` `}` `;`, after any other operator
+(including the `>` of an arrow, so `` => /`/.test(c) `` is a regex), or
+after a keyword such as `return` or `typeof` — opens a one-line regex that
+ends at an unescaped `/` outside a `[…]` class. So a quote or backtick
+inside a regex (`` /[*_`>]/g ``) does not open a string that hides the lines
+below it. A `/` with no closing `/` on its line is division. A template
+literal's `${…}` substitutions are lexed as code, with a stack of brace
+depths that resumes the template at the matching `}`, so a nested template
+or quote inside a substitution (`` `'${v.replaceAll("'", `'\\''`)}'` ``)
+does not close the outer template early. It then
+collects every assertion statement — `assert…(`, `assert_eq!(`,
+`assert.x(`, `expect(` not preceded by `.`, and Python/bats
+`assert`/`assert_x` commands; `debug_assert!` and a declaration such as
+`function assertNoEscalation(…) {` are not assertions — extending each
+over the following lines until its brackets close (up to 200 lines).
+
+An assertion on the old side counts as kept or moved only when the new
+side of some test file in the diff holds a copy with the same text,
+ignoring whitespace, **and** the same context:
+
+- **The same guards and skips around it.** Its enclosing lines are found
+  by indentation and by open `{`, so both formatted and unformatted code
+  are covered. Every enclosing line that does not just name a test, a test
+  group, a test function (`#[test]`, `test_…`) or a type or module is part
+  of the context: an `if`/`else`/`match`, a loop, a `with` or `try`, a
+  callback such as `.forEach(`, a wrapper helper, or a helper function that
+  may never be called. A head wrapped over several lines is part of the
+  context whole, every line of its condition: `deno fmt`'s
+  `if (`…`) {`, black's `if (`…`):`, rustfmt's `if a` / `&& b` / `{`, an
+  Allman `{`, a Python `\` continuation, and a `for (` whose array of
+  cases spans lines. These are found as one logical line: lines inside an
+  open `(` or `[`, lines that lead with `&&`, `||`, `.` or `?`, and a bare
+  `{` all continue the line above. A head longer than 200 lines is
+  reported, since the gate cannot key it whole. When an enclosing line continues a chain — `else`,
+  `elif`, `} else if`, `except`, `catch`, `finally`, a `case`/`default:`
+  arm or a Rust match arm — the earlier heads of that chain back to its
+  opening `if`, `try`, `switch` or `match` are part of the context too. They
+  are found by brace (the `if (…) {` whose `{` a `} else {` closes) and by
+  indentation (same-indent heads above, skipping their bodies). So changing
+  the `if` condition above an `else` assertion is a removal. When no brace
+  links a branch to its head and the walk back passes 400 lines, the
+  assertion is reported, because the gate cannot see the head. So are skip
+  markers on the enclosing test:
+  `it.skip(`, `Deno.test.ignore(`, `xit(`, `ignore: true`, `#[ignore]`,
+  `#[should_panic]`, a non-test `#[cfg(…)]`, `@pytest.mark.skip`,
+  `@unittest.skip`, `pytestmark`.
+- **The same early exits before it** in its innermost function: `return`,
+  `continue`, `break`, `throw`, `raise`, `panic!`, `pytest.skip(`,
+  `t.Skip(` and the like, outside a closure opened on the same line. An
+  exit inside a function or closure body that closed before the assertion
+  is not counted: a `{` opened by `=> {`, `function (…) {`, `|x| {` or an
+  object method such as `async run(args) {`, or a nested Python `def`. A
+  `return` in a mock or callback cannot stop a later assertion from
+  running, so changing it does not mark that assertion removed. An exit in
+  a closed `if` or loop block still counts.
+
+Copies are counted, so deleting one of two identical assertions is a
+removal. Everything else is removed: an edit to any line of a multi-line
+assertion (a `.any(` predicate losing a condition, an expected value
+changing), an assertion commented out or deleted, and a copy re-added
+under a new condition, into a skipped test or after a new early exit. An
+unchanged assertion whose guard, skip or preceding exit changed is
+removed too, and so is one whose brackets never close within 200 lines
+when the file changes at or after it, because the gate cannot tell where
+it ends. A re-wrap, a re-indent, or a move to another test or another
+test file with nothing new around it still counts as moved. As a backstop
+for a lexer mistake, a removed line that opens an assertion but that the
+lexer entered already inside a carried-over string or block comment is
+always reported, even when the same text is re-added: the gate cannot read
+its context, so it fails closed. An assertion-shaped line in a multi-line
+template literal or block comment that the diff removes or moves must
+therefore be named in the Test Plan too. Valid source never ends inside a
+string, template, `${…}` substitution or block comment, so when either
+side's lexer reaches the end of a file still inside one, it has lost its
+place. If the file changes at or after the line where that literal opened,
+every assertion-shaped line of the old side from that line on is reported.
+A copy on such a new side from that line on cannot vouch for a move.
+
+Each remaining removed assertion must appear, ignoring whitespace, in the
+Test Plan section; otherwise PR creation is blocked and the notice lists
+every unaccounted assertion. The gate checks only that the assertion is
+named — whether the stated requirement truly makes it untrue is left to the
+Standards reviewer, whose brief now asks it to list every assertion the diff
+removes from an existing test and return a `violation` for any that has none.
+When the test-file patch itself cannot be read, or it reaches the
+8,000,000-character read cap, only the heading rule applies and a warning
+is logged. The patch is not scanned after a silent cut.
+
+Like the docs-sweep and result-placeholder gates, its verdict is computed
+early and folded into an earlier summary gate's own notice (closure,
+independent review, reproduction status) when one of those blocks first, and
+it gets the same single
+[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn — a
+second block fails the run, and a branch that already carries a PR instead
+finalises as `summary_incomplete`. Among the standalone gates it runs after
+the docs sweep and before the placeholder-token gate.
+
+```mermaid
+flowchart TD
+  A["Diff touches a test file?"] -->|No| Z["Continue"]
+  A -->|Yes / unreadable| B["Summary has ## Test Plan heading?"]
+  B -->|No| X["Block PR"]
+  B -->|Yes| C["Any assertion edited, deleted, or re-added under a new guard, skip or exit?"]
+  C -->|No| Z
+  C -->|Yes| D["Each named in the Test Plan?"]
+  D -->|Yes| Z
+  D -->|No| X
+  style Z fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+  style X fill:#c45858,stroke:#6b2020,color:#fff
+```
 
 ## 🚫 A leftover placeholder token blocks the summary
 
@@ -1337,6 +1732,48 @@ flagged. Like the docs-sweep gate it is folded into the earlier summary
 gates' own notice when one of those blocks first, and it gets the same
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
 turn — a second block fails the run.
+
+## 🌳 A branch outcome with no recorded test blocks the summary (Issue #3147)
+
+Fleet PRs kept shipping a new branch no test reached, and review-fix runs
+closed out an untested-branch finding by adding the test it named while
+their own rework opened new untested branches of its own (GRQ-AutoTrader#2368),
+or named a test that did not exist (VibeCoder#3132). The enumeration the
+guidelines already required — Issue #3069, above — stayed prose: nothing
+checked that the PR summary actually carried it, or that a named test was
+real.
+
+**The gate.**
+[`branch_outcomes_gate.ts`](../../worker/deno/lib/branch_outcomes_gate.ts)
+runs as a summary-rule gate in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts),
+with the same applicability test as the docs-sweep gate: whenever
+`git diff --name-only <base>...HEAD` carries any file that is neither a test
+(`isTestFilePath`) nor documentation (`.md`, `.mdx`, `.markdown`, `.rst`,
+`.adoc`, `.txt`, or a `docs/` path segment) — and also when the diff cannot
+be read, fail closed. It blocks a summary with no `Branch outcomes:` list
+(a `Branch outcomes:` line, bold or plain, or a `Branch outcomes` heading,
+followed by one list item per outcome naming `path:line`, the outcome, the
+test that reaches it, and that flipping it went red), an empty one, a bare
+placeholder (`tbd`, `n/a`, …), or one that names a test-file path not
+tracked at HEAD — checked with `git ls-tree` on HEAD, run from the
+repository root, so a named path must itself be relative to the repository
+root (`worker/deno/tests/foo_test.ts`, not `tests/foo_test.ts`) even though
+the test command runs from `worker/deno` (Issue #3160); a failed lookup also
+blocks, fail closed. A test identifier with no test-file path (for example a
+Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
+none added` is accepted when the diff adds no branch.
+
+It is a summary-rule gate like docs sweep and the placeholder-token gate: its
+verdict is folded into an earlier summary gate's own notice when that one
+blocks first, it shares the single
+[in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn, and
+a second block fails the run — a branch that already carries a PR finalises
+as `summary_incomplete` through `reportSummaryRuleBlock`. The gate runs in
+the issue-run completion phase only; a pr_feedback run instead re-enumerates
+every branch its own fix commits add and refreshes the committed summary's
+`Branch outcomes:` list to the head, rather than leaving the first round's
+entries standing (`prompts/pr_feedback/prompt.md`).
 
 ## 🔧 Changed workflow files are checked before the PR
 
@@ -1390,7 +1827,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the five summary gates above, a finding
+Like the security-fix gate and unlike the seven summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1428,10 +1865,10 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the five summary-rule gates — closure,
-independent review, reproduction status, docs sweep and the placeholder-token
-gate — still pre-empts the
-guard: a follow-up filed there would promise "that run's PR still
+with **no** PR yet, each of the seven summary-rule gates — closure,
+independent review, reproduction status, docs sweep, removed test
+assertions, the placeholder-token gate and the branch-outcomes gate — still
+pre-empts the guard: a follow-up filed there would promise "that run's PR still
 completes #N on merge" for a PR any of those gates can still prevent from ever being
 raised, so whichever gate blocks first fails the run and the guard never
 runs. On an existing-PR branch the guard instead runs from inside
@@ -1440,7 +1877,7 @@ comment is posted but before that gate's recovery finalises the PR. Before
 Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
 because that gate ran after the guard; the closure, independent-review and
 reproduction-status gates ran ahead of the guard and skipped it. Once all
-five gates pass, `completionBody` runs the same guard once more — via the
+seven gates pass, `completionBody` runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -1501,7 +1938,10 @@ flowchart TD
   an unrelated finding.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
-  survives the merge in the follow-up instead.
+  survives the merge in the follow-up instead. The one exception is a summary
+  that marks a criterion `missing`: that PR is raised as `Part of #N` and its
+  merge hands the issue to a human (Issue #3177, see
+  [A `missing` criterion does not close the issue](#a-missing-criterion-does-not-close-the-issue)).
 - **A healthy run is untouched**, whatever its summary says. A degraded run
   that showed every scope item `met` is left alone only when it reported no
   unmatched `partial` or `missing` entry. An unmatched entry like that is
@@ -1520,9 +1960,11 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The five summary gates above — acceptance-criteria closure, independent review,
-reproduction status, docs sweep and the placeholder-token gate — sit at the completion phase's PR-creation chokepoint, so
-blocking one normally costs the next attempt a rewrite and nothing else. The
+The seven summary gates above — acceptance-criteria closure, independent review,
+reproduction status, docs sweep, removed test assertions, the
+placeholder-token gate and the branch-outcomes gate — sit at the completion
+phase's PR-creation chokepoint, so blocking one normally costs the next
+attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
 recovery path for exactly that.
@@ -1541,14 +1983,18 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists and a summary rule is unmet, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
-With **no** PR for the run's branch the run recovers in-run before the block
-stands — see [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
-below. Either way the gate's remediation comment is posted, so the shortfall is
-on the issue thread rather than only in one host's log.
+The run's **first** summary-rule block recovers in-run before it stands,
+whether or not the run's branch already carries a PR (Issue #3163) — see
+[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
+An existing PR is not finalised, labelled or auto-merged across that turn;
+only a block that survives the recovery (the run's second such block) on an
+existing-PR branch finalises as `summary_incomplete`. Either way the gate's
+remediation comment is posted, so the shortfall is on the issue thread rather
+than only in one host's log.
 
 A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
 When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
@@ -1616,7 +2062,7 @@ closes a `security`-labelled finding without its vulnerability-fix evidence stop
 the run, PR or no PR: that one is not a documentation shortfall. Order is what
 enforces it — a `security` run whose summary also broke a format rule would
 otherwise leave through the first summary gate and never be asked for its
-evidence, so the security gate is now evaluated ahead of all five.
+evidence, so the security gate is now evaluated ahead of all six.
 
 **Satisfy the rule rather than fail it.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, not a judgement the run got wrong —
@@ -1639,12 +2085,12 @@ flowchart TD
     WF -->|"finding or unreadable"| F2
     WF -->|"clean or nothing in scope"| G{"Summary gates<br/>rule satisfied?"}
     G -->|yes| PR["gh pr create"]
-    G -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|no| R{"First summary-rule block<br/>of this run?"}
-    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242)"]
+    G -->|no| R{"First summary-rule block<br/>of this run?"}
+    R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
+    R -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
+    Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style G fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -1677,24 +2123,45 @@ now recover the way the security-fix gate does
 1. the verdict is recorded on the run state and the log reads
    `PR-summary rule block — recovering once in-run`;
 2. the agent is re-invoked **fresh** — never `--resume`, because the previous
-   turn already concluded the work was finished — with the gate's own
-   remediation comment replayed into the prompt, told to edit the summary file
-   and commit, and nothing else;
+   turn already concluded the work was finished — with the gate's own reason
+   and remediation comment fenced as untrusted data under a per-render nonce,
+   a boundary-integrity rule naming that fence's nonce, and the genuine
+   review-block markers printed outside it (Issue #3152); told to edit the
+   summary file and commit, and nothing else;
 3. the worker renders the closure block itself when that summary still fails
    either criteria gate (Issue #2242, below);
 4. whatever the recovery produced is committed on the issue branch;
 5. the quality gate runs again over the changed tree, then the completion gates.
 
-A run that satisfies the gate on the re-run raises its PR. A **second** block in
-the same run fails exactly as a block did before, with the comment already on
-the thread — the same verdict is never posted twice, so the thread records the
-shortfall rather than the number of attempts at it. A recovery invocation the
-worker could not launch at all — a rate limit, a failed spawn — changed nothing
-on the branch, so the original block stands unaltered.
+A run that satisfies the gate on the re-run raises its PR, or, when the run's
+branch already carried a PR from the execute phase, updates and finalises that
+same PR — no second PR is opened. A **second** block in the same run is not
+recovered again: with no PR it fails exactly as a block did before, with the
+comment already on the thread; on an existing-PR branch that PR is finalised
+as `summary_incomplete` (Issue #1140). The same verdict is never posted
+twice, so the thread records the shortfall rather than the number of attempts
+at it. A recovery invocation the worker could not launch at all — a rate
+limit, a failed spawn — changed nothing on the branch: with no PR the
+original block stands unaltered; with an existing PR, completion re-runs and
+that block finalises the PR as `summary_incomplete` rather than failing the
+run over a live PR and returning the issue to the claimable pool for a
+sibling host to redo finished work (Issue #1140).
 
-All five summary gates route through it: closure (#518), independent review
-(#663), reproduction status (#521), docs sweep (#3073) and the placeholder-token
-gate (#3124). The two exceptions above do not — the
+**Issue #3163.** Before this, a block on a branch that already carried a
+PR — raised by the agent itself from inside the execute phase — skipped the
+recovery turn entirely and finalised that PR as `summary_incomplete`
+straight from the gate comment. VibeCoder#3155, #3158 and #3159 all shipped
+this way: the gate comment landed on the issue seconds after the agent's own
+PR, with no chance to fix the summary, and #3159 went out still describing
+the old no-changes deferral in this manual. The run's first block now always
+takes the one recovery turn, whichever kind of branch it is on; a block that
+survives that turn is handled as before: finalised as `summary_incomplete`
+when a PR exists, failed when none does.
+
+All seven summary gates route through it: closure (#518), independent review
+(#663), reproduction status (#521), docs sweep (#3073), removed test
+assertions (#3131), the placeholder-token gate (#3124) and the
+branch-outcomes gate (#3147). The two exceptions above do not — the
 security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.
 

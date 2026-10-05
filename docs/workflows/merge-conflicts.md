@@ -33,24 +33,40 @@ superseding the "no wait between them" of Issue #2305 on this point); then
 **abandon-and-restart** — the conflicting PR is closed, never force-pushed, and
 its originating issue re-queued so the fleet redoes the work off the current
 base. The re-queued issue keeps whatever pickup label it already carries, and
-gains `idle-task` when it carries none (Issue #2277). Every fallback leaves one
+gains `idle-task` when it carries none (Issue #2277). That issue then becomes
+the next pickup in its own repo through pickup ordering, not by applying
+`top-priority` — see [Conflict redo first in its repo](issue-processing.md#-issue-selection-priority)
+(Issue #3034). Every fallback leaves one
 `merge-fallback` issue behind recording what happened, linked from the closed PR
 (Issues #2304, #2310 — the scan's fallback; the resolution processor's own copy
-of this rung is wired to the flag by the next sub-issue under #2298). A PR whose
+of this rung now follows it, Issue #3032). A PR whose
 originating issue **cannot** be found is closed
 as well, and its flag issue carries `idle-task` and the PR's diff summary, so the
-flag is the re-do item. Two restarts per originating issue: the third
-exhaustion declines — there is no third redo — and the **originating issue**
-gains `needs-human` plus one comment naming the PR and asking a human to fix it
-by hand, rescope the issue, or close it (Issue #2804). The PR itself stays
-open on `merge-conflict` with a base-keyed park marker (Issue #2312). **The
-merge-conflict scan applies `needs-human` to no conflicting PR** (Issue #2310)
-— only for a *worker* fault, three attempts disrupted before any conclusion —
-and a hand-applied `needs-human` is still honoured as a veto.
+flag is the re-do item. **There is no cap on restarts per originating issue**
+(Issue #3033): every exhaustion of the attempt budget closes the PR and
+re-queues the issue again, however many times it has already been restarted,
+and the fleet never hands the issue to a human just because it has spent a
+restart budget — there is no third-redo cut-off and no park-at-a-spent-budget
+step any more (the scan's park path was retired with it, Issue #3166; only
+park markers posted before then are still honoured — see `parked` below). Every redo starts on a **fresh branch cut from the base
+branch's current tip**, never from the abandoned head, so a redo never
+inherits whatever defeated the one before it; the restart marker left on the
+issue records the abandoned branch's name so the next pickup's setup phase
+never resumes it. **Neither the merge-conflict scan nor the resolution
+processor applies `needs-human` to a conflicting PR** (Issues #2310, #3032) —
+even a *worker* fault, three attempts disrupted before any conclusion, only
+logs a loud WARN and leaves the PR queued — and a hand-applied `needs-human`
+is still honoured as a veto. The only declines that are not a spent restart
+budget are a trusted restart claim naming *this* PR (an earlier abandon of it
+did not finish), a restart claim whose author cannot be established, and the
+issue already having another open PR of its own — each of those is logged and
+left for the next pass, never escalated to `needs-human` on this route
+either.
 
-Every attempt ends visibly: merged, failed, or escalated. An attempt that
+Every attempt ends visibly: merged, failed, or disrupted. An attempt that
 opened and then went silent was disrupted, not judged — it does not spend the
-budget, it is re-attempted, and three disruptions on one PR escalate. The pass
+budget, it is re-attempted, and three disruptions on one PR trip a WARN and
+leave it queued, asking nobody. The pass
 also refuses to *start* a resolution the cycle cannot cover, and an agent the
 worker itself SIGTERMs at the cycle end has its attempt **withdrawn** rather
 than judged: the kill is the worker's decision, so the PR pays nothing for it. Every
@@ -71,7 +87,7 @@ flowchart TD
     Label --> Spent{"Concluded budget spent?"}
     Spent -->|Yes — and no needs-human| Abandon
     Spent -->|No| Disrupted{"3+ attempts disrupted<br/>with no conclusion?"}
-    Disrupted -->|Yes| Human
+    Disrupted -->|Yes| Warn["Log loudly (WARN);<br/>no label applied;<br/>PR left queued"]
     Disrupted -->|No| Lock{"PR lock acquired?"}
     Lock -->|No — another host holds it| Sleep
     Lock -->|Yes| Record["Comment: attempt N of 3<br/>(names any disruption)"]
@@ -92,12 +108,13 @@ flowchart TD
     Abort --> Failed["Failure conclusion comment"]
     Failed --> Budget2{"Attempts spent?"}
     Budget2 -->|No| Sleep
-    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(fewer than 2 restarts,<br/>no other PR)"}
-    Abandon -->|"Both restarts spent"| Park["Parked: left open on merge-conflict<br/>with a base-keyed park marker;<br/>re-attempted when the base tip moves"]
+    Budget2 -->|Yes| Abandon{"Abandon and restart?<br/>(no restart cap,<br/>no other open PR)"}
+    Abandon -->|"Claim names this PR,<br/>or unverifiable,<br/>or other open PR"| Declined["Declined: left open,<br/>reason recorded — never<br/>needs-human, next pass retries"]
     Abandon -->|"A step failed"| Left["Left open, reason recorded —<br/>no human is asked"]
     Abandon -->|"No originating issue"| NoIssue["Close the PR; the flag issue<br/>carries idle-task and the<br/>PR's diff summary"]
     Abandon -->|"Yes"| Restart["Close the PR (never force-push),<br/>re-queue its issue — keeping any<br/>pickup label, else adding idle-task"]
-    Restart --> Flag["File one merge-fallback issue<br/>and link it from the PR"]
+    Restart --> Fresh["Fresh branch cut from the<br/>base branch's current tip —<br/>marker records the abandoned branch"]
+    Fresh --> Flag["File one merge-fallback issue<br/>and link it from the PR"]
     NoIssue --> Flag
     style Scan fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Conflicting fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -122,11 +139,12 @@ flowchart TD
     style Abandon fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style Restart fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style NoIssue fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style Fresh fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style Flag fill:#6ba3c4,stroke:#1d4a6a,color:#1a1a1a
-    style Park fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style Declined fill:#707070,stroke:,color:#fff
     style Left fill:#707070,stroke:,color:#fff
     style Failed fill:#c96868,stroke:#7a2020,color:#fff
-    style Human fill:#c96868,stroke:#7a2020,color:#fff
+    style Warn fill:#707070,stroke:#707070,color:#fff
     style Sleep fill:#707070,stroke:,color:#fff
 ```
 
@@ -147,8 +165,8 @@ flowchart TD
   first and lets the PR through only when a fleet-authored comment carries a
   `vibe-ci-fix-attempt` marker **and** no comment carries the conflict lane's
   own `needs-human-escalation: merge-conflict-…` marker. A marker from any
-  other login counts for nothing, and the budget, disruption bound, park and
-  abandon apply unchanged. `needs-human` stays on the PR for the red check. A
+  other login counts for nothing, and the budget, disruption bound, legacy
+  park and abandon apply unchanged. `needs-human` stays on the PR for the red check. A
   conflict whose two sides genuinely contradict each other **is** in scope — the
   agent judges it and names the call (Issue #2306); only a resolution the
   mechanical guards refuse leaves the merge ladder for abandon-and-restart, and
@@ -369,9 +387,10 @@ settle still reaches no agent and now consults no issue either.
   deepens the clone (`git fetch --deepen`, then `--unshallow`) until
   `git merge-base` answers, a no-op on a full clone, **before** the attempt
   marker is posted. A branch with no common ancestor even in full history is
-  escalated to a human as its own outcome — a re-initialised or rewritten
-  branch, not a conflict the agent failed to resolve — and spends **no**
-  attempt.
+  recorded as a failed attempt with outcome `no-common-ancestor` — a
+  re-initialised or rewritten branch, not a conflict the agent failed to
+  resolve — and runs the same retry/abandon-and-redo rule as any other failed
+  attempt rather than being escalated on its own (Issue #3032).
 - **At most 3 concluded attempts, shared across every pass that works the PR**
   (Issue #2996, raised from 2 and no longer the ladder's alone — the first
   attempt and up to two retries against whatever the base has become since;
@@ -391,17 +410,16 @@ settle still reaches no agent and now consults no issue either.
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
   that conflicts again months later starts from a full budget.
-- The final *concluded* failure runs **abandon-and-restart** first. In the
-  resolution processor that rung is still followed by a `needs-human`
-  escalation when it declines or fails, naming the conflicted files, why the
-  merge failed and which route ended at a person — the **scan's** copy of that
-  escalation is gone (Issue #2310), and the processor's is the next sub-issue
-  under #2298.
+- The final *concluded* failure runs **abandon-and-restart** first. Neither the
+  resolution processor nor the scan asks a person when that rung declines or
+  fails: the processor logs a loud WARN and leaves the PR open with no label —
+  the **scan's** copy of that escalation was already gone (Issue #2310), and
+  the processor's own copy has now followed it (Issue #3032).
 - **Nothing stalls unowned.** If the processor's own conclusion never landed —
   the run ended between the failure comment and it — the next scan finds a PR
   that is out of budget and carries no `needs-human` and runs the same abandon
-  rung itself. The scan escalates nothing from that route any more (Issue
-  #2310): it closes, re-queues and files the flag, and where the rung declines
+  rung itself. Neither route escalates to a person any more (Issues #2310,
+  #3032): it closes, re-queues and files the flag, and where the rung declines
   or fails it records `budget-spent` and leaves the PR open.
 
 ### 🤝 The shared three-attempt budget and the owner-check window
@@ -465,6 +483,13 @@ flowchart TD
   stall watchdog calls it (Issue #3001); every GitHub call and both resolvers
   are injected, and production binds both in
   [`conflict_takeover_resolvers.ts`](../../worker/deno/lib/conflict_takeover_resolvers.ts).
+- The merge-conflict pass calls it too, for every `milestone/**` head, in the
+  cycle that first sees the conflict (Issue #3031). There is no milestone
+  stand-down any more: `processMergeConflict` hands the PR straight to the
+  takeover, which opens one `milestone-fix/**` PR or reuses the open one. It
+  skips only while another host holds a live PR lock, and its log line names
+  that host and the lock's age. A failed takeover spends one attempt from the
+  shared budget, exactly as on the ordinary route.
 - Read-only checks first: reads the shared tally from trusted markers
   (`readResolutionAttempts`); declines with no marker at all when
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are spent; assesses the head
@@ -613,25 +638,26 @@ scan reads that marker back and climbs rather than repeating it.
   pickup label it already carried, so the pipeline raises a fresh PR off the
   current base.
 - **No rung applies `needs-human`** — not to the PR, not to its issue. A
-  declined abandon (the attempt budget is not yet spent, the issue was already
-  restarted, or it has another open PR of its own — a PR naming *no*
-  originating issue is closed against its flag issue instead, Issue #2310) or
-  a failed one posts **one** comment carrying
+  declined abandon (a trusted restart claim naming *this* PR, a restart claim
+  whose author cannot be established, or the issue has another open PR of its
+  own — a PR naming *no* originating issue is closed against its flag issue
+  instead, Issue #2310) or a failed one posts **one** comment carrying
   `<!-- vibe-merge-conflict-rung-failed rung="abandon" head="<sha>" -->` and
   stops there, adding no label anywhere. Nothing has been spent and nothing is
   broken on this route — the verdict is merely stale — so parking the work at
   `needs-human` would block it from discovery over a stale reading. The next
   scan reads that marker back and waits at this head; the stall watchdog (Issue
   #569) is the backstop, and a later head or base move restarts the ladder at a
-  real merge attempt. The budget-spent caller still escalates on a declined
-  abandon — there the PR has failed real merges and has nowhere else to go —
-  with one exception: a decline because the issue has **spent its restarts**
-  asks nobody either, because that PR is parked rather than stuck
-  (Issue #2312).
-- **One rung per head, and two abandons per issue.** The ladder's own
-  markers bound each rung to one run at the head they name, and the abandon rung
-  is bounded a second time by the restart markers it leaves on the *issue* — so
-  work is closed and re-raised at most twice, never in a loop.
+  real merge attempt. **There is no restart cap** (Issue #3033), so there is no
+  "spent its restarts" decline any more either: the budget-spent caller never
+  hands an issue to a human just because it has already been restarted —
+  every one of the three decline reasons above is logged and left for the
+  next pass (Issue #3032).
+- **One rung per head, and no cap on abandons per issue** (Issue #3033). The
+  ladder's own markers bound each rung to one run at the head they name; the
+  restart marker left on the issue is what stops two hosts abandoning the same
+  exhausted PR twice, not a count, so work can be closed and re-raised any
+  number of times without ever looping on the same head.
 - **The head sha and the verdict are read together**, in one
   `gh pr view --json headRefOid,mergeable,author`. The scan's own projection
   carries neither, and a rung decided on a head from one moment and a verdict
@@ -664,36 +690,26 @@ A branch that has defeated two real merges is usually cheaper to **redo** than
 to reconcile, and redoing it needs nobody (Issue #1115,
 `worker/deno/lib/conflict_abandon_restart.ts`). So the rung a spent budget
 reaches closes the conflicting PR and re-queues its originating issue, and the
-pipeline raises a fresh PR off the current base. **The scan's spent-budget
-branch puts no `needs-human` on the PR** (Issue #2310), and records every
-outcome in the pass's own log. The one route that reaches a person is an issue
-whose two redos are both spent (Issue #2804, below) — and that label goes on
-the originating issue, not the PR.
+pipeline raises a fresh PR off the **base branch's current tip** — never off
+the abandoned head. **The scan's spent-budget branch puts no `needs-human` on
+the PR** (Issue #2310), and records every outcome in the pass's own log.
+**There is no cap on how many times an issue can be restarted** (Issue #3033):
+every exhaustion of the attempt budget closes the PR and re-queues the issue
+again, however many times it has already been restarted, and nothing on this
+route ever hands the issue to a human for having used up a restart budget —
+there is no such budget to use up.
 
 - **"Start again" never means force-push.** The PR is *closed*, not merged; the
   branch is neither deleted nor rewritten, so every commit on it stays readable
   and linked from the abandon comment. A regenerated branch force-pushed over
   the same PR would destroy its commits and its review history — the same class
   of harm as the side-picking the contract forbids.
-- **Four preconditions run before anything is destroyed**, in this order: at
-  least `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts are recorded on the PR
-  since its last resolved marker (`readResolutionAttempts`); the PR's
-  originating issue is resolved; that issue has not already been restarted
-  twice; and it has no *other* open PR of its own. A failed lookup is never
-  read as an absence. Fewer than three failed attempts declines outright, as
-  `attempts-not-spent`, carrying the `failedAttempts` count and the budget — a
-  log line records it, and nothing is closed or posted (Issue #3000: abandon
-  and redo happens only after three failed attempts, not on the first stale
-  verdict — GRQ-AutoTrader#1957 reached it without a fair run). A `stalled`
-  abandon is exempt from this guard, and the exemption now covers only the
-  blocking-PR stall repair's second trip (`stall_repair.ts`, Issue #2802): it
-  is not a conflict-resolution outcome, and is bound instead by its own
-  two-trip limit. The merge-conflict queue's own stall watchdog (Issue #3001)
-  no longer uses the `stalled` reason at all — it calls this same guarded
-  route with the ordinary merge-conflict reason, so a trip of its 2-hour owner
-  check is held to the same three-failed-attempts guard as every other caller.
-  The issue's own labels are then read to decide which
-  pickup label the re-queue leaves it on — never whether the abandon happens.
+- **Three preconditions run before anything is destroyed**, in this order: the
+  PR's originating issue is resolved; a restart claim on that issue does not
+  name *this* PR, and is attributable to the fleet; and it has no *other* open
+  PR of its own. A failed lookup is never read as an absence. The issue's own
+  labels are then read to decide which pickup label the re-queue leaves it on
+  — never whether the abandon happens.
 - **The re-queue keeps the label the issue already carries, and never asks a
   human for one** (Issue #2277). A pickup label already on the issue —
   `top-priority`, `work-on`, `low-priority` or `idle-task` — is left exactly as
@@ -716,94 +732,92 @@ the originating issue, not the PR.
   200 paths), and only then is the PR closed. A flag that could **not** be filed
   leaves the PR open naming the `fallback-flag` step: closing against a record
   nobody can find is the loss the old rule was protecting against.
-- **Two restarts per originating issue** (Issue #2312). The marker lives on the
-  *issue*, not the PR: the PR being counted is closed moments later and a
-  replacement takes its place, so a PR-keyed bound would loop. It is posted
-  on the originating issue **before** the PR is commented on and closed, which
-  is also what makes two hosts produce one abandon; if that post fails, the
-  abandon stops at the `issue-comment` step and the PR stays open rather than
-  being closed against a claim nobody can read back. That restart comment also
-  carries a table of this PR's own resolution attempts — PR, attempt, pass,
-  UTC time and outcome — so the re-queued issue's history is readable without
-  reopening the closed PR. One restart was too few — the first fresh PR is
-  raised off a base that has often moved again by the time it conflicts, and a
-  second redo settles a useful share of those. A claim naming *this* PR
-  declines whatever the count says: it means an earlier abandon of this very
-  PR did not finish, and closing it twice is not a retry.
-- **After the second restart a human decides — there is no third redo**
-  (Issue #2804). When an issue already redone twice fails again, by any route
-  into the rung — the blocking-PR stall, the conflict-queue stall, or the
-  conflict ladder's own final rung — `abandonAndRestart` hands the
-  **originating issue** to a human itself, no longer through
-  `escalateToHuman`. It reads the thread of every PR the issue's restart
-  claims name, plus this PR, and posts **one** comment on the issue naming
-  this PR and carrying a table listing every attempt across the whole restart
-  chain — pass, `YYYY-MM-DD HH:MM UTC` time and outcome. The label goes on
-  first, via `addLabelToIssue` (which still passes the worker label guard),
-  then the comment — a reader who sees `needs-human` can trust the comment is
-  coming. A label that cannot be added is a `failed` outcome at `issue-label`
-  and no comment is attempted; a comment that then fails is `failed` at
-  `issue-comment`, and the label is rolled back **only** when the issue did
-  not already carry `needs-human` before this flow added it (Issue #2951:
-  remove only labels this flow can prove it applied) — a pre-existing
-  `needs-human` is left alone either way. A chain thread that cannot be read
-  is a `failed` outcome at `pr-thread`, before either side effect runs. The PR
-  is not closed and the issue is not re-queued. It is idempotent: once the
-  fleet's own hand-off comment for this PR is already on the issue, nothing
-  more is done — the label is not re-added, since a human may have removed it
-  — so `needs-human` and the comment land together exactly once. The outcome
-  is still `declined` with `already-restarted`, so no caller needed editing.
-
-  ```mermaid
-  flowchart TD
-      A["PR fails again<br/>(conflict budget spent, or blocking-PR<br/>stall second trip)"] --> B{"Restarts recorded<br/>on the issue ≥ 2?"}
-      B -- no --> C["Close the PR, re-queue the issue<br/>(restart n of 2)"]
-      B -- yes --> D["Read the thread of every PR the<br/>restart chain names, plus this PR"]
-      D --> E{"Chain thread readable?"}
-      E -- no --> F["failed: pr-thread<br/>(abandon-failed)"]
-      E -- yes --> G{"Hand-off comment for<br/>this PR already on the issue?"}
-      G -- yes --> H["Nothing more said<br/>(declined: already-restarted)"]
-      G -- no --> I["Add needs-human<br/>(addLabelToIssue)"]
-      I -- failed --> J["failed: issue-label<br/>(abandon-failed)"]
-      I -- added --> K["Post one comment naming the PR,<br/>with a table of every attempt<br/>across the restart chain"]
-      K -- posted --> H
-      K -- failed --> L["failed: issue-comment<br/>(abandon-failed) —<br/>roll back needs-human only if<br/>this flow just added it"]
-  ```
-
-- **The PR itself is parked, not escalated** (Issue #2312). The third
-  exhaustion leaves the PR **open**, keeps `merge-conflict` on it, appends the
-  event to the PR's own `merge-fallback` flag, and posts one comment carrying
-  `<!-- vibe-merge-conflict-parked base="<sha>" at="<ISO>" -->` plus an
-  `**Owner:** \`conflict takeover\`` line and a `**Takeover at <ISO>**` line —
-  the park time plus `CONFLICT_OWNER_CHECK_HOURS` (Issue #2997) — so the
-  merge-conflict pass takes the PR back and fixes it forward if the PR head
-  has not moved by then. It is recorded as the
-  `parked` skip reason, and `needs-human` never reaches the PR on this path —
-  only its originating issue, as above. The marker keys on the **base**
-  sha, unlike every other marker in this vocabulary, because nothing acts until
-  the *base* tip moves: a base that has not moved cannot merge any better than
-  it did an hour ago. Every later pass compares the PR's live `baseRefOid`
-  against the marker and skips it unchanged; the first pass where they differ
-  attempts the PR again with a fresh three-attempt budget **counted from the park
-  marker onward**, so it does not arrive back at a spent one. A base tip that
-  cannot be read is not evidence that it moved, so the PR stays parked and the
-  unreadable tip is warned about. The stall watchdog (Issue #3001) honours the
-  same comparison, but only while the shared budget remains: a parked PR on an
-  unmoved base is suppressed, because the park marker is what *follows* the
-  label rather than the silence after it. Once the budget is spent a parked PR
-  still trips — the watchdog reaches the guarded `abandonAndRestart`, whose
-  restarts-spent hand-off is idempotent — and once the base moves the
-  watchdog measures that PR the ordinary way again, so a park can never buy
-  permanent silence.
-- **A half-done abandon is never parked away.** When the restart claim on the
-  issue names *this* PR, an earlier abandon of it started and stopped part-way,
-  so the issue may never have been re-queued. That is a failure, not a wait:
-  it records `budget-spent` with the route on the WARN line, keeps no park
-  marker, and stays visible to the stall watchdog. Only a genuinely spent
-  restart budget parks.
+- **No cap on restarts per originating issue** (Issue #3033, replacing the old
+  two-restarts-then-`needs-human` bound from Issue #2804 and #2312). The
+  marker still lives on the *issue*, not the PR — the PR being counted is
+  closed moments later and a replacement takes its place, so a PR-keyed bound
+  would loop — and it is still posted before the close, which is what makes
+  two hosts produce one abandon rather than two. What it no longer does is
+  count towards a cap: an issue may carry any number of these markers, and
+  every one of them simply records that a redo happened. A claim naming
+  *this* PR still declines the abandon whatever the count says: it means an
+  earlier abandon of this very PR did not finish, and closing it twice is not
+  a retry. A restart claim whose author cannot be established also declines —
+  the bound that keeps an outsider from forging a claim must not be relaxed
+  just because there is no longer a count to protect.
+- **Every redo starts on a fresh branch cut from the base branch's current
+  tip** (Issue #3033), never from the branch the abandon just closed. The
+  restart marker records the abandoned branch's name as a `branch="…"`
+  attribute, and the re-queued issue's own setup phase (`resume-on-reclaim`,
+  `lib/issue_branch_resume.ts`) skips any branch a fleet-authored restart
+  marker names rather than resuming it — resuming an abandoned branch would
+  silently undo the point of the redo. `lib/conflict_redo_branch.ts` picks the
+  fresh name: ordinarily the title-derived branch name, or — when that name
+  collides with a branch an earlier abandon on this issue already named —
+  `<name>-redo-<k>` for the first `k` that is free. The abandoned branch
+  itself is left exactly as it was: never deleted, never force-pushed.
+- **Declining is never escalated.** Every decline this rung can reach — a
+  restart claim naming this PR, a restart claim whose author cannot be
+  established, or the issue already having another open PR of its own — is
+  logged and the PR is left open for the next pass to decide again. None of
+  them ever reaches `needs-human`: nothing has been spent and nothing is
+  broken, the reading is merely stale or unattributable, so parking the work
+  at `needs-human` would block it from discovery over a reading that may
+  already have changed by the next pass.
+- **A `milestone/**` head is rebuilt, not closed** (Issue #3035). A milestone
+  PR's head is the merged work of many sub-PRs, so closing it and re-queuing
+  one issue would lose all of them. When the rung is reached for a
+  `milestone/**` head (`isMilestoneHead`), `runAbandonRestart` sends it to
+  `abandonAndRebuildMilestone` (`worker/deno/lib/conflict_milestone_rebuild.ts`)
+  instead of `abandonAndRestart`. The rebuild lists the PRs merged into the
+  milestone branch — sync PRs excluded, since they only carry the base branch
+  forward — ordered by `mergedAt`, and cuts the rebuild detached at
+  `origin/<base>`'s current tip. It then cherry-picks each sub-PR's merge
+  commit in that order; one that does not replay cleanly is skipped and the
+  replay continues with the next. It then `git merge -s ours` the old
+  milestone tip, so the rebuild still descends from it, and delivers the
+  result with a plain fast-forward push, or — when the ruleset refuses that
+  push (GH013) — through the milestone sync PR, which lands as a merge commit
+  so the base stays in the branch's ancestry. Never a force-push of the
+  milestone branch. Each skipped sub-PR's sub-issue is re-queued the same way
+  as the single-issue route (`planRequeueLabel`: kept pickup label, else
+  `idle-task`; reopened if closed) with a fleet-authored restart marker
+  naming the sub-PR — which is what the redo-priority pickup ordering reads —
+  plus a milestone roll-back marker, so the merged-PR closers do not close it
+  again. One comment on the milestone PR, and the WARN log line, list every
+  replayed and every skipped sub-PR by sub-issue number. No `needs-human` on
+  any outcome and no restart cap; a failed step is reported by name like the
+  single-issue route (`milestone-sub-prs`, `milestone-rebuild`,
+  `milestone-push`, `sub-issue-requeue`, `pr-comment`). **How a milestone
+  head reaches it** (Issue #3036): the merge-conflict pass takes a
+  `milestone/**` head over through a `milestone-fix/**` PR (Issue #3031), and
+  once that spends the shared budget the takeover declines and the pass runs
+  this rebuild in the same cycle — it is the pass with a clone. The scan
+  hands a spent milestone head to that pass rather than to
+  `abandonAndRestart`, and the stall watchdog, which has no clone, never
+  abandons one: it restarts its clock and leaves the rebuild to the pass. The
+  rebuild's PR comment carries a `merge-conflict-resolved` marker for the
+  rebuilt head, so the redo starts with a fresh budget instead of being
+  rebuilt again on the next pass. `conflict_2028_replay_test.ts` replays
+  GRQ-AutoTrader#2028 through this route.
 - **A part-done abandon is never where this stops.** Every step names itself on
   failure, and the pass records that step at WARN with `route=abandon-failed` —
   "PR closed, issue not re-queued" must be visible, not silent.
+
+The milestone redo, end to end:
+
+```mermaid
+flowchart LR
+    A["Spent-budget rung reached<br/>on a milestone/** head"] --> B["List merged sub-PRs,<br/>ordered by mergedAt"]
+    B --> C["Cut rebuild detached<br/>at origin/base tip"]
+    C --> D["Cherry-pick each<br/>sub-PR merge commit"]
+    D -->|"replays cleanly"| E["Keep in rebuilt branch"]
+    D -->|"conflicts"| F["Skip and re-queue<br/>sub-issue"]
+    E --> G["git merge -s ours<br/>old milestone tip"]
+    F --> G
+    G --> H["Push: fast-forward,<br/>or via milestone sync PR"]
+    H --> I["Comment + WARN log:<br/>replayed and skipped sub-PRs"]
+```
 
 ### 🚩 Every fallback is flagged
 
@@ -905,9 +919,10 @@ actually used.
 - The next attempt comment says so on the PR — how many attempts were
   disrupted, and that a disruption does not spend the budget.
 - Disruption has its own bound: **3 disrupted attempts** on one PR and the scan
-  applies `needs-human` with a comment pointing at the worker, not the conflict.
-  That escalation runs from the scan, not the resolution pass, precisely
-  because the resolution pass may be what cannot finish.
+  logs a loud WARN pointing at the worker, not the conflict — no label is
+  applied and the PR is left queued (Issue #3032). That bound is checked by the
+  scan, not the resolution pass, precisely because the resolution pass may be
+  what cannot finish.
 - One disruption source is closed outright: the cross-host PR lock is now
   **refreshed while the attempt runs**. The lock TTL is five minutes and a
   resolution runs for as long as the agent takes, so without renewal a second
@@ -927,8 +942,8 @@ single owner check's responsibility, whatever caused the silence
 one owner for every conflicted PR, not a backstop keyed on label age alone: its
 clock starts at the **latest** of four events — the `merge-conflict` label's own
 `labeled` timeline event; the latest trusted stand-down
-(`readLatestStandDownAtMs`, Issue #2997 — gated-head, milestone-head or park
-markers, read back by their own `at="…"`); the last trusted resolution attempt
+(`readLatestStandDownAtMs`, Issue #2997 — gated-head, legacy milestone-head
+or park markers, read back by their own `at="…"`); the last trusted resolution attempt
 (`readResolutionAttempts`, Issue #2996); and the head's own last move (the head
 commit's committer date, read per PR — a future-dated or unreadable time is
 ignored, so the watchdog fails towards acting). Only fleet-authored markers
@@ -967,38 +982,40 @@ Six details carry the weight:
   `MERGEABLE` is skipped before it costs a timeline or a thread read. An
   `UNKNOWN` state — GitHub computes mergeability lazily — is re-read per PR and,
   if it still cannot be established, said out loud rather than dropped.
-- **The clock starts at the latest of four events, not the label alone.** A
-  label applied hours ago says nothing once a stand-down, a resolution attempt
-  or a moved head has happened more recently — each of those is evidence the
-  queue is owned, so the 2-hour window is counted from whichever came last. A
-  head that has since moved again resets the clock to that move: the watchdog
-  is asking "has the head been unchanged for 2 hours", not "how old is the
-  label".
-- **Only trusted markers and a readable head count.** Stand-down and attempt
-  markers are read back only from a fleet-authored comment, exactly as the rest
-  of this vocabulary already requires, so a forged one can never buy silence.
-  The head's committer date is read per PR; a time in the future or one the
-  pass cannot read is ignored rather than trusted, so the watchdog fails
-  towards acting rather than towards silence.
-- **It fixes forward — takeover while the budget remains, guarded abandon once
-  it is spent.** A trip no longer repairs the ladder in two stages of its own;
-  it runs `runConflictTakeover` (Issue #2999) while
-  `CONFLICT_RESOLUTION_BUDGET` (3) is unspent — that pass posts its own
-  `pass="takeover"` attempt marker, which restarts the clock, so the next trip
-  comes 2 hours later — and once the budget is spent it calls the same guarded
-  `abandonAndRestart` (Issue #3000) every other caller uses, with the ordinary
-  merge-conflict reason, so the three-failed-attempts guard applies exactly as
-  it does everywhere else.
-- **The maintenance lease keeps one host acting, and the re-check keeps it
-  honest.** Only the host holding the lease acts on a trip; under the lease it
-  re-reads the thread and the live head and stands down if the head has moved
-  or another host's attempt has landed since the trip was detected.
-- **It never applies `needs-human` itself.** It files no issue and adds no
-  label; the only hand-off to a human is the restarts-spent one inside
-  `abandonAndRestart` (#3000/#2804), posted on the originating issue, not the
-  PR. The `<!-- vibe-conflict-stall-repair -->` trip marker and the "clear the
-  ladder's rung=\"abandon\" wait marker" first trip are gone with the two-trip
-  design they belonged to.
+- **A conclusion, not an attempt, clears it.** An attempt that opened and then
+  went silent is the disrupted case, and the disruption bound no longer applies
+  any label of its own (Issue #3032) — so a PR held there carries no
+  `needs-human` and this watchdog is what still moves it. If the disruption
+  bound has not fired either then nothing else is moving the PR — so that PR
+  *is* detected. Keying on "an attempt marker exists" would miss the GRQ#4408
+  shape exactly.
+- **The clock starts at the label, and a conclusion restarts it.** Markers
+  older than the `labeled` event belong to a previous conflict and say nothing
+  about this one. A conclusion puts the PR back in the ordinary ladder and
+  starts a fresh clock from itself — so one failed attempt in hour two does not
+  buy permanent silence for a PR that then never gets its second, which nothing
+  else watches either, because its budget is not spent.
+- **The trip lives on the PR.** The first trip posts one
+  `<!-- vibe-conflict-stall-repair trip="1" -->` comment, and every host reads
+  it back, so a stall trips once however many hosts see it. A conclusion after
+  the trip ends it: the next stall starts again at its own first trip. Trip
+  markers count only from a fleet author, so a forged one can never skip
+  straight to closing the PR.
+- **It repairs, it never starts an attempt** (Issue #2803). Forcing an attempt
+  from a watchdog would race the ordinary pass and manufacture the disrupted
+  state the workflow works hard to avoid. The first trip instead deletes the
+  ladder's `rung="abandon"` wait marker for the head, so the ordinary pass
+  reruns the ladder — its own merge-then-resolve attempt — once. If the PR is
+  still stalled 8 hours after the trip, the second trip closes it and redoes
+  its work through `abandonAndRestart` with a `stalled` reason whose comments
+  say the ladder was rerun once — never that the branch was synced or a lane
+  rerun, which is the blocking-PR route's repair; the re-queue label is the
+  issue's own pickup label, else `idle-task`, never `work-on`.
+  It files no issue and adds no label; both trips run under the maintenance
+  lease. There is no cap on how many times the issue has already been redone
+  (Issue #3033) — the second trip abandons and redoes it exactly as any other
+  exhaustion does,
+  [above](#-abandon-and-restart-before-a-human-is-asked).
 
 ### 🤫 Why #116 went silent
 
@@ -1112,9 +1129,9 @@ that gap, and reading the queue means reading both:
 - **The watchdog files no issue and applies no label to the PR — never
   `escalated`, never `needs-human`.** A mechanical stall is repaired, not
   reported, and `needs-human` is a cross-subsystem veto that would remove the
-  PR from the very lane that clears it (Issue #569). The one `needs-human` on
-  this path is the abandon rung's own, on the *originating issue* once both its
-  redos are spent (Issue #2804).
+  PR from the very lane that clears it (Issue #569). The abandon rung this
+  route reaches never applies `needs-human` to the *originating issue* either
+  — there is no cap on restarts to spend (Issue #3033).
 - **The blocking-PR stall watchdog defers to this lane.** A `CONFLICTING` PR —
   or one carrying `merge-conflict` — is never reported as "green but unmerged",
   is never synced or abandoned by stall repair, and a live escalation from
@@ -1124,8 +1141,9 @@ that gap, and reading the queue means reading both:
   label. Its first trip syncs the branch and reruns the owning lane once; its
   second trip abandons the PR through this ladder's own `abandonAndRestart`
   rung, with a `stalled` reason, so the PR and issue comments say "stalled"
-  rather than "merge conflict" and the issue shares the same two restarts —
-  after which a further stall hands the issue to a human (Issue #2804).
+  rather than "merge conflict", and the issue shares the same uncapped
+  restart marker vocabulary (Issue #3033) — a further stall simply redoes the
+  work again, never hands the issue to a human for it.
   NEAT-AI-Ockham#119 was closed by hand thirteen minutes after that comment
   appeared, before rung 1 ran; see
   [Blocking-PR stall watchdog](../CONFIGURATION.md#-blocking-pr-stall-watchdog).
@@ -1187,7 +1205,7 @@ each carries the operands that make the decision checkable afterwards:
 | `budget-spent` | `attemptsSpent`, `maxAttempts` | Every concluded attempt is spent, and the abandon rung declined or failed. The PR keeps its place and nobody is asked: the route (and, for a failure, the step) rides the WARN line beside this record (Issue #2310). |
 | `owner-check-pending` | `dueAt`, `attemptsSpent` | A failed attempt is spent but the next one is not due yet — the PR's head SHA has not moved since that failure and `CONFLICT_OWNER_CHECK_HOURS` (2 hours) have not yet passed, giving the owner a window to look first (Issue #2996). The PR stays labelled and queued; `dueAt` is when it next becomes due. |
 | `abandoned-restarted` | `issueNumber`, `attemptsSpent`, `flagIssueNumber` | The budget was spent, so the PR was closed and its originating issue re-queued for a fresh PR off the current base. The issue keeps the pickup label it already carried, or gains `idle-task` when it carried none (Issue #2277) — the label is named in the scan's log line. `flagIssueNumber` is the `merge-fallback` issue the fallback filed, absent only when the filing failed; where the PR named no originating issue it is also `issueNumber`, because the flag is then the re-do item (Issue #2310). |
-| `parked` | `base`, `flagIssueNumber` | The originating issue has spent its two restarts, so the PR is left open on `merge-conflict` and waits for its base tip to move (Issue #2312). `base` is the sha the park marker records; the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the park marker — the first pass it differs. No `needs-human` on the PR; its originating issue carries `needs-human` and one comment asking a human to decide (Issue #2804). |
+| `parked` | `base` | A **legacy** park marker (Issue #2312) on a PR whose base tip has not moved since. **No pass writes a park marker any more** (Issue #3166): a park was the answer to an issue that had spent its restarts, and with no restart cap (Issue #3033) a spent budget always goes to abandon-and-redo — a declined abandon is recorded as `budget-spent`, never parked. The scan still honours markers posted before that change: `base` is the sha the marker records, the PR is skipped every pass while its live `baseRefOid` still matches it, and attempted again — with a fresh budget counted from the marker — the first pass it differs, after which it follows the uncapped abandon path like any other PR. No `needs-human` reaches the PR or its originating issue on this route. |
 | `disrupted-bound` | `disruptedCount`, `maxDisruptedAttempts` | Attempts keep being disrupted before they conclude. |
 | `lock-held` | `lockHolder` | Another host holds the cross-host PR lock. |
 | `pr-not-open` | `state` | The live `gh pr view --json state,mergeable` at the claim point reported `CLOSED` or `MERGED`, or the state could not be read (`UNKNOWN`). Nothing is written to the PR and no attempt is opened, so an unreadable state costs one cycle and no budget (Issue #1774). |
@@ -1377,20 +1395,18 @@ leftovers of the old escalation each cycle
 reserved for what genuinely needs a person: a policy call, a credential,
 confirming intent.
 
-**The merge-conflict scan applies it for no conflict outcome** (Issue #2310). A
-spent budget used to end here — `needs-human` plus a summary naming the route —
-which is how a mechanical stall acquired a label that means "a human must
-decide". It does not any more: the budget-spent branch closes and re-queues,
-files the `merge-fallback` flag, and records everything else in the pass log.
-The resolution processor's own final escalation is the last one left on this
-path and goes with the next sub-issue under #2298. Two things are deliberately
-unchanged:
+**Neither the merge-conflict scan nor the resolution processor applies it for
+any conflict outcome any more** (Issues #2310, #3032). A spent budget used to
+end here — `needs-human` plus a summary naming the route — which is how a
+mechanical stall acquired a label that means "a human must decide". It does not
+any more: the budget-spent branch closes and re-queues, files the
+`merge-fallback` flag, and records everything else in the pass log. The
+resolution processor's own final escalation has followed the scan's: a declined
+or failed abandon-and-redo now logs a loud WARN and leaves the PR open with no
+label, rather than asking a person. One thing is deliberately unchanged:
 
 - **A hand-applied `needs-human` is still a veto.** A human who labels a PR owns
   it, so the scan keeps skipping it and never overrides the label.
-- **The disruption bound still escalates.** Three attempts cut short before any
-  conclusion is a fault in the *worker*, not an outcome of the conflict, and a
-  person is the right reader for it.
 
 ## 🔁 The lane rotates, so this pass is not always last
 
@@ -1444,13 +1460,18 @@ branch at the same time. A host that loses the race returns immediately.
   resolution, and `findUncorroboratedOverrides`, which is what makes an
   unevidenced claim decidable without trusting the model.
 - `worker/deno/lib/conflict_abandon_restart.ts` — the abandon-and-restart rung:
-  its four preconditions, the restart marker and the `MAX_RESTARTS_PER_ISSUE`
-  bound it enforces, the comments it posts on the PR and the issue, and
-  `exhaustedEscalationRoute`, which names the route when the rung declines or
-  fails. Both callers use it: the spent attempt budget, which escalates to a
-  human on a decline *other* than a spent restart budget (Issue #2312), and the
-  exhausted stale-verdict ladder, which records the rung as failed and asks
-  nobody (Issue #2280).
+  its preconditions, the restart marker (which now also records the abandoned
+  branch, so a redo never resumes it), the comments it posts on the PR and the
+  issue, and `exhaustedEscalationRoute`, which names the route when the rung
+  declines or fails. There is no cap on restarts per issue (Issue #3033), and
+  neither caller ever asks a person on a decline (Issue #3032): the spent
+  attempt budget logs a loud WARN and leaves the PR open, and the exhausted
+  stale-verdict ladder records the rung as failed and asks nobody
+  (Issue #2280). Both callers use it.
+- `worker/deno/lib/conflict_milestone_rebuild.ts` — the milestone redo
+  (Issue #3035): rebuilds a conflicted `milestone/**` branch from the base
+  tip, replays merged sub-PRs in merge order, and re-queues the sub-issue of
+  every sub-PR that will not replay.
 - `worker/deno/lib/merge_conflict_stall_watchdog.ts` — the 2-hour owner
   check. While the shared 3-attempt budget remains it runs the conflict
   takeover; once the budget is spent it abandons and redoes the PR, and only

@@ -67,9 +67,14 @@ export interface ReproductionGateResult {
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
-/** A `## Reproduction` (or `## Reproduction Status`) heading, any level. */
+/**
+ * A `## Reproduction` (or `## Reproduction Status`) heading, any level. The
+ * tail is `\s*(?::\s*)?$`, not `\s*:?\s*$`: two whitespace runs with only an
+ * optional `:` between them backtrack quadratically on a heading padded with
+ * spaces and then any other character (Issue #3164).
+ */
 const REPRODUCTION_HEADING_RE =
-  /^\s{0,3}#{1,6}\s+reproduction(\s+status)?\s*:?\s*$/i;
+  /^\s{0,3}#{1,6}\s+reproduction(\s+status)?\s*(?::\s*)?$/i;
 
 /** Any markdown heading — the section boundary. */
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
@@ -80,15 +85,25 @@ const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+(?:\[[ xX~]?\]\s*)?/;
 /**
  * The block's labelled fields. Hardcoded patterns only — a `new RegExp()`
  * built from an argument is a ReDoS surface Semgrep blocks on.
+ *
+ * Each value is read with `([^\n]*)` and no `$`, never `(.*)$`: `.` stops at a
+ * lone `\r`, so `(.*)$` could fail and backtrack, splitting a run of spaces
+ * between `\s*` and `(.*)` in every possible way — quadratic in the run. A
+ * tail that cannot fail cannot backtrack (Issue #3186).
  */
 const FIELD_PATTERNS = {
-  symptom: /^symptom\s*[:\-–—]\s*(.*)$/i,
-  status: /^(?:reproduction\s+)?status\s*[:\-–—]\s*(.*)$/i,
-  regressionTest: /^(?:regression\s+)?test\s*[:\-–—]\s*(.*)$/i,
+  symptom: /^symptom\s*[:\-–—]\s*([^\n]*)/i,
+  status: /^(?:reproduction\s+)?status\s*[:\-–—]\s*([^\n]*)/i,
+  regressionTest: /^(?:regression\s+)?test\s*[:\-–—]\s*([^\n]*)/i,
 } as const;
 
-/** The reason a downgraded status carries, wherever it sits in the block. */
-const REASON_RE = /reason\s*[:\-–—]\s*(.*)$/i;
+/**
+ * The reason a downgraded status carries, wherever it sits in the block. The
+ * search is unanchored, so its tail must not fail: with `(.*)$` it restarted at
+ * every later `reason:` on a line holding a lone `\r` and rescanned to the end
+ * each time (Issue #3186). `([^\n]*)` takes the first labelled occurrence.
+ */
+const REASON_RE = /reason\s*[:\-–—]\s*([^\n]*)/i;
 
 /**
  * The fail-before / pass-after observation `verified` requires. Matches

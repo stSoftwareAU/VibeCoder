@@ -14,7 +14,8 @@
  *
  * - the `merge-conflict` label going on;
  * - the newest trusted stand-down (`readLatestStandDownAtMs`,
- *   `gated_head_guard.ts`) — the gated-head and park waits both write one;
+ *   `gated_head_guard.ts`) — the gated-head wait writes one, and a legacy
+ *   park marker posted before Issue #3166 still counts as one;
  * - the newest trusted resolution attempt (`readResolutionAttempts`,
  *   `merge_conflict_markers.ts`) — any pass's attempt or conclusion marker;
  * - the PR's head moving (`headChangedAtMs`) — a fresh push is itself
@@ -79,7 +80,10 @@ import {
   readResolutionAttempts,
   spentConflictAttempts,
 } from "./merge_conflict_markers.ts";
-import { readLatestStandDownAtMs } from "./gated_head_guard.ts";
+import {
+  isMilestoneHead,
+  readLatestStandDownAtMs,
+} from "./gated_head_guard.ts";
 import {
   type ConflictTakeoverDeps,
   type ConflictTakeoverOutcome,
@@ -601,12 +605,15 @@ export interface ConflictStallRepairOptions extends ConflictStallRepairDeps {
  * needed. Once the budget is spent, it closes the PR and redoes its work
  * through `abandonAndRestart`, using the **guarded** `{ kind: "merge-conflict" }`
  * reason, which the shared budget still bounds — never `stalled`, which is
- * exempt from that guard.
+ * exempt from that guard. A `milestone/**` head is the exception (Issue
+ * #3036): its redo is the merge-conflict pass's milestone rebuild, so this
+ * pass restarts the clock and reports `"abandon-declined"` instead.
  *
- * It never applies `needs-human` itself — only `abandonAndRestart`'s own
- * restarts-spent hand-off does — and it files no issue and adds no label of
- * its own. It never throws: every failure is logged and reported as
- * `"failed"`, and the next pass retries.
+ * It files no issue, adds no label and never applies `needs-human` — nor does
+ * the rung it hands off to: there is no restart cap and no needs-human
+ * hand-off for this route, however many times the issue has already been
+ * redone (Issue #3033). It never throws: every failure is logged and
+ * reported as `failed`, and the next pass retries.
  */
 export async function repairConflictQueueStall(
   stall: ConflictQueueStall,
@@ -763,6 +770,28 @@ export async function repairConflictQueueStall(
         outcome: outcome.kind,
       });
       return "taken-over";
+    }
+
+    // Issue #3036: a `milestone/**` head's redo is the milestone rebuild,
+    // which needs a clone — the merge-conflict pass runs it. This pass has
+    // none, and the single-issue abandon would close the milestone PR and
+    // drop every sub-PR's work with it, so it restarts the clock and leaves
+    // the redo to that pass.
+    if (isMilestoneHead(view.headRefName)) {
+      await postWatchdogChecked(
+        repo,
+        prNumber,
+        options.nowMs,
+        comments,
+        isTrustedAuthor,
+        ghCommandFn,
+      );
+      logger.info(
+        "Merge-conflict stall repair: the milestone head's budget is spent — " +
+          "the merge-conflict pass rebuilds it from its base",
+        { repo, prNumber, branchName: view.headRefName },
+      );
+      return "abandon-declined";
     }
 
     const abandon = options.abandon ?? abandonAndRestart;

@@ -176,6 +176,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the capped, linear scan from the quadratic regex it replaced
   // (Issue #3085 review).
   "tests/docs_sweep_gate_test.ts",
+  // The branch-outcomes heading regex scans a PR-summary line an agent
+  // (steered by an untrusted issue body) writes; only a growth measurement
+  // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
+  // replaced (PR #3160 review).
+  "tests/branch_outcomes_gate_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).
@@ -185,7 +190,15 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   "tests/prompt_leak_redaction_test.ts",
+  // The removed-assertion gate lexes an agent-written test file whole; only a
+  // growth measurement separates its capped, linear scans from a quadratic
+  // walk on hostile nesting and unclosed brackets (#3148 review).
+  "tests/removed_assertion_gate_context_test.ts",
   "tests/run_ps1_launcher_test.ts",
+  // The not-planned-refs issue/hunk scanners read an untrusted PR body and
+  // diff hunk; only a growth measurement separates their linear scans from
+  // the quadratic patterns they replaced (Issue #3223).
+  "tests/milestone_not_planned_refs_test.ts",
 ];
 
 /**

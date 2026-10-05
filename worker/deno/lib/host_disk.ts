@@ -636,6 +636,15 @@ export class HostDiskMonitor {
     return this.trimRefused;
   }
 
+  /**
+   * The floor in bytes for a filesystem of `totalBytes`, under this
+   * monitor's resolved floors — what the heavy-build gate compares against
+   * (Issue #3178), so it and the claim gate share one floor.
+   */
+  floorBytesFor(totalBytes: number): number {
+    return lowFloorBytes(totalBytes, this.floors);
+  }
+
   get workVolumeRatchet(): WorkVolumeRatchet {
     if (this.baseline === null) return classifyWorkVolumeRatchet(null, null);
     return classifyWorkVolumeRatchet(this.volumeUsedNow, this.volumeUsedPeak);

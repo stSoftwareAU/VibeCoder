@@ -12,6 +12,7 @@ import {
   extractClaimInfo,
   PR_COMMENT_CLAIM_PREFIX,
 } from "../lib/claim_pr_comment.ts";
+import { hasVisibleContent } from "../lib/github.ts";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -497,16 +498,18 @@ Deno.test("claim pr comment - posted body contains visible text, not only HTML c
   );
   // Body must also include visible (non-HTML-comment) text, otherwise the
   // claim renders as a blank comment on GitHub.
-  const visiblePortion = (postedBody ?? "").replace(/<!--[\s\S]*?-->/g, "")
-    .trim();
   assertEquals(
-    visiblePortion.length > 0,
+    hasVisibleContent(postedBody ?? ""),
     true,
     `Claim body has no visible text — would render blank on GitHub. Got: ${
       JSON.stringify(postedBody)
     }`,
   );
   // Visible text should reference the worker so readers can understand it.
+  const visiblePortion = (postedBody ?? "").replace(
+    "<!-- PR_COMMENT_CLAIM:my-worker:555 -->",
+    "",
+  );
   assertEquals(visiblePortion.includes("my-worker"), true);
 });
 

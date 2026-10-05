@@ -215,14 +215,13 @@ export function conflictRungFailedMarker(
 // ---------------------------------------------------------------------------
 
 /**
- * Marker posted when a PR is **parked** on `merge-conflict` (Issue #2312).
+ * Marker that once recorded a PR **parked** on `merge-conflict` (Issue #2312).
  *
- * The fleet restarts an issue's work twice. After the second restart the fresh
- * PR's spent budget has nowhere left to go that is worth spending an agent run
- * on: the same two branches conflict, and a third judged merge of the same two
- * sides has never been what settled one. So the PR is left open carrying the
- * queue label, and this marker is what follows the label — the record that the
- * fleet decided to wait rather than that it went silent.
+ * **Legacy and read-only (Issue #3166).** Nothing writes it any more: the scan's
+ * park path was unreachable once abandon-and-redo lost its restart cap (Issue
+ * #3033), and a declined abandon now ends as `budget-spent` instead. The scan
+ * and the stall watchdog still read the markers already posted, so a PR parked
+ * before the change keeps waiting on its base rather than being retried at once.
  *
  * **Keyed on the `base` sha, not the head**, which is what makes the wait end.
  * Every other marker in this vocabulary keys on the head, because every other
@@ -303,11 +302,10 @@ export interface ConflictParkRecord {
  * (`conflict_marker_trust.ts`): a park marker suppresses every later attempt,
  * so one anybody could post would be a way to silence a PR's queue for ever.
  *
- * A marker whose `base` cannot be read is treated as no park at all. That is
- * the self-healing direction — the PR is offered again, its spent budget
- * declines the abandon, and the park is re-recorded with a base a reader can
- * compare — where honouring it would park the PR on a sha nothing can ever
- * match.
+ * A marker whose `base` cannot be read is treated as no park at all, so the PR
+ * follows the uncapped abandon-and-redo path (Issue #3166) rather than staying
+ * parked on a sha nothing can ever match. Nothing re-records a park: the marker
+ * is legacy and read-only.
  *
  * @param comments - Raw REST comment objects, oldest first, fleet-authored.
  * @returns The newest readable park record, with its index in `comments`.

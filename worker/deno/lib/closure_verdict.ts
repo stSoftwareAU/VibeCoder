@@ -31,6 +31,10 @@
  */
 
 import type { Result } from "../types.ts";
+import {
+  VIOLATION_REASON_LINES,
+  violationReasonSettles,
+} from "./independent_review_gate.ts";
 
 /** The Spec axis vocabulary — the closure statuses of a criterion. */
 export type VerdictStatus = "met" | "partial" | "missing" | "unrequested";
@@ -80,7 +84,7 @@ export interface StandardsVerdict {
   finding: string;
   /** The `file:line` a violation was seen at. */
   evidence?: string;
-  /** Whether a violation was fixed here, or why it stands. */
+  /** `fixed in this diff`, or `pre-existing, filed #<n>` (Issue #3196). */
   reason?: string;
 }
 
@@ -130,7 +134,10 @@ const MAX_ENTRIES = 100;
  *
  *   - newlines and list markers, which would split one entry into several;
  *   - `#` headings and HTML comments, which would open a section or forge a
- *     provenance marker;
+ *     provenance marker. A `#` followed by a digit survives: `#123` is an
+ *     issue reference, not a heading (a heading needs a space after its
+ *     hashes), and a pre-existing `violation`'s reason must keep the issue it
+ *     filed (Issue #3196);
  *   - the `evidence:` / `reason:` / `reviewer:` label keywords, which the
  *     validators match on — the first match wins, so a criterion carrying its
  *     own `reviewer: missing` would override the verdict being rendered.
@@ -146,9 +153,10 @@ const MAX_ENTRIES = 100;
 function sanitiseField(raw: string): string {
   return raw
     .replace(/[\r\n]+/g, " ")
-    .replace(/<!--|-->/g, " ")
+    .replace(/<!--|--!?>/g, " ")
     .replace(/[A-Za-z]{0,32}(?:evidence|reason|reviewer)\s*[:\-—]+\s*/gi, " ")
-    .replace(/[`*_#|]/g, " ")
+    .replace(/[`*_|]/g, " ")
+    .replace(/#(?!\d)/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, MAX_FIELD_CHARS)
@@ -428,7 +436,15 @@ export function assessVerdictCoverage(
     if (!finding.reason) {
       shortfalls.push(
         `the \`violation\` "${finding.finding}" carries no reason — say ` +
-          `whether it was fixed in this diff or why it stands`,
+          `whether it was fixed in this diff`,
+      );
+    } else if (!violationReasonSettles(finding.reason)) {
+      shortfalls.push(
+        `the \`violation\` "${finding.finding}" is neither fixed nor filed — ` +
+          `a breach in a line this diff adds or changes is fixed in this ` +
+          `diff, never left standing; write ${
+            VIOLATION_REASON_LINES.join(", or ")
+          }`,
       );
     }
   }

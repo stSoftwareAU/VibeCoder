@@ -443,8 +443,8 @@ Deno.test("buildMilestoneSummaryBody - omits Closes when no tracking issue", () 
   assertEquals(body.includes("Closes"), false);
 });
 
-// Issue #3014: dependencyNote is appended, byte-identical output otherwise.
-Deno.test("buildMilestoneSummaryBody - unchanged when dependencyNote omitted", () => {
+// Issue #3014 / #3223: extraSections is appended, byte-identical output otherwise.
+Deno.test("buildMilestoneSummaryBody - unchanged when extraSections omitted", () => {
   const closedIssues = [{ number: 10, title: "Add login" }];
   const withoutParam = buildMilestoneSummaryBody("v1.0", "main", closedIssues);
   const withUndefined = buildMilestoneSummaryBody(
@@ -457,7 +457,7 @@ Deno.test("buildMilestoneSummaryBody - unchanged when dependencyNote omitted", (
   assertEquals(withoutParam, withUndefined);
 });
 
-Deno.test("buildMilestoneSummaryBody - places dependencyNote before Review notes", () => {
+Deno.test("buildMilestoneSummaryBody - places extraSections before Review notes", () => {
   const closedIssues = [{ number: 10, title: "Add login" }];
   const note =
     "### ⏸️ Held: pending dependencies\n\n- #1 depends on #2 (still open)";
@@ -824,6 +824,522 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiab
       msg.includes("Issue #3014")
     ),
     true,
+  );
+});
+
+// Issue #3223: the summary PR body also lists added Markdown lines that
+// name an issue closed as not planned.
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line naming a not-planned issue", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([
+        {
+          number: 10,
+          title: "Dropped feature",
+          state: "closed",
+          state_reason: "not_planned",
+          body: "",
+        },
+      ]);
+    }
+
+    // hasNothingToMerge's ahead_by probe — distinct from the not-planned
+    // module's plain compare call below (no --jq).
+    if (key.includes("/compare/") && key.includes("--jq")) {
+      return "5";
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/runbook.md",
+            status: "modified",
+            patch: "@@ -1,0 +1,1 @@\n+see #10 for the runbook",
+          },
+        ],
+      });
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertStringIncludes(
+    createdPrs[0]!.body,
+    "Docs cite issues closed as not planned",
+  );
+  assertStringIncludes(createdPrs[0]!.body, "#10");
+  assertEquals(
+    logs.some((msg) => msg.includes("WARNING") && msg.includes("Issue #3223")),
+    true,
+  );
+});
+
+// Issue #3223: a failed compare call never blocks PR creation — it only
+// swaps in the "not checked" note.
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-planned scan could not run when compare fails", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([
+        {
+          number: 10,
+          title: "Dropped feature",
+          state: "closed",
+          state_reason: "not_planned",
+          body: "",
+        },
+      ]);
+    }
+
+    if (key.includes("/compare/") && key.includes("--jq")) {
+      return "5";
+    }
+    if (key.includes("/compare/")) {
+      throw new Error("compare API unavailable");
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertStringIncludes(
+    createdPrs[0]!.body,
+    "Docs not checked for issues closed as not planned",
+  );
+  assertEquals(
+    logs.some((msg) =>
+      msg.includes("WARNING") &&
+      msg.includes("could not check milestone") &&
+      msg.includes("Issue #3223")
+    ),
+    true,
+  );
+});
+
+// Issue #3223: a candidate exists but the only Markdown file in the compare
+// diff lacks `patch` — the PR body must still carry the "not checked" note
+// (not silently say nothing was found).
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes an unchecked Markdown file with no patch", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([
+        {
+          number: 10,
+          title: "Dropped feature",
+          state: "closed",
+          state_reason: "not_planned",
+          body: "",
+        },
+      ]);
+    }
+
+    if (key.includes("/compare/") && key.includes("--jq")) {
+      return "5";
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          { filename: "docs/big.md", status: "modified" },
+        ],
+      });
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertStringIncludes(
+    createdPrs[0]!.body,
+    "Docs not checked for issues closed as not planned",
+  );
+  assertStringIncludes(createdPrs[0]!.body, "docs/big.md");
+});
+
+// Issue #3223: a clean scan — every issue closed completed, no declared
+// dependency pending — must leave the not-planned section out entirely, and
+// must never call the compare API (there are no not-planned candidates to
+// look for in the diff).
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body omits not-planned section on a clean scan", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+  let compareCalls = 0;
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([
+        {
+          number: 10,
+          title: "Add login",
+          state: "closed",
+          state_reason: "completed",
+          body: "",
+        },
+      ]);
+    }
+
+    // hasNothingToMerge's ahead_by probe (`--jq`) always runs, independently
+    // of the not-planned scan — only the plain compare call below (used by
+    // `findNotPlannedDocReferences` to fetch the diff) must stay unused,
+    // since there are no not-planned candidates for it to look for.
+    if (key.includes("/compare/") && key.includes("--jq")) {
+      return "5";
+    }
+    if (key.includes("/compare/")) {
+      compareCalls++;
+      return JSON.stringify({ files: [] });
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Add login", milestone: { title: "v1.0" } },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  assertEquals(
+    createdPrs[0]!.body.includes("closed as not planned"),
+    false,
+  );
+  assertEquals(compareCalls, 0);
+});
+
+// Issue #3014 / #3223: a pending declared dependency and a not-planned doc
+// reference can both apply to the same summary PR. The hold section must
+// come first, separated from the not-planned section by exactly one blank
+// line.
+Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds and cites a not-planned issue together", async () => {
+  const createdPrs: { body: string }[] = [];
+  const logs: string[] = [];
+
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+
+    if (
+      key.includes("--paginate") &&
+      key.includes("issues?milestone=1&state=all")
+    ) {
+      return JSON.stringify([
+        { number: 10, title: "Add login", body: "Depends on #20" },
+        {
+          number: 11,
+          title: "Dropped feature",
+          state: "closed",
+          state_reason: "not_planned",
+          body: "",
+        },
+      ]);
+    }
+    // The declared dependency issue — still open.
+    if (key.includes("api repos/owner/repo/issues/20")) {
+      return JSON.stringify({ state: "open" });
+    }
+
+    if (key.includes("/compare/") && key.includes("--jq")) {
+      return "5";
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/runbook.md",
+            status: "modified",
+            patch: "@@ -1,0 +1,1 @@\n+see #11 for the runbook",
+          },
+        ],
+      });
+    }
+
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (
+      key.includes("issue list") && key.includes("--state open") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 10, title: "Add login", milestone: { title: "v1.0" } },
+        {
+          number: 11,
+          title: "Dropped feature",
+          milestone: { title: "v1.0" },
+        },
+      ]);
+    }
+    if (
+      key.includes("issue list") && key.includes("--state all") &&
+      key.includes("--milestone")
+    ) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("api") && key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      const bodyIdx = args.indexOf("--body");
+      if (bodyIdx >= 0) createdPrs.push({ body: args[bodyIdx + 1]! });
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+
+  const deps = createMockDeps({
+    ghCommandFn: ghFn,
+    log: (msg) => logs.push(msg),
+  });
+
+  const result = await checkAndHandleMilestoneCompletions(deps);
+  assertEquals(result.ok, true);
+
+  assertEquals(createdPrs.length, 1);
+  const body = createdPrs[0]!.body;
+  assertStringIncludes(body, "Held: pending dependencies");
+  assertStringIncludes(body, "### ⚠️ Docs cite issues closed as not planned");
+  const holdIdx = body.indexOf("Held: pending dependencies");
+  const notPlannedIdx = body.indexOf(
+    "### ⚠️ Docs cite issues closed as not planned",
+  );
+  assertEquals(holdIdx >= 0 && notPlannedIdx > holdIdx, true);
+  assertStringIncludes(
+    body,
+    "#10 depends on #20 (still open)\n\n### ⚠️ Docs cite issues closed as not planned",
   );
 });
 

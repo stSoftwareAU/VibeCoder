@@ -9,6 +9,7 @@
 import { captureReleaseOutcomes } from "./fixtures/release_outcome_capture.ts";
 import {
   assert,
+  assertArrayIncludes,
   assertEquals,
   assertMatch,
   assertStringIncludes,
@@ -140,9 +141,9 @@ Deno.test("extractSubIssueUrls - extracts unique GitHub issue URLs", () => {
 - https://github.com/other/repo/issues/50`;
   const urls = extractSubIssueUrls(output);
   assertEquals(urls.length, 3);
-  assertEquals(urls.includes("https://github.com/org/repo/issues/101"), true);
-  assertEquals(urls.includes("https://github.com/org/repo/issues/102"), true);
-  assertEquals(urls.includes("https://github.com/other/repo/issues/50"), true);
+  assertArrayIncludes(urls, ["https://github.com/org/repo/issues/101"]);
+  assertArrayIncludes(urls, ["https://github.com/org/repo/issues/102"]);
+  assertArrayIncludes(urls, ["https://github.com/other/repo/issues/50"]);
 });
 
 Deno.test("extractSubIssueUrls - returns empty array for no URLs", () => {
@@ -312,14 +313,12 @@ Deno.test("checkSubIssuesOnGitHub - returns URLs when sub-issues found", async (
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 2);
-    assertEquals(
-      result.value.includes("https://github.com/org/repo/issues/101"),
-      true,
-    );
-    assertEquals(
-      result.value.includes("https://github.com/org/repo/issues/102"),
-      true,
-    );
+    assertArrayIncludes(result.value, [
+      "https://github.com/org/repo/issues/101",
+    ]);
+    assertArrayIncludes(result.value, [
+      "https://github.com/org/repo/issues/102",
+    ]);
   }
 });
 
@@ -482,14 +481,12 @@ Deno.test("listSubIssuesViaIssueList - finds sub-issues via REST list with 'Part
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.length, 2);
-    assertEquals(
-      result.value.includes("https://github.com/org/repo/issues/131"),
-      true,
-    );
-    assertEquals(
-      result.value.includes("https://github.com/org/repo/issues/132"),
-      true,
-    );
+    assertArrayIncludes(result.value, [
+      "https://github.com/org/repo/issues/131",
+    ]);
+    assertArrayIncludes(result.value, [
+      "https://github.com/org/repo/issues/132",
+    ]);
   }
 });
 
@@ -1088,14 +1085,8 @@ Deno.test("buildPlanningSummaryComment - builds comment with sub-issue list", ()
   const comment = buildPlanningSummaryComment(urls, "testbot");
   assertEquals(comment.includes("## Planning Complete"), true);
   assertEquals(comment.includes("**2 sub-issue(s)**"), true);
-  assertEquals(
-    comment.includes("https://github.com/org/repo/issues/101"),
-    true,
-  );
-  assertEquals(
-    comment.includes("https://github.com/org/repo/issues/102"),
-    true,
-  );
+  assertStringIncludes(comment, "https://github.com/org/repo/issues/101");
+  assertStringIncludes(comment, "https://github.com/org/repo/issues/102");
   assertEquals(comment.includes("testbot"), true);
 });
 
@@ -1279,12 +1270,9 @@ Deno.test("processIssuePlanning - succeeds when sub-issues found via GitHub API 
   if (result.ok) {
     assertEquals(result.value.processed, true);
     assertEquals(result.value.subIssueCount, 2);
-    assertEquals(
-      result.value.subIssueUrls.includes(
-        "https://github.com/org/repo/issues/101",
-      ),
-      true,
-    );
+    assertArrayIncludes(result.value.subIssueUrls, [
+      "https://github.com/org/repo/issues/101",
+    ]);
     assertEquals(postedComment.includes("## Planning Complete"), true);
   }
 });
@@ -2510,8 +2498,8 @@ Planning complete. **2 sub-issue(s)** created:
 🤖 Processed by: testbot`;
   const urls = extractSubIssueUrlsFromComments(comments, 100);
   assertEquals(urls.length, 2);
-  assertEquals(urls.includes("https://github.com/org/repo/issues/101"), true);
-  assertEquals(urls.includes("https://github.com/org/repo/issues/102"), true);
+  assertArrayIncludes(urls, ["https://github.com/org/repo/issues/101"]);
+  assertArrayIncludes(urls, ["https://github.com/org/repo/issues/102"]);
 });
 
 Deno.test("extractSubIssueUrlsFromComments - excludes the planning issue URL itself", () => {

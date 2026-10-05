@@ -61,6 +61,21 @@ const ROW_RE = /^\s{0,3}\|/;
  */
 const SEPARATOR_RE = /^\s{0,3}\|\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*(?:\|\s*)?$/;
 
+/**
+ * Escape text so it stays inside one markdown table cell.
+ *
+ * The backslash is escaped **before** the pipe (CodeQL
+ * js/incomplete-sanitization): escaping the pipe alone turns a trailing `\`
+ * in the input into `\\|` — an escaped backslash then a bare pipe, which
+ * splits the cell. Callers still flatten newlines their own way.
+ *
+ * @param text - Untrusted cell text
+ * @returns The text with every backslash and pipe escaped
+ */
+export function escapeTableCell(text: string): string {
+  return text.replace(/\\/g, "\\\\").replace(/\|/g, "\\|");
+}
+
 /** Split one markdown table row into trimmed cells, honouring `\|` escapes. */
 export function splitTableRow(line: string): string[] {
   const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");

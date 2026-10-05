@@ -859,14 +859,14 @@ flowchart TD
     A[PR pass picks up a PR] --> B{"Head is a milestone branch?"}
     B -- no --> W[Work the PR as before]
     B -- yes --> M{"Which pass?"}
-    M -- merge-conflict --> S["Stand down: left to<br/>the milestone sync"]
+    M -- merge-conflict --> S["Conflict takeover, same cycle:<br/>open or reuse one milestone-fix PR"]
     M -- spelling --> C[GET /rules/branches/head]
     C -- unreadable --> W
     C --> D{"required_status_checks<br/>or pull_request rule?"}
     D -- no --> W
     D -- yes --> E[Stand down: no agent run,<br/>no attempt, no retry]
     E --> F[One comment per branch,<br/>naming the rule]
-    S --> F2[One comment per branch,<br/>naming the sync]
+    S --> F2["Skip only while another host<br/>holds a live lock (logged)"]
     M -- CI fix --> G[GET /rules/branches/head]
     G -- unreadable --> W
     G --> H{"required_status_checks<br/>or pull_request rule?"}
@@ -888,17 +888,21 @@ What each pass does with a `milestone/**` head:
 | Spelling fix | `guardGatedHead` — stands down when a rule gates it | `vibe-gated-head`, owner `conflict takeover` |
 | CI fix | Fixes on `milestone-fix/<leaf>/pr-<N>-ci-<n>`, raises an auto-merge-armed PR into the gated head; stands down before the agent runs (no retry spent) only while any fix PR for this head is already open (Issue #2907) | None — the stand-down is silent; the open fix PR itself carries the explanation |
 | Review feedback | Fixes on its own `milestone-fix/<leaf>/pr-<N>-feedback-<commentId>` branch and raises an auto-merge-armed PR the same way; no pre-agent stand-down — a different comment's fix in flight does not stop this one (Issue #2907) | None |
-| Merge conflict | **Left to the milestone sync**, gated or not (Issue #1772) | `vibe-milestone-head`, owner `milestone sync` |
+| Merge conflict | **Conflict takeover in the same cycle**, gated or not: opens one `milestone-fix/<leaf>/pr-<N>-takeover-<sha12>` PR into the head, or reuses the open one (Issue #3031) | None — no stand-down; the takeover's attempt and conclusion markers |
 
-- **The merge-conflict pass is left to the milestone sync.** The every-cycle
-  milestone branch sync is the single owner of `default → milestone/*` merges,
-  and it already lands its merge through a sync PR when a ruleset refuses the
-  direct push (Issue #589). Running the PR ladder on the same head would
-  duplicate that merge and race the sync's push, so the pass stands down on the
-  branch name alone — no rules read, no attempt marker, one log line
-  (`skipped: milestone head — resolved by the milestone branch sync`) and one
-  comment naming the sync. The CI-nudge behaviour (Issue #1762) is unchanged by
-  this.
+- **The merge-conflict pass takes a milestone head over in the same cycle**
+  (Issue #3031). It used to stand down and leave the head to the milestone
+  sync (Issue #1772), and GRQ-AutoTrader#2028 and #1957 both stalled there
+  until a human merged the base by hand. Now `processMergeConflict` calls
+  `runConflictTakeover` for any `milestone/**` head, decided on the branch name
+  alone: the takeover resolves on a `milestone-fix/**` side branch and opens
+  one PR into the milestone branch, or reuses the open one, so a milestone PR
+  never gets a second fix PR. It never pushes the head, so it cannot race the
+  sync's push. It skips only while another host holds a live PR lock, and the
+  log line names that host and the lock's age. A failed takeover posts a
+  `failed` marker that counts against the shared `CONFLICT_RESOLUTION_BUDGET`,
+  the same as the ordinary route. No stand-down comment is posted. The
+  CI-nudge behaviour (Issue #1762) is unchanged by this.
 - **The spelling pass's agent never runs on a gated head**, so nothing is
   committed that cannot be pushed, and no attempt or retry is spent —
   `guardGatedHead` runs before the checkout.
@@ -926,15 +930,14 @@ What each pass does with a `milestone/**` head:
   nudge and left for the milestone completion path. The `queued` path only
   re-runs a workflow and pushes nothing, so it is not gated.
 - **One comment per branch, not one per run.** The comment carries a hidden
-  marker — `<!-- vibe-gated-head branch="…" at="…" -->`, or
-  `<!-- vibe-milestone-head branch="…" at="…" -->` for the merge-conflict
-  stand-down; a later run that finds the marker stays silent. Dedup matches on
-  the `branch="…"` prefix, so a legacy marker without `at=` still suppresses a
-  repeat comment. A comment thread that cannot be read posts nothing and
+  marker — `<!-- vibe-gated-head branch="…" at="…" -->`; a later run that
+  finds the marker stays silent. (The retired merge-conflict stand-down's
+  `<!-- vibe-milestone-head … -->` marker is no longer posted, Issue #3031.)
+  Dedup matches on the `branch="…"` prefix, so a legacy marker without `at=`
+  still suppresses a repeat comment. A comment thread that cannot be read posts nothing and
   says so in the log — a duplicate every run is the noise this removes.
 - **Each stand-down names its owner and a takeover time** (Issue #2997).
-  `buildGatedHeadComment` (owner `conflict takeover`) and
-  `buildMilestoneHeadComment` (owner `milestone sync`) add a
+  `buildGatedHeadComment` (owner `conflict takeover`) adds a
   `**Owner:** \`<owner>\`` line and a `**Takeover at <ISO-8601 UTC>**` line —
   the stand-down time plus `CONFLICT_OWNER_CHECK_HOURS` (2 hours): if the PR
   head has not moved by then, the merge-conflict pass takes the conflict back
@@ -946,8 +949,8 @@ What each pass does with a `milestone/**` head:
   park comment.
   `readLatestStandDownAtMs(comments, isTrustedAuthor)` in
   `gated_head_guard.ts` is the pure reader for all three stand-down markers —
-  `vibe-gated-head`, `vibe-milestone-head` and the park marker
-  `vibe-merge-conflict-parked`: it returns the newest trusted marker's `at=`
+  `vibe-gated-head`, the legacy `vibe-milestone-head` (still read on PRs
+  that carry one) and the park marker `vibe-merge-conflict-parked`: it returns the newest trusted marker's `at=`
   time (epoch ms), falling back to the comment's `created_at` for a legacy
   marker and ignoring untrusted authors. It is not yet wired to the stall
   watchdog — that is a later sub-issue of #2965.
@@ -980,33 +983,17 @@ local HEAD did.
 
 A PR that conflicts with its base cannot run CI, so the merge-conflict pass
 merges the base branch in for real rather than side-picking. That pass is
-bounded by **three concluded attempts, shared across every pass that works the
-PR** — `CONFLICT_RESOLUTION_BUDGET`
-([`merge_conflict_markers.ts`](../worker/deno/lib/merge_conflict_markers.ts),
-Issue #2996) — one budget, tallied from marker comments on the PR itself
-(`pass="ladder"` for the stale-verdict ladder, `pass="sync"` for the milestone
-sync and `pass="takeover"` for the takeover rung; a legacy marker carrying no
-`pass=` reads as `ladder`), so the same PR cannot be given extra attempts just
-by being worked through more than one pass. The third judged failure runs the
-abandon-and-restart rung, and no outcome of the *scan's* spent-budget route
-asks a person at all (Issue #2310); the resolution processor's own last
-escalation goes with the next sub-issue under #2298.
-
-**A failed attempt leaves the PR to its owner for a bounded window, rather
-than no wait at all** (Issue #2996, superseding the "no wait between them"
-stance of Issue #2305 on this point). The next attempt is due once
-`CONFLICT_OWNER_CHECK_HOURS` (2 hours) have passed with the PR's head SHA
-unchanged since the failed attempt — or at once if the head has already moved,
-since a moved head is a different merge the owner cannot have been still
-reviewing. A legacy failure marker with no recorded head, or a current head
-that cannot be read, cannot prove the head moved, so the 2-hour spacing
-applies; a failure with no readable timestamp is due at once (the three-attempt
-budget still bounds it regardless). While the PR waits out that window it is
-recorded with the `owner-check-pending` skip reason and stays labelled and
-queued — see
-[the merge-conflict workflow](workflows/merge-conflicts.md#-the-shared-three-attempt-budget-and-the-owner-check-window)
-for the full decision and its flowchart. Two hosts are still kept off one PR by
-the cross-host lock, never by this spacing.
+bounded by **two concluded attempts, with no wait between them** —
+`DEFAULT_MAX_CONFLICT_ATTEMPTS`
+([`pr_merge_conflict_scan.ts`](../worker/deno/lib/pr_merge_conflict_scan.ts)) —
+the first attempt and one retry against whatever the base has become since
+(Issue #2305). The second judged failure runs the abandon-and-restart rung, and
+no outcome of the *scan's* spent-budget route asks a person at all (Issue #2310);
+the resolution processor's own spent budget asks no person either — it goes to
+abandon-and-redo in its turn (Issue #3032). A PR one concluded failure in is due
+again on the very next pass: the four-hour cooldown that used to sit between
+the attempts bought nothing a moved base does not, and two hosts are kept off
+one PR by the cross-host lock rather than by a wait.
 
 That rung closes the PR — never force-pushes it — and re-queues its originating
 issue. A pickup label the issue already carries is kept as it is, so a restart
@@ -1016,10 +1003,9 @@ the issue at `needs-human` (Issue #2277). Every fallback files one
 `merge-fallback` issue recording what happened, linked from the closed PR; a PR
 whose originating issue cannot be found is closed too, and its flag carries
 `idle-task` and the PR's diff summary so the flag *is* the re-do item
-(Issue #2310). Its preconditions,
-its two-restarts-per-issue bound and its exits — including the park that
-follows the second restart (Issue #2312) and the `needs-human` hand-off of an
-issue whose two redos are spent (Issue #2804) — are in
+(Issue #2310). There is no cap on restarts per issue (Issue #3033): every
+redo starts on a fresh branch cut from the base branch's current tip, never
+the abandoned one. Its preconditions and its exits are in
 [the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
 
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
@@ -1052,7 +1038,8 @@ self-closing alert issue per provider in VibeCoder — see
 
 A disrupted attempt is re-attempted rather than charged, and is bounded
 separately: `DEFAULT_MAX_DISRUPTED_ATTEMPTS` disruptions on one PR means the
-disruption — not the conflict — is the problem, and a human is told so.
+disruption — not the conflict — is the problem, and it is logged loudly rather
+than asking a person: no label is applied and the PR is left queued.
 
 For a **PR**, the ledger is the attempt/conclusion marker comments on the PR
 itself, so the bound holds across hosts and worker restarts. For a **milestone
@@ -1097,9 +1084,9 @@ default tip never refills the attempt count.
   — `assessGatedHead()`, the read the CI-fix and review-feedback passes use to
   detect a gated head before working on a `milestone-fix/**` branch instead
   (Issue #2907), `guardGatedHead()`, the stand-down the spelling pass still
-  makes on a head no direct push can reach, and `standDownMilestoneHead()`,
-  the merge-conflict pass's own stand-down on any `milestone/**` head
-  (Issue #1772).
+  makes on a head no direct push can reach. The merge-conflict pass no longer
+  stands down on a `milestone/**` head: it calls `runConflictTakeover()`
+  (`conflict_takeover.ts`) in the same cycle (Issue #3031).
 - [`worker/deno/lib/milestone_fix_pr.ts`](../worker/deno/lib/milestone_fix_pr.ts)
   — `milestoneFixBranchFor()`, `findOpenMilestoneFixPr()` and
   `raiseMilestoneFixPr()`, the CI-fix and review-feedback passes' delivery of a

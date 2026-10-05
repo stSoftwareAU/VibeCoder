@@ -159,6 +159,31 @@ Deno.test("describeFallbackAction - tells a revert from a roll-back that could n
   assertStringIncludes(stuck, "nothing left to revert");
 });
 
+Deno.test("describeFallbackAction - a failed roll-back that reverted nothing says so plainly (Issue #3204)", () => {
+  const stuck = describeFallbackAction({
+    merged: false,
+    reverted: [],
+    reason: "revert conflicted on #3050",
+  }, "main");
+  assertStringIncludes(stuck, "Nothing was left reverted.");
+  assertEquals(stuck.includes("beyond"), false);
+});
+
+Deno.test("describeFallbackAction - a failed roll-back names what it left reverted (Issue #3204)", () => {
+  const stuck = describeFallbackAction({
+    merged: false,
+    reverted: [{
+      prNumber: 12,
+      sha: "abc1234",
+      headRefName: "issue-45-child",
+      title: "Child",
+    }],
+    reason: "revert conflicted on #3050",
+  }, "main");
+  assertStringIncludes(stuck, "Left reverted: PR #12 (revert `abc1234`).");
+  assertEquals(stuck.includes("Nothing was left reverted"), false);
+});
+
 Deno.test("fileFallbackFlag - hands the filer every field the fallback observed (Issue #2311)", async () => {
   const filings: MergeFallbackFiling[] = [];
   const events: string[] = [];

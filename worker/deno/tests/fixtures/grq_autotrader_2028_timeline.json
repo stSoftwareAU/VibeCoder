@@ -1,0 +1,95 @@
+{
+  "source": "GRQ-AutoTrader#2028 — sanitised: placeholder repository, logins and SHAs (Issue #3036)",
+  "repo": "example-org/example-trader",
+  "workerLogin": "fleet-worker-bot",
+  "humanLogin": "example-human",
+  "milestoneIssue": 1810,
+  "milestoneTitle": "1810 example milestone",
+  "pr": {
+    "number": 2028,
+    "head": "milestone/1810-example-milestone",
+    "base": "Develop",
+    "headCommittedAt": "2026-10-01T12:07:45Z"
+  },
+  "commits": {
+    "baseRoot": "2028000000000000000000000000000000000a01",
+    "baseTip": "2028000000000000000000000000000000000a02",
+    "initialHead": "2028000000000000000000000000000000000a03",
+    "humanPush": "2028000000000000000000000000000000000a04"
+  },
+  "subPrs": [
+    {
+      "number": 1910,
+      "headRefName": "issue-1891-retire-nested-section",
+      "body": "Closes #1891",
+      "mergedAt": "2026-09-30T11:23:02Z",
+      "mergeCommit": "2028000000000000000000000000000000000b01"
+    },
+    {
+      "number": 2013,
+      "headRefName": "issue-1897-retire-top-level-section",
+      "body": "Closes #1897",
+      "mergedAt": "2026-10-01T12:07:45Z",
+      "mergeCommit": "2028000000000000000000000000000000000b02"
+    }
+  ],
+  "events": [
+    { "at": "2026-10-01T13:38:53Z", "kind": "conflict-labelled" },
+    {
+      "at": "2026-10-01T20:11:19Z",
+      "kind": "human-push",
+      "historical": true,
+      "actor": "example-human",
+      "sha": "2028000000000000000000000000000000000a04"
+    },
+    {
+      "at": "2026-10-01T20:22:14Z",
+      "kind": "label-removed",
+      "historical": true
+    },
+    {
+      "at": "2026-10-01T20:25:27Z",
+      "kind": "human-push",
+      "historical": true,
+      "actor": "example-human",
+      "sha": "2028000000000000000000000000000000000a05"
+    },
+    {
+      "at": "2026-10-01T21:19:54Z",
+      "kind": "conflict-labelled",
+      "historical": true
+    },
+    {
+      "at": "2026-10-01T22:28:45Z",
+      "kind": "label-removed",
+      "historical": true,
+      "actor": "example-human"
+    },
+    {
+      "at": "2026-10-01T22:57:37Z",
+      "kind": "conflict-labelled",
+      "historical": true
+    },
+    {
+      "at": "2026-10-01T23:04:37Z",
+      "kind": "milestone-head-stand-down",
+      "historical": true
+    },
+    {
+      "at": "2026-10-02T00:47:37Z",
+      "kind": "human-push",
+      "historical": true,
+      "actor": "example-human",
+      "sha": "2028000000000000000000000000000000000a06"
+    },
+    {
+      "at": "2026-10-02T01:18:04Z",
+      "kind": "human-push",
+      "historical": true,
+      "actor": "example-human",
+      "sha": "2028000000000000000000000000000000000a07"
+    },
+    { "at": "2026-10-02T01:37:43Z", "kind": "pr-merged", "historical": true }
+  ],
+  "replay": { "tickMinutes": 15, "endAt": "2026-10-02T01:37:43Z" }
+}
