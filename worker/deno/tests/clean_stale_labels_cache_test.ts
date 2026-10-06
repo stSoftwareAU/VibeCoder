@@ -121,7 +121,7 @@ Deno.test("cleanStaleLabels — warm call within TTL skips the API", async () =>
         actor: { login: "bot" },
         created_at: "2024-05-01T10:00:00Z",
       },
-    ]);
+    ], true);
 
     const gh = recordingGh(REOPENED_TIMELINE);
     const issues = [makeIssue(7)];
@@ -161,7 +161,7 @@ Deno.test("cleanStaleLabels — label removal invalidates the cached timeline", 
         actor: { login: "alice" },
         created_at: "2024-05-01T11:00:00Z",
       },
-    ]);
+    ], true);
 
     const gh = recordingGh(REOPENED_TIMELINE);
     const issues = [makeIssue(99)];
