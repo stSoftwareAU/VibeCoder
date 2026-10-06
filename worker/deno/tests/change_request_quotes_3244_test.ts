@@ -285,11 +285,13 @@ function finding(file: string, problem: string): ChangeRequestFinding {
 }
 
 /** `STALE_QUOTE_SENTENCE` with its own embedded quotes escaped, as a model
- * reply quoting it inside a bigger quoted span would write it. */
-const ESCAPED_STALE_QUOTE_SENTENCE = STALE_QUOTE_SENTENCE.replace(
-  /"/g,
-  '\\"',
-);
+ * reply quoting it inside a bigger quoted span would write it. Backslashes
+ * are escaped first so the result is a well-formed escaped string (CodeQL
+ * js/incomplete-sanitization); the fixture holds none, so the text is the
+ * same. */
+const ESCAPED_STALE_QUOTE_SENTENCE = STALE_QUOTE_SENTENCE
+  .replace(/\\/g, "\\\\")
+  .replace(/"/g, '\\"');
 
 Deno.test("findStaleQuotes - the quoted sentence still present is reported stale", () => {
   const findings = [
