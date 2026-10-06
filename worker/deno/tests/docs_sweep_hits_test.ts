@@ -591,7 +591,7 @@ const REPLAY_3215_SOURCE_GREP = [
   "",
 ].join("\n");
 
-Deno.test("checkDocsSweepTerms - replay of VibeCoder#3215: a stale doc comment in an untouched source file blocks", async () => {
+Deno.test("checkDocsSweepTerms - replay of VibeCoder#3215: a stale doc comment in an untouched source file is reported", async () => {
   const check = await checkDocsSweepTerms({
     rawBody: "grep: `park`; section: `docs/workflows/merge-conflicts.md`",
     base: "origin/main",
@@ -682,7 +682,7 @@ Deno.test("buildDocsSweepHitsComment - names source comment lines as part of the
 // buildDocsSweepHitsComment
 // ---------------------------------------------------------------------------
 
-Deno.test("buildDocsSweepHitsComment - lists each file:line with its sentence and the two ways out", () => {
+Deno.test("buildDocsSweepHitsComment - lists each file:line with its sentence, the two ways out, and is advisory", () => {
   const comment = buildDocsSweepHitsComment([
     {
       path: "docs/a.md",
@@ -695,7 +695,10 @@ Deno.test("buildDocsSweepHitsComment - lists each file:line with its sentence an
   assertStringIncludes(comment, "below the maximum trade fails");
   assertStringIncludes(comment, "maximum trade");
   assertStringIncludes(comment, "still true because");
-  assertStringIncludes(comment, "a second miss fails the run");
+  assertStringIncludes(comment, "advisory");
+  assertStringIncludes(comment, "do not block this PR");
+  assertEquals(comment.includes("second miss"), false);
+  assertEquals(comment.includes("fails the run"), false);
 });
 
 Deno.test("buildDocsSweepHitsComment - caps the list and says how many more", () => {
