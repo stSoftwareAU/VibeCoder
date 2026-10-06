@@ -1460,6 +1460,27 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+- **Apply a new rule to your own diff.** After writing or changing a rule,
+  read it literally, as a reviewer would, and apply it to this PR's own
+  diff: the rule's own examples and model sentences, the code and tests the
+  PR adds or edits, any helper doc comment that says when to use the thing
+  the rule governs, and the PR summary (its Test Plan, `Branch outcomes:`
+  and similar lists). Grep `git diff <base>...HEAD` for the nouns the rule
+  governs. Anything in the diff that the rule, read literally, would flag is
+  a defect to fix before the PR is raised: change that content, or narrow
+  the rule so it names the allowed use — "a positive pin over a page's text
+  through `flatWholeFile(body)` is a finding; flattening a pinned-phrase
+  literal is not". An example offered as the correct way must itself pass
+  the rule, checked against the code it describes. The PR body says you
+  applied the rule to the PR's own diff and names what you found, or says
+  you found nothing. Three fleet PRs were sent back for this: one required
+  each `Branch outcomes:` line to state that flipping it went red while its
+  own list did not (#3160); one offered a model sentence about the
+  not-planned scan as the correctly scoped wording, and that sentence
+  over-claimed what the scan covered (#3236); one called any drift test
+  reaching for `flatWholeFile` a finding while its own drift tests called
+  it on pinned-phrase literals and the helper's own doc comment allowed
+  exactly that (#3240).
 - **Scope a rule to the runs it is true for.**
   `prompts/coding_guidelines/prompt.md` is rendered into every phase that
   `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)
