@@ -4,9 +4,10 @@ The pre-commit safety gate refused every hidden path missing from the
 worker's canonical allowlist (`ALLOWED_HIDDEN_PATHS`), even a file the
 repo's own `.gitignore` re-allows and tracks on purpose. That made #3293
 fail twice, on `.claude/skills/review-fleet-prs/SKILL.md`, `run.sh` and
-`review_log.ts`. The gate now also exempts a refused hidden path when the
-repo's tracked, unmodified root `.gitignore` re-allows it, as
-`git check-ignore --no-index` reports. Secret patterns
+`review_log.ts`. The gate now also exempts a refused hidden path when an
+ancestor-directory walk finds an explicit `!`-negation decided by the
+repo's tracked, unmodified root `.gitignore` itself (Issue #3309
+hardening). Secret patterns and credential-store paths
 (`FORBIDDEN_STAGED_PATTERNS`) are never exempt this way, and every failure
 to read the answer leaves the path refused. `REQUIRED_GITIGNORE_PATTERNS`
 is not widened. Closes #3296.
@@ -34,14 +35,18 @@ is not widened. Closes #3296.
 - The exemption is the last one in `assertSafeToCommit`, after the
   `mergedInUnchanged` and default-ref exemptions. `classifyStagedPath` is
   unchanged, so its other callers keep the strict answer.
-- The `.gitignore` must exist at `HEAD` (`cat-file -e HEAD:.gitignore`) and
-  its working tree must match `HEAD` (`diff --quiet HEAD -- .gitignore`).
-  This catches the usual same-commit edit. A staged-only edit whose
-  working-tree file has been put back is not caught (see Standards Review).
-- `check-ignore` exit 1 is the only exempting answer. Exit 0, any other
-  code, or a spawn failure leaves the path refused. A `run` test seam
-  exists only because `runGitCommand` reports a timeout as `ok:true` with
-  code 124.
+- The `.gitignore` must exist at `HEAD` (`cat-file -e HEAD:.gitignore`),
+  its index must match `HEAD` (`diff --cached --quiet HEAD -- .gitignore`)
+  and its working tree must match `HEAD`
+  (`diff --quiet HEAD -- .gitignore`). The index check catches a
+  staged-only edit whose working-tree file has been put back (Issue #3309
+  hardening of the gap noted in Standards Review below).
+- An ancestor-directory walk finding an explicit `!`-negation decided by
+  the root `.gitignore` itself is the only exempting answer. No decision
+  anywhere in the chain, a decision from a nested or untracked
+  `.gitignore`, a non-negation decision, or a spawn failure leaves the
+  path refused (Issue #3309). A `run` test seam exists only because
+  `runGitCommand` reports a timeout as `ok:true` with code 124.
 - `assertAdoptedMergeIsSafe` (`worker/deno/lib/milestone_merge_state.ts`)
   is deliberately excluded: an agent-committed merge stays held to the
   strict classifier plus `mergedInUnchanged`.
@@ -60,9 +65,10 @@ is not widened. Closes #3296.
 - Residual risk: the gate reads `.gitignore` at `HEAD`, not on the base
   branch, so a re-allow committed earlier on the same branch counts.
   Secrets stay refused regardless, and the prompt rule tells agents never
-  to add a re-allow rule themselves. `check-ignore` exit 1 also covers a
-  hidden path no rule mentions, and a path re-allowed by an untracked
-  nested `.gitignore` (see Standards Review).
+  to add a re-allow rule themselves. The ancestor-walk and root-source
+  requirement (Issue #3309) closes the residual risk that a bare
+  `check-ignore` exit 1 would otherwise cover a hidden path no rule
+  mentions, or a path re-allowed by an untracked nested `.gitignore`.
 
 ## Evidence
 
@@ -76,9 +82,9 @@ flowchart TD
     F -->|yes| R[refused]
     F -->|no| G{.gitignore tracked at HEAD and unmodified?}
     G -->|no or unreadable| R
-    G -->|yes| C{git check-ignore -q --no-index}
-    C -->|exit 1: re-allowed| OK
-    C -->|exit 0, other code, or spawn failure| R
+    G -->|yes| C{ancestor walk: root .gitignore !-negation?}
+    C -->|found| OK
+    C -->|no decision, other source, or spawn failure| R
 ```
 
 Observed `git check-ignore` against this repo's `.gitignore`:
@@ -95,8 +101,9 @@ $ git check-ignore -v -n --no-index -- .claude/skills/review-fleet-prs/SKILL.md;
 1
 ```
 
-The code relies on exit 1 meaning "not ignored", and exit 0 meaning
-"ignored".
+The code no longer treats a bare exit 1 as sufficient: it also requires the
+deciding rule found by the ancestor walk to be a root-`.gitignore`
+`!`-negation, not just the exit code (Issue #3309).
 
 - `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts`: 18
   tests. Real-repo fixtures (with a local git identity) cover the
@@ -229,6 +236,6 @@ three gain the exemption by intent. `classifyStagedPath` is unchanged, so
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — The docs say the root .gitignore must be unmodified 'in both the index and the working tree', but the code only runs git diff --quiet HEAD -- .gitignore , which compares HEAD with the working tree. A staged .gitignore edit whose working-tree copy has been put back still passes, and no test covers th — evidence: `worker/deno/lib/pre commit safety.ts:321` — reason: NOT fixed in this diff and NOT filed: this breach is on a line the diff adds, and this turn may not change code. It needs a code retry that adds git diff --cached --quiet HEAD -- .gitignore and an index-only test.
-- **violation** — The docs say a path is exempt when the .gitignore 're-allows' it, but exit 1 from git check-ignore -q --no-index only means 'not ignored'. That also exempts a hidden path no rule mentions, in a repo without a . ignore line, and a path re-allowed by an untracked nested .gitignore. Neither case is tes — evidence: `worker/deno/lib/pre commit safety.ts:333` — reason: NOT fixed in this diff and NOT filed: this breach is on a line the diff adds, and this turn may not change code. It needs a code retry that either requires a matching negation rule from the tracked root .gitignore or rewords the docs to say 'not ignored', with tests for both cases.
+- **fixed (Issue #3309)** — The docs said the root .gitignore must be unmodified 'in both the index and the working tree', but the code only ran git diff --quiet HEAD -- .gitignore, which compares HEAD with the working tree. A staged .gitignore edit whose working-tree copy had been put back would have passed. — evidence: `worker/deno/lib/pre_commit_safety.ts` now also runs `git diff --cached --quiet HEAD -- .gitignore`, and Case 11 in `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts` covers the index-only edit.
+- **fixed (Issue #3309)** — The docs said a path is exempt when the .gitignore 're-allows' it, but exit 1 from git check-ignore -q --no-index only means 'not ignored', which would also exempt a hidden path no rule mentions and a path re-allowed by an untracked nested .gitignore. — evidence: `gitignoreReallowed` now requires an ancestor-walk decision from the root `.gitignore` itself that is an explicit `!`-negation; Case 9 and Case 10 in the same test file cover both previously-untested scenarios.
 - **clean** — Australian English spelling, JSDoc on the new exported function, fail-closed handling when git cannot run or returns other exit codes, TDD (a dedicated 3296 test file with positive and negative controls), and secret patterns checked before any .gitignore exemption
