@@ -17,6 +17,8 @@ import {
 } from "./issue_filter.ts";
 import type { BlockingPRInfo, OpenPR } from "./issue_query.ts";
 import { describeBlockingPr, getBlockingPRForIssue } from "./issue_query.ts";
+import type { DependencyBlocker } from "./issue_dependencies.ts";
+import { describeDependencyBlockers } from "./issue_finder_common.ts";
 
 /**
  * Label configuration for blocking reason detection.
@@ -204,6 +206,39 @@ export function getBlockingLabelReasons(
   }
 
   return reasons;
+}
+
+// =============================================================================
+// summariseDependencyBlockers
+// =============================================================================
+
+/**
+ * Summarise `isDependencyBlocked`'s collected blockers into the two
+ * human-readable fields `diagnoseRepoIssue` renders.
+ *
+ * @param repo - The candidate's repo, so only cross-repo blockers are qualified
+ * @param blockers - Blockers collected by `isDependencyBlocked`
+ * @returns `openSubIssues` (open `child` blockers) and `unmetDependencies`
+ *   (everything else — forward dependencies and unreadable-children holds),
+ *   each `undefined` when there is nothing of that kind
+ */
+export function summariseDependencyBlockers(
+  repo: string,
+  blockers: DependencyBlocker[],
+): { openSubIssues?: string; unmetDependencies?: string } {
+  const result: { openSubIssues?: string; unmetDependencies?: string } = {};
+  const children = blockers.filter((b) => b.kind === "child");
+  if (children.length > 0) {
+    result.openSubIssues = children.map((b) => `#${b.number}`).join(", ");
+  }
+  // Issue #3321: anything that is not a `child` blocker is a forward
+  // dependency or an unreadable-children fail-closed hold — both
+  // belong in "Unmet dependencies", not just `depends-on`.
+  const forward = blockers.filter((b) => b.kind !== "child");
+  if (forward.length > 0) {
+    result.unmetDependencies = describeDependencyBlockers(repo, forward);
+  }
+  return result;
 }
 
 // =============================================================================

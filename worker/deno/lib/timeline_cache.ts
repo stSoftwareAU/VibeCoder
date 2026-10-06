@@ -27,13 +27,11 @@ import type { TimelineLabelEventJson } from "./validation.ts";
 /**
  * Internal cache-entry shape (Issue #3296).
  *
- * The timeline can be written by two different readers that disagree on
- * how much of it they fetched:
- *
- * - `fetchTimelineWithCache` reads only page 1 (the oldest 100 events) and
- *   writes a **partial** entry (`complete: false`).
- * - `wasLabelAddedByAllowedAuthor` paginates the REST timeline to exhaustion
- *   and writes a **complete** entry (`complete: true`).
+ * Every reader in `issue_query.ts` now paginates the REST timeline to
+ * exhaustion and writes a **complete** entry (`complete: true`). Until
+ * Issue #3327 `fetchTimelineWithCache` read only page 1 (the oldest 100
+ * events) and wrote a **partial** entry (`complete: false`); an entry without
+ * the flag, or one written by an older worker, is still read as partial.
  *
  * The reserved-label trust gate must never treat a partial (truncated)
  * timeline as authoritative — on a busy issue (>100 timeline events) the
