@@ -23,10 +23,15 @@
  */
 
 import { assertStringIncludes } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  type DocSection,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 /** The `## Making Changes` section of the `pr_feedback` prompt. */
-async function makingChangesSection(): Promise<string> {
+async function makingChangesSection(): Promise<DocSection> {
   return section(
     await readRepoDoc("prompts/pr_feedback/prompt.md"),
     "Making Changes",
