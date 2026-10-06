@@ -357,6 +357,17 @@ source. Any rename, refactor, or rewrite breaks the test without
 indicating a real regression. Flag every grep-as-assertion over source
 code you find.
 
+**Stylesheets are source code.** A test that reads a `.css`, `.scss`,
+`.sass` or `.less` file and regex-matches selectors, selector order or
+property values (`width: max-content`, `justify-content: flex-end`, a
+`z-index`) is a source-text grep, not a layout test. Splitting a selector
+list or moving a property breaks it; another rule overriding the property,
+a JS-set marker never applied, or overflow inside a clipping container all
+leave it green. Flag it under this check even when the test claims to
+prove layout, cascade order, overflow, clipping or element position; the
+fix is a headless-browser check that measures rendered boxes, such as the
+repository's existing `e2e/` or Playwright checks.
+
 **Documentation-drift tests are not a finding — do not flag them.** A
 test that reads a documentation file, narrows it to one named section by
 heading, and asserts that section still states a rule the code cannot

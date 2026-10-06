@@ -250,6 +250,17 @@ not after a reviewer finds it weeks later.
   every exception the existing rules carve out. Two rules left telling the
   agent to do opposite things is a blocking self-review finding. List the
   related existing rules you checked in the PR body, or say you found none.
+- After writing or changing such a rule, **apply it to this PR's own diff**,
+  read literally as a reviewer would: the rule's own examples and model
+  sentences, the code and tests the PR adds or edits, any helper doc comment
+  that says when to use what the rule governs, and the PR summary (Test
+  Plan, `Branch outcomes:` and similar lists). Grep `git diff <base>...HEAD`
+  for the nouns the rule governs. Anything there the rule would flag is a
+  defect to fix before the PR is raised: change that content, or narrow the
+  rule so it names the allowed use. An example offered as the correct way
+  must itself pass the rule, checked against the code it describes. Say in
+  the PR body that you applied the rule to the PR's own diff, and name what
+  you found or say you found nothing.
 - **Adding a member owes a docs change too.** When you add a field, enum
   variant, kind, flag, column or row element to an existing set, grep for one
   or two **existing sibling members**, not the new one — the new name is in no
@@ -1299,6 +1310,23 @@ List each entry point checked in the PR summary. A changed call site
 whose revert leaves the suite green is a blocking self-review finding: add
 a test through that caller, ideally at the level the linked issue's
 Failure Detection names.
+
+**A new argument or behaviour reaches every caller that needs it.** When a
+change adds a parameter, value or behaviour that the linked issue needs on
+every path (every caller of a shared function, every sibling outcome a router
+dispatches, every entry point that builds the value), list every caller and
+sibling first: grep for the function's name, and read the router's other
+arms. Then either pass the new value on each one or state in the PR summary
+why that caller does not need it. Do not give a behaviour-carrying parameter
+a default that silently turns the behaviour off (`= ""`, `= false`, `None`);
+make it required, so the compiler or type checker names each caller you
+missed. A caller that hard-codes the old value (`Scheduled`, `""`, `false`)
+where the new one belongs is a blocking self-review finding, and so is a test
+that hands the new value straight to the helper while no production caller
+passes it. **Every changed call site needs a test that goes red without it**
+above cannot find this caller, because the diff never changed it and there
+is nothing to revert. List the callers and siblings checked in the PR summary
+(Issue #3253).
 
 **Narrowing a shared helper changes every caller.** Before a helper that
 other code already calls starts rejecting, throwing on or dropping a value it
