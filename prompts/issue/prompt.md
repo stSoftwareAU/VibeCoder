@@ -1037,7 +1037,11 @@ rewrite it, never append to it:
   the summary names, then make every claim match the head: the reproduction
   status, each test's pass/fail result, any "known defect" note, and every
   function, file and helper it names — each must exist at the head and be used
-  as described.
+  as described. An illustrative example ("for example `X`") is a claim too —
+  grep `X` for the stated property before naming it. A Test Plan bullet that
+  quotes a behaviour must name the test in that file that covers it. The
+  worker checks these claims against the head before it raises the PR and
+  blocks the run on a false one it confirms (Issue #3257).
 - Re-derive the Summary, Evidence and Acceptance Criteria sections from that
   diff, not from memory of the run. Every file or behaviour the summary says
   this PR changes must appear in `git diff <base>...HEAD` — existing at the
