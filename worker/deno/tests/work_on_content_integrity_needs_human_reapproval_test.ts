@@ -490,7 +490,7 @@ Deno.test(
 
     try {
       // The cache predates the re-approval; the live timeline carries it.
-      await cache.write("owner/repo", 42, [priorApproval()]);
+      await cache.write("owner/repo", 42, [priorApproval()], true);
 
       const ghState = makeGhState({
         timeline: [
@@ -581,7 +581,7 @@ Deno.test(
       await cache.write("owner/repo", 42, [
         priorApproval(),
         needsHumanRemoval("alice", REMOVE_T2),
-      ]);
+      ], true);
 
       const ghState = makeGhState({ timeline: [priorApproval()] });
       const gh = createGhMock(ghState);
@@ -617,7 +617,7 @@ Deno.test(
     const { cache, dir } = makeCache();
 
     try {
-      await cache.write("owner/repo", 42, [priorApproval()]);
+      await cache.write("owner/repo", 42, [priorApproval()], true);
 
       const ghState = makeGhState({ timeline: [priorApproval()] });
       const gh = createGhMock(ghState);
