@@ -1303,6 +1303,21 @@ rule at the new call site when any caller can pass a rejected value;
 otherwise adding a test that an existing caller still accepts its real
 inputs; and listing the callers checked in the PR summary.
 
+**A new argument or behaviour reaches every caller that needs it (Issue #3253).**
+The changed-call-site rule above covers callers the diff changes; a caller the
+diff should have changed but did not has nothing to revert, so that rule
+cannot find it. Fleet PRs wired a new value into some callers and missed one:
+VibeCoder#3251 gave `recoverAndFinaliseExistingPr` a `docsSweepHitsComment = ""`
+parameter that `reportSummaryRuleBlock` never passed; GRQ-AutoTrader#2282
+added `RunOrigin` but every production caller hard-coded
+`RunOrigin::Scheduled`; and VibeCoder#3095 fixed two of three declared
+hand-off outcomes and left `handOffToPlanning` unchanged. The guidelines and
+the issue prompt's Test Plan step now require listing every caller and
+sibling route first, passing the new value on each or stating why one does
+not need it, making a behaviour-carrying parameter required rather than
+defaulting it to a value that turns the behaviour off, and treating a caller
+left on the old hard-coded value as a blocking self-review finding.
+
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran

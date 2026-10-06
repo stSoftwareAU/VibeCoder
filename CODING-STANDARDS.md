@@ -408,6 +408,23 @@ whose revert leaves the suite green is a blocking self-review finding: add
 a test through that caller, ideally at the level the linked issue's
 Failure Detection names.
 
+**A new argument or behaviour reaches every caller that needs it.** When a
+change adds a parameter, value or behaviour that the linked issue needs on
+every path (every caller of a shared function, every sibling outcome a router
+dispatches, every entry point that builds the value), list every caller and
+sibling first: grep for the function's name, and read the router's other
+arms. Then either pass the new value on each one or state in the PR summary
+why that caller does not need it. Do not give a behaviour-carrying parameter
+a default that silently turns the behaviour off (`= ""`, `= false`, `None`);
+make it required, so the compiler or type checker names each caller you
+missed. A caller that hard-codes the old value (`Scheduled`, `""`, `false`)
+where the new one belongs is a blocking self-review finding, and so is a test
+that hands the new value straight to the helper while no production caller
+passes it. **Every changed call site needs a test that goes red without it**
+above cannot find this caller, because the diff never changed it and there
+is nothing to revert. List the callers and siblings checked in the PR summary
+(Issue #3253).
+
 **Narrowing a shared helper changes every caller.** Before a helper that
 other code already calls starts rejecting, throwing on or dropping a value it
 used to accept (a validator, type guard, allowed-value set, required field,
