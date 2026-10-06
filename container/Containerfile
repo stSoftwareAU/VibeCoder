@@ -339,12 +339,17 @@ ARG PLAYWRIGHT_VERSION="1.61.0-alpha-1778188671000"
 ARG PLAYWRIGHT_SHA256_NOARCH="d714ab4fb6571698e01ebac8a14c7c448b5fa072eaf99398fa24cf34ce54c516"
 ARG PLAYWRIGHT_SHA256_CHROMIUM_AMD64="4f5dfbb09cc103573be201e870573fe53f36b1de076ac649049c421bb5b31e69"
 ARG PLAYWRIGHT_SHA256_CHROMIUM_ARM64="549844a1f15687f91486645079ec0e495a880687e6813e2d42ef4d044782d589"
+ARG PLAYWRIGHT_SHA256_HEADLESS_SHELL_AMD64="1f56c33a82881212d708748b9975292d40ab403b7caee16451e32eabec94c0cb"
+ARG PLAYWRIGHT_SHA256_HEADLESS_SHELL_ARM64="4cd3d333c78771a29ae56506f26c54a225d4e3d8fc716165c012e8922e10bb61"
+ARG PLAYWRIGHT_SHA256_FFMPEG_AMD64="ebc74fc5b94830176a3c2914ae96bd8bc7f6a91f4f33890230f84a172ee61ccc"
+ARG PLAYWRIGHT_SHA256_FFMPEG_ARM64="2628c03f05318ff812c8c9baaf207dea2ddf53e818c0dc936714b0fbe3afb009"
 
 ENV PLAYWRIGHT_BROWSERS_PATH="/opt/playwright-browsers"
 # Issue #3250: e2e scripts use executablePath: Deno.env.get("CHROMIUM_PATH") to find the baked browser.
 ENV CHROMIUM_PATH="/usr/local/bin/chromium"
 
-# Chromium zip is downloaded and SHA-256 verified before install (Issue #274).
+# The Chromium, chromium-headless-shell and ffmpeg zips are downloaded and
+# SHA-256 verified before install (Issues #274, #3256).
 RUN set -eu; \
     tarball="/tmp/playwright-core.tgz"; \
     curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/playwright-core/-/playwright-core-${PLAYWRIGHT_VERSION}.tgz"; \
@@ -356,22 +361,29 @@ RUN set -eu; \
     browsers="$(npm root -g)/playwright-core/browsers.json"; \
     chromium_rev="$(jq -r '.browsers[] | select(.name=="chromium") | .revision' "${browsers}")"; \
     chromium_ver="$(jq -r '.browsers[] | select(.name=="chromium") | .browserVersion' "${browsers}")"; \
+    shell_rev="$(jq -r '.browsers[] | select(.name=="chromium-headless-shell") | .revision' "${browsers}")"; \
+    shell_ver="$(jq -r '.browsers[] | select(.name=="chromium-headless-shell") | .browserVersion' "${browsers}")"; \
+    ffmpeg_rev="$(jq -r '.browsers[] | select(.name=="ffmpeg") | .revision' "${browsers}")"; \
     arch="$(uname -m)"; \
+    pw_zip() { curl -fsSL ${CURL_RETRY} -o /tmp/pw.zip "$1"; echo "$2  /tmp/pw.zip" | sha256sum -c -; mkdir -p "$3"; unzip -q /tmp/pw.zip -d "$3"; test -x "$3/$4"; : > "$3/INSTALLATION_COMPLETE"; rm -f /tmp/pw.zip; }; \
     case "${arch}" in \
-      x86_64) chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}"; \
-        chromium_url="https://cdn.playwright.dev/builds/cft/${chromium_ver}/linux64/chrome-linux64.zip" ;; \
-      aarch64) chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_ARM64}"; \
-        chromium_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${chromium_rev}/chromium-linux-arm64.zip" ;; \
+      x86_64) \
+        chromium_url="https://cdn.playwright.dev/builds/cft/${chromium_ver}/linux64/chrome-linux64.zip"; chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_AMD64}"; chromium_exe="chrome-linux64/chrome"; \
+        shell_url="https://cdn.playwright.dev/builds/cft/${shell_ver}/linux64/chrome-headless-shell-linux64.zip"; shell_sha="${PLAYWRIGHT_SHA256_HEADLESS_SHELL_AMD64}"; shell_exe="chrome-headless-shell-linux64/chrome-headless-shell"; \
+        ffmpeg_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/${ffmpeg_rev}/ffmpeg-linux.zip"; ffmpeg_sha="${PLAYWRIGHT_SHA256_FFMPEG_AMD64}" ;; \
+      aarch64) \
+        chromium_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${chromium_rev}/chromium-linux-arm64.zip"; chromium_sha="${PLAYWRIGHT_SHA256_CHROMIUM_ARM64}"; chromium_exe="chrome-linux/chrome"; \
+        shell_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/chromium/${shell_rev}/chromium-headless-shell-linux-arm64.zip"; shell_sha="${PLAYWRIGHT_SHA256_HEADLESS_SHELL_ARM64}"; shell_exe="chrome-linux/headless_shell"; \
+        ffmpeg_url="https://cdn.playwright.dev/dbazure/download/playwright/builds/ffmpeg/${ffmpeg_rev}/ffmpeg-linux-arm64.zip"; ffmpeg_sha="${PLAYWRIGHT_SHA256_FFMPEG_ARM64}" ;; \
       *) echo "Unsupported build architecture: ${arch}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL ${CURL_RETRY} -o /tmp/chromium.zip "${chromium_url}"; \
-    echo "${chromium_sha}  /tmp/chromium.zip" | sha256sum -c -; \
-    dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium-${chromium_rev}"; \
-    mkdir -p "${dest}"; \
-    unzip -q /tmp/chromium.zip -d "${dest}"; \
-    chrome_bin="$(find "${dest}" -maxdepth 2 -type f -name chrome | head -n1)"; test -n "${chrome_bin}"; ln -s "${chrome_bin}" "${CHROMIUM_PATH}"; \
-    : > "${dest}/INSTALLATION_COMPLETE"; \
-    rm -f /tmp/chromium.zip; \
+    chromium_dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium-${chromium_rev}"; \
+    shell_dest="${PLAYWRIGHT_BROWSERS_PATH}/chromium_headless_shell-${shell_rev}"; \
+    ffmpeg_dest="${PLAYWRIGHT_BROWSERS_PATH}/ffmpeg-${ffmpeg_rev}"; \
+    pw_zip "${chromium_url}" "${chromium_sha}" "${chromium_dest}" "${chromium_exe}"; \
+    ln -s "${chromium_dest}/${chromium_exe}" "${CHROMIUM_PATH}"; \
+    pw_zip "${shell_url}" "${shell_sha}" "${shell_dest}" "${shell_exe}"; \
+    pw_zip "${ffmpeg_url}" "${ffmpeg_sha}" "${ffmpeg_dest}" "ffmpeg-linux"; \
     playwright-core install --with-deps chromium; \
     rm -rf /var/lib/apt/lists/*; \
     chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"; \

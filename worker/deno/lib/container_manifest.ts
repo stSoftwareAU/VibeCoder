@@ -1054,6 +1054,11 @@ export function findToolchainInstallViolations(
  * The worker captures PR evidence with Playwright MCP, and the host has no
  * browser to borrow — so Chromium must be baked in at build time, resolvable
  * by the non-root worker user, with nothing left to download at run time.
+ * `playwright-core install --with-deps chromium` also fetches
+ * chromium-headless-shell (a default `chromium.launch()` runs the headless
+ * shell, not the "headless" Chromium binary) and ffmpeg (ships with every
+ * browser, even under `--no-shell`) — Issue #3256 — so those two blobs need
+ * the same checksum and verification treatment as the Chromium zip itself.
  *
  * @param containerfile - Raw Containerfile text.
  * @param manifest - The parsed manifest.
@@ -1075,15 +1080,19 @@ export function findBrowserInstallViolations(
         "version would not be pinned anywhere",
     );
   } else {
-    // Issue #274: the npm tarball pin does not cover the Chromium zip
-    // `playwright-core install` then fetches. Those blobs need their own
-    // committed checksums, restated as PLAYWRIGHT_SHA256_CHROMIUM_* ARGs.
-    for (const key of CHROMIUM_SHA_KEYS) {
-      if (!browser.sha256[key]) {
-        violations.push(
-          `container/tools.json "${BROWSER_TOOL_NAME}" sha256 omits ${key}: ` +
-            "the Chromium browser blob would be fetched without a committed checksum",
-        );
+    // Issue #274 / #3256: the npm tarball pin does not cover the browser
+    // blobs `playwright-core install` then fetches (Chromium itself, plus
+    // the chromium-headless-shell and ffmpeg blobs that come along with it).
+    // Those blobs need their own committed checksums, restated as
+    // PLAYWRIGHT_SHA256_<LABEL>_* ARGs.
+    for (const blob of BROWSER_BLOBS) {
+      for (const key of blob.keys) {
+        if (!browser.sha256[key]) {
+          violations.push(
+            `container/tools.json "${BROWSER_TOOL_NAME}" sha256 omits ${key}: ` +
+              `the ${blob.label} browser blob would be fetched without a committed checksum`,
+          );
+        }
       }
     }
   }
@@ -1112,17 +1121,17 @@ export function findBrowserInstallViolations(
     );
   }
 
-  if (
-    browser &&
-    CHROMIUM_SHA_KEYS.every((key) => browser.sha256[key]) &&
-    !code.some((line) =>
-      line.includes("PLAYWRIGHT_SHA256_CHROMIUM") && !/^ARG\b/.test(line)
-    )
-  ) {
-    violations.push(
-      "Containerfile never verifies a PLAYWRIGHT_SHA256_CHROMIUM checksum: " +
-        "the Chromium blob would be fetched without checking the committed digest",
-    );
+  for (const blob of BROWSER_BLOBS) {
+    if (
+      browser &&
+      blob.keys.every((key) => browser.sha256[key]) &&
+      !code.some((line) => line.includes(blob.arg) && !/^ARG\b/.test(line))
+    ) {
+      violations.push(
+        `Containerfile never verifies a ${blob.arg} checksum: ` +
+          `the ${blob.label} blob would be fetched without checking the committed digest`,
+      );
+    }
   }
 
   // The build runs as root; the worker does not. Without a readability fix
@@ -1280,11 +1289,31 @@ function checksWithoutShortCircuit(
 const BROWSER_TOOL_NAME = "playwright-core";
 
 /**
- * Extra `sha256` keys on playwright-core for the Chromium zip (Issue #274).
- * Named like rust's rustfmt_/clippy_ extras so they become
- * `PLAYWRIGHT_SHA256_CHROMIUM_AMD64` / `_ARM64` build ARGs.
+ * Zips `playwright-core install --with-deps chromium` fetches, each needing
+ * a committed digest (Issues #274, #3256). A default `chromium.launch()`
+ * runs the chromium-headless-shell binary, and ffmpeg ships alongside every
+ * browser (even under `--no-shell`), so both need the same checksum and
+ * Containerfile-verification treatment as the Chromium zip itself. Keys are
+ * named like rust's rustfmt_/clippy_ extras so they become
+ * `PLAYWRIGHT_SHA256_<LABEL>_AMD64` / `_ARM64` build ARGs.
  */
-const CHROMIUM_SHA_KEYS = ["chromium_amd64", "chromium_arm64"] as const;
+const BROWSER_BLOBS = [
+  {
+    label: "Chromium",
+    keys: ["chromium_amd64", "chromium_arm64"],
+    arg: "PLAYWRIGHT_SHA256_CHROMIUM",
+  },
+  {
+    label: "chromium-headless-shell",
+    keys: ["headless_shell_amd64", "headless_shell_arm64"],
+    arg: "PLAYWRIGHT_SHA256_HEADLESS_SHELL",
+  },
+  {
+    label: "ffmpeg",
+    keys: ["ffmpeg_amd64", "ffmpeg_arm64"],
+    arg: "PLAYWRIGHT_SHA256_FFMPEG",
+  },
+] as const;
 
 /** `ENV PLAYWRIGHT_BROWSERS_PATH=<value>`, capturing the (maybe quoted) value. */
 const BROWSERS_PATH_ENV_RE = /^ENV\s+PLAYWRIGHT_BROWSERS_PATH=(\S+)$/;
