@@ -895,7 +895,7 @@ flowchart LR
     P -- yes --> PB["pr_blocked+1"]
     P -- no --> M{Named by a<br/>merged fleet PR?}
     M -- yes --> MB["merged_pr_blocked+1"]
-    M -- no --> D{"Names an open dependency,<br/>or a closed one another<br/>open milestone may hold?"}
+    M -- no --> D{"Names an open dependency,<br/>or a closed one another<br/>open milestone may hold,<br/>or has open native sub-issues?"}
     D -- yes --> DB["dependency_blocked+1"]
     D -- no --> R{This run already<br/>holding it back?}
     R -- yes --> RD{Held because the claim<br/>path deferred it?}
