@@ -447,3 +447,52 @@ Deno.test("processPrFeedback - drift check: a throwing driftCheckFn does not abo
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// The change request body reaches the drift check (Issue #3244).
+// ---------------------------------------------------------------------------
+
+Deno.test("processPrFeedback - drift check: the change request body is passed to the drift check (Issue #3244)", async () => {
+  const workDir = await makeWorkDir();
+  try {
+    const events: string[] = [];
+    const recordedComments: string[] = [];
+    const recordedOptions: CapturedOptions[] = [];
+
+    const mockClaude: Partial<ClaudeDeps> = {
+      runClaudeWithRetry: makeClaudeMock(events, ["Fixed"], recordedOptions),
+    };
+    const mockGithub: Partial<GitHubDeps> = {
+      runGhCommand: makeDriftGh(recordedComments),
+    };
+    const deps = createMockDeps({
+      claude: mockClaude,
+      github: mockGithub,
+      git: {
+        runGitCommand: makeDriftGit(),
+        commitAndPushPending: makeCommitMock(events),
+      },
+    });
+
+    const capturedInputs: Array<{ changeRequest?: string }> = [];
+    const processorDeps = baseProcessorDeps(workDir, deps);
+    processorDeps.driftCheckFn = ((
+      input: { changeRequest?: string },
+    ) => {
+      capturedInputs.push(input);
+      return Promise.resolve({ status: "clean", checked: [] });
+    }) as unknown as PrFeedbackProcessorDeps["driftCheckFn"];
+
+    const commentBody = "Please fix the typo on line 10";
+    const result = await processPrFeedback(
+      makeInput({ commentBody }),
+      processorDeps,
+    );
+
+    assertEquals(result.ok, true);
+    assertEquals(capturedInputs.length, 1);
+    assertEquals(capturedInputs[0]!.changeRequest, commentBody);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

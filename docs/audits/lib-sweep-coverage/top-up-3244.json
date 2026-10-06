@@ -1,0 +1,12 @@
+{
+  "issue": 3244,
+  "chunk": "top-up-3244",
+  "title": "top-up: change-request quote staleness check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3244",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: change_request_quotes.ts (#3244)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/change_request_quotes.ts"
+  ],
+  "sweptAt": "7db06b1be69ad9958a7d25179e23a29ef2d27d0c"
+}
