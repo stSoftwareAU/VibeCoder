@@ -15,7 +15,7 @@ treats `total > completed` as `dependency-blocked` in both readers. An absent or
 malformed field behaves exactly as before. The body task-list half of the
 parent/child gate is still not modelled. Closes #3314.
 
-**Review follow-up (PR #3318):** two gaps in the original fix.
+**Review follow-up (PR #3318):** three gaps in the original fix.
 
 1. The two production lines that carry the fix — `fetchAllIssues`'s `--json`
    field list (`worker/deno/lib/issue_query.ts:520`) and the census input
@@ -36,8 +36,35 @@ parent/child gate is still not modelled. Closes #3314.
    list (line ~489) and mapping it with `parseSubIssuesSummary` into the rows
    `classifyIssues` reads (line ~519). Test added to
    `worker/deno/tests/repo_busy_for_idle_task_test.ts`.
+3. `fetchAllIssues` (`worker/deno/lib/issue_query.ts`) always asks `gh`
+   for `subIssuesSummary` in its `--json` field list, but that field is only
+   recognised by cli/cli
+   v2.94.0+ (confirmed against `cli/cli`'s `api/query_builder.go` at v2.93.0
+   vs v2.94.0 — `subIssuesSummary` is absent from `issueOnlyFields` in the
+   former). `docs/SETUP.md`'s `sudo apt-get install -y gh` gives operators
+   2.4.0 on Ubuntu 22.04, 2.23.0 on Debian 12 or 2.45.0 on Ubuntu 24.04
+   (confirmed against `packages.ubuntu.com`/`packages.debian.org`) — all
+   below the floor — so the host-run `diagnose-repo` command (documented in
+   `docs/TROUBLESHOOTING.md`/`docs/USAGE.md`) crashed outright with
+   `Unknown JSON field: "subIssuesSummary"`, and `diagnose-issue`'s
+   milestone-occupancy and repo-availability checks silently degraded to
+   "assume OK". `fetchAllIssues` now retries once without the field when
+   `gh` rejects it with that exact message, restoring pre-#3314 behaviour on
+   older `gh`. `repo_busy_for_idle_task.ts` and `idle_detect_diagnostics.ts`
+   also request `subIssuesSummary`, but neither backs a documented host-run
+   command (both run only inside the container, which pins gh 2.97.0), so
+   they are unaffected by this host/apt-gh gap and are left as-is. Tests
+   added to `worker/deno/tests/issue_query_test.ts`.
 
-**Docs sweep** — grep: `subIssuesSummary`, `hasOpenSubIssues`,
+**Docs sweep (review follow-up, item 3)** — grep: `subIssuesSummary`,
+`fetchAllIssues`, "apt-get install -y gh", "gh version", "2.94" over
+`docs/SETUP.md`, `docs/DEPLOYMENT.md`, `docs/TROUBLESHOOTING.md`,
+`docs/USAGE.md`: no hits describe a `gh` version floor or `fetchAllIssues`'s
+field list, so there was no stale sentence to fix. The retry is an internal
+fallback that restores pre-#3314 behaviour on old `gh` — it adds no new
+documented contract, so no doc update is owed for it.
+
+**Docs sweep (original)** — grep: `subIssuesSummary`, `hasOpenSubIssues`,
 `parseSubIssuesSummary`, `normaliseIssue`, `checkParentBlocked`, "parent/child",
 "Parent/child", "per-issue API call", "not modelled", "unmodelled",
 `dependency_blocked`, `classifyIssues`, "idle-detect"; section:
@@ -93,8 +120,34 @@ says an open sub-issue counts as a dependency.
   (`startable=1` instead of `0`), then the line was restored.
 - `deno test -A --no-check tests/idle_census_sub_issues_wiring_3314_test.ts tests/repo_busy_for_idle_task_test.ts`
   from `worker/deno`: 28 passed, 0 failed.
+- Review follow-up (item 3): added three tests to
+  `worker/deno/tests/issue_query_test.ts`: a stub that rejects
+  `subIssuesSummary` with gh's real `Unknown JSON field: "subIssuesSummary"`
+  message (confirmed against cli/cli's `pkg/cmdutil/json_flags.go`) proves
+  `fetchAllIssues` retries once without the field and still returns the
+  listing; a stub that fails the retry too proves the retry's own error
+  surfaces, not the original; a stub that rejects with an unrelated message
+  proves a genuine failure is not retried. All three went red with the fix
+  reverted (confirmed by disabling the `SUBISSUES_SUMMARY_UNSUPPORTED` branch
+  and re-running), then the fix was restored.
+- `deno task test:unit tests/issue_query_test.ts` from `worker/deno`:
+  82 passed, 0 failed.
 
 **Branch outcomes:**
+
+- `worker/deno/lib/issue_query.ts` (the `SUBISSUES_SUMMARY_UNSUPPORTED.test(message)`
+  branch in `fetchAllIssues`) — match, retry succeeds —
+  `worker/deno/tests/issue_query_test.ts::issue_query - fetchAllIssues retries without subIssuesSummary when gh rejects it (Issue #3318)`
+  — branch disabled, test went red (original "Unknown JSON field" error
+  surfaced instead of the retried listing)
+- same branch — match, retry also fails —
+  `worker/deno/tests/issue_query_test.ts::issue_query - fetchAllIssues surfaces the retry's own error when the fallback also fails (Issue #3318)`
+  — branch disabled, test went red (wrong error message surfaced)
+- same branch — no match, genuine failure rethrown without a retry —
+  `worker/deno/tests/issue_query_test.ts::issue_query - fetchAllIssues does not retry a genuine gh failure (Issue #3318)`
+  — covered by the existing `#4257` empty/unparseable-output tests already
+  rethrowing on the first call; the new test additionally counts calls to
+  pin "no retry" for a non-matching message
 
 - `worker/deno/lib/issue_query.ts:241` — absent (raw field is not an object,
   e.g. `null` or missing) — `worker/deno/tests/issue_query_test.ts::issue_query - parseIssueListJson drops a null subIssuesSummary`

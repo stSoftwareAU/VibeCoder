@@ -1520,6 +1520,88 @@ Deno.test("issue_query - fetchAllIssues rejects unparseable gh output without ca
   }
 });
 
+// =============================================================================
+// gh < 2.94.0 rejects `subIssuesSummary` (Issue #3318)
+// =============================================================================
+
+Deno.test("issue_query - fetchAllIssues retries without subIssuesSummary when gh rejects it (Issue #3318)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const issues = await fetchAllIssues(
+      "org/repo",
+      cache,
+      100,
+      (args) => {
+        calls++;
+        const fields = args[args.indexOf("--json") + 1] ?? "";
+        if (fields.includes("subIssuesSummary")) {
+          // The exact message cli/cli's query_builder.go emits for a field
+          // unknown to the running gh version (confirmed against gh 2.93.0,
+          // which predates `subIssuesSummary`).
+          return Promise.reject(
+            new Error(
+              'Unknown JSON field: "subIssuesSummary"\nAvailable fields:\n  number\n  title',
+            ),
+          );
+        }
+        return Promise.resolve(
+          JSON.stringify([{ number: 9, title: "Pre-2.94 gh" }]),
+        );
+      },
+    );
+    assertEquals(calls, 2, "must retry once without the unsupported field");
+    assertEquals(issues.length, 1);
+    assertEquals(issues[0]?.number, 9);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchAllIssues surfaces the retry's own error when the fallback also fails (Issue #3318)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    await assertRejects(
+      () =>
+        fetchAllIssues("org/repo", cache, 100, (args) => {
+          calls++;
+          const fields = args[args.indexOf("--json") + 1] ?? "";
+          if (fields.includes("subIssuesSummary")) {
+            return Promise.reject(
+              new Error('Unknown JSON field: "subIssuesSummary"'),
+            );
+          }
+          return Promise.reject(new Error("gh: network unreachable"));
+        }),
+      Error,
+      "network unreachable",
+    );
+    assertEquals(calls, 2, "must have attempted the retry before failing");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchAllIssues does not retry a genuine gh failure (Issue #3318)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    await assertRejects(
+      () =>
+        fetchAllIssues("org/repo", cache, 100, () => {
+          calls++;
+          return Promise.reject(new Error("gh: rate limit exceeded"));
+        }),
+      Error,
+      "rate limit",
+    );
+    assertEquals(calls, 1, "an unrelated gh failure must not be retried");
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchAllIssues caches a genuine empty list (Issue #4257)", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
