@@ -46,6 +46,12 @@ export interface DeferredPrRecord {
   attempts: number;
   /** The refusal, in one line, as the run last saw it. */
   lastError: string;
+  /**
+   * An advisory comment the run would have posted on the PR once it existed
+   * — the Docs sweep term hits (Issue #3237). The drain posts it on the PR
+   * it raises, so deferring the create does not lose it.
+   */
+  advisoryComment?: string;
 }
 
 /** `owner/repo` with the character set GitHub actually allows. */
@@ -102,7 +108,8 @@ export function isDeferredPrRecord(value: unknown): value is DeferredPrRecord {
     typeof r.body === "string" &&
     typeof r.deferredAtEpoch === "number" &&
     typeof r.attempts === "number" &&
-    typeof r.lastError === "string"
+    typeof r.lastError === "string" &&
+    (r.advisoryComment === undefined || typeof r.advisoryComment === "string")
   );
 }
 

@@ -144,11 +144,31 @@ guessing — the analysis-only hand-off then routes it to a human.
      says to reuse is a stated requirement: the Spec reviewer judges it as a
      criterion, and a diff that re-implements it by hand instead of calling
      it is not `met`.
+   - **Extend a module's existing imports.** When you add tests or code
+     partway down an existing module — a new block inside an existing
+     `mod tests`, say — merge each new name into the `use` / `import`
+     statement the module already has for that crate or module rather than
+     starting a second one. A formatter may not catch it (stable `cargo fmt`
+     sorts `use` statements but does not merge them), so a duplicate import
+     can pass CI and still breach a standard only review enforces
+     (Issue #3230).
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
+   A test that reads a `.css` or `.scss` file and matches selectors or
+   property values is a source-text grep, not a layout test, even where the
+   appearance is itself the stated contract: it breaks when a selector list
+   is split or a property moves, and still passes when another rule
+   overrides the property or a clipping container hides the overflow. A
+   claim about layout, cascade order, overflow, clipping or element position
+   needs a headless-browser check that measures rendered boxes, such as the
+   repository's existing `e2e/` or Playwright checks, and that check must
+   itself be run, per **A browser check you did not run is not a safety
+   net** under Error Recovery.
+   Where the repository has no browser harness, the PR names that gap in
+   its Test Plan rather than substituting a stylesheet regex.
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
@@ -190,8 +210,8 @@ guessing — the analysis-only hand-off then routes it to a human.
    Docs sweep line as `file:line — still true because …`. The worker
    re-runs the line's quoted terms over the head's docs itself, and over
    the comment lines of its source files: a hit outside the lines your diff
-   changed that the line does not name as `file:line` blocks the PR the
-   same way a missing line does.
+   changed that the line does not name as `file:line` is posted as an
+   advisory PR comment for the reviewer and does not block the PR.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is
@@ -246,8 +266,20 @@ guessing — the analysis-only hand-off then routes it to a human.
    exception the existing rules carve out. List the related existing rules
    you checked in the PR summary, or say you found none; two rules left
    telling the agent to do opposite things is a blocking self-review
-   finding. When the change involves architecture, data
-   flow, state transitions, or sequence of events, include a **Mermaid**
+   finding. Then apply the new or changed rule to this PR's own diff, read
+   literally as a reviewer would: its own examples and model sentences, the
+   code and tests the diff adds or edits, any helper doc comment that says
+   when to use what the rule governs, and the PR summary's Test Plan,
+   `Branch outcomes:` and similar lists — grep `git diff <base>...HEAD` for
+   the nouns the rule governs. Anything there the rule would flag is fixed
+   before the PR is raised, by changing that content or by narrowing the
+   rule so it names the allowed use, and an example offered as the correct
+   way must itself pass the rule, checked against the code it describes.
+   The PR summary says you applied the rule to the PR's own diff and names
+   what you found, or says you found nothing (see **Apply a new rule to
+   your own diff** in `CODING-STANDARDS.md`). When the change involves
+   architecture, data flow, state transitions, or sequence of events,
+   include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
    aids understanding — Mermaid renders natively on GitHub.
@@ -630,8 +662,15 @@ reviewer its path.
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
   one `violation` entry per such departure, with the `file:line` it saw, and the
-  `clean` areas it checked and found compliant. Anything else it notices is
-  `optional`: note it on the `clean` line if you like, and do not chase it.
+  `clean` areas it checked and found compliant. A rule the target
+  repository's standards say is **enforced by review** — no lint, formatter or
+  CI check catches it, in words such as "by review only" or "a finding a
+  reader has to raise" — is the exception to that question: there the review
+  is the enforcement, so a breach of it in a line the diff adds or changes is
+  a `violation` whatever its effect on correctness. Ask it to name, on its
+  `clean` line, each review-enforced rule it checked, so a rule it skipped
+  shows in the PR body (Issue #3230). Anything else it notices is `optional`:
+  note it on the `clean` line if you like, and do not chase it.
   Ask it also to list every assertion the diff removes from an existing test
   and say, for each, whether an issue requirement makes it untrue — returning
   a `violation` (with the `file:line` it saw) for any removed assertion that
@@ -1062,12 +1101,15 @@ The file MUST contain:
 7. **Test Plan**: List the tests added or modified. Write a result line only
    after the command has run on the final head, and state the actual outcome
    (passed, or failed with its first error) — never write a placeholder token
-   to fill in later. The worker catches an unfilled ALL-CAPS ..._PLACEHOLDER
-   token written outside backticks and code blocks — for example
-   SOMETHING_PLACEHOLDER in prose. It blocks PR creation, or records the
-   shortfall against a PR the run already raised. A token inside backticks or
-   a code block is not caught, and it is still never acceptable in place of
-   a result. If a gate was not run, say so plainly with the
+   to fill in later. The worker catches an unfilled ALL-CAPS token ending in
+   _PLACEHOLDER, _PENDING, _TBD or _TODO written outside backticks and code
+   blocks — for example SOMETHING_PLACEHOLDER in prose — or a bare ALL-CAPS
+   identifier with an underscore left as the result after the colon on a
+   line that cites a gate command — for example GATE_OUTCOME_PENDING in
+   prose. It blocks PR creation, or records the shortfall against a PR the
+   run already raised. A token inside backticks or a code block is not
+   caught, and it is still never acceptable in place of a result. If a gate
+   was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
    under Evidence must exist at the head — in the diff or already tracked —
@@ -1117,9 +1159,17 @@ The file MUST contain:
    changed call site needs a test that goes red without it** in the
    guidelines); for a UI control that test invokes the handler, the Test Plan
    lists each entry point checked, and a changed call site whose revert leaves
-   the suite green is a blocking self-review finding. Likewise, every
-   outcome of a branch the diff adds — each new condition, match arm, exit
-   code and interface default —
+   the suite green is a blocking self-review finding. Likewise, a parameter,
+   value or behaviour the diff adds that the issue needs on every path
+   reaches every caller and sibling route that needs it (see **A new
+   argument or behaviour reaches every caller that needs it** in the
+   guidelines): list the callers and siblings checked, each passing the new
+   value or with the reason it does not need it; a behaviour-carrying
+   parameter is required rather than defaulted to a value that turns the
+   behaviour off, and a caller left on the old hard-coded value is a
+   blocking self-review finding. Likewise, every outcome of a branch the
+   diff adds — each new condition, match arm, exit code and interface
+   default —
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
@@ -1210,8 +1260,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Reproduction
 
 - **symptom** — the action buttons stacked vertically below 480px
-- **status** — `verified` — the layout test failed against the unfixed CSS and passes after the fix
-- **regression test** — `tests/button.test.js::keeps the buttons in one row`
+- **status** — `verified` — the headless-browser check failed against the unfixed CSS and passes after the fix
+- **regression test** — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px`
 
 ## Acceptance Criteria
 
@@ -1230,9 +1280,9 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ## Test Plan
 
-- Added tests for button alignment in `tests/button.test.js`
+- Added a headless-browser check for button alignment in `e2e/buttons.spec.ts`
 
 **Branch outcomes:**
 
-- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `tests/button.test.js::keeps the buttons in one row` — flipping `flex-wrap: nowrap` back to `wrap` turned it red
+- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px` — restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows
 ```

@@ -1106,7 +1106,12 @@ each given the finished diff and nothing from the author's context:
   named contract source, and a workflow invariant documented but not
   validated — a `.github/workflows/*` behaviour change the README or a
   comment calls load-bearing that the repository's workflow validator does
-  not assert.
+  not assert. A rule the target repository's standards say is **enforced by
+  review** — no lint, formatter or CI check catches it, such as
+  GRQ-AutoTrader's one `use` statement per module per file — is a
+  `violation` whenever a line the diff adds or changes breaches it, whatever
+  its effect on correctness, and the `clean` line names each review-enforced
+  rule the reviewer checked (Issue #3230).
 
 **A violation the diff introduced blocks the PR.** A Standards finding in a
 line this PR wrote — a doc comment the change made wrong, a cited test that
@@ -1297,6 +1302,21 @@ actual output; keeping the shared helper as it was and applying the stricter
 rule at the new call site when any caller can pass a rejected value;
 otherwise adding a test that an existing caller still accepts its real
 inputs; and listing the callers checked in the PR summary.
+
+**A new argument or behaviour reaches every caller that needs it (Issue #3253).**
+The changed-call-site rule above covers callers the diff changes; a caller the
+diff should have changed but did not has nothing to revert, so that rule
+cannot find it. Fleet PRs wired a new value into some callers and missed one:
+VibeCoder#3251 gave `recoverAndFinaliseExistingPr` a `docsSweepHitsComment = ""`
+parameter that `reportSummaryRuleBlock` never passed; GRQ-AutoTrader#2282
+added `RunOrigin` but every production caller hard-coded
+`RunOrigin::Scheduled`; and VibeCoder#3095 fixed two of three declared
+hand-off outcomes and left `handOffToPlanning` unchanged. The guidelines and
+the issue prompt's Test Plan step now require listing every caller and
+sibling route first, passing the new value on each or stating why one does
+not need it, making a behaviour-carrying parameter required rather than
+defaulting it to a value that turns the behaviour off, and treating a caller
+left on the old hard-coded value as a blocking self-review finding.
 
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
@@ -1552,9 +1572,14 @@ literal, except that a `\w*` or `\w+` stem marker matches a run of word
 characters, so `replac\w*` finds both forms. A hit is cleared when it sits
 on a line the branch's `git diff --unified=0 <base>...HEAD` added or
 changed, or when the line names it as `file:line` or `file:start-end`. Any
-other hit blocks the summary with a notice listing each `file:line` and its
-sentence (at most 20, then "and N more"), through the same single in-run
-recovery turn: fix it, or name it as `file:line — still true because …`. A
+other hit is advisory (Issue #3237, because the re-run was failing fleet
+runs): it is posted once, as a PR comment for the reviewer, listing each
+`file:line` and its sentence (at most 20, then "and N more"), and logged at
+WARN. When GitHub's secondary rate limit defers the PR to the next cycle
+(Issue #1951), the comment is parked with the deferred PR record and the
+drain posts it on the PR it raises. It never blocks the summary and triggers
+no recovery turn — fix it, or
+name it as `file:line — still true because …`. A
 term with more than 10 such hits in doc files the diff did not touch is a
 locator word, not a removed claim: those hits are set aside and the term
 is logged as not checked line by line, while its hits in files the diff
@@ -1577,7 +1602,9 @@ other common source extensions) and keeps only hits on a whole comment line
 (`isSourceCommentLine`: `//`, `/*`, a `*` continuation, or `#` and a space).
 A code line, or a comment trailing code, is not read. Those hits are cleared
 the same way — a line the diff changed, or `file:line` in the Docs sweep line
-— and block through the same recovery turn. The broad-term limit of 10 is
+— and are otherwise advisory too: posted once as a PR comment and logged at
+WARN, never blocking and never triggering a recovery turn. The broad-term
+limit of 10 is
 counted for source comments apart from docs, so a term common in comments
 never sets aside its doc hits.
 
@@ -1740,8 +1767,17 @@ because nothing checked the summary for a bare ALL-CAPS token the agent
 never resolved (Issue #3124).
 [`result_placeholder_gate.ts`](../../worker/deno/lib/result_placeholder_gate.ts)
 blocks PR creation when the PR summary contains a token matching
-`\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b`; a token inside a backtick code span or a
-fenced code block is ignored, so an identifier mentioned in code is never
+`\b[A-Z][A-Z0-9_]*_(?:PLACEHOLDER|PENDING|TBD|TODO)\b` anywhere in prose, or
+when a line citing a gate command (`quality.sh`, a `deno`/`cargo`/`npm`/
+`pnpm`/`yarn`/`go`/`make` subcommand, `pytest`, `shellcheck` or `semgrep`)
+leaves the text after its last colon a bare ALL-CAPS identifier with at
+least one underscore — a structural backstop that catches an invented
+suffix without the gate having to enumerate it. GRQ#5164, raised after
+Issue #3124 landed, carried `- ./quality.sh < /dev/null on the head:
+GATE_OUTCOME_PENDING` in its summary and PR body; the original
+`_PLACEHOLDER`-only regex let it through, so Issue #3248 widened the gate
+to both rules above. A token inside a backtick code span or a fenced code
+block is ignored either way, so an identifier mentioned in code is never
 flagged. Like the docs-sweep gate it is folded into the earlier summary
 gates' own notice when one of those blocks first, and it gets the same
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)

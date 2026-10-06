@@ -679,8 +679,10 @@ The reviewers keep what makes them worth running: a fresh context that never
 sees the author's reasoning. The Standards reviewer is also scoped as the
 [Claude Code best practices](https://code.claude.com/docs/en/best-practices#add-an-adversarial-review-step)
 advise: a `violation` must cite a documented standard and affect correctness,
-security or the stated requirements, and anything else is listed as
-`optional` and not chased.
+security or the stated requirements — or breach a rule the repository's
+standards say only review enforces, which is always a `violation` and is
+named on the `clean` line when checked (Issue #3230) — and anything else is
+listed as `optional` and not chased.
 
 **Expected effect.** Two review contexts move from Opus 5.5 at `high` ($4/$20
 per MTok) to Sonnet 5.5 ($2/$10) at `medium` and `low`. No fleet figure is

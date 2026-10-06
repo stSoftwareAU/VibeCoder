@@ -17,7 +17,13 @@
  */
 
 import { assert } from "@std/assert";
-import { flat, readRepoDoc as read, section } from "./support/markdown_docs.ts";
+import {
+  DocSection,
+  flat,
+  readRepoDoc as read,
+  section,
+  splitSection,
+} from "./support/markdown_docs.ts";
 import {
   loadReleaseTagRuleset,
   refIsProtected,
@@ -39,7 +45,7 @@ const FIRST_IMMUTABLE_RELEASE = "1.0.50";
 /** How many earlier releases predate it and stay `immutable: false`. */
 const MUTABLE_RELEASE_COUNT = "31";
 
-async function integritySection(): Promise<string> {
+async function integritySection(): Promise<DocSection> {
   return section(await read("docs/RELEASE-TAGGING.md"), INTEGRITY_SECTION);
 }
 
@@ -168,9 +174,9 @@ Deno.test("CONFIGURATION.md - a frozen host at its pin is documented as doing no
     CHECKOUT_UPDATE_SECTION,
   );
 
-  const atPin = body.split(/\n\s*\n/).map(flat).find((paragraph) =>
-    /already (on|at) (its|the) pin/i.test(paragraph)
-  );
+  const atPin = splitSection(body, /\n\s*\n/).map((p) => flat(p)).find((
+    paragraph,
+  ) => /already (on|at) (its|the) pin/i.test(paragraph));
   assert(
     atPin,
     "the checkout-update section does not say what a host already at its pin does",
@@ -203,7 +209,9 @@ Deno.test("SETUP.md - the latest-release pin is stated, and dynamic is not the d
   );
   // Issue #871: `dynamic` stays available, but the docs must say who it is
   // for rather than leaving it looking like the default.
-  const dynamicFor = body.split(/\n\s*\n/).map(flat).find((paragraph) =>
+  const dynamicFor = splitSection(body, /\n\s*\n/).map((p) => flat(p)).find((
+    paragraph,
+  ) =>
     /not the default/i.test(paragraph) && /testing Vibe Coder/i.test(paragraph)
   );
   assert(
