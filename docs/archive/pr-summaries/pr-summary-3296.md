@@ -159,15 +159,8 @@ An independent reviewer was given only the diff and the issue body.
   `gitignoreReallowed` wired into `assertSafeToCommit`
   (`worker/deno/lib/pre_commit_safety.ts:413`) and the regression test
   named under Reproduction — reviewer: met
-- **met** — The same path in a repo whose `.gitignore` does not re-allow
-  it is still refused — evidence: the "no .gitignore at all exempts
-  nothing" and non-re-allowing fixtures in
-  `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts` —
-  reviewer: met
-- **met** — `.claude/settings.local.json`, which stays ignored under
-  `.claude/*`, is still refused — evidence: "does not exempt a path
-  check-ignore reports as ignored (exit 0)" in the same file — reviewer:
-  met
+- **met** — The same path in a repo whose `.gitignore` does not re-allow it is still refused — evidence: `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts::assertSafeToCommit - an edited committed SKILL.md is refused when the repo's .gitignore does not re-allow .claude/skills (Issue #3296)` — reviewer: met
+- **met** — `.claude/settings.local.json`, which stays ignored under `.claude/*`, is still refused — evidence: `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts::assertSafeToCommit - .claude/settings.local.json stays refused even though .claude/skills is re-allowed (Issue #3296)`, supported by `gitignoreReallowed - does not exempt a path check-ignore reports as ignored (exit 0)` in the same file — reviewer: met
 - **met** — Secret patterns (`.env`, `.config*.json`, `*.pem`, …) are
   refused even if a repo's `.gitignore` re-allows them — evidence: ".env,
   .config.local.json and key.pem stay refused even when the repo's
