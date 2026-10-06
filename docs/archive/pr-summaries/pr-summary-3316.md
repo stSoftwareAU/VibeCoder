@@ -30,7 +30,13 @@ The pre-commit safety gate's `/.*\.secret\.json$/` entry in `FORBIDDEN_STAGED_PA
   - `worker/deno/lib/pre_commit_safety.ts:50` is the change itself.
   - `hooks/pre-commit:43` already uses the suffix form.
 
-  The other `*.secret.json` hits list the same glob-style path set, which this change leaves unchanged, so each stays true: CODING-STANDARDS.md:1094, SECURITY.md:678-680, prompts/coding_guidelines/prompt.md:1017-1020, prompts/security_scan/prompt.md:919, docs/ADD-REPO.md:291 and worker/deno/lib/gitignore_enforcer.ts:9.
+  The other `*.secret.json` hits (grep rerun on the final head) name the glob-style path, not a regex. This change leaves that path set unchanged, so each stays true:
+  - `CODING-STANDARDS.md:1095` lists `*.secret.json` among the paths the gate refuses, which is still the case.
+  - `SECURITY.md:679` describes `*.secret.json` as files explicitly marked as secret; the suffix match still blocks them.
+  - `prompts/coding_guidelines/prompt.md:1019` lists the same marked-secret glob; unchanged behaviour.
+  - `worker/deno/lib/gitignore_enforcer.ts:9` (and its pattern list at `:79`) is the `.gitignore` entry the enforcer adds, not the staged-path regex.
+  - `hooks/pre-commit:9`, `:33` and `:42` are comments beside the suffix check at `:43`.
+  - `worker/deno/setup/config_writer.ts:358`, `:368` and `.gitignore:38` are `.gitignore` glob lines, which already match by suffix.
 
 ## Test Plan
 
