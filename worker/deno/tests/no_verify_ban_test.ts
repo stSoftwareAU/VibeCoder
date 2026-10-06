@@ -25,7 +25,6 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -80,62 +79,10 @@ Deno.test("no-verify - no template outside the guidelines names the flag (Issue 
 
 Deno.test("no-verify - the guidelines still forbid it, categorically (Issue #783)", async () => {
   // The guard above is only meaningful while the ban it defers to exists.
+  // The section-scoped wording pins live in `no_verify_ban_drift_test.ts`,
+  // because that file's `markdown_docs.ts` import spawns git, which would
+  // drop this file from the `check:manifests` completeness family.
   const text = await familyText(BAN_OWNER);
   assert(text, "coding_guidelines must resolve");
   assertStringIncludes(text, NO_VERIFY);
-  // The ban lives in the Commit Safety section; the wording wraps, so it is
-  // matched as one collapsed line within that section.
-  const collapsed = flat(
-    section(
-      await readRepoDoc("prompts/coding_guidelines/prompt.md"),
-      "Commit Safety",
-    ),
-  );
-  assertStringIncludes(
-    collapsed,
-    "Bypassing either safeguard (e.g. `git commit --no-verify`, `git add -f`) " +
-      "is forbidden",
-    "missing from coding_guidelines' Commit Safety section",
-  );
-  assertStringIncludes(
-    collapsed,
-    "fix the allowlist via PR — do not bypass",
-    "missing from coding_guidelines' Commit Safety section",
-  );
-});
-
-Deno.test("no-verify - the two templates keep the rest of the reversibility bullet (Issue #783)", async () => {
-  // Only `--no-verify` leaves the list: `push --force`, `rm -rf` and branch
-  // deletion genuinely can be the only way forward, and keep their clause.
-  // Both templates carry that bullet in their Long-Horizon Execution section.
-  for (const name of ["issue", "pr_feedback"]) {
-    const collapsed = flat(
-      section(
-        await readRepoDoc(`prompts/${name}/prompt.md`),
-        "Long-Horizon Execution",
-      ),
-    );
-    const section_ = `${name}'s Long-Horizon Execution section`;
-    assertStringIncludes(
-      collapsed,
-      "Bound irreversible actions",
-      `missing from ${section_}`,
-    );
-    assertStringIncludes(
-      collapsed,
-      "git push --force",
-      `missing from ${section_}`,
-    );
-    assertStringIncludes(
-      collapsed,
-      "only way forward",
-      `missing from ${section_}`,
-    );
-    // …and each now says why the bypass is not among them.
-    assertStringIncludes(
-      collapsed,
-      "Bypassing the pre-commit gate is",
-      `missing from ${section_}`,
-    );
-  }
 });
