@@ -13,24 +13,16 @@
  * drops the rule fails in CI.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { assertStringIncludes } from "@std/assert";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-
-async function load(type: string): Promise<string> {
-  const result = await loadPrompt(type, PROMPTS_DIR);
-  assertEquals(result.ok, true, `${type} failed to load`);
-  if (!result.ok) throw new Error(`${type} failed to load`);
-  return result.value;
-}
-
-function normalise(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ");
+/** The flattened, lowercased text of one heading's section of a doc. */
+async function scoped(doc: string, title: string): Promise<string> {
+  return flat(section(await readRepoDoc(doc), title)).toLowerCase();
 }
 
 Deno.test("issue - step 3 owes a docs change for additions, changes and removals", async () => {
-  const body = normalise(await load("issue"));
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
 
   for (
     const required of [
@@ -47,14 +39,14 @@ Deno.test("issue - step 3 owes a docs change for additions, changes and removals
 });
 
 Deno.test("issue - PR summary requires a Docs sweep line", async () => {
-  const body = normalise(await load("issue"));
+  const body = await scoped("prompts/issue/prompt.md", "PR Summary File");
 
   assertStringIncludes(body, "**docs sweep**");
   assertStringIncludes(body, "`no hits`");
 });
 
 Deno.test("pr_feedback - a fix runs the same docs sweep", async () => {
-  const body = normalise(await load("pr_feedback"));
+  const body = await scoped("prompts/pr_feedback/prompt.md", "Making Changes");
 
   for (
     const required of [
