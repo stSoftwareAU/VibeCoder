@@ -46,116 +46,69 @@ This is a test-only change. No production code or prompt changed.
 `docs/archive/`, and got no hits. No symbol, flag or documented behaviour
 changed, so no docs needed updating. The section is `none`.
 
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- Each positive pin reads `readRepoDoc` + `section()` + `flat()` scoped to the
+  heading that states its rule — reviewer: met
+- The `first-party` and tag carve-out absence checks stay whole-file —
+  reviewer: met
+- Each pin maps to its own section (audit Definitions, audit Supply-chain
+  hardening, setup CI Hardening Defaults, guidelines Dependency Bumps and
+  Supply Chain) — reviewer: met
+- Reuse the shared `worker/deno/tests/support/markdown_docs.ts` helpers, as in
+  #3242 — reviewer: met
+- Optional lint for `.replace(/\s+/g, " ")` in doc-reading tests — reviewer:
+  met — reason: the issue marks it optional; skipped as out of scope (33 test
+  files still use the call)
+- Unrequested changes: none — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- § Documentation-drift tests, condition 1 (section-scoped positive pins;
+  absence checks whole-file) — reviewer: met
+- Every re-scoped phrase sits inside its named heading's bounds in the prompt
+  — reviewer: met
+- Condition 4 (new pin absent from base) — reviewer: met — reason: no new pin
+  is added; existing #787 pins are narrowed
+- Removed assertions each keep an equivalent or stricter check — reviewer: met
+- A named test must exist (`worker/deno/tests/action_sha_pinning_policy_test.ts`,
+  `worker/deno/tests/support/markdown_docs.ts`) — reviewer: met
+
 ## Test Plan
 
+- Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
+  ``assertEquals(loaded.ok, true, `${family} failed to load`);`` — the
+  `latest()` helper that returned `loaded` is gone; `readRepoDoc` throws on a
+  missing prompt, so a failed load still fails the test.
+- Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
+  ``assertEquals( /`stSoftwareAU\/\*` actions and\s+`ghcr\.io\/stsoftwareau\/\*` images may pin to a tag/ .test(audit.text.replace(/\s+/g, " ")), false, "the audit still carries the tag carve-out for stSoftwareAU/* actions", );``
+  — same regex and verdict, now `.test(flatWholeFile(audit.text))`; still
+  whole-file.
+- Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
+  `assertEquals( /first-party/i.test(collapsed), false, "the guidelines never used the term and must not gain it", );`
+  — `collapsed` is now section-scoped, so the absence check reads the whole
+  file as `/first-party/i.test(text)`.
+- Every other assertion line is unchanged; only the bindings it reads
+  (`collapsed`, `audit.collapsed`, `setup.collapsed`) are now section-scoped.
 - `deno task test:unit tests/action_sha_pinning_policy_test.ts`: 6 passed, 0
-  failed. `deno fmt --check`, `deno lint` and `deno check` on the file are
-  clean.
-- Red checks: I moved each pinned line out of its section in a scratch edit of
-  the prompt, then restored the prompt afterwards.
-  - Moving "**Container images** are the one carve-out" out of the audit's
-    Definitions failed the image carve-out case. The base-branch version of the
-    test stayed **green** under the same mutation, which shows the gap the issue
-    describes.
-  - Moving "this check is about _who wrote the code a privileged trigger runs_"
-    out of Supply-chain hardening failed the check 10 case.
-  - Moving "No owner is exempt" out of the setup prompt's CI Hardening Defaults
-    failed the no-owner case.
-  - Moving "Pin GitHub Actions to commit SHAs" out of the guidelines' Dependency
-    Bumps and Supply Chain section failed the guidelines case.
-- `deno task drift-pins-on-base origin/main` reported `ALREADY ON BASE` for the
-  sampled pins in the audit's Definitions and the setup prompt's CI Hardening
-  Defaults. That is expected. This PR adds no rule and no new pinned phrase: it
-  narrows the scope of the #787 pins that already existed, so condition 4 (a new
-  pin must be absent from the base section) does not apply. The red checks above
-  show what the narrowing guards.
-- Assertions removed from existing tests (every pinned phrase is kept, under the
-  scope #3262 requires):
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    ``assertEquals(loaded.ok, true, `${family} failed to load`);`` — #3262
-    replaces the whole-file `latest()` helper (which wrapped `loadPrompt`) with
-    `readRepoDoc`, so there is no `loaded` result left to check; `readRepoDoc`
-    throws if the prompt is missing, so a failed load still fails the test
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    ``assertEquals( /`stSoftwareAU\/\*` actions and\s+`ghcr\.io\/stsoftwareau\/\*` images may pin to a tag/ .test(audit.text.replace(/\s+/g, " ")), false, "the audit still carries the tag carve-out for stSoftwareAU/* actions", );``
-    — #3262 retires the local `.replace(/\s+/g, " ")` flattening; the same
-    absence check is still a whole-file check, now on
-    `.test(flatWholeFile(auditWhole))` in the no-owner case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertStringIncludes(collapsed, "stSoftwareAU/*");` — #3262 requires every
-    positive pin to read only the section that states its rule
-    (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against `auditDefinitions` and `setupHardening` in the no-owner
-    case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertStringIncludes(collapsed, "actions/*");` — #3262 requires every
-    positive pin to read only the section that states its rule
-    (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against `auditDefinitions` and `setupHardening` in the no-owner
-    case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertStringIncludes(collapsed, "**Container images** are the one carve-out");`
-    — #3262 requires every positive pin to read only the section that states its
-    rule (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the audit's Definitions section in the image carve-out
-    case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    ``assertStringIncludes(collapsed, "`ghcr.io/stsoftwareau/*` images");`` —
-    #3262 requires every positive pin to read only the section that states its
-    rule (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the audit's Definitions section in the image carve-out
-    case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    ``assertStringIncludes(collapsed, "`@sha256:` digest");`` — #3262 requires
-    every positive pin to read only the section that states its rule
-    (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the audit's Definitions section in the image carve-out
-    case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertStringIncludes(collapsed, "Reusable workflows pinned by commit SHA");`
-    — #3262 requires every positive pin to read only the section that states its
-    rule (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the audit's Supply-chain hardening section in the check
-    13 case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    ``assertStringIncludes( collapsed, "an internal `stSoftwareAU/*` reusable workflow at a tag is flagged", );``
-    — #3262 requires every positive pin to read only the section that states its
-    rule (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the audit's Supply-chain hardening section in the check
-    13 case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertStringIncludes( collapsed, "this check is about *who wrote the code a privileged trigger runs*", );`
-    — #3262 requires every positive pin to read only the section that states its
-    rule (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the audit's Supply-chain hardening section in the check
-    10 case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertStringIncludes(collapsed, "Pin GitHub Actions to commit SHAs");` —
-    #3262 requires every positive pin to read only the section that states its
-    rule (CODING-STANDARDS.md § Documentation-drift tests, condition 1), so a
-    whole-file `collapsed` pin is no longer true to the issue; the same phrase
-    is re-pinned against the guidelines' Dependency Bumps and Supply Chain
-    section in the guidelines case
-  - Removed from `worker/deno/tests/action_sha_pinning_policy_test.ts`:
-    `assertEquals( /first-party/i.test(collapsed), false, "the guidelines never used the term and must not gain it", );`
-    — #3262 drops the `latest()` helper that produced `collapsed`; the same
-    absence check still reads the whole file, now as
-    `/first-party/i.test(guidelinesWhole)` in the guidelines case
-  - Also re-scoped, not listed by the gate:
-    `assertStringIncludes(audit.collapsed, "no owner
-    is exempt")` and
-    `assertStringIncludes(setup.collapsed, "No owner is
-    exempt")` now pin
-    against `auditDefinitions` and `setupHardening`.
-- `./quality.sh`: see the result line below.
+  failed.
+- Red checks (scratch prompt edits, restored afterwards): moving "**Container
+  images** are the one carve-out" out of the audit's Definitions, "this check
+  is about _who wrote the code a privileged trigger runs_" out of Supply-chain
+  hardening, "No owner is exempt" out of the setup prompt's CI Hardening
+  Defaults, and "Pin GitHub Actions to commit SHAs" out of the guidelines'
+  Dependency Bumps and Supply Chain section each failed its case. The base
+  version of the test stayed green under the first mutation.
+- Drift pins: `deno task drift-pins-on-base origin/main` reported
+  `ALREADY ON BASE` for the sampled pins — expected green on base, because this
+  refactor adds no new pinned phrase; it narrows the existing #787 pins.
+- `./quality.sh < /dev/null`: exit 0, `Result: PASSED (with skipped checks)` —
+  only `config integration` skipped (`deno or .config.json not available`);
+  deno tests, lint, type check, fmt, markdownlint and semgrep passed.
 
 Branch outcomes: none added
 
