@@ -1072,6 +1072,53 @@ Deno.test("formatParentBlockedMessage - blocked with open children", () => {
   );
 });
 
+Deno.test("formatParentBlockedMessage - a same-repo open child renders as a bare #N (Issue #3319)", () => {
+  const result: ParentBlockedResult = {
+    isBlocked: true,
+    openChildren: [{ repo: "owner/repo", number: 7 }],
+    closedChildren: [],
+    totalChildren: 1,
+  };
+
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
+  assertEquals(
+    message,
+    "Issue #100 is blocked by 1 open sub-issue(s): #7. 0/1 sub-issues completed.",
+  );
+});
+
+Deno.test("formatParentBlockedMessage - a cross-repo open child renders as owner/repo#N (Issue #3319)", () => {
+  const result: ParentBlockedResult = {
+    isBlocked: true,
+    openChildren: [{ repo: "other/lib", number: 5 }],
+    closedChildren: [],
+    totalChildren: 1,
+  };
+
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
+  assertEquals(
+    message,
+    "Issue #100 is blocked by 1 open sub-issue(s): other/lib#5. 0/1 sub-issues completed.",
+  );
+});
+
+Deno.test("formatParentBlockedMessage - same-repo match on the child's repo is case-insensitive (Issue #3319)", () => {
+  // The child's own repo differs only in case from the parent's — still the
+  // same repo, so it must render as a bare #N, not "Owner/App#7".
+  const result: ParentBlockedResult = {
+    isBlocked: true,
+    openChildren: [{ repo: "Owner/App", number: 7 }],
+    closedChildren: [],
+    totalChildren: 1,
+  };
+
+  const message = formatParentBlockedMessage(100, result, "owner/app");
+  assertEquals(
+    message,
+    "Issue #100 is blocked by 1 open sub-issue(s): #7. 0/1 sub-issues completed.",
+  );
+});
+
 // =============================================================================
 // Integration-style tests with realistic GitHub issue scenarios
 // =============================================================================

@@ -284,12 +284,17 @@ reviews, …) must page explicitly.
   gh api "repos/OWNER/REPO/issues/N/comments?per_page=100" --paginate
   ```
 
-- **Never combine `--paginate` with `--jq`.** `gh` applies `--jq` *per page*,
-  so `--paginate --jq 'map(...)'` emits **one JSON array per page** — the
-  concatenated output is invalid JSON. Fetch the raw pages with `--paginate`
-  alone, then post-process the merged result in code (this is why
+- **`--paginate` with `--jq` prints one JSON array per page.** `gh` applies
+  `--jq` *per page*, so the concatenated output is not one JSON document, and
+  `gh` refuses `--slurp` alongside `--jq`. Either fetch the raw pages with
+  `--paginate` alone and post-process the merged result in code (this is why
   `getIssueComments` moved its field remapping into the pure
-  `parseGhRawCommentsJson` helper rather than an inline `--jq` filter).
+  `parseGhRawCommentsJson` helper), or keep the `--jq` projection and parse
+  the output **one array per line**, throwing on a malformed line so an
+  unreadable page never passes as an empty result —
+  `parseMarkerCommentPages` (`worker/deno/lib/marker_comment_pages.ts`) and
+  `parseNativeSubIssueRefPages` (`worker/deno/lib/native_sub_issues.ts`,
+  Issue #3319) do this. Never `JSON.parse` the whole payload as one array.
 
 **GraphQL — paginate with `first:`/`last:` + cursors:**
 

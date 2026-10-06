@@ -11,8 +11,8 @@
  * Coverage:
  *   - parseNativeSubIssueRefPages: multi-page merge, repo taken from
  *     `repository_url`, fallback to `parentRepo`, cross-page dedupe, a
- *     malformed line throwing, and a hostile `repository_url` falling back
- *     quickly rather than backtracking.
+ *     malformed line throwing, and a hostile `repository_url` scaling
+ *     linearly rather than backtracking.
  *   - fetchNativeSubIssueRefs: the `gh` argv shape (`per_page=100`,
  *     `--paginate`, `--jq`), invalid-input short-circuiting, and a `gh`
  *     failure propagating rather than being swallowed.
@@ -25,6 +25,7 @@ import {
   fetchNativeSubIssueRefs,
   parseNativeSubIssueRefPages,
 } from "../lib/native_sub_issues.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // ---------------------------------------------------------------------------
 // parseNativeSubIssueRefPages
@@ -82,18 +83,18 @@ Deno.test("parseNativeSubIssueRefPages - a malformed line throws", () => {
   assertThrows(() => parseNativeSubIssueRefPages("not json", "owner/repo"));
 });
 
-Deno.test("parseNativeSubIssueRefPages - a hostile repository_url falls back quickly rather than backtracking", () => {
-  const hostile = "/repos/" + "a/".repeat(20000) + "x";
-  const payload = JSON.stringify([
-    { number: 9, repository_url: hostile },
-  ]);
-  const start = performance.now();
-  const refs = parseNativeSubIssueRefPages(payload, "owner/repo");
-  const elapsedMs = performance.now() - start;
+Deno.test("parseNativeSubIssueRefPages - a hostile repository_url scales linearly and falls back to the parent repo", () => {
+  const refs = assertLinearGrowth(
+    "repository_url parse over a slash-heavy URL",
+    (chars) =>
+      JSON.stringify([{
+        number: 9,
+        repository_url: "/repos/" + "a/".repeat(Math.ceil(chars / 2)) + "x",
+      }]),
+    (payload) => parseNativeSubIssueRefPages(payload, "owner/repo"),
+    { baseChars: 10_000 },
+  );
   assertEquals(refs, [{ repo: "owner/repo", number: 9 }]);
-  // A backtracking match on this input would take seconds; a linear one
-  // resolves in milliseconds.
-  assertEquals(elapsedMs < 1000, true);
 });
 
 // ---------------------------------------------------------------------------
@@ -106,7 +107,10 @@ Deno.test("fetchNativeSubIssueRefs - queries the paginated sub_issues endpoint w
     calls.push(args);
     return Promise.resolve(
       JSON.stringify([
-        { number: 5, repository_url: "https://api.github.com/repos/owner/repo" },
+        {
+          number: 5,
+          repository_url: "https://api.github.com/repos/owner/repo",
+        },
       ]),
     );
   };
