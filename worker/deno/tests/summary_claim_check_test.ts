@@ -366,6 +366,308 @@ Deno.test("findTestPlanClaimProblems - a tracked test file with no recognised te
   );
 });
 
+Deno.test("findTestPlanClaimProblems - a directory reference is notChecked, not a missing-file problem", async () => {
+  const summary = "## Test Plan\n\n" +
+    '- Ran the whole suite in `worker/deno/tests/`: "all suites pass on the head"\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => {
+      throw new Error("must not be read — a directory is not a test file");
+    },
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `a directory must not be a missing-file problem, got ${
+      JSON.stringify(result.problems)
+    }`,
+  );
+  assert(
+    result.notChecked.some((n) =>
+      n.includes("`worker/deno/tests/`") && n.includes("not checked")
+    ),
+    `expected a not-a-file note for the directory, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a glob reference is notChecked, not a missing-file problem", async () => {
+  const summary = "## Test Plan\n\n" +
+    '- `worker/deno/tests/*_test.ts` "all suites pass on the head"\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => {
+      throw new Error("must not be read — a glob is not a test file");
+    },
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `a glob must not be a missing-file problem, got ${
+      JSON.stringify(result.problems)
+    }`,
+  );
+  assert(
+    result.notChecked.some((n) =>
+      n.includes("`worker/deno/tests/*_test.ts`") && n.includes("not checked")
+    ),
+    `expected a not-a-file note for the glob, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a reference that is a directory prefix of tracked paths is notChecked, not a missing-file problem", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "tests/unit",
+    "rejects a malformed header entirely",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["tests/unit/foo_test.ts", "tests/unit/bar_test.ts"],
+    readFile: async () => {
+      throw new Error("must not be read — a directory is not a test file");
+    },
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `a tracked directory must not be a missing-file problem, got ${
+      JSON.stringify(result.problems)
+    }`,
+  );
+  assert(
+    result.notChecked.some((n) =>
+      n.includes("`tests/unit`") && n.includes("not checked")
+    ),
+    `expected a not-a-file note for the directory prefix, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a ./-prefixed reference resolves to the tracked file and is checked", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "./worker/deno/tests/foo_test.ts",
+    "rejects a malformed header entirely",
+  );
+  const readPaths: string[] = [];
+  const covered = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async (path) => {
+      readPaths.push(path);
+      return `Deno.test("rejects a malformed header entirely", () => {});\n`;
+    },
+  });
+  assertEquals(readPaths, ["worker/deno/tests/foo_test.ts"]);
+  assertEquals(covered.problems, []);
+  assertEquals(covered.notChecked, []);
+
+  const uncovered = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => `Deno.test("something else entirely", () => {});\n`,
+  });
+  assertEquals(uncovered.problems.length, 1);
+  assertEquals(uncovered.problems[0]?.kind, "no-matching-test");
+  assertEquals(
+    uncovered.problems[0]?.testFile,
+    "worker/deno/tests/foo_test.ts",
+  );
+});
+
+// Claim-match rule (quoteCoveredBy / significantWords / wordsMatch): at
+// least half of the quote's significant words must match, on exact, stemmed
+// or 4+-char-prefix terms, with stopwords dropped.
+
+Deno.test("findTestPlanClaimProblems - exactly half of the quote's significant words matching is covered", async () => {
+  // Quote words: reject, malform, header, entirely (4). The test name shares
+  // reject and header: exactly half.
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "rejects malformed header entirely",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => `Deno.test("rejects header", () => {});\n`,
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `half the words matching must count as covered, got ${
+      JSON.stringify(result.problems)
+    }`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - fewer than half of the quote's significant words matching is a no-matching-test problem", async () => {
+  // Same four quote words; the test name shares only reject: one of four.
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "rejects malformed header entirely",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => `Deno.test("rejects nothing", () => {});\n`,
+  });
+  assertEquals(result.problems.length, 1);
+  assertEquals(result.problems[0]?.kind, "no-matching-test");
+});
+
+Deno.test("findTestPlanClaimProblems - a stemmed variant of each test word is covered (rejecting/rejects, parsed/parses, header/headers)", async () => {
+  // Without stemming only header/headers would match (by prefix): one of
+  // three, under the half threshold.
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "rejecting a parsed header",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => `Deno.test("rejects headers it parses", () => {});\n`,
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `stemmed variants must match, got ${JSON.stringify(result.problems)}`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a 4+-char prefix of each test word is covered (config/configuration, validat/validation)", async () => {
+  // Neither quote word equals a test word, even after stemming: config is a
+  // prefix of configuration, and validat (validates, stemmed) a prefix of
+  // validation.
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "validates the config",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => `Deno.test("configuration validation", () => {});\n`,
+  });
+  assertEquals(
+    result.problems,
+    [],
+    `prefix variants must match, got ${JSON.stringify(result.problems)}`,
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a quote sharing only stopwords with the test is a no-matching-test problem", async () => {
+  // asserts, that and every are stopwords; widget and render(s) are the
+  // quote's significant words and the test has neither.
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts",
+    "asserts that every widget renders",
+  );
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () =>
+      `Deno.test("asserts that every header parses", () => {});\n`,
+  });
+  assertEquals(result.problems.length, 1);
+  assertEquals(result.problems[0]?.kind, "no-matching-test");
+});
+
+Deno.test("findTestPlanClaimProblems - an empty (whitespace-only) quote is skipped", async () => {
+  const summary =
+    `## Test Plan\n\n- \`worker/deno/tests/foo_test.ts\` covers "   "\n`;
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => {
+      throw new Error("must not be read — the quote is empty");
+    },
+  });
+  assertEquals(result.problems, []);
+  assertEquals(result.notChecked, []);
+});
+
+// Reference handling: a quote before its reference, and suffix stripping.
+
+Deno.test("findTestPlanClaimProblems - a quote before its only test-file reference is checked against that file and blocks when uncovered", async () => {
+  const summary = "## Test Plan\n\n" +
+    '- "rejects a malformed header entirely" in `worker/deno/tests/foo_test.ts`\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => `Deno.test("something else entirely", () => {});\n`,
+  });
+  assertEquals(
+    result.problems.length,
+    1,
+    `the quote must attach to the following reference, got ${
+      JSON.stringify(result.problems)
+    }`,
+  );
+  assertEquals(result.problems[0]?.kind, "no-matching-test");
+  assertEquals(
+    result.problems[0]?.testFile,
+    "worker/deno/tests/foo_test.ts",
+  );
+});
+
+Deno.test("findTestPlanClaimProblems - a quote with a backtick span between it and the following reference is not attached", async () => {
+  const summary = "## Test Plan\n\n" +
+    '- "rejects a malformed header entirely" via `deno test` in `worker/deno/tests/foo_test.ts`\n';
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async () => {
+      throw new Error(
+        "must not be read — `deno test` sits between the quote and the file",
+      );
+    },
+  });
+  assertEquals(result.problems, []);
+  assertEquals(result.notChecked, []);
+});
+
+Deno.test("findTestPlanClaimProblems - a path:line reference resolves to the tracked file", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts:42",
+    "rejects a malformed header entirely",
+  );
+  const readPaths: string[] = [];
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async (path) => {
+      readPaths.push(path);
+      return `Deno.test("rejects a malformed header entirely", () => {});\n`;
+    },
+  });
+  assertEquals(readPaths, ["worker/deno/tests/foo_test.ts"]);
+  assertEquals(result.problems, []);
+  assertEquals(result.notChecked, []);
+});
+
+Deno.test("findTestPlanClaimProblems - a path::test reference resolves to the tracked file", async () => {
+  const summary = SUMMARY_WITH_COVERAGE_CLAIM(
+    "worker/deno/tests/foo_test.ts::rejects_malformed_header",
+    "rejects a malformed header entirely",
+  );
+  const readPaths: string[] = [];
+  const result = await findTestPlanClaimProblems({
+    summary,
+    trackedFiles: ["worker/deno/tests/foo_test.ts"],
+    readFile: async (path) => {
+      readPaths.push(path);
+      return `Deno.test("rejects a malformed header entirely", () => {});\n`;
+    },
+  });
+  assertEquals(readPaths, ["worker/deno/tests/foo_test.ts"]);
+  assertEquals(result.problems, []);
+  assertEquals(result.notChecked, []);
+});
+
 // ---------------------------------------------------------------------------
 // buildSummaryClaimQuestionPrompt
 // ---------------------------------------------------------------------------
@@ -455,6 +757,28 @@ Deno.test("buildSummaryClaimQuestionPrompt - the same args with a valid issue nu
     summaryPath: ".pr_summary",
   });
   assertStringIncludes(prompt, "acme/widgets#7");
+});
+
+Deno.test("buildSummaryClaimQuestionPrompt - throws on a base ref with a leading '-' that the pattern alone accepts", () => {
+  assertThrows(() =>
+    buildSummaryClaimQuestionPrompt({
+      repo: "acme/widgets",
+      issueNumber: 1,
+      baseRef: "-x",
+      summaryPath: ".pr_summary",
+    })
+  );
+});
+
+Deno.test("buildSummaryClaimQuestionPrompt - throws on an absolute-path base ref that the pattern alone accepts", () => {
+  assertThrows(() =>
+    buildSummaryClaimQuestionPrompt({
+      repo: "acme/widgets",
+      issueNumber: 1,
+      baseRef: "/etc/x",
+      summaryPath: ".pr_summary",
+    })
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -748,6 +1072,96 @@ Deno.test("runSummaryClaimCheck - a reply with no verdict block is notChecked", 
   assertEquals(result.findings, []);
   assertFalse(summaryClaimCheckBlocked(result));
   assert(result.notChecked.length > 0);
+});
+
+Deno.test("runSummaryClaimCheck - a base ref that fails validation is notChecked, does not throw, and never calls askQuestion", async () => {
+  let called = false;
+  const logger = makeLogger();
+  const result = await runSummaryClaimCheck(
+    {
+      repo: "acme/widgets",
+      issueNumber: 7,
+      repoPath: "/does/not/matter",
+      baseRef: "origin/rel+1",
+      summaryPath: SUMMARY_PATH,
+      summaryContent: "## Summary\n\nText.\n",
+    },
+    {
+      runGit: okGit(""),
+      askQuestion: async () => {
+        called = true;
+        return okResult("");
+      },
+      logger,
+    },
+  );
+  assertFalse(called, "the question must not be asked without a prompt");
+  assertFalse(summaryClaimCheckBlocked(result));
+  assert(
+    result.notChecked.some((n) => n.includes("well-formed base ref")),
+    `expected the prompt-build failure recorded, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+  assert(logger.errors.some((e) => e.includes("well-formed base ref")));
+});
+
+Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches result.notChecked", async () => {
+  const result = await runSummaryClaimCheck(
+    {
+      repo: "acme/widgets",
+      issueNumber: 7,
+      repoPath: "/does/not/matter",
+      baseRef: "origin/main",
+      summaryPath: SUMMARY_PATH,
+      summaryContent: SUMMARY_WITH_COVERAGE_CLAIM(
+        "foo_test.ts",
+        "handles the empty input case correctly",
+      ),
+    },
+    {
+      runGit: okGit(
+        "worker/deno/tests/foo_test.ts\nworker/other/foo_test.ts\n",
+      ),
+      askQuestion: async () => okResult("no findings worth noting"),
+      logger: makeLogger(),
+    },
+  );
+  assertEquals(result.testPlanProblems, []);
+  assert(
+    result.notChecked.some((n) => n.includes("more than one tracked file")),
+    `expected the ambiguity note forwarded, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
+});
+
+Deno.test("runSummaryClaimCheck - an unreadable tracked test file reaches result.notChecked", async () => {
+  const result = await runSummaryClaimCheck(
+    {
+      repo: "acme/widgets",
+      issueNumber: 7,
+      repoPath: "/does/not/exist/anywhere",
+      baseRef: "origin/main",
+      summaryPath: SUMMARY_PATH,
+      summaryContent: SUMMARY_WITH_COVERAGE_CLAIM(
+        "worker/deno/tests/foo_test.ts",
+        "handles the empty input case correctly",
+      ),
+    },
+    {
+      runGit: okGit("worker/deno/tests/foo_test.ts\n"),
+      askQuestion: async () => okResult("no findings worth noting"),
+      logger: makeLogger(),
+    },
+  );
+  assertEquals(result.testPlanProblems, []);
+  assert(
+    result.notChecked.some((n) => n.includes("could not be read")),
+    `expected the could-not-be-read note forwarded, got ${
+      JSON.stringify(result.notChecked)
+    }`,
+  );
 });
 
 // ---------------------------------------------------------------------------

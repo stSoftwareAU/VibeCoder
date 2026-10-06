@@ -340,6 +340,17 @@ interface Span {
 /** A test-file reference found inside backticks, at its span in the block. */
 interface TestFileRef extends Span {
   path: string;
+  /**
+   * False when the span names a directory (trailing `/`) or a glob (`*?[`)
+   * rather than one file — a quote attached to it is recorded as not
+   * checked, never as a missing file.
+   */
+  fileShaped: boolean;
+}
+
+/** Whether a reference names one file, not a directory or a glob. */
+function isFileShaped(ref: string): boolean {
+  return !ref.endsWith("/") && !/[*?[]/.test(ref);
 }
 
 /** Bounded span patterns over untrusted Test Plan text (Issue #3143 posture). */
@@ -353,7 +364,8 @@ const QUOTE_SPAN_RE = /"([^"\n]{1,300})"|“([^”\n]{1,300})”/g;
  * extent is kept too — not only the ones that resolve to a test file — so
  * {@link attachQuoteToRef} can tell whether an unrelated backtick-fenced
  * token (a shell command, a path, an error message) sits between a
- * candidate reference and the quote.
+ * candidate reference and the quote. A `::test` suffix, a `:line` suffix
+ * and a leading `./` are stripped so the reference resolves as written.
  */
 function findRefsAndBlank(
   block: string,
@@ -375,8 +387,14 @@ function findRefsAndBlank(
     const doubleColon = candidate.indexOf("::");
     if (doubleColon >= 0) candidate = candidate.slice(0, doubleColon);
     candidate = candidate.replace(/:\d+(?::\d+)?$/, "");
+    if (candidate.startsWith("./")) candidate = candidate.slice(2);
     if (!/\s/.test(candidate) && isTestFilePath(candidate)) {
-      refs.push({ start, end, path: candidate });
+      refs.push({
+        start,
+        end,
+        path: candidate,
+        fileShaped: isFileShaped(candidate),
+      });
     }
   }
   blanked += block.slice(last);
@@ -432,9 +450,14 @@ function attachQuoteToRef(
 type ResolvedRef =
   | { kind: "resolved"; path: string }
   | { kind: "ambiguous" }
+  | { kind: "directory" }
   | { kind: "none" };
 
-/** Resolve a quoted test-file reference against the repo's tracked files. */
+/**
+ * Resolve a quoted test-file reference against the repo's tracked files. A
+ * reference that names no tracked file but is a directory prefix of one
+ * (`tests/unit`) resolves as `directory`, never as missing.
+ */
 function resolveTrackedPath(
   ref: string,
   trackedFiles: readonly string[],
@@ -443,8 +466,18 @@ function resolveTrackedPath(
   const suffix = "/" + ref;
   const matches = trackedFiles.filter((path) => path.endsWith(suffix));
   if (matches.length === 1) return { kind: "resolved", path: matches[0]! };
-  if (matches.length === 0) return { kind: "none" };
-  return { kind: "ambiguous" };
+  if (matches.length > 1) return { kind: "ambiguous" };
+  const dir = ref + "/";
+  const isDirectory = trackedFiles.some((path) =>
+    path.startsWith(dir) || path.includes("/" + dir)
+  );
+  return isDirectory ? { kind: "directory" } : { kind: "none" };
+}
+
+/** Not-checked note for a reference that names a directory or a glob. */
+function notAFileNote(ref: string): string {
+  return `\`${ref}\` names a directory or pattern rather than a test file, ` +
+    "so its Test Plan claims were not checked";
 }
 
 /**
@@ -466,6 +499,7 @@ export async function findTestPlanClaimProblems(opts: {
   const problems: TestPlanClaimProblem[] = [];
   const notChecked: string[] = [];
   const segmentCache = new Map<string, TestFileSplit | null>();
+  const notedNonFiles = new Set<string>();
   let claimsChecked = 0;
   let claimsSkipped = 0;
 
@@ -491,7 +525,16 @@ export async function findTestPlanClaimProblems(opts: {
       }
       claimsChecked++;
 
-      const resolved = resolveTrackedPath(ref.path, opts.trackedFiles);
+      const resolved = ref.fileShaped
+        ? resolveTrackedPath(ref.path, opts.trackedFiles)
+        : { kind: "directory" } as const;
+      if (resolved.kind === "directory") {
+        if (!notedNonFiles.has(ref.path)) {
+          notedNonFiles.add(ref.path);
+          notChecked.push(notAFileNote(ref.path));
+        }
+        continue;
+      }
       if (resolved.kind === "none") {
         problems.push({
           line: block,

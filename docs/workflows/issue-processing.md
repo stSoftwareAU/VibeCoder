@@ -1872,10 +1872,11 @@ Two independent checks feed one result:
    declarations) whose name or body, or the file's own preamble — the text
    before the first declaration, where a fixture shared by more than one
    test tends to live — shares at least half of the quote's significant
-   words; a named test file not tracked at the head blocks too. An ambiguous
-   basename, an unreadable or oversized file, a file with no recognised test
-   declaration, or a claim past the 50-claim cap is logged as not checked
-   rather than blocking. A corpus run of this backstop over the 876
+   words; a named test file not tracked at the head blocks too. A reference
+   to a directory (trailing `/`), a glob or a directory prefix of tracked
+   paths is not a file; it, an ambiguous basename, an unreadable or oversized
+   file, a file with no recognised test declaration, or a claim past the
+   50-claim cap is logged as not checked rather than blocking. A corpus run of this backstop over the 876
    summaries archived in `docs/archive/pr-summaries/` when it was run flagged 2
    (pr-summary-658 and pr-summary-663, both quoting test names no longer
    present in the named files); the adjacency and preamble rules above
