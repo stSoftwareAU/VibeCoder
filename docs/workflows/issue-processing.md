@@ -1819,11 +1819,12 @@ Two independent checks feed one result:
    the head — an illustrative "for example `X`" counts too. A finding blocks
    only when it names the summary file and its sentence is found in the
    summary's own text; otherwise it is logged as unconfirmed and never acted
-   on. A base ref that cannot be resolved, a question that cannot be
-   launched, or a reply with no readable verdict is logged at error level,
-   recorded in `notChecked`, and never blocks on its own — an unreachable
-   model or an unreadable file is never reported as a clean check, but it
-   also never blocks a PR by itself.
+   on. A base ref that cannot be resolved is logged at error level; a
+   question that cannot be launched, or a reply with no readable verdict, is
+   logged at warn level instead — the same as the review-fix drift check's
+   own model pass. All three are recorded in `notChecked` and never block on
+   their own — an unreachable model or an unreadable file is never reported
+   as a clean check, but it also never blocks a PR by itself.
 2. **A deterministic Test Plan backstop**
    (`findTestPlanClaimProblems`). In the `## Test Plan` section, a list item
    that names a test file in backticks and quotes a behaviour ("…" or

@@ -1152,9 +1152,11 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         value: { exitCode: 0, output: "mock", timedOut: false },
       })
     ),
-    // Not scripted by default (Issue #3257): the completion phase then logs
-    // the summary claim check's model pass as not checked, so a test that
-    // says nothing about it is unaffected.
+    // Not scripted by default (Issue #3257): the model pass fails, so the
+    // claim check records it in `notChecked` and logs it at warn level
+    // (never blocking), and no run stats are recorded — a test that says
+    // nothing about the claim check is unaffected. A test that exercises
+    // the check scripts this seam.
     runSummaryClaimQuestion: mockFn<ClaudeDeps["runSummaryClaimQuestion"]>(
       () =>
         Promise.resolve({

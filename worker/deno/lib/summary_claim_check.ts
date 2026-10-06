@@ -616,10 +616,15 @@ export interface SummaryClaimCheckInput {
  * Run the first-run PR-summary claim check (Issue #3257).
  *
  * Called by the completion phase before the PR is raised. Never throws for
- * an expected failure — every degradation (tracked files could not be
- * listed, the base ref is unresolvable, the model question could not be
- * launched or returned no usable verdict) is logged and recorded in
- * `notChecked` rather than blocking the run.
+ * an expected failure — every degradation is logged and recorded in
+ * `notChecked` rather than blocking the run. A deterministic case — tracked
+ * files could not be listed, the base ref is unresolvable, or the prompt
+ * could not be built — logs at error level: the check itself failed. A
+ * model-dependent case — the question could not be launched, or its reply
+ * carried no readable verdict — logs at warn level instead, the same as
+ * `runPrFeedbackDriftCheck`'s model pass (pr_feedback_drift_check.ts): an
+ * unavailable or unreadable model answer is the model's or the host's
+ * problem, not this check's.
  */
 export async function runSummaryClaimCheck(
   input: SummaryClaimCheckInput,
@@ -694,7 +699,11 @@ export async function runSummaryClaimCheck(
       if (!result.ok) {
         const msg = result.error.message;
         notChecked.push(msg);
-        deps.logger.error(
+        // Mirrors `runPrFeedbackDriftCheck` (pr_feedback_drift_check.ts),
+        // which logs an unavailable model pass at warn: a model that could
+        // not be launched is the host's or the model's problem, not a
+        // deterministic check failing, and never blocks on its own.
+        deps.logger.warn(
           `Summary claim check: model question failed: ${msg}`,
           { repo, issueNumber },
         );
@@ -703,7 +712,9 @@ export async function runSummaryClaimCheck(
         if (!parsed.ok) {
           const msg = parsed.error.message;
           notChecked.push(msg);
-          deps.logger.error(`Summary claim check: ${msg}`, {
+          // As above: an unreadable verdict is the model's problem, not a
+          // deterministic check failing, so it logs at warn (Issue #3257).
+          deps.logger.warn(`Summary claim check: ${msg}`, {
             repo,
             issueNumber,
           });

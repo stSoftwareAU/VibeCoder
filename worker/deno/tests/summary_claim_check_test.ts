@@ -701,7 +701,7 @@ Deno.test("runSummaryClaimCheck - askQuestion error is notChecked, not blocked",
       JSON.stringify(result.notChecked)
     }`,
   );
-  assert(logger.errors.length > 0);
+  assert(logger.warns.length > 0);
 });
 
 Deno.test("runSummaryClaimCheck - a null baseRef never calls askQuestion", async () => {
