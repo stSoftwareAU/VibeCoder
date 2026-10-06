@@ -43,8 +43,8 @@ Test Plan. `docs/workflows/issue-processing.md` records the history
 ## Evidence
 
 Prompt and standards change only — no UI, no runtime code. The drift test
-`worker/deno/tests/existing_screen_text_3259_test.ts` pins the rule on both
-surfaces and the Test Plan clause.
+`worker/deno/tests/existing_screen_text_3259_test.ts` pins the rule in all three
+documents and the issue prompt's Test Plan clause.
 
 **Related existing rules checked:** `CODING-STANDARDS.md` **A Code Change
 Owes a Docs Change** bullet "When a change alters what an existing state …
@@ -66,15 +66,16 @@ it.
 
 ## Test Plan
 
-- Added `worker/deno/tests/existing_screen_text_3259_test.ts` (3 tests).
-- `deno test --allow-read worker/deno/tests/existing_screen_text_3259_test.ts
-  worker/deno/tests/caller_reach_3253_test.ts` — passed on the final head.
-- Red without the change: with `CODING-STANDARDS.md` and
-  `prompts/issue/prompt.md` restored to the base, all three new tests failed
-  ("could not locate the existing-screen-text rule", missing-phrase
-  assertions); restored, all passed.
-- `deno task drift-pins-on-base origin/main …` per section, on the final
-  head: `CODING-STANDARDS.md` "Test coverage expectations" — absent on base:
+- Added `worker/deno/tests/existing_screen_text_3259_test.ts` (4 tests).
+- The reviewer confirmed all 4 existing-screen-text tests passed on
+  `7456e69e` in review 5426023899. This follow-up changes only this summary
+  and synchronises the PR body; the test and its three documents are unchanged.
+- Red-without evidence relies on the per-phrase `drift-pins-on-base` record
+  below for all four sections, independently confirmed by that review.
+  The earlier three-test restoration experiment did not cover the injected
+  twin and is not claimed as evidence for the four-test suite.
+- `deno task drift-pins-on-base origin/main …` per section, recorded for
+  `7456e69e`: `CODING-STANDARDS.md` "Test coverage expectations" — absent on base:
   "list every message the screen already renders", "say whether it is still
   true in the new state", "reword it, hide it or mark it", "Add a test that
   renders the new state", "A pre-existing message left unchanged that is
@@ -92,9 +93,20 @@ it.
   "Test Coverage Expectations" (added after the review of PR #3283 found the
   twin missing the rule) — absent on base: the same six phrases as the
   CODING-STANDARDS section, each `absent on base`.
-- The 27 existing tests that read the issue prompt's "Instructions" or "PR
-  Summary File" sections still pass (102 passed, 0 failed).
+- Earlier validation recorded 102 passed, 0 failed across the 27 existing
+  test files reading the issue prompt's "Instructions" or "PR Summary File"
+  sections; this summary-only follow-up does not claim a fresh run.
 - No existing test assertion was removed.
-- `./quality.sh` — not run on the laptop (the review fix was made there); the same gate runs in CI as the `validate-scripts` jobs, which passed on the reviewed head e4187cb9, and `deno test tests/existing_screen_text_3259_test.ts` (3 tests) and `markdownlint-cli2` pass on the final head
+- Fresh section-scoped comparison against base `d951d7df` confirmed all
+  18 pinned-phrase checks across the four sections are absent on base and
+  present on `7456e69e`. This used a standalone JavaScript comparison,
+  not a fresh run of the Deno `drift-pins-on-base` task.
+- Fresh `deno test --allow-read tests/existing_screen_text_3259_test.ts
+  tests/caller_reach_3253_test.ts` (from `worker/deno`) could not run:
+  the JSR package manifest for `@std/assert` failed to load from `jsr.io`.
+- `./quality.sh < /dev/null` — attempted after installing the repository's
+  checksum-verified Deno 2.9.6; completeness checks failed in this environment.
+  No fresh Deno test or full quality-gate pass is claimed.
+- `git diff --check` — passed for this summary correction.
 
 Branch outcomes: none added
