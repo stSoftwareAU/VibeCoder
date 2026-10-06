@@ -2,8 +2,11 @@
 
 Adds a self-review rule, **A new state on an existing screen re-reads that
 screen's existing text**, to `CODING-STANDARDS.md` (Test coverage
-expectations) and to `prompts/issue/prompt.md` (a step-1 bullet beside the UI
-browser-check guidance, and a clause in the PR Summary File Test Plan step).
+expectations), to its injected twin `prompts/coding_guidelines/prompt.md`
+(Test Coverage Expectations, the only surface a pr_feedback, ci_fix,
+merge_conflict or custom_pr run in a fleet repo sees), and to
+`prompts/issue/prompt.md` (a step-1 bullet beside the UI browser-check
+guidance, and a clause in the PR Summary File Test Plan step).
 When a change adds a state or mode to an existing screen, the run must list
 every note, empty-state text, warning, badge and label the screen already
 renders, say whether each is still true in the new state, fix the ones that
@@ -55,7 +58,8 @@ new one.
 **Docs sweep** — grep: `existing screen`, `empty-state text`, `renders or
 explains`, "re-read\w*"; section: `docs/workflows/issue-processing.md` (the
 issue prompt's self-review rule history); updated: `CODING-STANDARDS.md`,
-`prompts/issue/prompt.md`, `docs/workflows/issue-processing.md`;
+`prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`,
+`docs/workflows/issue-processing.md`;
 `CODING-STANDARDS.md:1206` — still true because the docs-change bullet on
 altering an existing state's meaning is unchanged and the new rule points at
 it.
@@ -84,7 +88,10 @@ it.
   message left unchanged that is false or misleading in the new state is a
   blocking self-review finding". `prompts/issue/prompt.md` "PR Summary File"
   — absent on base: "re-reads that screen's existing text", "each marked
-  still true or changed for the new state".
+  still true or changed for the new state". `prompts/coding_guidelines/prompt.md`
+  "Test Coverage Expectations" (added after the review of PR #3283 found the
+  twin missing the rule) — absent on base: the same six phrases as the
+  CODING-STANDARDS section, each `absent on base`.
 - The 27 existing tests that read the issue prompt's "Instructions" or "PR
   Summary File" sections still pass (102 passed, 0 failed).
 - No existing test assertion was removed.

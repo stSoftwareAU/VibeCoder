@@ -68,6 +68,34 @@ Deno.test("CODING-STANDARDS carries the existing-screen-text rule (Issue #3259)"
   }
 });
 
+// The injected twin is the only surface pr_feedback, ci_fix, merge_conflict
+// and custom_pr runs in a fleet repo ever see (review of PR #3283).
+Deno.test("the injected coding_guidelines twin carries the existing-screen-text rule (Issue #3259)", async () => {
+  const guidelines = section(
+    await readRepoDoc("prompts/coding_guidelines/prompt.md"),
+    "Test Coverage Expectations",
+  );
+  const paragraph = existingScreenTextParagraph(
+    guidelines,
+    "coding_guidelines",
+  );
+  for (
+    const phrase of [
+      "list every message the screen already renders",
+      "say whether it is still true in the new state",
+      "reword it, hide it or mark it",
+      "Add a test that renders the new state",
+      "A pre-existing message left unchanged that is false or misleading in the new state is a blocking self-review finding",
+      "List the messages checked in the PR summary's Test Plan",
+    ]
+  ) {
+    assert(
+      paragraph.includes(phrase),
+      `coding_guidelines is missing "${phrase}" from the existing-screen-text rule: ${paragraph}`,
+    );
+  }
+});
+
 Deno.test("issue prompt Instructions carry the existing-screen-text rule (Issue #3259)", async () => {
   const text = flat(
     section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
