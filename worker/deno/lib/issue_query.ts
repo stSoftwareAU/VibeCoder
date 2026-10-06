@@ -223,6 +223,31 @@ interface GhIssueListItem {
   updatedAt?: string;
   author: { login: string };
   milestone?: { title: string } | null;
+  /** Raw GitHub native sub-issue counts, validated by {@link parseSubIssuesSummary}. */
+  subIssuesSummary?: unknown;
+}
+
+/**
+ * Validate a raw `subIssuesSummary` field from `gh issue list` (Issue #3314).
+ *
+ * Only `total` and `completed` are kept (`percentCompleted` is derivable and
+ * not needed); malformed shapes (non-numbers, negatives) return `undefined`
+ * so an absent or broken field behaves exactly like an issue with no
+ * sub-issues at all.
+ */
+export function parseSubIssuesSummary(
+  raw: unknown,
+): { total: number; completed: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const { total, completed } = raw;
+  if (
+    typeof total !== "number" || !Number.isFinite(total) || total < 0 ||
+    typeof completed !== "number" || !Number.isFinite(completed) ||
+    completed < 0
+  ) {
+    return undefined;
+  }
+  return { total, completed };
 }
 
 /**
@@ -288,6 +313,11 @@ export function parseIssueListJson(jsonStr: string): FilterableIssue[] {
       const bodyValue = (item as unknown as { body?: unknown }).body;
       if (typeof bodyValue === "string") {
         issue.body = bodyValue;
+      }
+      // Issue #3314: GitHub native sub-issue counts, kept only when valid.
+      const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
+      if (subIssuesSummary !== undefined) {
+        issue.subIssuesSummary = subIssuesSummary;
       }
       return issue;
     });
@@ -469,7 +499,9 @@ export async function fetchAllIssues(
       // Issue #1805: include `body` so milestone-health dependency
       // detection can read from the shared cache instead of issuing a
       // second `gh issue list --milestone …` call per milestone.
-      "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body",
+      // Issue #3314: include `subIssuesSummary` so native sub-issue
+      // blocking can be read from this call instead of a per-issue one.
+      "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body,subIssuesSummary",
       "--limit",
       String(limit),
     ]);
