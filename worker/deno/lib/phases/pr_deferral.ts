@@ -157,6 +157,8 @@ export interface PendingPr {
   body: string;
   base: string;
   reviewers: readonly string[];
+  /** Posted on the PR once the drain raises it (Issue #3237); empty = none. */
+  advisoryComment?: string;
 }
 
 /**
@@ -197,6 +199,7 @@ export async function deferPrCreation(
     deferredAtEpoch: Math.floor(Date.now() / 1000),
     attempts: request.attempts,
     lastError: boundRefusalReason(request.message),
+    ...(pr.advisoryComment ? { advisoryComment: pr.advisoryComment } : {}),
   };
 
   const stored = config.workDir

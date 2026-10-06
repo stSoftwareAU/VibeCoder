@@ -15,8 +15,9 @@
  * head's `README.md`, every `*\/README.md` and `docs/` (excluding
  * `docs/archive/`). A hit is stale unless it sits in a line the branch's
  * diff added or changed, or the Docs sweep line names it as left alone by
- * `file:line` (or `file:start-end`). Stale hits block the summary through the
- * same one in-run recovery turn as the rest of the gate.
+ * `file:line` (or `file:start-end`). Stale hits are advisory (Issue #3237):
+ * the worker posts them once as a PR comment for the reviewer and logs them,
+ * but they never block the run.
  *
  * The same terms are also re-run over source files outside `docs/`
  * (`SOURCE_COMMENT_PATHSPECS`), keeping only hits on a whole comment line
@@ -113,7 +114,7 @@ export const MAX_TERMS = 20;
 /** A term longer than this is not a grep term anyone typed; it is skipped. */
 const MAX_TERM_CHARS = 200;
 
-/** Up to how many stale hits are named in the comment and the reason. */
+/** Up to how many stale hits are named in the comment and the log line. */
 export const MAX_REPORTED_HITS = 20;
 
 /** Hit sentences are trimmed to this many characters in the comment. */
@@ -507,7 +508,7 @@ function renderHitText(text: string): string {
     : flat;
 }
 
-/** The phase-failure reason for stale hits, naming the first few. */
+/** The warning-log description of stale hits, naming the first few. */
 export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
   const named = hits.slice(0, 5).map((h) => `${h.path}:${h.line}`).join(", ");
   const extra = hits.length - 5;
@@ -518,8 +519,9 @@ export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
 }
 
 /**
- * Build the issue comment posted when the Docs sweep's own terms still hit
- * lines the branch neither changed nor named.
+ * Build the PR comment posted for the reviewer when the Docs sweep's own
+ * terms still hit lines the branch neither changed nor named. Advisory only
+ * (Issue #3237): posted once, and the run completes regardless.
  */
 export function buildDocsSweepHitsComment(
   hits: readonly DocsSweepHit[],
@@ -531,24 +533,26 @@ export function buildDocsSweepHitsComment(
   const extra = hits.length - MAX_REPORTED_HITS;
   if (extra > 0) listed.push(`- … and ${extra} more`);
   return [
-    "⚠️ **Docs sweep terms still hit the head.** Re-running the grep terms " +
-    "your **Docs sweep** line quotes over `README.md`, `*/README.md` and " +
-    "`docs/` (excluding `docs/archive/`), and over the comment lines in source " +
-    "files outside `docs/`, at the head finds lines the diff did not change " +
-    "and the line does not name:",
+    "ℹ️ **Docs sweep terms still hit the head (advisory).** Re-running the " +
+    "grep terms this PR's **Docs sweep** line quotes over `README.md`, " +
+    "`*/README.md` and `docs/` (excluding `docs/archive/`), and over the " +
+    "comment lines in source files outside `docs/`, at the head finds lines " +
+    "the diff did not change and the line does not name:",
     "",
     ...listed,
     "",
-    "For each one, read the sentence and either:",
+    "These hits are advisory: they do not block this PR. Reviewer: check " +
+    "each sentence is still true.",
+    "",
+    "To resolve one, either:",
     "",
     "1. fix it in this change, if the change makes it false — including in " +
-    "a file whose other section you already updated; or",
+    "a file whose other section was already updated; or",
     "2. name it in the Docs sweep line as `<file>:<line> — still true " +
     "because <reason>`.",
     "",
     "Grep for the stem of a behavioural claim, not one inflection " +
     '(`replac\\w* or remov\\w*`, not "replaces or removes"), and re-run the ' +
-    "grep on the final head after editing. The worker asks once; a second " +
-    "miss fails the run.",
+    "grep on the final head after editing.",
   ].join("\n");
 }
