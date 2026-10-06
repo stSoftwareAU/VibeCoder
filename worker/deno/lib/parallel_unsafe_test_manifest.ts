@@ -191,6 +191,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/grill_me_stall_guard_bounds_2183_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
+  // The pre-commit safety gate's dotenv/config/secrets patterns scan a staged
+  // path an untrusted commit can shape; only a growth measurement separates
+  // the fixed, linear patterns from the quadratic ones they replaced
+  // (Issue #3311).
+  "tests/pre_commit_safety_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   "tests/prompt_leak_redaction_test.ts",
