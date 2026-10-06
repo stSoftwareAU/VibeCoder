@@ -85,6 +85,13 @@ import { fetchTrustedBotReviewComments } from "./pr_review_context.ts";
 import { noteAgentRunWorkItem } from "./handler_watchdog.ts";
 import { runPrBodySync, syncPrBodyFromSummary } from "./pr_body_sync.ts";
 import { getRunId } from "./run_id.ts";
+import {
+  buildReviewerNoChangeEscalation,
+  isReviewerChangeRequest,
+  MAX_REVIEWER_NO_CHANGE_ATTEMPTS,
+  probeAgentAnswer,
+  REVIEWER_NO_CHANGE_RETRY_NOTE,
+} from "./pr_feedback_reviewer_no_change.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -913,34 +920,33 @@ async function _processFeedbackWithHeartbeat(
   carrier.rtkOutput = rtk.result;
 
   // Execute Claude in the target repo directory (Issue #1297)
-  const claudeResult = await deps.claude.runClaudeWithRetry(
-    {
-      // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
-      // run-conditional, so the template stays the same on every host.
-      // RTK's line goes outermost, so it is the last thing the agent reads.
-      prompt: rtk.applyPrompt(
-        graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
-      ),
-      systemPrompt,
-      timeoutSeconds: claudeTimeout,
-      noOutputTimeout: claudeNoOutputTimeout,
-      phase: "pr_feedback",
-      cwd: processorDeps.workDir,
-      logger,
-      // The browser unless `skip_screenshot_check` (Issue #2925): a review
-      // asking for screenshots needs it. CodeGraph and Graft ride beside it
-      // only when their index built.
-      ...graft.mcpConfigOption(
-        codegraph.mcpConfig(browserGranted(processorDeps.repoConfigs, repo)),
-      ),
-      // Issue #2384: absent unless RTK's hook is installed, so every other
-      // run spawns the argv it always did.
-      ...settingsJsonOption(undefined, rtk.hookSettings()),
-    },
-    {
-      maxRetries: maxRateLimitRetries,
-    },
-  );
+  const agentStartMs = Date.now();
+  const agentRequest = {
+    // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
+    // run-conditional, so the template stays the same on every host.
+    // RTK's line goes outermost, so it is the last thing the agent reads.
+    prompt: rtk.applyPrompt(
+      graft.applyPrompt(codegraph.applyPrompt(userPrompt)),
+    ),
+    systemPrompt,
+    timeoutSeconds: claudeTimeout,
+    noOutputTimeout: claudeNoOutputTimeout,
+    phase: "pr_feedback",
+    cwd: processorDeps.workDir,
+    logger,
+    // The browser unless `skip_screenshot_check` (Issue #2925): a review
+    // asking for screenshots needs it. CodeGraph and Graft ride beside it
+    // only when their index built.
+    ...graft.mcpConfigOption(
+      codegraph.mcpConfig(browserGranted(processorDeps.repoConfigs, repo)),
+    ),
+    // Issue #2384: absent unless RTK's hook is installed, so every other
+    // run spawns the argv it always did.
+    ...settingsJsonOption(undefined, rtk.hookSettings()),
+  };
+  const claudeResult = await deps.claude.runClaudeWithRetry(agentRequest, {
+    maxRetries: maxRateLimitRetries,
+  });
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
   // Issue #2384: the saved-token figure, read whether or not the invocation
@@ -980,6 +986,97 @@ async function _processFeedbackWithHeartbeat(
       ok: false,
       error: new Error(failureMessage),
     };
+  }
+
+  // In-run retry for an unanswered request-changes review (Issue #3246). A
+  // `pr_review` claim dismisses the review, and a dismissal cannot be
+  // undone, so a later cycle can never retry it — give the agent a second
+  // run inside this one before the worker posts the agent's rebuttal or
+  // escalates to `needs-human`.
+  let reviewerAttempts = 1;
+  let lastAttempt = {
+    exitCode: claudeResult.value.exitCode,
+    durationSeconds: Math.round((Date.now() - agentStartMs) / 1000),
+  };
+  while (
+    isReviewerChangeRequest(commentType) &&
+    reviewerAttempts < MAX_REVIEWER_NO_CHANGE_ATTEMPTS
+  ) {
+    const answer = await probeAgentAnswer({
+      readResponseMessage: async () => {
+        try {
+          return await Deno.readTextFile(
+            prResponseMessagePath(processorDeps.workDir),
+          );
+        } catch {
+          return undefined;
+        }
+      },
+      headMoved: async () => {
+        if (beforeSha === undefined) return undefined;
+        const moved = await deps.git.branchHeadChanged(beforeSha, pushBranch, {
+          cwd: processorDeps.workDir,
+        });
+        return moved.ok ? moved.value : undefined;
+      },
+      workingTreeStatus: async () => {
+        const status = await deps.git.runGitCommand(
+          ["status", "--porcelain"],
+          { cwd: processorDeps.workDir },
+        );
+        return status.ok && status.value.code === 0
+          ? status.value.stdout
+          : undefined;
+      },
+    });
+    if (answer !== "nothing") {
+      if (answer === "unknown") {
+        logger.warn(
+          "PR feedback: could not tell whether the run answered the " +
+            "review, so it is not re-run (Issue #3246)",
+          { repo, prNumber, reviewId: commentId },
+        );
+      }
+      break;
+    }
+    logger.warn(
+      "PR feedback: request-changes review ended with no fix and no " +
+        "rebuttal — re-running the agent (Issue #3246)",
+      {
+        repo,
+        prNumber,
+        reviewId: commentId,
+        attempt: reviewerAttempts,
+        exitCode: lastAttempt.exitCode,
+        durationSeconds: lastAttempt.durationSeconds,
+      },
+    );
+    reviewerAttempts++;
+    const retryStartMs = Date.now();
+    const retry = await deps.claude.runClaudeWithRetry(
+      {
+        ...agentRequest,
+        prompt: `${agentRequest.prompt}\n\n${REVIEWER_NO_CHANGE_RETRY_NOTE}`,
+      },
+      { maxRetries: maxRateLimitRetries },
+    );
+    lastAttempt = {
+      exitCode: retry.ok ? retry.value.exitCode : -1,
+      durationSeconds: Math.round((Date.now() - retryStartMs) / 1000),
+    };
+    if (!retry.ok || retry.value.timedOut) {
+      logger.error(
+        "PR feedback: the re-run on the request-changes review failed " +
+          "(Issue #3246)",
+        {
+          repo,
+          prNumber,
+          reviewId: commentId,
+          error: retry.ok ? "timed out" : retry.error.message,
+        },
+      );
+      break;
+    }
   }
 
   // Result-placeholder reply recovery (Issue #3124): one in-run retry when
@@ -1030,11 +1127,20 @@ async function _processFeedbackWithHeartbeat(
   // push below, so a recovery-turn edit rides the same push and a residual
   // hit reaches the reply through `.pr_response_message`, read later by
   // `readPrResponseMessage`. Wrapped so an unexpected throw never aborts an
-  // otherwise-successful run — the check is a backstop, not a gate.
+  // otherwise-successful run — the check is a backstop, not a gate. The
+  // change request body is passed through so the check can confirm a
+  // sentence the reviewer quoted was rewritten or removed rather than left
+  // sitting under an appended correction (Issue #3244).
   try {
     const driftCheck = processorDeps.driftCheckFn ?? runPrFeedbackDriftCheck;
     const driftOutcome = await driftCheck(
-      { repo, prNumber, repoPath: processorDeps.workDir, beforeSha },
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        changeRequest: processedBody,
+      },
       {
         runGit: async (args: string[]) => {
           const r = await deps.git.runGitCommand(args, {
@@ -1394,6 +1500,10 @@ async function _processFeedbackWithHeartbeat(
     }
   }
 
+  // Issue #3246: set when this run escalates an unanswered request-changes
+  // review to `needs-human`, so the summary below can say so.
+  let reviewerEscalated = false;
+
   // Reply to comment — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded && fixBranch && fixPrError) {
     await replyFixPrRaiseFailed(
@@ -1418,6 +1528,57 @@ async function _processFeedbackWithHeartbeat(
     );
   } else if (hasChanges && !pushSucceeded) {
     await replyPushFailed(repo, prNumber, deps, pushVerification);
+  } else if (
+    isReviewerChangeRequest(commentType) && customMessage !== undefined
+  ) {
+    // Issue #3246: the agent's rebuttal answers the review — post it, never
+    // the neutral reply.
+    await replyWithResult(repo, prNumber, deps, customMessage);
+  } else if (isReviewerChangeRequest(commentType)) {
+    // Issue #3246: no fix and no rebuttal after every in-run attempt — a
+    // dismissed review cannot be rediscovered next cycle, so escalate now
+    // rather than post the neutral "could not identify a code change" reply.
+    logger.warn(
+      "PR feedback: request-changes review left unanswered after every " +
+        "in-run attempt — escalating to needs-human (Issue #3246)",
+      {
+        repo,
+        prNumber,
+        reviewId: commentId,
+        attempts: reviewerAttempts,
+        lastExitCode: lastAttempt.exitCode,
+        lastDurationSeconds: lastAttempt.durationSeconds,
+      },
+    );
+    const escalation = buildReviewerNoChangeEscalation({
+      reviewId: commentId,
+      attempts: reviewerAttempts,
+      lastExitCode: lastAttempt.exitCode,
+      lastDurationSeconds: lastAttempt.durationSeconds,
+    });
+    const escalated = await escalateToHuman({
+      ghClient: createGhEscalationClient(deps.github.runGhCommand),
+      repo,
+      target: { kind: "pr", number: prNumber },
+      needsHumanLabel: "needs-human",
+      heading: escalation.heading,
+      reason: escalation.reason,
+      nextStep: escalation.nextStep,
+      ensureLabelColour: "d4c5f9",
+      ensureLabelDescription:
+        "Worker could not produce a fix; human review required",
+      dedupKey: `pr-review-unanswered:${repo}#${prNumber}:${commentId}`,
+      deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
+      logger,
+    });
+    if (!escalated.ok) {
+      logger.error(
+        "PR feedback: escalating the unanswered request-changes review " +
+          "failed (Issue #3246)",
+        { repo, prNumber, reviewId: commentId, error: escalated.error.message },
+      );
+    }
+    reviewerEscalated = true;
   } else {
     await replyNoChanges(
       repo,
@@ -1449,8 +1610,12 @@ async function _processFeedbackWithHeartbeat(
         ? fixPr
           ? `Pushed fixes for PR #${prNumber} feedback via fix PR #${fixPr.number}`
           : `Pushed fixes for PR #${prNumber} feedback`
+        : reviewerEscalated
+        ? `PR #${prNumber} review ${commentId}: no fix or rebuttal after ${reviewerAttempts} run(s) — escalated to needs-human`
         : hasChanges
         ? `Fixed PR #${prNumber} feedback locally but failed to push`
+        : isReviewerChangeRequest(commentType) && customMessage !== undefined
+        ? `Reviewed PR #${prNumber} feedback — rebuttal posted, no changes`
         : `Reviewed PR #${prNumber} feedback — no changes needed`,
     },
   };
@@ -1627,6 +1792,10 @@ async function replyNoChanges(
   // classifier-aware response. When a failing CI check is associated with
   // the feedback we route via the classifier; otherwise we use a neutral
   // "could not identify a code change" message.
+  //
+  // Issue #3246: a request-changes review (`commentType === "pr_review"`)
+  // never reaches this function — its unanswered case is caught upstream
+  // and either posts the agent's rebuttal or escalates to `needs-human`.
   const classification = failingCheckName
     ? classifyCiFailure(failingCheckName, [], commentBody)
     : undefined;

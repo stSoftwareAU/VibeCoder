@@ -192,6 +192,104 @@ Deno.test("findNotPlannedDocReferences - declared dependency outside the milesto
   assertEquals(compareCalls, 0);
 });
 
+/** Fake gh for a single member whose body declares `body`; every single-issue lookup answers closed not_planned. */
+function dependencyFake(body: string): {
+  ghFn: (args: string[]) => Promise<string>;
+  lookups: string[];
+} {
+  const lookups: string[] = [];
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("/issues?milestone=")) {
+      return JSON.stringify([{ number: 40, title: "Member", body }]);
+    }
+    const single = /\/issues\/(\d+)$/.exec(key);
+    if (single) {
+      lookups.push(key);
+      const num = Number.parseInt(single[1]!, 10);
+      return JSON.stringify({
+        number: num,
+        title: `Dropped dependency ${num}`,
+        state: "closed",
+        state_reason: "not_planned",
+      });
+    }
+    if (key.includes("/compare/")) {
+      return JSON.stringify({
+        files: [
+          {
+            filename: "docs/z.md",
+            status: "added",
+            patch: patchAdding(1, ["relies on #97 and #96"]),
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected gh call: ${key}`);
+  };
+  return { ghFn, lookups };
+}
+
+Deno.test("findNotPlannedDocReferences - same-repo dependency written owner/repo#N is looked up and reported", async () => {
+  const { ghFn, lookups } = dependencyFake(`Depends on ${REPO}#97`);
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(lookups, [`api repos/${REPO}/issues/97`]);
+  assertEquals(result.value.references.length, 1);
+  const ref = result.value.references[0]!;
+  assertEquals(ref.issueNumber, 97);
+  assertEquals(ref.file, "docs/z.md");
+  assertEquals(ref.lines, [1]);
+});
+
+Deno.test("findNotPlannedDocReferences - same-repo dependency in a different case (Blocked by OWNER/REPO#N) is looked up", async () => {
+  const { ghFn, lookups } = dependencyFake(
+    `Blocked by ${REPO.toUpperCase()}#97`,
+  );
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(lookups, [`api repos/${REPO}/issues/97`]);
+  assertEquals(result.value.references.length, 1);
+  assertEquals(result.value.references[0]!.issueNumber, 97);
+});
+
+Deno.test("findNotPlannedDocReferences - cross-repo dependency is never looked up and not a candidate", async () => {
+  const { ghFn, lookups } = dependencyFake(
+    "Depends on other-owner/other-repo#96",
+  );
+
+  const result = await findNotPlannedDocReferences({
+    repo: REPO,
+    milestoneNumber: 1,
+    defaultBranch: "main",
+    milestoneBranch: "milestone/v1",
+    ghCommandFn: ghFn,
+  });
+
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(lookups.filter((k) => k.endsWith("/issues/96")), []);
+  assertEquals(result.value.references, []);
+});
+
 Deno.test("findNotPlannedDocReferences - a member depending on itself triggers no single-issue lookup", async () => {
   let singleLookupCalls = 0;
   const ghFn = async (args: string[]): Promise<string> => {
