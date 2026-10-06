@@ -4,7 +4,7 @@
 
 Closes #3263
 
-These five drift tests each loaded a whole prompt with `loadPrompt`, collapsed it with `.replace(/\s+/g, " ")` and pinned phrases over the entire file:
+These five drift tests each read a whole doc and pinned phrases over the entire file, with no `section()` scope. The 3172, 3073 and 2952 tests loaded the issue and pr_feedback prompts with `loadPrompt` and collapsed them with `.toLowerCase().replace(/\s+/g, " ")`. The 3058 test loaded the issue prompt with `loadPrompt` and read `prompts/coding_guidelines/prompt.md` and `CODING-STANDARDS.md` with `Deno.readTextFile`, collapsing all three with `.replace(/\s+/g, " ")`. The 3015 test matched the issue, pr_feedback, ci_fix and merge_conflict prompts from `loadPrompt` as is, and collapsed only `CODING-STANDARDS.md`, which it read with `Deno.readTextFile`:
 
 - `worker/deno/tests/prompt_docs_sweep_3172_test.ts`
 - `worker/deno/tests/prompt_docs_sweep_3073_test.ts`
@@ -48,6 +48,13 @@ These assertions were removed or changed. Each was a whole-file load and is repl
 - `const body = normalise(await load("issue"));` and `const body = normalise(await load("pr_feedback"));` in the 3073 and 2952 tests changed to `await scoped(<doc>, "Instructions" | "PR Summary File" | "Making Changes")`. This moves them to section scope.
 - `const body = await load("issue");`, `const body = await load(type);` and `const body = await load("merge_conflict");` in `worker/deno/tests/pr_body_matches_final_diff_3015_test.ts` changed to `flat(section(...))`, scoped to "PR Summary File", "Making Changes", "Fixing the Failure" and "What To Do". This moves them to section scope.
 - The `normalise(...)` calls in `worker/deno/tests/pr_claims_verified_3058_test.ts` (issue prompt, coding_guidelines, CODING-STANDARDS.md) changed. Each pinned phrase now asserts against the section that carries it. The pinned strings are unchanged.
+
+These whole-file assertions were removed. #3263 requires every pin to be scoped to the section that carries it, so an assertion over the whole-file `body`, `guidelines` or `standards` string no longer holds. Each one's pinned strings are now asserted against section-scoped strings in the same test:
+
+- Removed from `worker/deno/tests/pr_body_matches_final_diff_3015_test.ts`: `assertStringIncludes(body, required);` — #3263 scopes each pin to its section, so the whole-prompt `body` is gone; the same strings are asserted against `flat(section(...))` for "PR Summary File", "Making Changes", "Fixing the Failure" and "What To Do"
+- Removed from `worker/deno/tests/pr_claims_verified_3058_test.ts`: `assertStringIncludes(body, required);` — #3263 scopes each pin to its section, so the whole-prompt `body` in `Issue #3058 - issue prompt demands demonstrated criteria and finished deliverables` is gone; its strings are asserted against `escapeHatch` and `acceptanceCriteriaClosure`
+- Removed from `worker/deno/tests/pr_claims_verified_3058_test.ts`: `assertStringIncludes(guidelines, required);` — #3263 scopes each pin to its section, so the whole-file `guidelines` is gone; its strings are asserted against `blockedOnAnotherIssue` and `escapeHatch`
+- Removed from `worker/deno/tests/pr_claims_verified_3058_test.ts`: `assertStringIncludes(standards, required);` — #3263 scopes each pin to its section, so the whole-file `standards` is gone; its strings are asserted against `testCoverageExpectations` and `prSummaryAndEvidence`
 
 All five tests named above are tracked at the head (`git ls-files` from the repository root).
 
