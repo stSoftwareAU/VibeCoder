@@ -17,11 +17,18 @@
  * `.gitignore` may re-allow a hidden path this worker's canonical list does
  * not (Issue #3296) — `.claude/skills` and `.claude/agents` under this very
  * repo's `.gitignore`, for instance. `gitignoreReallowed` below judges that
- * case with `git check-ignore --no-index` against the repo's own rules.
- * `FORBIDDEN_STAGED_PATTERNS` (secret-bearing filenames) are never exempt
- * this way, and the check fails closed — nothing is exempt — whenever the
- * repo's `.gitignore` cannot be proven both tracked at `HEAD` and unmodified,
- * or `check-ignore` itself cannot be run.
+ * case with `git check-ignore -v -n --no-index` against the repo's own
+ * rules, walking the path and its ancestor directories to find the nearest
+ * rule that actually decides it, and exempting only when that rule is an
+ * explicit `!`-negation in the *root* `.gitignore` — exit 1 from a plain
+ * `check-ignore -q` means only "no rule matches", which is equally true of a
+ * repo whose `.gitignore` never governs the path at all, so that alone
+ * cannot be trusted as a re-allow (Issue #3309). `FORBIDDEN_STAGED_PATTERNS`
+ * (secret-bearing filenames, including `.aws/`, `.ssh/`, `.gnupg/` and
+ * `.netrc`) are never exempt this way, and the check fails closed — nothing
+ * is exempt — whenever the repo's `.gitignore` cannot be proven both tracked
+ * at `HEAD` and unmodified in both the index and the working tree, or
+ * `check-ignore` itself cannot be run.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -50,6 +57,13 @@ export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   /^\.config.*\.json$/,
   /.*\.secret\.json$/,
   /^\.secrets\//,
+  // Credential-store directories and files (Issue #3309) — SECURITY.md and
+  // CODING-STANDARDS.md already document these as always-forbidden, never
+  // exempt via the repo's-own-.gitignore route below.
+  /^\.aws\//,
+  /^\.ssh\//,
+  /^\.gnupg\//,
+  /^\.netrc$/,
   // Private key material and credential files (Issue #3660). Matched on the
   // final path segment so nested paths (`certs/server.pem`) are caught too.
   /(^|\/)[^/]+\.(pem|key|p12|pfx)$/,
@@ -273,6 +287,63 @@ function isForbiddenStagedPath(path: string): boolean {
 }
 
 /**
+ * The deciding rule from one `git check-ignore -v -n` output line, or `null`
+ * when the line shows no decision (`::` — nothing matched this path at
+ * all). Line format: `<source>:<linenum>:<pattern>\t<pathname>`.
+ */
+function parseCheckIgnoreDecision(
+  line: string,
+): { source: string; pattern: string } | null {
+  const tab = line.indexOf("\t");
+  if (tab < 0) return null;
+  const match = /^([^:]*):(\d*):(.*)$/.exec(line.slice(0, tab));
+  const source = match?.[1];
+  const pattern = match?.[3];
+  if (!source || pattern === undefined) return null;
+  return { source, pattern };
+}
+
+/**
+ * The most specific `git check-ignore -v -n --no-index` decision governing
+ * `path` (Issue #3309 hardening of #3296).
+ *
+ * Walks `path` and its ancestor directories nearest-first (the path itself,
+ * then its parent, grandparent, and so on up to the top-level segment),
+ * stopping at the first one some rule actually decides. This mirrors how
+ * git itself resolves ignore status: a directory explicitly re-allowed by
+ * name (e.g. `!.claude/skills`) governs every path beneath it that no more
+ * specific rule decides, even though `check-ignore` run on a nested file
+ * directly reports no decision (`::`) for that file.
+ *
+ * Returns `null` — nothing governs, fail closed — when every segment in the
+ * chain is undecided (`::`, i.e. exit 1), when any `check-ignore` call
+ * cannot be run, or when a "decided" (exit 0) result's output line cannot be
+ * parsed. A `null` here is deliberately indistinguishable between "this
+ * repo's `.gitignore` never mentions this path" and a tool failure — both
+ * must refuse the exemption, not grant it.
+ */
+async function nearestGovernance(
+  path: string,
+  options: GitCommandOptions,
+  run: typeof runGitCommand,
+): Promise<{ source: string; pattern: string } | null> {
+  const segments = path.split("/").filter((s) => s.length > 0);
+  for (let depth = segments.length; depth >= 1; depth--) {
+    const probe = segments.slice(0, depth).join("/");
+    const checked = await run(
+      ["check-ignore", "-v", "-n", "--no-index", "--", probe],
+      options,
+    );
+    if (!checked.ok) return null;
+    const { code, stdout } = checked.value;
+    if (code !== 0 && code !== 1) return null;
+    if (code === 1) continue; // nothing decided this segment; walk up.
+    return parseCheckIgnoreDecision(stdout.split("\n")[0] ?? "");
+  }
+  return null;
+}
+
+/**
  * Hidden paths a target repo's own `.gitignore` re-allows (Issue #3296).
  *
  * `ALLOWED_HIDDEN_PATHS` is this worker's one canonical list, but a repo may
@@ -282,15 +353,19 @@ function isForbiddenStagedPath(path: string): boolean {
  * purpose. A path is exempt here only when:
  *
  *   1. It does not match any `FORBIDDEN_STAGED_PATTERNS` entry — secret
- *      filenames are never exempt this way, regardless of what any
- *      `.gitignore` says.
+ *      filenames and credential-store directories are never exempt this
+ *      way, regardless of what any `.gitignore` says.
  *   2. The repo's root `.gitignore` is tracked at `HEAD` and unmodified in
  *      both the index and the working tree — otherwise an agent could opt a
- *      path in within the very commit being judged, or the check could read
- *      a `.gitignore` the repository does not actually carry forward.
- *   3. `git check-ignore -q --no-index -- <path>` exits 1 (not ignored —
- *      i.e. re-allowed) for that path. Exit 0 (ignored), any other exit
- *      code, or a command that could not be run at all, leaves the path not
+ *      path in within the very commit being judged (via either the staged
+ *      content or the on-disk file `check-ignore --no-index` actually
+ *      reads), or the check could read a `.gitignore` the repository does
+ *      not actually carry forward.
+ *   3. {@link nearestGovernance} finds, for that path or one of its
+ *      ancestor directories, an explicit `!`-negation decided by the root
+ *      `.gitignore` file itself (source `.gitignore`, not a nested or
+ *      untracked one). No decision anywhere in the chain, a decision from
+ *      any other source, or a non-negation decision, all leave the path not
  *      exempt — this check fails closed.
  *
  * @param args.violations Paths the classifier refused
@@ -310,34 +385,46 @@ export async function gitignoreReallowed(args: {
   const candidates = violations.filter((p) => !isForbiddenStagedPath(p));
   if (candidates.length === 0) return exempt;
 
-  // The repo's own .gitignore must be tracked at HEAD and unmodified in the
-  // index and working tree — otherwise nothing it says can be trusted for
-  // this commit, and nothing is exempt on its account.
+  // The repo's own .gitignore must be tracked at HEAD and unmodified in both
+  // the index and the working tree — otherwise nothing it says can be
+  // trusted for this commit. The index check catches a `.gitignore` staged
+  // with new content; the working-tree check catches an on-disk edit that
+  // was never staged at all — `check-ignore --no-index` reads the on-disk
+  // file directly, bypassing the index, so either alone could let a commit
+  // opt itself in.
   const atHead = await run(
     ["cat-file", "-e", "HEAD:.gitignore"],
     options,
   );
   if (!atHead.ok || atHead.value.code !== 0) return exempt;
-  const unmodified = await run(
+  const unmodifiedIndex = await run(
+    ["diff", "--cached", "--quiet", "HEAD", "--", ".gitignore"],
+    options,
+  );
+  if (!unmodifiedIndex.ok || unmodifiedIndex.value.code !== 0) return exempt;
+  const unmodifiedWorkingTree = await run(
     ["diff", "--quiet", "HEAD", "--", ".gitignore"],
     options,
   );
-  if (!unmodified.ok || unmodified.value.code !== 0) return exempt;
+  if (!unmodifiedWorkingTree.ok || unmodifiedWorkingTree.value.code !== 0) {
+    return exempt;
+  }
 
   for (const path of candidates) {
-    const checked = await run(
-      ["check-ignore", "-q", "--no-index", "--", path],
-      options,
-    );
-    if (!checked.ok) continue;
-    if (checked.value.code === 1) {
+    const governance = await nearestGovernance(path, options, run);
+    if (
+      governance !== null && governance.source === ".gitignore" &&
+      governance.pattern.startsWith("!")
+    ) {
       exempt.add(path);
       console.log(
         `[pre-commit-safety] INFO: ${path} is exempt from the safety gate ` +
-          `(Issue #3296): the repo's own .gitignore re-allows it`,
+          `(Issue #3296): the repo's own root .gitignore explicitly ` +
+          `re-allows it (rule: ${governance.pattern})`,
       );
     }
-    // code === 0 (ignored) or any other exit code: not exempt.
+    // No decision anywhere in the chain, a decision from a nested/untracked
+    // .gitignore, or a non-negation decision: not exempt.
   }
   return exempt;
 }

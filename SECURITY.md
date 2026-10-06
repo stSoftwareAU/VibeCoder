@@ -720,18 +720,25 @@ exempt on its account (fail closed).
 
 It also exempts **a hidden path the target repository's own tracked
 `.gitignore` re-allows** (Issue #3296). A staged hidden path outside the
-five-entry `ALLOWED_HIDDEN_PATHS` allowlist is accepted when
-`git check-ignore -q --no-index -- <path>` reports it is *not* ignored by that
-repository's own `.gitignore` — judged, not assumed, by actually running the
-check against the committed file. This is conditional on the root `.gitignore`
-itself: it must be tracked at `HEAD`, and unmodified in both the index and the
-working tree, so a commit can never opt itself in by editing `.gitignore` in
-the same change. `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
+five-entry `ALLOWED_HIDDEN_PATHS` allowlist is accepted only when
+`git check-ignore -v -n --no-index` finds, for that path or one of its
+ancestor directories (the nearest decision wins), an explicit `!`-negation
+rule whose *source* is the repository's own root `.gitignore` itself — not a
+nested or untracked `.gitignore`. Exit 1 from a plain `check-ignore -q` alone
+is not enough: it means only "no rule matches", which is equally true of a
+repository whose `.gitignore` never governs the path at all (Issue #3309),
+so the gate judges the deciding rule, not just the exit code. This is
+conditional on the root `.gitignore` itself: it must be tracked at `HEAD`,
+and unmodified in both the index (`git diff --cached`) and the working tree
+(`git diff`, which `check-ignore --no-index` reads directly), so a commit
+can never opt itself in by editing `.gitignore` in the same change, whether
+staged or only on disk. `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
 `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, `*.pem`,
 `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials.json`,
 `service-account*.json`, and the rest) are checked first and are **never**
 exempt under this route, even when the repository's own `.gitignore`
-re-allows them. If `git check-ignore` cannot be run, nothing is exempt on this
+re-allows them. If `git check-ignore` cannot be run, or no rule anywhere in
+the path's ancestor chain decides it at all, nothing is exempt on this
 account (fail closed), and each exemption is logged at INFO naming the path.
 This closes the gap where this repository's own `.gitignore` re-allows
 `.claude/skills/` and `.claude/agents/` (Issues #2675, #2976) yet the gate

@@ -1096,14 +1096,20 @@ neither may drift from it.
 **Per-repo opt-in — a path the repository's own `.gitignore` re-allows**
 (Issue #3296). The pre-commit safety gate (`assertSafeToCommit()`) also
 accepts a staged hidden path outside the five-entry allowlist when
-`git check-ignore -q --no-index` reports that path is not ignored by the
-target repository's own tracked, unmodified root `.gitignore` — for example
+`git check-ignore -v -n --no-index`, walked over that path and its ancestor
+directories, finds an explicit `!`-negation rule decided by the target
+repository's tracked, unmodified root `.gitignore` itself — for example
 this repository's `.gitignore` re-allows `.claude/skills/` and
-`.claude/agents/` (Issues #2675, #2976). This never widens the fleet-wide
+`.claude/agents/` (Issues #2675, #2976). Exit 1 from a plain
+`check-ignore -q` alone is not enough, since that only means "no rule
+matches" — equally true of a repository whose `.gitignore` never governs
+the path at all (Issue #3309) — and a decision from a nested or untracked
+`.gitignore` does not count either. This never widens the fleet-wide
 allowlist above: it only recognises what a specific repository has already
 chosen to track. The forbidden patterns below are never exempt under this
-route, and if `.gitignore` cannot be read or has been modified, nothing is
-exempt (fail closed). Each exemption is logged at INFO.
+route, and if `.gitignore` cannot be read, has been modified (in the index
+or the working tree), or no rule in the path's ancestor chain decides it at
+all, nothing is exempt (fail closed). Each exemption is logged at INFO.
 
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,

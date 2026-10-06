@@ -731,12 +731,14 @@ This is enforced at the single git-push choke-point by
   exempts nothing.
 - **Nor is a hidden path the repository's own `.gitignore` re-allows**
   (Issue #3296). A staged hidden path outside the fleet-wide allowlist is
-  exempt when `git check-ignore` reports it is not ignored by that
-  repository's own tracked, unmodified root `.gitignore` — for example this
-  repository's `.gitignore` re-allows `.claude/skills/` and `.claude/agents/`
-  (Issues #2675, #2976). Every forbidden secret pattern stays refused
-  regardless, and if `.gitignore` cannot be read or has been modified, nothing
-  is exempt. See [SECURITY.md](../SECURITY.md) for the full rule.
+  exempt when `git check-ignore` finds an explicit `!`-negation rule, decided
+  by that repository's own tracked, unmodified root `.gitignore` itself, for
+  the path or an ancestor directory — for example this repository's
+  `.gitignore` re-allows `.claude/skills/` and `.claude/agents/` (Issues
+  #2675, #2976). Every forbidden secret pattern stays refused regardless, and
+  if `.gitignore` cannot be read, has been modified, or no rule decides the
+  path at all, nothing is exempt. See [SECURITY.md](../SECURITY.md) for the
+  full rule.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes

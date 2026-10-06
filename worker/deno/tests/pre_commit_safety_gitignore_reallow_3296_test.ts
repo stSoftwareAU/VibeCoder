@@ -1,13 +1,20 @@
 /**
- * Tests for the repo-`.gitignore` re-allow exemption (Issue #3296).
+ * Tests for the repo-`.gitignore` re-allow exemption (Issue #3296, hardened
+ * against #3309).
  *
  * `ALLOWED_HIDDEN_PATHS` is the worker's one canonical allowlist, but a
  * target repo's own `.gitignore` may legitimately re-allow a hidden path
  * (this repo's `.gitignore` re-allows `.claude/skills` and `.claude/agents`,
  * for instance). `gitignoreReallowed` and the wiring in `assertSafeToCommit`
  * accept such a path only when the repo's own tracked, unmodified
- * `.gitignore` re-allows it via `git check-ignore --no-index`, and never for
- * a path matching `FORBIDDEN_STAGED_PATTERNS`.
+ * `.gitignore` re-allows it: `git check-ignore -v -n --no-index`, walked
+ * over the path and its ancestor directories, must find an explicit
+ * `!`-negation rule whose deciding source is that root `.gitignore` itself —
+ * never a nested or untracked one, never a plain non-negation match, and
+ * never a path matching `FORBIDDEN_STAGED_PATTERNS`. Exit 1 from a bare
+ * `check-ignore -q` is not sufficient on its own: it means only "no rule
+ * matches", which also holds for a repo whose `.gitignore` never governs the
+ * path at all (Issue #3309).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -377,10 +384,36 @@ Deno.test("gitignoreReallowed - never exempts a FORBIDDEN_STAGED_PATTERNS path",
   }
 });
 
-// --- Case 8: injected-runner seam probes the two untested branches ---------
+// --- Case 8: injected-runner seam probes the ancestor-walk governance ------
+// (Issue #3309 — exit 1 from a single `check-ignore -q` no longer decides
+// the exemption; the walk and the deciding rule's source/sign do.)
 
-function okOutput(code: number): Result<GitCommandOutput> {
-  return { ok: true, value: { code, stdout: "", stderr: "" } };
+function okOutput(code: number, stdout = ""): Result<GitCommandOutput> {
+  return { ok: true, value: { code, stdout, stderr: "" } };
+}
+
+/**
+ * Build a `check-ignore -v -n` stub. `decisions` maps a probe path to its
+ * `<source>:<line>:<pattern>` decision string; a probe not listed gets the
+ * default "no rule decides this segment" (`::`, exit 1) every ancestor-walk
+ * step takes until something decides it.
+ */
+function checkIgnoreStub(
+  decisions: Record<string, string>,
+): (args: string[]) => Promise<Result<GitCommandOutput>> {
+  return (args: string[]) => {
+    const sub = args[0];
+    if (sub === "cat-file" || sub === "diff") {
+      return Promise.resolve(okOutput(0));
+    }
+    if (sub === "check-ignore") {
+      const probe = args[args.length - 1] ?? "";
+      const decision = decisions[probe];
+      if (decision === undefined) return Promise.resolve(okOutput(1));
+      return Promise.resolve(okOutput(0, `${decision}\t${probe}\n`));
+    }
+    throw new Error(`unexpected git subcommand: ${sub}`);
+  };
 }
 
 Deno.test("gitignoreReallowed - a check-ignore call that cannot run at all exempts nothing", async () => {
@@ -426,21 +459,56 @@ Deno.test("gitignoreReallowed - a check-ignore exit code other than 0 or 1 exemp
   assertEquals(exempt.size, 0);
 });
 
-Deno.test("gitignoreReallowed - positive control: the same stubbed cat-file/diff with check-ignore exit 1 does exempt", async () => {
-  const run = (args: string[]) => {
-    const sub = args[0];
-    if (sub === "cat-file" || sub === "diff") {
-      return Promise.resolve(okOutput(0));
-    }
-    if (sub === "check-ignore") return Promise.resolve(okOutput(1));
-    throw new Error(`unexpected git subcommand: ${sub}`);
-  };
+Deno.test("gitignoreReallowed - positive control: a root .gitignore negation on an ancestor directory exempts a nested file (Issue #3309)", async () => {
+  // SKILL_PATH itself and its nearer ancestors are undecided ("::", the
+  // default); only ".claude/skills" is decided, by a root .gitignore
+  // negation — the real shape the #3296 SKILL.md case takes (verified
+  // against a real repo above).
+  const run = checkIgnoreStub({
+    ".claude/skills": ".gitignore:5:!.claude/skills",
+  });
   const exempt = await gitignoreReallowed({
     violations: [SKILL_PATH],
     options: { cwd: "/does/not/matter" },
     run,
   });
   assertEquals(exempt.has(SKILL_PATH), true);
+});
+
+Deno.test("gitignoreReallowed - a decision from a nested/untracked .gitignore does not exempt (Issue #3309)", async () => {
+  // The file's own decision comes from a non-root source — the shape an
+  // untracked nested `.claude/.gitignore` re-allow takes.
+  const run = checkIgnoreStub({
+    [SKILL_PATH]: ".claude/.gitignore:1:!SKILL.md",
+  });
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run,
+  });
+  assertEquals(exempt.has(SKILL_PATH), false);
+});
+
+Deno.test("gitignoreReallowed - a non-negation decision from the root .gitignore does not exempt (Issue #3309)", async () => {
+  const run = checkIgnoreStub({ [SKILL_PATH]: ".gitignore:4:.claude/*" });
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run,
+  });
+  assertEquals(exempt.has(SKILL_PATH), false);
+});
+
+Deno.test("gitignoreReallowed - no decision anywhere in the ancestor chain does not exempt (Issue #3309)", async () => {
+  // Every probe is undecided ("::") — the shape an unpatched repo whose
+  // .gitignore lacks the `.*` rule takes for a path it simply never governs.
+  const run = checkIgnoreStub({});
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run,
+  });
+  assertEquals(exempt.has(SKILL_PATH), false);
 });
 
 // --- Existing #2737 guarantee must still hold (sanity, no re-allow here) ---
@@ -455,6 +523,93 @@ Deno.test("assertSafeToCommit - an agent-added .env or .claude/secret during a m
     assert(!result.ok);
     if (!result.ok) {
       assert(result.error.message.includes(".env"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- Case 9: real repo — exit 1 alone is not a re-allow (Issue #3309) -----
+
+const UNPATCHED_GITIGNORE = "node_modules/\n";
+
+Deno.test("assertSafeToCommit - a tracked .gitignore lacking the `.*` rule exempts nothing for .aws/credentials, .netrc or .npmrc (Issue #3309)", async () => {
+  const dir = await makeRepo("pre_commit_3309_unpatched_");
+  try {
+    await stageFile(dir, ".gitignore", UNPATCHED_GITIGNORE);
+    await mustGit(["commit", "-q", "-m", "base"], dir);
+    await stageFile(dir, ".aws/credentials", "key=1\n");
+    await stageFile(dir, ".netrc", "machine example.com\n");
+    await stageFile(dir, ".npmrc", "//registry.example.com/:_authToken=x\n");
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(
+      !result.ok,
+      "check-ignore exit 1 means 'no rule matches', not 're-allowed'",
+    );
+    if (!result.ok) {
+      const msg = result.error.message;
+      assert(msg.includes(".aws/credentials"), msg);
+      assert(msg.includes(".netrc"), msg);
+      assert(msg.includes(".npmrc"), msg);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- Case 10: real repo — an untracked nested .gitignore is not the root's -
+
+Deno.test("assertSafeToCommit - an untracked nested .claude/.gitignore re-allowing settings.local.json is still refused (Issue #3309)", async () => {
+  const dir = await makeSkillRepo(
+    "pre_commit_3309_nested_gi_",
+    REALLOWING_GITIGNORE,
+  );
+  try {
+    await Deno.writeTextFile(
+      `${dir}/.claude/.gitignore`,
+      "!settings.local.json\n",
+    );
+    await stageFile(dir, ".claude/settings.local.json", '{"x":1}\n');
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(
+      !result.ok,
+      "an untracked nested .gitignore must not stand in for the root one",
+    );
+    if (!result.ok) {
+      assert(result.error.message.includes(".claude/settings.local.json"));
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// --- Case 11: real repo — index-only .gitignore edit (Issue #3309) --------
+
+Deno.test("assertSafeToCommit - a .gitignore modified only in the index exempts nothing (Issue #3309)", async () => {
+  const dir = await makeSkillRepo(
+    "pre_commit_3309_gi_index_only_",
+    REALLOWING_GITIGNORE,
+  );
+  try {
+    // Stage a self-serving rewrite, then restore the working-tree file to
+    // the committed content without unstaging. `git diff HEAD -- .gitignore`
+    // (working tree vs HEAD) now sees no difference, and
+    // `check-ignore --no-index` reads the restored, innocuous-looking file
+    // — only `git diff --cached` catches that the index still differs.
+    await Deno.writeTextFile(
+      `${dir}/.gitignore`,
+      REALLOWING_GITIGNORE + "!.aws\n",
+    );
+    await runGit(["add", ".gitignore"], dir);
+    await Deno.writeTextFile(`${dir}/.gitignore`, REALLOWING_GITIGNORE);
+    await stageFile(dir, SKILL_PATH, "# skill\nedited\n");
+    const result = await assertSafeToCommit({ cwd: dir });
+    assert(
+      !result.ok,
+      "an index-modified .gitignore cannot vouch, even if the working tree matches HEAD",
+    );
+    if (!result.ok) {
+      assert(result.error.message.includes(SKILL_PATH));
     }
   } finally {
     await Deno.remove(dir, { recursive: true });
