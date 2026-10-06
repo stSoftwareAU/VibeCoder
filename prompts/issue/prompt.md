@@ -1021,7 +1021,11 @@ rewrite it, never append to it:
   the summary names, then make every claim match the head: the reproduction
   status, each test's pass/fail result, any "known defect" note, and every
   function, file and helper it names — each must exist at the head and be used
-  as described.
+  as described. An illustrative example ("for example `X`") is a claim too —
+  grep `X` for the stated property before naming it. A Test Plan bullet that
+  quotes a behaviour must name the test in that file that covers it. The
+  worker checks these claims against the head before it raises the PR and
+  blocks the run on a false one it confirms (Issue #3257).
 - Re-derive the Summary, Evidence and Acceptance Criteria sections from that
   diff, not from memory of the run. Every file or behaviour the summary says
   this PR changes must appear in `git diff <base>...HEAD` — existing at the
@@ -1104,11 +1108,12 @@ The file MUST contain:
    to fill in later. The worker catches an unfilled ALL-CAPS token ending in
    _PLACEHOLDER, _PENDING, _TBD or _TODO written outside backticks and code
    blocks — for example SOMETHING_PLACEHOLDER in prose — or a bare ALL-CAPS
-   identifier with an underscore left as the result after the colon on a
-   line that cites a gate command — for example GATE_OUTCOME_PENDING in
-   prose. It blocks PR creation, or records the shortfall against a PR the
-   run already raised. A token inside backticks or a code block is not
-   caught, and it is still never acceptable in place of a result. If a gate
+   identifier with an underscore left as the result after a colon, dash or
+   `=` on a line that cites a gate command — for example
+   GATE_OUTCOME_PENDING in prose. It blocks PR creation, or records the
+   shortfall against a PR the run already raised. A token inside backticks
+   or a code block is not caught, and it is still never acceptable in
+   place of a result. If a gate
    was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or

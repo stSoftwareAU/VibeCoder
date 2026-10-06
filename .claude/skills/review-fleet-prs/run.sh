@@ -108,12 +108,72 @@ EOF
   echo "Log:  tail -f $LOG"
 }
 
+# Picks the Claude subscription a round runs on, the way the worker picks
+# one at start-up (Issue #3289): claude_credential.ts ranks the host's
+# credential pool by remaining budget and leaves out the labels in $1 (a
+# comma list — the subscription a round just exhausted). Sets CRED_LABEL,
+# CRED_NAME and CRED_VALUE; an empty CRED_LABEL means the host's `claude`
+# login is used as before. The token value is never logged or traced: xtrace
+# is suspended while it is in a variable the shell would print.
+select_credential() {
+  local json cred_rc
+  { local xtrace=$-; set +x; } 2>/dev/null
+  CRED_LABEL="" CRED_NAME="" CRED_VALUE=""
+  json=$(cd "$SKILL_DIR" && deno run --allow-read --allow-env \
+    --allow-net=api.anthropic.com claude_credential.ts \
+    ${1:+"--exclude=$1"} 2>"$errfile")
+  cred_rc=$?
+  [[ -s "$errfile" ]] && errors <"$errfile"
+  if [[ $cred_rc -ne 0 ]]; then
+    log "credential selection failed; the round uses the host's claude login"
+  else
+    CRED_LABEL=$(jq -r '.label // empty' <<<"$json" 2>/dev/null)
+    CRED_NAME=$(jq -r '.name // empty' <<<"$json" 2>/dev/null)
+    CRED_VALUE=$(jq -r '.value // empty' <<<"$json" 2>/dev/null)
+    [[ -n $CRED_NAME && -n $CRED_VALUE ]] || CRED_LABEL=""
+  fi
+  [[ $xtrace == *x* ]] && set -x
+  return 0
+}
+
+# Whether a round's log holds the CLI's usage-limit refusal (Issue #3289).
+round_hit_usage_limit() {
+  [[ "$(cd "$SKILL_DIR" && deno run --allow-read claude_credential.ts \
+    "--usage-limit-log=$1" 2>/dev/null)" == "true" ]]
+}
+
+# One headless Claude round, logged to $1. Runs on the subscription
+# select_credential chose, exported to `claude` alone; xtrace stays off in
+# the subshell so the export is never traced.
+#
+# `exec ... or die`: a bare exec that cannot start `claude` (not on PATH)
+# falls through and perl exits 0, which would read as a completed round.
+# `claude -p` otherwise kills its reviewer agents 600s in and ends the
+# round with their PRs unreviewed; the alarm is the round's only limit.
+run_round() {
+  (
+    { set +x; } 2>/dev/null
+    cd "$CHECKOUT" || exit 1
+    [[ -n $CRED_LABEL ]] && export "$CRED_NAME=$CRED_VALUE"
+    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+      "$ROUND_TIMEOUT" \
+      claude -p "$prompt" \
+      --model claude-opus-5-5 --effort xhigh \
+      --allowedTools "Agent" "Read" "Grep" "Glob" "Edit(/$dir/**)" \
+      "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
+      2>&1
+  ) | tee -a "$LOG" "$1"
+  # The round's own status, not tee's: a killed or failed round is a failed
+  # pass, so escalate_result counts it rather than seeing an ok.
+  return "${PIPESTATUS[0]}"
+}
+
 # One pass: a gate check, then a Claude round if anything is ready.
 # Returns non-zero when the App token, the gate or the Claude round failed;
 # sets $LAST_ERROR to a one-line gist of why, for escalate_result to report.
 pass() {
   local reviewer=() ready dir prompt minted errfile token_rc gate_rc round_rc
-  local entry input
+  local entry input spent
   LAST_ERROR=""
   errfile="$STATE_DIR/last-error"
   # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
@@ -191,20 +251,26 @@ from $SKILL_DIR and write its input files under $dir. Skip the
 PushNotification step: this session is headless. Finish with the one-line
 round report."
 
-  # `exec ... or die`: a bare exec that cannot start `claude` (not on PATH)
-  # falls through and perl exits 0, which would read as a completed round.
-  # `claude -p` otherwise kills its reviewer agents 600s in and ends the
-  # round with their PRs unreviewed; the alarm is the round's only limit.
-  (cd "$CHECKOUT" && CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
-    "$ROUND_TIMEOUT" \
-    claude -p "$prompt" \
-    --model claude-opus-5-5 --effort xhigh \
-    --allowedTools "Agent" "Read" "Grep" "Glob" "Edit(/$dir/**)" \
-    "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
-    2>&1) | tee -a "$LOG" "$dir/claude.log"
-  # The round's own status, not tee's: a killed or failed round is a failed
-  # pass, so escalate_result counts it rather than seeing an ok.
-  round_rc=${PIPESTATUS[0]}
+  select_credential ""
+  [[ -n $CRED_LABEL ]] && log "round on Claude subscription $CRED_LABEL"
+  run_round "$dir/claude.log"
+  round_rc=$?
+  # Issue #3289: a round the subscription's usage limit stopped is run again
+  # once on the next-ranked subscription, so one exhausted window does not
+  # stop the fleet review while the pool still holds budget.
+  if [[ $round_rc -ne 0 && $round_rc -ne 142 && -n $CRED_LABEL ]] &&
+    round_hit_usage_limit "$dir/claude.log"; then
+    spent=$CRED_LABEL
+    log "round hit the usage limit on subscription $spent; selecting another"
+    select_credential "$spent"
+    if [[ -n $CRED_LABEL && $CRED_LABEL != "$spent" ]]; then
+      log "retrying the round once on subscription $CRED_LABEL"
+      run_round "$dir/claude-retry.log"
+      round_rc=$?
+    else
+      log "no other subscription has budget; the round stays failed"
+    fi
+  fi
   if [[ $round_rc -eq 142 ]]; then
     # 128 + SIGALRM: the alarm above killed a hung round.
     LAST_ERROR="round timed out after ${ROUND_TIMEOUT}s"
