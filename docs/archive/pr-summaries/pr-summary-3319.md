@@ -61,7 +61,7 @@ Real `gh` behaviour this PR relies on, observed on 2026-10-06:
 ## Test Plan
 
 - `deno task test:unit` on the touched test files: 221 passed, 0 failed.
-- `./quality.sh < /dev/null` passes.
+- `./quality.sh < /dev/null` passes. Only config integration is skipped, because there is no local `.config.json`. `worker/deno/tests/native_sub_issue_refs_test.ts` uses `assertLinearGrowth`, so it is registered in `WALL_CLOCK_TEST_FILES` (`worker/deno/lib/parallel_unsafe_test_manifest.ts`) and runs in the serial pass.
 - Regression: `worker/deno/tests/issue_fetcher_sub_issues_test.ts` "checkParentBlocked - a parent with more than 30 children is not truncated, across paginated pages (Issue #3319)" fails against the base single-page read. The open #135 sits on page 2.
 
 Branch outcomes:
@@ -72,10 +72,10 @@ Branch outcomes:
 - `worker/deno/lib/issue_dependencies.ts:523`: the open-state map answers only for a same-repo child.
   - Test: "checkParentBlocked's same-repo open-state map never answers for a cross-repo child" in `worker/deno/tests/cross_repo_dependency_gate_test.ts`.
   - Dropping the `sameRepo &&` guard turned it red.
-- `worker/deno/lib/issue_dependencies.ts:903`: a cross-repo child is skipped in the work-on graph.
+- `worker/deno/lib/issue_dependencies.ts:906`: a cross-repo child is skipped in the work-on graph.
   - Test: "buildWorkOnDependencyGraph - a cross-repo child with the same number as a set member is not linked (Issue #3319)" in `worker/deno/tests/issue_dependency_cycles_test.ts`.
   - Removing the guard turned it red.
-- `worker/deno/lib/issue_dependencies.ts:938`: `refLabel` renders `#N` for a same-repo child and `owner/repo#N` for a cross-repo child, matching case-insensitively.
+- `worker/deno/lib/issue_dependencies.ts:941`: `refLabel` renders `#N` for a same-repo child and `owner/repo#N` for a cross-repo child, matching case-insensitively.
   - Tests: the three `formatParentBlockedMessage … (Issue #3319)` tests in `worker/deno/tests/issue_dependencies_test.ts`.
   - Always returning `#N` turned them red.
 - `worker/deno/lib/issue_finder_common.ts:834`: the blocker records `child.repo`.
