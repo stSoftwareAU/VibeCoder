@@ -341,7 +341,7 @@ Deno.test("an open dependency's blocker names no milestone", async () => {
 Deno.test("an open sub-issue is collected as a child blocker", async () => {
   const fetcher: IssueFetcher = {
     ...makeFetcher("", { [`${REPO}#99`]: { state: "OPEN" } }),
-    getSubIssues: () => Promise.resolve([99]),
+    getSubIssues: () => Promise.resolve([{ repo: REPO, number: 99 }]),
   };
   const blockers: DependencyBlocker[] = [];
   assertEquals(

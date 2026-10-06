@@ -99,8 +99,10 @@ function makeFetcher(
   return {
     getIssueBody: (_repo: string, n: number) =>
       Promise.resolve(bodies[n] ?? ""),
-    getSubIssues: (_repo: string, n: number) =>
-      Promise.resolve(subIssues[n] ?? []),
+    getSubIssues: (repo: string, n: number) =>
+      Promise.resolve(
+        (subIssues[n] ?? []).map((number) => ({ repo, number })),
+      ),
     getIssueState: (_repo: string, n: number): Promise<IssueState> =>
       Promise.resolve({ number: n, state: "OPEN" }),
   };
@@ -149,5 +151,41 @@ Deno.test(
     assertEquals(graph.find((n) => n.issueNumber === 11)?.childOf, 10);
     // 10→11 (parent) and 11→10 (depends-on) closes a cycle.
     assertEquals(detectDependencyCycles(graph), [10, 11]);
+  },
+);
+
+Deno.test(
+  "buildWorkOnDependencyGraph - a cross-repo child with the same number as a set member is not linked (Issue #3319)",
+  async () => {
+    // Node 20's native sub-issues are #21 in another repo (cross-repo —
+    // coincidentally the same number as a set member) and #22 in its own
+    // repo (same-repo). Only the same-repo child may be linked via
+    // `childOf`; the cross-repo one must not be, even though #21 is also in
+    // the issue-number set.
+    const fetcher: IssueFetcher = {
+      getIssueBody: () => Promise.resolve(""),
+      getSubIssues: (repo: string, n: number) => {
+        if (repo === "owner/repo" && n === 20) {
+          return Promise.resolve([
+            { repo: "other/lib", number: 21 },
+            { repo: "owner/repo", number: 22 },
+          ]);
+        }
+        return Promise.resolve([]);
+      },
+      getIssueState: (_repo: string, n: number): Promise<IssueState> =>
+        Promise.resolve({ number: n, state: "OPEN" }),
+    };
+
+    const graph = await buildWorkOnDependencyGraph(fetcher, "owner/repo", [
+      20,
+      21,
+      22,
+    ]);
+
+    // #21 shares a number with a cross-repo child but must stay unlinked.
+    assertEquals(graph.find((n) => n.issueNumber === 21)?.childOf, undefined);
+    // #22 is the genuine same-repo child and must be linked to its parent.
+    assertEquals(graph.find((n) => n.issueNumber === 22)?.childOf, 20);
   },
 );
