@@ -14,29 +14,21 @@
  * and `merge_conflict` templates and `CODING-STANDARDS.md`.
  *
  * The assertions run against the current templates, so a later edit that
- * drops the rule fails in CI.
+ * drops the rule fails in CI. Each pin is scoped to the narrowest heading
+ * section that carries it (CODING-STANDARDS.md § Documentation-drift tests,
+ * condition 1).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-
-async function load(type: string): Promise<string> {
-  const result = await loadPrompt(type, PROMPTS_DIR);
-  assertEquals(result.ok, true, `${type} failed to load`);
-  if (!result.ok) throw new Error(`${type} failed to load`);
-  return result.value;
-}
-
-/** Flatten whitespace so a line wrap does not break a substring match. */
-function normalise(text: string): string {
-  return text.replace(/\s+/g, " ");
-}
+import { assertStringIncludes } from "@std/assert";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 Deno.test("Issue #3015 - issue prompt re-derives the PR summary from the final diff", async () => {
-  const body = await load("issue");
+  const body = flat(
+    section(
+      await readRepoDoc("prompts/issue/prompt.md"),
+      "PR Summary File",
+    ),
+  );
 
   for (
     const required of [
@@ -51,9 +43,19 @@ Deno.test("Issue #3015 - issue prompt re-derives the PR summary from the final d
   }
 });
 
-for (const type of ["pr_feedback", "ci_fix"]) {
+const TYPES_AND_SECTIONS: readonly [type: string, heading: string][] = [
+  ["pr_feedback", "Making Changes"],
+  ["ci_fix", "Fixing the Failure"],
+];
+
+for (const [type, heading] of TYPES_AND_SECTIONS) {
   Deno.test(`Issue #3015 - ${type} ties the PR summary to the final diff`, async () => {
-    const body = await load(type);
+    const body = flat(
+      section(
+        await readRepoDoc(`prompts/${type}/prompt.md`),
+        heading,
+      ),
+    );
 
     for (
       const required of [
@@ -68,7 +70,12 @@ for (const type of ["pr_feedback", "ci_fix"]) {
 }
 
 Deno.test("Issue #3015 - merge_conflict keeps the PR summary true to the head", async () => {
-  const body = await load("merge_conflict");
+  const body = flat(
+    section(
+      await readRepoDoc("prompts/merge_conflict/prompt.md"),
+      "What To Do",
+    ),
+  );
 
   for (
     const required of [
@@ -82,8 +89,11 @@ Deno.test("Issue #3015 - merge_conflict keeps the PR summary true to the head", 
 });
 
 Deno.test("Issue #3015 - CODING-STANDARDS.md ties the PR summary to the final diff", async () => {
-  const standards = normalise(
-    await Deno.readTextFile(`${REPO_ROOT}CODING-STANDARDS.md`),
+  const standards = flat(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "PR Summary and Evidence",
+    ),
   );
 
   for (

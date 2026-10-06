@@ -16,32 +16,27 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
 import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-
-async function loadIssuePrompt(): Promise<string> {
-  const result = await loadPrompt("issue", PROMPTS_DIR);
-  assertEquals(result.ok, true, "issue failed to load");
-  if (!result.ok) throw new Error("issue failed to load");
-  return result.value.toLowerCase().replace(/\s+/g, " ");
+/** The docs-sweep rule for the `issue` template lives in `## Instructions`. */
+async function scoped(doc: string, title: string): Promise<string> {
+  return flat(section(await readRepoDoc(doc), title)).toLowerCase();
 }
 
 Deno.test("issue - docs sweep greps the stem of a behavioural claim", async () => {
-  const body = await loadIssuePrompt();
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
   assertStringIncludes(body, "grep for the **stem** of a behavioural claim");
   assertStringIncludes(body, "replac\\w* or remov\\w*");
 });
 
 Deno.test("issue - docs sweep is re-run on the final head and each remaining hit is recorded", async () => {
-  const body = await loadIssuePrompt();
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
   assertStringIncludes(body, "on the final head, after editing");
   assertStringIncludes(body, "file:line — still true because");
 });
 
 Deno.test("issue - docs sweep reads every passage in a file it lists as updated", async () => {
-  const body = await loadIssuePrompt();
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
   assertStringIncludes(
     body,
     "in every file you list as updated, read every passage that mentions the changed surface",
@@ -49,7 +44,7 @@ Deno.test("issue - docs sweep reads every passage in a file it lists as updated"
 });
 
 Deno.test("issue - the template says the worker re-runs the line's quoted terms", async () => {
-  const body = await loadIssuePrompt();
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
   assertStringIncludes(body, "the worker re-runs the line's quoted terms");
 });
 
