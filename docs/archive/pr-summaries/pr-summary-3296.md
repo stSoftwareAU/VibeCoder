@@ -150,66 +150,6 @@ The code relies on exit 1 meaning "not ignored", and exit 0 meaning
   passes when the repo's own .gitignore re-allows .claude/skills (Issue
   #3296)" failed on base and passes after the fix.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-An independent reviewer was given only the diff and the issue body.
-
-- **met** — A modified `.claude/skills/<x>/SKILL.md` in a repo whose
-  `.gitignore` re-allows `.claude/skills` passes the gate — evidence:
-  `gitignoreReallowed` wired into `assertSafeToCommit`
-  (`worker/deno/lib/pre_commit_safety.ts:413`) and the regression test
-  named under Reproduction — reviewer: met
-- **met** — The same path in a repo whose `.gitignore` does not re-allow it is still refused — evidence: `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts::assertSafeToCommit - an edited committed SKILL.md is refused when the repo's .gitignore does not re-allow .claude/skills (Issue #3296)` — reviewer: met
-- **met** — `.claude/settings.local.json`, which stays ignored under `.claude/*`, is still refused — evidence: `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts::assertSafeToCommit - .claude/settings.local.json stays refused even though .claude/skills is re-allowed (Issue #3296)`, supported by `gitignoreReallowed - does not exempt a path check-ignore reports as ignored (exit 0)` in the same file — reviewer: met
-- **met** — Secret patterns (`.env`, `.config*.json`, `*.pem`, …) are
-  refused even if a repo's `.gitignore` re-allows them — evidence: ".env,
-  .config.local.json and key.pem stay refused even when the repo's
-  .gitignore re-allows them" and "never exempts a
-  FORBIDDEN_STAGED_PATTERNS path" — reviewer: met
-- **unrequested** — Doc updates across the six manuals listed in the Docs
-  sweep — reviewer: unrequested — reason: they keep the docs truthful
-  about the changed safety gate, as **A Code Change Owes a Docs Change**
-  requires.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-An independent reviewer was given only the diff and `CODING-STANDARDS.md`.
-
-- **violation** — PR Summary and Evidence, "Prose about the PR's own
-  change": the docs say the root `.gitignore` must be unmodified "in both
-  the index and the working tree", but the code only runs
-  `git diff --quiet HEAD -- .gitignore`, which compares `HEAD` with the
-  working tree. A staged `.gitignore` edit whose working-tree file has been
-  put back passes the guard, and no test covers that index-only case —
-  evidence: `worker/deno/lib/pre_commit_safety.ts:321`, `SECURITY.md:727`,
-  `CODING-STANDARDS.md:1101`, `docs/MERGE.md:735` — reason: not fixed in
-  this diff; this retry may correct only the PR summary, so the code or
-  manual wording needs a follow-up.
-- **violation** — PR Summary and Evidence, the same rule: the docs say the
-  gate exempts a path the `.gitignore` "re-allows", but exit 1 from
-  `git check-ignore -q --no-index` means "not ignored". That also covers a
-  hidden path no rule mentions, in a repo without a `.*` ignore line, and a
-  path re-allowed by an untracked nested `.gitignore`. Neither case is
-  tested — evidence: `worker/deno/lib/pre_commit_safety.ts:333`,
-  `CODING-STANDARDS.md:1096`, `SECURITY.md:721`,
-  `prompts/coding_guidelines/prompt.md:1013` — reason: not fixed in this
-  diff, for the same reason.
-- **clean** — Language and Spelling; Never Fail Silently (every
-  `cat-file`, `diff` or `check-ignore` failure leaves the path refused);
-  log levels (each exemption is logged at INFO); TDD, every branch outcome
-  tested; refusal and negative tests with a positive control; parallel-safe
-  unit tests (no `Deno.env` or `Deno.chdir` calls, no sleeps, a temp
-  directory per test); Deno/TypeScript conventions (`Result`,
-  `@std/assert`, an injected `run` seam); KISS/DRY (reuses
-  `FORBIDDEN_STAGED_PATTERNS` and `runGitCommand`); Commit Safety (secret
-  patterns are never exempt); A Code Change Owes a Docs Change; Check
-  existing rules first; A named test must exist. No existing test assertion
-  was removed or weakened, because the only test file is new.
-
 ## Test Plan
 
 - Removed assertions: none. No existing test was edited.
@@ -275,3 +215,20 @@ three gain the exemption by intent. `classifyStagedPath` is unchanged, so
 (`worker/deno/lib/git_push.ts:468`) are unaffected.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A modified .claude/skills/<x>/SKILL.md in a repo whose .gitignore re-allows .claude/skills passes the gate. — evidence: `worker/deno/tests/pre commit safety gitignore reallow 3296 test.ts::assertSafeToCommit - an edited committed SKILL.md passes when the repo's own .gitignore re-allows .claude/skills (Issue #3296)` — reviewer: met
+- **met** — The same path in a repo whose .gitignore does not re-allow it is still refused. — evidence: `worker/deno/tests/pre commit safety gitignore reallow 3296 test.ts::assertSafeToCommit - an edited committed SKILL.md is refused when the repo's .gitignore does not re-allow .claude/skills (Issue #3296)` — reviewer: met
+- **met** — .claude/settings.local.json , which stays ignored under .claude/ , is still refused. — evidence: `worker/deno/tests/pre commit safety gitignore reallow 3296 test.ts::assertSafeToCommit - .claude/settings.local.json stays refused even though .claude/skills is re-allowed (Issue #3296)` — reviewer: met
+- **met** — Secret patterns ( .env , .config .json , .pem , …) are refused even if a repo's .gitignore re-allows them. — evidence: `worker/deno/tests/pre commit safety gitignore reallow 3296 test.ts::assertSafeToCommit - .env, .config.local.json and key.pem stay refused even when the repo's .gitignore re-allows them (Issue #3296); gitignoreReallowed - never exempts a FORBIDDEN STAGED PATTERNS path` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — The docs say the root .gitignore must be unmodified 'in both the index and the working tree', but the code only runs git diff --quiet HEAD -- .gitignore , which compares HEAD with the working tree. A staged .gitignore edit whose working-tree copy has been put back still passes, and no test covers th — evidence: `worker/deno/lib/pre commit safety.ts:321` — reason: NOT fixed in this diff and NOT filed: this breach is on a line the diff adds, and this turn may not change code. It needs a code retry that adds git diff --cached --quiet HEAD -- .gitignore and an index-only test.
+- **violation** — The docs say a path is exempt when the .gitignore 're-allows' it, but exit 1 from git check-ignore -q --no-index only means 'not ignored'. That also exempts a hidden path no rule mentions, in a repo without a . ignore line, and a path re-allowed by an untracked nested .gitignore. Neither case is tes — evidence: `worker/deno/lib/pre commit safety.ts:333` — reason: NOT fixed in this diff and NOT filed: this breach is on a line the diff adds, and this turn may not change code. It needs a code retry that either requires a matching negation rule from the tracked root .gitignore or rewords the docs to say 'not ignored', with tests for both cases.
+- **clean** — Australian English spelling, JSDoc on the new exported function, fail-closed handling when git cannot run or returns other exit codes, TDD (a dedicated 3296 test file with positive and negative controls), and secret patterns checked before any .gitignore exemption
