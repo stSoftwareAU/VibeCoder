@@ -32,6 +32,7 @@ import { assert, assertEquals } from "@std/assert";
 import { evaluateGhCommand } from "../lib/gh_guard_decision.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 import { flattenAll } from "./support/prompt_prose.ts";
+import { readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 
@@ -224,15 +225,23 @@ const WAIT_CONTRACT: readonly { what: string; pattern: RegExp }[] = [
   },
 ];
 
-for (const template of ["coding_guidelines", "ci_fix"]) {
+/** The section each template carries its wait-command contract in. */
+const WAIT_CONTRACT_SECTION: Readonly<Record<string, string>> = {
+  coding_guidelines: "Long-Horizon Runs",
+  ci_fix: "CI Fix Mode",
+};
+
+for (const [template, title] of Object.entries(WAIT_CONTRACT_SECTION)) {
   Deno.test(`${template} - names a wait command that works in the container`, async () => {
-    const text = await Deno.readTextFile(
-      `${PROMPTS_DIR}/${template}/prompt.md`,
+    const text = section(
+      await readRepoDoc(`prompts/${template}/prompt.md`),
+      title,
     );
     for (const { what, pattern } of WAIT_CONTRACT) {
       assert(
         pattern.test(text),
-        `${template}/prompt.md must name ${what} (no match for ${pattern})`,
+        `${template}/prompt.md's "${title}" section must name ${what} ` +
+          `(no match for ${pattern})`,
       );
     }
   });
