@@ -549,10 +549,12 @@ function isBarePlaceholder(body: string): boolean {
 
 /**
  * Blank the parts of a backtick code span that are not the entry's own
- * words, line by line, for every CLOSED span (an odd-indexed segment of a
- * `` ` ``-split line that is not the line's last segment — an unterminated
- * trailing backtick never closes, so the dangling last segment is left
- * alone):
+ * words, paragraph by paragraph (lines joined by blank-line boundaries, so a
+ * span opened on one line and closed on the next — hard-wrapped fleet
+ * summaries do this routinely — still pairs correctly; PR #3312 review), for
+ * every CLOSED span (an odd-indexed segment of a `` ` ``-split paragraph that
+ * is not the paragraph's last segment — an unterminated trailing backtick
+ * never closes, so the dangling last segment is left alone):
  *
  *  - a `path::name`-shaped span keeps only the part before the first `::`:
  *    `` `worker/deno/tests/foo_test.ts::flags no test reaches` `` becomes
@@ -574,20 +576,44 @@ function isBarePlaceholder(body: string): boolean {
  *    left unchanged — there is nothing to blank, and `namedTestPaths` /
  *    `unitLabel` still need to read it.
  *
- * Splits each line on the backtick character rather than using a regex, so
- * there is nothing here that can backtrack.
+ * Splits each paragraph on the backtick character rather than using a
+ * regex, so there is nothing here that can backtrack.
+ *
+ * Groups lines into paragraphs at blank-line boundaries (never across one):
+ * a blank line always separates one `Branch outcomes` entry's prose from the
+ * next, so resetting span-pairing state there cannot merge two unrelated
+ * entries' stray backticks into one false pair. Consecutive non-blank lines
+ * (a bullet plus its indented continuation lines) are joined with `\n` and
+ * pass through `blankLineCitationNames` as a single string — `split("\`")`
+ * does not care that the string contains embedded newlines, so a span that
+ * opens on one line and closes on the next is paired exactly as it would be
+ * if the two lines had never been wrapped.
  */
 function blankTestCitationNames(text: string): string {
-  return text
-    .split(LINE_TERMINATOR_RE)
-    .map(blankLineCitationNames)
-    .join("\n");
+  const lines = text.split(LINE_TERMINATOR_RE);
+  const out: string[] = [];
+  let paragraph: string[] = [];
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    out.push(...blankLineCitationNames(paragraph.join("\n")).split("\n"));
+    paragraph = [];
+  };
+  for (const line of lines) {
+    if (line.trim() === "") {
+      flushParagraph();
+      out.push(line);
+    } else {
+      paragraph.push(line);
+    }
+  }
+  flushParagraph();
+  return out.join("\n");
 }
 
 /** A closed code-span segment containing whitespace somewhere. */
 const SPAN_HAS_WHITESPACE_RE = /\s/;
 
-/** `blankTestCitationNames`' per-line worker. */
+/** `blankTestCitationNames`' per-paragraph worker. */
 function blankLineCitationNames(line: string): string {
   const segments = line.split("`");
   for (let k = 1; k < segments.length - 1; k += 2) {
@@ -609,11 +635,14 @@ function blankLineCitationNames(line: string): string {
  */
 /**
  * Source of the negated-red pattern, shared (by construction, not by
- * duplicated literals) between the strong single-match regex and its global
- * stripping copy below — the two MUST stay identical bar their flags, or the
- * "did the unit record a red flip once negated-red phrases are removed"
- * check in `recordsRedFlip` drifts out of sync with what counts as an
- * admission in the first place.
+ * duplicated literals) with `STRONG_ADMISSION_RES` below so the "strong,
+ * always blocks" check can never drift from one half of what
+ * `recordsRedFlip`'s global strip (below, `NEGATED_RED_GLOBAL_RE`) treats as
+ * negated — the global strip also ORs in `OTHER_NEGATED_RED_SOURCES`, which
+ * this single-match regex deliberately does NOT carry: those weaker
+ * phrasings ("not red" with no verb, "instead of ... red") only disarm a
+ * false red-flip reading, they are not on their own an unambiguous
+ * admission.
  *
  * Deliberately narrower than a bare "negation word, up to N words, `red`":
  * a corpus run over `docs/archive/pr-summaries/` turned up genuinely
@@ -656,11 +685,34 @@ const WEAK_ADMISSION_RES: readonly RegExp[] = [
 ];
 
 /**
- * Global variant of the negated-red strong regex, for stripping before the
- * red check — built from the same `NEGATED_RED_SOURCE` so it can never drift
- * from the strong regex above.
+ * Further phrasings where `red` appears but no flip actually went red (PR
+ * #3312 review): a bare negation directly adjacent to `red` with no go/turn
+ * verb between ("left it green, not red", "stayed green, never red"), an
+ * "instead of (...) red" contrast ("kept it green instead of turning it
+ * red"), a stated future obligation ("a test that goes red is still to
+ * add"), and an explicit "needs/should ... red" ask. `NEGATED_RED_SOURCE`
+ * above is deliberately narrow (direct negation of a go/turn verb only), so
+ * these are additive, not a replacement — they only feed the global
+ * `recordsRedFlip` strip, never the single-match `STRONG_ADMISSION_RES`
+ * entry (a bare "not red" is weak wording, not an unambiguous confession on
+ * its own).
  */
-const NEGATED_RED_GLOBAL_RE = new RegExp(NEGATED_RED_SOURCE, "gi");
+const OTHER_NEGATED_RED_SOURCES = [
+  "(?:\\bnever|\\bnot|n['’]t)\\s+red\\b",
+  "\\binstead\\s+of\\s+(?:\\S+\\s+){0,3}red\\b",
+  "\\b(?:needs?|should)\\s+(?:\\S+\\s+){0,3}red\\b",
+  "\\bred\\b[,:]?\\s+(?:is\\s+)?still\\s+to\\s+add\\b",
+];
+
+/**
+ * Global variant of every negated-red pattern, for stripping before the red
+ * check — built from `NEGATED_RED_SOURCE` (so it can never drift from the
+ * strong regex above) plus `OTHER_NEGATED_RED_SOURCES`.
+ */
+const NEGATED_RED_GLOBAL_RE = new RegExp(
+  [NEGATED_RED_SOURCE, ...OTHER_NEGATED_RED_SOURCES].join("|"),
+  "gi",
+);
 
 /** A bare mention of `red`, checked after negated-red phrases are stripped out. */
 const RED_RE = /\bred\b/i;
@@ -960,7 +1012,21 @@ function evaluateApplicable(
     }
   }
 
-  if (record.present) {
+  if (record.present && !blankedRecord.present) {
+    // The header itself was found in the unblanked parse (stripDecoration
+    // tolerates a backticked header) but vanished once code spans were
+    // blanked — a backticked `` `Branch outcomes:` `` header contains a
+    // space, so blanking the whole span erases the header text along with
+    // it. The admission check below reads ONLY the blanked text, so this
+    // means it never actually read this PR summary's list at all — fail
+    // closed rather than silently skip the check (PR #3312 review).
+    problems.push(
+      "the `Branch outcomes:` header could not be re-read once code spans " +
+        "were blanked for the admission check — write the header without " +
+        "backticks around it (e.g. `Branch outcomes:` as plain text, not " +
+        "`` `Branch outcomes:` ``)",
+    );
+  } else if (record.present) {
     const admission = evaluateUnreachedAdmissions(blankedRecord);
     problems.push(...admission.problems);
     unreachedEntries = admission.unreachedEntries;

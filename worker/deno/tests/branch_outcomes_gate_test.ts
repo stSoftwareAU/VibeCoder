@@ -1521,6 +1521,212 @@ Deno.test("validateBranchOutcomes - a long run of 'stay' words then a non-matchi
   );
 });
 
+// ---------------------------------------------------------------------------
+// PR #3312 review: the PR's own `Branch outcomes:` list (pr-summary-3288.md)
+// admitted four reachable outcomes had no test. These four close that gap.
+// ---------------------------------------------------------------------------
+
+// branch_outcomes_gate.ts:398 — an entry line cut by capEntry is not counted
+// as captured, so its full (uncapped) text still reaches the admission check
+// via uncapturedLines. Flip `entryLines.push(...)` to always `[j]` and this
+// goes green: the capped `entries[]` text loses "no test reaches it" past
+// MAX_ENTRY_CHARS, and marking the line captured removes it from
+// uncapturedLines too, so neither copy carries the admission any more.
+Deno.test("validateBranchOutcomes - an admission past the entry-length cap still blocks (capEntry truncation)", () => {
+  const padding = "pad ".repeat(1_020); // > MAX_ENTRY_CHARS (4,000) once joined
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      `- \`${FOO_TS}:1\` — guard — ${padding}no test reaches it\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// branch_outcomes_gate.ts:409 — the same cap, but for a CONTINUATION line
+// joined onto the previous entry. Flip `entryLines[lastIndex]!.push(j)` to
+// run unconditionally and this goes green the same way.
+Deno.test("validateBranchOutcomes - an admission on a continuation line past the entry-length cap still blocks", () => {
+  const padding = "pad ".repeat(1_020);
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      `- \`${FOO_TS}:1\` — guard —\n` +
+      `  ${padding}no test reaches it\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// branch_outcomes_gate.ts:596 — a `path::name` span keeps only the part
+// before `::`, even when the name after it contains spaces: the path
+// survives blanking and clears the unrelated "stayed green" wording
+// elsewhere in the entry. Flip the `sep >= 0` branch to also blank the whole
+// span on whitespace and this goes red: the path is lost, so nothing clears
+// the weak "stayed green" admission.
+Deno.test("validateBranchOutcomes - a path::name span with spaces keeps the path and stays valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      `- \`worker/deno/tests/foo_test.ts::name with spaces\` — other suites ` +
+      "stayed green\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+  assertEquals(result.unreachedEntries, []);
+});
+
+// branch_outcomes_gate.ts:750 — an admitting entry with no `path:line` token
+// gets a fallback label: its first 80 characters, `…`-suffixed. Flip the cut
+// to never truncate and this goes red: the label is the full untruncated
+// text instead.
+Deno.test("validateBranchOutcomes - a long admitting entry with no path:line gets an 80-character label ending in '…'", () => {
+  const prose = "x".repeat(90) + " this change admits no test reaches it";
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: `**Branch outcomes:**\n- ${prose}\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.unreachedEntries.length, 1);
+  const label = result.unreachedEntries[0]!;
+  assertEquals(label.length, 81);
+  assert(label.endsWith("…"));
+  assertEquals(label.slice(0, 80), prose.slice(0, 80));
+});
+
+// ---------------------------------------------------------------------------
+// PR #3312 review: cross-line backtick pairing (VibeCoder#3132-style defect,
+// still present for a span wrapped across a hard-wrapped line).
+// ---------------------------------------------------------------------------
+
+// blankLineCitationNames used to pair backticks one RAW line at a time, so a
+// span opened on one line and closed on the next was never recognised as a
+// span at all — the pairing on the next line started fresh, and the
+// entry's own admission prose that followed the wrapped span sat inside
+// what the gate (wrongly) read as a still-open code span.
+Deno.test("validateBranchOutcomes - an admission after a backtick span wrapped onto the next line still blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — minimum hold in `check_min_hold(ctx,\n" +
+      "  now)` — **no test reaches it**: flipping the guard left `cargo test " +
+      "--workspace` green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// The reverse must also hold: a wrapped `path::name` test-name span whose
+// wrapped half contains an admission phrase must still be blanked (the
+// phrase is the test's NAME, not the entry's own prose), so the entry stays
+// valid.
+Deno.test("validateBranchOutcomes - a wrapped path::name test name containing an admission phrase is blanked and valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/tests/foo_test.ts::flags an entry no test\n" +
+      "  reaches` — flipped, went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+// ---------------------------------------------------------------------------
+// PR #3312 review: recordsRedFlip's bare `\bred\b` check cleared a weak
+// admission on ordinary ways of saying "no test went red" that happen to
+// mention the word 'red' without the negation governing a go/turn verb
+// directly — real wording plausible in a PR summary, not in EVASION_VARIANTS.
+// ---------------------------------------------------------------------------
+
+const RED_LOOKALIKE_EVASIONS: Array<{ name: string; entry: string }> = [
+  {
+    name: "not red (no verb between)",
+    entry: "`crates/x.ts:20` — flipping it left the suite green, not red",
+  },
+  {
+    name: "instead of turning it red",
+    entry: "`crates/x.ts:21` — flipping it kept the suite green instead of " +
+      "turning it red",
+  },
+  {
+    name: "never red (no verb between)",
+    entry: "`crates/x.ts:22` — untested: flipped, stayed green, never red",
+  },
+  {
+    name: "a red test is still to add",
+    entry: "`crates/x.ts:23` — untested; a test that goes red is still to add",
+  },
+];
+
+for (const { name, entry } of RED_LOOKALIKE_EVASIONS) {
+  Deno.test(`validateBranchOutcomes - red-lookalike evasion blocks: ${name}`, () => {
+    const result = validateBranchOutcomes({
+      changedFiles: [FOO_TS],
+      prSummaryContent: `**Branch outcomes:**\n- ${entry}\n`,
+      testsAtHead: new Set<string>(),
+    });
+    assertEquals(result.valid, false, name);
+    assert(
+      result.problems.some((p) => p.includes("admits no test reaches")),
+      name,
+    );
+  });
+}
+
+// A genuine (unnegated) red flip right beside a negation elsewhere in the
+// sentence must still clear the admission — the new patterns must not
+// over-strip a legitimate "went red".
+Deno.test("validateBranchOutcomes - an unrelated negation beside a genuine red flip is still valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/x.ts:24` — not a special case — flipped, test went red\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+});
+
+// ---------------------------------------------------------------------------
+// PR #3312 review: a backticked `` `Branch outcomes:` `` header is found in
+// the unblanked parse (stripDecoration tolerates backticks) but vanishes
+// once code spans are blanked for the admission check (the span contains a
+// space, so it is blanked outright) — the admission check must fail closed
+// rather than silently never run.
+// ---------------------------------------------------------------------------
+
+Deno.test("validateBranchOutcomes - a backticked header that disappears under blanking blocks instead of skipping the check", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n`Branch outcomes:`\n" +
+      "- `crates/app/src/handler.rs:2022` — guard — no test reaches it: " +
+      "flipping it left the suite green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(
+    result.problems.some((p) => p.includes("could not be re-read")),
+  );
+});
+
+// A plain (non-backticked) header must be unaffected — present survives
+// blanking and the ordinary admission check still runs and still blocks.
+Deno.test("validateBranchOutcomes - a plain-text header still runs the admission check", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\nBranch outcomes:\n" +
+      "- `crates/app/src/handler.rs:2022` — guard — no test reaches it: " +
+      "flipping it left the suite green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+  assert(!result.problems.some((p) => p.includes("could not be re-read")));
+});
+
 Deno.test("lookupTestsAtHead - invokes git with --literal-pathspecs ls-tree -r --name-only HEAD --", async () => {
   let seenArgs: string[] = [];
   const runGit = (args: string[]) => {
