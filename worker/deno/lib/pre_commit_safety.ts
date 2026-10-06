@@ -11,9 +11,17 @@
  * bypassed (`git add -f`), or the canonical patterns from #1757 have
  * not yet been applied to a repo.
  *
- * The allowlist is derived from `REQUIRED_GITIGNORE_PATTERNS` in
- * `gitignore_enforcer.ts` (the single source of truth), so the two
- * layers cannot drift apart.
+ * `ALLOWED_HIDDEN_PATHS`, derived from `REQUIRED_GITIGNORE_PATTERNS` in
+ * `gitignore_enforcer.ts` (the single source of truth), is not the only way a
+ * hidden path can be exempt: a target repo's own tracked, unmodified
+ * `.gitignore` may re-allow a hidden path this worker's canonical list does
+ * not (Issue #3296) — `.claude/skills` and `.claude/agents` under this very
+ * repo's `.gitignore`, for instance. `gitignoreReallowed` below judges that
+ * case with `git check-ignore --no-index` against the repo's own rules.
+ * `FORBIDDEN_STAGED_PATTERNS` (secret-bearing filenames) are never exempt
+ * this way, and the check fails closed — nothing is exempt — whenever the
+ * repo's `.gitignore` cannot be proven both tracked at `HEAD` and unmodified,
+ * or `check-ignore` itself cannot be run.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
