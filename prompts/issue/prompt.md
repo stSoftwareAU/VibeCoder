@@ -152,6 +152,22 @@ guessing — the analysis-only hand-off then routes it to a human.
      sorts `use` statements but does not merge them), so a duplicate import
      can pass CI and still breach a standard only review enforces
      (Issue #3230).
+   - **A new state on an existing screen re-reads that screen's existing
+     text.** When the change adds a state or mode to a screen that
+     already exists (an earlier date, a paged or partial load, a
+     fallback, an empty or error case), list every message the screen
+     already renders — notes, empty-state text, warnings, badges,
+     labels — and say for each whether it is still true in the new
+     state. Reword, hide or mark each one that is not, so the new state
+     never shows a message written for another state, and add a test
+     that renders the new state and asserts each message that differs
+     in that state, or is absent from it. A test that renders only the
+     new rows stays green while an old message is wrong: an empty state
+     reading "Nothing happened in this period." above a new load-older
+     control, or today's live badge beside an earlier date's figures. A
+     pre-existing message left unchanged that is false or misleading in
+     the new state is a blocking self-review finding; list the messages
+     checked in the PR summary's Test Plan (Issue #3259).
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
@@ -1172,9 +1188,16 @@ The file MUST contain:
    value or with the reason it does not need it; a behaviour-carrying
    parameter is required rather than defaulted to a value that turns the
    behaviour off, and a caller left on the old hard-coded value is a
-   blocking self-review finding. Likewise, every outcome of a branch the
-   diff adds — each new condition, match arm, exit code and interface
-   default —
+   blocking self-review finding. Likewise, a state or mode the diff adds
+   to a screen that already exists re-reads that screen's existing text
+   (see **A new state on an existing screen re-reads that screen's
+   existing text** under Instructions): the Test Plan lists every note,
+   empty-state text, warning, badge and label the screen already
+   renders, each marked still true or changed for the new state, with a
+   test asserting each one that differs; a pre-existing message left
+   false or misleading in the new state is a blocking self-review
+   finding. Likewise, every outcome of a branch the diff adds — each new
+   condition, match arm, exit code and interface default —
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
