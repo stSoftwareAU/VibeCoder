@@ -105,6 +105,56 @@ function makeMockGithub(captured: CapturedGh): Partial<GitHubDeps> {
   };
 }
 
+/**
+ * A `gh` mock that answers the PR live-state read and the label-list probe
+ * normally, but throws for every write the escalation itself attempts: both
+ * the REST and CLI forms of `addLabel` (`POST .../issues/N/labels` and
+ * `issue edit --add-label`), and both forms of `postComment`
+ * (`POST .../issues/N/comments` and `issue comment --body`) — see
+ * `gh_escalation_client.ts`. Nothing the escalation writes can land, so
+ * `escalateToHuman` must return `ok: false` (Issue #3246).
+ */
+function makeAllWritesThrowGithub(captured: CapturedGh): Partial<GitHubDeps> {
+  return {
+    runGhCommand: (args: string[]) => {
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      if (args[0] === "label" && args[1] === "list") {
+        return Promise.resolve("[]");
+      }
+      if (args[0] === "api" && args.includes("-X")) {
+        const xIdx = args.indexOf("-X");
+        if (args[xIdx + 1] === "POST") {
+          const endpoint = String(args[xIdx + 2] ?? "");
+          if (endpoint.includes("/issues/") && endpoint.includes("/labels")) {
+            throw new Error("mock: label-add REST call failed");
+          }
+          if (endpoint.includes("/comments")) {
+            throw new Error("mock: comment-post REST call failed");
+          }
+        }
+        // Any other `-X` write (e.g. the repo-level label-create call made
+        // by `ensureLabelExists`) is left to succeed, so the escalation's
+        // failure is caused only by the writes it makes directly.
+      }
+      if (args[0] === "issue" && args[1] === "edit") {
+        throw new Error("mock: add-label CLI fallback failed");
+      }
+      if (args[0] === "issue" && args[1] === "comment") {
+        throw new Error("mock: comment CLI fallback failed");
+      }
+      // Reads that are not writes (e.g. the dedup comment-page GET) answer
+      // with nothing found and keep the escalation moving.
+      if (args[0] === "pr" && args[1] === "comment") {
+        const idx = args.indexOf("--body");
+        if (idx >= 0 && args[idx + 1] !== undefined) {
+          captured.comments.push(args[idx + 1] as string);
+        }
+      }
+      return Promise.resolve("");
+    },
+  };
+}
+
 function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
   return {
     repo: "org/repo",
@@ -123,6 +173,7 @@ interface Scenario {
   runBehaviours: Array<"nothing" | "rebuttal" | "fail">;
   branchHeadChangedOverride?: GitDeps["branchHeadChanged"];
   runGitCommandOverride?: GitDeps["runGitCommand"];
+  githubOverride?: Partial<GitHubDeps>;
 }
 
 interface CapturedLogError {
@@ -189,7 +240,7 @@ async function runScenario(scenario: Scenario): Promise<ScenarioResult> {
 
     const deps = createMockDeps({
       claude: mockClaude,
-      github: makeMockGithub(captured),
+      github: scenario.githubOverride ?? makeMockGithub(captured),
       git: gitOverrides,
     });
 
@@ -333,6 +384,28 @@ Deno.test("reviewer no-change: retry call itself fails — still escalates, exit
   );
   assertEquals(retryFailureLog !== undefined, true);
   assertEquals(retryFailureLog?.context?.error, "boom");
+});
+
+Deno.test("reviewer no-change: escalation that cannot post anything is logged loudly", async () => {
+  const captured: CapturedGh = { comments: [], labelsAdded: [] };
+  const { result, loggerErrors } = await runScenario({
+    input: makeInput(),
+    runBehaviours: ["nothing", "nothing"],
+    githubOverride: makeAllWritesThrowGithub(captured),
+  });
+
+  for (const comment of captured.comments) {
+    assertEquals(comment.includes("could not identify a code change"), false);
+  }
+
+  assertEquals(result.ok, true);
+
+  const escalationFailureLog = loggerErrors.find((e) =>
+    e.message.includes(
+      "escalating the unanswered request-changes review failed",
+    )
+  );
+  assertEquals(escalationFailureLog !== undefined, true);
 });
 
 Deno.test("reviewer no-change: dirty working tree answers — no retry", async () => {
