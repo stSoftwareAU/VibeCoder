@@ -226,7 +226,10 @@ export const diagnoseRepoCommand: Command = {
           if (children.length > 0) {
             openSubIssues = children.map((b) => `#${b.number}`).join(", ");
           }
-          const forward = blockers.filter((b) => b.kind === "depends-on");
+          // Issue #3321: anything that is not a `child` blocker is a forward
+          // dependency or an unreadable-children fail-closed hold — both
+          // belong in "Unmet dependencies", not just `depends-on`.
+          const forward = blockers.filter((b) => b.kind !== "child");
           if (forward.length > 0) {
             unmetDependencies = describeDependencyBlockers(repo, forward);
           }
