@@ -60,9 +60,15 @@ Deno.test(
       if (command.includes("/sub_issues")) {
         return Promise.resolve(
           JSON.stringify([
-            { number: 101, title: "Child A" },
-            { number: 102, title: "Child B" },
-          ]),
+            {
+              number: 101,
+              repository_url: "https://api.github.com/repos/owner/repo",
+            },
+            {
+              number: 102,
+              repository_url: "https://api.github.com/repos/owner/repo",
+            },
+          ]) + "\n",
         );
       }
       return Promise.resolve(JSON.stringify({ body: "" }));
@@ -71,7 +77,13 @@ Deno.test(
     const fetcher = createIssueFetcher(ghFn);
     const subIssues = await fetcher.getSubIssues("owner/repo", 100);
 
-    assertEquals(subIssues.sort((a, b) => a - b), [101, 102]);
+    assertEquals(
+      subIssues.sort((a, b) => a.number - b.number),
+      [
+        { repo: "owner/repo", number: 101 },
+        { repo: "owner/repo", number: 102 },
+      ],
+    );
   },
 );
 
@@ -144,7 +156,14 @@ Deno.test(
     const ghFn = (args: string[]): Promise<string> => {
       const command = args.join(" ");
       if (command.includes("/sub_issues")) {
-        return Promise.resolve(JSON.stringify([{ number: 200 }]));
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 200,
+              repository_url: "https://api.github.com/repos/owner/repo",
+            },
+          ]) + "\n",
+        );
       }
       if (command.includes("issue view") && command.includes("body")) {
         return Promise.resolve(JSON.stringify({ body: "Parent issue" }));
@@ -163,7 +182,9 @@ Deno.test(
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.isBlocked, true);
-      assertEquals(result.value.openChildren, [200]);
+      assertEquals(result.value.openChildren, [
+        { repo: "owner/repo", number: 200 },
+      ]);
     }
   },
 );

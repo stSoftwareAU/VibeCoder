@@ -99,8 +99,10 @@ function makeFetcher(
   return {
     getIssueBody: (_repo: string, n: number) =>
       Promise.resolve(bodies[n] ?? ""),
-    getSubIssues: (_repo: string, n: number) =>
-      Promise.resolve(subIssues[n] ?? []),
+    getSubIssues: (repo: string, n: number) =>
+      Promise.resolve(
+        (subIssues[n] ?? []).map((number) => ({ repo, number })),
+      ),
     getIssueState: (_repo: string, n: number): Promise<IssueState> =>
       Promise.resolve({ number: n, state: "OPEN" }),
   };
