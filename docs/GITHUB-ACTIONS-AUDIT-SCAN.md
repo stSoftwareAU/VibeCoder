@@ -1185,6 +1185,12 @@ not planned at all and the plan carries one line, `secret scanning / push
 protection: skipped — private repository needs paid GitHub Secret
 Protection`, so `--apply` sends no `security_and_analysis` write
 (Issue #2225).
+Private vulnerability reporting is turned on for a **public** repository
+only (Issue #3267): the command reads `private-vulnerability-reporting`
+and plans a bare `PUT` only when it reads `"enabled": false`; on a
+private or internal repository it is not read, and the plan carries one
+line, `private vulnerability reporting: skipped — available on public
+repositories only`.
 One approving review on the default branch is part of the default plan
 (Issue #2680): fleet PRs wait for the `/review-fleet-prs` skill or the owner
 before they merge. A `pull_request` rule below one is raised in the ruleset

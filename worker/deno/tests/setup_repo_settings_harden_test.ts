@@ -29,6 +29,7 @@ import {
   CODE_SECURITY_SKIP_NOTE,
   hardenRepo,
   type HardenRepoOptions,
+  PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE,
   SECRET_PROTECTION_SKIP_NOTE,
 } from "../lib/repo_settings_harden.ts";
 import {
@@ -69,6 +70,8 @@ interface FakeRepo {
   collaborators?: Record<string, string>;
   /** CodeQL default setup (Issue #2704); an Error fails the read. */
   codeScanning?: { state: string; query_suite?: string } | Error;
+  /** Private vulnerability reporting (Issue #3267); absent, the read is a 404. */
+  pvr?: { enabled: boolean; refuseWrite?: boolean };
 }
 
 /** The login the fake GitHub says the gh identity is. */
@@ -225,6 +228,9 @@ function makeFakeGitHub(
         if (state.codeScanning instanceof Error) throw state.codeScanning;
         if (state.codeScanning) return state.codeScanning;
       }
+      if (endpoint === `${base}/private-vulnerability-reporting`) {
+        if (state.pvr) return { enabled: state.pvr.enabled };
+      }
       if (endpoint === `${base}/rulesets`) {
         return state.rulesets.map((r) => ({
           id: r["id"],
@@ -276,6 +282,18 @@ function makeFakeGitHub(
         endpoint === `${base}/code-scanning/default-setup`
       ) {
         state.codeScanning = body as { state: string };
+        return;
+      }
+      if (
+        method === "PUT" &&
+        endpoint === `${base}/private-vulnerability-reporting`
+      ) {
+        if (state.pvr?.refuseWrite) {
+          throw new Error(
+            "gh: Resource not accessible by integration (HTTP 403)",
+          );
+        }
+        state.pvr = { enabled: true };
         return;
       }
       if (endpoint === `${base}/actions/permissions/workflow`) {
@@ -470,7 +488,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(state[repo]!.actions["sha_pinning_required"], true);
   assertStringIncludes(
     first.lines.join("\n"),
-    `${repo}: 6 applied, 1 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 6 applied, 2 unchanged, 0 skipped, 0 failed`,
   );
 
   writes.length = 0;
@@ -481,7 +499,7 @@ Deno.test("runRepoSettingsHarden - a drifted repo gets exactly the drifted write
   assertEquals(writes, [], "a converged repo must see zero writes");
   assertStringIncludes(
     second.lines.join("\n"),
-    `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 0 applied, 8 unchanged, 0 skipped, 0 failed`,
   );
 });
 
@@ -499,7 +517,7 @@ Deno.test("runRepoSettingsHarden - a converged repo reads only, and the totals l
   const last = h.lines[h.lines.length - 1] ?? "";
   assertMatch(
     last,
-    /^Repo-settings hardening: 0 applied, 7 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
+    /^Repo-settings hardening: 0 applied, 8 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,
   );
 });
 
@@ -579,7 +597,7 @@ Deno.test("runRepoSettingsHarden - a repo whose hardenRepo throws never stops th
   assertStringIncludes(out, "boom: rulesets unreachable");
   assertStringIncludes(
     out,
-    `${healthy}: 6 applied, 1 unchanged, 0 skipped, 0 failed`,
+    `${healthy}: 6 applied, 2 unchanged, 0 skipped, 0 failed`,
   );
   assertStringIncludes(out, "1 repo(s) failed");
 });
@@ -601,7 +619,7 @@ Deno.test("runRepoSettingsHarden - a failed step inside hardenRepo is never swal
   const out = [...h.lines, ...h.warnings].join("\n");
   assertStringIncludes(
     out,
-    `${repo}: 5 applied, 1 unchanged, 0 skipped, 1 failed`,
+    `${repo}: 5 applied, 2 unchanged, 0 skipped, 1 failed`,
   );
   assertStringIncludes(out, "workflow-token");
   assertStringIncludes(out, "HTTP 403: Resource not accessible");
@@ -645,7 +663,7 @@ Deno.test("runRepoSettingsHarden - a private repo gets no secret-scanning write 
     [],
   );
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "4 applied, 1 unchanged, 2 skipped, 0 failed");
+  assertStringIncludes(line, "4 applied, 1 unchanged, 3 skipped, 0 failed");
   assertStringIncludes(line, SECRET_PROTECTION_SKIP_NOTE);
   assertStringIncludes(line, CODE_SECURITY_SKIP_NOTE);
 });
@@ -862,7 +880,7 @@ Deno.test("runRepoSettingsHarden - a dry run performs no write, runs no CODEOWNE
   assertEquals(h.codeownersCalls, [], "the CODEOWNERS writer writes a file");
   assertEquals(h.closerCalls, [], "the closer comments on and closes issues");
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "6 planned, 1 unchanged, 0 skipped, 0 failed");
+  assertStringIncludes(line, "6 planned, 2 unchanged, 0 skipped, 0 failed");
   assertStringIncludes(line, "workflow-token");
   assertStringIncludes(line, "codeowners: skipped (dry run)");
   assertStringIncludes(h.lines.join("\n"), "dry run");
@@ -1254,7 +1272,7 @@ Deno.test("runRepoSettingsHarden - a public repo gets CodeQL default setup once,
   assertEquals(writes, [], "CodeQL already configured: no write");
   assertStringIncludes(
     second.lines.join("\n"),
-    `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`,
+    `${repo}: 0 applied, 8 unchanged, 0 skipped, 0 failed`,
   );
 });
 
@@ -1306,7 +1324,7 @@ Deno.test("runRepoSettingsHarden - a repo with its own CodeQL workflow is report
   assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
   assertEquals(codeqlWrites(writes), []);
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 2 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, "codeql-default-setup");
   assertStringIncludes(line, ".github/workflows/codeql.yml");
 });
@@ -1324,6 +1342,115 @@ Deno.test("runRepoSettingsHarden - a refused CodeQL read is reported on the repo
 
   assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
   const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
-  assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");
+  assertStringIncludes(line, "5 applied, 2 unchanged, 1 skipped, 0 failed");
   assertStringIncludes(line, "HTTP 403");
+});
+
+// ---------------------------------------------------------------------------
+// Private vulnerability reporting on public repositories only (Issue #3267)
+// ---------------------------------------------------------------------------
+
+/** The private-vulnerability-reporting writes among `writes`. */
+function pvrWrites(writes: readonly RecordedWrite[]): RecordedWrite[] {
+  return writes.filter((w) =>
+    w.endpoint.endsWith("/private-vulnerability-reporting")
+  );
+}
+
+Deno.test("runRepoSettingsHarden - a public repo with PVR off gets a bare PUT once, and a second run writes nothing (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo({ pvr: { enabled: false } }) };
+  const { gh, writes } = makeFakeGitHub(state);
+  const workDir = await makeWorkDir([repo]);
+
+  const ok = await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, workDir).deps,
+  );
+
+  assertEquals(ok, true);
+  assertEquals(pvrWrites(writes), [{
+    method: "PUT",
+    endpoint: `repos/${repo}/private-vulnerability-reporting`,
+    body: {},
+  }]);
+
+  writes.length = 0;
+  const second = harness(gh, workDir);
+  await runRepoSettingsHarden({ repos: [repo] }, second.deps);
+  assertEquals(pvrWrites(writes), [], "PVR already on: no second write");
+});
+
+Deno.test("runRepoSettingsHarden - a public repo with PVR already on makes no write (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes } = makeFakeGitHub({
+    [repo]: driftedRepo({ pvr: { enabled: true } }),
+  });
+
+  await runRepoSettingsHarden(
+    { repos: [repo] },
+    harness(gh, await makeWorkDir([repo])).deps,
+  );
+
+  assertEquals(pvrWrites(writes), []);
+});
+
+Deno.test("runRepoSettingsHarden - a dry run plans PVR without writing, named on the line (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const state = { [repo]: driftedRepo({ pvr: { enabled: false } }) };
+  const before = structuredClone(state);
+  const { gh: inner } = makeFakeGitHub(state);
+  const attempted: string[] = [];
+  const gh = (args: string[]): Promise<string> => {
+    if (isWrite(args)) {
+      attempted.push(args.join(" "));
+      return Promise.reject(new Error(`dry run wrote: ${args.join(" ")}`));
+    }
+    return inner(args);
+  };
+  const h = harness(gh, await makeWorkDir([repo]), { dryRun: true });
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(attempted, [], "a dry run must not attempt a single write");
+  assertEquals(state, before);
+  assertEquals(ok, true, [...h.lines, ...h.warnings].join("\n"));
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "would apply:");
+  assertStringIncludes(line, "private-vulnerability-reporting");
+});
+
+Deno.test("runRepoSettingsHarden - a private repo makes no PVR read or write, and the line says why (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const { gh, writes, reads } = makeFakeGitHub({
+    [repo]: driftedRepo({ visibility: "private", pvr: { enabled: false } }),
+  });
+  const h = harness(gh, await makeWorkDir([repo]));
+
+  await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(
+    reads.filter((r) => r.includes("private-vulnerability-reporting")),
+    [],
+  );
+  assertEquals(pvrWrites(writes), []);
+  const line = h.lines.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE);
+});
+
+Deno.test("runRepoSettingsHarden - a refused PVR write fails the step, named on the line (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const { gh } = makeFakeGitHub({
+    [repo]: driftedRepo({
+      pvr: { enabled: false, refuseWrite: true },
+    }),
+  });
+  const h = harness(gh, await makeWorkDir([repo]));
+
+  const ok = await runRepoSettingsHarden({ repos: [repo] }, h.deps);
+
+  assertEquals(ok, false, [...h.lines, ...h.warnings].join("\n"));
+  const line = h.warnings.find((l) => l.startsWith(`${repo}:`)) ?? "";
+  assertStringIncludes(line, "failed: ");
+  assertStringIncludes(line, "private-vulnerability-reporting");
 });
