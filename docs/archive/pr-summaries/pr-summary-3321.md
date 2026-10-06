@@ -20,9 +20,13 @@ before its children. The gate now fails closed:
   `unreadable-children` blocker, which `describeDependencyBlockers` renders as
   "sub-issues of #N could not be read (treated as blocked)".
 - `diagnose-repo` now summarises through a pure, tested
-  `summariseDependencyBlockers` helper. The hold appears under "Unmet
-  dependencies" and is no longer dropped by the old `kind === "depends-on"`
-  filter.
+  `summariseDependencyBlockers` helper, which puts an `unreadable-children`
+  blocker under "Unmet dependencies" instead of dropping it through the old
+  `kind === "depends-on"` filter. `diagnose-repo` itself reads sub-issues
+  through `createDiagnosticIssueFetcher` (`worker/deno/lib/diagnose_issue.ts`),
+  whose body-based `getSubIssues` still answers `[]` on a failure and is not
+  changed here, so today that command does not produce the blocker on a live
+  lookup failure.
 
 ```mermaid
 flowchart LR
@@ -81,19 +85,18 @@ cached `[]` kept that wrong answer alive for the cache TTL.
   tests.
 - Green on head: `./quality.sh < /dev/null` gave `Result: PASSED (with skipped
   checks)`. The deno tests passed; config integration was SKIPPED.
-- Docs sweep: grep run for `sub_issues`, `getSubIssues`, `checkParentBlocked`,
-  `returns? \[\]` and `fail\w* open`. Updated:
-  - `docs/CUSTOM-PROMPTS.md:374` (Dependency row);
-  - `docs/INTERNALS.md:1675` (Parent blocking row);
-  - `docs/GH-API-OPTIMISATION.md:219` (sub-issues cache note);
-  - the doc comments on `IssueFetcher.getSubIssues`, `DependencyBlocker.kind`
-    and `checkParentBlocked` `@returns` (`worker/deno/lib/issue_dependencies.ts`);
-  - the doc comments on `describeDependencyBlockers` and `isDependencyBlocked`
-    (`worker/deno/lib/issue_finder_common.ts`).
 
-  Remaining hits are `docs/archive/pr-summaries/pr-summary-1218.md` and
-  `pr-summary-1697.md`. Both are immutable historical records of earlier PRs
-  and still describe what those PRs did, so they are left alone.
+**Docs sweep** — grep: `sub_issues`, `getSubIssues`, `checkParentBlocked`, `isDependencyBlocked`, `buildWorkOnDependencyGraph`, `describeDependencyBlockers`, `diagnose-repo`, "Unmet dependencies", "Open sub-issues", `returns? \[\]`, `fail\w* open`; section: `docs/workflows/issue-processing.md#suppression-rules--what-can-knock-out-a-higher-priority-candidate` (item 4, "Dependency blocking"); updated: `docs/workflows/issue-processing.md` (item 4 said the gate "Fails open on API errors", which this change makes false), `docs/INTERNALS.md` (`#-filtering-criteria`, "Parent blocking" row), `docs/CUSTOM-PROMPTS.md` (`#-when-a-labelled-issue-is-dispatched`, "Dependency" row), `docs/GH-API-OPTIMISATION.md` (`#one-cache-key-one-limit-issue-1486`, sub-issues cache note), and the doc comments on `IssueFetcher.getSubIssues`, `DependencyBlocker.kind` and `checkParentBlocked` (`worker/deno/lib/issue_dependencies.ts`) and on `describeDependencyBlockers` and `isDependencyBlocked` (`worker/deno/lib/issue_finder_common.ts`)
+
+Other hits, read and left alone because they stay true:
+`docs/INTERNALS.md` `checkParentBlocked()` bullet ("Fails closed");
+`docs/INTERNALS.md#-repository-diagnostic-tool-diagnose-repo-deno-command` and
+`docs/TROUBLESHOOTING.md` (list "dependencies, sub-issues" generically);
+`docs/IDLE-TASK-FRAMEWORK.md:948-953` (forward-dependency fail-safe);
+`docs/workflows/planning-and-questions.md:778` (planning's own sub-issue
+count, a different reader); `docs/audits/*` (dated audit records). The
+`docs/archive/pr-summaries/pr-summary-1218.md` and `pr-summary-1697.md` hits
+are historical records of earlier PRs and still describe what those PRs did.
 
 ## Test Plan
 
@@ -112,49 +115,32 @@ New tests:
   tests, covering unreadable-children, the child/depends-on split, and empty
   input.
 
-Branch outcomes (each was flipped in a scratch worktree, and the suite went
-red):
+**Branch outcomes:**
+- `worker/deno/lib/issue_finder_common.ts:598` — error (`gh` call rejects → throws, naming `repo#issue`) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - rejects naming the repo#issue when the API call fails (Issue #3321)` — flipped to `return []`, test went red (with 3 others)
+- `worker/deno/lib/issue_finder_common.ts:605` — error (empty or whitespace-only output → throws) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - rejects naming the repo#issue on empty output` and `::getSubIssues - rejects naming the repo#issue on whitespace-only output` — flipped to `return []`, tests went red
+- `worker/deno/lib/issue_finder_common.ts:613` — error (unparseable output → throws) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - rejects naming the repo#issue on unparseable output` — flipped to `return []`, test went red
+- `worker/deno/lib/issue_finder_common.ts:620` — error (non-array JSON → throws) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - rejects naming the repo#issue on a non-array JSON response` — flipped to `return []`, test went red
+- `worker/deno/lib/issue_finder_common.ts:625` — success (genuine array → its numbers) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - returns the numbers reported by the native sub-issues API` — flipped to map an empty array, test went red
+- `worker/deno/lib/issue_finder_common.ts:625` — absent (genuine `[]` → `[]`) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - a genuine [] response still returns []` — green on base and head (unchanged outcome)
+- `worker/deno/lib/issue_finder_common.ts:598` — error not cached (a rejection is not written by `cached()`) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::getSubIssues - a failed lookup is not cached; the next call re-fetches (Issue #3321)` — flipped `:598` to `return []` (cacheable), test went red
+- `worker/deno/lib/issue_finder_common.ts:882` — fail-closed default (`ok:false`, no `blockers` → `true`) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::isDependencyBlocked - reports blocked when the parent's sub-issues call throws (Issue #3321)` and `::isDependencyBlocked - reports blocked when the parent's sub-issues call returns empty output (Issue #3321)` — flipped to `return false`, both tests went red
+- `worker/deno/lib/issue_finder_common.ts:876` — fail-closed with `blockers` (pushes `unreadable-children`) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::isDependencyBlocked - collects an 'unreadable-children' blocker when blockers[] is supplied, and describeDependencyBlockers names it (Issue #3321)` — dropped the push, test went red
+- `worker/deno/lib/issue_finder_common.ts:884` — success (`ok:true`, not blocked) — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::isDependencyBlocked - a genuine [] sub-issues response with no dependencies is NOT blocked (control for the regression above)` — control, green on base and head
+- `worker/deno/lib/issue_finder_common.ts:812` — `unreadable-children` rendering in `describeDependencyBlockers` — `worker/deno/tests/issue_fetcher_sub_issues_test.ts::isDependencyBlocked - collects an 'unreadable-children' blocker when blockers[] is supplied, and describeDependencyBlockers names it (Issue #3321)` and `worker/deno/tests/diagnose_repo_test.ts::summariseDependencyBlockers - an unreadable-children blocker reads as unmet dependencies, not open sub-issues (Issue #3321)` — dropped the push, both tests went red
+- `worker/deno/lib/diagnose_repo.ts:236` — non-`child` blockers go to `unmetDependencies` — `worker/deno/tests/diagnose_repo_test.ts::summariseDependencyBlockers - an unreadable-children blocker reads as unmet dependencies, not open sub-issues (Issue #3321)` — restored the old `kind === "depends-on"` filter, test went red
+- `worker/deno/lib/diagnose_repo.ts:231` — present (`child` blockers → `openSubIssues`) and absent (none → `undefined`) — `worker/deno/tests/diagnose_repo_test.ts::summariseDependencyBlockers - a child blocker and a depends-on blocker split between the two fields` and `worker/deno/tests/diagnose_repo_test.ts::summariseDependencyBlockers - no blockers leaves both fields undefined` — flipped the guard to `>= 0`, the absent test went red
+- `worker/deno/lib/diagnose_repo.ts:238` — absent (no non-`child` blockers → `unmetDependencies` stays `undefined`) — `worker/deno/tests/diagnose_repo_test.ts::summariseDependencyBlockers - no blockers leaves both fields undefined` — flipped the guard to `>= 0`, test went red
 
-- `worker/deno/lib/issue_finder_common.ts:598`: the `gh` call rejects and
-  `getSubIssues` throws. Reached by "rejects naming the repo#issue when the API
-  call fails". The flip to `return []` turned 4 tests red.
-- `worker/deno/lib/issue_finder_common.ts:606`: empty or whitespace output
-  throws. Reached by "rejects … on empty output" and "… whitespace-only
-  output". The flip to `return []` turned 3 tests red.
-- `worker/deno/lib/issue_finder_common.ts:614`: unparseable output throws.
-  Reached by "rejects … on unparseable output". The flip to `return []` turned
-  1 test red.
-- `worker/deno/lib/issue_finder_common.ts:621`: a non-array response throws.
-  Reached by "rejects … on a non-array JSON response". The flip to `return []`
-  turned 1 test red.
-- A genuine array returns numbers. Reached by "a genuine [] response still
-  returns []" and "returns the numbers reported by the native sub-issues API".
-  These existing outcomes are green on base and head.
-- Not cached on failure: reached by "a failed lookup is not cached; the next
-  call re-fetches". Base cached the `[]` answer, so this test was red on base.
-- `worker/deno/lib/issue_finder_common.ts:871`: `ok:false` with no `blockers`
-  returns `true`. Reached by "isDependencyBlocked - reports blocked when the
-  parent's sub-issues call throws" and "… returns empty output". The flip to
-  `false` turned 2 tests red.
-- `worker/deno/lib/issue_finder_common.ts:876`: `ok:false` with `blockers`
-  pushes `unreadable-children`. Reached by "collects an 'unreadable-children'
-  blocker …". Dropping the push turned 1 test red.
-- `worker/deno/lib/issue_finder_common.ts:812`: the `describeDependencyBlockers`
-  rendering. Reached by the same test and by the diagnose-repo test (a).
-  Dropping the loop turned 2 tests red.
-- `worker/deno/lib/diagnose_repo.ts:236`: non-child blockers go to
-  `unmetDependencies`. Reached by "summariseDependencyBlockers - an
-  unreadable-children blocker reads as unmet dependencies". Restoring the old
-  `kind === "depends-on"` filter turned 1 test red.
-- `worker/deno/lib/diagnose_repo.ts:230` and `:237`, the absent cases (no
-  children, no forward blockers): reached by "no blockers leaves both fields
-  undefined".
+Each flip was re-run on 2026-10-06 against the current head in a scratch
+worktree with `deno test --no-check -A` over the two test files above
+(baseline: 52 passed, 0 failed).
 
-Entry points checked:
-
-- `worker/deno/commands/diagnose_repo.ts` now calls
-  `summariseDependencyBlockers`. Reverting the filter inside it went red,
-  through test (a) above.
+`worker/deno/commands/diagnose_repo.ts` and
+`worker/deno/lib/issue_dependencies.ts` add no branch: the command replaces
+its inline filters with one call to `summariseDependencyBlockers`, and
+`issue_dependencies.ts` changes only the `DependencyBlocker.kind` type and doc
+comments. The command's call has no test of its own; the behaviour it
+delegates is covered by the `summariseDependencyBlockers` tests above.
 
 Changed test fakes (no assertion was removed or weakened):
 
@@ -169,28 +155,44 @@ Changed test fakes (no assertion was removed or weakened):
 
 ### Callers checked (narrowed shared helper `getSubIssues`)
 
-Every reader of `getSubIssues` passes through `checkParentBlocked`, which
-already wraps the call in a `Result` and returns `{ ok: false }` on a
-rejection:
+The shared fetcher's `getSubIssues` (`worker/deno/lib/issue_finder_common.ts`)
+is wrapped by the per-scan `subCache` memo and the TTL `cached()` wrapper in
+the same file. Both pass a rejection through unchanged. It has two readers:
 
-- `isDependencyBlocked` in `worker/deno/lib/issue_finder_common.ts` now fails
-  closed. It is reached from:
+- `checkParentBlocked` (`worker/deno/lib/issue_dependencies.ts:471`) calls it
+  inside a `try` and returns `{ ok: false }` on a rejection.
+  `isDependencyBlocked` (`worker/deno/lib/issue_finder_common.ts`) now fails
+  closed on that. `isDependencyBlocked` is called from:
   - `worker/deno/commands/diagnose_repo.ts`
-  - `worker/deno/commands/collect_self_diagnostic_candidates.ts`
-  - `worker/deno/commands/collect_work_on_candidates.ts`
-  - `worker/deno/commands/collect_low_priority_candidates.ts`
-  - `worker/deno/commands/collect_idle_task_candidates.ts`
-  - `worker/deno/commands/collect_label_candidates.ts`
-  - `worker/deno/commands/diagnose_issue.ts`
+  - `worker/deno/lib/collect_self_diagnostic_candidates.ts`
+  - `worker/deno/lib/collect_work_on_candidates.ts`
+  - `worker/deno/lib/collect_low_priority_candidates.ts`
+  - `worker/deno/lib/collect_idle_task_candidates.ts`
+  - `worker/deno/lib/collect_label_candidates.ts`
+  - `worker/deno/lib/diagnose_issue.ts`
   - `worker/deno/lib/new_work_eligibility.ts`
 
-  In each of them, a blocked result skips the candidate, which is the intended
-  hold.
-- `worker/deno/commands/check_parent_dependencies.ts` uses its own fetcher and
-  already handles `ok:false`.
-- `worker/deno/lib/dependency_chain_promotion.ts`: an `unreadable-children`
-  blocker names the candidate itself. The visited set is seeded with the
-  candidate, so chain promotion cannot loop or promote it.
+  In each scan collector, a blocked result skips the candidate, which is the
+  intended hold.
+- `buildWorkOnDependencyGraph` (`worker/deno/lib/issue_dependencies.ts:891`)
+  calls `fetcher.getSubIssues` itself, inside its own `try`/`catch`, without
+  going through `checkParentBlocked`. On a rejection it skips that node's
+  parent edges. Before this change the same failure answered `[]`, which also
+  added no edges, so the cycle detection reached from
+  `worker/deno/lib/collect_work_on_candidates.ts:720` behaves as before.
+
+Separate fetchers, not changed by this diff:
+
+- `worker/deno/commands/check_parent_dependencies.ts` has its own
+  `getSubIssues` and already handles `ok:false`.
+- `createDiagnosticIssueFetcher` (`worker/deno/lib/diagnose_issue.ts`), used
+  by `diagnose-issue` and `diagnose-repo`, has a body-based `getSubIssues` that
+  still answers `[]` on a failure, so those diagnostics do not report the
+  `unreadable-children` hold for a live lookup failure.
+
+`worker/deno/lib/dependency_chain_promotion.ts`: an `unreadable-children`
+blocker names the candidate itself. The visited set is seeded with the
+candidate, so chain promotion cannot loop or promote it.
 
 ### Guards kept
 
