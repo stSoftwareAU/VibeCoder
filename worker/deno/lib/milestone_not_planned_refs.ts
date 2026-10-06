@@ -8,8 +8,9 @@
  * the milestone branch can still describe that dropped work as present, and
  * nothing on the merge path previously said so.
  *
- * This module scans the milestone's issues (and their declared forward
- * dependencies) for ones closed as not planned, then scans the
+ * This module scans the milestone's issues (and their declared same-repo
+ * forward dependencies, bare `#N` or `owner/repo#N` for this repo) for ones
+ * closed as not planned, then scans the
  * default…milestone compare diff for added Markdown lines that name one of
  * those issues, so the summary-PR reviewer can see every forward reference to
  * dropped work. It never blocks PR creation — a lookup or diff failure only
@@ -22,7 +23,7 @@ import type { Result } from "../types.ts";
 import { isValidRepoSlug } from "./repo_slug.ts";
 import { isValidBranchName } from "./repo_rulesets.ts";
 import { parseJsonArrayPages } from "./json_array_pages.ts";
-import { extractDependencyReferences } from "./issue_dependencies.ts";
+import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
 import { scrubUntrustedText } from "./prompt_delimiter.ts";
 
 /** Injectable `gh` runner (same shape as the other milestone helpers). */
@@ -289,7 +290,17 @@ export async function findNotPlannedDocReferences(
   const lookupCache = new Map<number, NotPlannedCandidate | null>();
   const sortedMembers = [...members].sort((a, b) => a.number - b.number);
   for (const member of sortedMembers) {
-    const deps = extractDependencyReferences(member.body ?? "");
+    // Same-repo deps only: bare `#N` or this repo spelt out (any case).
+    const deps = [
+      ...new Set(
+        extractDependencyReferencesDetailed(member.body ?? "")
+          .filter((ref) =>
+            ref.repo === undefined ||
+            ref.repo.toLowerCase() === repo.toLowerCase()
+          )
+          .map((ref) => ref.number),
+      ),
+    ].sort((a, b) => a - b);
     for (const dep of deps) {
       // Members (self included) are already scanned; outside deps are cached below.
       if (memberNumbers.has(dep)) continue;
