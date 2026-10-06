@@ -57,6 +57,36 @@ parent/child gate is still not modelled. Closes #3314.
    command (both run only inside the container, which pins gh 2.97.0), so
    they are unaffected by this host/apt-gh gap and are left as-is. Tests
    added to `worker/deno/tests/issue_query_test.ts`.
+4. The 2.94.0 floor and the error message were confirmed against `cli/cli`
+   source, but the field *shape* `parseSubIssuesSummary`/`hasOpenSubIssues`
+   depend on (numeric `total`/`completed`) had no observed `gh` output. Run
+   on the container's own pinned `gh` (2.97.0):
+   `gh issue view 2503 -R stSoftwareAU/GRQ-AutoTrader --json number,state,subIssuesSummary`
+   →
+   `{"number":2503,"state":"OPEN","subIssuesSummary":{"completed":0,"percentCompleted":0,"total":4}}`.
+   Matches what the code assumes.
+5. `ALL_ISSUES_FIELDS` adds `subIssuesSummary` to the `FilterableIssue` rows
+   cached under the unversioned `issues_all` key
+   (`worker/deno/lib/issue_query.ts:471`, `:528`), so a row the previous
+   release cached lacks the field for up to the cache's 600 s TTL after a
+   deploy. **Choice: keep the key, read the old shape.** The field is
+   optional on `FilterableIssue`/`CensusIssue` and both production readers
+   (`hasOpenSubIssues`, called from the census and the audit) already treat
+   an absent field as "not blocked" — the exact pre-#3314 reading, by
+   design (see the `SIMPLE-ON-PURPOSE` comment on `hasOpenSubIssues`).
+   Bumping the key (e.g. `issues_all_v2`) would touch every invalidation
+   site (`issue_lifecycle.ts:130`, `issue_close_notifier.ts:72`,
+   `pr_issue_linking.ts:1118`, `pr_maintenance.ts:2303`,
+   `stuck_recovery.ts:829/945/1261`) for no behavioural gain, since the old
+   shape is already handled correctly. Added
+   `worker/deno/tests/issue_query_test.ts`'s
+   `"a pre-#3314 issues_all entry (no subIssuesSummary field) is served, and
+   the census/audit treat it as not sub-issue-blocked (Issue #3318)"`: seeds
+   an old-shape `issues_all` entry (object with no `subIssuesSummary` key at
+   all) via `IssueCache.write`, calls `fetchAllIssues` with a `gh` stub that
+   throws if called, and asserts the entry is served unchanged and that both
+   `classifyIssues` and `buildIdleDecisionCensus` count the row as claimable
+   / not `dependency_blocked`.
 
 **Docs sweep (review follow-up, item 3)** — grep: `subIssuesSummary`,
 `fetchAllIssues`, "apt-get install -y gh", "gh version", "2.94" over
@@ -137,8 +167,13 @@ says an open sub-issue counts as a dependency.
   proves a genuine failure is not retried. All three went red with the fix
   reverted (confirmed by disabling the `SUBISSUES_SUMMARY_UNSUPPORTED` branch
   and re-running), then the fix was restored.
+- Review follow-up (item 5, persisted shape): added
+  `worker/deno/tests/issue_query_test.ts`'s
+  `"a pre-#3314 issues_all entry (no subIssuesSummary field) is served, and
+  the census/audit treat it as not sub-issue-blocked (Issue #3318)"` — see
+  Branch outcomes, `issue_query.ts:265`, for the red run.
 - `deno task test:unit tests/issue_query_test.ts` from `worker/deno`:
-  82 passed, 0 failed.
+  83 passed, 0 failed.
 
 **Branch outcomes:**
 
@@ -170,7 +205,8 @@ says an open sub-issue counts as a dependency.
   — flipped to return `undefined`, test went red
 - `worker/deno/lib/issue_query.ts:265` — absent summary means not blocked —
   `worker/deno/tests/idle_decision_census_test.ts::#3314 - an absent subIssuesSummary is claimable, as before`
-  — flipped to `return true`, test went red
+  and (review follow-up, item 5) `worker/deno/tests/issue_query_test.ts::issue_query - a pre-#3314 issues_all entry (no subIssuesSummary field) is served, and the census/audit treat it as not sub-issue-blocked (Issue #3318)`
+  — flipped to `return true`, both tests went red
 - `worker/deno/lib/issue_query.ts:266` — blocked (`total > completed`) —
   `worker/deno/tests/idle_decision_census_test.ts::#3314 - an issue with open native sub-issues is dependency-blocked, not claimable`
   — flipped to `return false`, test went red (as did the matching

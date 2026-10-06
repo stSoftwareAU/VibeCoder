@@ -26,6 +26,8 @@ import {
 } from "../lib/issue_query.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { TimelineCache } from "../lib/timeline_cache.ts";
+import { classifyIssues } from "../lib/idle_detect_diagnostics.ts";
+import { buildIdleDecisionCensus } from "../lib/idle_decision_census.ts";
 
 // =============================================================================
 // parseIssueListJson tests
@@ -1734,6 +1736,64 @@ Deno.test("issue_query - a legacy bare-array cache entry is still readable (Issu
     await cleanup();
   }
 });
+
+Deno.test(
+  "issue_query - a pre-#3314 issues_all entry (no subIssuesSummary field) is served, and the census/audit treat it as not sub-issue-blocked (Issue #3318)",
+  async () => {
+    const { cache, cleanup } = await makeTempCache();
+    try {
+      // Simulates a row written by the release before #3314 — the field is
+      // absent from the object entirely, not merely `undefined`, matching
+      // what the file-backed cache actually held pre-deploy.
+      const oldShapeIssue = {
+        number: 2503,
+        title: "Parent with open sub-issues",
+        url: "https://github.com/org/repo/issues/2503",
+        author: "someone",
+        assignees: [],
+        labels: ["work-on"],
+        createdAt: "2024-01-01T00:00:00Z",
+        milestone: "",
+      };
+      await cache.write("org/repo", "issues_all", {
+        limit: 100,
+        issues: [oldShapeIssue],
+      });
+
+      const issues = await fetchAllIssues("org/repo", cache, 100, () => {
+        throw new Error("a pre-#3314 entry must be served, not refetched");
+      });
+      assertEquals(issues, [oldShapeIssue]);
+      assert(
+        !("subIssuesSummary" in issues[0]!),
+        "the old-shape row must carry no subIssuesSummary field at all",
+      );
+
+      // CODING-STANDARDS.md "Changing the Shape of Persisted Data": the key
+      // (`issues_all`) is kept, and both production readers of the new field
+      // already treat its absence as "not blocked" — the pre-#3314 reading —
+      // for up to the cache's 600s TTL after a deploy.
+      const verdicts = classifyIssues(issues, { workerUser: "vibebot" });
+      assertEquals(verdicts[0]?.claimable, true);
+
+      const census = buildIdleDecisionCensus({
+        decisionPoint: "filing",
+        workerUser: "vibebot",
+        repos: [{
+          repo: "org/repo",
+          monitored: true,
+          scannedThisCycle: true,
+          nice: 0,
+          issues,
+        }],
+      });
+      assertEquals(census.perRepo[0]?.unblocked.workOn, 1);
+      assertEquals(census.perRepo[0]?.dependencyBlocked, 0);
+    } finally {
+      await cleanup();
+    }
+  },
+);
 
 Deno.test("issue_query - fetchMergedPRsByUser rejects empty gh output instead of caching [] (Issue #4257)", async () => {
   const { cache, cleanup } = await makeTempCache();
