@@ -30,43 +30,6 @@ re-read shows `"enabled": true`. Closes #3268.
 - The `docs/audits/*` sweeps are dated snapshots.
 - Open, from the standards review below: the "A check that could not run says so (Issue #1094)" paragraph (`docs/GITHUB-ACTIONS-AUDIT-SCAN.md:1123`) names the "Actions policies" permission for every 403 on these endpoints. That may be the wrong advice for the new PVR read.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — Public repo with `enabled:false` → one `BP-REPO-PVR-OFF` finding with the admin prose. — evidence: `worker/deno/tests/repo_settings_scanner_test.ts::scanRepoSettings - a public repository with PVR off files BP-REPO-PVR-OFF (Issue #3268)` — reviewer: met
-- **met** — Public repo with `enabled:true` → no finding. — evidence: `worker/deno/tests/repo_settings_scanner_test.ts::scanRepoSettings - a public repository with PVR on files nothing but still reads the endpoint (Issue #3268)` — reviewer: met
-- **met** — Already-open `BP-REPO-PVR-OFF` → no duplicate. — evidence: `worker/deno/tests/repo_settings_scanner_test.ts::scanRepoSettings - a known-open BP-REPO-PVR-OFF is not re-filed (Issue #3268)` — reviewer: met
-- **met** — Private repo → no PVR read, check recorded as skipped. — evidence: `worker/deno/tests/repo_settings_scanner_test.ts::scanRepoSettings - a private or internal repository is not read for PVR and the skip is recorded (Issue #3268)` — reviewer: met
-- **met** — 403 / other read error → `onLookupFailure` called, no finding. — evidence: `worker/deno/tests/repo_settings_scanner_test.ts::scanRepoSettings - a PVR read failure is a lookup failure, not a finding or a skip (Issue #3268)` — reviewer: met
-- **met** — Closer closes an open `BP-REPO-PVR-OFF` only when the PVR step ran cleanly **and** the re-read shows `enabled:true`. — evidence: `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF closes once hardening applied and the re-read shows enabled: true`, `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF closes when already compliant (no step of its kind) and the re-read shows enabled: true` — reviewer: met — reason: "ran cleanly" includes "no step of its kind", as for every other mapped kind (`eligibleFindingIds`). The positive read-back is still required.
-- **met** — Closer leaves it open on a re-read of `false`, a dry run, a failed step, or a missing read-back. — evidence: `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF stays open when the re-read shows enabled: false`, `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF never closes on a dry run (planned/failed/skipped this run)`, `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF stays open when the read-back has no enabled field (scanner silent)`, `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF stays open when the repo is private (PVR not read at all)`, `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF stays open and warns when the PVR read-back rejects` — reviewer: met
-- **met** — Docs list the new id. — evidence: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` — reviewer: met
-- **unrequested** — The four existing private/internal scanner tests narrow `onCheckSkipped` to `SECRET_PROTECTION_SKIP_CHECK`, and the shared `HARDENED`/`OPEN` fixtures gain PVR entries — reviewer: unrequested — reason: a needed side effect, because private repos now also emit the PVR skip. Those tests now assert "at least this skip" rather than "exactly these skips".
-- **unrequested** — The existing `eligibleFindingIds` test expects `BP-REPO-PVR-OFF` in its eligible list — reviewer: unrequested — reason: follows mechanically from the new `FINDING_STEP_KIND` entry.
-- **unrequested** — Exported `PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK` / `_REASON` constants — reviewer: unrequested — reason: they follow the existing `SECRET_PROTECTION_SKIP_*` pattern for the required skip reason.
-- **unrequested** — `suggestedFix` adds a Settings path and a `repo-settings-harden --apply` hint after the `ADMIN` prose; severity `medium` — reviewer: unrequested — reason: the issue gave no severity; the hint matches an existing finding.
-- **unrequested** — Docs go beyond the id: a public-only paragraph and a closer sentence — reviewer: unrequested — reason: these are accurate against the code (docs-change rule).
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — Log Levels Are a Promise About What the Reader Must Do — evidence: `worker/deno/lib/repo_settings_scanner.ts:372` — reason: open, not fixed in this diff. Every private or internal repository now gets a PVR skip on every audit run. The audit template logs that skip at `WARNING` (`worker/deno/lib/idle_task_templates/github_actions_audit_template.ts:1483`), but it is an expected absence nobody can act on, so it belongs at INFO.
-- **violation** — Every outcome of a branch you add needs a test that reaches it (absent/empty) — evidence: `worker/deno/lib/repo_settings_scanner.ts:383` — reason: open, not fixed in this diff. No scanner test feeds a PVR response without an `enabled` field, so the "absent field → no finding" outcome is not pinned at the scanner level (see Branch outcomes).
-- **violation** — A new behaviour reaches every caller / A Code Change Owes a Docs Change — evidence: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md:1123`, `worker/deno/lib/idle_task_templates/github_actions_audit_template.ts:1497` — reason: open, not fixed in this diff. A 403 on the new PVR read goes down the "not permitted" path, which tells the operator to grant the "Actions policies" permission. The reviewer believes this endpoint needs Administration read instead, but did not check this against GitHub.
-- **violation** — Comment/doc accuracy — evidence: `worker/deno/tests/repo_settings_scanner_test.ts:246` — reason: open, not fixed in this diff. The test title "records no skip" is now true only for the secret-protection skip.
-- **clean** — Checked and compliant:
-  - the two changed assertions follow from the issue;
-  - the narrowed callbacks keep every secret-protection assertion;
-  - the scanner and closer outcomes listed below are tested;
-  - both production callers of `scanRepoSettings` are covered;
-  - the visibility gate is reused (DRY/KISS);
-  - a read failure fails loud and never counts as a pass;
-  - Australian English;
-  - Deno/TS conventions;
-  - `deno lint` and `deno fmt --check` are clean on the changed files.
-
 ## Test Plan
 
 - `deno test --allow-all tests/repo_settings_scanner_test.ts tests/setup_repo_settings_audit_close_test.ts` (from `worker/deno`): 45 passed, 0 failed.
@@ -95,3 +58,26 @@ Each test was flipped in a scratch copy of `worker/deno` with `--no-check` where
 - `worker/deno/setup/repo_settings_audit_close.ts:277` — fail-closed (missing `enabled`, or private repo not read → stays open) — `worker/deno/tests/setup_repo_settings_audit_close_test.ts::BP-REPO-PVR-OFF stays open when the read-back has no enabled field (scanner silent)` — flipped to `true` and to `!== false`, test went red each time (also `BP-REPO-PVR-OFF stays open when the repo is private (PVR not read at all)`)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Public repo with enabled:false → one BP-REPO-PVR-OFF finding with the admin prose. — evidence: `worker/deno/tests/repo settings scanner test.ts::scanRepoSettings - a public repository with PVR off files BP-REPO-PVR-OFF (Issue #3268)` — reviewer: met
+- **met** — Public repo with enabled:true → no finding. — evidence: `worker/deno/tests/repo settings scanner test.ts::scanRepoSettings - a public repository with PVR on files nothing but still reads the endpoint (Issue #3268)` — reviewer: met
+- **met** — Already-open BP-REPO-PVR-OFF → no duplicate. — evidence: `worker/deno/tests/repo settings scanner test.ts::scanRepoSettings - a known-open BP-REPO-PVR-OFF is not re-filed (Issue #3268)` — reviewer: met
+- **met** — Private repo → no PVR read, check recorded as skipped. — evidence: `worker/deno/tests/repo settings scanner test.ts::scanRepoSettings - a private or internal repository is not read for PVR and the skip is recorded (Issue #3268)` — reviewer: met
+- **met** — 403 / other read error → onLookupFailure called, no finding. — evidence: `worker/deno/tests/repo settings scanner test.ts::scanRepoSettings - a PVR read failure is a lookup failure, not a finding or a skip (Issue #3268)` — reviewer: met
+- **met** — Closer closes an open BP-REPO-PVR-OFF only when the PVR step ran cleanly and the re-read shows enabled:true . — evidence: `worker/deno/tests/setup repo settings audit close test.ts::BP-REPO-PVR-OFF closes once hardening applied and the re-read shows enabled: true; ::BP-REPO-PVR-OFF closes when already compliant (no step of its kind) and the re-read shows enabled: true` — reviewer: met
+- **met** — Closer leaves it open on a re-read of false , a dry run, a failed step, or a missing read-back. — evidence: `worker/deno/tests/setup repo settings audit close test.ts::BP-REPO-PVR-OFF stays open when the re-read shows enabled: false; ::BP-REPO-PVR-OFF never closes on a dry run (planned/failed/skipped this run); ::BP-REPO-PVR-OFF stays open when the read-back has no enabled field (scanner silent); ::BP-REPO` — reviewer: met
+- **met** — Docs list the new id. — evidence: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md (finding-id list and the 'Private vulnerability reporting is checked on a public repository only (Issue #3268)' paragraph)` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Log Levels Are a Promise About What the Reader Must Do: the PVR skip this diff adds fires for every private or internal repository on every audit run. The audit template's onCheckSkipped logs it at WARNING, but it is an expected absence nobody can act on, so it belongs at INFO. — evidence: `worker/deno/lib/repo settings scanner.ts:372` — reason: NOT fixed and NOT filed. This turn is barred from changing code, so I cannot honestly write 'fixed in this diff'. The new skip call is a line this diff adds, so this needs a fix turn (onCheckSkipped → logger.info, plus the docs line that says WARNING) before the PR is raised.
+- **violation** — Every outcome of a branch you add needs a test that reaches it: no scanner test sends a PVR response without an enabled field. Flipping pvr?.enabled === false to pvr && pvr.enabled !== true would leave the suite green. — evidence: `worker/deno/lib/repo settings scanner.ts:383` — reason: NOT fixed. The branch is a line this diff adds and this turn is barred from changing code. It needs a fix turn that adds a scanner test feeding {} for private-vulnerability-reporting and asserting no BP-REPO-PVR-OFF.
+- **violation** — A new behaviour reaches every caller / A Code Change Owes a Docs Change: a 403 on the new private-vulnerability-reporting read goes down the 'not permitted' path, which tells the operator to grant ACTIONS POLICY PERMISSION ('Actions policies'). GitHub documents the Administration read permission for — evidence: `worker/deno/lib/repo settings scanner.ts:376` — reason: NOT fixed. The new read is a line this diff adds and this turn is barred from changing code. It needs a fix turn that names the right permission per endpoint (or a PVR-specific message) and says in docs/GITHUB-ACTIONS-AUDIT-SCAN.md which permission the PVR read needs.
+- **violation** — Comment/doc accuracy: this diff narrowed the test's onCheckSkipped to count only the secret-protection skip, so the title 'records no skip' is now false, because the scanner does record a PVR skip for that private repository. — evidence: `worker/deno/tests/repo settings scanner test.ts:246` — reason: NOT fixed. The narrowed callback is a line this diff changes and this turn is barred from changing code. It needs a fix turn that retitles the test to 'records no secret-protection skip'.
+- **clean** — Checked and compliant: Australian English in new prose and identifiers; KISS/DRY (the scanner reuses needsPaidSecretProtection and readJson, and the closer reuses the FINDING STEP KIND/positive read-back table); fail-loud handling (a read failure is a lookup failure, never a pass, and an unreadable
