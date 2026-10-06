@@ -694,7 +694,7 @@ before the pre-commit gate** (Issue #1661), with a warning naming each path, so
 they never reach the gate and never widen its allowlist.
 
 The worker's own staged-path gate (`assertSafeToCommit()`, Issue #1758)
-exempts two other cases. The first is **a path a merge in progress brings in
+exempts three other cases. The first is **a path a merge in progress brings in
 unchanged** (Issue #2737). During a merge the index holds every path the
 merged-in branch changed, so a hidden file that branch already tracks (for
 example `.claude/skills/…/SKILL.md`) used to refuse the whole
@@ -717,6 +717,27 @@ secret file the default branch does not track, an edited copy, a mode change
 and a deletion are all still refused. If `origin/HEAD` is unset, names a ref
 outside `refs/remotes/origin/`, or names a ref that cannot be read, nothing is
 exempt on its account (fail closed).
+
+It also exempts **a hidden path the target repository's own tracked
+`.gitignore` re-allows** (Issue #3296). A staged hidden path outside the
+five-entry `ALLOWED_HIDDEN_PATHS` allowlist is accepted when
+`git check-ignore -q --no-index -- <path>` reports it is *not* ignored by that
+repository's own `.gitignore` — judged, not assumed, by actually running the
+check against the committed file. This is conditional on the root `.gitignore`
+itself: it must be tracked at `HEAD`, and unmodified in both the index and the
+working tree, so a commit can never opt itself in by editing `.gitignore` in
+the same change. `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
+`*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, `*.pem`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials.json`,
+`service-account*.json`, and the rest) are checked first and are **never**
+exempt under this route, even when the repository's own `.gitignore`
+re-allows them. If `git check-ignore` cannot be run, nothing is exempt on this
+account (fail closed), and each exemption is logged at INFO naming the path.
+This closes the gap where this repository's own `.gitignore` re-allows
+`.claude/skills/` and `.claude/agents/` (Issues #2675, #2976) yet the gate
+refused edits to those tracked files (Issue #3293, failed twice) because they
+sat outside the fleet-wide `ALLOWED_HIDDEN_PATHS` allowlist, which is not
+widened by this exemption.
 
 The same rule covers a milestone merge commit the worker adopts rather than
 writes (`assertAdoptedMergeIsSafe()`, Issues #1964 and #2739). Each refused

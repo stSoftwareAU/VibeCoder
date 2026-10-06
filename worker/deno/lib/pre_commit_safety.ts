@@ -267,6 +267,78 @@ export async function mergedInUnchanged(args: {
   return exempt;
 }
 
+/** True when `path` matches one of the always-forbidden secret patterns. */
+function isForbiddenStagedPath(path: string): boolean {
+  return FORBIDDEN_STAGED_PATTERNS.some((re) => re.test(path));
+}
+
+/**
+ * Hidden paths a target repo's own `.gitignore` re-allows (Issue #3296).
+ *
+ * `ALLOWED_HIDDEN_PATHS` is this worker's one canonical list, but a repo may
+ * legitimately re-allow a hidden path of its own — this repo's `.gitignore`
+ * re-allows `.claude/skills` and `.claude/agents`, for instance — and the
+ * gate should not refuse an edit to a file the repo itself tracks on
+ * purpose. A path is exempt here only when:
+ *
+ *   1. It does not match any `FORBIDDEN_STAGED_PATTERNS` entry — secret
+ *      filenames are never exempt this way, regardless of what any
+ *      `.gitignore` says.
+ *   2. The repo's root `.gitignore` is tracked at `HEAD` and unmodified in
+ *      both the index and the working tree — otherwise an agent could opt a
+ *      path in within the very commit being judged, or the check could read
+ *      a `.gitignore` the repository does not actually carry forward.
+ *   3. `git check-ignore -q --no-index -- <path>` exits 1 (not ignored —
+ *      i.e. re-allowed) for that path. Exit 0 (ignored), any other exit
+ *      code, or a command that could not be run at all, leaves the path not
+ *      exempt — this check fails closed.
+ *
+ * @param args.violations Paths the classifier refused
+ * @param args.options Git command options (cwd, env, timeout)
+ * @returns The exempt paths (each logged at INFO), possibly empty
+ */
+export async function gitignoreReallowed(args: {
+  violations: string[];
+  options: GitCommandOptions;
+}): Promise<Set<string>> {
+  const { violations, options } = args;
+  const exempt = new Set<string>();
+
+  const candidates = violations.filter((p) => !isForbiddenStagedPath(p));
+  if (candidates.length === 0) return exempt;
+
+  // The repo's own .gitignore must be tracked at HEAD and unmodified in the
+  // index and working tree — otherwise nothing it says can be trusted for
+  // this commit, and nothing is exempt on its account.
+  const atHead = await runGitCommand(
+    ["cat-file", "-e", "HEAD:.gitignore"],
+    options,
+  );
+  if (!atHead.ok || atHead.value.code !== 0) return exempt;
+  const unmodified = await runGitCommand(
+    ["diff", "--quiet", "HEAD", "--", ".gitignore"],
+    options,
+  );
+  if (!unmodified.ok || unmodified.value.code !== 0) return exempt;
+
+  for (const path of candidates) {
+    const checked = await runGitCommand(
+      ["check-ignore", "-q", "--no-index", "--", path],
+      options,
+    );
+    if (!checked.ok) continue;
+    if (checked.value.code === 1) {
+      exempt.add(path);
+      console.log(
+        `[pre-commit-safety] INFO: ${path} is exempt from the safety gate ` +
+          `(Issue #3296): the repo's own .gitignore re-allows it`,
+      );
+    }
+    // code === 0 (ignored) or any other exit code: not exempt.
+  }
+  return exempt;
+}
+
 /**
  * The local remote-tracking ref of origin's default branch, read from
  * `refs/remotes/origin/HEAD` without touching the network (Issue #2774).
@@ -300,7 +372,10 @@ async function originDefaultRef(
  * staged blob and mode are identical to that path on the default branch's
  * tip, read from the local `origin/<default>` ref and never fetched (Issue
  * #2774). If that ref cannot be resolved or read, nothing is exempt on its
- * account (fail closed).
+ * account (fail closed). A remaining hidden-path violation is also exempt
+ * when the repo's own tracked, unmodified `.gitignore` re-allows it (Issue
+ * #3296) — secret-bearing filenames from `FORBIDDEN_STAGED_PATTERNS` never
+ * are, and this check too fails closed.
  *
  * @param options Git command options (cwd, env, timeout).
  */
@@ -331,6 +406,10 @@ export async function assertSafeToCommit(
       options,
     });
     violations = violations.filter((p) => !published.has(p));
+  }
+  if (violations.length > 0) {
+    const reallowed = await gitignoreReallowed({ violations, options });
+    violations = violations.filter((p) => !reallowed.has(p));
   }
   if (violations.length === 0) {
     return { ok: true, value: undefined };

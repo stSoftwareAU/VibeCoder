@@ -1080,20 +1080,35 @@ instructions for adding a command, see [docs/EXTENDING.md](docs/EXTENDING.md).
 ## Commit Safety — never commit hidden files
 
 Hidden files (any path matching `.*`) routinely carry secrets — `.env`, API
-keys, OAuth tokens, SSH keys. Never stage or commit a hidden path outside the
-small allowlist.
+keys, OAuth tokens, SSH keys. Never stage or commit a hidden path unless it is
+on the fleet-wide allowlist below, or the target repository's own tracked
+`.gitignore` explicitly re-allows it (Issue #3296, see below) — secret
+patterns are forbidden regardless of either route.
 
-**Allowlist — the only hidden paths that may ever be tracked:** `.gitignore`,
-`.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared editor
-settings), `.markdownlint-cli2.jsonc`. These are the five entries
+**Allowlist — the fleet-wide hidden paths that may always be tracked:**
+`.gitignore`, `.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared
+editor settings), `.markdownlint-cli2.jsonc`. These are the five entries
 `REQUIRED_GITIGNORE_PATTERNS` re-allows in
 `worker/deno/lib/gitignore_enforcer.ts`, which is what writes each repository's
 `.gitignore`; this list and `prompts/coding_guidelines/` restate it, and
 neither may drift from it.
 
+**Per-repo opt-in — a path the repository's own `.gitignore` re-allows**
+(Issue #3296). The pre-commit safety gate (`assertSafeToCommit()`) also
+accepts a staged hidden path outside the five-entry allowlist when
+`git check-ignore -q --no-index` reports that path is not ignored by the
+target repository's own tracked, unmodified root `.gitignore` — for example
+this repository's `.gitignore` re-allows `.claude/skills/` and
+`.claude/agents/` (Issues #2675, #2976). This never widens the fleet-wide
+allowlist above: it only recognises what a specific repository has already
+chosen to track. The forbidden patterns below are never exempt under this
+route, and if `.gitignore` cannot be read or has been modified, nothing is
+exempt (fail closed). Each exemption is logged at INFO.
+
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,
-`.netrc`, and any other hidden file not on the allowlist.
+`.netrc`, and any other hidden file not on the allowlist or re-allowed by the
+repository's own tracked `.gitignore`.
 
 **Also forbidden — private key material and credential files:** `*.pem`,
 `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
@@ -1108,8 +1123,12 @@ explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
   `git reset HEAD <file>`.
 - **Never use `git add -f`** to bypass `.gitignore`, and never bypass the
   pre-commit safety gate with `git commit --no-verify`.
-- If a hidden file legitimately needs tracking, raise an issue and update the
-  allowlist in `worker/deno/lib/gitignore_enforcer.ts` via PR.
+- If a hidden file legitimately needs tracking in every monitored repository,
+  raise an issue and update the fleet-wide allowlist in
+  `worker/deno/lib/gitignore_enforcer.ts` via PR. If it only needs tracking in
+  one repository, re-allow it in that repository's own `.gitignore` instead
+  (Issue #3296) — the pre-commit safety gate recognises the re-allow without a
+  fleet-wide change.
 
 ## Secret Redaction — Every Outbound Sink
 

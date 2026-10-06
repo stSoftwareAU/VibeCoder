@@ -998,8 +998,8 @@ matching `.*` (e.g. `.env`, `.aws/credentials`, `.ssh/id_rsa`). Hidden files
 routinely carry secrets — `.env`, API keys, OAuth tokens, SSH keys — and a
 single committed secret triggers full credential rotation.
 
-**Allowlist — the only hidden paths that may ever be staged.** These are the
-five entries `REQUIRED_GITIGNORE_PATTERNS` re-allows in
+**Allowlist — the fleet-wide hidden paths that may always be staged.** These
+are the five entries `REQUIRED_GITIGNORE_PATTERNS` re-allows in
 `worker/deno/lib/gitignore_enforcer.ts`, which is what actually writes each
 repository's `.gitignore`; this list and `CODING-STANDARDS.md` restate it, and
 neither may drift from it:
@@ -1010,9 +1010,16 @@ neither may drift from it:
 - `.markdownlint-cli2.jsonc` (markdownlint config)
 - `.gitattributes`
 
+**Per-repo exception** (Issue #3296): a hidden path outside this list may
+still be staged if the repository's *own* committed `.gitignore` already
+re-allows it (e.g. `.claude/skills/`) — the pre-commit safety gate checks this
+for you. Never add such a re-allow rule yourself; only stage a path that is
+already re-allowed on the base branch.
+
 **Stage only the working files your change touches**, plus the allowlisted
-hidden paths above. Everything below is always forbidden — never stage it, never
-`git add -f`:
+or repo-re-allowed hidden paths above. Everything below is always
+forbidden — never stage it, never `git add -f`, and never expect the per-repo
+exception above to cover it:
 
 - `.env`, `.env.*` (dotenv files)
 - `.config.json`, `.config*.json` (worker config; may contain API tokens)
@@ -1034,14 +1041,14 @@ dropping the broad rule.
 
 1. Before every commit, check the staged set with
    `git diff --cached --name-only` and confirm no hidden path is present except
-   those on the allowlist.
+   those on the allowlist or already re-allowed by the repo's own `.gitignore`.
 2. If a hidden file is staged by accident, run `git reset HEAD <file>` before
    committing.
 3. **Never use `git add -f`** to bypass `.gitignore`. The ignore rules exist to
    stop secret leaks — bypassing them is forbidden.
-4. If a hidden file legitimately needs to be tracked, raise an issue first and
-   get human approval before adding the path to the allowlist in
-   `worker/deno/lib/gitignore_enforcer.ts`. Do not add ad-hoc re-allow rules
+4. If a hidden file legitimately needs to be tracked fleet-wide, raise an
+   issue first and get human approval before adding the path to the allowlist
+   in `worker/deno/lib/gitignore_enforcer.ts`. Do not add ad-hoc re-allow rules
    during normal work.
 
 **Defence in depth.** Two safeguards back this rule, but they are _not_ a
