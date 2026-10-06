@@ -17,6 +17,9 @@
  *     `--paginate`, `--jq`), invalid-input short-circuiting, and a `gh`
  *     failure propagating rather than being swallowed.
  *
+ * The file is registered in `WALL_CLOCK_TEST_FILES` so it runs in the serial
+ * pass.
+ *
  * Australian English spelling used throughout.
  */
 

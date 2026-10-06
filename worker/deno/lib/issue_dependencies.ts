@@ -525,7 +525,10 @@ export async function checkParentBlocked(
         continue;
       }
       try {
-        const childState = await fetcher.getIssueState(child.repo, child.number);
+        const childState = await fetcher.getIssueState(
+          child.repo,
+          child.number,
+        );
         if (childState.state === "OPEN") {
           openChildren.push(child);
         } else {
