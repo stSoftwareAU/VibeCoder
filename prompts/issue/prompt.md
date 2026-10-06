@@ -157,6 +157,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
+   A test that reads a `.css` or `.scss` file and matches selectors or
+   property values is a source-text grep, not a layout test, even where the
+   appearance is itself the stated contract: it breaks when a selector list
+   is split or a property moves, and still passes when another rule
+   overrides the property or a clipping container hides the overflow. A
+   claim about layout, cascade order, overflow, clipping or element position
+   needs a headless-browser check that measures rendered boxes, such as the
+   repository's existing `e2e/` or Playwright checks, and that check must
+   itself be run, per **A browser check you did not run is not a safety
+   net** under Error Recovery.
+   Where the repository has no browser harness, the PR names that gap in
+   its Test Plan rather than substituting a stylesheet regex.
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
@@ -254,8 +266,20 @@ guessing — the analysis-only hand-off then routes it to a human.
    exception the existing rules carve out. List the related existing rules
    you checked in the PR summary, or say you found none; two rules left
    telling the agent to do opposite things is a blocking self-review
-   finding. When the change involves architecture, data
-   flow, state transitions, or sequence of events, include a **Mermaid**
+   finding. Then apply the new or changed rule to this PR's own diff, read
+   literally as a reviewer would: its own examples and model sentences, the
+   code and tests the diff adds or edits, any helper doc comment that says
+   when to use what the rule governs, and the PR summary's Test Plan,
+   `Branch outcomes:` and similar lists — grep `git diff <base>...HEAD` for
+   the nouns the rule governs. Anything there the rule would flag is fixed
+   before the PR is raised, by changing that content or by narrowing the
+   rule so it names the allowed use, and an example offered as the correct
+   way must itself pass the rule, checked against the code it describes.
+   The PR summary says you applied the rule to the PR's own diff and names
+   what you found, or says you found nothing (see **Apply a new rule to
+   your own diff** in `CODING-STANDARDS.md`). When the change involves
+   architecture, data flow, state transitions, or sequence of events,
+   include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
    aids understanding — Mermaid renders natively on GitHub.
@@ -1077,12 +1101,15 @@ The file MUST contain:
 7. **Test Plan**: List the tests added or modified. Write a result line only
    after the command has run on the final head, and state the actual outcome
    (passed, or failed with its first error) — never write a placeholder token
-   to fill in later. The worker catches an unfilled ALL-CAPS ..._PLACEHOLDER
-   token written outside backticks and code blocks — for example
-   SOMETHING_PLACEHOLDER in prose. It blocks PR creation, or records the
-   shortfall against a PR the run already raised. A token inside backticks or
-   a code block is not caught, and it is still never acceptable in place of
-   a result. If a gate was not run, say so plainly with the
+   to fill in later. The worker catches an unfilled ALL-CAPS token ending in
+   _PLACEHOLDER, _PENDING, _TBD or _TODO written outside backticks and code
+   blocks — for example SOMETHING_PLACEHOLDER in prose — or a bare ALL-CAPS
+   identifier with an underscore left as the result after the colon on a
+   line that cites a gate command — for example GATE_OUTCOME_PENDING in
+   prose. It blocks PR creation, or records the shortfall against a PR the
+   run already raised. A token inside backticks or a code block is not
+   caught, and it is still never acceptable in place of a result. If a gate
+   was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
    under Evidence must exist at the head — in the diff or already tracked —
@@ -1233,8 +1260,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Reproduction
 
 - **symptom** — the action buttons stacked vertically below 480px
-- **status** — `verified` — the layout test failed against the unfixed CSS and passes after the fix
-- **regression test** — `tests/button.test.js::keeps the buttons in one row`
+- **status** — `verified` — the headless-browser check failed against the unfixed CSS and passes after the fix
+- **regression test** — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px`
 
 ## Acceptance Criteria
 
@@ -1253,9 +1280,9 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ## Test Plan
 
-- Added tests for button alignment in `tests/button.test.js`
+- Added a headless-browser check for button alignment in `e2e/buttons.spec.ts`
 
 **Branch outcomes:**
 
-- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `tests/button.test.js::keeps the buttons in one row` — flipping `flex-wrap: nowrap` back to `wrap` turned it red
+- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px` — restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows
 ```

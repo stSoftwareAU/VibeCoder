@@ -250,6 +250,17 @@ not after a reviewer finds it weeks later.
   every exception the existing rules carve out. Two rules left telling the
   agent to do opposite things is a blocking self-review finding. List the
   related existing rules you checked in the PR body, or say you found none.
+- After writing or changing such a rule, **apply it to this PR's own diff**,
+  read literally as a reviewer would: the rule's own examples and model
+  sentences, the code and tests the PR adds or edits, any helper doc comment
+  that says when to use what the rule governs, and the PR summary (Test
+  Plan, `Branch outcomes:` and similar lists). Grep `git diff <base>...HEAD`
+  for the nouns the rule governs. Anything there the rule would flag is a
+  defect to fix before the PR is raised: change that content, or narrow the
+  rule so it names the allowed use. An example offered as the correct way
+  must itself pass the rule, checked against the code it describes. Say in
+  the PR body that you applied the rule to the PR's own diff, and name what
+  you found or say you found nothing.
 - **Adding a member owes a docs change too.** When you add a field, enum
   variant, kind, flag, column or row element to an existing set, grep for one
   or two **existing sibling members**, not the new one — the new name is in no

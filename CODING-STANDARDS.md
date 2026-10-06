@@ -517,9 +517,10 @@ not exist. A test cited as evidence is also run on the final head and its
 result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
 untested is an over-claim (Issue #3058). An unresolved placeholder where a
-result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where
-`./quality.sh`'s outcome should be, say — counts as an unreported result and
-is itself a blocking self-review finding (Issue #3124).
+result belongs — an unfilled ALL-CAPS token ending in `_PLACEHOLDER`,
+`_PENDING`, `_TBD` or `_TODO` left where `./quality.sh`'s outcome should be,
+say — counts as an unreported result and is itself a blocking self-review
+finding (Issues #3124, #3248).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's
@@ -637,6 +638,12 @@ guidance under **Unit tests** below.
   framework internals unless that appearance or structure is itself a stated
   contract. Use visual snapshots deliberately when appearance is the contract
   and the baseline can be reviewed. A restyle should not break a behaviour test.
+  A test that reads a stylesheet (`.css`, `.scss`) and matches selectors or
+  property values is a source-text grep (rule 5 of **Test-Driven Development
+  (TDD)** above), not a layout test, even where appearance is the contract: a
+  claim about layout, cascade order, overflow, clipping or element position
+  needs a headless-browser check that measures rendered boxes, and where the
+  repository has no browser harness the PR's Test Plan names that gap instead.
   A closed `visually-hidden` element keeps a 1×1 box, which Playwright counts
   as visible, so assert the semantic closed state (`aria-expanded="false"`, or
   the open-only class absent) rather than `toBeVisible()`/`isHidden()`.
@@ -1476,6 +1483,27 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+- **Apply a new rule to your own diff.** After writing or changing a rule,
+  read it literally, as a reviewer would, and apply it to this PR's own
+  diff: the rule's own examples and model sentences, the code and tests the
+  PR adds or edits, any helper doc comment that says when to use the thing
+  the rule governs, and the PR summary (its Test Plan, `Branch outcomes:`
+  and similar lists). Grep `git diff <base>...HEAD` for the nouns the rule
+  governs. Anything in the diff that the rule, read literally, would flag is
+  a defect to fix before the PR is raised: change that content, or narrow
+  the rule so it names the allowed use — "a positive pin over a page's text
+  through `flatWholeFile(body)` is a finding; flattening a pinned-phrase
+  literal is not". An example offered as the correct way must itself pass
+  the rule, checked against the code it describes. The PR body says you
+  applied the rule to the PR's own diff and names what you found, or says
+  you found nothing. Three fleet PRs were sent back for this: one required
+  each `Branch outcomes:` line to state that flipping it went red while its
+  own list did not (#3160); one offered a model sentence about the
+  not-planned scan as the correctly scoped wording, and that sentence
+  over-claimed what the scan covered (#3236); one called any drift test
+  reaching for `flatWholeFile` a finding while its own drift tests called
+  it on pinned-phrase literals and the helper's own doc comment allowed
+  exactly that (#3240).
 - **Scope a rule to the runs it is true for.**
   `prompts/coding_guidelines/prompt.md` is rendered into every phase that
   `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)
