@@ -13,8 +13,12 @@
  */
 
 import { assertEquals } from "@std/assert";
-import { createIssueFetcher } from "../lib/issue_finder_common.ts";
+import {
+  createIssueFetcher,
+  ISSUE_SUB_ISSUES_CACHE_PREFIX,
+} from "../lib/issue_finder_common.ts";
 import { checkParentBlocked } from "../lib/issue_dependencies.ts";
+import { IssueCache } from "../lib/issue_cache.ts";
 
 // ---------------------------------------------------------------------------
 // getSubIssues — uses the native sub-issues API
@@ -248,5 +252,104 @@ Deno.test(
     const argv = subIssuesCalls[0]!;
     assertEquals(argv.includes("--paginate"), true);
     assertEquals(argv.some((a) => a.includes("per_page=100")), true);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// getSubIssues — a malformed/old-shaped cache entry is never trusted
+// (Issue #3325: the payload moved from number[] to SubIssueRef[], so a
+// cache entry a relaunching worker's old code wrote before the cache key
+// was bumped must not be read back and handed to checkParentBlocked).
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "getSubIssues - a v1-shaped (number[]) cache hit under the current key is rejected, forcing a live read",
+  async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const cache = new IssueCache(dir, 600);
+      // Simulate a stale/corrupt entry: the old shape, written under the
+      // (hypothetically reused) current key.
+      await cache.write(
+        "owner/repo",
+        `${ISSUE_SUB_ISSUES_CACHE_PREFIX}300`,
+        [7, 8],
+      );
+
+      let liveCalls = 0;
+      const ghFn = (args: string[]): Promise<string> => {
+        if (args.join(" ").includes("/sub_issues")) {
+          liveCalls++;
+          return Promise.resolve(
+            JSON.stringify([
+              {
+                number: 9,
+                repository_url: "https://api.github.com/repos/owner/repo",
+              },
+            ]) + "\n",
+          );
+        }
+        return Promise.resolve(JSON.stringify({ body: "" }));
+      };
+
+      const fetcher = createIssueFetcher(ghFn, cache);
+      const subIssues = await fetcher.getSubIssues("owner/repo", 300);
+
+      assertEquals(liveCalls, 1, "the malformed hit must not be trusted");
+      assertEquals(subIssues, [{ repo: "owner/repo", number: 9 }]);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "checkParentBlocked - still blocks on an open child when the sub-issues cache holds a v1-shaped entry",
+  async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const cache = new IssueCache(dir, 600);
+      await cache.write(
+        "owner/repo",
+        `${ISSUE_SUB_ISSUES_CACHE_PREFIX}400`,
+        [500],
+      );
+
+      const ghFn = (args: string[]): Promise<string> => {
+        const command = args.join(" ");
+        if (command.includes("/sub_issues")) {
+          return Promise.resolve(
+            JSON.stringify([
+              {
+                number: 500,
+                repository_url: "https://api.github.com/repos/owner/repo",
+              },
+            ]) + "\n",
+          );
+        }
+        if (command.includes("issue view") && command.includes("body")) {
+          return Promise.resolve(JSON.stringify({ body: "Parent issue" }));
+        }
+        if (command.includes("number,state,title")) {
+          return Promise.resolve(
+            JSON.stringify({ number: 500, state: "OPEN", title: "Child" }),
+          );
+        }
+        return Promise.resolve("[]");
+      };
+
+      const fetcher = createIssueFetcher(ghFn, cache);
+      const result = await checkParentBlocked(fetcher, "owner/repo", 400);
+
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(result.value.isBlocked, true);
+        assertEquals(result.value.openChildren, [
+          { repo: "owner/repo", number: 500 },
+        ]);
+      }
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
   },
 );

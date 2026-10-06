@@ -499,10 +499,18 @@ export function createIssueFetcher(
     repo: string,
     key: string,
     read: () => Promise<T>,
+    /**
+     * Shape guard for the cached hit (Issue #3325 defence in depth). A
+     * version bump already keeps an old-shaped entry from being read back
+     * under this key, but this rejects a hit whose shape still does not
+     * match — e.g. corruption — rather than handing the caller malformed
+     * data.
+     */
+    isValidHit: (value: T) => boolean = () => true,
   ): Promise<T> => {
     if (cache) {
       const hit = await cache.read<T>(repo, key);
-      if (hit !== null) return hit;
+      if (hit !== null && isValidHit(hit)) return hit;
     }
     const value = await read();
     if (cache) await cache.write(repo, key, value);
@@ -521,6 +529,7 @@ export function createIssueFetcher(
         repo,
         `${ISSUE_SUB_ISSUES_CACHE_PREFIX}${issueNumber}`,
         () => fetchSubIssues(ghCommandFn, repo, issueNumber),
+        isSubIssueRefArray,
       );
     },
     getIssueBody(repo: string, issueNumber: number) {
@@ -630,6 +639,21 @@ function fetchSubIssues(
   issueNumber: number,
 ): Promise<SubIssueRef[]> {
   return uncachedIssueFetcher(ghCommandFn).getSubIssues(repo, issueNumber);
+}
+
+/**
+ * Whether a cached hit is really a `SubIssueRef[]` (Issue #3325). Guards
+ * against a malformed entry under the current versioned key reaching
+ * `checkParentBlocked`'s `childKey`, which otherwise throws on a missing
+ * `repo` string and fails the parent/child gate open.
+ */
+function isSubIssueRefArray(value: unknown): value is SubIssueRef[] {
+  return Array.isArray(value) &&
+    value.every((entry) =>
+      typeof entry === "object" && entry !== null &&
+      typeof (entry as { repo?: unknown }).repo === "string" &&
+      typeof (entry as { number?: unknown }).number === "number"
+    );
 }
 
 function fetchIssueBody(
