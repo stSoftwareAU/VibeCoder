@@ -198,6 +198,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // growth measurement separates its capped, linear scans from a quadratic
   // walk on hostile nesting and unclosed brackets (#3148 review).
   "tests/removed_assertion_gate_context_test.ts",
+  // The result-placeholder gate's suffix and result-line regexes scan an
+  // agent-written PR summary or reply, steered by an untrusted issue body;
+  // only a growth measurement separates their linear scans from a quadratic
+  // one (Issue #3248).
+  "tests/result_placeholder_gate_test.ts",
   "tests/run_ps1_launcher_test.ts",
   // The not-planned-refs issue/hunk scanners read an untrusted PR body and
   // diff hunk; only a growth measurement separates their linear scans from

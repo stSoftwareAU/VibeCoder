@@ -500,9 +500,10 @@ not exist. A test cited as evidence is also run on the final head and its
 result reported, and a coverage claim
 names the branches its tests exercise — "every branch" with one branch
 untested is an over-claim (Issue #3058). An unresolved placeholder where a
-result belongs — an unfilled ALL-CAPS `..._PLACEHOLDER` token left where
-`./quality.sh`'s outcome should be, say — counts as an unreported result and
-is itself a blocking self-review finding (Issue #3124).
+result belongs — an unfilled ALL-CAPS token ending in `_PLACEHOLDER`,
+`_PENDING`, `_TBD` or `_TODO` left where `./quality.sh`'s outcome should be,
+say — counts as an unreported result and is itself a blocking self-review
+finding (Issues #3124, #3248).
 
 **A stub mirrors the real callee's contract.** When code shells out to another
 repository's binary or script, the test stub must reproduce that callee's

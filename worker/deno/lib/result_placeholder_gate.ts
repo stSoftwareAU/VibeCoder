@@ -1,20 +1,33 @@
 /**
- * Result-placeholder gate (Issue #3124).
+ * Result-placeholder gate (Issue #3124, widened by Issue #3248).
  *
  * While drafting, the agent sometimes invents its own fill-in-later token —
- * an all-caps name ending in `_PLACEHOLDER`, such as
- * `QUALITY_RESULT_PLACEHOLDER` — where a command's result belongs, and then
- * never replaces it with the outcome. No prompt template supplies that
- * token. Left bare, it reads as "the gate was run" to anyone who does not
- * know it is a stand-in, when in truth nothing was reported at all. A left-over placeholder is therefore treated the same as an unreported
- * result: the PR-creation path blocks on it (folded into whichever
- * summary-rule gate also fails, so one recovery turn asks for everything —
- * `completion_phase.ts`), and the reply path never lets one reach a public PR
- * comment at all (`pr_branch_preparation.ts`'s `readPrResponseMessage`
- * chokepoint).
+ * an all-caps name ending in `_PLACEHOLDER`, `_PENDING`, `_TBD` or `_TODO`,
+ * such as `QUALITY_RESULT_PLACEHOLDER` — where a command's result belongs,
+ * and then never replaces it with the outcome. No prompt template supplies
+ * that token. Left bare, it reads as "the gate was run" to anyone who does
+ * not know it is a stand-in, when in truth nothing was reported at all.
  *
- * Modelled on `docs_sweep_gate.ts`: pure functions only, a hardcoded regex (no
- * `new RegExp()` built from input), and a bounded scan of text that is
+ * A fleet PR (GRQ#5164) escaped the suffix check entirely with
+ * `GATE_OUTCOME_PENDING` on a result line:
+ * `` - `./quality.sh < /dev/null` on the head: GATE_OUTCOME_PENDING ``. Since
+ * Issue #3248, a second, structural rule backstops the suffix one: on a line
+ * whose raw text cites a known gate command (`./quality.sh`, `deno test`,
+ * `cargo test`, etc.), the text after the line's last `:` is checked as a
+ * whole — a bare ALL-CAPS identifier with at least one underscore there
+ * (optionally followed by a full stop) is a fill-in-later token regardless of
+ * its suffix. `PASSED` and `OK` (no underscore) are not flagged; a line with
+ * no cited gate command is not flagged.
+ *
+ * A left-over placeholder, caught by either rule, is therefore treated the
+ * same as an unreported result: the PR-creation path blocks on it (folded
+ * into whichever summary-rule gate also fails, so one recovery turn asks for
+ * everything — `completion_phase.ts`), and the reply path never lets one
+ * reach a public PR comment at all (`pr_branch_preparation.ts`'s
+ * `readPrResponseMessage` chokepoint).
+ *
+ * Modelled on `docs_sweep_gate.ts`: pure functions only, hardcoded regexes
+ * (no `new RegExp()` built from input), and a bounded scan of text that is
  * agent-authored and steered by an untrusted issue body, so it is treated as
  * untrusted throughout.
  *
@@ -28,12 +41,22 @@ const MAX_SCAN_CHARS = 200_000;
 const MAX_NAMED_TOKENS = 10;
 
 /**
- * A fill-in-later token: an all-caps identifier ending in `_PLACEHOLDER`.
- * `SECTION_PLACEHOLDER_VALUES`-style names with a trailing word character
- * after `PLACEHOLDER` correctly do not match — `\b` after `PLACEHOLDER`
- * requires a non-word boundary there.
+ * A fill-in-later token: an all-caps identifier ending in `_PLACEHOLDER`,
+ * `_PENDING`, `_TBD` or `_TODO` — the fill-in-later suffixes seen in fleet
+ * output (Issues #3124 and #3248). `SECTION_PLACEHOLDER_VALUES`- or
+ * `SYNC_PENDING_COUNT`-style names with a trailing word character after the
+ * suffix correctly do not match — the final `\b` requires a non-word
+ * boundary there.
  */
-const PLACEHOLDER_TOKEN_RE = /\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b/g;
+const PLACEHOLDER_TOKEN_RE =
+  /\b[A-Z][A-Z0-9_]*_(?:PLACEHOLDER|PENDING|TBD|TODO)\b/g;
+
+/** A gate command a result line cites (Issue #3248). */
+const GATE_COMMAND_RE =
+  /\bquality\.sh\b|\b(?:deno|cargo|npm|pnpm|yarn|go|make)\s+(?:task|test|lint|check|fmt|clippy|audit|run|build|vet)\b|\b(?:pytest|shellcheck|semgrep)\b/;
+
+/** A bare ALL-CAPS identifier with at least one underscore, optionally ending in a full stop. */
+const BARE_IDENTIFIER_RE = /^([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\.?$/;
 
 /**
  * Split text into alternating "outside code" / "inside code" segments, so
@@ -190,25 +213,104 @@ function splitOutsideCode(
 }
 
 /**
- * Find every distinct result-placeholder token in `text`, outside fenced
- * code blocks and inline code spans, in first-seen order, capped at
- * {@link MAX_NAMED_TOKENS}. A token mentioned only inside backticks — e.g.
- * discussing `` `REDACTION_PLACEHOLDER` `` — is deliberately not reported;
- * one left bare in prose (`QUALITY_RESULT_PLACEHOLDER`) is.
+ * Replace every in-code character (everything but `\n`) with a space, so the
+ * result is the same length — and every offset lines up — as `text`, but
+ * carries only the prose a reader actually sees.
+ */
+function maskCode(text: string): string {
+  return splitOutsideCode(text)
+    .map((segment) =>
+      segment.inCode ? segment.value.replace(/[^\n]/g, " ") : segment.value
+    )
+    .join("");
+}
+
+/** One located fill-in-later token, from either the suffix rule or the backstop. */
+interface TokenMatch {
+  /** Offset of the token's first character in the original text. */
+  start: number;
+  /** Offset just past the token's last character. */
+  end: number;
+  /** The token's text. */
+  name: string;
+}
+
+/**
+ * Find every fill-in-later token in `text`, outside fenced code blocks and
+ * inline code spans, in document order (Issue #3248).
+ *
+ * Two independent rules run over the code-masked text (so offsets still line
+ * up with the original): the suffix rule ({@link PLACEHOLDER_TOKEN_RE}), and
+ * a structural backstop for result lines — a line whose RAW text cites a
+ * known gate command, where the text after the line's last `:` (taken from
+ * the masked line) is a bare ALL-CAPS identifier with an underscore,
+ * optionally followed by a full stop. The backstop and the suffix rule can
+ * both find the same token (e.g. `GATE_OUTCOME_PENDING`); overlapping
+ * matches are de-duplicated, keeping the earlier one.
+ */
+function findTokenMatches(text: string): TokenMatch[] {
+  const masked = maskCode(text);
+  const matches: TokenMatch[] = [];
+
+  for (const found of masked.matchAll(PLACEHOLDER_TOKEN_RE)) {
+    matches.push({
+      start: found.index!,
+      end: found.index! + found[0].length,
+      name: found[0],
+    });
+  }
+
+  let lineStart = 0;
+  while (lineStart <= masked.length) {
+    const nl = masked.indexOf("\n", lineStart);
+    const lineEnd = nl === -1 ? masked.length : nl;
+    const rawLine = text.slice(lineStart, lineEnd);
+    const maskedLine = masked.slice(lineStart, lineEnd);
+    if (GATE_COMMAND_RE.test(rawLine)) {
+      const colon = maskedLine.lastIndexOf(":");
+      if (colon !== -1) {
+        const tail = maskedLine.slice(colon + 1);
+        const trimmed = tail.trim();
+        const identMatch = trimmed.match(BARE_IDENTIFIER_RE);
+        if (identMatch) {
+          const name = identMatch[1]!;
+          const leadingWhitespace = tail.length - tail.trimStart().length;
+          const start = lineStart + colon + 1 + leadingWhitespace;
+          matches.push({ start, end: start + name.length, name });
+        }
+      }
+    }
+    if (lineEnd === masked.length) break;
+    lineStart = lineEnd + 1;
+  }
+
+  matches.sort((a, b) => a.start - b.start);
+  const kept: TokenMatch[] = [];
+  for (const match of matches) {
+    const previous = kept[kept.length - 1];
+    if (previous && match.start < previous.end) continue;
+    kept.push(match);
+  }
+  return kept;
+}
+
+/**
+ * Find every distinct fill-in-later token name in `text`, in first-seen
+ * order, capped at {@link MAX_NAMED_TOKENS} (Issues #3124, #3248). A token
+ * mentioned only inside backticks — e.g. discussing
+ * `` `REDACTION_PLACEHOLDER` `` — is deliberately not reported; one left
+ * bare in prose (`QUALITY_RESULT_PLACEHOLDER`), or a bare ALL-CAPS
+ * identifier on a result line (`GATE_OUTCOME_PENDING`), is.
  */
 export function findResultPlaceholders(text: string): string[] {
   const bounded = (text ?? "").slice(0, MAX_SCAN_CHARS);
   const found: string[] = [];
   const seen = new Set<string>();
-  for (const segment of splitOutsideCode(bounded)) {
-    if (segment.inCode) continue;
-    for (const token of segment.value.matchAll(PLACEHOLDER_TOKEN_RE)) {
-      const name = token[0];
-      if (seen.has(name)) continue;
-      seen.add(name);
-      found.push(name);
-      if (found.length >= MAX_NAMED_TOKENS) return found;
-    }
+  for (const match of findTokenMatches(bounded)) {
+    if (seen.has(match.name)) continue;
+    seen.add(match.name);
+    found.push(match.name);
+    if (found.length >= MAX_NAMED_TOKENS) return found;
   }
   return found;
 }
@@ -232,25 +334,32 @@ export function validateResultPlaceholders(
   return { valid: tokens.length === 0, tokens };
 }
 
-/** Replace every bare (outside-code) placeholder occurrence with `replacement`. */
+/**
+ * Replace every bare (outside-code) fill-in-later token — from either rule —
+ * with `replacement`, splicing into the ORIGINAL text so code spans and
+ * fences stay byte-identical (Issues #3124, #3248).
+ */
 export function replaceResultPlaceholders(
   text: string,
   replacement: string,
 ): string {
-  const segments = splitOutsideCode(text ?? "");
-  return segments
-    .map((segment) =>
-      segment.inCode
-        ? segment.value
-        : segment.value.replace(PLACEHOLDER_TOKEN_RE, replacement)
-    )
-    .join("");
+  const original = text ?? "";
+  const matches = findTokenMatches(original);
+  let result = original;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const match = matches[i]!;
+    result = result.slice(0, match.start) + replacement +
+      result.slice(match.end);
+  }
+  return result;
 }
 
 /** Render the token list for a comment or prompt, e.g. `` `FOO_PLACEHOLDER`, `BAR_PLACEHOLDER` ``. */
 function describeTokens(tokens: readonly string[]): string {
-  // Every token already matched the strict `[A-Z][A-Z0-9_]*_PLACEHOLDER`
-  // regex, so it is safe to echo verbatim into Markdown and a prompt.
+  // Every token comes from either the strict `[A-Z][A-Z0-9_]*_(?:PLACEHOLDER|
+  // PENDING|TBD|TODO)` suffix regex or the structural backstop's
+  // `[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+` identifier, so every name is
+  // `[A-Z][A-Z0-9_]*` — safe to echo verbatim into Markdown and a prompt.
   return tokens.map((token) => `\`${token}\``).join(", ");
 }
 

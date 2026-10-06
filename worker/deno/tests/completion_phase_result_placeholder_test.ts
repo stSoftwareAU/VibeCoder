@@ -46,6 +46,22 @@ Changed the broker balance card. Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
 `;
 
+/** A clean summary with the GRQ#5164 structural-backstop token (Issue #3248). */
+const SUMMARY_WITH_GATE_OUTCOME_PENDING = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+
+**Branch outcomes:** none added
+
+- \`./quality.sh < /dev/null\` on the head: GATE_OUTCOME_PENDING
+
+## Test Plan
+
+- \`worker/deno/tests/completion_phase_result_placeholder_test.ts\`
+`;
+
 /** The same summary once the token has been replaced with the actual outcome. */
 const SUMMARY_WITH_TOKEN_RESOLVED = `## Summary
 
@@ -444,6 +460,37 @@ Deno.test(
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_BARE_TOKEN,
+      retryWrites: SUMMARY_WITH_TOKEN_RESOLVED,
+      changedFiles: "crates/report/src/decisions.rs",
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
+  },
+);
+
+Deno.test(
+  "completion - a GATE_OUTCOME_PENDING result token blocks PR creation (Issue #3248)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_GATE_OUTCOME_PENDING,
+      changedFiles: "crates/report/src/decisions.rs",
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertStringIncludes(outcome.reason ?? "", "placeholder");
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(outcome.comments[0]!, "GATE_OUTCOME_PENDING");
+  },
+);
+
+Deno.test(
+  "completion - a recovery replacing GATE_OUTCOME_PENDING with the actual outcome raises the PR (Issue #3248)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_GATE_OUTCOME_PENDING,
       retryWrites: SUMMARY_WITH_TOKEN_RESOLVED,
       changedFiles: "crates/report/src/decisions.rs",
     });
