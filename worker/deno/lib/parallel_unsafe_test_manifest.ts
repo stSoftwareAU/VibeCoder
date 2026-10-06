@@ -181,6 +181,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
   // replaced (PR #3160 review).
   "tests/branch_outcomes_gate_test.ts",
+  // The change-request quote extractor scans reviewer-written text; only a
+  // growth measurement separates its linear hand-written scanners from a
+  // backtracking regex (#3244).
+  "tests/change_request_quotes_3244_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).
