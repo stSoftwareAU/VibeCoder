@@ -157,7 +157,9 @@ export function parseNativeSubIssueRefPages(
     if (trimmed.length === 0) continue;
 
     const parsed: unknown = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) continue;
+    if (!Array.isArray(parsed)) {
+      throw new Error(`sub_issues page was not a JSON array: ${trimmed}`);
+    }
 
     for (const entry of parsed) {
       if (entry === null || typeof entry !== "object") continue;
@@ -188,8 +190,9 @@ export function parseNativeSubIssueRefPages(
  * `per_page=100` request — a parent with more than 100 children would
  * otherwise silently lose the rest. Invalid inputs (malformed slug or
  * non-positive issue number) return `[]`, matching the existing helper; a
- * `gh` or parse failure throws, so a caller that must not treat "the read
- * failed" the same as "there are no sub-issues" can tell them apart.
+ * `gh` failure, blank output or unparseable page throws, so a caller that
+ * must not treat "the read failed" the same as "there are no sub-issues"
+ * can tell them apart (Issue #3321).
  *
  * @param repo - Repository in `owner/repo` form.
  * @param parentIssueNumber - The parent issue number.
@@ -202,13 +205,44 @@ export async function fetchNativeSubIssueRefs(
 ): Promise<SubIssueRef[]> {
   if (!isValidSubIssueQuery(repo, parentIssueNumber)) return [];
 
-  const raw = await ghCommandFn([
-    "api",
-    `repos/${repo}/issues/${parentIssueNumber}/sub_issues?per_page=100`,
-    "--paginate",
-    "--jq",
-    "[.[] | {number: .number, repository_url: .repository_url}]",
-  ]);
+  let raw: string;
+  try {
+    raw = await ghCommandFn([
+      "api",
+      `repos/${repo}/issues/${parentIssueNumber}/sub_issues?per_page=100`,
+      "--paginate",
+      "--jq",
+      "[.[] | {number: .number, repository_url: .repository_url}]",
+    ]);
+  } catch (error) {
+    throw new Error(
+      `sub_issues lookup for ${repo}#${parentIssueNumber} failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 
-  return parseNativeSubIssueRefPages(raw, repo);
+  // Issue #3321: a genuine "no sub-issues" page still carries the jq
+  // filter's `[]` text, so blank stdout means the runner failed (or
+  // returned nothing) rather than that the parent has no children. Treat
+  // it as a failure instead of reading it as "not blocked".
+  // Issue #3321: a genuine "no sub-issues" page still carries the jq
+  // filter's `[]` text, so blank stdout means the runner failed (or
+  // returned nothing) rather than that the parent has no children. Treat
+  // it as a failure instead of reading it as "not blocked".
+  if (raw.trim() === "") {
+    throw new Error(
+      `sub_issues lookup for ${repo}#${parentIssueNumber} returned empty output`,
+    );
+  }
+
+  try {
+    return parseNativeSubIssueRefPages(raw, repo);
+  } catch (error) {
+    throw new Error(
+      `sub_issues lookup for ${repo}#${parentIssueNumber} returned unparseable output: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }

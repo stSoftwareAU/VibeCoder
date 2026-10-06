@@ -216,7 +216,9 @@ Measured on the three-repo, two-author fixture in
 Two per-issue reads on the scan path are cached too (Issue #1818): the
 dependency fetcher's `issue_state_v2_<n>`, `issue_body_v1_<n>` and
 `issue_sub_issues_v2_<n>` (a referenced issue is viewed once per iteration,
-not once per idle re-scan), and the scan-time content-integrity check reads
+not once per idle re-scan; a failed sub-issues lookup rejects and is not
+cached under this key, so the next read retries rather than inheriting a
+stale failure — Issue #3321), and the scan-time content-integrity check reads
 the candidate's title and body from the listing instead of a live
 `gh issue view` — the claimed issue is still re-verified live at pickup
 (Issue #3647). Before this one cycle spent ~735 `issue view` calls on 94

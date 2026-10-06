@@ -86,6 +86,15 @@ Deno.test("parseNativeSubIssueRefPages - a malformed line throws", () => {
   assertThrows(() => parseNativeSubIssueRefPages("not json", "owner/repo"));
 });
 
+Deno.test("parseNativeSubIssueRefPages - a non-array page throws (Issue #3321)", () => {
+  assertThrows(() =>
+    parseNativeSubIssueRefPages(
+      JSON.stringify({ message: "Not Found" }),
+      "owner/repo",
+    )
+  );
+});
+
 Deno.test("parseNativeSubIssueRefPages - a hostile repository_url scales linearly and falls back to the parent repo", () => {
   const refs = assertLinearGrowth(
     "repository_url parse over a slash-heavy URL",
@@ -156,4 +165,14 @@ Deno.test("fetchNativeSubIssueRefs - a throwing gh propagates the throw", async 
     Promise.reject(new Error("network down"));
 
   await assertRejects(() => fetchNativeSubIssueRefs("owner/repo", 1, gh));
+});
+
+Deno.test("fetchNativeSubIssueRefs - blank output throws rather than reading as 'no children' (Issue #3321)", async () => {
+  const gh = (_args: string[]): Promise<string> => Promise.resolve("  \n");
+
+  await assertRejects(
+    () => fetchNativeSubIssueRefs("owner/repo", 1, gh),
+    Error,
+    "owner/repo#1",
+  );
 });

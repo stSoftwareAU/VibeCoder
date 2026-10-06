@@ -599,15 +599,16 @@ function uncachedIssueFetcher(
       // repo — so a cross-repo sub-issue was resolved as if it were this
       // repo's own issue of the same number. `fetchNativeSubIssueRefs`
       // paginates at `per_page=100` and keeps each child's own repo.
-      try {
-        return await fetchNativeSubIssueRefs(
-          repo,
-          issueNumber,
-          ghCommandFn,
-        );
-      } catch {
-        return [];
-      }
+      //
+      // Issue #3321: a lookup failure (the `gh` call rejecting, empty or
+      // unparseable output) must *reject*, never answer `[]`. `[]` means
+      // "this issue genuinely has no sub-issues", and `checkParentBlocked`
+      // — and in turn `isDependencyBlocked` — would read that as "not
+      // blocked", letting a parent be claimed while its children were
+      // merely unreadable rather than actually closed. `fetchNativeSubIssueRefs`
+      // already throws on each of those failure modes, so this call must
+      // not catch and mask it.
+      return await fetchNativeSubIssueRefs(repo, issueNumber, ghCommandFn);
     },
     async getIssueBody(repo: string, issueNumber: number) {
       const output = await ghCommandFn([
@@ -772,6 +773,11 @@ export type { DependencyBlocker };
  * (Issue #2533), shared by `diagnose_issue` and `diagnose_repo` so both
  * commands name a cross-milestone hold the same way.
  *
+ * Renders three kinds: `child` (an open sub-issue), `depends-on` (an open or
+ * milestone-held forward dependency), and `unreadable-children` (Issue
+ * #3321) — the parent/child gate could not read this issue's sub-issues at
+ * all, so it is treated as blocked rather than claimable.
+ *
  * @param repo - The candidate's repo, so only cross-repo blockers are qualified
  * @param blockers - Blockers collected by {@link isDependencyBlocked}
  * @returns The reason, or `""` when there are no blockers
@@ -800,6 +806,13 @@ export function describeDependencyBlockers(
           ref(dep)
         } is closed but in open milestone '${dep.heldByMilestone}'`
         : `depends on ${ref(dep)} which is not resolved`,
+    );
+  }
+  for (
+    const unreadable of blockers.filter((b) => b.kind === "unreadable-children")
+  ) {
+    parts.push(
+      `sub-issues of ${ref(unreadable)} could not be read (treated as blocked)`,
     );
   }
   return parts.join("; ");
@@ -833,6 +846,10 @@ export function describeDependencyBlockers(
  * When `blockers` is provided, collects all blockers instead of returning
  * early on the first one. Used to classify whether blockers are claimable
  * or stalled (Issue #2473).
+ *
+ * Issue #3321: an unreadable sub-issues lookup (`checkParentBlocked`
+ * returning `{ ok: false }`) counts as blocked, mirroring the fail-safe
+ * already applied to a forward dependency that cannot be read.
  */
 export async function isDependencyBlocked(
   repo: string,
@@ -850,8 +867,21 @@ export async function isDependencyBlocked(
       issueNumber,
       openStateMap,
     );
-    if (parentResult.ok && parentResult.value.isBlocked) {
-      if (parentResult.ok && parentResult.value.openChildren) {
+    if (!parentResult.ok) {
+      // Issue #3321: an unreadable sub-issues lookup must fail closed — the
+      // parent/child gate cannot tell whether this issue has open children,
+      // so it is treated as blocked rather than claimable.
+      if (blockers) {
+        blockers.push({
+          repo,
+          number: issueNumber,
+          kind: "unreadable-children",
+        });
+      } else {
+        return true;
+      }
+    } else if (parentResult.value.isBlocked) {
+      if (parentResult.value.openChildren) {
         for (const child of parentResult.value.openChildren) {
           if (blockers) {
             blockers.push({

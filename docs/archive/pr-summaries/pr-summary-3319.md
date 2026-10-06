@@ -144,6 +144,12 @@ Branch outcomes:
   - Tests: "fetchNativeSubIssueRefs - issue number 0 returns [] without calling gh" and "fetchNativeSubIssueRefs - invalid repo slug returns [] without calling gh".
 - A `gh` failure propagates out of `fetchNativeSubIssueRefs`.
   - Test: "fetchNativeSubIssueRefs - a throwing gh propagates the throw".
+- Blank stdout from `gh` throws instead of being read as "no children" (Issue #3321).
+  - Test: "fetchNativeSubIssueRefs - blank output throws rather than reading as 'no children' (Issue #3321)".
+  - Removing the blank-output check turned it red.
+- A non-array page throws instead of being silently skipped (Issue #3321).
+  - Test: "parseNativeSubIssueRefPages - a non-array page throws (Issue #3321)".
+  - Reverting the check to `continue` turned it red.
 - Regex on untrusted `repository_url`: "parseNativeSubIssueRefPages - a hostile repository_url scales linearly and falls back to the parent repo" uses `assertLinearGrowth`.
   - Swapping in a backtracking pattern turned it red.
 - `worker/deno/lib/issue_finder_common.ts`'s `cached()` helper: a malformed/old-shaped hit under `isSubIssueRefArray` is rejected and forces a live read; a well-shaped hit is still served from the cache.
@@ -155,12 +161,27 @@ Branch outcomes:
 - [x] Input validation: the repo slug and issue number are validated before `gh` is called. A `repository_url` that does not match the anchored pattern falls back to the parent repo.
 - [x] No secrets or hidden files are staged.
 - [x] Injection surface: `gh` is called with an argv array, with no shell string.
-- [x] Error handling: a `gh` failure or a malformed page throws from `fetchNativeSubIssueRefs`.
+- [x] Error handling: a `gh` failure, blank output, a malformed page or a non-array page throws from `fetchNativeSubIssueRefs`, and `getSubIssues` no longer catches that into `[]`.
 - [x] No new dependencies.
+
+## Merge with main (Issue #3321)
+
+While resolving a merge conflict with `main`, this branch picked up #3321's
+fail-closed fix (merged to `main` independently of this PR). `getSubIssues`
+now delegates entirely to `fetchNativeSubIssueRefs` with **no** local
+try/catch — a `gh` failure propagates. `fetchNativeSubIssueRefs` itself was
+extended to also throw on blank stdout (a genuine "no children" page still
+carries the jq filter's `[]` text) and on a non-array page, so every failure
+mode #3321 named rejects rather than reading as "no sub-issues". New tests:
+"fetchNativeSubIssueRefs - blank output throws …" and
+"parseNativeSubIssueRefPages - a non-array page throws …" in
+`worker/deno/tests/native_sub_issue_refs_test.ts`; both confirmed red when
+their guard is removed. `docs/GH-API-OPTIMISATION.md`'s cache-key paragraph
+was reworded to describe both the pagination fix and the fail-closed
+behaviour under the same `issue_sub_issues_v2_` key.
 
 ## Follow-ups (not in scope)
 
 - `fetchNativeSubIssueNumbers` still reads a single page, capped at 100 children. Its callers are `planning_processor.ts` and `failure_detection_resume.ts`.
-- `getSubIssues` keeps its existing fail-open behaviour: a fetch error returns `[]`.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
