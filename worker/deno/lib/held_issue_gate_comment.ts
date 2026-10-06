@@ -76,6 +76,13 @@ export type HeldIssueGate =
   | { kind: "fleet-pr-cap"; open: number; cap: number }
   /** The dependency is closed, but its code rides a milestone branch. */
   | { kind: "milestone-wait"; dependency: ChainIssueRef; milestone: string }
+  /**
+   * The issue's own sub-issues could not be read (Issue #3321's
+   * `unreadable-children` blocker). There is no dependency to name — the
+   * blocker is the read failure itself, not something this issue waits on —
+   * so, unlike every other kind here, this carries no {@link ChainIssueRef}.
+   */
+  | { kind: "unreadable-children" }
   /** The dependency is still open, optionally with an unworkable chain root. */
   | {
     kind: "dependency";
@@ -149,6 +156,9 @@ function gateSentence(gate: HeldIssueGate): string {
         `but its code only reaches the default branch when ${milestone} ` +
         `merges.`;
     }
+    case "unreadable-children":
+      return `This issue's sub-issues could not be read, so it is held ` +
+        `until they can be.`;
     case "dependency": {
       const ref = renderRef(gate.dependency);
       if (gate.rootReason === undefined) {
@@ -183,6 +193,8 @@ function gateKey(gate: HeldIssueGate): string {
     case "milestone-wait":
       return `held-gate-milestone-wait-${renderRef(gate.dependency)}-` +
         `${safeMilestone(gate.milestone)}`;
+    case "unreadable-children":
+      return `held-gate-unreadable-children`;
     case "dependency": {
       const base = `held-gate-dependency-${renderRef(gate.dependency)}`;
       if (gate.rootReason === undefined) return base;
@@ -284,10 +296,13 @@ export async function upsertHeldIssueGateComment(opts: {
  * - `pr-blocked` at the default-branch slot cap (#2663) ⇒ `fleet-pr-cap`.
  * - `pr-blocked` with the PR recorded (#2534) ⇒ `pr-open`.
  * - `dependency-blocked` ⇒ the first recorded blocker: `milestone-wait` when it
- *   is the cross-milestone hold (#2173), otherwise `dependency`, carrying the
- *   chain's unworkable root unless the fleet is already working the chain —
- *   work is happening, so only the root sentence is dropped; the issue is still
- *   told which dependency it waits on.
+ *   is the cross-milestone hold (#2173), `unreadable-children` (#3321, #3326)
+ *   when the parent/child gate could not read this issue's own sub-issues —
+ *   `number` on that blocker is the candidate itself, so it must never be
+ *   rendered as a dependency the issue "waits on" — otherwise `dependency`,
+ *   carrying the chain's unworkable root unless the fleet is already working
+ *   the chain — work is happening, so only the root sentence is dropped; the
+ *   issue is still told which dependency it waits on.
  *
  * Every other reason (`milestone-paced`, cooldowns, …) is not commented: the
  * parent issue names these gates and no others.
@@ -316,6 +331,13 @@ export function heldIssueGateFor(
   if (held.reason !== "dependency-blocked") return null;
   const first = held.blockers?.[0];
   if (first === undefined) return null;
+  // Issue #3326: `unreadable-children` names the candidate itself, not a
+  // dependency — rendering it through the `dependency` branch below would
+  // post "this issue waits on dependency #<itself>". Report the read
+  // failure directly instead.
+  if (first.kind === "unreadable-children") {
+    return { kind: "unreadable-children" };
+  }
   const dependency = { repo: first.repo, number: first.number };
   if (first.heldByMilestone) {
     return {
