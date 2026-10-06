@@ -2,8 +2,10 @@
 
 Five drift tests pinned prompt phrases over the whole flattened file, so a
 phrase surviving in an unrelated section kept them green. Each presence pin is
-now read with `readRepoDoc`, narrowed with `section()` to the heading that
-carries its rule and flattened with `flat()`. The two "must not appear
+now read with `readRepoDoc` and narrowed with `section()` to the heading that
+carries its rule. The string pins then flatten that section with `flat()`;
+`sleep_poll_guidance_1954_test.ts` instead tests its `WAIT_CONTRACT` regexes
+against the raw `section(...)` text, without `flat()`. The two "must not appear
 anywhere" checks stay on `flatWholeFile`. The tests, and the pins they hold, are
 the same as before; only where each pin looks has changed. Closes #3302.
 
@@ -78,8 +80,77 @@ Backend-only change: only test files are touched.
 
 ## Test Plan
 
-- Removed assertions: none. Every pin was moved to a narrower read, not
-  dropped.
+```text
+assertStringIncludes( collapsed, "Bypassing either safeguard (e.g. `git commit --no-verify`, `git add -f`) " + "is forbidden", );
+assertStringIncludes(collapsed, "fix the allowlist via PR — do not bypass");
+assert(text, `${family} must resolve`);
+assertStringIncludes(text, "Bound irreversible actions");
+assertStringIncludes(text, "git push --force");
+assertStringIncludes(text, "only way forward");
+assertStringIncludes(text, "Bypassing the pre-commit gate is");
+assertEquals(result.ok, true, `${type} failed to load`);
+assertStringIncludes(body, required);
+assertStringIncludes( body, "a helper or component the issue says to reuse counts as a stated criterion", );
+assertStringIncludes(body, "flag these four departures");
+assertStringIncludes( body, "an in-repo helper, component or policy re-implemented by hand instead of called", );
+assert(result.ok, "issue prompt failed to load");
+assertStringIncludes(flat, "`reviewer:` is a verdict, not a quotation");
+assertStringIncludes(flat, `\`${verdict}\``);
+assert( !flat.includes("keep the `reviewer:` field as the reviewer wrote it"), "this instruction conflicts with the closed vocabulary the gate parses, " + "and cost #834 a completed run", );
+assertStringIncludes(flat, "put the **nearest** of the four in `reviewer:`");
+assertStringIncludes(flat, "quote what it actually said in `reason:`");
+assertStringIncludes(flat, "not assessed");
+assertStringIncludes(flat, "traceable, not creep");
+assertStringIncludes( flat, "add a one-line `reason:` saying why you departed", );
+assertStringIncludes( flat, "An unrecorded departure is the self-assessment this whole section exists to remove", );
+assert( pattern.test(text), `${template}/prompt.md must name ${what} (no match for ${pattern})`, );
+assertEquals(result.ok, true, "issue prompt failed to load");
+assert( !/why it stands/i.test(body), "the prompt still offers 'why it stands' as a violation's reason", );
+assertStringIncludes(body, "reason: fixed in this diff");
+assertStringIncludes(body, "reason: pre-existing, filed #<n>");
+assertStringIncludes( body, "A breach in a line this diff adds or changes may not be deferred", );
+```
+
+The 28 assertions above were removed from existing tests, in diff order. Every
+pinned phrase is still asserted. #3302 requires each pin to read its rule's
+section, not the whole prompt, so the old whole-file form is untrue to the
+issue. Where each one went:
+
+- Removed from `worker/deno/tests/no_verify_ban_test.ts` (the first seven) —
+  scoping them needs `markdown_docs.ts`, which would drop this file from the
+  `check:manifests` family. They are re-pinned on `flat(section(...))` in
+  `no_verify_ban_drift_test.ts::no-verify - the guidelines' Commit Safety section keeps the categorical ban (Issue #783)`
+  (Commit Safety) and
+  `no_verify_ban_drift_test.ts::no-verify - the two templates keep the rest of the reversibility bullet (Issue #783)`
+  (Long-Horizon Execution). `assert(text, ...)` went with the `familyText`
+  read: `readRepoDoc` throws on a missing file and `section()` asserts its
+  heading exists.
+- Removed from `worker/deno/tests/reuse_existing_owner_3084_test.ts` (the next
+  five) — the load check went with `loadPrompt`, for the same reason. Each
+  phrase is re-pinned, with a message naming its section, in the same-named
+  test: `issue - step 1 makes the agent call the existing owner instead of copying it`
+  (Instructions), `issue - the Spec reviewer brief treats a named reuse as a criterion`
+  (Independent Review Before the PR),
+  `pr_feedback - a fix calls the owner and replaces a flagged copy` (Making
+  Changes) and
+  `CODING-STANDARDS - the over-engineering checklist flags an in-repo helper copied by hand`
+  (Coding Principles).
+- Removed from `worker/deno/tests/reviewer_verdict_rule_test.ts` (the next
+  ten) — the load check went with `loadPrompt`. Each phrase is re-pinned on
+  `text` (from `reviewerVerdictSection()`, Independent Review Before the PR) in
+  the same-named `reviewer verdict - …` test. The `!flat.includes(...)` absence
+  check is still whole-file. It now reads `whole` (`flatWholeFile(doc)`)
+  because `flat` is now the imported helper, in
+  `reviewer verdict - the prompt no longer demands verbatim reviewer text (Issue #886)`.
+- Removed from `worker/deno/tests/sleep_poll_guidance_1954_test.ts` (one) —
+  re-asserted against the raw `section(...)` text from
+  `WAIT_CONTRACT_SECTION`, with a message naming the section, in
+  `sleep_poll_guidance_1954_test.ts::${template} - names a wait command that works in the container`.
+- Removed from `worker/deno/tests/standing_violation_3196_test.ts` (the last
+  five) — the load check went with `loadPrompt`. The `/why it stands/i`
+  absence check is still whole-file, now on `flatWholeFile(doc)`. The three
+  phrases are re-pinned on `reviewSection` (Independent Review Before the PR)
+  in `Issue #3196 - the issue prompt offers only fixed or filed as a violation's reason`.
 - Base: every pinned phrase is already in its target section on origin/main
   (416fd710). This is a refactor, so the tests are expected green on base.
 - Per-pin red check: for each pin, I deleted exactly one occurrence of the
