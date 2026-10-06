@@ -1839,8 +1839,8 @@ Two independent checks feed one result:
    words; a named test file not tracked at the head blocks too. An ambiguous
    basename, an unreadable or oversized file, a file with no recognised test
    declaration, or a claim past the 50-claim cap is logged as not checked
-   rather than blocking. A corpus run of this backstop over the 869
-   summaries in `docs/archive/pr-summaries/` at the time of writing flagged 2
+   rather than blocking. A corpus run of this backstop over the 876
+   summaries archived in `docs/archive/pr-summaries/` when it was run flagged 2
    (pr-summary-658 and pr-summary-663, both quoting test names no longer
    present in the named files); the adjacency and preamble rules above
    removed four would-be false positives — pr-summary-1549 and -3222
