@@ -1132,9 +1132,17 @@ The file MUST contain:
    changed call site needs a test that goes red without it** in the
    guidelines); for a UI control that test invokes the handler, the Test Plan
    lists each entry point checked, and a changed call site whose revert leaves
-   the suite green is a blocking self-review finding. Likewise, every
-   outcome of a branch the diff adds — each new condition, match arm, exit
-   code and interface default —
+   the suite green is a blocking self-review finding. Likewise, a parameter,
+   value or behaviour the diff adds that the issue needs on every path
+   reaches every caller and sibling route that needs it (see **A new
+   argument or behaviour reaches every caller that needs it** in the
+   guidelines): list the callers and siblings checked, each passing the new
+   value or with the reason it does not need it; a behaviour-carrying
+   parameter is required rather than defaulted to a value that turns the
+   behaviour off, and a caller left on the old hard-coded value is a
+   blocking self-review finding. Likewise, every outcome of a branch the
+   diff adds — each new condition, match arm, exit code and interface
+   default —
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
