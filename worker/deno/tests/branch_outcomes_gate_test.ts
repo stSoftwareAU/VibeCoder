@@ -14,6 +14,8 @@ import {
 } from "../lib/branch_outcomes_gate.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
+const FOO_TS = "worker/deno/lib/foo.ts";
+
 // ---------------------------------------------------------------------------
 // parseBranchOutcomes
 // ---------------------------------------------------------------------------
@@ -993,6 +995,460 @@ Deno.test("lookupTestsAtHead - parses stdout lines into the returned set", async
   assertEquals(
     result,
     new Set(["worker/deno/tests/foo_test.ts", "worker/deno/tests/bar_test.ts"]),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// unreached admissions (Issue #3288)
+// ---------------------------------------------------------------------------
+
+Deno.test("validateBranchOutcomes - a GRQ-shape admission blocks and names the label", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — minimum hold blocks — " +
+      "**no test reaches it**: flipped the guard, `cargo test --workspace` " +
+      "stayed green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  const problem = result.problems.find((p) => p.includes("admits no test"))!;
+  assertStringIncludes(problem, "admits no test reaches");
+  assertEquals(result.unreachedEntries, ["crates/app/src/handler.rs:2022"]);
+});
+
+Deno.test("validateBranchOutcomes - the same GRQ input with only the admission replaced is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — minimum hold blocks — " +
+      "flipped the guard, test went red\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+  assertEquals(result.unreachedEntries, []);
+});
+
+Deno.test("validateBranchOutcomes - a covered entry naming the test and a red flip is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — guard — " +
+      "`worker/deno/tests/foo_test.ts::rejects bad input` — flipped to " +
+      "success, test went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+  assertEquals(result.unreachedEntries, []);
+});
+
+Deno.test("validateBranchOutcomes - a mixed list of 3 flags exactly the strong and weak entries", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — no test reaches it: flipped the " +
+      "guard, stayed green\n" +
+      "- `crates/app/src/other.rs` — guard — removing the check left the " +
+      "suite green\n" +
+      "- `worker/deno/tests/foo_test.ts::case` — flipped, went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.unreachedEntries, [
+    "crates/app/src/handler.rs:2022",
+    "crates/app/src/other.rs — guard — removing the check left the suite green",
+  ]);
+  for (const problem of result.problems) {
+    assertEquals(problem.includes("worker/deno/tests/foo_test.ts"), false);
+  }
+});
+
+// Evasion variants — each must block.
+const EVASION_VARIANTS: Array<{ name: string; entry: string }> = [
+  { name: "no tests reach it", entry: "`crates/x.ts:1` — no tests reach it" },
+  {
+    name: "No test covers the fallback",
+    entry: "`crates/x.ts:2` — No test covers the fallback",
+  },
+  {
+    name: "not reached by any test",
+    entry: "`crates/x.ts:3` — not reached by any test",
+  },
+  {
+    name: "flipping it never went red",
+    entry: "`crates/x.ts:4` — flipping it never went red",
+  },
+  {
+    name: "didn’t go red (curly apostrophe)",
+    entry: "`crates/x.ts:5` — didn’t go red",
+  },
+  { name: "unreached", entry: "`crates/x.ts:6` — unreached" },
+  { name: "untested", entry: "`crates/x.ts:7` — untested" },
+  {
+    name: "VibeCoder#3257 shape",
+    entry: "`crates/x.ts:8` — unreachable through findTestPlanClaimProblems, " +
+      "which skips it first; flipping it left the suite green",
+  },
+  {
+    name: "path-citing entry with a strong phrase",
+    entry: "`worker/deno/tests/foo_test.ts::prefix only` checks the prefix, " +
+      "so no test reaches the fallback",
+  },
+  {
+    name: "never turned red",
+    entry: "`crates/x.ts:10` — flipping it never turned red",
+  },
+  {
+    name: "no test went red",
+    entry: "`crates/x.ts:11` — no test went red",
+  },
+  {
+    name: "does not go red when flipped",
+    entry: "`crates/x.ts:12` — does not go red when flipped",
+  },
+  {
+    name: "did not turn the suite red",
+    entry: "`crates/x.ts:13` — did not turn the suite red",
+  },
+];
+
+for (const { name, entry } of EVASION_VARIANTS) {
+  Deno.test(`validateBranchOutcomes - evasion variant blocks: ${name}`, () => {
+    const result = validateBranchOutcomes({
+      changedFiles: [FOO_TS],
+      prSummaryContent: `**Branch outcomes:**\n- ${entry}\n`,
+      testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+    });
+    assertEquals(result.valid, false, name);
+    assert(
+      result.problems.some((p) => p.includes("admits no test reaches")),
+      name,
+    );
+  });
+}
+
+Deno.test("validateBranchOutcomes - an admission on an indented continuation line blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/x.ts:9` — guard —\n" +
+      "  no test reaches it\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+Deno.test("validateBranchOutcomes - an admission in a markdown table row blocks via uncapturedLines", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:** two arms added:\n" +
+      "\n" +
+      "| Outcome | Test |\n" +
+      "| --- | --- |\n" +
+      "| success | no test reaches the edge case |\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+Deno.test("validateBranchOutcomes - an admission after 'none added.' on a following line blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:** none added.\n" +
+      "\n" +
+      "Actually, the guard added here: no test reaches the new branch.\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+Deno.test("validateBranchOutcomes - an inline-body admission blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "Branch outcomes: `lib/x.ts:3` — no test reaches it\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+Deno.test("validateBranchOutcomes - a 101st entry admission after 100 covered entries blocks", () => {
+  const covered = Array.from(
+    { length: 100 },
+    (_, i) => `- worker/deno/tests/foo_test.ts::case${i}, flipped, went red`,
+  ).join("\n");
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      `${covered}\n` +
+      "- `crates/y.ts:5` — no test reaches it\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// Look-alikes — each must stay valid.
+Deno.test("validateBranchOutcomes - a Rust covered entry with a blanked inline-test-name is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/a.rs:10` — error — `handler::tests::rejects` — flipped, " +
+      "went red; the rest of the suite stayed green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+});
+
+Deno.test("validateBranchOutcomes - a path-citing entry mentioning an unrelated 'stayed green' is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/tests/foo_test.ts::x` — unchanged base behaviour; " +
+      "other suites stayed green\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+Deno.test("validateBranchOutcomes - a code-span test name containing the admission phrase is blanked and valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/tests/foo_test.ts::flags an entry no test reaches` " +
+      "— flipped, went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+Deno.test("validateBranchOutcomes - past-tense 'had no test reaching it' is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- had no test reaching it; added " +
+      "`worker/deno/tests/foo_test.ts::y`, flipped, went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+Deno.test("validateBranchOutcomes - 'no test -x' prefix look-alike is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- no test -x → violation — `worker/deno/tests/foo_test.ts::z` — " +
+      "flipped, went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+// Corpus look-alikes (review round 1): a `docs/archive/pr-summaries/` corpus
+// run found the loose negated-red pattern ("negation, up to 3 words, red")
+// firing on genuinely COVERED entries where the negation governs an
+// unrelated word, not the red flip itself.
+const CORPUS_RED_LOOKALIKES: Array<{ name: string; entry: string }> = [
+  {
+    name: "pr-summary-3223.md:178 'never add'",
+    entry: "flipped to never add, `worker/deno/tests/foo_test.ts::x` test " +
+      "went red",
+  },
+  {
+    name: "pr-summary-3244.md:126 'no split'",
+    entry: "flipped to no split, `worker/deno/tests/foo_test.ts::x` test " +
+      "went red",
+  },
+  {
+    name: "pr-summary-3255.md:109 'No gap'",
+    entry: "No gap: `worker/deno/tests/foo_test.ts::runGateWithRepair - " +
+      "verifies the repair`. Flipped: red.",
+  },
+  {
+    name: "pr-summary-3257.md:80 'never attach'",
+    entry: "flipped to never attach, `worker/deno/tests/foo_test.ts::x` " +
+      "test went red",
+  },
+  {
+    name: "pr-summary-3257.md:124 'never blocked'",
+    entry: "flipped to never blocked, `worker/deno/tests/foo_test.ts::x` " +
+      "each went red",
+  },
+];
+
+for (const { name, entry } of CORPUS_RED_LOOKALIKES) {
+  Deno.test(`validateBranchOutcomes - corpus look-alike is valid: ${name}`, () => {
+    const result = validateBranchOutcomes({
+      changedFiles: [FOO_TS],
+      prSummaryContent: `**Branch outcomes:**\n- ${entry}\n`,
+      testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+    });
+    assert(result.valid, name);
+  });
+}
+
+// Exemption.
+Deno.test("validateBranchOutcomes - exempt (untestable) with a real reason is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/z.rs:1` — timeout guard — exempt (untestable): the timeout " +
+      "branch needs a real thirty-minute wall clock\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+});
+
+Deno.test("validateBranchOutcomes - exempt (out of scope) with a real reason is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/z.rs:2` — retry path — exempt (out of scope): issue #1234 " +
+      "owns the retry path\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+});
+
+Deno.test("validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/z.rs:3` — timeout guard — exempt (untestable):\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(
+    result.problems.some((p) =>
+      p.includes("marked exempt but gives no reason")
+    ),
+  );
+  assert(!result.problems.some((p) => p.includes("admits no test reaches")));
+  assertEquals(result.unreachedEntries, []);
+});
+
+Deno.test("validateBranchOutcomes - exempt (later) is not an exemption and the admission still blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/z.rs:4` — exempt (later): reasons reasons reasons — no " +
+      "test reaches it\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+Deno.test("buildBranchOutcomesGateComment - names the exempt clause", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Summary\n",
+    testsAtHead: new Set(),
+  });
+  const comment = buildBranchOutcomesGateComment(result);
+  assertStringIncludes(comment, "exempt (untestable): <reason>");
+});
+
+// ---------------------------------------------------------------------------
+// Hostile growth (Issue #3288) — one per new pattern.
+// ---------------------------------------------------------------------------
+
+Deno.test("validateBranchOutcomes - a long run of 'left ' then a non-matching char scales linearly", () => {
+  const buildSummary = (chars: number) =>
+    `**Branch outcomes:**\n- ${"left ".repeat(chars)}x\n`;
+  assertLinearGrowth(
+    "branch-outcomes 'left ...x' weak-admission scan",
+    buildSummary,
+    (input) =>
+      validateBranchOutcomes({
+        changedFiles: [FOO_TS],
+        prSummaryContent: input,
+        testsAtHead: new Set(),
+      }),
+    { baseChars: 4_000 },
+  );
+});
+
+Deno.test("validateBranchOutcomes - a long run of 'never ' then a non-matching char scales linearly", () => {
+  const buildSummary = (chars: number) =>
+    `**Branch outcomes:**\n- ${"never ".repeat(chars)}x\n`;
+  assertLinearGrowth(
+    "branch-outcomes 'never ...x' negated-red scan",
+    buildSummary,
+    (input) =>
+      validateBranchOutcomes({
+        changedFiles: [FOO_TS],
+        prSummaryContent: input,
+        testsAtHead: new Set(),
+      }),
+    { baseChars: 4_000 },
+  );
+});
+
+Deno.test("validateBranchOutcomes - a long run of 'no ' then a non-matching char scales linearly", () => {
+  const buildSummary = (chars: number) =>
+    `**Branch outcomes:**\n- ${"no ".repeat(chars)}x\n`;
+  assertLinearGrowth(
+    "branch-outcomes 'no ...x' strong-admission scan",
+    buildSummary,
+    (input) =>
+      validateBranchOutcomes({
+        changedFiles: [FOO_TS],
+        prSummaryContent: input,
+        testsAtHead: new Set(),
+      }),
+    { baseChars: 4_000 },
+  );
+});
+
+Deno.test("validateBranchOutcomes - 'exempt (' then a long run of spaces then 'x' scales linearly", () => {
+  const buildSummary = (chars: number) =>
+    `**Branch outcomes:**\n- exempt (${" ".repeat(chars)}x\n`;
+  assertLinearGrowth(
+    "branch-outcomes 'exempt (...x' scan",
+    buildSummary,
+    (input) =>
+      validateBranchOutcomes({
+        changedFiles: [FOO_TS],
+        prSummaryContent: input,
+        testsAtHead: new Set(),
+      }),
+    { baseChars: 4_000 },
+  );
+});
+
+Deno.test("validateBranchOutcomes - a long line of repeated '`a::' scales linearly (blanking)", () => {
+  const buildSummary = (chars: number) =>
+    "**Branch outcomes:**\n- " + "`a::".repeat(chars) + "x\n";
+  assertLinearGrowth(
+    "branch-outcomes citation-blanking scan",
+    buildSummary,
+    (input) =>
+      validateBranchOutcomes({
+        changedFiles: [FOO_TS],
+        prSummaryContent: input,
+        testsAtHead: new Set(),
+      }),
+    { baseChars: 4_000 },
+  );
+});
+
+Deno.test("validateBranchOutcomes - a long run of 'stay' words then a non-matching char scales linearly", () => {
+  const buildSummary = (chars: number) =>
+    `**Branch outcomes:**\n- ${"stay ".repeat(chars)}x\n`;
+  assertLinearGrowth(
+    "branch-outcomes 'stay ...x' weak-admission scan",
+    buildSummary,
+    (input) =>
+      validateBranchOutcomes({
+        changedFiles: [FOO_TS],
+        prSummaryContent: input,
+        testsAtHead: new Set(),
+      }),
+    { baseChars: 4_000 },
   );
 });
 
