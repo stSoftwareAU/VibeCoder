@@ -1388,6 +1388,21 @@ operation, calling an existing sibling guard rather than writing a new
 one, a refusal test whose fixture holds that state, and the inventory
 in the PR summary.
 
+**Changing the shape of persisted data bumps its key or reads the old shape
+(Issue #3328).** Fleet PRs changed the type of a value that outlives a
+deployment or relaunch and kept its versioned key, so the previous release's
+entries were read back as the new type: VibeCoder#3325 moved `getSubIssues`
+from `number[]` to `SubIssueRef[]` under the unchanged
+`issue_sub_issues_v1_` prefix of the file-backed `.gh-scan-cache`, and a
+`[7, 8]` entry made `checkParentBlocked` throw and skip the parent/child
+gate; GRQ-AutoTrader#2481 made `cashChange` read only `row.interest_charged`
+while the service worker's `grq-api-v1:` cache still held rows with the old
+`interest` key. Each PR's tests saw only new-shape data, so CI stayed green.
+`CODING-STANDARDS.md` and the guidelines now require bumping the key's
+version or reading and converting the old shape, a test that seeds an
+old-shape entry, updating every doc that names the key, and saying in the PR
+summary which of the two was chosen.
+
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed
 whether or not the change was there: VibeCoder#3091, #3085 and #3079, and
