@@ -683,6 +683,14 @@ export function planRepoSettingsHardening(
     }
   }
   steps.push(...planCodeqlDefaultSetup(snapshot));
+  if (snapshot.privateVulnerabilityReporting?.enabled !== true) {
+    steps.push({
+      kind: "private-vulnerability-reporting",
+      title: "Enable private vulnerability reporting",
+      method: "PUT",
+      endpoint: "private-vulnerability-reporting",
+    });
+  }
   // The approval step comes first: when it adds the pull_request rule, the
   // code-owner step below re-reads the live ruleset and finds it there.
   const pullRequestSteps = planDefaultBranchPullRequest(
@@ -1773,6 +1781,11 @@ export interface HardenRepoOutcome {
   skipNote?: string;
   /** {@link CODE_SECURITY_SKIP_NOTE} on a private repository (Issue #2704). */
   codeqlSkipNote?: string;
+  /**
+   * {@link PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE} on a private or
+   * internal repository (Issue #3267).
+   */
+  pvrSkipNote?: string;
   /** The allow-list's action coordinates (empty when the workflows were unreadable). */
   coordinates: string[];
   /** How many workflow `uses:` references fed the allow-list. */
@@ -1913,15 +1926,23 @@ async function hardenRepoInto(
     );
   }
 
-  // CodeQL default setup (Issue #2704): read on a public repository only —
-  // a private one would need paid Code Security, so it is not even asked.
+  // CodeQL default setup (Issue #2704) and private vulnerability reporting
+  // (Issue #3267): both read on a public repository only — a private or
+  // internal one would need paid Code Security, and GitHub offers private
+  // vulnerability reporting on public repositories only, so neither is
+  // even asked there.
   if (repoInfo) {
     if (needsPaidSecretProtection(repoInfo.visibility, repoInfo.private)) {
       outcome.codeqlSkipNote = CODE_SECURITY_SKIP_NOTE;
+      outcome.pvrSkipNote = PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE;
     } else {
       const codeql = await readCodeScanning(repo, gh);
       if ("value" in codeql) snapshot.codeScanning = codeql.value;
       else results.push(codeql.result);
+      snapshot.privateVulnerabilityReporting = await read(
+        "private-vulnerability-reporting",
+        `repos/${repo}/private-vulnerability-reporting`,
+      );
     }
   }
 
