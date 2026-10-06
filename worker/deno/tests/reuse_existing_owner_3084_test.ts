@@ -12,31 +12,33 @@
  * templates, the shared Spec reviewer prompt constant and the coding
  * standards now carry, so a later edit that drops it fails here.
  *
+ * Each pin runs against the one section of the doc that carries the rule —
+ * `Instructions`, `Independent Review Before the PR`, `Making Changes` or
+ * `Coding Principles` — rather than the whole file, so the test stays a
+ * meaningful drift pin even if the same phrase could appear elsewhere
+ * (CODING-STANDARDS.md § Documentation-drift tests, condition 1). The
+ * `buildIssueRunAgents` check pins a rendered prompt value, not a doc, so it
+ * flattens the whole string instead.
+ *
  * Australian English spelling throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { assert, assertStringIncludes } from "@std/assert";
 import {
   buildIssueRunAgents,
   SPEC_REVIEWER_AGENT_NAME,
 } from "../lib/issue_executor_agents.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-
-async function load(type: string): Promise<string> {
-  const result = await loadPrompt(type, PROMPTS_DIR);
-  assertEquals(result.ok, true, `${type} failed to load`);
-  if (!result.ok) throw new Error(`${type} failed to load`);
-  return result.value;
-}
-
-function normalise(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ");
-}
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 Deno.test("issue - step 1 makes the agent call the existing owner instead of copying it", async () => {
-  const body = normalise(await load("issue"));
+  const body = flat(
+    section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
+  ).toLowerCase();
 
   for (
     const required of [
@@ -49,21 +51,37 @@ Deno.test("issue - step 1 makes the agent call the existing owner instead of cop
       "a component the issue says to reuse is a stated requirement",
     ]
   ) {
-    assertStringIncludes(body, required);
+    assertStringIncludes(
+      body,
+      required,
+      `missing from prompts/issue/prompt.md's Instructions section: "${required}"`,
+    );
   }
 });
 
 Deno.test("issue - the Spec reviewer brief treats a named reuse as a criterion", async () => {
-  const body = normalise(await load("issue"));
+  const body = flat(
+    section(
+      await readRepoDoc("prompts/issue/prompt.md"),
+      "Independent Review Before the PR",
+    ),
+  ).toLowerCase();
 
   assertStringIncludes(
     body,
     "a helper or component the issue says to reuse counts as a stated criterion",
+    "missing from prompts/issue/prompt.md's Independent Review Before the " +
+      "PR section",
   );
 });
 
 Deno.test("pr_feedback - a fix calls the owner and replaces a flagged copy", async () => {
-  const body = normalise(await load("pr_feedback"));
+  const body = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+  ).toLowerCase();
 
   for (
     const required of [
@@ -72,20 +90,29 @@ Deno.test("pr_feedback - a fix calls the owner and replaces a flagged copy", asy
       "replace the copy with a call to the owner",
     ]
   ) {
-    assertStringIncludes(body, required);
+    assertStringIncludes(
+      body,
+      required,
+      `missing from prompts/pr_feedback/prompt.md's Making Changes section: ` +
+        `"${required}"`,
+    );
   }
 });
 
 Deno.test("CODING-STANDARDS - the over-engineering checklist flags an in-repo helper copied by hand", async () => {
-  const text = await Deno.readTextFile(
-    new URL("../../../CODING-STANDARDS.md", import.meta.url),
-  );
-  const body = normalise(text);
+  const body = flat(
+    section(await readRepoDoc("CODING-STANDARDS.md"), "Coding Principles"),
+  ).toLowerCase();
 
-  assertStringIncludes(body, "flag these four departures");
+  assertStringIncludes(
+    body,
+    "flag these four departures",
+    "missing from CODING-STANDARDS.md's Coding Principles section",
+  );
   assertStringIncludes(
     body,
     "an in-repo helper, component or policy re-implemented by hand instead of called",
+    "missing from CODING-STANDARDS.md's Coding Principles section",
   );
 });
 
@@ -95,7 +122,8 @@ Deno.test("spec-reviewer agent - a named reuse is a stated requirement", () => {
     reviewerAgents: true,
   });
   assert(agents, "the reviewer key on must build definitions");
-  const prompt = normalise(agents[SPEC_REVIEWER_AGENT_NAME]!.prompt);
+  const prompt = flatWholeFile(agents[SPEC_REVIEWER_AGENT_NAME]!.prompt)
+    .toLowerCase();
 
   assertStringIncludes(prompt, "says to reuse is a stated requirement");
   assertStringIncludes(
