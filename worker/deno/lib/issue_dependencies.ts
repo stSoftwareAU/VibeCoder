@@ -49,8 +49,17 @@ export interface DependencyBlocker {
   repo: string;
   /** Issue number of the blocking dependency. */
   number: number;
-  /** Type of dependency relationship. */
-  kind: "child" | "depends-on";
+  /**
+   * Type of dependency relationship.
+   *
+   * - `child` — an open sub-issue of the candidate.
+   * - `depends-on` — an open (or milestone-held) forward dependency.
+   * - `unreadable-children` (Issue #3321) — the candidate's own sub-issues
+   *   could not be read at all; `number` is the candidate issue itself, not
+   *   a child, since no child list could be produced to name one. Fails
+   *   closed: treated as blocked rather than claimable.
+   */
+  kind: "child" | "depends-on" | "unreadable-children";
   /**
    * The dependency's milestone title when the hold is the cross-milestone
    * one (Issue #2173): the dependency is *closed*, but sits in another
@@ -219,7 +228,15 @@ export interface WorkOrderResult {
 export interface IssueFetcher {
   /** Get the state of an issue */
   getIssueState(repo: string, issueNumber: number): Promise<IssueState>;
-  /** Get sub-issue numbers for a given issue */
+  /**
+   * Get sub-issue numbers for a given issue.
+   *
+   * Issue #3321: rejects on a lookup failure — a failed call, or empty,
+   * unparseable or non-array output — and must never answer `[]` for one.
+   * `[]` is reserved for a genuine "this issue has no sub-issues" answer;
+   * conflating the two let a parent be claimed while its children were
+   * merely unreadable.
+   */
   getSubIssues(repo: string, issueNumber: number): Promise<number[]>;
   /** Get the issue body text */
   getIssueBody(repo: string, issueNumber: number): Promise<string>;
@@ -438,7 +455,10 @@ export type OpenIssueStateMap = Map<number, "OPEN">;
  *   When supplied, child issues present in the map are resolved
  *   without a per-issue `getIssueState` call. Children absent from
  *   the map fall back to the fetcher (closed / not-yet-loaded path).
- * @returns Result containing blocked status and details
+ * @returns Result containing blocked status and details. Issue #3321: a
+ *   `getSubIssues` rejection (a lookup failure) propagates as `{ ok: false }`
+ *   here, which `isDependencyBlocked` treats as blocked rather than
+ *   claimable.
  */
 export async function checkParentBlocked(
   fetcher: IssueFetcher,

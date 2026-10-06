@@ -372,7 +372,7 @@ A `top-priority` issue is **not** automatically picked just because the label is
    - The held issue's gate comment states the count against the cap — e.g. "6 fleet PRs are open on this repo's default branch (cap 6)" — rather than naming one PR as the blocker. The idle census, the idle-detect audit and the idle-task filer's own gate apply the same call with the same cap, so none can call work claimable that the scan holds (the #460 / #2563 invariant).
    - Until Issue #2663 any single fleet PR held every non-milestone issue: one fleet PR at a time on the default branch, per repository, fleet-wide. On stSoftwareAU/GRQ-AutoTrader all 13 `work-on` issues waited three hours behind one PR.
 3. **Recently-closed PR cooldown** — [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts) suppress candidates whose target branch was the subject of a worker-closed (un-merged) PR inside the cooldown window.: prevents the worker from immediately re-opening a PR that was just closed (e.g. a reviewer rejected the approach) before a human has had time to react.
-4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails open on API errors so a transient outage cannot stall the worker.
+4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails closed on a lookup it cannot complete: a dependency whose state cannot be read, and a native sub-issues lookup that fails or returns empty, unparseable or non-array output, both hold the candidate rather than release it (Issue #3321). Only an unreadable issue body, with no other blocker already found, lets the candidate through.
 5. **Content modified after approval** — [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts), backed by [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts), compares a SHA-256 hash of the issue title + body against the snapshot captured when an allowed author added `work-on`: if the issue content has been edited by an untrusted author after approval, the candidate is suppressed and `needs-human` is added. The approval label itself is left in place (Issue #3964) — stripping it destroyed the record of who had approved what. TOCTOU protection, so a mutated issue body cannot ride a stale approval.
 
    **Two signals count as re-approval** (Issues #1561, #1617). A trusted author re-adding the approval label is one; a **trusted human removing `needs-human`** is the other — the escalation comment asks for exactly that, so honouring it makes the instruction do what it says. Either signal must post-date **both** the snapshot and the newest recorded edit; an older signal is genuine but stale (`[REAPPROVAL_PREDATES_EDIT]`) and the block stands. A `needs-human` removal by a fleet login (`service_accounts` / `fleet_pr_authors`) is label maintenance rather than review, and never reads as a human's re-approval. A counted re-approval logs `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION]`, re-baselines the snapshot onto the current content, and proceeds; a later untrusted edit blocks again with its own fresh comment.
@@ -1387,6 +1387,21 @@ local config — proving each item safe to lose or refusing the
 operation, calling an existing sibling guard rather than writing a new
 one, a refusal test whose fixture holds that state, and the inventory
 in the PR summary.
+
+**Changing the shape of persisted data bumps its key or reads the old shape
+(Issue #3328).** Fleet PRs changed the type of a value that outlives a
+deployment or relaunch and kept its versioned key, so the previous release's
+entries were read back as the new type: VibeCoder#3325 moved `getSubIssues`
+from `number[]` to `SubIssueRef[]` under the unchanged
+`issue_sub_issues_v1_` prefix of the file-backed `.gh-scan-cache`, and a
+`[7, 8]` entry made `checkParentBlocked` throw and skip the parent/child
+gate; GRQ-AutoTrader#2481 made `cashChange` read only `row.interest_charged`
+while the service worker's `grq-api-v1:` cache still held rows with the old
+`interest` key. Each PR's tests saw only new-shape data, so CI stayed green.
+`CODING-STANDARDS.md` and the guidelines now require bumping the key's
+version or reading and converting the old shape, a test that seeds an
+old-shape entry, updating every doc that names the key, and saying in the PR
+summary which of the two was chosen.
 
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed

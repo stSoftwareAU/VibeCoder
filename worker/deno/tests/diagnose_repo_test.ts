@@ -16,6 +16,7 @@ import {
   getBlockingLabelReasons,
   type LabelConfig,
   type RepoIssueDiagnosticInput,
+  summariseDependencyBlockers,
 } from "../lib/diagnose_repo.ts";
 import type { FilterableIssue } from "../lib/issue_filter.ts";
 import type { OpenPR } from "../lib/issue_query.ts";
@@ -593,5 +594,49 @@ Deno.test(
     assert(reason, "expected a dependency reason naming #726");
     assertStringIncludes(reason, "not resolved");
     assert(!reason.includes("open milestone"));
+  },
+);
+
+// =============================================================================
+// summariseDependencyBlockers (Issue #3321)
+// =============================================================================
+
+Deno.test(
+  "summariseDependencyBlockers - an unreadable-children blocker reads as unmet dependencies, not open sub-issues (Issue #3321)",
+  () => {
+    const result = summariseDependencyBlockers("owner/repo", [{
+      repo: "owner/repo",
+      number: 522,
+      kind: "unreadable-children",
+    }]);
+
+    assertEquals(result.openSubIssues, undefined);
+    assert(result.unmetDependencies, "expected unmetDependencies to be set");
+    assertStringIncludes(result.unmetDependencies, "could not be read");
+    assertStringIncludes(result.unmetDependencies, "#522");
+  },
+);
+
+Deno.test(
+  "summariseDependencyBlockers - a child blocker and a depends-on blocker split between the two fields",
+  () => {
+    const result = summariseDependencyBlockers("owner/repo", [
+      { repo: "owner/repo", number: 7, kind: "child" },
+      { repo: "owner/repo", number: 9, kind: "depends-on" },
+    ]);
+
+    assertEquals(result.openSubIssues, "#7");
+    assert(result.unmetDependencies, "expected unmetDependencies to be set");
+    assertStringIncludes(result.unmetDependencies, "#9");
+  },
+);
+
+Deno.test(
+  "summariseDependencyBlockers - no blockers leaves both fields undefined",
+  () => {
+    const result = summariseDependencyBlockers("owner/repo", []);
+
+    assertEquals(result.openSubIssues, undefined);
+    assertEquals(result.unmetDependencies, undefined);
   },
 );
