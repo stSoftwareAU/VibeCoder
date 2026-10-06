@@ -24,6 +24,7 @@ import {
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
   needsPaidSecretProtection,
+  outcomeSkipNotes,
   planRepoSettingsHardening,
   PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE,
   type RepoSettingsSnapshot,
@@ -2631,4 +2632,46 @@ Deno.test("hardenRepo - a 404 on private vulnerability reporting plans nothing (
   });
   assertEquals(writes, []);
   assertEquals(report.results, []);
+});
+
+Deno.test("outcomeSkipNotes - returns the three notes in order when all are set (Issue #3267)", () => {
+  assertEquals(
+    outcomeSkipNotes({
+      skipNote: "secret",
+      codeqlSkipNote: "codeql",
+      pvrSkipNote: "pvr",
+    }),
+    ["secret", "codeql", "pvr"],
+  );
+});
+
+Deno.test("outcomeSkipNotes - returns an empty array when none are set (Issue #3267)", () => {
+  assertEquals(outcomeSkipNotes({}), []);
+});
+
+Deno.test("outcomeSkipNotes - a private repo's hardenRepo outcome includes the PVR skip note (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = {
+    visibility: "private",
+    private: true,
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  };
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assert(
+    outcomeSkipNotes(report).includes(
+      PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE,
+    ),
+  );
 });

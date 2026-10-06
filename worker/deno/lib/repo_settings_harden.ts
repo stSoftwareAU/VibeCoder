@@ -683,7 +683,7 @@ export function planRepoSettingsHardening(
     }
   }
   steps.push(...planCodeqlDefaultSetup(snapshot));
-  if (snapshot.privateVulnerabilityReporting?.enabled !== true) {
+  if (snapshot.privateVulnerabilityReporting?.enabled === false) {
     steps.push({
       kind: "private-vulnerability-reporting",
       title: "Enable private vulnerability reporting",
@@ -1792,6 +1792,17 @@ export interface HardenRepoOutcome {
   referenceCount: number;
   /** Actions whose manifest could not be read (allow-list may be short). */
   unreadable: string[];
+}
+
+/** The outcome's skip notes, in order: secret scanning, CodeQL, then PVR. */
+export function outcomeSkipNotes(
+  outcome: Pick<
+    HardenRepoOutcome,
+    "skipNote" | "codeqlSkipNote" | "pvrSkipNote"
+  >,
+): string[] {
+  return [outcome.skipNote, outcome.codeqlSkipNote, outcome.pvrSkipNote]
+    .filter((note): note is string => note !== undefined);
 }
 
 /**
