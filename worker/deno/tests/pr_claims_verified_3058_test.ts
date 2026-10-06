@@ -90,6 +90,7 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
   );
   for (
     const required of [
+      "In an issue run, the worker recognises that shape and **defers** the issue",
       "After a commit this deferral is honoured only when the `Depends on` / `Blocked by` line names an issue the worker reads as still open",
       "A CI-fix run is the exception",
       "Base-branch failures",
@@ -106,7 +107,6 @@ Deno.test("Issue #3058 - coding guidelines defer a committed Blocked heading and
   );
   for (
     const required of [
-      "In an issue run",
       "hands the issue to a human (`needs-human`) only while the branch has no commits",
       "In an issue run, this free-text hand-off is honoured only when the run leaves no commit",
       "A PR-feedback or CI-fix run keeps using the `.pr_response_message` escape hatch",
