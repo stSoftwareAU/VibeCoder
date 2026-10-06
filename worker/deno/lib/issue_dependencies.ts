@@ -900,7 +900,6 @@ export async function buildWorkOnDependencyGraph(
       const children = await fetcher.getSubIssues(repo, n);
       const sameRepo = childIsSameRepo(repo);
       for (const child of children) {
-        if (!sameRepo(child.repo)) continue;
         if (!set.has(child.number)) continue;
         const childNode = nodes.get(child.number);
         if (childNode) childNode.childOf = n;

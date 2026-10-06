@@ -188,3 +188,65 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "checkParentBlocked - a parent with more than 30 children is not truncated, across paginated pages (Issue #3319)",
+  async () => {
+    // `--paginate` makes `gh` itself issue the follow-up requests and apply
+    // the `--jq` filter per page, so the stdout this fetcher sees is already
+    // the full multi-line payload — one JSON array per page. Thirty-five
+    // children split across two page lines (#101-#130, then #131-#135)
+    // exercises both "more than the old 30-item default page" and "more
+    // than one page line to merge".
+    const page1 = JSON.stringify(
+      Array.from({ length: 30 }, (_, i) => ({
+        number: 101 + i,
+        repository_url: "https://api.github.com/repos/owner/repo",
+      })),
+    );
+    const page2 = JSON.stringify(
+      Array.from({ length: 5 }, (_, i) => ({
+        number: 131 + i,
+        repository_url: "https://api.github.com/repos/owner/repo",
+      })),
+    );
+
+    const subIssuesCalls: string[][] = [];
+    const ghFn = (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      if (command.includes("/sub_issues")) {
+        subIssuesCalls.push(args);
+        return Promise.resolve(`${page1}\n${page2}\n`);
+      }
+      if (command.includes("issue view") && command.includes("body")) {
+        return Promise.resolve(JSON.stringify({ body: "Parent issue" }));
+      }
+      if (command.includes("number,state,title")) {
+        const n = Number(args[2]);
+        // #101-#134 closed, #135 the lone open child.
+        const state = n === 135 ? "OPEN" : "CLOSED";
+        return Promise.resolve(
+          JSON.stringify({ number: n, state, title: `Child ${n}` }),
+        );
+      }
+      return Promise.resolve("[]");
+    };
+
+    const fetcher = createIssueFetcher(ghFn);
+    const result = await checkParentBlocked(fetcher, "owner/repo", 1);
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.isBlocked, true);
+      assertEquals(result.value.openChildren, [
+        { repo: "owner/repo", number: 135 },
+      ]);
+      assertEquals(result.value.totalChildren, 35);
+    }
+
+    assertEquals(subIssuesCalls.length, 1);
+    const argv = subIssuesCalls[0]!;
+    assertEquals(argv.includes("--paginate"), true);
+    assertEquals(argv.some((a) => a.includes("per_page=100")), true);
+  },
+);
