@@ -395,7 +395,7 @@ export async function scanRepoSettings(
         PRIVATE_VULNERABILITY_REPORTING_CHECK,
         options.onLookupFailure,
       );
-      if (pvr !== undefined && typeof pvr.enabled !== "boolean") {
+      if (pvr !== undefined && typeof pvr?.enabled !== "boolean") {
         options.onLookupFailure?.(
           PRIVATE_VULNERABILITY_REPORTING_CHECK,
           "response carried no boolean `enabled` field",

@@ -1117,15 +1117,27 @@ unreadable visibility is not treated as exempt, as for secret scanning);
 `"enabled": false` files `BP-REPO-PVR-OFF`; a private or internal
 repository is not read and the skip is named in the audit summary as
 `private vulnerability reporting (private repository — GitHub offers it
-on public repositories only)`; any read failure, a 403 included, is
-reported as a lookup failure and yields no finding — never a pass.
+on public repositories only)`. That skip is logged at `INFO`, not
+`WARNING` — unlike the secret-protection skip above, which a licence would
+lift, nobody can act on GitHub simply not offering PVR on a private or
+internal repository, and `WARNING` is reserved for a gap a human could
+close. Any read failure — including a response without a boolean
+`enabled` field, which is treated as unreadable rather than silently
+passing — is reported as a lookup failure and yields no finding, never a
+pass; a 403 on this read names the repository "Administration"
+fine-grained read permission, not "Actions policies" (GitHub's
+"Permissions required for fine-grained personal access tokens" page lists
+`GET /repos/{owner}/{repo}/private-vulnerability-reporting` under
+Administration).
 
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
 same thing on every run of every affected repository, and logging it at
 `ERROR` trains the reader to ignore `ERROR` in the worker log. Such a lookup
-is logged once at `WARNING`, naming the repository "Actions policies"
-fine-grained read permission it would take. A 5xx, a network failure or a
+is logged once at `WARNING`, naming the fine-grained read permission it would
+take — the repository "Actions policies" permission for the Actions-policy
+endpoints, the repository "Administration" permission for
+`private-vulnerability-reporting` (Issue #3268). A 5xx, a network failure or a
 malformed response is a genuine fault and still logs `ERROR`. Either way the
 check is recorded as **skipped** and named in the audit's own summary —
 `Checks skipped — NOT covered by this audit: …` — because an audit that

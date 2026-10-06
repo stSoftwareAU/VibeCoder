@@ -197,14 +197,16 @@ function openWithVisibility(
 
 Deno.test("scanRepoSettings - a private repository files neither secret-scanning finding and records one skip (Issue #2225)", async () => {
   const skips: string[] = [];
+  const actionableFlags: boolean[] = [];
   const findings = await scanRepoSettings(
     "org/repo",
     ghFor(openWithVisibility({ visibility: "private", private: true })),
     {
       defaultBranch: "Develop",
-      onCheckSkipped: (what, reason) => {
+      onCheckSkipped: (what, reason, actionable) => {
         if (what === SECRET_PROTECTION_SKIP_CHECK) {
           skips.push(`${what}: ${reason}`);
+          actionableFlags.push(actionable);
         }
       },
       onLookupFailure: () => {
@@ -223,6 +225,8 @@ Deno.test("scanRepoSettings - a private repository files neither secret-scanning
     "secret scanning / push protection: private repository — needs paid " +
       "GitHub Secret Protection",
   );
+  // A licence would lift this one, so it is actionable (Issue #3268).
+  assertEquals(actionableFlags, [true]);
 });
 
 Deno.test("scanRepoSettings - an internal repository is exempt like a private one (Issue #2225)", async () => {
@@ -243,7 +247,7 @@ Deno.test("scanRepoSettings - an internal repository is exempt like a private on
   assertEquals(skips.length, 1);
 });
 
-Deno.test("scanRepoSettings - a private repository with both settings already on records no skip (Issue #2225)", async () => {
+Deno.test("scanRepoSettings - a private repository with both settings already on records no secret-protection skip (Issue #2225)", async () => {
   const skips: string[] = [];
   const findings = await scanRepoSettings(
     "org/repo",
@@ -494,6 +498,7 @@ Deno.test("scanRepoSettings - a private or internal repository is not read for P
   ) {
     const seen: string[] = [];
     const skips: Array<[string, string]> = [];
+    const actionableFlags: boolean[] = [];
     const findings = await scanRepoSettings(
       "org/repo",
       ghFor(
@@ -502,7 +507,10 @@ Deno.test("scanRepoSettings - a private or internal repository is not read for P
       ),
       {
         defaultBranch: "Develop",
-        onCheckSkipped: (what, reason) => skips.push([what, reason]),
+        onCheckSkipped: (what, reason, actionable) => {
+          skips.push([what, reason]);
+          actionableFlags.push(actionable);
+        },
         onLookupFailure: () => {
           throw new Error("PVR must not be read on a private repository");
         },
@@ -521,6 +529,9 @@ Deno.test("scanRepoSettings - a private or internal repository is not read for P
     );
     assertEquals(pvrSkips.length, 1, JSON.stringify(skips));
     assertEquals(pvrSkips[0]![1], PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON);
+    // Nobody can act: GitHub does not offer PVR on a private/internal repo
+    // (Issue #3268).
+    assertEquals(actionableFlags, [false]);
   }
 });
 
@@ -560,6 +571,66 @@ Deno.test("scanRepoSettings - a PVR read failure is a lookup failure, not a find
     assert(failures[0]![1].includes(err.message), failures[0]![1]);
     assertEquals(skips, []);
   }
+});
+
+Deno.test("scanRepoSettings - a PVR response without a boolean enabled field is a lookup failure, not a finding (Issue #3268)", async () => {
+  const failures: Array<[string, string]> = [];
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor({
+      ...HARDENED,
+      "repos/org/repo": {
+        ...HARDENED["repos/org/repo"],
+        visibility: "public",
+        private: false,
+      },
+      "/private-vulnerability-reporting": {},
+    }),
+    {
+      defaultBranch: "Develop",
+      onLookupFailure: (what, reason) => failures.push([what, reason]),
+      onCheckSkipped: (what) => skips.push(what),
+    },
+  );
+  assert(
+    !findings.some((f) => f.findingId === "BP-REPO-PVR-OFF"),
+    findings.map((f) => f.findingId).join(", "),
+  );
+  assertEquals(failures.length, 1, JSON.stringify(failures));
+  assertEquals(failures[0]![0], "private-vulnerability-reporting");
+  assert(failures[0]![1].includes("enabled"), failures[0]![1]);
+  assertEquals(skips, []);
+});
+
+Deno.test("scanRepoSettings - a PVR response body of null is a lookup failure, not a throw (Issue #3268)", async () => {
+  const failures: Array<[string, string]> = [];
+  const skips: string[] = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor({
+      ...HARDENED,
+      "repos/org/repo": {
+        ...HARDENED["repos/org/repo"],
+        visibility: "public",
+        private: false,
+      },
+      "/private-vulnerability-reporting": null,
+    }),
+    {
+      defaultBranch: "Develop",
+      onLookupFailure: (what, reason) => failures.push([what, reason]),
+      onCheckSkipped: (what) => skips.push(what),
+    },
+  );
+  assert(
+    !findings.some((f) => f.findingId === "BP-REPO-PVR-OFF"),
+    findings.map((f) => f.findingId).join(", "),
+  );
+  assertEquals(failures.length, 1, JSON.stringify(failures));
+  assertEquals(failures[0]![0], "private-vulnerability-reporting");
+  assert(failures[0]![1].includes("enabled"), failures[0]![1]);
+  assertEquals(skips, []);
 });
 
 Deno.test("scanRepoSettings - an unreadable repos/{owner}/{repo} is not followed by a PVR read (Issue #3268)", async () => {

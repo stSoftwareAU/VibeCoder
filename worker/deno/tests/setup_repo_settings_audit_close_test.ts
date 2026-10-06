@@ -601,7 +601,7 @@ Deno.test("BP-REPO-PVR-OFF never closes on a dry run (planned/failed/skipped thi
   }
 });
 
-Deno.test("BP-REPO-PVR-OFF stays open when the read-back has no enabled field (scanner silent)", async () => {
+Deno.test("BP-REPO-PVR-OFF stays open when the read-back has no enabled field (scanner reports a lookup failure)", async () => {
   const stub = stubGh(
     { ...HARDENED, [`repos/${REPO}/private-vulnerability-reporting`]: {} },
     [PVR_ISSUE],
@@ -610,6 +610,7 @@ Deno.test("BP-REPO-PVR-OFF stays open when the read-back has no enabled field (s
 
   assertEquals(result.closed, []);
   assertEquals(stub.closes, []);
+  assertEquals(result.warnings.length, 1);
 });
 
 Deno.test("BP-REPO-PVR-OFF stays open when the repo is private (PVR not read at all)", async () => {

@@ -32,8 +32,8 @@
  *     both silently); ALLOW-LIST-INCOMPLETE needs the repo to be on a
  *     `selected` allow-list; PVR-OFF needs the read-back to show
  *     `enabled: true` (Issue #3268) — a private or internal repository is
- *     not read at all, and a read-back without `enabled` makes the scanner
- *     silent too, so silence confirms nothing.
+ *     not read at all, and a read-back without a boolean `enabled` field is
+ *     a scanner lookup failure, so the close is skipped rather than assumed.
  *
  * Only open issues carrying the finding's marker (parsed by the one
  * definition in `admin_only_finding.ts`) **and authored by a fleet login**
