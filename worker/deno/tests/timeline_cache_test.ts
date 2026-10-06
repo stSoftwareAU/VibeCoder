@@ -10,7 +10,6 @@
 import { assertEquals } from "@std/assert";
 import { TimelineCache } from "../lib/timeline_cache.ts";
 import {
-  fetchTimelineWithCache,
   getLabelLastAddInfo,
   hasIgnoreOpenPRsLabel,
   wasLabelAddedByAllowedAuthor,
@@ -359,8 +358,8 @@ Deno.test(
     const { cache, dir } = makeCache();
     try {
       // A truncated page-1-only slice showing ONLY the old trusted `work-on`
-      // add — exactly what fetchTimelineWithCache writes after reading page 1.
-      // Marked partial (complete=false).
+      // add — what fetchTimelineWithCache wrote after reading page 1 before
+      // Issue #3327. Marked partial (complete=false).
       await cache.write(
         "owner/repo",
         42,
@@ -445,27 +444,21 @@ Deno.test(
 );
 
 Deno.test(
-  "wasLabelAddedByAllowedAuthor - cache poisoned by fetchTimelineWithCache page-1 read re-paginates (Issue #3296)",
+  "wasLabelAddedByAllowedAuthor - cache poisoned by a page-1-only read re-paginates (Issue #3296)",
   async () => {
     const { cache, dir } = makeCache();
     try {
-      // Simulate cleanStaleLabels' read: fetchTimelineWithCache reads only
-      // page 1 (the oldest-100 slice) and writes a PARTIAL entry to the shared
-      // cache. Here the page-1 slice shows only the old trusted work-on add.
-      const partialPage1 = JSON.stringify([
+      // A PARTIAL entry, as written by `fetchTimelineWithCache` before Issue
+      // #3327 (and still possible from an older worker sharing the cache
+      // directory). The page-1 slice shows only the old trusted work-on add.
+      await cache.write("owner/repo", 42, [
         {
           event: "labeled",
           label: { name: "work-on" },
           actor: { login: "alice" },
           created_at: "2024-05-01T10:00:00Z",
         },
-      ]);
-      await fetchTimelineWithCache(
-        "owner/repo",
-        42,
-        recordingGh(partialPage1).fn,
-        cache,
-      );
+      ], false);
 
       // The shared cache now holds a partial slice: read() sees it, but the
       // trust gate's readComplete() must treat it as a miss.

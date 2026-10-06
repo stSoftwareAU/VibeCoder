@@ -1322,6 +1322,108 @@ Deno.test(
 );
 
 Deno.test(
+  "processGrillMe - needs-human removal on timeline page 2 still invokes Claude (Issue #3327)",
+  async () => {
+    // GRQ-AutoTrader#2089: 131 timeline events. Page 1 (the oldest 100) holds
+    // only a removal from before the round; the developer's removal after the
+    // round is on page 2. Reading page 1 alone re-added `needs-human` forever.
+    const ctx = makeContext();
+    const addedLabels: string[] = [];
+
+    let fetchCallCount = 0;
+    const ghClient = stubGhClient({
+      getIssue: () => Promise.resolve(makeIssue({ labels: ["grill-me"] })),
+      getIssueComments: () => {
+        fetchCallCount++;
+        const round1 = makeComment({
+          id: 1,
+          author: "testbot",
+          body: `${GRILL_ME_ROUND_MARKER}1\n\nQuestions...`,
+          createdAt: "2026-05-09T08:00:00Z",
+        });
+        if (fetchCallCount <= 2) return Promise.resolve([round1]);
+        return Promise.resolve([
+          round1,
+          makeComment({
+            id: 2,
+            author: "testbot",
+            body: `${GRILL_ME_ROUND_MARKER}2\n\nMore questions...`,
+            createdAt: "2026-05-09T09:30:00Z",
+          }),
+        ]);
+      },
+      addLabel: (_r, _n, label) => {
+        addedLabels.push(label);
+        return Promise.resolve();
+      },
+      removeLabel: () => Promise.resolve(),
+    });
+
+    const page1: Record<string, unknown>[] = [{
+      event: "unlabeled",
+      label: { name: "needs-human" },
+      actor: { login: "maintainer" },
+      created_at: "2026-05-01T00:00:00Z",
+    }];
+    for (let i = 0; page1.length < 100; i++) {
+      page1.push({
+        event: "commented",
+        actor: { login: "testbot" },
+        created_at: "2026-05-02T00:00:00Z",
+      });
+    }
+    const page2 = [{
+      event: "unlabeled",
+      label: { name: "needs-human" },
+      actor: { login: "maintainer" },
+      created_at: "2026-05-09T08:30:00Z",
+    }];
+
+    let claudeInvoked = false;
+    const deps = createMockDeps({
+      claude: {
+        runClaudeWithRetry: () => {
+          claudeInvoked = true;
+          return Promise.resolve({
+            ok: true,
+            value: {
+              output: `${GRILL_ME_ROUND_MARKER}2`,
+              exitCode: 0,
+              timedOut: false,
+            },
+          });
+        },
+      },
+      github: {
+        runGhCommand: (args: string[]) => {
+          const page = /[?&]page=(\d+)/.exec(args[1] ?? "")?.[1] ?? "1";
+          return Promise.resolve(
+            JSON.stringify(page === "1" ? page1 : page === "2" ? page2 : []),
+          );
+        },
+      },
+    });
+
+    const result = await processGrillMe(ctx, {
+      promptsDir: PROMPTS_DIR,
+      ghClient,
+      logger: deps.logger,
+      deps,
+    });
+
+    assertEquals(result.ok, true);
+    if (!result.ok) return;
+    assertEquals(
+      claudeInvoked,
+      true,
+      "the page-2 removal is the developer's go signal",
+    );
+    assertEquals(result.value.workerCommentPosted, true);
+    assertNoForbiddenLabel(addedLabels);
+  },
+);
+
+Deno.test(
   "processGrillMe - worker-only label strip preserves existing awaiting-reply behaviour (Issue #1878)",
   async () => {
     // When the timeline shows the worker user is the only actor on
