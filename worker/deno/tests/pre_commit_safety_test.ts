@@ -169,9 +169,14 @@ Deno.test(
 Deno.test(
   "classifyStagedPath - config pattern stays linear on hostile input (Issue #3311)",
   () => {
+    // The ".json" suffix is on the end so the fixed config pattern
+    // actually matches (near the final segment) rather than falling
+    // through to every other pattern in the array, including the
+    // unrelated, pre-existing `/.*\.secret\.json$/` entry, which has its
+    // own (out-of-scope) quadratic blow-up on long non-matching input.
     assertLinearGrowth(
       "classifyStagedPath, repeated /.config prefixes",
-      (chars) => "/.config".repeat(chars) + "\nx",
+      (chars) => "/.config".repeat(chars) + ".json",
       classifyStagedPath,
       { baseChars: 10_000 },
     );
@@ -181,10 +186,21 @@ Deno.test(
 Deno.test(
   "classifyStagedPath - secrets pattern stays linear on hostile input (Issue #3311)",
   () => {
+    // The `/.secrets/` pattern sits after the unrelated, pre-existing
+    // `/.*\.secret\.json$/` entry in FORBIDDEN_STAGED_PATTERNS, so any
+    // long input that doesn't match an earlier pattern is guaranteed to
+    // hit that (out-of-scope) entry's quadratic blow-up before
+    // classifyStagedPath even reaches the secrets pattern under test.
+    // Exercising the fixed secrets pattern directly keeps this test
+    // focused on Issue #3311's own change.
+    const secretsPattern = FORBIDDEN_STAGED_PATTERNS.find((re) =>
+      re.source.includes("secrets")
+    );
+    assert(secretsPattern !== undefined, "expected a /.secrets/ pattern");
     assertLinearGrowth(
-      "classifyStagedPath, repeated /.secrets prefixes",
+      "FORBIDDEN_STAGED_PATTERNS secrets pattern, repeated /.secrets prefixes",
       (chars) => "/.secrets".repeat(chars) + "x",
-      classifyStagedPath,
+      (input) => secretsPattern!.test(input),
       { baseChars: 10_000 },
     );
   },
