@@ -24,6 +24,12 @@
  *    state is `not-configured`, with the `default` query suite; a repository
  *    already configured, on either suite, is left as it is, and one that runs
  *    its own CodeQL workflow (advanced setup) is reported, never written.
+ *  - private vulnerability reporting (Issue #3267) — public repositories
+ *    only, behind the same visibility gate ({@link needsPaidSecretProtection})
+ *    since GitHub offers it on public repositories only: read from
+ *    `private-vulnerability-reporting` and turned on with a bare PUT only
+ *    when it reads `enabled: false`; a 404 plans nothing, and a private or
+ *    internal repository is not read and the skip is stated.
  *  - one approving review on the default branch (GHA-PERM-004, Issue #2680)
  *    — by default: fleet PRs wait for `/review-fleet-prs` or the owner to
  *    approve instead of auto-merging unreviewed. A pull_request rule below
@@ -131,6 +137,12 @@ export interface RepoSettingsSnapshot {
    * so advanced setup cannot be ruled out and nothing is written.
    */
   codeqlWorkflows?: string[];
+  /**
+   * Private vulnerability reporting (`private-vulnerability-reporting`,
+   * Issue #3267). Read on a public repository only; absent, nothing is
+   * planned, and a 404 leaves it absent.
+   */
+  privateVulnerabilityReporting?: { enabled?: boolean };
   /** The default branch's effective rules (`rules/branches/{branch}`). */
   rules?: Array<{
     type?: string;
@@ -193,6 +205,7 @@ export interface HardenStep {
     | "actions-allow-list"
     | "secret-scanning"
     | "codeql-default-setup"
+    | "private-vulnerability-reporting"
     | "ruleset-reviews"
     | "default-branch-approval"
     | "default-branch-squash-only"
@@ -502,6 +515,14 @@ export function isSecretScanningSkipped(
 export const CODE_SECURITY_SKIP_NOTE =
   "code scanning default setup: skipped — private repository needs " +
   "paid GitHub Code Security";
+
+/**
+ * The note printed when private vulnerability reporting is exempt (Issue
+ * #3267): GitHub offers it on public repositories only.
+ */
+export const PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE =
+  "private vulnerability reporting: skipped — available on public " +
+  "repositories only";
 
 /** The endpoint for CodeQL default setup, under `repos/{repo}/`. */
 const CODEQL_DEFAULT_SETUP = "code-scanning/default-setup";
