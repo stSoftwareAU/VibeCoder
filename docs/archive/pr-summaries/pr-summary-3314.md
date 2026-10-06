@@ -18,8 +18,10 @@ parent/child gate is still not modelled. Closes #3314.
 **Review follow-up (PR #3318):** three gaps in the original fix.
 
 1. The two production lines that carry the fix — `fetchAllIssues`'s `--json`
-   field list (`worker/deno/lib/issue_query.ts:520`) and the census input
-   mapping `subIssuesSummary: i.subIssuesSummary`
+   field list (the `ALL_ISSUES_FIELDS` constant at
+   `worker/deno/lib/issue_query.ts:471`, used by the `fetchAllIssuesJson` call
+   at `:553`) and the census input mapping
+   `subIssuesSummary: i.subIssuesSummary`
    (`worker/deno/lib/run_core_production_deps.ts:5773`) — had no test that
    goes red if either is reverted. Added
    `worker/deno/tests/idle_census_sub_issues_wiring_3314_test.ts`, driving
@@ -59,10 +61,15 @@ parent/child gate is still not modelled. Closes #3314.
 **Docs sweep (review follow-up, item 3)** — grep: `subIssuesSummary`,
 `fetchAllIssues`, "apt-get install -y gh", "gh version", "2.94" over
 `docs/SETUP.md`, `docs/DEPLOYMENT.md`, `docs/TROUBLESHOOTING.md`,
-`docs/USAGE.md`: no hits describe a `gh` version floor or `fetchAllIssues`'s
-field list, so there was no stale sentence to fix. The retry is an internal
-fallback that restores pre-#3314 behaviour on old `gh` — it adds no new
-documented contract, so no doc update is owed for it.
+`docs/USAGE.md`; section:
+`docs/TROUBLESHOOTING.md#-worker-not-picking-up-issues` and
+`docs/USAGE.md` (both document the host-run `diagnose-repo` command the
+retry keeps working on old `gh`): no hits describe a `gh` version floor or
+`fetchAllIssues`'s field list, and neither section's description of
+`diagnose-repo`'s behaviour or output changes, so there was no stale
+sentence to fix. The retry is an internal fallback that restores pre-#3314
+behaviour on old `gh` — it adds no new documented contract, so no doc update
+is owed for it.
 
 **Docs sweep (original)** — grep: `subIssuesSummary`, `hasOpenSubIssues`,
 `parseSubIssuesSummary`, `normaliseIssue`, `checkParentBlocked`, "parent/child",
@@ -188,7 +195,8 @@ says an open sub-issue counts as a dependency.
 - `worker/deno/lib/idle_decision_census.ts:1278` — blocked (claimable count
   records `dependency_blocked`) — `worker/deno/tests/idle_decision_census_test.ts::#3314 - an issue with open native sub-issues is dependency-blocked, not claimable`
   — flipped to `false ||`, test went red
-- `worker/deno/lib/issue_query.ts:520` — `fetchAllIssues` requests
+- `worker/deno/lib/issue_query.ts:471` (the `ALL_ISSUES_FIELDS` constant
+  `fetchAllIssues` passes to `fetchAllIssuesJson`) — `fetchAllIssues` requests
   `subIssuesSummary` — `worker/deno/tests/idle_census_sub_issues_wiring_3314_test.ts::production deps - fetchAllIssues requests subIssuesSummary in --json (Issue #3314)`
   and the audit/census tests in the same file — field dropped from the
   `--json` list, all three tests went red (`claimable=1`,
