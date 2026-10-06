@@ -17,6 +17,8 @@ import {
   assertSafeToCommit,
   gitignoreReallowed,
 } from "../lib/pre_commit_safety.ts";
+import type { GitCommandOutput } from "../lib/git_timeout.ts";
+import type { Result } from "../types.ts";
 
 interface GitRunResult {
   code: number;
@@ -373,6 +375,72 @@ Deno.test("gitignoreReallowed - never exempts a FORBIDDEN_STAGED_PATTERNS path",
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+// --- Case 8: injected-runner seam probes the two untested branches ---------
+
+function okOutput(code: number): Result<GitCommandOutput> {
+  return { ok: true, value: { code, stdout: "", stderr: "" } };
+}
+
+Deno.test("gitignoreReallowed - a check-ignore call that cannot run at all exempts nothing", async () => {
+  let checkIgnoreCalled = false;
+  const run = (args: string[]) => {
+    const sub = args[0];
+    if (sub === "cat-file" || sub === "diff") {
+      return Promise.resolve(okOutput(0));
+    }
+    if (sub === "check-ignore") {
+      checkIgnoreCalled = true;
+      return Promise.resolve(
+        { ok: false, error: new Error("spawn failed") } as Result<
+          GitCommandOutput
+        >,
+      );
+    }
+    throw new Error(`unexpected git subcommand: ${sub}`);
+  };
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run,
+  });
+  assert(checkIgnoreCalled, "expected check-ignore to have been attempted");
+  assertEquals(exempt.size, 0);
+});
+
+Deno.test("gitignoreReallowed - a check-ignore exit code other than 0 or 1 exempts nothing", async () => {
+  const run = (args: string[]) => {
+    const sub = args[0];
+    if (sub === "cat-file" || sub === "diff") {
+      return Promise.resolve(okOutput(0));
+    }
+    if (sub === "check-ignore") return Promise.resolve(okOutput(128));
+    throw new Error(`unexpected git subcommand: ${sub}`);
+  };
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run,
+  });
+  assertEquals(exempt.size, 0);
+});
+
+Deno.test("gitignoreReallowed - positive control: the same stubbed cat-file/diff with check-ignore exit 1 does exempt", async () => {
+  const run = (args: string[]) => {
+    const sub = args[0];
+    if (sub === "cat-file" || sub === "diff") {
+      return Promise.resolve(okOutput(0));
+    }
+    if (sub === "check-ignore") return Promise.resolve(okOutput(1));
+    throw new Error(`unexpected git subcommand: ${sub}`);
+  };
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run,
+  });
+  assertEquals(exempt.has(SKILL_PATH), true);
 });
 
 // --- Existing #2737 guarantee must still hold (sanity, no re-allow here) ---

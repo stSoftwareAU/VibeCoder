@@ -295,13 +295,16 @@ function isForbiddenStagedPath(path: string): boolean {
  *
  * @param args.violations Paths the classifier refused
  * @param args.options Git command options (cwd, env, timeout)
+ * @param args.run Git command runner override (test seam only); defaults to
+ *   `runGitCommand`
  * @returns The exempt paths (each logged at INFO), possibly empty
  */
 export async function gitignoreReallowed(args: {
   violations: string[];
   options: GitCommandOptions;
+  run?: typeof runGitCommand;
 }): Promise<Set<string>> {
-  const { violations, options } = args;
+  const { violations, options, run = runGitCommand } = args;
   const exempt = new Set<string>();
 
   const candidates = violations.filter((p) => !isForbiddenStagedPath(p));
@@ -310,19 +313,19 @@ export async function gitignoreReallowed(args: {
   // The repo's own .gitignore must be tracked at HEAD and unmodified in the
   // index and working tree — otherwise nothing it says can be trusted for
   // this commit, and nothing is exempt on its account.
-  const atHead = await runGitCommand(
+  const atHead = await run(
     ["cat-file", "-e", "HEAD:.gitignore"],
     options,
   );
   if (!atHead.ok || atHead.value.code !== 0) return exempt;
-  const unmodified = await runGitCommand(
+  const unmodified = await run(
     ["diff", "--quiet", "HEAD", "--", ".gitignore"],
     options,
   );
   if (!unmodified.ok || unmodified.value.code !== 0) return exempt;
 
   for (const path of candidates) {
-    const checked = await runGitCommand(
+    const checked = await run(
       ["check-ignore", "-q", "--no-index", "--", path],
       options,
     );
