@@ -57,7 +57,7 @@ Deno.test("CODING-STANDARDS carries the existing-screen-text rule (Issue #3259)"
     "say whether it is still true in the new state",
     "reword it, hide it or mark it",
     "Add a test that renders the new state",
-    "is a blocking self-review finding",
+    "A pre-existing message left unchanged that is false or misleading in the new state is a blocking self-review finding",
     "List the messages checked in the PR summary's Test Plan",
   ];
   for (const phrase of keyPhrases) {

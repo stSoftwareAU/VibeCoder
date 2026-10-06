@@ -68,9 +68,23 @@ it.
 - Red without the change: with `CODING-STANDARDS.md` and
   `prompts/issue/prompt.md` restored to the base, all three new tests failed
   ("could not locate the existing-screen-text rule", missing-phrase
-  assertions); restored, all passed. Every pinned phrase is absent from the
-  base versions of the sections read (Test coverage expectations,
-  Instructions, PR Summary File).
+  assertions); restored, all passed.
+- `deno task drift-pins-on-base origin/main …` per section, on the final
+  head: `CODING-STANDARDS.md` "Test coverage expectations" — absent on base:
+  "list every message the screen already renders", "say whether it is still
+  true in the new state", "reword it, hide it or mark it", "Add a test that
+  renders the new state", "A pre-existing message left unchanged that is
+  false or misleading in the new state is a blocking self-review finding",
+  "List the messages checked in the PR summary's Test Plan" (the review of
+  PR #3283 found the earlier bare pin "is a blocking self-review finding"
+  ALREADY ON BASE; it is replaced by the full sentence). `prompts/issue/prompt.md`
+  "Instructions" — absent on base: "A new state on an existing screen
+  re-reads that screen's existing text.", "list every message the screen
+  already renders", "add a test that renders the new state", "A pre-existing
+  message left unchanged that is false or misleading in the new state is a
+  blocking self-review finding". `prompts/issue/prompt.md` "PR Summary File"
+  — absent on base: "re-reads that screen's existing text", "each marked
+  still true or changed for the new state".
 - The 27 existing tests that read the issue prompt's "Instructions" or "PR
   Summary File" sections still pass (102 passed, 0 failed).
 - No existing test assertion was removed.
