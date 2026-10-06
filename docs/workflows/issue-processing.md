@@ -1303,6 +1303,21 @@ rule at the new call site when any caller can pass a rejected value;
 otherwise adding a test that an existing caller still accepts its real
 inputs; and listing the callers checked in the PR summary.
 
+**A new argument or behaviour reaches every caller that needs it (Issue #3253).**
+The changed-call-site rule above covers callers the diff changes; a caller the
+diff should have changed but did not has nothing to revert, so that rule
+cannot find it. Fleet PRs wired a new value into some callers and missed one:
+VibeCoder#3251 gave `recoverAndFinaliseExistingPr` a `docsSweepHitsComment = ""`
+parameter that `reportSummaryRuleBlock` never passed; GRQ-AutoTrader#2282
+added `RunOrigin` but every production caller hard-coded
+`RunOrigin::Scheduled`; and VibeCoder#3095 fixed two of three declared
+hand-off outcomes and left `handOffToPlanning` unchanged. The guidelines and
+the issue prompt's Test Plan step now require listing every caller and
+sibling route first, passing the new value on each or stating why one does
+not need it, making a behaviour-carrying parameter required rather than
+defaulting it to a value that turns the behaviour off, and treating a caller
+left on the old hard-coded value as a blocking self-review finding.
+
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran
@@ -1752,8 +1767,17 @@ because nothing checked the summary for a bare ALL-CAPS token the agent
 never resolved (Issue #3124).
 [`result_placeholder_gate.ts`](../../worker/deno/lib/result_placeholder_gate.ts)
 blocks PR creation when the PR summary contains a token matching
-`\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b`; a token inside a backtick code span or a
-fenced code block is ignored, so an identifier mentioned in code is never
+`\b[A-Z][A-Z0-9_]*_(?:PLACEHOLDER|PENDING|TBD|TODO)\b` anywhere in prose, or
+when a line citing a gate command (`quality.sh`, a `deno`/`cargo`/`npm`/
+`pnpm`/`yarn`/`go`/`make` subcommand, `pytest`, `shellcheck` or `semgrep`)
+leaves the text after its last colon a bare ALL-CAPS identifier with at
+least one underscore — a structural backstop that catches an invented
+suffix without the gate having to enumerate it. GRQ#5164, raised after
+Issue #3124 landed, carried `- ./quality.sh < /dev/null on the head:
+GATE_OUTCOME_PENDING` in its summary and PR body; the original
+`_PLACEHOLDER`-only regex let it through, so Issue #3248 widened the gate
+to both rules above. A token inside a backtick code span or a fenced code
+block is ignored either way, so an identifier mentioned in code is never
 flagged. Like the docs-sweep gate it is folded into the earlier summary
 gates' own notice when one of those blocks first, and it gets the same
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)

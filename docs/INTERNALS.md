@@ -2191,9 +2191,10 @@ verbatim, marker syntax in agent-authored text is neutralised at the
 before anything is posted — otherwise a forged attempt or deferral marker
 would be read back as the fleet's own record (Issue #2236). The same
 chokepoint replaces a bare fill-in-later token left in
-`.pr_response_message` (e.g. `QUALITY_RESULT_PLACEHOLDER`) with
-`[result not reported]` and logs it as an error, so an unresolved
-placeholder is never posted as if it were the real result (Issue #3124). The failing
+`.pr_response_message` (e.g. `QUALITY_RESULT_PLACEHOLDER` or
+`GATE_OUTCOME_PENDING`) with `[result not reported]` and logs it as an
+error, so an unresolved placeholder is never posted as if it were the real
+result (Issues #3124, #3248). The failing
 check's name is the second untrusted value those bodies carry — a
 `pull_request` workflow derives the job name from the head ref, so a fork
 chooses it — and it is made inert by the same helper wherever the lane
