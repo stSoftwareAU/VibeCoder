@@ -19,34 +19,60 @@
  * only `ghcr.io/stsoftwareau/*` **container images** keep tag pinning; and the
  * term "first-party" is gone in favour of the explicit set names.
  *
+ * Positive pins are section-scoped (CODING-STANDARDS.md § Documentation-drift
+ * tests, condition 1), so a rule that moves to another heading fails loudly
+ * rather than passing by matching the whole file; the "first-party" absence
+ * checks and the tag carve-out regex deliberately read the whole file, since
+ * an absence check must not be narrowed to one section.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 /** The families that state the pinning rule. */
 const SUBJECTS = ["github_actions_audit", "workflow_setup"] as const;
 
-/** The text of one family's template, collapsed for matching. */
-async function latest(
-  family: string,
-): Promise<{ text: string; collapsed: string }> {
-  const loaded = await loadPrompt(family, PROMPTS_DIR);
-  assertEquals(loaded.ok, true, `${family} failed to load`);
-  if (!loaded.ok) throw new Error(loaded.error.message);
-  return {
-    text: loaded.value,
-    collapsed: loaded.value.replace(/\s+/g, " "),
-  };
+/** The audit's definitions section, where the carve-out and owner set live. */
+const AUDIT_DEFINITIONS = {
+  doc: "prompts/github_actions_audit/prompt.md",
+  title: "Definitions",
+} as const;
+
+/** The audit's supply-chain checks, where checks 10 and 13 live. */
+const AUDIT_SUPPLY_CHAIN = {
+  doc: "prompts/github_actions_audit/prompt.md",
+  title: "Supply-chain hardening",
+} as const;
+
+/** `workflow_setup`'s CI hardening defaults, where the owner set is restated. */
+const SETUP_HARDENING = {
+  doc: "prompts/workflow_setup/prompt.md",
+  title: "CI Hardening Defaults",
+} as const;
+
+/** The guidelines' dependency/supply-chain section, where the SHA rule lives. */
+const GUIDELINES_SUPPLY_CHAIN = {
+  doc: "prompts/coding_guidelines/prompt.md",
+  title: "Dependency Bumps and Supply Chain",
+} as const;
+
+/** One surface's section, flattened so wrapped prose still matches. */
+async function scoped(doc: string, title: string): Promise<string> {
+  return flat(section(await readRepoDoc(doc), title));
 }
 
 Deno.test("action pinning - neither template says first-party any more (Issue #787)", async () => {
-  // The term named two disjoint sets over exactly the rule it gated.
+  // The term named two disjoint sets over exactly the rule it gated. This is
+  // an absence check, so it deliberately reads the whole file.
   for (const family of SUBJECTS) {
-    const { text } = await latest(family);
+    const text = await readRepoDoc(`prompts/${family}/prompt.md`);
     assertEquals(
       /first-party/i.test(text),
       false,
@@ -57,41 +83,55 @@ Deno.test("action pinning - neither template says first-party any more (Issue #7
 });
 
 Deno.test("action pinning - no owner is exempt from the SHA rule (Issue #787)", async () => {
-  const audit = await latest("github_actions_audit");
-  const setup = await latest("workflow_setup");
+  const auditWhole = await readRepoDoc(AUDIT_DEFINITIONS.doc);
+  const auditDefinitions = flat(section(auditWhole, AUDIT_DEFINITIONS.title));
+  const setupHardening = await scoped(
+    SETUP_HARDENING.doc,
+    SETUP_HARDENING.title,
+  );
 
-  // The audit no longer licenses a tag on an internal action …
+  // The audit no longer licenses a tag on an internal action — an absence
+  // check, so it deliberately reads the whole file.
   assertEquals(
     /`stSoftwareAU\/\*` actions and\s+`ghcr\.io\/stsoftwareau\/\*` images may pin to a tag/
-      .test(audit.text.replace(/\s+/g, " ")),
+      .test(flatWholeFile(auditWhole)),
     false,
     "the audit still carries the tag carve-out for stSoftwareAU/* actions",
   );
-  assertStringIncludes(audit.collapsed, "no owner is exempt");
+  assertStringIncludes(auditDefinitions, "no owner is exempt");
   // … and both templates say so in terms a reader cannot mistake.
-  for (const { collapsed } of [audit, setup]) {
-    assertStringIncludes(collapsed, "stSoftwareAU/*");
-    assertStringIncludes(collapsed, "actions/*");
-  }
-  assertStringIncludes(setup.collapsed, "No owner is exempt");
+  assertStringIncludes(auditDefinitions, "stSoftwareAU/*");
+  assertStringIncludes(auditDefinitions, "actions/*");
+  assertStringIncludes(setupHardening, "stSoftwareAU/*");
+  assertStringIncludes(setupHardening, "actions/*");
+  assertStringIncludes(setupHardening, "No owner is exempt");
 });
 
 Deno.test("action pinning - the image carve-out survives, and only for images (Issue #787)", async () => {
   // Tag-pinning an internal *image* is still permitted; the carve-out was
   // never wrong about images, only about `uses:` references.
-  const { collapsed } = await latest("github_actions_audit");
-  assertStringIncludes(collapsed, "**Container images** are the one carve-out");
-  assertStringIncludes(collapsed, "`ghcr.io/stsoftwareau/*` images");
-  assertStringIncludes(collapsed, "`@sha256:` digest");
+  const definitions = await scoped(
+    AUDIT_DEFINITIONS.doc,
+    AUDIT_DEFINITIONS.title,
+  );
+  assertStringIncludes(
+    definitions,
+    "**Container images** are the one carve-out",
+  );
+  assertStringIncludes(definitions, "`ghcr.io/stsoftwareau/*` images");
+  assertStringIncludes(definitions, "`@sha256:` digest");
 });
 
 Deno.test("action pinning - check 13 no longer contradicts the rule above it (Issue #787)", async () => {
   // A cross-repo reusable workflow at a tag hit two rules with opposite
   // verdicts; check 13 now names the absence of an owner exception.
-  const { collapsed } = await latest("github_actions_audit");
-  assertStringIncludes(collapsed, "Reusable workflows pinned by commit SHA");
+  const supplyChain = await scoped(
+    AUDIT_SUPPLY_CHAIN.doc,
+    AUDIT_SUPPLY_CHAIN.title,
+  );
+  assertStringIncludes(supplyChain, "Reusable workflows pinned by commit SHA");
   assertStringIncludes(
-    collapsed,
+    supplyChain,
     "an internal `stSoftwareAU/*` reusable workflow at a tag is flagged",
   );
 });
@@ -99,18 +139,25 @@ Deno.test("action pinning - check 13 no longer contradicts the rule above it (Is
 Deno.test("action pinning - check 10 stays about authorship, not pinning (Issue #787)", async () => {
   // Its `actions/*`/`stSoftwareAU/*` set is about who wrote the code a
   // privileged trigger runs. Left as a set, it read as a pinning exemption.
-  const { collapsed } = await latest("github_actions_audit");
+  const supplyChain = await scoped(
+    AUDIT_SUPPLY_CHAIN.doc,
+    AUDIT_SUPPLY_CHAIN.title,
+  );
   assertStringIncludes(
-    collapsed,
+    supplyChain,
     "this check is about *who wrote the code a privileged trigger runs*",
   );
 });
 
 Deno.test("action pinning - the guidelines already stated the rule and are untouched (Issue #787)", async () => {
-  const { collapsed } = await latest("coding_guidelines");
-  assertStringIncludes(collapsed, "Pin GitHub Actions to commit SHAs");
+  const guidelinesWhole = await readRepoDoc(GUIDELINES_SUPPLY_CHAIN.doc);
+  const supplyChain = flat(
+    section(guidelinesWhole, GUIDELINES_SUPPLY_CHAIN.title),
+  );
+  assertStringIncludes(supplyChain, "Pin GitHub Actions to commit SHAs");
+  // An absence check, so it deliberately reads the whole file.
   assertEquals(
-    /first-party/i.test(collapsed),
+    /first-party/i.test(guidelinesWhole),
     false,
     "the guidelines never used the term and must not gain it",
   );
