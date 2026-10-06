@@ -620,6 +620,12 @@ guidance under **Unit tests** below.
   framework internals unless that appearance or structure is itself a stated
   contract. Use visual snapshots deliberately when appearance is the contract
   and the baseline can be reviewed. A restyle should not break a behaviour test.
+  A test that reads a stylesheet (`.css`, `.scss`) and matches selectors or
+  property values is a source-text grep (rule 5 of **Test-Driven Development
+  (TDD)** above), not a layout test, even where appearance is the contract: a
+  claim about layout, cascade order, overflow, clipping or element position
+  needs a headless-browser check that measures rendered boxes, and where the
+  repository has no browser harness the PR's Test Plan names that gap instead.
   A closed `visually-hidden` element keeps a 1×1 box, which Playwright counts
   as visible, so assert the semantic closed state (`aria-expanded="false"`, or
   the open-only class absent) rather than `toBeVisible()`/`isHidden()`.
