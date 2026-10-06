@@ -25,14 +25,19 @@
  * The guard's own verdict on those commands is asserted too: they are reads,
  * so the agent-side `gh` shim must pass `--watch` through.
  *
+ * The wait-contract pins (both templates name a working wait command) live in
+ * `sleep_poll_guidance_drift_test.ts` instead of here: they need
+ * `markdown_docs.ts`, which spawns git and would drop this file out of the
+ * `deno task check:manifests` completeness family (Issue #1483) — the same
+ * reason `no_verify_ban_test.ts` was split from `no_verify_ban_drift_test.ts`.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { evaluateGhCommand } from "../lib/gh_guard_decision.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 import { flattenAll } from "./support/prompt_prose.ts";
-import { readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 
@@ -207,45 +212,8 @@ Deno.test("prompts - none recommends sleep as a polling primitive", async () => 
 // ---------------------------------------------------------------------------
 // Acceptance 2 — both templates name a wait command that works in-container
 // ---------------------------------------------------------------------------
-
-/** The wait commands both templates must name, and what bounds them. */
-const WAIT_CONTRACT: readonly { what: string; pattern: RegExp }[] = [
-  { what: "gh pr checks --watch", pattern: /gh\s+pr\s+checks[^\n]*--watch/ },
-  {
-    what: "gh run watch --exit-status",
-    pattern: /gh\s+run\s+watch[^\n]*--exit-status/,
-  },
-  {
-    what: "the foreground `sleep` refusal",
-    pattern: /foreground\s+`?sleep`?[^.]*block/i,
-  },
-  {
-    what: "the bound the wait runs under",
-    pattern: /bounded\s+by\s+the\s+Bash\s+tool's[^.]*timeout/i,
-  },
-];
-
-/** The section each template carries its wait-command contract in. */
-const WAIT_CONTRACT_SECTION: Readonly<Record<string, string>> = {
-  coding_guidelines: "Long-Horizon Runs",
-  ci_fix: "CI Fix Mode",
-};
-
-for (const [template, title] of Object.entries(WAIT_CONTRACT_SECTION)) {
-  Deno.test(`${template} - names a wait command that works in the container`, async () => {
-    const text = section(
-      await readRepoDoc(`prompts/${template}/prompt.md`),
-      title,
-    );
-    for (const { what, pattern } of WAIT_CONTRACT) {
-      assert(
-        pattern.test(text),
-        `${template}/prompt.md's "${title}" section must name ${what} ` +
-          `(no match for ${pattern})`,
-      );
-    }
-  });
-}
+//
+// See sleep_poll_guidance_drift_test.ts.
 
 // ---------------------------------------------------------------------------
 // Acceptance 3 — the agent-side gh guard passes `--watch` through
