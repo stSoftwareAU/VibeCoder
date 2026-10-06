@@ -1752,8 +1752,17 @@ because nothing checked the summary for a bare ALL-CAPS token the agent
 never resolved (Issue #3124).
 [`result_placeholder_gate.ts`](../../worker/deno/lib/result_placeholder_gate.ts)
 blocks PR creation when the PR summary contains a token matching
-`\b[A-Z][A-Z0-9_]*_PLACEHOLDER\b`; a token inside a backtick code span or a
-fenced code block is ignored, so an identifier mentioned in code is never
+`\b[A-Z][A-Z0-9_]*_(?:PLACEHOLDER|PENDING|TBD|TODO)\b` anywhere in prose, or
+when a line citing a gate command (`quality.sh`, a `deno`/`cargo`/`npm`/
+`pnpm`/`yarn`/`go`/`make` subcommand, `pytest`, `shellcheck` or `semgrep`)
+leaves the text after its last colon a bare ALL-CAPS identifier with at
+least one underscore — a structural backstop that catches an invented
+suffix without the gate having to enumerate it. GRQ#5164, raised after
+Issue #3124 landed, carried `- ./quality.sh < /dev/null on the head:
+GATE_OUTCOME_PENDING` in its summary and PR body; the original
+`_PLACEHOLDER`-only regex let it through, so Issue #3248 widened the gate
+to both rules above. A token inside a backtick code span or a fenced code
+block is ignored either way, so an identifier mentioned in code is never
 flagged. Like the docs-sweep gate it is folded into the earlier summary
 gates' own notice when one of those blocks first, and it gets the same
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)
