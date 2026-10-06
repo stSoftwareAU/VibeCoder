@@ -84,30 +84,19 @@ flowchart TD
 
 ## Evidence
 
-Tests (run from `worker/deno`): `deno task test:unit
-tests/completion_phase_docs_sweep_test.ts tests/docs_sweep_hits_test.ts
-tests/prompt_docs_sweep_3172_test.ts tests/prompt_docs_sweep_3073_test.ts`.
-Result: 75 passed, 0 failed. `deno fmt --check` is clean.
+The pre-merge head `0e255a3` passed GitHub's Quality and Dependency
+Review workflows. The previous implementation runs covered the eight
+Docs sweep and deferred-PR suites listed in the Test Plan below.
 
-Deferral path (`deno task test:unit tests/deferred_pr_drain_test.ts
-tests/deferred_pr_store_test.ts tests/completion_phase_secondary_limit_test.ts
-tests/deferred_pr_dispatch_test.ts`): 32 passed, 0 failed.
+The merge-conflict fix incorporates `main` at `e6b7972`. It resolves the
+`docs/PROMPTS.md` issue row by preserving both this PR's advisory-comment
+behaviour and #3230's standards-review rule. No production behaviour or
+test assertion was changed by the conflict resolution.
 
-Quality gate: `./quality.sh < /dev/null` on the final head: `Result: FAILED`.
-Every check that ran passed except `deno tests` (26011 passed, 53 failed, 11
-ignored); `config integration`, `markdownlint` and `semgrep` were skipped
-(no live config, and those tools were not installed where the gate ran). None of
-the 53 failures is in a file this PR changes:
-
-- 51 are in 19 real-git test files (`git_branch_test.ts`,
-  `pr_branch_checkout_test.ts`, `git_pull_conflict_test.ts` and 16 others).
-  The same 51 tests failed in the same container on a branch without this
-  change, so they come from that container's git setup.
-- 2 are in `cache_secret_redaction_1261_test.ts`. They assert their scratch
-  directory, made under the current directory, is not under shared `/tmp`, and
-  that checkout lived under `/tmp`.
-
-CI's Quality workflow runs the full suite on the pushed head.
+Local verification of the merged tree: `git diff --check` passed. The
+focused `deno task test:unit` run could not start its tests because this
+environment could not fetch the `@std/assert` manifest from `jsr.io`.
+This is not a passing test result; GitHub CI validates the merged tree.
 
 **Docs sweep:** grep: `second miss`, `recovery turn`,
 `Docs sweep incomplete`, `stale hit`, `term hit`,
