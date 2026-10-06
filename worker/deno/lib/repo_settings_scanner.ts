@@ -11,6 +11,9 @@
  * the weekly audit reads them (read-only `gh api` calls) and files one
  * stable finding per open setting that says plainly a human must act —
  * drift becomes visible on the board instead of living in a report.
+ * Private vulnerability reporting (Issue #3268) is also read: GitHub offers
+ * it on public repositories only, so a public repository with it off is
+ * filed as `BP-REPO-PVR-OFF`.
  *
  * Failure policy: an unreadable endpoint is reported through
  * `onLookupFailure` and yields no finding for that endpoint — never a
@@ -22,6 +25,12 @@
  * to spend money is closed by hand every run. The skip travels through
  * `onCheckSkipped`, not `onLookupFailure`, because nothing failed, and the
  * audit names it in its own summary rather than passing it as clean.
+ *
+ * Private vulnerability reporting is read on a public repository only — a
+ * private or internal one is not read at all, and the skip travels through
+ * `onCheckSkipped` the same way, behind the same visibility gate
+ * ({@link needsPaidSecretProtection}) that `repo_settings_harden.ts` uses
+ * for its own PVR step.
  *
  * Wording note: the outbound secret masker rewrites `secret_scanning*`
  * key/value pairs and `id-token: write` to `***REDACTED***` in issue bodies
@@ -81,6 +90,12 @@ export const SECRET_PROTECTION_SKIP_CHECK = "secret scanning / push protection";
 /** Why it was skipped — rendered straight into the audit summary. */
 export const SECRET_PROTECTION_SKIP_REASON =
   "private repository — needs paid GitHub Secret Protection";
+/** How the private-vulnerability-reporting skip is named (Issue #3268). */
+export const PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK =
+  "private vulnerability reporting";
+/** Why it was skipped — GitHub offers it on public repositories only. */
+export const PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON =
+  "private repository — GitHub offers it on public repositories only";
 const ADMIN =
   "Repository admin action — the worker cannot change repository settings.";
 
@@ -99,7 +114,7 @@ async function readJson<T>(
   }
 }
 
-/** Read the four settings surfaces and return one finding per open setting. */
+/** Read the settings surfaces and return one finding per open setting. */
 export async function scanRepoSettings(
   repo: string,
   ghCommandFn: GhCommandFn,
@@ -343,6 +358,46 @@ export async function scanRepoSettings(
           `${ADMIN} Settings → Code security → enable push protection.`,
         evidence: `push protection status: ${push}`,
       });
+    }
+  }
+
+  // 5. Private vulnerability reporting (Issue #3268). GitHub offers it on
+  // public repositories only, behind the same visibility gate secret
+  // scanning uses. A private or internal repository is not read and the
+  // skip travels through `onCheckSkipped`. When `repoInfo` itself was
+  // unreadable the visibility is unknown, its own failure is already
+  // reported, and PVR is not read.
+  if (repoInfo) {
+    if (needsPaidSecretProtection(repoInfo.visibility, repoInfo.private)) {
+      options.onCheckSkipped?.(
+        PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK,
+        PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON,
+      );
+    } else {
+      const pvr = await readJson<{ enabled?: boolean }>(
+        ghCommandFn,
+        `repos/${repo}/private-vulnerability-reporting`,
+        "private-vulnerability-reporting",
+        options.onLookupFailure,
+      );
+      if (pvr?.enabled === false) {
+        add({
+          findingId: "BP-REPO-PVR-OFF",
+          severity: "medium",
+          title:
+            "🟠 Private vulnerability reporting is off — a researcher has no private way to report a vulnerability",
+          file: FILE,
+          lines: 0,
+          whyItMatters:
+            "On a public repository, private vulnerability reporting lets anyone report a vulnerability to the " +
+            "maintainers privately, as a draft security advisory. With it off, the only channel left is a public " +
+            "issue, which discloses the flaw before a fix exists (Issue #3268).",
+          suggestedFix:
+            `${ADMIN} Settings → Code security → enable "Private vulnerability reporting", or run ` +
+            "`mod.ts repo-settings-harden --repo <owner/name> --apply` from the checkout.",
+          evidence: `private-vulnerability-reporting enabled=${pvr.enabled}`,
+        });
+      }
     }
   }
 

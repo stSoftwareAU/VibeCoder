@@ -1072,13 +1072,16 @@ token defaults (`actions/permissions/workflow`), which actions may run and
 whether SHA pinning is enforced (`actions/permissions`), the default
 branch's pull-request rule (`rules/branches/<default>` — the approval
 count; code-owner review is deliberately off fleet-wide and never a
-finding, see THREAT-MODEL R14), and
-secret scanning / push protection (`security_and_analysis`). Each open
+finding, see THREAT-MODEL R14),
+secret scanning / push protection (`security_and_analysis`), and private
+vulnerability reporting (`private-vulnerability-reporting`, public
+repositories only). Each open
 setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
 `BP-REPO-SECRET-SCANNING-OFF`,
-`BP-REPO-PUSH-PROTECTION-OFF`, and — when the repository runs a "selected"
+`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`, and — when the repository
+runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
 workflows need that the list omits, composite steps included,)
 whose fix text says plainly that a
@@ -1105,6 +1108,17 @@ scanning / push protection (private repository — needs paid GitHub Secret
 Protection)` and logged once at `WARNING`, never `ERROR`, because nothing
 failed. Findings already open on private repositories stay open for a
 human to close; the audit never closes them.
+
+**Private vulnerability reporting is checked on a public repository only
+(Issue #3268).** GitHub offers it on public repositories only, so the
+scanner reads `private-vulnerability-reporting` only when the
+`repos/{owner}/{repo}` visibility is not `private` or `internal` (an
+unreadable visibility is not treated as exempt, as for secret scanning);
+`"enabled": false` files `BP-REPO-PVR-OFF`; a private or internal
+repository is not read and the skip is named in the audit summary as
+`private vulnerability reporting (private repository — GitHub offers it
+on public repositories only)`; any read failure, a 403 included, is
+reported as a lookup failure and yields no finding — never a pass.
 
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
@@ -1190,7 +1204,9 @@ only (Issue #3267): the command reads `private-vulnerability-reporting`
 and plans a bare `PUT` only when it reads `"enabled": false`; on a
 private or internal repository it is not read, and the plan carries one
 line, `private vulnerability reporting: skipped — available on public
-repositories only`.
+repositories only`. Setup's audit closer then closes an open
+`BP-REPO-PVR-OFF` issue only when that step ran cleanly and a re-read of
+`private-vulnerability-reporting` shows `"enabled": true` (Issue #3268).
 One approving review on the default branch is part of the default plan
 (Issue #2680): fleet PRs wait for the `/review-fleet-prs` skill or the owner
 before they merge. A `pull_request` rule below one is raised in the ruleset
