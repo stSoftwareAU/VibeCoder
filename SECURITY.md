@@ -2020,9 +2020,17 @@ We take security seriously. If you discover a security vulnerability, please fol
 
 ### 🐛 Reporting a Vulnerability
 
-1. **Do not** open a public GitHub issue for security vulnerabilities
+1. **Do not** file a public issue or pull request for a vulnerability. Public
+   reports expose users before a fix is available.
 
-2. **Email** the repository maintainers directly with:
+2. **Report it privately**, using one of these routes:
+   - **Preferred:** GitHub private vulnerability reporting — open this
+     repository's **Security** tab and choose
+     [**Report a vulnerability**](https://github.com/stSoftwareAU/VibeCoder/security/advisories/new).
+   - **Alternative:** email
+     [security@stsoftware.com.au](mailto:security@stsoftware.com.au).
+
+   Include:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact
