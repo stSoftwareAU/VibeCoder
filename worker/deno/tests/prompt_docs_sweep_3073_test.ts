@@ -15,24 +15,15 @@
  * drops the rule fails in CI.
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { assertStringIncludes } from "@std/assert";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-
-async function load(type: string): Promise<string> {
-  const result = await loadPrompt(type, PROMPTS_DIR);
-  assertEquals(result.ok, true, `${type} failed to load`);
-  if (!result.ok) throw new Error(`${type} failed to load`);
-  return result.value;
-}
-
-function normalise(text: string): string {
-  return text.toLowerCase().replace(/\s+/g, " ");
+async function scoped(doc: string, title: string): Promise<string> {
+  return flat(section(await readRepoDoc(doc), title)).toLowerCase();
 }
 
 Deno.test("issue - docs sweep also finds the manual section by the surface's own name", async () => {
-  const body = normalise(await load("issue"));
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
 
   for (
     const required of [
@@ -48,14 +39,14 @@ Deno.test("issue - docs sweep also finds the manual section by the surface's own
 });
 
 Deno.test("issue - worker gates PR creation on the Docs sweep line", async () => {
-  const body = normalise(await load("issue"));
+  const body = await scoped("prompts/issue/prompt.md", "Instructions");
 
   assertStringIncludes(body, "worker will not raise the pr without that line");
   assertStringIncludes(body, "a second miss fails the run");
 });
 
 Deno.test("pr_feedback - docs sweep also finds the manual section by the surface's own name", async () => {
-  const body = normalise(await load("pr_feedback"));
+  const body = await scoped("prompts/pr_feedback/prompt.md", "Making Changes");
 
   for (
     const required of [
