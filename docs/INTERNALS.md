@@ -3123,9 +3123,10 @@ collectors recorded on the refusal (Issue #2534):
 
 | Gate             | When                                                                   | Sentence                                                          |
 | ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `pr-open`        | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
-| `milestone-wait` | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
-| `dependency`     | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
+| `pr-open`             | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
+| `milestone-wait`      | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
+| `unreadable-children` | `dependency-blocked` because the issue's own sub-issues could not be read | this issue's sub-issues could not be read, so it is held until they can be |
+| `dependency`          | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
 
 When the chain behind the dependency ends at a root the fleet cannot move
 (`assigned`, `no-discovery-label`, `needs-human`, `cross-repo-unmonitored`), its
