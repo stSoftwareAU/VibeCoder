@@ -17,7 +17,8 @@
  *
  * Failure policy: an unreadable endpoint is reported through
  * `onLookupFailure` and yields no finding for that endpoint — never a
- * silent "hardened".
+ * silent "hardened". A private-vulnerability-reporting response without a
+ * boolean `enabled` field counts as a lookup failure too (Issue #3268).
  *
  * Exemption: secret scanning and push protection need the paid GitHub
  * Secret Protection add-on on a private or internal repository, so neither
@@ -72,9 +73,16 @@ export interface ScanRepoSettingsOptions {
    * A check this run deliberately did not make (Issue #2225) — not a
    * failure, so it is reported separately from `onLookupFailure`, which
    * logs a fault. The audit records it as a skipped check so the summary
-   * names what it did not cover.
+   * names what it did not cover. `actionable` is true when a human could
+   * turn the check on (secret protection: buy the licence) and false when
+   * the absence is expected and nobody can act (private vulnerability
+   * reporting on a private/internal repo — GitHub does not offer it there).
    */
-  onCheckSkipped?: (what: string, reason: string) => void;
+  onCheckSkipped?: (
+    what: string,
+    reason: string,
+    actionable: boolean,
+  ) => void;
   /**
    * `<owner>/<repo>@*` patterns the workflows need — including the actions
    * their composite steps pull in (Issue #4424). When given and the
@@ -90,6 +98,9 @@ export const SECRET_PROTECTION_SKIP_CHECK = "secret scanning / push protection";
 /** Why it was skipped — rendered straight into the audit summary. */
 export const SECRET_PROTECTION_SKIP_REASON =
   "private repository — needs paid GitHub Secret Protection";
+/** The PVR lookup's `what` label — also used by callers naming it (Issue #3268). */
+export const PRIVATE_VULNERABILITY_REPORTING_CHECK =
+  "private-vulnerability-reporting";
 /** How the private-vulnerability-reporting skip is named (Issue #3268). */
 export const PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK =
   "private vulnerability reporting";
@@ -325,6 +336,7 @@ export async function scanRepoSettings(
       options.onCheckSkipped?.(
         SECRET_PROTECTION_SKIP_CHECK,
         SECRET_PROTECTION_SKIP_REASON,
+        true,
       );
     }
     if (!exempt && scanningOff) {
@@ -364,23 +376,31 @@ export async function scanRepoSettings(
   // 5. Private vulnerability reporting (Issue #3268). GitHub offers it on
   // public repositories only, behind the same visibility gate secret
   // scanning uses. A private or internal repository is not read and the
-  // skip travels through `onCheckSkipped`. When `repoInfo` itself was
-  // unreadable the visibility is unknown, its own failure is already
-  // reported, and PVR is not read.
+  // skip travels through `onCheckSkipped` with `actionable: false` — nobody
+  // can turn it on there. When `repoInfo` itself was unreadable the
+  // visibility is unknown, its own failure is already reported, and PVR is
+  // not read. A response without a boolean `enabled` field is a lookup
+  // failure, not silence.
   if (repoInfo) {
     if (needsPaidSecretProtection(repoInfo.visibility, repoInfo.private)) {
       options.onCheckSkipped?.(
         PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK,
         PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON,
+        false,
       );
     } else {
       const pvr = await readJson<{ enabled?: boolean }>(
         ghCommandFn,
         `repos/${repo}/private-vulnerability-reporting`,
-        "private-vulnerability-reporting",
+        PRIVATE_VULNERABILITY_REPORTING_CHECK,
         options.onLookupFailure,
       );
-      if (pvr?.enabled === false) {
+      if (pvr !== undefined && typeof pvr.enabled !== "boolean") {
+        options.onLookupFailure?.(
+          PRIVATE_VULNERABILITY_REPORTING_CHECK,
+          "response carried no boolean `enabled` field",
+        );
+      } else if (pvr?.enabled === false) {
         add({
           findingId: "BP-REPO-PVR-OFF",
           severity: "medium",

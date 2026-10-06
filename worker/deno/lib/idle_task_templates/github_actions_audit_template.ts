@@ -198,6 +198,7 @@ import {
   scanActionAdvisories,
 } from "../action_advisory_scanner.ts";
 import {
+  PRIVATE_VULNERABILITY_REPORTING_CHECK,
   type RepoSettingsFinding,
   scanRepoSettings,
 } from "../repo_settings_scanner.ts";
@@ -373,7 +374,11 @@ export interface GitHubActionsAuditTemplateDeps {
       defaultBranch: string;
       knownOpenFindingIds: Iterable<string>;
       onLookupFailure: (what: string, reason: string) => void;
-      onCheckSkipped: (what: string, reason: string) => void;
+      onCheckSkipped: (
+        what: string,
+        reason: string,
+        actionable: boolean,
+      ) => void;
       requiredActionPatterns?: readonly string[];
     },
   ) => Promise<RepoSettingsFinding[]>;
@@ -607,6 +612,28 @@ export const ACTIONS_POLICY_PERMISSION =
   'the repository "Actions policies" fine-grained read permission';
 
 /**
+ * The fine-grained permission the private-vulnerability-reporting read
+ * needs (Issue #3268).
+ *
+ * GitHub's "Permissions required for fine-grained personal access tokens"
+ * page lists `GET /repos/{owner}/{repo}/private-vulnerability-reporting`
+ * under Administration (read), not under Actions policies.
+ */
+export const ADMINISTRATION_READ_PERMISSION =
+  'the repository "Administration" fine-grained read permission';
+
+/**
+ * Which fine-grained permission a 403 on a given check's endpoint names
+ * (Issue #3268) — Administration for private-vulnerability-reporting,
+ * Actions policies for everything else this template reads.
+ */
+export function permissionNeededFor(check: string): string {
+  return check === PRIVATE_VULNERABILITY_REPORTING_CHECK
+    ? ADMINISTRATION_READ_PERMISSION
+    : ACTIONS_POLICY_PERMISSION;
+}
+
+/**
  * Signatures of a lookup the token is simply **not permitted** to make
  * (Issue #1094).
  *
@@ -700,7 +727,9 @@ export function renderGitHubActionsAuditSummary(
     // would take to read it.
     const parts = extras.skippedChecks.map((skipped) =>
       skipped.notPermitted
-        ? `${skipped.check} (not permitted — grant ${ACTIONS_POLICY_PERMISSION})`
+        ? `${skipped.check} (not permitted — grant ${
+          permissionNeededFor(skipped.check)
+        })`
         : `${skipped.check} (${skipped.reason})`
     );
     lines.push(
@@ -1476,20 +1505,29 @@ export function createGitHubActionsAuditTemplate(
               defaultBranch: defaultBranchForRules.value,
               knownOpenFindingIds: seenIds,
               requiredActionPatterns,
-              // Issue #2225: a check the scanner deliberately did not make
-              // (secret scanning on a private repo, where it needs a paid
-              // licence) is not a fault — WARNING, and named as skipped so
-              // the audit never reads as having covered it.
-              onCheckSkipped: (what, reason) => {
+              // Issue #2225/#3268: a check the scanner deliberately did not
+              // make is not a fault, but whether a human can do anything
+              // about it varies. `actionable` (secret scanning on a private
+              // repo, where a licence would turn it on) stays WARNING;
+              // an expected absence nobody can act on (private
+              // vulnerability reporting on a private/internal repo — GitHub
+              // does not offer it there) is INFO, per CODING-STANDARDS
+              // "Log Levels Are a Promise". Either way it is named as
+              // skipped so the audit never reads as having covered it.
+              onCheckSkipped: (what, reason, actionable) => {
                 skippedChecks.push({
                   check: what,
                   reason,
                   notPermitted: false,
                 });
-                logger.warn(
-                  `github-actions-audit: repository settings check '${what}' skipped (${reason})`,
-                  { repo: opts.repo, template: NAME, runId },
-                );
+                const message =
+                  `github-actions-audit: repository settings check '${what}' skipped (${reason})`;
+                const context = { repo: opts.repo, template: NAME, runId };
+                if (actionable) {
+                  logger.warn(message, context);
+                } else {
+                  logger.info(message, context);
+                }
               },
               onLookupFailure: (what, reason) => {
                 // Issue #1094: a 403 here is a static limit of the token's
@@ -1503,7 +1541,9 @@ export function createGitHubActionsAuditTemplate(
                 if (notPermitted) {
                   logger.warn(
                     `github-actions-audit: repository settings check '${what}' not permitted ` +
-                      `(${reason}) — grant ${ACTIONS_POLICY_PERMISSION}; the check is reported ` +
+                      `(${reason}) — grant ${
+                        permissionNeededFor(what)
+                      }; the check is reported ` +
                       `as skipped, never as passed`,
                     context,
                   );
