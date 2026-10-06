@@ -35,13 +35,20 @@ export const ALLOWED_HIDDEN_PATHS: readonly string[] =
 
 /**
  * Always-forbidden patterns. Each regexp is matched against the full
- * staged path returned by `git diff --cached --name-only -z`.
+ * staged path returned by `git diff --cached --name-only -z`. The dotenv,
+ * config and secrets-directory patterns below are matched as any path
+ * segment (Issue #3311), so `services/api/.env` is caught at any depth —
+ * not just at the repo root — mirroring how the slash-free `.gitignore`
+ * entries apply at every depth.
  */
 export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
-  /^\.env(\..*)?$/,
-  /^\.config.*\.json$/,
+  // Matched as any path segment (Issue #3311).
+  /(^|\/)\.env(\.[^/]*)?(\/|$)/,
+  // Matched as any path segment (Issue #3311).
+  /(^|\/)\.config[^/]*\.json(\/|$)/,
   /.*\.secret\.json$/,
-  /^\.secrets\//,
+  // Matched as any path segment (Issue #3311).
+  /(^|\/)\.secrets\//,
   // Private key material and credential files (Issue #3660). Matched on the
   // final path segment so nested paths (`certs/server.pem`) are caught too.
   /(^|\/)[^/]+\.(pem|key|p12|pfx)$/,
@@ -64,7 +71,9 @@ export interface InspectStagedResult {
  * Classify a single staged path as safe or a violation.
  *
  * Order of checks:
- *   1. Explicit forbidden patterns (`.env`, `.config*.json`, etc.).
+ *   1. Explicit forbidden patterns (`.env`, `.config*.json`, `.secrets/`,
+ *      etc.), each caught at any depth (Issue #3311), not just at the
+ *      repo root.
  *   2. Generic "hidden top-level path outside the allowlist" check —
  *      `^\.[^/]+` minus the entries on the allowlist. The check is
  *      applied to the first path segment so that allowlisted directories
