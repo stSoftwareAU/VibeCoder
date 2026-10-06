@@ -164,8 +164,9 @@ guessing — the analysis-only hand-off then routes it to a human.
    overrides the property or a clipping container hides the overflow. A
    claim about layout, cascade order, overflow, clipping or element position
    needs a headless-browser check that measures rendered boxes, such as the
-   repository's existing `e2e/` or Playwright checks, run as **A browser
-   check you did not run is not a safety net** under Error Recovery says.
+   repository's existing `e2e/` or Playwright checks, and that check must
+   itself be run, per **A browser check you did not run is not a safety
+   net** under Error Recovery.
    Where the repository has no browser harness, the PR names that gap in
    its Test Plan rather than substituting a stylesheet regex.
    **Change only what the issue changes.** Edit only the expectation the
