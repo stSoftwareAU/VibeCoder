@@ -15,6 +15,28 @@ treats `total > completed` as `dependency-blocked` in both readers. An absent or
 malformed field behaves exactly as before. The body task-list half of the
 parent/child gate is still not modelled. Closes #3314.
 
+**Review follow-up (PR #3318):** two gaps in the original fix.
+
+1. The two production lines that carry the fix — `fetchAllIssues`'s `--json`
+   field list (`worker/deno/lib/issue_query.ts:520`) and the census input
+   mapping `subIssuesSummary: i.subIssuesSummary`
+   (`worker/deno/lib/run_core_production_deps.ts:5773`) — had no test that
+   goes red if either is reverted. Added
+   `worker/deno/tests/idle_census_sub_issues_wiring_3314_test.ts`, driving
+   the real `createProductionRunCoreDeps` with a stub `gh` that mirrors the
+   real CLI's contract (returns only the fields named in `--json`). Reverting
+   either line now fails the test for the right reason: the audit reports
+   `claimable=1` and the census shows `inversion_signal=true` for the
+   GRQ-AutoTrader#2503-shaped fixture.
+2. `classifyIssues`'s third production caller, `repoHasStartableWork` in
+   `worker/deno/lib/repo_busy_for_idle_task.ts`, never requested or mapped
+   `subIssuesSummary`, so the fleet-global existence gate still counted a
+   sub-issue-blocked issue as startable while the audit/census called it
+   blocked. Fixed by requesting `subIssuesSummary` in that caller's `--json`
+   list (line ~489) and mapping it with `parseSubIssuesSummary` into the rows
+   `classifyIssues` reads (line ~519). Test added to
+   `worker/deno/tests/repo_busy_for_idle_task_test.ts`.
+
 **Docs sweep** — grep: `subIssuesSummary`, `hasOpenSubIssues`,
 `parseSubIssuesSummary`, `normaliseIssue`, `checkParentBlocked`, "parent/child",
 "Parent/child", "per-issue API call", "not modelled", "unmodelled",
@@ -55,6 +77,22 @@ says an open sub-issue counts as a dependency.
   a malformed one.
 - `deno test -A --no-check tests/issue_query_test.ts tests/idle_decision_census_test.ts tests/idle_detect_diagnostics_test.ts --filter "/3314|subIssuesSummary/"`
   from `worker/deno`: 14 passed, 0 failed.
+- Review follow-up: added `worker/deno/tests/idle_census_sub_issues_wiring_3314_test.ts`
+  (3 tests) driving the real `createProductionRunCoreDeps` — confirms
+  `fetchAllIssues` requests `subIssuesSummary`, the audit does not count the
+  fixture issue as claimable, and the census counts it `dependency_blocked=1`.
+  Reverting either of the two production lines named above was shown to fail
+  each test for the right reason (see Branch outcomes below), then the lines
+  were restored.
+- Review follow-up: added one test to
+  `worker/deno/tests/repo_busy_for_idle_task_test.ts`
+  (`anyRepoHasUnblockedRealWork - a work-on issue with open native
+  sub-issues does not count (Issue #3314)`), asserting both the `false`
+  verdict and that the `--json` request includes `subIssuesSummary`. Reverting
+  the new mapping line in `repo_busy_for_idle_task.ts` was shown to fail it
+  (`startable=1` instead of `0`), then the line was restored.
+- `deno test -A --no-check tests/idle_census_sub_issues_wiring_3314_test.ts tests/repo_busy_for_idle_task_test.ts`
+  from `worker/deno`: 28 passed, 0 failed.
 
 **Branch outcomes:**
 
@@ -97,5 +135,18 @@ says an open sub-issue counts as a dependency.
 - `worker/deno/lib/idle_decision_census.ts:1278` — blocked (claimable count
   records `dependency_blocked`) — `worker/deno/tests/idle_decision_census_test.ts::#3314 - an issue with open native sub-issues is dependency-blocked, not claimable`
   — flipped to `false ||`, test went red
+- `worker/deno/lib/issue_query.ts:520` — `fetchAllIssues` requests
+  `subIssuesSummary` — `worker/deno/tests/idle_census_sub_issues_wiring_3314_test.ts::production deps - fetchAllIssues requests subIssuesSummary in --json (Issue #3314)`
+  and the audit/census tests in the same file — field dropped from the
+  `--json` list, all three tests went red (`claimable=1`,
+  `inversion_signal=true`)
+- `worker/deno/lib/run_core_production_deps.ts:5773` — census input mapping
+  carries `subIssuesSummary` — `worker/deno/tests/idle_census_sub_issues_wiring_3314_test.ts::production deps - the census counts the open-sub-issue parent as dependency_blocked (Issue #3314)`
+  — mapping line removed, test went red (`dependency_blocked=0`,
+  `inversion_signal=true`)
+- `worker/deno/lib/repo_busy_for_idle_task.ts:519` — `repoHasStartableWork`
+  maps `subIssuesSummary` into the rows `classifyIssues` reads —
+  `worker/deno/tests/repo_busy_for_idle_task_test.ts::anyRepoHasUnblockedRealWork - a work-on issue with open native sub-issues does not count (Issue #3314)`
+  — mapping line removed, test went red (`startable=1`)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
