@@ -1178,7 +1178,12 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. The Test Plan carries this enumeration as a
+   blocking self-review finding. A `Branch outcomes:` entry that admits it —
+   `no test reaches it`, or a flip that left the suite green — is work still
+   to do before the summary, not reporting: add the test, or remove the
+   branch; the worker blocks PR creation on it, and only an entry written
+   `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` may
+   stand. The Test Plan carries this enumeration as a
    `Branch outcomes:` list — one line per outcome naming `path:line`, the
    outcome, the test that reaches it, and that flipping it went red — or
    `Branch outcomes: none added` when the diff adds no branch. When the diff
