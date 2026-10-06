@@ -336,3 +336,67 @@ Deno.test("deferred drain - a token in the refusal never reaches the issue threa
     await Deno.remove(workDir, { recursive: true });
   }
 });
+
+Deno.test("deferred drain - a parked advisory comment is posted on the PR it raises (Issue #3237)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    await recordDeferredPr(
+      workDir,
+      record({ advisoryComment: "Docs sweep terms still hit the head" }),
+    );
+    const posts: { issue: number; body: string }[] = [];
+
+    const drained = await drainDeferredPrs({
+      workDir,
+      findOpenPr: noPr,
+      createPr: () =>
+        Promise.resolve({
+          ok: true,
+          value: "https://github.com/stSoftwareAU/VibeCoder/pull/1970",
+        }),
+      comment: (_repo, issue, body) => {
+        posts.push({ issue, body });
+        return Promise.resolve();
+      },
+    });
+
+    assert(drained.ok);
+    assertEquals(drained.value.raised, 1);
+    const onPr = posts.filter((p) => p.issue === 1970);
+    assertEquals(onPr.length, 1, "the advisory goes to the PR, once");
+    assertStringIncludes(onPr[0]!.body, "Docs sweep terms still hit the head");
+    assertEquals(
+      posts.filter((p) => p.issue === 1951).length,
+      1,
+      "the issue still gets only the PR-raised note",
+    );
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("deferred drain - a record with no advisory posts only the PR-raised note (Issue #3237)", async () => {
+  const workDir = await Deno.makeTempDir();
+  try {
+    await recordDeferredPr(workDir, record());
+    const posts: number[] = [];
+    const drained = await drainDeferredPrs({
+      workDir,
+      findOpenPr: noPr,
+      createPr: () =>
+        Promise.resolve({
+          ok: true,
+          value: "https://github.com/stSoftwareAU/VibeCoder/pull/1970",
+        }),
+      comment: (_repo, issue) => {
+        posts.push(issue);
+        return Promise.resolve();
+      },
+    });
+
+    assert(drained.ok);
+    assertEquals(posts, [1951]);
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});

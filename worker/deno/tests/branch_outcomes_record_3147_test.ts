@@ -17,28 +17,22 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
-import { loadPrompt } from "../lib/prompt_manager.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-
-async function loadPromptBody(type: string): Promise<string> {
-  const result = await loadPrompt(type, PROMPTS_DIR);
-  assertEquals(result.ok, true, `${type} failed to load`);
-  if (!result.ok) throw new Error(`${type} failed to load`);
-  return result.value;
-}
+import {
+  type DocSection,
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const PARAGRAPH_START =
   "**Every outcome of a branch you add needs a test that reaches it.**";
 
-function branchOutcomeParagraph(sectionText: string, what: string): string {
+function branchOutcomeParagraph(sectionText: DocSection, what: string): string {
   const start = sectionText.indexOf(PARAGRAPH_START);
   assert(start >= 0, `could not locate the branch-outcome rule in ${what}`);
   const end = sectionText.indexOf("\n\n", start);
-  const paragraph = end >= 0
-    ? sectionText.slice(start, end)
-    : sectionText.slice(start);
+  const paragraph = excerpt(sectionText, start, end >= 0 ? end : undefined);
   return flat(paragraph).trim();
 }
 
@@ -101,8 +95,9 @@ Deno.test("issue prompt Test Plan step names the Branch outcomes: list and its g
 });
 
 Deno.test("issue prompt skeleton summary carries a Branch outcomes: example (Issue #3147)", async () => {
-  const body = await loadPromptBody("issue");
-  const flattened = flat(body);
+  const flattened = flat(
+    section(await readRepoDoc("prompts/issue/prompt.md"), "PR Summary File"),
+  );
 
   assert(
     flattened.includes("**Branch outcomes:**"),
@@ -111,8 +106,12 @@ Deno.test("issue prompt skeleton summary carries a Branch outcomes: example (Iss
 });
 
 Deno.test("pr_feedback prompt requires re-enumerating every branch a fix commit adds (Issue #3147)", async () => {
-  const body = await loadPromptBody("pr_feedback");
-  const flattened = flat(body);
+  const flattened = flat(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+  );
 
   for (
     const phrase of [

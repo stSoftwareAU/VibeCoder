@@ -201,6 +201,49 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
+#### A request-changes review is never answered with "no change" (Issue #3246)
+
+A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) dismisses
+the review, and a dismissal cannot be undone — so if the agent's run ends
+with nothing to show for it, no later cycle can rediscover the finding. The
+worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
+helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) now guards
+against that case:
+
+- If the run leaves no commit, no working-tree change and no
+  `.pr_response_message`, the worker re-runs the agent once, in the same
+  run, on the same review, with a note appended to the prompt. If the
+  worker cannot tell whether the run left anything — a git read failed — it
+  does not re-run.
+- After the run (or runs): if no fix was pushed and the agent wrote a
+  `.pr_response_message`, that message is posted as the reply — the
+  rebuttal — never the neutral "could not identify a code change" reply.
+- If no fix was pushed and there is no `.pr_response_message`, the worker
+  posts no neutral reply either: it labels the PR `needs-human` with a
+  comment naming the review id, the number of runs, the last run's exit
+  code and duration, and saying no fix or rebuttal was produced.
+- At most `MAX_REVIEWER_NO_CHANGE_ATTEMPTS` (2) agent runs are made for a
+  single claimed review.
+
+This only changes behaviour for a claimed request-changes review. A
+no-change run against an inline review comment or a top-level PR comment is
+unaffected: it still gets the neutral "could not identify a code change"
+reply.
+
+```mermaid
+flowchart TD
+    A["Agent run on claimed<br/>request-changes review"] --> L{"Left anything?<br/>(commit, working-tree<br/>change, or message)"}
+    L -- "can't tell (git read failed)" --> U["No re-run"]
+    L -- "no, and under the attempt cap" --> RR["Re-run once,<br/>same review, note appended"]
+    RR --> F
+    L -- yes --> F{"Pushed fix?"}
+    F -- yes --> OK["Reply describes the fix"]
+    F -- "no, has .pr_response_message" --> REB["Post it as the rebuttal"]
+    F -- "no, and no .pr_response_message" --> NH["Label needs-human;<br/>comment names review id,<br/>run count, exit code, duration"]
+    U --> F
+    P["Inline comment or<br/>top-level PR comment,<br/>no change found"] --> NEU["Neutral 'could not identify<br/>a code change' reply"]
+```
+
 #### Fix the defect everywhere it lives (Issues #3086, #3114)
 
 A finding's file, line, repro and suggested fix are one example of a defect,
@@ -263,15 +306,24 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Three checks run, each only when it applies:
+Four checks run, each only when it applies:
 
-1. **Model drift pass** — only when the push changes a code file (neither a
-   test nor documentation, the same rule as the docs-sweep gate below). A
-   read-only question (file-writing, sub-agent, web and plan-mode tools
-   denied, the same list as the closure-verdict question) is asked over the
-   PR summary and every doc/prompt/README the PR diff touches against its
-   base (capped at 40 files): list every sentence the code change makes
-   false or leaves incomplete, quoted verbatim.
+1. **Model drift pass** — only when the push changes a code file or a test
+   file (a docs-only push gets no model pass). A read-only question
+   (file-writing, sub-agent, web and plan-mode tools denied, the same list
+   as the closure-verdict question) is asked over the PR summary and every
+   doc/prompt/README the PR diff touches against its base (capped at 40
+   files): list every sentence the change makes false or leaves incomplete,
+   quoted verbatim. The change request this push answers (the review or
+   comment body, carried as the agent's own prompt) is fenced into the
+   question as untrusted text; when it quotes a sentence from the PR
+   summary, a doc or the PR body, the question asks the model to confirm
+   that sentence has been rewritten or removed at the head — a quoted
+   sentence still present, even with a correction added after it, is drift.
+   The question also always asks for any sentence that a later sentence in
+   the same file corrects, supersedes or contradicts (an earlier-round
+   paragraph followed by a "PR-feedback round N" correction, say) — the
+   earlier one is reported.
 2. **Deterministic Test Plan recount** — whenever the PR diff carries a
    summary, the worker counts top-level `Deno.test(` / `it(` declarations
    at the head for every test file the PR diff adds or edits, and flags a
@@ -287,23 +339,39 @@ Three checks run, each only when it applies:
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.
+4. **Deterministic quoted-sentence check (Issue #3244)** — on every
+   non-skipped push, the change request this push answers is parsed for its
+   findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:
+   <problem>`). For each finding whose file is a
+   `docs/archive/pr-summaries/pr-summary-*.md`, every quoted span of four or
+   more words in the finding's problem text — straight or curly double
+   quotes, single quotes; split at an ellipsis; never across a line break —
+   is looked for in that summary at the head, ignoring case, whitespace, and
+   Markdown emphasis, backticks or underscores. A span still present is a
+   hit. A named summary that cannot be read at the head is reported as not
+   checked rather than given a recovery turn on its own — the same as a
+   model pass that returns no verdict.
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
-rewrite the listed sentences, recount the Test Plan and fix the Docs sweep
-line, without changing code. The checks are then re-run; a prose finding
-counts as fixed only when its quoted sentence was present before the
-recovery turn and is gone after it — a finding whose file was not one of
-the files the question was asked about is never read back, so it stays
-reported regardless of the recovery turn. A model pass that returns no
-verdict is not a hit and does not trigger a recovery turn on its own; it
-goes straight to the reply note. Whatever remains after the recovery turn —
-plus a model pass that returned no verdict — is appended to
-`.pr_response_message` under `### Drift check (Issue #3143)`, so it reaches
-the PR reply instead of being pushed silently.
+rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
+line, and rewrite or remove each stale quoted sentence — without changing
+code. The checks are then re-run; a prose finding counts as fixed only when
+its quoted sentence was present before the recovery turn and is gone after
+it — a finding whose file was not one of the files the question was asked
+about is never read back, so it stays reported regardless of the recovery
+turn. A stale quoted sentence counts as fixed only when it is actually gone
+after the recovery turn — a correction appended below it leaves it standing,
+so it stays reported. A model pass that returns no verdict is not a hit and
+does not trigger a recovery turn on its own; it goes straight to the reply
+note, and a named summary the quoted-sentence check could not read at the
+head goes there too. Whatever remains after the recovery turn — plus a model
+pass that returned no verdict and a summary that could not be checked — is
+appended to `.pr_response_message` under `### Drift check (Issue #3143)`, so
+it reaches the PR reply instead of being pushed silently.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
@@ -675,6 +743,14 @@ flowchart TD
 - **Out-of-scope PR feedback:** The worker takes the **escape hatch** — files a
   follow-up issue, replies once naming it (mentioning `needs-human` if a person
   should triage), and exits cleanly rather than looping.
+- **No fix and no rebuttal on a request-changes review:** A claimed
+  `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
+  change and no `.pr_response_message` is re-run once (in the same worker
+  run, with a note appended) rather than answered with the neutral reply,
+  because dismissing the review cannot be undone; if the final run still has
+  neither a pushed fix nor a `.pr_response_message`, the worker labels the PR
+  `needs-human` instead of posting a reply (see **A request-changes review is
+  never answered with "no change"** above).
 
 ## 📚 Further reading
 

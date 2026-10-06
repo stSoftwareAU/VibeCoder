@@ -359,17 +359,22 @@ Profile-guided optimisation (`-Cprofile-generate` / `-Cprofile-use`)
 is the next lever after these three, and is a per-repo opt-in — do
 not file a missing-PGO finding.
 
-## Toolchain 1.96–1.98 learnings
+## Toolchain 1.95–1.99 learnings
 
 The fleet pins a concrete Rust channel and moves it in steps, so a
-crate can meet three releases' worth of new lints at once. These
-checks cover what changed across 1.96, 1.97 and 1.98 that alters what
-a reviewer should *look for* — not release trivia.
+crate can meet several releases' worth of new lints at once. These
+checks cover what changed across 1.95 to 1.99 that alters what a
+reviewer should *look for* — not release trivia. 1.96 to 1.98 were
+mined when the pin moved to 1.98.0; 1.95 and 1.99 when it moved to
+1.99.0 (stSoftwareAU/VibeCoder#3258).
 
-Two of the three are about lints that are **deny-by-default or
-warn-by-default**. Under a `-D warnings` gate those fail the build with
-no code change, which is the whole reason a toolchain bump is a
-reviewable event rather than a one-line diff.
+Most of them are about lints that are **deny-by-default or
+warn-by-default**, or deprecations that now warn. Under a `-D warnings`
+gate those fail the build with no code change, which is the whole
+reason a toolchain bump is a reviewable event rather than a one-line
+diff. A finding of that kind is `severity:medium` when the crate's
+gate passes `-D warnings` (every fleet crate does), else
+`severity:low`.
 
 **Static evidence only**, as everywhere in this bucket: each check
 below names a grep-able pattern. Where confirming a candidate needs a
@@ -385,17 +390,19 @@ restating them.
 29. **Runtime symbol definitions.** Gate: `has_ffi`. Rust 1.98 made
     `invalid_runtime_symbol_definitions` **deny-by-default** and added
     `suspicious_runtime_symbol_definitions` and `c_void_returns` as
-    warnings. Flag a `#[no_mangle]` / `#[unsafe(no_mangle)]` or
-    `extern "C"` definition whose symbol name collides with a `core`
-    runtime symbol — `memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`,
-    `strlen` — because the compiler now refuses it rather than
-    quietly letting a crate replace the runtime out from under
-    `core`. Flag separately a foreign-ABI function returning
-    `core::ffi::c_void` (or `libc::c_void`) **by value**: `c_void` is
-    not an inhabited value type, so the signature never described
-    something callable. Both are boundary-scoped like every FFI check
-    here — a safe internal helper is not in scope merely because the
-    crate links a C library.
+    warnings; 1.99 extended the first two to POSIX symbols. Flag a
+    `#[no_mangle]` / `#[unsafe(no_mangle)]` or `extern "C"` definition
+    whose symbol name collides with a `core` runtime symbol —
+    `memcpy`, `memmove`, `memset`, `memcmp`, `bcmp`, `strlen` — or
+    with a POSIX one (`malloc`, `free`, `open`, `read`, `write`,
+    `close`, `printf`, the `pthread_*` family), because the compiler
+    now refuses it rather than quietly letting a crate replace the
+    runtime out from under `core` or libc. Flag separately a
+    foreign-ABI function returning `core::ffi::c_void` (or
+    `libc::c_void`) **by value**: `c_void` is not an inhabited value
+    type, so the signature never described something callable. Both
+    are boundary-scoped like every FFI check here — a safe internal
+    helper is not in scope merely because the crate links a C library.
 30. **`#[repr(transparent)]` after the 1.98 tightening.** Gate:
     `has_transparent_repr`. `repr(transparent)` requires at most one
     field with a non-trivial size or alignment; 1.98 narrowed what
@@ -410,10 +417,22 @@ restating them.
     a private-field case can need the defining crate, so where the
     type comes from a dependency, say so in the suggested fix and let
     the human confirm.
-31. **Standard-library supersessions (1.96–1.98).** Always applies.
+31. **Standard-library supersessions (1.95–1.99).** Always applies.
     Flag a hand-rolled implementation of something these releases
     stabilised, citing the site and naming the replacement:
-    offset arithmetic to locate a subslice within its parent, where
+    `String::from_utf8_lossy(&bytes).into_owned()` on a `Vec<u8>` the
+    caller owns, now `String::from_utf8_lossy_owned(bytes)`, and the
+    same recovery from a `FromUtf8Error`, now `into_utf8_lossy`
+    (1.99); `NonNull::new(Box::into_raw(b)).unwrap()` and its inverse,
+    now `Box::into_non_null` / `Box::from_non_null` (1.99); a
+    pointer, length and capacity split off a `Vec` by hand to rebuild
+    it later, now `Vec::into_parts` / `Vec::from_parts` (1.99); a file
+    opened only to call `File::set_times` on it, or the `filetime`
+    crate used for that alone, now `std::fs::set_times` /
+    `set_times_nofollow` (1.99); `Vec::from(boxed_array).into_iter()`
+    or `IntoIterator::into_iter(*boxed)` to consume a `Box<[T; N]>`,
+    which now implements `IntoIterator` directly (1.99); offset
+    arithmetic to locate a subslice within its parent, where
     `str::substr_range` / `[T]::subslice_range` now answer directly
     (1.98); a paired `strip_prefix` and `strip_suffix` doing one
     logical strip, now `strip_circumfix` (1.98); a manual UTF-16
@@ -421,24 +440,136 @@ restating them.
     lossy variants (1.98); bit-width or highest-set-bit computed from
     `leading_zeros`, now `bit_width`, `highest_one` and
     `isolate_highest_one` on the integer primitives and
-    `NonZero<{integer}>` (1.97); and, in tests, a `match` whose only
+    `NonZero<{integer}>` (1.97); in tests, a `match` whose only
     purpose is to panic on the non-matching arm, now `assert_matches!`
-    (1.96). Also flag use of the `std::char` free functions and
-    constants deprecated in 1.97 — the associated items on `char`
-    replace them. These are `severity:low` hygiene findings: the old
-    code is correct, it is simply no longer the shortest correct
-    thing. Do not file one per call site — one finding per file,
-    listing the sites.
+    (1.96); a `compare_exchange` loop, or `fetch_update(|v| Some(f(v)))`
+    that always produces a new value, now `Atomic*::update` (1.95),
+    while any other `fetch_update` call is check 32's business;
+    `v.push(x)` followed by `v.last_mut().unwrap()`,
+    now `Vec::push_mut` (and the `insert_mut` / `push_front_mut` /
+    `push_back_mut` family on `Vec`, `VecDeque` and `LinkedList`)
+    (1.95); a `match n { 0 => false, 1 => true, _ => err }` for an
+    integer-to-bool conversion, now `bool::try_from` (1.95); a
+    hand-rolled `#[cold] #[inline(never)] fn cold() {}` called to
+    steer branch layout, now `core::hint::cold_path` (1.95); a `match`
+    arm whose body is one `if let … else` fall-through, now an
+    `if let` guard on the arm (1.95); and the `cfg_if!` macro from the
+    `cfg-if` crate, now `cfg_select!` in `core` (1.95) — file that one
+    with the `## Dead dependencies` check too, since the crate can go.
+    Also flag use of the `std::char` free functions and constants
+    deprecated in 1.97 — the associated items on `char` replace them.
+    These are `severity:low` hygiene findings: the old code is
+    correct, it is simply no longer the shortest correct thing. Do not
+    file one per call site — one finding per file, listing the sites.
+    Check the crate's `rust-version` first: a replacement newer than
+    its declared MSRV is not a finding.
+32. **Deprecations that now warn (1.95, 1.99).** Always applies. Rust
+    1.99 fully deprecates the legacy integer modules: a constant or
+    function reached as `std::u32::MAX`, `core::i64::MIN`,
+    `std::usize::MAX` or `u8::min_value()` — any of `i8` to `i128`,
+    `isize`, `u8` to `u128`, `usize` under `std::` or `core::` — now
+    warns, and under `-D warnings` stops the build. The associated
+    items (`u32::MAX`, `i64::MIN`, `u8::MIN`) replace them one for
+    one. `std::f32::consts` and `std::f64::consts` are not deprecated;
+    `std::f32::MAX` and friends are only clippy's
+    `legacy_numeric_constants`, so note them in the same finding but
+    do not file them alone. Rust 1.99 also deprecates
+    `Atomic*::fetch_update` as "renamed to `try_update`": the two are
+    identical (`try_update` is stable since 1.95), so flag every
+    `fetch_update` call and name the rename — this is what failed
+    first when the fleet's crates met 1.99 (NEAT-AI-Ockham's
+    `-D warnings` gate, on one `fetch_update` in its clock). Rust 1.95
+    deprecated
+    `Eq::assert_receiver_is_total_eq` and warns on a manual
+    implementation of it: flag an `impl Eq for T { fn
+    assert_receiver_is_total_eq(&self) {} }` body — the impl is
+    `impl Eq for T {}`. One finding per file, listing the sites.
+33. **Zero-size chunking is now a compile error (1.99).** Always
+    applies. `unconditional_panic` is deny-by-default, and 1.99
+    extended it to the slice methods that panic on a zero size:
+    `chunks(0)`, `chunks_mut(0)`, `chunks_exact(0)`, `rchunks(0)`,
+    `windows(0)` and their variants, with a literal zero or a `const`
+    the compiler can fold to zero. Flag those sites: they compiled on
+    1.98 and are refused now. A size computed from input that may be
+    zero is a run-time panic the lint cannot see — guard it
+    (`.max(1)`, or an early return) and file it under check 1, not
+    here.
+34. **`#[no_mangle]` on a generic item is a hard error (1.99).** Gate:
+    `has_ffi`. `no_mangle_generic_items` was a warning; 1.99 upgrades
+    it to an error. Flag `#[no_mangle]` / `#[unsafe(no_mangle)]` on a
+    function with type or const parameters, or on one inside a generic
+    `impl<T>` block. A generic item has no single symbol, so the
+    attribute never produced the export the author expected; the fix
+    is one monomorphic wrapper per exported instantiation, named for
+    its type.
+35. **Statement macros in expression position (1.99).** Always
+    applies. `semicolon_in_expressions_from_macros` already warned on
+    a local `macro_rules!` whose expansion ends in a trailing `;`
+    while the call sits where an expression is required — a `let`
+    initialiser, a match arm, a function's tail expression. 1.99 adds
+    `semicolon_in_expressions_from_non_local_macros`, warn-by-default,
+    for the same shape when the macro comes from **another crate**;
+    the warning lands in the calling crate, so a dependency's macro
+    can stop a `-D warnings` gate. Static evidence: a `macro_rules!`
+    arm ending in `;` paired with an expression-position call, or a
+    call in expression position to a dependency macro whose
+    documentation shows it as a statement. Fix at the call site —
+    wrap it in a block, or use it as the statement it is; for a local
+    macro, drop the trailing `;` from the arm.
+36. **Unreachable `cfg_select!` arms, `#[path]` on inline modules, and
+    `assert!(x.is_empty())` (1.99).** Always applies.
+    `unreachable_cfg_select_predicates` joined the `unused` group
+    (warn-by-default): flag a `cfg_select!` arm after a `_ =>` arm, or
+    a predicate repeated verbatim earlier in the same block — it can
+    never be chosen. `#[path = "…"]` on a module with an inline body
+    (`mod m { … }`) is now linted as unused: the attribute only steers
+    where an outlined `mod m;` is read from, so on an inline module it
+    records an intention the compiler ignores. Clippy 1.99 adds
+    `assert_is_empty` (pedantic, so only crates that opt into
+    `clippy::pedantic` meet it): `assert!(v.is_empty())` or
+    `assert!(!v.is_empty())` on a string, slice, array or `Vec` reports
+    only that the check failed, never what `v` held — the replacement
+    is `assert_eq!(v, [] as [T; 0])` / `assert_ne!`, which prints the
+    contents. GRQ-AutoTrader's tax store tests were the first fleet hit
+    on 1.99. All three are hygiene, but under `-D warnings` they stop
+    the build.
+37. **rustdoc: unused footnotes and dangling attributes in doctests
+    (1.99).** Gate: the crate's gate builds docs with `RUSTDOCFLAGS`
+    containing `-D warnings`, or runs doctests (`cargo test` does by
+    default). Flag a doc comment that defines a footnote
+    (`[^name]: …`) nothing in the same item's docs references — the
+    new `unused_footnote_definition` rustdoc lint. Flag a doctest code
+    block whose last meaningful line is an attribute (`#[allow(…)]`,
+    `#[rustfmt::skip]`) with nothing after it to apply to: accepted
+    before, an error since 1.99. Both are greps over `///` and `//!`
+    lines.
 
-`pin!` no longer permits deref coercions (1.97) and symbol mangling
-defaults to the v0 scheme (1.97). Neither is a review check: the first
-is a soundness fix the compiler enforces, and the second affects
-debuggers and profilers rather than source. They are noted here so a
-future reader does not re-derive them as candidates.
+Noted so a future reader does not re-derive them as candidates, none
+of them a review check: `pin!` no longer permits deref coercions
+(1.97) and symbol mangling defaults to the v0 scheme (1.97) — the
+first is a soundness fix the compiler enforces, the second affects
+debuggers and profilers rather than source; `Pin::new_unchecked`'s
+documented safety invariants changed slightly (1.99) — a `// SAFETY:`
+comment on it written against the old wording is check 3's business
+when the file is otherwise touched, not a finding on its own; `mut
+ref` / `mut ref mut` patterns, accepted by mistake, are unstable again
+(1.95); `use $crate::{self};` is rejected (1.95); a derive helper
+attribute that shares a name with a built-in attribute gets a
+future-compatibility warning (1.95); `--remap-path-scope` is stable
+(1.95); C-variadic function definitions are stable (1.99), so a C shim
+kept only to define one can now be Rust — a design choice, not a
+finding; Cargo 1.99 disables incremental compilation when `CI` is set,
+so `CARGO_INCREMENTAL=0` in a workflow is now redundant but harmless;
+Cargo 1.99 adds a built-in `debug` profile, so a crate that declares
+its own `[profile.debug]` now customises the built-in one rather than
+defining a custom profile — say so in the suggested fix and let the
+human confirm what cargo makes of that crate's table; and the compiler
+moved to LLVM 23 (1.99), which can change codegen and inline
+assembly diagnostics but not what source is accepted.
 
 ## Test output
 
-32. **A green `cargo test` prints a line per passing test.** Folded
+38. **A green `cargo test` prints a line per passing test.** Folded
     into `### Cross-bucket: verbose gate output` in the orchestrator
     prompt, which every scan applies regardless of the drawn bucket —
     see there for the full contract and the per-ecosystem quiet
@@ -456,7 +587,7 @@ production path; never `severity:high`. Each stable id uses the standard
 
 Blocking calls on an async runtime stay under check 19.
 
-33. **Lambda release profile.** Gate: the crate depends on
+39. **Lambda release profile.** Gate: the crate depends on
     `lambda_runtime` or `lambda_http`. Flag a `[profile.release]` with
     no `strip = true`; when `lto` or `codegen-units` are also missing,
     fold them into check 27 and do not file both. Effect: a smaller zip
@@ -464,21 +595,21 @@ Blocking calls on an async runtime stay under check 19.
     records it). Risk: stripped binaries lose symbol names in
     backtraces. Stable id: title `Lambda crate <name> release profile
     not size-tuned`.
-34. **Serial awaits over independent calls.** Gate: `has_async`. Flag a
+40. **Serial awaits over independent calls.** Gate: `has_async`. Flag a
     loop that `.await`s one remote call per item when no iteration uses
     another's result; suggest `join_all`, `JoinSet` or
     `buffer_unordered(n)`. Effect: latency falls from the sum of the
     calls to about the slowest one. Risk: unbounded fan-out can trip
     rate limits, so bound it. Stable id: title `Serial awaits in
     <function>`.
-35. **HTTP client without a timeout, or built per call.** Flag a
+41. **HTTP client without a timeout, or built per call.** Flag a
     `reqwest::Client` (or AWS SDK client) built without a timeout, or
     constructed inside a handler or loop instead of once. Effect: a hung
     peer can no longer hold the task, and connection reuse saves a TLS
     handshake per call. Risk: too short a timeout fails slow but healthy
     calls. Stable id: title `HTTP client in <function> has no timeout or
     is rebuilt per call`.
-36. **Unbounded growth in a long-lived process.** Flag a `HashMap` used
+42. **Unbounded growth in a long-lived process.** Flag a `HashMap` used
     as a cache with no eviction, an `unbounded_channel` fed faster than
     it drains, or a buffer allocated per iteration of a hot loop whose
     size is known up front (`with_capacity`, reuse). Unnecessary

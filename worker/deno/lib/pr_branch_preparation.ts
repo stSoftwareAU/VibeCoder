@@ -216,10 +216,11 @@ export function prResponseMessagePath(workDir: string): string {
  * consumers read through, and the defusal is logged rather than swallowed.
  * The worker's own marker is appended afterwards and still parses normally.
  *
- * Result-placeholder backstop (Issue #3124): a fill-in-later token such as
- * `QUALITY_RESULT_PLACEHOLDER`, left where a command's actual result
- * belongs, reads as "the gate was run" to a reader who does not know the
- * fleet's internal vocabulary — when nothing was actually reported.
+ * Result-placeholder backstop (Issues #3124, #3248): a fill-in-later token
+ * such as `QUALITY_RESULT_PLACEHOLDER` or `GATE_OUTCOME_PENDING`, left where
+ * a command's actual result belongs, reads as "the gate was run" to a
+ * reader who does not know the fleet's internal vocabulary — when nothing
+ * was actually reported.
  * `pr_feedback_processor.ts` gets one in-run recovery turn to fix this
  * before the message is ever read back here; this is the fail-loud
  * backstop for every one of the four reply consumers (PR feedback, CI fix,

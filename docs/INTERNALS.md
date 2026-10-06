@@ -2191,9 +2191,10 @@ verbatim, marker syntax in agent-authored text is neutralised at the
 before anything is posted — otherwise a forged attempt or deferral marker
 would be read back as the fleet's own record (Issue #2236). The same
 chokepoint replaces a bare fill-in-later token left in
-`.pr_response_message` (e.g. `QUALITY_RESULT_PLACEHOLDER`) with
-`[result not reported]` and logs it as an error, so an unresolved
-placeholder is never posted as if it were the real result (Issue #3124). The failing
+`.pr_response_message` (e.g. `QUALITY_RESULT_PLACEHOLDER` or
+`GATE_OUTCOME_PENDING`) with `[result not reported]` and logs it as an
+error, so an unresolved placeholder is never posted as if it were the real
+result (Issues #3124, #3248). The failing
 check's name is the second untrusted value those bodies carry — a
 `pull_request` workflow derives the job name from the head ref, so a fork
 chooses it — and it is made inert by the same helper wherever the lane
@@ -5182,8 +5183,9 @@ All business logic lives here. Shell tooling invokes them directly with
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
 |                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from a rewritten pr-summary file after a fix-run push (Issue #3089)                                                                                                                                          |
-|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143)                                                                                               |
+|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143); given the change request, flags quoted summary sentences still present (Issue #3244)         |
 |                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257)                                                                                                                            |
+|                             | [change_request_quotes.ts](../worker/deno/lib/change_request_quotes.ts)                                           | Parses a change request's findings and quoted spans; flags quoted PR-summary sentences still present in a summary; called by the drift check (Issue #3244)                                                                      |
 |                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143)                                                                                                                                             |
 |                             | [pr_comments.ts](../worker/deno/lib/pr_comments.ts)                                                               | PR comment/feedback detection and processing                                                                                                                                                                                    |
 |                             | [pr_evidence.ts](../worker/deno/lib/pr_evidence.ts)                                                               | Screenshot processing and evidence validation                                                                                                                                                                                   |
