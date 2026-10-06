@@ -21,8 +21,12 @@
  * is a grep. These cases pin that rule on both surfaces, pin the conditions the
  * carve-out attaches to it, and pin the mechanism it names.
  *
- * The suite dogfoods its own rule: every assertion below is scoped to a named
- * section with `section()` rather than run over a whole file.
+ * The suite dogfoods its own rule: every positive pin below is scoped to a
+ * named section with `section()` rather than run over a whole file. Only the
+ * two absence checks read the whole prompt, because an absence must hold in
+ * every section: the helper-path check is a raw `includes` (the path has no
+ * whitespace to collapse), and the sentence check goes through
+ * `flatWholeFile`.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -33,11 +37,16 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  type DocSection,
+  excerpt,
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-const PROMPTS_DIR = `${REPO_ROOT}prompts`;
 const TESTS_DIR = `${REPO_ROOT}worker/deno/tests`;
 
 /** The helper module the carve-out names, relative to `tests/`. */
@@ -46,16 +55,20 @@ const SUPPORT = "support/markdown_docs.ts";
 /** The one-line rule both surfaces now state. */
 const RULE = /a rule the source cannot hold is documentation drift/i;
 
-/** The text of one prompt family, collapsed for matching. */
-async function promptCollapsed(family: string): Promise<string> {
-  const loaded = await loadPrompt(family, PROMPTS_DIR);
-  assertEquals(loaded.ok, true, `cannot load ${family}`);
-  if (!loaded.ok) throw new Error(loaded.error.message);
-  return flat(loaded.value);
+/** The `### 2. Source-text greps used as assertions` section of test_audit,
+ * collapsed for matching — the narrowest heading carrying the rule and its
+ * carve-out. */
+async function testAuditGrepCheckCollapsed(): Promise<string> {
+  return flat(
+    section(
+      await readRepoDoc("prompts/test_audit/prompt.md"),
+      "Source-text greps used as assertions",
+    ),
+  );
 }
 
 /** The `## Test-Driven Development (TDD)` section of the standards. */
-async function tddSection(): Promise<string> {
+async function tddSection(): Promise<DocSection> {
   return section(
     await readRepoDoc("CODING-STANDARDS.md"),
     "Test-Driven Development",
@@ -63,7 +76,7 @@ async function tddSection(): Promise<string> {
 }
 
 Deno.test("documentation drift - both surfaces state the same rule (Issue #2429)", async () => {
-  const audit = await promptCollapsed("test_audit");
+  const audit = await testAuditGrepCheckCollapsed();
   const standards = flat(await tddSection());
 
   for (
@@ -83,7 +96,8 @@ Deno.test("documentation drift - both surfaces state the same rule (Issue #2429)
 Deno.test("documentation drift - the standards carve the pattern out instead of banning it (Issue #2429)", async () => {
   const tdd = await tddSection();
   // The numbered rules, before the first `###` subsection.
-  const rules = flat(tdd.split("\n### ")[0] ?? "");
+  const idx = tdd.indexOf("\n### ");
+  const rules = flat(excerpt(tdd, 0, idx >= 0 ? idx : undefined));
 
   assertEquals(
     rules.includes("check documentation for keywords"),
@@ -106,7 +120,7 @@ Deno.test("documentation drift - the standards carve the pattern out instead of 
 });
 
 Deno.test("documentation drift - the auditor exempts the pattern it still flags in source (Issue #2429)", async () => {
-  const collapsed = await promptCollapsed("test_audit");
+  const collapsed = await testAuditGrepCheckCollapsed();
   // It still flags the real defect …
   assertStringIncludes(collapsed, "grep-as-assertion");
   // … and now says a documentation-drift test is not one.
@@ -114,17 +128,27 @@ Deno.test("documentation drift - the auditor exempts the pattern it still flags 
     collapsed,
     "Documentation-drift tests are not a finding",
   );
+  // The two absence checks below must hold over the *whole* prompt, not just
+  // this section — the cross-repo body guard and the unconditional-flag
+  // wording are both things the prompt must not say anywhere, not only here
+  // (reproduced at head 34c19c2: adding either under a different `###`
+  // heading, e.g. "Performance / timing assertions", passed a section-scoped
+  // check while failing on main).
+  const wholePrompt = await readRepoDoc("prompts/test_audit/prompt.md");
   // Not the helper by path: `test_audit` is filed into other repositories, so
-  // its body may not cite a VibeCoder-internal path (the cross-repo body
-  // guard). It describes the shape instead.
+  // its body may not cite a VibeCoder-internal path anywhere (the cross-repo
+  // body guard). It describes the shape instead. The path has no whitespace,
+  // so a raw `includes` is enough — no `flat()` needed.
   assertEquals(
-    collapsed.includes(SUPPORT),
+    wholePrompt.includes(SUPPORT),
     false,
     "test_audit cites a VibeCoder-internal path, which the cross-repo body " +
       "guard forbids — describe the shape instead",
   );
   assertEquals(
-    collapsed.includes("Flag every grep-as-assertion you find."),
+    flatWholeFile(wholePrompt).includes(
+      "Flag every grep-as-assertion you find.",
+    ),
     false,
     "test_audit still flags every grep-as-assertion without exception",
   );
@@ -133,9 +157,10 @@ Deno.test("documentation drift - the auditor exempts the pattern it still flags 
 Deno.test("documentation drift - the pattern the carve-out protects is real (Issue #2429)", async () => {
   // The carve-out is only worth having while the suites it protects exist and
   // use the mechanism it names — so call it rather than grep for it.
-  assertStringIncludes(
+  // `section()` throws when the heading is missing or renamed.
+  section(
     await readRepoDoc("CODING-STANDARDS.md"),
-    "## Test-Driven Development (TDD)",
+    "Test-Driven Development (TDD)",
   );
 
   const docsSuites: string[] = [];

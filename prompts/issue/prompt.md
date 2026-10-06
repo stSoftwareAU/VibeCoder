@@ -144,6 +144,14 @@ guessing — the analysis-only hand-off then routes it to a human.
      says to reuse is a stated requirement: the Spec reviewer judges it as a
      criterion, and a diff that re-implements it by hand instead of calling
      it is not `met`.
+   - **Extend a module's existing imports.** When you add tests or code
+     partway down an existing module — a new block inside an existing
+     `mod tests`, say — merge each new name into the `use` / `import`
+     statement the module already has for that crate or module rather than
+     starting a second one. A formatter may not catch it (stable `cargo fmt`
+     sorts `use` statements but does not merge them), so a duplicate import
+     can pass CI and still breach a standard only review enforces
+     (Issue #3230).
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
@@ -630,8 +638,15 @@ reviewer its path.
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
   one `violation` entry per such departure, with the `file:line` it saw, and the
-  `clean` areas it checked and found compliant. Anything else it notices is
-  `optional`: note it on the `clean` line if you like, and do not chase it.
+  `clean` areas it checked and found compliant. A rule the target
+  repository's standards say is **enforced by review** — no lint, formatter or
+  CI check catches it, in words such as "by review only" or "a finding a
+  reader has to raise" — is the exception to that question: there the review
+  is the enforcement, so a breach of it in a line the diff adds or changes is
+  a `violation` whatever its effect on correctness. Ask it to name, on its
+  `clean` line, each review-enforced rule it checked, so a rule it skipped
+  shows in the PR body (Issue #3230). Anything else it notices is `optional`:
+  note it on the `clean` line if you like, and do not chase it.
   Ask it also to list every assertion the diff removes from an existing test
   and say, for each, whether an issue requirement makes it untrue — returning
   a `violation` (with the `file:line` it saw) for any removed assertion that

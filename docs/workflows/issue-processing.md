@@ -1106,7 +1106,12 @@ each given the finished diff and nothing from the author's context:
   named contract source, and a workflow invariant documented but not
   validated — a `.github/workflows/*` behaviour change the README or a
   comment calls load-bearing that the repository's workflow validator does
-  not assert.
+  not assert. A rule the target repository's standards say is **enforced by
+  review** — no lint, formatter or CI check catches it, such as
+  GRQ-AutoTrader's one `use` statement per module per file — is a
+  `violation` whenever a line the diff adds or changes breaches it, whatever
+  its effect on correctness, and the `clean` line names each review-enforced
+  rule the reviewer checked (Issue #3230).
 
 **A violation the diff introduced blocks the PR.** A Standards finding in a
 line this PR wrote — a doc comment the change made wrong, a cited test that
