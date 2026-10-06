@@ -15,7 +15,7 @@ Closes #3311
 
 ### Essential Design Decisions
 
-- Each pattern matches one whole path segment, using `(^|\/)` before it and `(\/|$)` after it. `[^/]*` keeps the match inside a single segment, so the match time stays linear.
+- Each changed pattern starts with `(^|\/)`, so it matches at the start of any path segment. The dotenv and config patterns end with `(\/|$)`, so they match one whole segment; the secrets pattern `/(^|\/)\.secrets\//` ends with a literal `\/`, so it matches a `.secrets` directory at any depth. `[^/]*` keeps the match inside a single segment, so the match time stays linear.
 - `(\/|$)` also catches a directory named like the file, such as `a/.env.d/x` or `a/.config.local.json/x`.
 - `src/foo.env`, `src/app.config.json`, `a/secrets/x` and `a/.secretsx/y` stay safe.
 
@@ -27,7 +27,7 @@ Closes #3311
 ## Evidence
 
 - Before the fix, the new unit tests failed (50 passed, 4 failed), and integration Scenario C failed with "should have refused the commit but returned Ok". After the fix, 54 unit tests and 3 integration tests pass.
-- **Docs sweep:** I grepped for `FORBIDDEN_STAGED_PATTERNS`, `.secrets/`, `.config*.json` and `.env.*`. No update was needed: CODING-STANDARDS.md:1094, SECURITY.md:678-680, prompts/coding_guidelines/prompt.md:1017-1020, prompts/security_scan/prompt.md:919, docs/ADD-REPO.md:291 and worker/deno/lib/gitignore_enforcer.ts:9 list the slash-free `.gitignore` forms, which already apply at any depth. hooks/pre-commit:13,32,37,58 already matches these names at any depth or by basename. docs/audits/security-sweep-1661-worker-state-paths.md:63 is a historical audit.
+- **Docs sweep** — grep: `FORBIDDEN_STAGED_PATTERNS`, `assertSafeToCommit`, "pre-commit safety", `.secrets/`, `.config*.json`, `.env.*`; section: `SECURITY.md#-configuration-file-configjson`; updated: none — every hit stays true. I read the section's "Protected Patterns" list and the `assertSafeToCommit()` paragraphs through: they list the slash-free `.config*.json` and `.secrets/` forms and never say the gate is root-only, so no sentence is made false. The other hits need no update either: CODING-STANDARDS.md:1094, prompts/coding_guidelines/prompt.md:1017-1020, prompts/security_scan/prompt.md:919, docs/ADD-REPO.md:291 and worker/deno/lib/gitignore_enforcer.ts:9 list the slash-free `.gitignore` forms, which already apply at any depth. hooks/pre-commit:13,32,37,58 already matches these names at any depth or by basename. docs/AGENT-ACCOUNTABILITY.md:729 and docs/MERGE.md:704 name the gate without listing its patterns. docs/audits/security-sweep-1661-worker-state-paths.md:63 is a historical audit.
 
 ## Test Plan
 
