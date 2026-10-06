@@ -34,12 +34,33 @@ per machine.
 ```
 
 `--install` registers a launchd agent on macOS or a systemd user service on
-Linux. The host needs `deno`, `jq`, `gh` signed in, and `claude` signed in.
+Linux. The host needs `deno`, `jq`, `gh` signed in, and either `claude`
+signed in or the worker's Claude credential directory
+(`~/.vibe-coder/credentials/claude/provider*.env`, see
+[SETUP.md](../../../docs/SETUP.md)).
 The log is `runner.log` in the log directory below. Every pass writes a
 line to it: an idle pass logs `gate: nothing ready (...)` with the gate's
 skip counts, so a quiet log still shows the gate running every 5 minutes.
 A headless round cannot send the
 PushNotification in step 4; `summary.md` still shows what is waiting.
+
+### Which Claude subscription a round runs on
+
+Each round runs on the subscription the worker itself would pick (Issue
+#3289): `claude_credential.ts` reads the host's Claude credential pool,
+probes each token's remaining budget and ranks them the way the worker does
+at start-up (`worker/deno/lib/claude_token_selection.ts`), and `run.sh`
+exports the winner to `claude -p` alone. The ranking is logged by label
+(`provider`, `provider-2`, …), never by value, and the value is never
+traced. One file in the pool is used without a probe; no pool means the
+host's `claude` login, as before.
+
+When a round ends with the CLI's usage-limit refusal, the pass logs
+`round hit the usage limit on subscription <label>`, selects again with that
+label excluded, and runs the round once more on the next-ranked
+subscription (`claude-retry.log` in the round directory) before counting
+the pass as failed. No other subscription with budget means the round
+stays failed and the pass says so. Any other failure is not retried.
 
 ### As a GitHub App
 
