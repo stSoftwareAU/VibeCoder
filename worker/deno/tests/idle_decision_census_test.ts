@@ -1050,6 +1050,93 @@ Deno.test("#460 - the census exposes which issues it counted as claimable", () =
 });
 
 // ===========================================================================
+// Issue #3314 — the census must model native sub-issue blocking
+// ===========================================================================
+//
+// GRQ-AutoTrader#2503 has 4 open native sub-issues (no body dependency
+// markers), so `checkParentBlocked` refuses it as `dependency-blocked` while
+// the census — reading only the body — counted it claimable. GitHub's
+// `subIssuesSummary` field rides free on the existing `gh issue list` call.
+
+function subIssueIssue(
+  number: number,
+  labels: string[],
+  subIssuesSummary: { total: number; completed: number },
+): CensusIssue {
+  return { number, labels, assignees: [], milestone: "", subIssuesSummary };
+}
+
+Deno.test("#3314 - an issue with open native sub-issues is dependency-blocked, not claimable", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [subIssueIssue(10, ["work-on"], { total: 4, completed: 0 })],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 0);
+  assertEquals(entry.dependencyBlocked, 1);
+});
+
+Deno.test("#3314 - an issue whose sub-issues are all completed is claimable", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [subIssueIssue(10, ["work-on"], { total: 2, completed: 2 })],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+});
+
+Deno.test("#3314 - an absent subIssuesSummary is claimable, as before", () => {
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [issue(10, ["work-on"])],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.unblocked.workOn, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+});
+
+Deno.test("#3314 - an issue both time-deferred and open-sub-issue counts as time-deferred, matching the scan's order", () => {
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    .replace(/\.\d{3}Z$/, "Z");
+  const body = upsertWorkerRecordLine(
+    "Plain body.",
+    buildTimeDeferralLine(future),
+  );
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "worker",
+    repos: [repoInput({
+      repo: "o/r",
+      issues: [{
+        ...subIssueIssue(10, ["work-on"], { total: 4, completed: 0 }),
+        body,
+      }],
+    })],
+  });
+  const entry = census.perRepo[0];
+  assert(entry);
+  assertEquals(entry.timeDeferred, 1);
+  assertEquals(entry.dependencyBlocked, 0);
+  assertEquals(entry.unblocked.workOn, 0);
+});
+
+// ===========================================================================
 // Issue #2455 — the census must model the cross-milestone hold (Issue #2173)
 // ===========================================================================
 //
@@ -1378,6 +1465,29 @@ Deno.test("census - a purely dependency-blocked work-on issue does not suppress 
   assertEquals(entry.dependencyBlocked, 1);
   // The dependency is the low-priority issue itself — suppressing it would
   // deadlock the chain, which is exactly why #2610 carved it out.
+  assertEquals(entry.unblocked.lowPriority, 1);
+  assertEquals(entry.lowPrioritySuppressed, 0);
+});
+
+Deno.test("census - a work-on issue blocked only by open sub-issues does not suppress the backlog (Issue #3314)", () => {
+  // Mirrors the #2610 test above but via `censusVisibleRefusal`'s
+  // sub-issue gate rather than the body-ref gate, so `dependency-blocked`'s
+  // `human`-clearing, non-suppressing treatment agrees in both readers.
+  const census = buildIdleDecisionCensus({
+    decisionPoint: "filing",
+    workerUser: "vibe-bot",
+    repos: [
+      repoInput({
+        repo: "org/a",
+        issues: [
+          subIssueIssue(1, ["work-on"], { total: 4, completed: 0 }),
+          issue(2, ["low-priority"]),
+        ],
+      }),
+    ],
+  });
+  const entry = census.perRepo[0]!;
+  assertEquals(entry.dependencyBlocked, 1);
   assertEquals(entry.unblocked.lowPriority, 1);
   assertEquals(entry.lowPrioritySuppressed, 0);
 });

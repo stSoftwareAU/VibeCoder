@@ -976,8 +976,14 @@ defers to the scan rather than escalating against it. Both call sites of the
 gate — the claimable count and the tier-3 `censusVisibleRefusal` — are given the
 milestone context, because a `work-on` issue that reads as refused by *nothing*
 would wrongly suppress the lower tiers (`dependency-blocked` is `human`-clearing
-and never suppresses, Issue #2610). The parent/child gate remains the one
-unmodelled rule here.
+and never suppresses, Issue #2610). Native sub-issues are now modelled too
+(Issue #3314): GitHub's `subIssuesSummary` field rides free on the same
+`gh issue list` call, and `hasOpenSubIssues` treats `total > completed` as
+dependency-blocked in both the census and the audit. On 2026-10-04
+`stSoftwareAU/GRQ-AutoTrader#2503` had 4 open native sub-issues and logged an
+inversion alert for three cycles before this gate existed. Only the body
+task-list half of the parent/child gate — `checkParentBlocked`'s
+back-referenced refs — remains unmodelled.
 
 The **run-local hold** gate (Issue #655) closes the fourth instance, one step
 later in the pipeline. Every gate above lives in a `collect_*_candidates.ts`;
