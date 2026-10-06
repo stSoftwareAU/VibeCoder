@@ -1529,7 +1529,7 @@ async function _processFeedbackWithHeartbeat(
     // Issue #3246: no fix and no rebuttal after every in-run attempt — a
     // dismissed review cannot be rediscovered next cycle, so escalate now
     // rather than post the neutral "could not identify a code change" reply.
-    logger.error(
+    logger.warn(
       "PR feedback: request-changes review left unanswered after every " +
         "in-run attempt — escalating to needs-human (Issue #3246)",
       {
