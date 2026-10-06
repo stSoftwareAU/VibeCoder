@@ -275,6 +275,16 @@ Deno.test("findResultPlaceholders - the structural backstop keeps a trailing ful
 Deno.test("findResultPlaceholders - a backstop identifier also ending in _PENDING is reported once", () => {
   const text = "- `deno test`: QUALITY_GATE_PENDING";
   assertEquals(findResultPlaceholders(text), ["QUALITY_GATE_PENDING"]);
+  assertEquals(
+    replaceResultPlaceholders(text, "[result not reported]"),
+    "- `deno test`: [result not reported]",
+  );
+});
+
+Deno.test("findResultPlaceholders - a gate-command line with no colon is not flagged", () => {
+  const text = "`deno test` QUALITY_GATE_OUTCOME";
+  assertEquals(findResultPlaceholders(text), []);
+  assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
 });
 
 Deno.test("findResultPlaceholders - a bare identifier inside an inline code span is not flagged", () => {
