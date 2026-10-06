@@ -167,6 +167,23 @@ a fault must never be masked as success.
 
 <!-- guidelines-layer: code -->
 
+## Changing the Shape of Persisted Data
+
+**Changing the shape of persisted data bumps its key or reads the old shape.**
+When a change alters the type of a value that is cached or stored beyond one
+process, or adds, renames or removes a field the new code reads from it — a
+file-backed cache, a service-worker cache, a key-value store, a stored record
+— first ask whether that value outlives a deployment or relaunch. If it does,
+either bump the key's version (`_v1_` → `_v2_`, `-v1:` → `-v2:`) so an old
+entry is never read as the new type, or read the old shape too and convert
+it. Add a test that seeds an entry in the old shape and asserts the new code
+either ignores it (a live read happens) or still handles it correctly; tests
+that only ever see new-shape data stay green until the first deployment
+breaks. Update every doc and doc comment that names the key, and say in the
+PR summary which of the two the change chose. A persisted shape changed with
+neither a bumped key nor an old-shape test is a blocking self-review finding
+(Issue #3328).
+
 ## Don't regress Deno repos to Node.js
 
 A repo is a **Deno repo** if any of `deno.json`, `deno.jsonc`, or `deno.lock`

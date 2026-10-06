@@ -582,7 +582,9 @@ Deno.test(
     // An open sub-issue (child blocker) plus a cross-repo forward dependency.
     const fetcher: IssueFetcher = {
       getSubIssues: (_repo: string, issueNumber: number) =>
-        Promise.resolve(issueNumber === 70 ? [7] : []),
+        Promise.resolve(
+          issueNumber === 70 ? [{ repo: "owner/repo", number: 7 }] : [],
+        ),
       getIssueBody: (_repo: string, issueNumber: number) =>
         Promise.resolve(
           issueNumber === 70 ? "Depends on other/repo#9" : "",
@@ -651,7 +653,9 @@ Deno.test(
 
     const fetcher: IssueFetcher = {
       getSubIssues: (_repo: string, issueNumber: number) =>
-        Promise.resolve(issueNumber === 71 ? [7] : []),
+        Promise.resolve(
+          issueNumber === 71 ? [{ repo: "owner/repo", number: 7 }] : [],
+        ),
       getIssueBody: (_repo: string, issueNumber: number) =>
         issueNumber === 71
           ? Promise.reject(new Error("gh issue view failed"))

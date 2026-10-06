@@ -14,8 +14,10 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildHeldIssueGateComment,
   HELD_ISSUE_GATE_MARKER,
+  heldIssueGateFor,
   upsertHeldIssueGateComment,
 } from "../lib/held_issue_gate_comment.ts";
+import type { BlockedCandidateInfo } from "../lib/issue_finder_logger.ts";
 
 const DEP = { repo: "owner/repo-b", number: 42 };
 /** The logins the fleet itself posts as — the only markers it may trust. */
@@ -236,6 +238,76 @@ Deno.test("buildHeldIssueGateComment - strips markup from a crafted milestone ti
   assertEquals(comment.body.split("<!--").length, 2);
   assertEquals(comment.body.split("-->").length, 2);
   assertEquals(comment.body.split('"').length, 3);
+});
+
+Deno.test("buildHeldIssueGateComment - names the unreadable-children read failure", () => {
+  const comment = buildHeldIssueGateComment({ kind: "unreadable-children" });
+
+  assertStringIncludes(
+    comment.body,
+    "sub-issues could not be read, so it is held until they can be",
+  );
+  assertEquals(comment.key, "held-gate-unreadable-children");
+});
+
+// =============================================================================
+// heldIssueGateFor — never renders a blocker as a dependency on itself
+// =============================================================================
+
+const held = (
+  blockers: BlockedCandidateInfo["blockers"],
+): BlockedCandidateInfo => ({
+  repo: "owner/repo-a",
+  issueNumber: 100,
+  milestone: "",
+  reason: "dependency-blocked",
+  blockers,
+});
+
+Deno.test("heldIssueGateFor - an unreadable-children blocker never names a dependency on the candidate itself (Issue #3326)", () => {
+  // isDependencyBlocked pushes { repo, number: issueNumber, kind:
+  // "unreadable-children" } when the sub-issues lookup fails — `number` is
+  // the candidate itself, not a real dependency.
+  const gate = heldIssueGateFor(
+    held([{ repo: "owner/repo-a", number: 100, kind: "unreadable-children" }]),
+    undefined,
+    false,
+  );
+
+  assert(gate !== null, "expected a gate");
+  assertEquals(gate.kind, "unreadable-children");
+  const sentence = buildHeldIssueGateComment(gate).body;
+  assert(
+    !sentence.includes("waits on dependency owner/repo-a#100"),
+    `expected no self-referencing dependency sentence, got: ${sentence}`,
+  );
+});
+
+Deno.test("heldIssueGateFor - an unreadable-children blocker wins even alongside a real forward dependency", () => {
+  // The parent/child check runs before forward-dependency checks, so when
+  // the sub-issues read fails, `unreadable-children` is always blockers[0]
+  // — a later real `depends-on` blocker must not change that.
+  const gate = heldIssueGateFor(
+    held([
+      { repo: "owner/repo-a", number: 100, kind: "unreadable-children" },
+      { repo: "owner/repo-a", number: 200, kind: "depends-on" },
+    ]),
+    undefined,
+    false,
+  );
+
+  assert(gate !== null, "expected a gate");
+  assertEquals(gate.kind, "unreadable-children");
+});
+
+Deno.test("heldIssueGateFor - an ordinary dependency blocker still names it", () => {
+  const gate = heldIssueGateFor(
+    held([{ repo: "owner/repo-b", number: 42, kind: "depends-on" }]),
+    undefined,
+    false,
+  );
+
+  assertEquals(gate, { kind: "dependency", dependency: DEP });
 });
 
 // =============================================================================

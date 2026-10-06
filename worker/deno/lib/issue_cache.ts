@@ -51,8 +51,16 @@ export const ISSUE_STATE_CACHE_PREFIX = "issue_state_v2_";
 /** Cache key prefix for a referenced issue's body (Issue #1818). */
 export const ISSUE_BODY_CACHE_PREFIX = "issue_body_v1_";
 
-/** Cache key prefix for a referenced issue's sub-issue numbers (Issue #1818). */
-export const ISSUE_SUB_ISSUES_CACHE_PREFIX = "issue_sub_issues_v1_";
+/**
+ * Cache key prefix for a referenced issue's sub-issues (Issue #1818).
+ *
+ * Bumped to `v2` by Issue #3325: the payload changed from `number[]` to
+ * `SubIssueRef[]` ({repo, number}) so cross-repo children keep their own
+ * repo. A `v1` entry cached by the old code and read back by the new code
+ * would hand `checkParentBlocked` a bare number with no `repo` string,
+ * which throws in `childKey` and fails the parent/child gate open.
+ */
+export const ISSUE_SUB_ISSUES_CACHE_PREFIX = "issue_sub_issues_v2_";
 
 /**
  * Default cache directory: per-account, under the shared temporary root.

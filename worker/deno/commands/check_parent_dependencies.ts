@@ -23,15 +23,19 @@ import {
   normaliseIssueState,
 } from "../lib/issue_dependencies.ts";
 import { validateCheckParentDepsArgs } from "../lib/command_args.ts";
-import { fetchNativeSubIssueNumbers } from "../lib/native_sub_issues.ts";
+import {
+  fetchNativeSubIssueRefs,
+  type SubIssueRef,
+} from "../lib/native_sub_issues.ts";
 
 /**
  * Data returned by the check-parent-deps command.
  */
 interface CheckParentDepsData {
   isBlocked: boolean;
-  openChildren: number[];
-  closedChildren: number[];
+  /** Each child with its own repo (Issue #3319: may be cross-repo). */
+  openChildren: SubIssueRef[];
+  closedChildren: SubIssueRef[];
   totalChildren: number;
   message: string;
 }
@@ -68,7 +72,10 @@ export function createGhIssueFetcher(
       };
     },
 
-    async getSubIssues(_repo: string, issueNumber: number): Promise<number[]> {
+    async getSubIssues(
+      _repo: string,
+      issueNumber: number,
+    ): Promise<SubIssueRef[]> {
       // Issue #1218: query the native sub-issues endpoint, never the timeline.
       //
       // A `cross-referenced` timeline event is created by *anyone* who mentions
@@ -89,10 +96,15 @@ export function createGhIssueFetcher(
       // with its back-reference check.
       //
       // Delegated to the shared helper rather than re-spelt here: it already
-      // validates the slug, asks for `per_page=100` (the REST default of 30
-      // would silently truncate a large parent's child set, and a missing
-      // child reads as "not blocked"), and de-duplicates.
-      return await fetchNativeSubIssueNumbers(_repo, issueNumber, runGhFn);
+      // validates the slug, paginates at `per_page=100` (the REST default of
+      // 30 would silently truncate a large parent's child set, and a missing
+      // child reads as "not blocked"), de-duplicates, and keeps each child's
+      // own repo (Issue #3319: a sub-issue can live in another repository).
+      try {
+        return await fetchNativeSubIssueRefs(_repo, issueNumber, runGhFn);
+      } catch {
+        return [];
+      }
     },
 
     async getIssueBody(_repo: string, issueNumber: number): Promise<string> {
@@ -147,7 +159,7 @@ export const checkParentDepsCommand: Command = {
       };
     }
 
-    const message = formatParentBlockedMessage(issueNumber, result.value);
+    const message = formatParentBlockedMessage(issueNumber, result.value, repo);
 
     return {
       success: true,

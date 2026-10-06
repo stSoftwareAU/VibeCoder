@@ -1672,7 +1672,7 @@ Each candidate issue is checked by functions in
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
 | **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt — an open attempt, a wedged resolution gate (Issue #2388) or a spent conflict budget (Issue #1780) |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open, or is closed in another still-open milestone (Issue #2173) |
-| **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                               |
+| **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items); a failed native sub-issues lookup also counts as blocked rather than as "no children" (Issue #3321) |
 | **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
 
 #### 🔗 Dependency-chain promotion
@@ -3123,9 +3123,10 @@ collectors recorded on the refusal (Issue #2534):
 
 | Gate             | When                                                                   | Sentence                                                          |
 | ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `pr-open`        | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
-| `milestone-wait` | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
-| `dependency`     | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
+| `pr-open`             | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
+| `milestone-wait`      | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
+| `unreadable-children` | `dependency-blocked` because the issue's own sub-issues could not be read | this issue's sub-issues could not be read, so it is held until they can be |
+| `dependency`          | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
 
 When the chain behind the dependency ends at a root the fleet cannot move
 (`assigned`, `no-discovery-label`, `needs-human`, `cross-repo-unmonitored`), its

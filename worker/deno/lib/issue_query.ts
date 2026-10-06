@@ -2163,17 +2163,22 @@ export interface LabelLastAddInfo {
 }
 
 /**
- * Fetch (or read from cache) the parsed timeline label events for the
- * given issue (Issue #1673).
+ * Fetch (or read from cache) the **complete** parsed timeline for the given
+ * issue, returning `null` instead of throwing (Issue #1673, #3327).
  *
- * Centralises the cache-then-API path used by both
- * `wasLabelAddedByAllowedAuthor` and `getLabelLastAddInfo`. On cache
- * hit returns the parsed events without calling `gh`; on miss issues
- * a single `gh api .../timeline` call, parses, validates, and writes
- * the result back to the cache.
+ * Every caller asks a "most recent event" question — the latest
+ * `needs-human` removal (#1878), the latest trusted re-approval, the latest
+ * reopen — so the answer must come from the whole timeline. This used to read
+ * `timeline?per_page=100` alone, which is page 1: the **oldest** 100 events.
+ * On a busy issue (GRQ-AutoTrader#2089, 131 events) the developer's removal
+ * sat on page 2, the lookup returned a removal from four days earlier, and the
+ * grill-me processor re-added `needs-human` on every scan (Issue #3327).
  *
- * Errors and validation failures fall through to a `null` return so
- * each caller can apply its own fail-safe behaviour.
+ * Delegates to {@link fetchCompleteTimeline}: a complete cache entry is
+ * honoured, a partial one is refused, and the REST timeline is paginated to
+ * exhaustion. Errors, validation failures and the page cap fall through to a
+ * `null` return so each caller keeps its own fail-safe behaviour — a timeline
+ * that could not be read in full is never treated as authoritative.
  */
 export async function fetchTimelineWithCache(
   repo: string,
@@ -2181,43 +2186,11 @@ export async function fetchTimelineWithCache(
   ghCommandFn: (args: string[]) => Promise<string>,
   cache?: TimelineCache,
 ): Promise<TimelineLabelEventJson[] | null> {
-  if (cache) {
-    const cached = await cache.read(repo, issueNumber);
-    if (cached !== null) return cached;
-  }
-
-  let raw: string;
   try {
-    // Use per_page=100 so recent events (including label removals) are not
-    // truncated to the default 30-item page. Without this, an issue with
-    // many events can miss the developer's most recent `needs-human` removal,
-    // causing `isNonWorkerRemovalAfterRound` to see only a stale removal
-    // that pre-dates the current round — returning false and re-adding the
-    // label even though the developer has signalled "go" (Issue #1878).
-    raw = await ghCommandFn([
-      "api",
-      `repos/${repo}/issues/${issueNumber}/timeline?per_page=100`,
-    ]);
+    return await fetchCompleteTimeline(repo, issueNumber, ghCommandFn, cache);
   } catch {
     return null;
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  const validated = validateTimelineLabelEventsJson(parsed);
-  if (!validated.ok) return null;
-
-  // This reads only page 1 (the oldest 100 events), so cache it as a
-  // *partial* timeline (Issue #3296). The reserved-label trust gate
-  // (`wasLabelAddedByAllowedAuthor`) will not honour a partial entry and
-  // re-paginates instead, so a truncated slice can never bypass the gate.
-  if (cache) await cache.write(repo, issueNumber, validated.value, false);
-  return validated.value;
 }
 
 /**
@@ -2254,8 +2227,8 @@ export async function getLabelLastAddInfo(
 
 /**
  * Extract the most-recent `labeled` event for `labelName` from an already
- * fetched timeline. Shared by {@link getLabelLastAddInfo} (page-1, best
- * effort) and {@link getLabelLastAddInfoComplete} (exhaustive).
+ * fetched timeline. Shared by {@link getLabelLastAddInfo} (fail-safe `null`)
+ * and {@link getLabelLastAddInfoComplete} (errors propagate).
  *
  * Issue #1617: exported so a caller that needs *both* the last add and the
  * last remove — the content-approval gate, which counts a trusted
@@ -2286,16 +2259,12 @@ export function lastAddInfoFromTimeline(
  * Exhaustive variant of {@link getLabelLastAddInfo} for callers that **mutate**
  * on the answer (Issue #3709, SEC-c41e97b60238).
  *
- * `getLabelLastAddInfo` reads page 1 only and honours a partial cache entry —
- * fine for best-effort re-approval hints, but not for
- * `stripUntrustedWorkOnLabel`, which removes a label and names the adder in a
- * public comment. On a busy issue (>100 timeline events) the genuinely
- * most-recent `labeled` event falls beyond page 1, so a page-1 read can name
- * the wrong actor and strip a label a trusted author has since re-applied.
- *
- * This variant uses exactly the source of truth the sibling trust gate uses:
- * a fully paginated timeline, refusing partial cache entries. Errors and page
- * caps propagate so the caller can fail closed.
+ * Both variants read the fully paginated timeline and refuse partial cache
+ * entries (Issue #3327 brought `getLabelLastAddInfo` up to this source of
+ * truth). They differ only on failure: `getLabelLastAddInfo` returns `null`,
+ * while this variant lets errors and page caps propagate so a caller that
+ * removes a label and names the adder in a public comment
+ * (`stripUntrustedWorkOnLabel`) can fail closed rather than act on nothing.
  */
 export async function getLabelLastAddInfoComplete(
   repo: string,
@@ -2450,10 +2419,9 @@ async function paginateTimeline(
  * Fetch the full timeline for an issue, preferring a **complete** cache entry
  * (Issue #3709).
  *
- * Unlike {@link fetchTimelineWithCache} this never returns a page-1-only
- * slice: a partial cache entry is refused and the REST timeline is paginated
- * to exhaustion instead. Use it wherever a decision depends on the genuinely
- * most-recent timeline event.
+ * A partial cache entry is refused and the REST timeline is paginated to
+ * exhaustion instead. Errors and the page cap propagate; use
+ * {@link fetchTimelineWithCache} for the same read with a fail-safe `null`.
  */
 export async function fetchCompleteTimeline(
   repo: string,
@@ -2525,7 +2493,7 @@ export async function wasLabelAddedByAllowedAuthor(
   //
   // Issue #3296: only a *complete* (fully paginated) cached timeline is even
   // considered. A partial page-1-only entry — written by
-  // `fetchTimelineWithCache` — is truncated to the oldest 100 events, so on a
+  // `fetchTimelineWithCache` before Issue #3327 — holds the oldest 100 events, so on a
   // busy issue (>100 timeline events) it can hide the genuinely most-recent
   // reserved-label add behind a stale one.
   if (cache) {

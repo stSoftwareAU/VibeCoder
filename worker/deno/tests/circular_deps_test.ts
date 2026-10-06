@@ -41,8 +41,14 @@ function createMockFetcher(
         title: issue.title ?? `Issue #${issueNumber}`,
       };
     },
-    async getSubIssues(_repo: string, issueNumber: number): Promise<number[]> {
-      return subIssues.get(issueNumber) ?? [];
+    async getSubIssues(
+      repo: string,
+      issueNumber: number,
+    ): Promise<{ repo: string; number: number }[]> {
+      return (subIssues.get(issueNumber) ?? []).map((number) => ({
+        repo,
+        number,
+      }));
     },
     async getIssueBody(_repo: string, issueNumber: number): Promise<string> {
       const issue = issues.get(issueNumber);

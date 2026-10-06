@@ -371,7 +371,7 @@ is**, checked in this order after the trust gate above:
 | Milestone occupancy | Another fleet account already holds an issue in the same milestone. |
 | Closed or merged PR | A fleet PR for this issue closed inside `closed_pr_cooldown_seconds` (default one hour), or merged at any time in the past. A trusted re-add of the custom label dated **after** the PR closed lifts either. |
 | Open PR | A fleet PR is open against the issue's work stream. Add `ignore-open-prs` from an allowlisted account to override. |
-| Dependency | The issue names an open dependency, or has an open sub-issue. |
+| Dependency | The issue names an open dependency, or has an open sub-issue, or its sub-issues cannot be read. |
 
 A run that produces no work also puts the issue into the retry cooldown, so a
 persistently failing custom-labelled issue backs off instead of burning an
