@@ -711,7 +711,7 @@ the summary says who judged it:
   by code it could not see. You may depart from its verdict, but only out loud:
   add a one-line `reason:` saying why you departed. An unrecorded departure is
   the self-assessment this whole section exists to remove.
-- **`reviewer:` is a verdict, not a quotation.** It carries exactly one of
+- **.** It carries exactly one of
   `met`, `partial`, `missing` or `unrequested` — the gate parses it, and any
   other text fails the run with the work already done. When the reviewer's own
   words do not land on one of the four ("not assessed", "traceable, not creep",
