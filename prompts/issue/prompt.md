@@ -254,8 +254,20 @@ guessing — the analysis-only hand-off then routes it to a human.
    exception the existing rules carve out. List the related existing rules
    you checked in the PR summary, or say you found none; two rules left
    telling the agent to do opposite things is a blocking self-review
-   finding. When the change involves architecture, data
-   flow, state transitions, or sequence of events, include a **Mermaid**
+   finding. Then apply the new or changed rule to this PR's own diff, read
+   literally as a reviewer would: its own examples and model sentences, the
+   code and tests the diff adds or edits, any helper doc comment that says
+   when to use what the rule governs, and the PR summary's Test Plan,
+   `Branch outcomes:` and similar lists — grep `git diff <base>...HEAD` for
+   the nouns the rule governs. Anything there the rule would flag is fixed
+   before the PR is raised, by changing that content or by narrowing the
+   rule so it names the allowed use, and an example offered as the correct
+   way must itself pass the rule, checked against the code it describes.
+   The PR summary says you applied the rule to the PR's own diff and names
+   what you found, or says you found nothing (see **Apply a new rule to
+   your own diff** in `CODING-STANDARDS.md`). When the change involves
+   architecture, data flow, state transitions, or sequence of events,
+   include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
    `classDiagram`, `gitGraph`) in a fenced `` ```mermaid `` block where it
    aids understanding — Mermaid renders natively on GitHub.
