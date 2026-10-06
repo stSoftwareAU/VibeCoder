@@ -187,3 +187,20 @@ Deno.test("deferred PR - a token in the refusal never reaches the pending note (
   );
   assertStringIncludes(body, "PR pending");
 });
+
+Deno.test("deferred PR - an advisory comment round-trips, and a non-string one is refused (Issue #3237)", async () => {
+  assertEquals(
+    isDeferredPrRecord({ ...record(), advisoryComment: "hits" }),
+    true,
+  );
+  assertEquals(isDeferredPrRecord({ ...record(), advisoryComment: 7 }), false);
+
+  const workDir = await Deno.makeTempDir();
+  try {
+    await recordDeferredPr(workDir, { ...record(), advisoryComment: "hits" });
+    const [back] = await listDeferredPrs(workDir);
+    assertEquals(back?.advisoryComment, "hits");
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
