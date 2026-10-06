@@ -157,6 +157,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
    semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
+   A test that reads a `.css` or `.scss` file and matches selectors or
+   property values is a source-text grep, not a layout test, even where the
+   appearance is itself the stated contract: it breaks when a selector list
+   is split or a property moves, and still passes when another rule
+   overrides the property or a clipping container hides the overflow. A
+   claim about layout, cascade order, overflow, clipping or element position
+   needs a headless-browser check that measures rendered boxes, such as the
+   repository's existing `e2e/` or Playwright checks, and that check must
+   itself be run, per **A browser check you did not run is not a safety
+   net** under Error Recovery.
+   Where the repository has no browser harness, the PR names that gap in
+   its Test Plan rather than substituting a stylesheet regex.
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
@@ -1240,8 +1252,8 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 ## Reproduction
 
 - **symptom** — the action buttons stacked vertically below 480px
-- **status** — `verified` — the layout test failed against the unfixed CSS and passes after the fix
-- **regression test** — `tests/button.test.js::keeps the buttons in one row`
+- **status** — `verified` — the headless-browser check failed against the unfixed CSS and passes after the fix
+- **regression test** — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px`
 
 ## Acceptance Criteria
 
@@ -1260,9 +1272,9 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ## Test Plan
 
-- Added tests for button alignment in `tests/button.test.js`
+- Added a headless-browser check for button alignment in `e2e/buttons.spec.ts`
 
 **Branch outcomes:**
 
-- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `tests/button.test.js::keeps the buttons in one row` — flipping `flex-wrap: nowrap` back to `wrap` turned it red
+- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px` — restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows
 ```
