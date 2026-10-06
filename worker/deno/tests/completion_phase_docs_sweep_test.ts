@@ -621,6 +621,12 @@ Deno.test(
 
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 0, "the existing PR is reused");
+    assertEquals(
+      outcome.events.includes("recover"),
+      true,
+      "the existing PR is recovered, not created",
+    );
     const prNumber = Number(PR_URL.split("/").pop());
     const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
     assertEquals(
