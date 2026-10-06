@@ -79,6 +79,7 @@ progress survives.
   When you genuinely must wait for something that has not finished, wait
   **inside a command that blocks on its own** rather than in the shell:
 
+  - `gh pr checks <pr> --watch --fail-fast` — returns once the checks settle,
     or at the first failure, and exits non-zero when one failed.
   - `gh run watch <run-id> --exit-status` — returns once that run finishes,
     and exits non-zero when it failed.
