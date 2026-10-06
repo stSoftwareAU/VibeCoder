@@ -18,11 +18,21 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import {
+  type DeferredPrRecord,
+  listDeferredPrs,
+} from "../lib/deferred_pr_store.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
 const ISSUE = 3073;
 const PR_URL = `https://github.com/${REPO}/pull/4210`;
+
+/** GitHub's secondary (content-creation) rate-limit refusal of `gh pr create`. */
+const SECONDARY_LIMIT_ERROR =
+  "gh command failed (exit 1): HTTP 403: You have exceeded a secondary rate " +
+  "limit and have been temporarily blocked from content creation. Please " +
+  "retry your request again later.";
 
 const ISSUE_BODY = `## Problem
 
@@ -53,7 +63,17 @@ Changed the broker balance card. Closes #${ISSUE}.
 - \`worker/deno/tests/completion_phase_docs_sweep_test.ts\`
 `;
 
-function stubClient(comments: string[]): GitHubClient {
+/** One comment posted, with the issue/PR number it was posted to (Issue #3237). */
+interface CommentPost {
+  number: number;
+  body: string;
+}
+
+function stubClient(
+  comments: string[],
+  posts: CommentPost[] = [],
+  options: { postCommentThrows?: boolean } = {},
+): GitHubClient {
   return {
     getIssue: () => {
       throw new Error("stub");
@@ -61,8 +81,12 @@ function stubClient(comments: string[]): GitHubClient {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: (_repo: string, _issue: number, body: string) => {
+    postComment: (_repo: string, issue: number, body: string) => {
+      if (options.postCommentThrows) {
+        return Promise.reject(new Error("stub: postComment failed"));
+      }
       comments.push(body);
+      posts.push({ number: issue, body });
       return Promise.resolve(undefined);
     },
     editIssue: () => Promise.resolve(),
@@ -102,6 +126,18 @@ interface Scenario {
   grepCode?: number;
   /** Ordered event log shared across the mocked deps, for assertion. */
   events?: string[];
+  /**
+   * When true, the stub client's `postComment` rejects — exercising the
+   * advisory docs-sweep comment's own failure path (Issue #3237). Omitted,
+   * `postComment` succeeds as normal.
+   */
+  postCommentThrows?: boolean;
+  /**
+   * When true, `gh pr create` is refused by GitHub's secondary
+   * (content-creation) rate limit with no time left in the run, so the PR is
+   * parked for the next cycle's drain (Issue #1951).
+   */
+  prCreateRefusedBySecondaryLimit?: boolean;
 }
 
 interface Outcome {
@@ -111,7 +147,13 @@ interface Outcome {
   claudePrompts: string[];
   prCreateCalls: number;
   comments: string[];
+  /** Every comment posted, with the issue/PR number it targeted (Issue #3237). */
+  commentPosts: CommentPost[];
   events: string[];
+  /** `logger.warn` messages recorded while driving this run (Issue #3237). */
+  warnLogs: string[];
+  /** PRs parked for the next cycle's drain when creation was deferred. */
+  deferred: DeferredPrRecord[];
 }
 
 /** Drive the live completion phase over a (possibly) blocked docs-sweep gate. */
@@ -126,13 +168,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   await Deno.writeTextFile(summaryPath, scenario.summary);
 
   const comments: string[] = [];
+  const commentPosts: CommentPost[] = [];
   let prCreateCalls = 0;
   let claudeCalls = 0;
   const claudePrompts: string[] = [];
   const events = scenario.events ?? [];
+  const warnLogs: string[] = [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
+  config.infraRetryBackoffMs = 1;
 
   const ctx: IssueContext = {
     repo: REPO,
@@ -143,6 +188,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     issueComments: "",
     githubUser: "testbot",
     config,
+    // No time left to wait out a secondary limit: the run defers at once.
+    ...(scenario.prCreateRefusedBySecondaryLimit
+      ? { handlerDeadlineEpochMs: Date.now() }
+      : {}),
   };
   const state: PhaseState = {
     branchName: `issue-${ISSUE}-docs-sweep`,
@@ -157,12 +206,23 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      warn: (message: string) => {
+        warnLogs.push(message);
+      },
+    },
     github: {
-      createClient: () => stubClient(comments),
+      createClient: () =>
+        stubClient(comments, commentPosts, {
+          postCommentThrows: scenario.postCommentThrows,
+        }),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") {
           prCreateCalls++;
           events.push("pr-create");
+          if (scenario.prCreateRefusedBySecondaryLimit) {
+            return Promise.reject(new Error(SECONDARY_LIMIT_ERROR));
+          }
         }
         if (args[0] === "pr" && args[1] === "view") {
           return Promise.resolve(JSON.stringify({ state: "OPEN" }));
@@ -274,8 +334,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   });
 
   let result;
+  let deferred: DeferredPrRecord[] = [];
   try {
     result = await workOnIssueCompletion(ctx, state, deps);
+    deferred = await listDeferredPrs(workDir);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
     await Deno.remove(workDir, { recursive: true });
@@ -290,7 +352,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     claudePrompts,
     prCreateCalls,
     comments,
+    commentPosts,
     events,
+    warnLogs,
+    deferred,
   };
 }
 
@@ -511,55 +576,92 @@ Deno.test(
 
 // ---------------------------------------------------------------------------
 // Issue #3172: the Docs sweep line's own grep terms are re-run at the head.
+// Issue #3237: stale hits are advisory (#3237) — posted once, never blocking.
 // ---------------------------------------------------------------------------
 
 /** A hit of the line's own term (`BrokerBalance`) the diff did not change. */
 const STALE_HIT =
   "HEAD:docs/reporting-api.md\u0000320\u0000BrokerBalance refuses a stale quote\n";
 
-/** The valid summary once the recovery names the hit as still true. */
-const SUMMARY_NAMING_HIT = SUMMARY_WITH_LINE.replace(
-  "; no hits",
-  "; `docs/reporting-api.md:320` — still true because the refusal stays",
-);
-
 Deno.test(
-  "completion - a stale hit of the Docs sweep's own term gets the one recovery turn, then the PR is raised once it is named",
+  "completion - a stale hit of the Docs sweep's own term is advisory (#3237): no recovery turn, the PR is still raised, one PR comment names the hit",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
-      retryWrites: SUMMARY_NAMING_HIT,
       changedFiles: "crates/report/src/decisions.rs",
       grepOutput: STALE_HIT,
     });
 
     assertEquals(outcome.status, "continue");
-    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is still raised");
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(prPosts.length, 1, "exactly one comment posted to the PR");
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
     assertStringIncludes(
-      outcome.claudePrompts[0]!,
-      "docs/reporting-api.md:320",
-    );
-    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
-    assertEquals(outcome.comments.length, 1);
-    assertStringIncludes(
-      outcome.comments[0]!,
+      prPosts[0]!.body,
       "BrokerBalance refuses a stale quote",
     );
+    assertStringIncludes(prPosts[0]!.body.toLowerCase(), "advisory");
+    const issuePosts = outcome.commentPosts.filter((p) => p.number === ISSUE);
+    assertEquals(issuePosts.length, 0, "no comment posted to the issue");
   },
 );
 
 Deno.test(
-  "completion - a stale hit the recovery leaves alone fails the run with no PR raised",
+  "completion - a stale hit on a recovered existing PR gets the advisory comment posted there (#3237)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
       changedFiles: "crates/report/src/decisions.rs",
       grepOutput: STALE_HIT,
+      prExistsForBranch: true,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
-    assertStringIncludes(outcome.reason ?? "", "docs/reporting-api.md:320");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 0, "the existing PR is reused");
+    assertEquals(
+      outcome.events.includes("recover"),
+      true,
+      "the existing PR is recovered, not created",
+    );
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(
+      prPosts.length,
+      1,
+      "exactly one comment posted to the existing PR",
+    );
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
+  },
+);
+
+Deno.test(
+  "completion - a failed advisory comment post does not fail the run (#3237)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      postCommentThrows: true,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is still raised");
+    assertEquals(
+      outcome.commentPosts.length,
+      0,
+      "the failed post leaves no comment recorded",
+    );
+    const issuePosts = outcome.commentPosts.filter((p) => p.number === ISSUE);
+    assertEquals(issuePosts.length, 0, "no comment posted to the issue");
+    const warned = outcome.warnLogs.some((m) =>
+      m.includes("Docs sweep hits comment failed (non-fatal)")
+    );
+    assertEquals(warned, true, "the failure is logged as non-fatal");
   },
 );
 
@@ -603,7 +705,7 @@ const STALE_SOURCE_COMMENT =
   "HEAD:crates/report/src/balance.rs\u000042\u0000/// BrokerBalance is shared by the two old callers\n";
 
 Deno.test(
-  "completion - a stale doc comment in an untouched source file blocks like a manual hit (Issue #3219)",
+  "completion - a stale doc comment in an untouched source file is advisory like a manual hit (#3237, Issue #3219)",
   async () => {
     const outcome = await runCompletion({
       summary: SUMMARY_WITH_LINE,
@@ -611,16 +713,22 @@ Deno.test(
       sourceGrepOutput: STALE_SOURCE_COMMENT,
     });
 
-    assertEquals(outcome.status, "failure");
-    assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 0, "no recovery turn is spent");
+    assertEquals(outcome.prCreateCalls, 1, "the PR is still raised");
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(prPosts.length, 1, "exactly one comment posted to the PR");
     assertStringIncludes(
-      outcome.reason ?? "",
+      prPosts[0]!.body,
       "crates/report/src/balance.rs:42",
     );
     assertStringIncludes(
-      outcome.comments[0] ?? "",
+      prPosts[0]!.body,
       "BrokerBalance is shared by the two old callers",
     );
+    const issuePosts = outcome.commentPosts.filter((p) => p.number === ISSUE);
+    assertEquals(issuePosts.length, 0, "no comment posted to the issue");
   },
 );
 
@@ -637,5 +745,79 @@ Deno.test(
     assertEquals(outcome.status, "continue");
     assertEquals(outcome.prCreateCalls, 1);
     assertEquals(outcome.claudeCalls, 0);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Review of PR #3251: a later summary-rule block on a run whose branch already
+// has a PR finalises that PR through `reportSummaryRuleBlock`, and the
+// advisory comment must reach the PR on that path too.
+// ---------------------------------------------------------------------------
+
+/**
+ * A summary with a valid Docs sweep line but no `Branch outcomes:` list, on a
+ * code-changing diff — the branch-outcomes gate (Issue #3147) blocks it, the
+ * recovery turn leaves it unchanged, and the second verdict goes through
+ * `reportSummaryRuleBlock`.
+ */
+const SUMMARY_WITH_LINE_NO_OUTCOMES = SUMMARY_WITH_LINE.replace(
+  "**Branch outcomes:** none added\n",
+  "",
+);
+
+Deno.test(
+  "completion - a stale hit on an existing PR blocked twice by another summary gate is still posted to the PR (#3237)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE_NO_OUTCOMES,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      prExistsForBranch: true,
+    });
+
+    assertEquals(
+      outcome.claudeCalls,
+      1,
+      "the other gate spends its one recovery turn",
+    );
+    assertEquals(outcome.prCreateCalls, 0, "the existing PR is reused");
+    assertEquals(
+      outcome.events.includes("recover"),
+      true,
+      "the existing PR is recovered, not created",
+    );
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(
+      prPosts.length,
+      1,
+      "exactly one advisory comment reaches the existing PR",
+    );
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
+    assertStringIncludes(prPosts[0]!.body.toLowerCase(), "advisory");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Issue #3237 review: a PR whose creation is deferred by GitHub's secondary
+// rate limit keeps the advisory, so the next cycle's drain can post it.
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "completion - a stale hit on a PR deferred by the secondary limit is parked with the PR, not lost (Issue #3237)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      prCreateRefusedBySecondaryLimit: true,
+    });
+
+    assertEquals(outcome.status, "early_exit", outcome.reason);
+    assertEquals(outcome.deferred.length, 1, "the PR is parked for the drain");
+    assertStringIncludes(
+      outcome.deferred[0]!.advisoryComment ?? "",
+      "docs/reporting-api.md:320",
+    );
   },
 );

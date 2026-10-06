@@ -198,8 +198,8 @@ guessing — the analysis-only hand-off then routes it to a human.
    Docs sweep line as `file:line — still true because …`. The worker
    re-runs the line's quoted terms over the head's docs itself, and over
    the comment lines of its source files: a hit outside the lines your diff
-   changed that the line does not name as `file:line` blocks the PR the
-   same way a missing line does.
+   changed that the line does not name as `file:line` is posted as an
+   advisory PR comment for the reviewer and does not block the PR.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is
