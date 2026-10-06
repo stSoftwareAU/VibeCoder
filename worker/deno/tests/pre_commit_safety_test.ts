@@ -17,6 +17,7 @@ import {
   FORBIDDEN_STAGED_PATTERNS,
   inspectStagedFiles,
 } from "../lib/pre_commit_safety.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 interface GitRunResult {
   code: number;
@@ -103,6 +104,91 @@ Deno.test("classifyStagedPath - api-key.secret.json is a violation", () => {
 Deno.test("classifyStagedPath - .secrets/anything is a violation", () => {
   assertEquals(classifyStagedPath(".secrets/api.key"), "violation");
 });
+
+Deno.test(
+  "classifyStagedPath - nested dotenv, config and secrets paths are violations (Issue #3311)",
+  () => {
+    for (
+      const path of [
+        "services/api/.env",
+        "a/b/.env.local",
+        "apps/web/.env.production",
+        "services/api/.config.json",
+        "pkg/.config.local.json",
+        "services/.secrets/api.key",
+        "a/b/.secrets/token",
+        "a/.env.d/x",
+        "a/.config.local.json/x",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "violation",
+        `expected '${path}' to be a violation`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - nested look-alikes stay safe (Issue #3311)",
+  () => {
+    for (
+      const path of [
+        "src/foo.env",
+        "docs/env.md",
+        "src/config.json",
+        "src/app.config.json",
+        "pkg/.config/dotnet-tools.json",
+        "a/secrets/x",
+        "a/.secretsx/y",
+        "a/my.secrets/z",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "safe",
+        `expected '${path}' to be safe`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - dotenv pattern stays linear on hostile input (Issue #3311)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.env. prefixes",
+      (chars) => "/.env.".repeat(chars) + "\nx",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - config pattern stays linear on hostile input (Issue #3311)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.config prefixes",
+      (chars) => "/.config".repeat(chars) + "\nx",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - secrets pattern stays linear on hostile input (Issue #3311)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.secrets prefixes",
+      (chars) => "/.secrets".repeat(chars) + "x",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
 
 Deno.test("classifyStagedPath - hidden top-level file is a violation", () => {
   assertEquals(classifyStagedPath(".aws"), "violation");
