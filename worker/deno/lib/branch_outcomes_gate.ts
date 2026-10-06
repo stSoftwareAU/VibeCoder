@@ -548,20 +548,34 @@ function isBarePlaceholder(body: string): boolean {
 }
 
 /**
- * Blank the NAME half of every `path::name`-shaped code span, line by line:
- * `` `worker/deno/tests/foo_test.ts::flags no test reaches` `` becomes
- * `` `worker/deno/tests/foo_test.ts` ``, and `` `handler::tests::min_hold` ``
- * becomes `` `handler` ``. A quoted test NAME that happens to contain an
- * admission phrase (e.g. a test literally named "flags an entry no test
- * reaches") must not itself trip the admission check below — only the
- * identifier before the first `::` is kept, since that is the part the rest
- * of this gate (`namedTestPaths`) treats as meaningful.
+ * Blank the parts of a backtick code span that are not the entry's own
+ * words, line by line, for every CLOSED span (an odd-indexed segment of a
+ * `` ` ``-split line that is not the line's last segment — an unterminated
+ * trailing backtick never closes, so the dangling last segment is left
+ * alone):
+ *
+ *  - a `path::name`-shaped span keeps only the part before the first `::`:
+ *    `` `worker/deno/tests/foo_test.ts::flags no test reaches` `` becomes
+ *    `` `worker/deno/tests/foo_test.ts` ``, and `` `handler::tests::min_hold` ``
+ *    becomes `` `handler` ``. A quoted test NAME that happens to contain an
+ *    admission phrase (e.g. a test literally named "flags an entry no test
+ *    reaches") must not itself trip the admission check below — only the
+ *    identifier before the first `::` is kept, since that is the part the
+ *    rest of this gate (`namedTestPaths`) treats as meaningful.
+ *  - any OTHER span containing whitespace is blanked outright: a span with a
+ *    space is prose, a test name, or a shell command quoted as code (e.g.
+ *    `` `cargo test --workspace` ``, or a bare test-name span in a list that
+ *    already cited its path earlier, as in the `completion - a Test Plan
+ *    bullet citing a behaviour no test covers blocks; …` shape) — none of it
+ *    is the entry's OWN prose, so a backticked admission such as
+ *    `` `no test reaches it` `` is never read as one: the admission has to
+ *    be in the entry's own words (bold is fine; a code span is not).
+ *  - a span with NO whitespace (a bare path, `path:line`, or identifier) is
+ *    left unchanged — there is nothing to blank, and `namedTestPaths` /
+ *    `unitLabel` still need to read it.
  *
  * Splits each line on the backtick character rather than using a regex, so
- * there is nothing here that can backtrack: a closed code span is an
- * odd-indexed segment that is not the line's last segment (an unterminated
- * trailing backtick never closes, so the dangling last segment is left
- * alone).
+ * there is nothing here that can backtrack.
  */
 function blankTestCitationNames(text: string): string {
   return text
@@ -570,13 +584,20 @@ function blankTestCitationNames(text: string): string {
     .join("\n");
 }
 
+/** A closed code-span segment containing whitespace somewhere. */
+const SPAN_HAS_WHITESPACE_RE = /\s/;
+
 /** `blankTestCitationNames`' per-line worker. */
 function blankLineCitationNames(line: string): string {
   const segments = line.split("`");
   for (let k = 1; k < segments.length - 1; k += 2) {
     const segment = segments[k]!;
     const sep = segment.indexOf("::");
-    if (sep >= 0) segments[k] = segment.slice(0, sep);
+    if (sep >= 0) {
+      segments[k] = segment.slice(0, sep);
+    } else if (SPAN_HAS_WHITESPACE_RE.test(segment)) {
+      segments[k] = "";
+    }
   }
   return segments.join("`");
 }
@@ -607,7 +628,9 @@ function blankLineCitationNames(line: string): string {
  * every real admission while leaving an unrelated negation elsewhere in the
  * sentence alone.
  */
-const NEGATED_RED_SOURCE = "(?:\\bnever|\\bnot|\\bno|n['’]t)\\s+(?:\\S+\\s+){0,3}red\\b";
+const NEGATED_RED_SOURCE = "(?:\\bnever|\\bnot|n['’]t|\\bno\\s+tests?)\\s+" +
+  "(?:go|goes|went|gone|going|turn|turns|turned|turning)\\s+" +
+  "(?:\\S+\\s+){0,2}red\\b";
 
 const STRONG_ADMISSION_RES: readonly RegExp[] = [
   // "no test(s) (yet) reach(es)/cover(s)/exercise(s) <outcome>"

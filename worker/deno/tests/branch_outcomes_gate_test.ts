@@ -1247,19 +1247,25 @@ Deno.test("validateBranchOutcomes - 'no test -x' prefix look-alike is valid", ()
   assert(result.valid);
 });
 
-// Corpus look-alikes (review round 1): a `docs/archive/pr-summaries/` corpus
-// run found the loose negated-red pattern ("negation, up to 3 words, red")
-// firing on genuinely COVERED entries where the negation governs an
-// unrelated word, not the red flip itself.
+// Corpus look-alikes (review round 1 & 2): a `docs/archive/pr-summaries/`
+// corpus run found the loose negated-red pattern ("negation, up to 3 words,
+// red") firing on genuinely COVERED entries where the negation governs an
+// unrelated word, not the red flip itself. The citation sits BEFORE the
+// "flipped to ..., (test) went red" phrase, exactly as the real corpus
+// entries are shaped — putting it between the negation and "red" instead
+// (review round 1's mistake) made the look-alike pass under the OLD loose
+// regex too, so it proved nothing.
 const CORPUS_RED_LOOKALIKES: Array<{ name: string; entry: string }> = [
   {
     name: "pr-summary-3223.md:178 'never add'",
-    entry: "flipped to never add, `worker/deno/tests/foo_test.ts::x` test " +
+    entry: "`worker/deno/lib/x.ts:1` — outcome — " +
+      "`worker/deno/tests/foo_test.ts::x` — flipped to never add, test " +
       "went red",
   },
   {
     name: "pr-summary-3244.md:126 'no split'",
-    entry: "flipped to no split, `worker/deno/tests/foo_test.ts::x` test " +
+    entry: "`worker/deno/lib/x.ts:2` — outcome — " +
+      "`worker/deno/tests/foo_test.ts::x` — flipped to no split, test " +
       "went red",
   },
   {
@@ -1269,15 +1275,78 @@ const CORPUS_RED_LOOKALIKES: Array<{ name: string; entry: string }> = [
   },
   {
     name: "pr-summary-3257.md:80 'never attach'",
-    entry: "flipped to never attach, `worker/deno/tests/foo_test.ts::x` " +
-      "test went red",
+    entry: "`worker/deno/lib/x.ts:3` — outcome — " +
+      "`worker/deno/tests/foo_test.ts::x` — flipped to never attach, test " +
+      "went red",
   },
   {
     name: "pr-summary-3257.md:124 'never blocked'",
-    entry: "flipped to never blocked, `worker/deno/tests/foo_test.ts::x` " +
-      "each went red",
+    entry: "`worker/deno/lib/x.ts:4` — outcome — " +
+      "`worker/deno/tests/foo_test.ts::x` — flipped to never blocked, each " +
+      "went red",
   },
 ];
+
+// Review round 2: a corpus entry lists several backticked test names after
+// one path-carrying span, e.g. `, \`completion - ...\`, \`completion - ...\``
+// — only the FIRST span is `path::name`-shaped; the later bare spans are
+// prose/test names, not the entry's own words, and must be blanked outright
+// rather than left to trip the strong regex (pr-summary-3257.md:124 shape).
+Deno.test("validateBranchOutcomes - a bare later span naming a behaviour 'no test covers' is blanked and valid (pr-summary-3257.md:124 shape)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/tests/foo_test.ts::a`, " +
+      "`completion - a Test Plan bullet citing a behaviour no test covers " +
+      "blocks; the recovery quotes a covered behaviour and the PR is " +
+      "raised` — flipped to never blocked, each went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+// Documented look-alike: a backticked admission is CODE, not the entry's own
+// prose, so it is blanked and never read as an admission — the admission
+// must be in the entry's own words (bold is fine, a code span is not).
+Deno.test("validateBranchOutcomes - a backticked whole-admission span is not treated as an admission (documented look-alike)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/x.ts:1` — guard — `no test reaches it`\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+});
+
+// A whitespace-free span (a bare path, `path:line`, identifier) is left
+// unchanged by blanking, so it still works as the admitting unit's LABEL.
+Deno.test("validateBranchOutcomes - a bare path:line span stays a label after blanking", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — minimum hold blocks — " +
+      "**no test reaches it**: flipped the guard, `cargo test " +
+      "--workspace` stayed green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.unreachedEntries, ["crates/app/src/handler.rs:2022"]);
+});
+
+// The GRQ case's whitespace-bearing command span (`cargo test --workspace`)
+// is blanked, but the entry's own "no test reaches it" prose still blocks.
+Deno.test("validateBranchOutcomes - the GRQ case still blocks with the command span blanked", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `crates/app/src/handler.rs:2022` — minimum hold blocks — " +
+      "**no test reaches it**: flipped the guard, `cargo test " +
+      "--workspace` stayed green\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
 
 for (const { name, entry } of CORPUS_RED_LOOKALIKES) {
   Deno.test(`validateBranchOutcomes - corpus look-alike is valid: ${name}`, () => {
