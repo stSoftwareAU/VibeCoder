@@ -74,6 +74,6 @@ it.
 - The 27 existing tests that read the issue prompt's "Instructions" or "PR
   Summary File" sections still pass (102 passed, 0 failed).
 - No existing test assertion was removed.
-- `./quality.sh` — GATE_RESULT
+- `./quality.sh` — not run on the laptop (the review fix was made there); the same gate runs in CI as the `validate-scripts` jobs, which passed on the reviewed head e4187cb9, and `deno test tests/existing_screen_text_3259_test.ts` (3 tests) and `markdownlint-cli2` pass on the final head
 
 Branch outcomes: none added
