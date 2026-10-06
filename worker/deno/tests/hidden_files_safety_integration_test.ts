@@ -203,3 +203,89 @@ Deno.test(
     }
   },
 );
+
+// ---------------------------------------------------------------------------
+// Scenario C — pre-commit gate catches nested secret-bearing paths
+// (Issue #3311)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "hidden-files safety - pre-commit gate refuses nested dotenv, config and secrets files (Issue #3311)",
+  async () => {
+    const dir = await makeRepo("hidden_files_int_c_");
+    try {
+      await Deno.mkdir(`${dir}/services/api/.secrets`, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/services/api/.env`,
+        "API_KEY=test_value_xyz\n",
+      );
+      await Deno.writeTextFile(
+        `${dir}/services/api/.config.local.json`,
+        "{}\n",
+      );
+      await Deno.writeTextFile(
+        `${dir}/services/api/.secrets/token`,
+        "super-secret-token\n",
+      );
+      await Deno.mkdir(`${dir}/src`, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/src/foo.ts`,
+        "export const value = 1;\n",
+      );
+
+      const ensure = await ensureGitignorePatterns(dir);
+      assert(ensure.ok, ensure.ok ? "" : ensure.error.message);
+
+      // Force-stage the nested secrets, bypassing .gitignore.
+      const forceAdd = await runGit(
+        [
+          "add",
+          "-f",
+          "services/api/.env",
+          "services/api/.config.local.json",
+          "services/api/.secrets/token",
+        ],
+        dir,
+      );
+      assertEquals(
+        forceAdd.code,
+        0,
+        `git add -f failed: ${forceAdd.stderr}`,
+      );
+
+      // Stage the legitimate source file too so the violation is not
+      // the only thing in the index.
+      await runGit(["add", "src/foo.ts"], dir);
+
+      // Pre-commit gate must refuse the commit and list all three
+      // nested secret-bearing paths in the violations.
+      const safety = await assertSafeToCommit({ cwd: dir });
+      assert(
+        !safety.ok,
+        "assertSafeToCommit should have refused the commit but returned Ok",
+      );
+      if (!safety.ok) {
+        assertStringIncludes(safety.error.message, "services/api/.env");
+        assertStringIncludes(
+          safety.error.message,
+          "services/api/.config.local.json",
+        );
+        assertStringIncludes(
+          safety.error.message,
+          "services/api/.secrets/token",
+        );
+      }
+
+      // No commit must have been created — the safety gate is a
+      // pre-flight check, not a post-flight rollback.
+      const log = await runGit(["log", "--oneline"], dir);
+      assertEquals(
+        log.stdout.trim(),
+        "",
+        `expected no commits, got log:\n${log.stdout}`,
+      );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
