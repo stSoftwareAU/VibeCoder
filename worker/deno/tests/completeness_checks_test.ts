@@ -42,6 +42,7 @@ Deno.test("completeness checks - the two that fired in one hour are members (Iss
       "tests/test_shard_plan_test.ts",
       "tests/marker_dedup_author_cap_test.ts",
       "tests/no_verify_ban_test.ts",
+      "tests/sleep_poll_guidance_1954_test.ts",
       "tests/prompt_house_vocabulary_drift_test.ts",
     ]
   ) {

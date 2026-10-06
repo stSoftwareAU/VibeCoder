@@ -36,60 +36,64 @@
  */
 
 import { assert, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import {
+  flat,
+  flatWholeFile,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+const SECTION_TITLE = "Independent Review Before the PR";
 
-async function latestIssuePrompt(): Promise<string> {
-  const result = await loadPrompt("issue", PROMPTS_DIR);
-  assert(result.ok, "issue prompt failed to load");
-  return result.value;
+/** The `reviewer:`/`reason:` rule's own section, whitespace flattened so a
+ * line wrap cannot break a match. */
+async function reviewerVerdictSection(): Promise<string> {
+  const doc = await readRepoDoc("prompts/issue/prompt.md");
+  return flat(section(doc, SECTION_TITLE));
 }
 
-/** The prompt with wrapping collapsed, for matching across line breaks. */
-const flatten = (text: string) => text.replace(/\s+/g, " ");
-
 Deno.test("reviewer verdict - the field is declared a closed vocabulary (Issue #886)", async () => {
-  const flat = flatten(await latestIssuePrompt());
-  assertStringIncludes(flat, "`reviewer:` is a verdict, not a quotation");
+  const text = await reviewerVerdictSection();
+  assertStringIncludes(text, "`reviewer:` is a verdict, not a quotation");
   for (const verdict of ["met", "partial", "missing", "unrequested"]) {
-    assertStringIncludes(flat, `\`${verdict}\``);
+    assertStringIncludes(text, `\`${verdict}\``);
   }
 });
 
 Deno.test("reviewer verdict - the prompt no longer demands verbatim reviewer text (Issue #886)", async () => {
-  const flat = flatten(await latestIssuePrompt());
+  const doc = await readRepoDoc("prompts/issue/prompt.md");
+  const whole = flatWholeFile(doc);
   assert(
-    !flat.includes("keep the `reviewer:` field as the reviewer wrote it"),
+    !whole.includes("keep the `reviewer:` field as the reviewer wrote it"),
     "this instruction conflicts with the closed vocabulary the gate parses, " +
       "and cost #834 a completed run",
   );
 });
 
 Deno.test("reviewer verdict - non-conforming reviewer wording is directed to reason: (Issue #886)", async () => {
-  const flat = flatten(await latestIssuePrompt());
-  assertStringIncludes(flat, "put the **nearest** of the four in `reviewer:`");
-  assertStringIncludes(flat, "quote what it actually said in `reason:`");
+  const text = await reviewerVerdictSection();
+  assertStringIncludes(text, "put the **nearest** of the four in `reviewer:`");
+  assertStringIncludes(text, "quote what it actually said in `reason:`");
 });
 
 Deno.test("reviewer verdict - the observed wording is named as an example (Issue #886)", async () => {
   // #834 wrote exactly these. Naming them means the next agent recognises the
   // case rather than inventing a fifth verdict.
-  const flat = flatten(await latestIssuePrompt());
-  assertStringIncludes(flat, "not assessed");
-  assertStringIncludes(flat, "traceable, not creep");
+  const text = await reviewerVerdictSection();
+  assertStringIncludes(text, "not assessed");
+  assertStringIncludes(text, "traceable, not creep");
 });
 
 Deno.test("reviewer verdict - departing out loud is still required (Issue #886)", async () => {
   // The fix must not weaken the rule it clarifies: a departure still has to be
   // recorded, which is the whole purpose of the section.
-  const flat = flatten(await latestIssuePrompt());
+  const text = await reviewerVerdictSection();
   assertStringIncludes(
-    flat,
+    text,
     "add a one-line `reason:` saying why you departed",
   );
   assertStringIncludes(
-    flat,
+    text,
     "An unrecorded departure is the self-assessment this whole section exists to remove",
   );
 });
