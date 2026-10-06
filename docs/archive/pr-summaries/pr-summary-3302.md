@@ -78,9 +78,10 @@ Backend-only change: only test files are touched.
 
 - `./quality.sh < /dev/null` PASSED at e8e0a12b (which includes the
   `sleep_poll_guidance_1954_test.ts`/`sleep_poll_guidance_drift_test.ts` split
-  below and the vacuous-pin re-check that fixed this Test Plan — both from a
-  PR #3310 review round, applied after the ecefcab1 run). The config
-  integration step was SKIPPED (no live config in the container).
+  below, from a PR #3310 review round applied after the ecefcab1 run). The
+  later correction to this Test Plan's Removed/Result columns (600db042) only
+  edits this summary file, so no further `quality.sh` run was needed. The
+  config integration step was SKIPPED (no live config in the container).
 - Docs sweep: no symbol, flag or documented command was renamed or changed.
   Only test-internal scoping moved, so no doc needed updating. The module doc
   of `worker/deno/tests/reuse_existing_owner_3084_test.ts` was updated to
@@ -167,17 +168,17 @@ issue. Where each one went:
 - Base: every pinned phrase is already in its target section on origin/main
   (416fd710). This is a refactor, so the tests are expected green on base.
 - Per-pin red check: for each pin, I deleted every occurrence of the phrase
-  within the target section only — the `Removed` column — and ran the test.
-  Each run FAILED, then I restored the phrase(s). 44 checks; no vacuous or
-  misplaced pin. A review on this PR found that five of these rows (the
+  within the target section only — the `Removed` column — and ran the test,
+  then restored the phrase(s). 44 checks. Five of them (the
   `reason: fixed in this diff`, `` `met` ``, `` `partial` ``, `` `missing` ``
   and `` `unrequested` `` pins in `standing_violation_3196_test.ts` and
-  `reviewer_verdict_rule_test.ts`) had originally been checked by removing only
-  one of several in-section occurrences, which left the test green — those
-  phrases recur 2–7 times in "Independent Review Before the PR" (the worked
-  examples and later prose restate them). The rows below now record the
-  actual in-section occurrence count, and each was re-verified by deleting
-  every one of them and confirming the test goes red.
+  `reviewer_verdict_rule_test.ts`) were first checked by deleting only one of
+  several in-section occurrences — those phrases recur 2–7 times in the issue
+  prompt's "Independent Review Before the PR" section (the worked examples
+  and later prose restate them) — which left the test green: a vacuous check.
+  The rows below record the actual in-section occurrence count for all 44
+  checks, each re-verified by deleting every occurrence and confirming the
+  test goes red.
 
 | Test file | Doc | Section | Pin | Removed | Result |
 |---|---|---|---|---|---|
