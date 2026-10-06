@@ -73,9 +73,15 @@ Deno.test(
       if (command.includes("/sub_issues")) {
         return Promise.resolve(
           JSON.stringify([
-            { number: 101, title: "Child A" },
-            { number: 102, title: "Child B" },
-          ]),
+            {
+              number: 101,
+              repository_url: "https://api.github.com/repos/owner/repo",
+            },
+            {
+              number: 102,
+              repository_url: "https://api.github.com/repos/owner/repo",
+            },
+          ]) + "\n",
         );
       }
       return Promise.resolve(JSON.stringify({ body: "" }));
@@ -84,7 +90,13 @@ Deno.test(
     const fetcher = createIssueFetcher(ghFn);
     const subIssues = await fetcher.getSubIssues("owner/repo", 100);
 
-    assertEquals(subIssues.sort((a, b) => a - b), [101, 102]);
+    assertEquals(
+      subIssues.sort((a, b) => a.number - b.number),
+      [
+        { repo: "owner/repo", number: 101 },
+        { repo: "owner/repo", number: 102 },
+      ],
+    );
   },
 );
 
@@ -210,7 +222,7 @@ Deno.test(
       );
 
       const subIssues = await fetcher.getSubIssues("owner/repo", 300);
-      assertEquals(subIssues, [5]);
+      assertEquals(subIssues, [{ repo: "owner/repo", number: 5 }]);
       assertEquals(callCount, 2, "the failure was not cached — re-fetched");
     } finally {
       await Deno.remove(dir, { recursive: true });
@@ -273,7 +285,14 @@ Deno.test(
     const ghFn = (args: string[]): Promise<string> => {
       const command = args.join(" ");
       if (command.includes("/sub_issues")) {
-        return Promise.resolve(JSON.stringify([{ number: 200 }]));
+        return Promise.resolve(
+          JSON.stringify([
+            {
+              number: 200,
+              repository_url: "https://api.github.com/repos/owner/repo",
+            },
+          ]) + "\n",
+        );
       }
       if (command.includes("issue view") && command.includes("body")) {
         return Promise.resolve(JSON.stringify({ body: "Parent issue" }));
@@ -292,7 +311,170 @@ Deno.test(
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.isBlocked, true);
-      assertEquals(result.value.openChildren, [200]);
+      assertEquals(result.value.openChildren, [
+        { repo: "owner/repo", number: 200 },
+      ]);
+    }
+  },
+);
+
+Deno.test(
+  "checkParentBlocked - a parent with more than 30 children is not truncated, across paginated pages (Issue #3319)",
+  async () => {
+    // `--paginate` makes `gh` itself issue the follow-up requests and apply
+    // the `--jq` filter per page, so the stdout this fetcher sees is already
+    // the full multi-line payload — one JSON array per page. Thirty-five
+    // children split across two page lines (#101-#130, then #131-#135)
+    // exercises both "more than the old 30-item default page" and "more
+    // than one page line to merge".
+    const page1 = JSON.stringify(
+      Array.from({ length: 30 }, (_, i) => ({
+        number: 101 + i,
+        repository_url: "https://api.github.com/repos/owner/repo",
+      })),
+    );
+    const page2 = JSON.stringify(
+      Array.from({ length: 5 }, (_, i) => ({
+        number: 131 + i,
+        repository_url: "https://api.github.com/repos/owner/repo",
+      })),
+    );
+
+    const subIssuesCalls: string[][] = [];
+    const ghFn = (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      if (command.includes("/sub_issues")) {
+        subIssuesCalls.push(args);
+        return Promise.resolve(`${page1}\n${page2}\n`);
+      }
+      if (command.includes("issue view") && command.includes("body")) {
+        return Promise.resolve(JSON.stringify({ body: "Parent issue" }));
+      }
+      if (command.includes("number,state,title")) {
+        const n = Number(args[2]);
+        // #101-#134 closed, #135 the lone open child.
+        const state = n === 135 ? "OPEN" : "CLOSED";
+        return Promise.resolve(
+          JSON.stringify({ number: n, state, title: `Child ${n}` }),
+        );
+      }
+      return Promise.resolve("[]");
+    };
+
+    const fetcher = createIssueFetcher(ghFn);
+    const result = await checkParentBlocked(fetcher, "owner/repo", 1);
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.isBlocked, true);
+      assertEquals(result.value.openChildren, [
+        { repo: "owner/repo", number: 135 },
+      ]);
+      assertEquals(result.value.totalChildren, 35);
+    }
+
+    assertEquals(subIssuesCalls.length, 1);
+    const argv = subIssuesCalls[0]!;
+    assertEquals(argv.includes("--paginate"), true);
+    assertEquals(argv.some((a) => a.includes("per_page=100")), true);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// getSubIssues — a malformed/old-shaped cache entry is never trusted
+// (Issue #3325: the payload moved from number[] to SubIssueRef[], so a
+// cache entry a relaunching worker's old code wrote before the cache key
+// was bumped must not be read back and handed to checkParentBlocked).
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "getSubIssues - a v1-shaped (number[]) cache hit under the current key is rejected, forcing a live read",
+  async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const cache = new IssueCache(dir, 600);
+      // Simulate a stale/corrupt entry: the old shape, written under the
+      // (hypothetically reused) current key.
+      await cache.write(
+        "owner/repo",
+        `${ISSUE_SUB_ISSUES_CACHE_PREFIX}300`,
+        [7, 8],
+      );
+
+      let liveCalls = 0;
+      const ghFn = (args: string[]): Promise<string> => {
+        if (args.join(" ").includes("/sub_issues")) {
+          liveCalls++;
+          return Promise.resolve(
+            JSON.stringify([
+              {
+                number: 9,
+                repository_url: "https://api.github.com/repos/owner/repo",
+              },
+            ]) + "\n",
+          );
+        }
+        return Promise.resolve(JSON.stringify({ body: "" }));
+      };
+
+      const fetcher = createIssueFetcher(ghFn, cache);
+      const subIssues = await fetcher.getSubIssues("owner/repo", 300);
+
+      assertEquals(liveCalls, 1, "the malformed hit must not be trusted");
+      assertEquals(subIssues, [{ repo: "owner/repo", number: 9 }]);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "checkParentBlocked - still blocks on an open child when the sub-issues cache holds a v1-shaped entry",
+  async () => {
+    const dir = await Deno.makeTempDir();
+    try {
+      const cache = new IssueCache(dir, 600);
+      await cache.write(
+        "owner/repo",
+        `${ISSUE_SUB_ISSUES_CACHE_PREFIX}400`,
+        [500],
+      );
+
+      const ghFn = (args: string[]): Promise<string> => {
+        const command = args.join(" ");
+        if (command.includes("/sub_issues")) {
+          return Promise.resolve(
+            JSON.stringify([
+              {
+                number: 500,
+                repository_url: "https://api.github.com/repos/owner/repo",
+              },
+            ]) + "\n",
+          );
+        }
+        if (command.includes("issue view") && command.includes("body")) {
+          return Promise.resolve(JSON.stringify({ body: "Parent issue" }));
+        }
+        if (command.includes("number,state,title")) {
+          return Promise.resolve(
+            JSON.stringify({ number: 500, state: "OPEN", title: "Child" }),
+          );
+        }
+        return Promise.resolve("[]");
+      };
+
+      const fetcher = createIssueFetcher(ghFn, cache);
+      const result = await checkParentBlocked(fetcher, "owner/repo", 400);
+
+      assertEquals(result.ok, true);
+      if (result.ok) {
+        assertEquals(result.value.isBlocked, true);
+        assertEquals(result.value.openChildren, [
+          { repo: "owner/repo", number: 500 },
+        ]);
+      }
+    } finally {
+      await Deno.remove(dir, { recursive: true });
     }
   },
 );

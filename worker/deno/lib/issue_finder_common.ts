@@ -33,6 +33,8 @@ import type {
   IssueState,
   OpenIssueStateMap,
 } from "./issue_dependencies.ts";
+import { fetchNativeSubIssueRefs } from "./native_sub_issues.ts";
+import type { SubIssueRef } from "./native_sub_issues.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { fetchOpenMilestoneClosedCounts } from "./issue_query.ts";
@@ -245,7 +247,7 @@ export function isRateLimitError(err: unknown): boolean {
  */
 export function memoiseIssueFetcher(fetcher: IssueFetcher): IssueFetcher {
   const bodyCache = new Map<string, Promise<string>>();
-  const subCache = new Map<string, Promise<number[]>>();
+  const subCache = new Map<string, Promise<SubIssueRef[]>>();
   const stateCache = new Map<string, Promise<IssueState>>();
   // Issue #222: keyed by repo AND number. A cross-repo dependency
   // (`Depends on owner/repo#560`) is now resolved against its own repo, so a
@@ -468,7 +470,7 @@ export function seedIssueFetcherFromListing(
       }
       return fetcher.getIssueState(repo, issueNumber);
     },
-    getSubIssues(repo: string, issueNumber: number) {
+    getSubIssues(repo: string, issueNumber: number): Promise<SubIssueRef[]> {
       return fetcher.getSubIssues(repo, issueNumber);
     },
     getIssueBody(repo: string, issueNumber: number) {
@@ -497,10 +499,18 @@ export function createIssueFetcher(
     repo: string,
     key: string,
     read: () => Promise<T>,
+    /**
+     * Shape guard for the cached hit (Issue #3325 defence in depth). A
+     * version bump already keeps an old-shaped entry from being read back
+     * under this key, but this rejects a hit whose shape still does not
+     * match — e.g. corruption — rather than handing the caller malformed
+     * data.
+     */
+    isValidHit: (value: T) => boolean = () => true,
   ): Promise<T> => {
     if (cache) {
       const hit = await cache.read<T>(repo, key);
-      if (hit !== null) return hit;
+      if (hit !== null && isValidHit(hit)) return hit;
     }
     const value = await read();
     if (cache) await cache.write(repo, key, value);
@@ -519,6 +529,7 @@ export function createIssueFetcher(
         repo,
         `${ISSUE_SUB_ISSUES_CACHE_PREFIX}${issueNumber}`,
         () => fetchSubIssues(ghCommandFn, repo, issueNumber),
+        isSubIssueRefArray,
       );
     },
     getIssueBody(repo: string, issueNumber: number) {
@@ -583,48 +594,21 @@ function uncachedIssueFetcher(
       // returns only genuine sub-issues (and `[]` when there are none),
       // so the body path keeps running with its back-reference check.
       //
-      // Issue #3321: a lookup failure (the `gh` call rejecting, empty,
-      // unparseable or non-array output) must *reject*, never answer `[]`.
-      // `[]` means "this issue genuinely has no sub-issues", and
-      // `checkParentBlocked` — and in turn `isDependencyBlocked` — would read
-      // that as "not blocked", letting a parent be claimed while its
-      // children were merely unreadable rather than actually closed.
-      let output: string;
-      try {
-        output = await ghCommandFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}/sub_issues`,
-        ]);
-      } catch (error) {
-        throw new Error(
-          `sub_issues lookup for ${repo}#${issueNumber} failed: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      if (output.trim() === "") {
-        throw new Error(
-          `sub_issues lookup for ${repo}#${issueNumber} returned empty output`,
-        );
-      }
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(output);
-      } catch (error) {
-        throw new Error(
-          `sub_issues lookup for ${repo}#${issueNumber} returned unparseable output: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
-      if (!Array.isArray(parsed)) {
-        throw new Error(
-          `sub_issues lookup for ${repo}#${issueNumber} returned a non-array response`,
-        );
-      }
-      return (parsed as Array<{ number?: number }>)
-        .map((sub) => sub.number)
-        .filter((n): n is number => typeof n === "number");
+      // Issue #3319: the unpaginated single-page read silently dropped a
+      // parent's children past the first 30, and discarded each child's own
+      // repo — so a cross-repo sub-issue was resolved as if it were this
+      // repo's own issue of the same number. `fetchNativeSubIssueRefs`
+      // paginates at `per_page=100` and keeps each child's own repo.
+      //
+      // Issue #3321: a lookup failure (the `gh` call rejecting, empty or
+      // unparseable output) must *reject*, never answer `[]`. `[]` means
+      // "this issue genuinely has no sub-issues", and `checkParentBlocked`
+      // — and in turn `isDependencyBlocked` — would read that as "not
+      // blocked", letting a parent be claimed while its children were
+      // merely unreadable rather than actually closed. `fetchNativeSubIssueRefs`
+      // already throws on each of those failure modes, so this call must
+      // not catch and mask it.
+      return await fetchNativeSubIssueRefs(repo, issueNumber, ghCommandFn);
     },
     async getIssueBody(repo: string, issueNumber: number) {
       const output = await ghCommandFn([
@@ -654,8 +638,23 @@ function fetchSubIssues(
   ghCommandFn: (args: string[]) => Promise<string>,
   repo: string,
   issueNumber: number,
-): Promise<number[]> {
+): Promise<SubIssueRef[]> {
   return uncachedIssueFetcher(ghCommandFn).getSubIssues(repo, issueNumber);
+}
+
+/**
+ * Whether a cached hit is really a `SubIssueRef[]` (Issue #3325). Guards
+ * against a malformed entry under the current versioned key reaching
+ * `checkParentBlocked`'s `childKey`, which otherwise throws on a missing
+ * `repo` string and fails the parent/child gate open.
+ */
+function isSubIssueRefArray(value: unknown): value is SubIssueRef[] {
+  return Array.isArray(value) &&
+    value.every((entry) =>
+      typeof entry === "object" && entry !== null &&
+      typeof (entry as { repo?: unknown }).repo === "string" &&
+      typeof (entry as { number?: unknown }).number === "number"
+    );
 }
 
 function fetchIssueBody(
@@ -885,7 +884,11 @@ export async function isDependencyBlocked(
       if (parentResult.value.openChildren) {
         for (const child of parentResult.value.openChildren) {
           if (blockers) {
-            blockers.push({ repo, number: child, kind: "child" });
+            blockers.push({
+              repo: child.repo,
+              number: child.number,
+              kind: "child",
+            });
           }
           if (!blockers) return true;
         }

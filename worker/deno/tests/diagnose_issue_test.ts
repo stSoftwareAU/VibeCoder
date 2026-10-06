@@ -773,5 +773,8 @@ Deno.test("createDiagnosticIssueFetcher - sub-issues come from the body referenc
 
   const subs = await fetcher.getSubIssues("owner/repo", 7);
 
-  assertEquals([...subs].sort((a, b) => a - b), [11, 12]);
+  assertEquals(
+    [...subs].sort((a, b) => a.number - b.number),
+    [{ repo: "owner/repo", number: 11 }, { repo: "owner/repo", number: 12 }],
+  );
 });
