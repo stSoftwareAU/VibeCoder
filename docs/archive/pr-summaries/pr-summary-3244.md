@@ -2,109 +2,134 @@
 
 ## Summary
 
-Review-fix pushes keep leaving sentences in the PR summary that the push itself makes false, sometimes with a "PR-feedback round N" correction appended below them (GRQ-AutoTrader#2486, VibeCoder#3236). The #3143 drift check let those pushes through. This branch adds the building blocks for the issue's three proposed guardrails. **It does not yet wire them into the drift check that runs on a review-fix push.**
+Review-fix pushes kept leaving a PR-summary sentence the push made false, sometimes with a "PR-feedback round N" correction appended below it (GRQ-AutoTrader#2486, VibeCoder#3236), past the #3143 drift check. This PR gives that check the change request it is answering and adds a deterministic backstop for quoted summary sentences. Closes #3244.
 
-What the branch contains at the head:
+- **Did the check run?** For VibeCoder#3236 the model pass did not run. Push `48f762da` changed only `CODING-STANDARDS.md`, the PR summary and a test file. All three are docs-sweep-exempt, and on the base branch `runPrFeedbackDriftCheck` asked its model question only when `codeChangingFiles` was non-empty. GRQ-AutoTrader#2486's push `99a96f9d` changed `.github/workflows/quality.yml`, a code file, so its model pass ran and missed the drift. **The model pass now also runs when the push changes a test file.** A docs-only push still gets none.
+- **Change request into the drift question (proposal 1).** `pr_feedback_processor.ts` passes the comment or review body the run answers (`processedBody`, as the agent's prompt carried it) as `DriftCheckInput.changeRequest`. `buildDriftQuestionPrompt` fences it as untrusted text. It asks the model to confirm that every sentence the change request quotes has been rewritten or removed at the head. A quoted sentence still present, even with a correction after it, counts as drift.
+- **Internal-contradiction clause (proposal 2).** The drift question always reports the earlier of two sentences when a later sentence in the same file corrects, supersedes or contradicts it.
+- **Deterministic backstop (proposal 3).** The new `worker/deno/lib/change_request_quotes.ts` parses findings in the review-fleet-prs `reviewBody` shape. For each finding against a `docs/archive/pr-summaries/pr-summary-*.md`, it takes every quoted span of four or more words in the problem text and looks for it in that summary at the head, normalised for case, whitespace, emphasis and quote style. On every non-skipped push, a span still present is a hit. It gets the existing single recovery turn, with a "rewrite or remove, do not append" step. If the span is still there afterwards, it is reported in `.pr_response_message`. A summary that a finding names but that cannot be read is reported as not checked (`quoteCheckUnavailable`) rather than passed.
+- The prose rules in `prompts/pr_feedback/prompt.md` and `CODING-STANDARDS.md` stay. The prompt's description of the drift check now matches what it does.
 
-- **`worker/deno/lib/change_request_quotes.ts` (new).** This is the deterministic, no-I/O backstop from proposal 3.
-  - `parseChangeRequestFindings` reads a change request in the `**\`file:line\`**: problem` shape that `reviewBody` (`.claude/skills/review-fleet-prs/review_log.ts`) writes. It keeps only each finding's problem text, never the `**Fix:**` text or the closing summary.
-  - `extractQuotedSpans` returns every quoted span of four or more words. It reads straight, curly and single quotes, splits a span at an ellipsis, and never lets a span cross a line break. It uses linear hand-written scanners, not a backtracking regex.
-  - `normaliseForQuoteMatch` folds case, whitespace, Markdown emphasis, backticks, underscores and quote style.
-  - `findStaleQuotes` reports each quote that is still present in the named `pr-summary-*.md`. A summary mapped to `undefined` is reported as `unchecked` rather than skipped.
-  - `isPrSummaryPath` replaces the private `SUMMARY_PATH_PATTERN` that `pr_feedback_drift_check.ts` used before.
-  - `summaryFilesNamedBy` lists the summaries the findings name.
-- **`worker/deno/lib/pr_feedback_drift_check.ts`.**
-  - `buildDriftQuestionPrompt` takes an optional `changeRequest`. When it is given, the prompt fences it as untrusted text and asks the model to confirm each quoted sentence was rewritten or removed. The question now always carries the internal-contradiction clause (proposal 2), and its wording covers "code, tests or docs".
-  - `buildDriftRecoveryPrompt` takes optional `staleQuotes`, fences them, and adds a "rewrite or remove, do not append" step.
-  - `DriftResidual` carries optional `staleQuotes`, which `formatDriftResidual` and the `.pr_response_message` lead count as hits.
-  - `loadSummaries` now uses `isPrSummaryPath`.
+## Spec
 
-**Not done at the head (outstanding for #3244):**
+### Intent and Rationale
 
-- `runPrFeedbackDriftCheck` does not call `parseChangeRequestFindings`, `findStaleQuotes` or `summaryFilesNamedBy`.
-- `runPrFeedbackDriftCheck` does not pass `changeRequest` to the question prompt or `staleQuotes` to the recovery prompt.
-- The model pass still runs only when the push changes a code file (`changesBehaviour`).
-- `DriftCheckInput.changeRequest` is declared, but `pr_feedback_processor.ts` never sets it.
+- The two misses had two causes. On #3236 the model pass never ran. On GRQ#2486 it ran without the reviewer's quoted sentence. Each cause gets its own fix.
+- The deterministic check needs no model, so it catches the quoted-sentence case even on a docs-only push or when the model pass returns no verdict.
 
-So a test- or docs-only push like VibeCoder#3236's round 2 still gets no model pass, and no reviewer quote is checked at runtime yet. The module doc comment at the top of `pr_feedback_drift_check.ts` says both gaps "are fixed here". That is not true at the head. It is a code-file comment, so this summary-only fix leaves it in place and records it here instead.
+### Essential Design Decisions
 
-Refs #3244. Because of the outstanding items above, this PR does not close it.
+- Stale quotes reuse the existing recovery path: one fix turn, then report. There is no new gate, so the check stays a backstop, as #3143 designed it.
+- Only findings in the `**\`file[:line]\`**: problem` shape against a `pr-summary-*.md` are checked deterministically. `**Fix:**` text and the closing summary are never read as part of a problem, because they routinely quote prose that is not the finding.
+- A named summary that cannot be read fails loud (`quoteCheckUnavailable`) but does not drive a recovery turn, because no recovery turn can fix a file the check cannot read.
+- The quote extractor uses linear hand-written scanners, not a backtracking regex, because it reads reviewer-written text. Growth tests in `worker/deno/tests/change_request_quotes_3244_test.ts` pin this, so that file is listed in `WALL_CLOCK_TEST_FILES`.
+
+### Undiscoverable Facts
+
+- The verdict on whether the check ran comes from each push's file list (`gh api repos/<repo>/commits/<sha> --jq '[.files[].filename]'`) checked against the base-branch gate. The host run logs were not reachable from this container.
 
 ## Evidence
 
-This is a backend change with no UI surface. The evidence is the unit tests and the branch-flip runs below.
+This is a backend change with no UI surface. The evidence is the unit and integration tests below, which run against real temporary git repositories, plus the full gate.
 
 ```mermaid
-flowchart LR
-    R["change request body"] --> P["parseChangeRequestFindings"]
-    P --> Q["extractQuotedSpans<br/>(4+ words)"]
-    Q --> F{"findStaleQuotes:<br/>still in pr-summary?"}
-    F -->|yes| S["stale quote"]
-    F -->|"summary unreadable"| U["unchecked"]
-    F -->|no| C["clean"]
-    S -.->|"not yet wired"| D["runPrFeedbackDriftCheck"]
+flowchart TD
+    P["pr_feedback_processor: agent turn"] --> D["runPrFeedbackDriftCheck<br/>(changeRequest = feedback body)"]
+    D --> Q["Deterministic: stale quotes<br/>(change_request_quotes.ts)"]
+    D --> M{"Code or test file changed?"}
+    M -- yes --> MP["Model pass: change request fenced,<br/>quoted-sentence + contradiction asks"]
+    M -- no --> NM["No model pass"]
+    Q --> H{"Any hit?"}
+    MP --> H
+    H -- yes --> R["One recovery turn<br/>(rewrite or remove, do not append)"]
+    R --> C["Re-check, including stale quotes"]
+    C -- left --> N[".pr_response_message"]
+    H -- "unreadable summary / no verdict" --> N
 ```
 
-**Docs sweep** — grep: `pr_feedback_drift_check`, `change_request_quotes`, `buildDriftQuestionPrompt`, `buildDriftRecoveryPrompt`, `DriftResidual`, `changeRequest`, `staleQuotes`, `SUMMARY_PATH_PATTERN`, `isPrSummaryPath`, "drift check", "Four checks run", "quoted-sentence"; section: `docs/workflows/pr-feedback.md#the-workers-drift-check-issue-3143`; updated: `docs/INTERNALS.md`, `docs/workflows/pr-feedback.md`, `prompts/pr_feedback/prompt.md`
+Observed tool output the change relies on:
 
-Sweep detail:
+- `gh api repos/stSoftwareAU/VibeCoder/commits/48f762da --jq '[.files[].filename]'` → `["CODING-STANDARDS.md","docs/archive/pr-summaries/pr-summary-3232.md","worker/deno/tests/own_change_claims_3120_test.ts"]`: no code file, so the base branch ran no model pass.
+- `gh api repos/stSoftwareAU/GRQ-AutoTrader/commits/99a96f9d --jq '[.files[].filename]'` → `[".github/workflows/quality.yml",".github/zizmor.yml","crates/infra/tests/cargo_cache.rs"]`: a code file, so the model pass ran.
+- The parser's producer contract is `reviewBody` in `.claude/skills/review-fleet-prs/review_log.ts`, which writes the `**\`<file>[:<line>]\`**: <problem>` / optional `**Fix:**` / closing-summary shape.
 
-- I ran each term over `README.md`, `docs/` (excluding `docs/archive/`), every `*/README.md`, `prompts/`, `CODING-STANDARDS.md` and `DESIGN-PRINCIPLES.md`. The "drift check" hits in `docs/LESSONS-LEARNT.md`, `prompts/documentation_audit/prompt.md` and `DESIGN-PRINCIPLES.md` are about other drift checks, and none is affected. Lines 169 and 250 of `docs/workflows/pr-feedback.md` only point at the section below and stay true.
-- `docs/workflows/pr-feedback.md` § "The worker's drift check (Issue #3143)": I read it through. Earlier commits on this branch had rewritten it to say four things that `runPrFeedbackDriftCheck` does not do at the head:
-  - "Four checks run".
-  - The model pass "runs on every push that changed a file".
-  - The question is "fenced together with the change request".
-  - A "Deterministic quoted-sentence check … runs on every non-skipped push".
-  
-  I restored the section to its base text ("Three checks run", model pass only when the push changes a code file), which matches the head.
-- `prompts/pr_feedback/prompt.md` ("Keep the PR summary true to the head"): an earlier commit had changed its closing sentence to tell the agent that a model pass "runs on every push" and that quoted spans are "checked for at the head". Neither happens at runtime, so I restored the base sentence.
-- `docs/INTERNALS.md` module table: the `pr_feedback_drift_check.ts` row said the model pass is "now carrying the change request and a quoted-sentence recheck". The row now says the prompt builders take a change request and stale quotes, but nothing passes them yet. The `change_request_quotes.ts` row now says the module is not yet called by the drift check.
+**Docs sweep** — grep: `quoteCheckUnavailable`, `staleQuotes`, `change_request_quotes`, "Three checks run", "only when the push changes a code file"; section: `docs/workflows/pr-feedback.md#the-workers-drift-check-issue-3143`; updated: `docs/workflows/pr-feedback.md`, `prompts/pr_feedback/prompt.md`, `docs/INTERNALS.md`
+
+Every hit of those terms at the head is in a line this diff adds or changes. I read the whole § "The worker's drift check (Issue #3143)" and rewrote it from three checks to four. Lines 169 and 250 of `docs/workflows/pr-feedback.md` only link to that section and are unchanged.
+
+Related existing rules checked: `prompts/pr_feedback/prompt.md` "Keep the PR summary true to the head" and `CODING-STANDARDS.md` § PR Summary and Evidence ("rewrite — never append to — the summary"). The new prompt sentence agrees with both: an appended correction still counts as drift.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Pass the change-request findings into the drift question, fenced as untrusted text, and ask the pass to confirm every sentence a finding quotes has been rewritten or removed at the head — evidence: `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::buildDriftQuestionPrompt - fences the change request only when given, and always carries the internal-contradiction clause`, `worker/deno/tests/pr_feedback_processor_drift_check_3143_test.ts::processPrFeedback - drift check: the change request body is passed to the drift check (Issue #3244)` — reviewer: met
+- **met** — Add an internal-contradiction clause to the drift question — evidence: `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::buildDriftQuestionPrompt - fences the change request only when given, and always carries the internal-contradiction clause` — reviewer: met
+- **met** — Deterministic backstop: a quoted span of four or more words from a finding against a `pr-summary-*.md` that is still in the summary at the head is treated as a block on the existing recovery path (one fix turn, then report it in `.pr_response_message`) — evidence: `worker/deno/lib/change_request_quotes.ts`, `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a test-only push that leaves a change-request-quoted sentence standing under a round-2 note is reported with the stale quote` — reviewer: met
+- **met** — Check first whether the check ran or missed; if it did not run, fix that first — evidence: the commit file lists under Evidence; `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a test-only push with no change request still makes a model call` — reviewer: missing — reason: the reviewer looked for host-log evidence in the diff. The check was done against each push's real file list and the base-branch gate (see Evidence). It showed the model pass never ran for #3236, and this diff fixes that.
+- **met** — Keep the prose rules; these checks enforce them and do not replace them — evidence: `prompts/pr_feedback/prompt.md` keeps "Keep the PR summary true to the head" and only updates its description of the drift check — reviewer: met
+- **met** — Tests feed the drift check a fix diff plus a finding quoting a still-present summary sentence with an appended correction below it, and assert the deterministic check blocks it and the recovery turn runs — evidence: `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a test-only push that leaves a change-request-quoted sentence standing under a round-2 note is reported with the stale quote`, `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a recovery turn that rewrites the stale quoted sentence away reports recovered` — reviewer: met
+- **unrequested** — The model pass now also runs when the push changes a test file (`modelPassNeeded` in `worker/deno/lib/pr_feedback_drift_check.ts`) — reviewer: unrequested — reason: this is the "if the check did not run, fix that first" step. The #3236 push changed only test and doc files, so it got no model pass.
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3244.json` and the `WALL_CLOCK_TEST_FILES` entry in `worker/deno/lib/parallel_unsafe_test_manifest.ts` — reviewer: unrequested — reason: the repository's completeness checks require both registrations for a new lib module and a growth-measuring test.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — The reviewer found no violations. It checked these review-enforced rules: every outcome of a branch you add needs a test, a named test must exist, writing a gate over text (compare like with like, no silent pass on unread input), vetting regexes on untrusted text with hostile growth cases, a stub mirrors the real callee's contract (parser shape checked against `reviewBody`), and a code change owes a docs change. It also checked Australian English, commit safety and secret redaction. Optional only: the git fixture helpers in the new drift-check test file are copied from the #3143 test file.
 
 ## Test Plan
 
-- `worker/deno/tests/change_request_quotes_3244_test.ts` is a new file. It adds 21 `Deno.test` declarations, and no existing test is edited.
-- **No assertion was removed from an existing test.** The diff adds this one test file and does not touch any other test file.
-- `cd worker/deno && deno test --allow-all tests/change_request_quotes_3244_test.ts`: `ok | 21 passed | 0 failed`, run on this head.
-- `cd worker/deno && deno test --allow-all tests/pr_feedback_drift_check_3143_test.ts tests/pr_feedback_processor_drift_check_3143_test.ts`: `ok | 30 passed | 0 failed`, run on this head.
-- No test covers the new `changeRequest`/`staleQuotes` branches in `pr_feedback_drift_check.ts` (see Branch outcomes). There is no end-to-end test that feeds `runPrFeedbackDriftCheck` a finding quoting a still-present summary sentence. The issue asks for one, but the wiring it would exercise does not exist yet.
+- `worker/deno/tests/change_request_quotes_3244_test.ts` (new): unit tests for the parser, the quote extractor, normalisation, `findStaleQuotes` and `summaryFilesNamedBy`, plus four growth tests on hostile input.
+- `worker/deno/tests/pr_feedback_drift_check_3244_test.ts` (new): `runPrFeedbackDriftCheck` against real temporary git repositories, covering a test-only push, a docs-only push, recovered and reported outcomes, a quote already rewritten, an unreadable named summary, and a test-only push with no change request. It also has prompt-builder and `formatDriftResidual` unit tests.
+- `worker/deno/tests/pr_feedback_processor_drift_check_3143_test.ts`: one test added, "the change request body is passed to the drift check (Issue #3244)". I removed it from the call site and it went red with `Actual: undefined`.
+- **No assertion was removed from an existing test.** The only existing test file touched gains one new test.
+- Removed two branches from `change_request_quotes.ts` that had no observable effect: a conditional push absorbed by `join(" ").trim()`, and an empty-quote check that `extractQuotedSpans`' four-word floor makes unreachable. Behaviour is unchanged and the tests still pass.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)` (config integration skipped, as on every run here). It ran on this head before the final test-only commit. The touched test files were re-run after that commit.
 
 **Branch outcomes:**
 
-For each line below, I flipped the branch in the working tree, ran the named test file, then restored the code. The two drift-check test files are `worker/deno/tests/pr_feedback_drift_check_3143_test.ts` and `worker/deno/tests/pr_feedback_processor_drift_check_3143_test.ts`.
+Lib line numbers are at the head. Every "went red" was observed by flipping the branch, running the named test file, then restoring the code.
 
-- `worker/deno/lib/change_request_quotes.ts:47` — match / no match (lookalike path) — `worker/deno/tests/change_request_quotes_3244_test.ts::isPrSummaryPath - matches a PR summary, rejects lookalikes` — flipped to always-match, test went red
-- `worker/deno/lib/change_request_quotes.ts:73` — skip (a line that is not a finding header) — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - strips a trailing :line, and excludes the Fix text and closing summary` — flipped to record it as a finding, test went red
-- `worker/deno/lib/change_request_quotes.ts:79` — trailing `:line` stripped — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - strips a trailing :line, and excludes the Fix text and closing summary` — flipped to keep it, test went red
-- `worker/deno/lib/change_request_quotes.ts:83` — empty rest-of-line not pushed — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:87` — blank line ends the problem — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - strips a trailing :line, and excludes the Fix text and closing summary` — flipped to keep reading, test went red
-- `worker/deno/lib/change_request_quotes.ts:91` — `**Fix:**` line ends the problem with no blank line before it — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:92` — next finding header ends the problem with no blank line before it — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:127` — line break drops an open straight-double span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a quote whose opener and closer are on different lines yields nothing` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:133` — `\"` inside a span kept as `"` — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - the VibeCoder#3236 problem text, literally`, `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - the quoted sentence still present is reported stale` — flipped, tests went red
-- `worker/deno/lib/change_request_quotes.ts:135` — `\"` outside a span opens one — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:143` — bare `"` closes a span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - the VibeCoder#3236 problem text, literally` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:170` — `“` opens a span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly double quotes` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:174` — nested `“` inside a span kept — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:180` — `”` closes a span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly double quotes` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:199` — single-quote opener at text start — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:201` — single-quote opener only after whitespace, `(` or `[` — no test reaches it — flipped to any position, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:235` — closer before a letter is an apostrophe — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - straight single quotes containing an apostrophe`, `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly single quotes containing an apostrophe` — flipped, tests went red
-- `worker/deno/lib/change_request_quotes.ts:237` — closer otherwise closes — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - straight single quotes containing an apostrophe`, `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly single quotes containing an apostrophe` — flipped, tests went red
-- `worker/deno/lib/change_request_quotes.ts:274` — span split at an ellipsis — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - an ellipsis-truncated quote yields the fragment before the ellipsis` — flipped to no split, test went red
-- `worker/deno/lib/change_request_quotes.ts:276` — fragment under four words dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a 3-word quote never clears the 4-word floor` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:277` — duplicate span dropped — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:334` — finding on a non-summary file ignored — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - a finding on a non-summary file is ignored` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:336` — unreadable summary reported unchecked — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - a summary mapped to undefined is reported unchecked, not stale` — flipped to not report it, test went red
-- `worker/deno/lib/change_request_quotes.ts:337` — duplicate unchecked file dropped — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:346` — empty normalised quote skipped — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:347` — quote absent from summary (rewritten) is not stale — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - a rewritten summary reports no stale quotes` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:349` — duplicate stale quote dropped — no test reaches it — flipped, test stayed green
-- `worker/deno/lib/change_request_quotes.ts:365` — non-summary finding skipped — `worker/deno/tests/change_request_quotes_3244_test.ts::summaryFilesNamedBy - unique PR summary paths, first-seen order` — flipped, test went red
-- `worker/deno/lib/change_request_quotes.ts:366` — duplicate summary path dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::summaryFilesNamedBy - unique PR summary paths, first-seen order` — flipped, test went red
-- `worker/deno/lib/pr_feedback_drift_check.ts:302` — change request present (fenced into the question) / absent — no test reaches it — flipped, both drift-check test files stayed green
-- `worker/deno/lib/pr_feedback_drift_check.ts:326` — change request present (quoted-sentence instruction added) / absent — no test reaches it — flipped, both drift-check test files stayed green
-- `worker/deno/lib/pr_feedback_drift_check.ts:427` — stale quotes present (fenced into the recovery prompt) / absent — no test reaches it — flipped, both drift-check test files stayed green
-- `worker/deno/lib/pr_feedback_drift_check.ts:462` — stale quotes present (rewrite step added) / absent — no test reaches it — flipped, both drift-check test files stayed green
-- `worker/deno/lib/pr_feedback_drift_check.ts:523` — absent (no stale quotes, not a hit) — `worker/deno/tests/pr_feedback_drift_check_3143_test.ts::formatDriftResidual - a modelPassUnavailable-only residual prints only the unavailable line, no 'found text' intro` — flipped absent to hit, test went red; the present (stale quotes are a hit) outcome is reached by no test
-- `worker/deno/lib/pr_feedback_drift_check.ts:555` — stale quotes listed in the residual — no test reaches it — flipped, both drift-check test files stayed green
-- `worker/deno/lib/pr_feedback_drift_check.ts:733` — absent (no stale quotes, "could not check it fully" lead) — `worker/deno/tests/pr_feedback_drift_check_3143_test.ts::runPrFeedbackDriftCheck - a modelPassUnavailable-only residual gets the 'could not check it fully' lead, not the 'found text' lead` — flipped absent to hit, test went red; the present outcome is reached by no test
+- `worker/deno/lib/pr_feedback_drift_check.ts:926` — model pass when a test file changed — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a test-only push with no change request still makes a model call` — flipped to code-only, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:926` — no model pass on a docs-only push — `worker/deno/tests/pr_feedback_drift_check_3143_test.ts::runPrFeedbackDriftCheck - a docs-only push makes no model call and reports clean` — unchanged base behaviour, still green
+- `worker/deno/lib/pr_feedback_drift_check.ts:992` — stale quote prevents "clean" — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a docs-only push with a still-present quoted sentence makes no model call but still runs the recovery turn` — flipped, 4 tests went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:993` — unreadable named summary prevents "clean" — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a finding naming a pr-summary that does not exist at the head is reported with quoteCheckUnavailable and no recovery call` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:1008` — stale quote triggers the recovery turn — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a test-only push that leaves a change-request-quoted sentence standing under a round-2 note is reported with the stale quote` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:1008` — unreadable summary alone runs no recovery turn — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a finding naming a pr-summary that does not exist at the head is reported with quoteCheckUnavailable and no recovery call` — passes on the head (1 agent call at most)
+- `worker/deno/lib/pr_feedback_drift_check.ts:1073` — stale quote still present after recovery → residual `staleQuotes` — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a test-only push that leaves a change-request-quoted sentence standing under a round-2 note is reported with the stale quote` — flipped, 2 tests went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:1073` — stale quote rewritten by recovery → "recovered" — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a recovery turn that rewrites the stale quoted sentence away reports recovered` — flipping the "recovered" gate went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:1077` — unreadable summary → `quoteCheckUnavailable` — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a finding naming a pr-summary that does not exist at the head is reported with quoteCheckUnavailable and no recovery call` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:307` — change request present / absent (fenced into the question) — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::buildDriftQuestionPrompt - fences the change request only when given, and always carries the internal-contradiction clause` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:331` — change request present / absent (quoted-sentence instruction) — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::buildDriftQuestionPrompt - fences the change request only when given, and always carries the internal-contradiction clause` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:432` — stale quotes present / absent (fenced into the recovery prompt) — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::buildDriftRecoveryPrompt - fences stale quotes only when given, and the 'do not append' step only then` — flipped, 3 tests went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:467` — stale quotes present / absent (rewrite step) — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::buildDriftRecoveryPrompt - fences stale quotes only when given, and the 'do not append' step only then` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:536` — stale quotes make a hit in `formatDriftResidual` — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::formatDriftResidual - a staleQuotes-only residual lists the quote under the 'found text' intro` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:569` — stale quotes listed in the residual — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::formatDriftResidual - a staleQuotes-only residual lists the quote under the 'found text' intro` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:581` — `quoteCheckUnavailable` line printed — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::formatDriftResidual - a quoteCheckUnavailable-only residual prints only that line, no 'found text' intro` — flipped, test went red
+- `worker/deno/lib/pr_feedback_drift_check.ts:781` — stale quotes choose the "found text" reply lead — `worker/deno/tests/pr_feedback_drift_check_3244_test.ts::runPrFeedbackDriftCheck - a docs-only push with a still-present quoted sentence makes no model call but still runs the recovery turn` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:48` — PR-summary path match / lookalike — `worker/deno/tests/change_request_quotes_3244_test.ts::isPrSummaryPath - matches a PR summary, rejects lookalikes` — flipped to always-match, test went red
+- `worker/deno/lib/change_request_quotes.ts:73` — non-header line skipped — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - strips a trailing :line, and excludes the Fix text and closing summary` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:79` — trailing `:line` stripped — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - strips a trailing :line, and excludes the Fix text and closing summary` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:86` — blank line ends the problem — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - strips a trailing :line, and excludes the Fix text and closing summary` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:90` — `**Fix:**` line ends the problem — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - a **Fix:** line directly after the problem with no blank line stops the problem there` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:91` — next header ends the problem — `worker/deno/tests/change_request_quotes_3244_test.ts::parseChangeRequestFindings - the next finding header directly after the problem with no blank line starts a new finding` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:126` — line break drops an open straight-double span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a quote whose opener and closer are on different lines yields nothing` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:132` — `\"` inside a span kept — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - the VibeCoder#3236 problem text, literally` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:132` — `\"` outside a span opens one — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - an escaped \" outside a span opens one, closed by a bare quote` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:142` — bare `"` closes a span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - the VibeCoder#3236 problem text, literally` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:170` — `“` opens a span / nested `“` kept — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly double quotes`, `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a nested “ inside a curly-double span is kept literally` — flipped, tests went red
+- `worker/deno/lib/change_request_quotes.ts:179` — `”` closes a span — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly double quotes` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:198` — single-quote opener at text start — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a single-quote opener at the very start of the text` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:200` — single-quote opener only after whitespace, `(` or `[` — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a single quote mid-word never opens a span` — flipped to any position, test went red
+- `worker/deno/lib/change_request_quotes.ts:234` — closer before a letter is an apostrophe / otherwise closes — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - straight single quotes containing an apostrophe`, `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - curly single quotes containing an apostrophe` — flipped, tests went red
+- `worker/deno/lib/change_request_quotes.ts:273` — span split at an ellipsis — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - an ellipsis-truncated quote yields the fragment before the ellipsis` — flipped to no split, test went red
+- `worker/deno/lib/change_request_quotes.ts:275` — fragment under four words dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a 3-word quote never clears the 4-word floor` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:276` — duplicate span dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::extractQuotedSpans - a duplicated span is returned once` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:333` — finding on a non-summary file ignored — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - a finding on a non-summary file is ignored` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:335` — unreadable summary reported unchecked — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - a summary mapped to undefined is reported unchecked, not stale` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:336` — duplicate unchecked file dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - two findings naming the same unreadable summary report it once in unchecked` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:345` — quote absent from the summary is not stale — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - a rewritten summary reports no stale quotes` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:347` — duplicate stale quote dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::findStaleQuotes - two findings quoting the same sentence in the same summary report it once` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:363` — non-summary finding skipped — `worker/deno/tests/change_request_quotes_3244_test.ts::summaryFilesNamedBy - unique PR summary paths, first-seen order` — flipped, test went red
+- `worker/deno/lib/change_request_quotes.ts:364` — duplicate summary path dropped — `worker/deno/tests/change_request_quotes_3244_test.ts::summaryFilesNamedBy - unique PR summary paths, first-seen order` — flipped, test went red

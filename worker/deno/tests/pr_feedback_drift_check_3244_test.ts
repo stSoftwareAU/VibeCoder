@@ -418,6 +418,18 @@ Deno.test("runPrFeedbackDriftCheck - a docs-only push with a still-present quote
     assertEquals(calls[0]!.readOnly, false);
     assertStringIncludes(calls[0]!.prompt, QUOTE);
     assertEquals(outcome.status, "reported");
+    if (outcome.status === "reported") {
+      assertEquals(outcome.residual.findings, []);
+      assertEquals(outcome.residual.mismatches, []);
+      assertEquals(outcome.residual.docsSweepProblems, []);
+    }
+
+    const message = await Deno.readTextFile(prResponseMessagePath(dir));
+    assertStringIncludes(
+      message,
+      "found text it leaves out of step with the code",
+    );
+    assert(!message.includes("could not check it fully"));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -594,6 +606,11 @@ Deno.test("buildDriftQuestionPrompt - fences the change request only when given,
     !withoutChangeRequest.includes("The change request this push answers:"),
   );
   assertStringIncludes(withoutChangeRequest, "PR-feedback round N");
+  assert(
+    !withoutChangeRequest.includes(
+      "Confirm each one has been rewritten or removed",
+    ),
+  );
 
   const withChangeRequest = buildDriftQuestionPrompt({
     repo: "org/repo",
@@ -609,6 +626,10 @@ Deno.test("buildDriftQuestionPrompt - fences the change request only when given,
   );
   assertStringIncludes(withChangeRequest, CHANGE_REQUEST);
   assertStringIncludes(withChangeRequest, "PR-feedback round N");
+  assertStringIncludes(
+    withChangeRequest,
+    "Confirm each one has been rewritten or removed",
+  );
 });
 
 Deno.test("buildDriftRecoveryPrompt - fences stale quotes only when given, and the 'do not append' step only then", () => {
