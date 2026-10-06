@@ -294,7 +294,7 @@ const REAL_IMAGE_OUTPUT: Record<
   // Captured from the image's own binary (Issue #2097): `graft --version`
   // prints the bare version, so the manifest entry needs no versionArgs.
   graft: { command: "0.18.0\n" },
-  rust: { command: "cargo 1.98.0 (797e8a9bc 2026-08-05)\n" },
+  rust: { command: "cargo 1.99.0 (5f94df478 2026-08-27)\n" },
   semgrep: { command: "1.173.0\n" },
   pyyaml: { module: "6.0.3\n" },
   // Captured by running the very tarball this manifest checksums, on the
