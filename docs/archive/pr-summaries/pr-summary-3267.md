@@ -97,14 +97,16 @@ flowchart LR
   `private-vulnerability-reporting` to `CHECKED_KINDS`, so every line counts one
   more checked setting: unchanged on a public repository where the read is a
   404, skipped on a private one. The old counts are untrue.
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` `${repo}: 6 applied, 1 unchanged, 0 skipped, 0 failed`, `` — now `2 unchanged`
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts` (two places): `` `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`, `` — now `8 unchanged`
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `/^Repo-settings hardening: 0 applied, 7 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/,` — now `8 unchanged`
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` `${healthy}: 6 applied, 1 unchanged, 0 skipped, 0 failed`, `` — now `2 unchanged`
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` `${repo}: 5 applied, 1 unchanged, 0 skipped, 1 failed`, `` — now `2 unchanged`
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `assertStringIncludes(line, "4 applied, 1 unchanged, 2 skipped, 0 failed");` — now `3 skipped` (private repository)
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `assertStringIncludes(line, "6 planned, 1 unchanged, 0 skipped, 0 failed");` — now `2 unchanged`
-  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts` (two places): `assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed");` — now `2 unchanged`
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes( first.lines.join("\n"), `${repo}: 6 applied, 1 unchanged, 0 skipped, 0 failed`, ); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `2 unchanged`
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes( second.lines.join("\n"), `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`, ); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `8 unchanged` (drifted-repo test)
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertMatch( last, /^Repo-settings hardening: 0 applied, 7 unchanged, 0 skipped, 0 failed across 1 repo\(s\)/, ); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `8 unchanged`
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes( out, `${healthy}: 6 applied, 1 unchanged, 0 skipped, 0 failed`, ); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `2 unchanged`
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes( out, `${repo}: 5 applied, 1 unchanged, 0 skipped, 1 failed`, ); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `2 unchanged`
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes(line, "4 applied, 1 unchanged, 2 skipped, 0 failed"); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `3 skipped` (private repository)
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes(line, "6 planned, 1 unchanged, 0 skipped, 0 failed"); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `2 unchanged`
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes( second.lines.join("\n"), `${repo}: 0 applied, 7 unchanged, 0 skipped, 0 failed`, ); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `8 unchanged` (CodeQL default-setup test)
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed"); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `2 unchanged` (own CodeQL workflow test)
+  - Removed from `worker/deno/tests/setup_repo_settings_harden_test.ts`: `` assertStringIncludes(line, "5 applied, 1 unchanged, 1 skipped, 0 failed"); `` — #3267 adds `private-vulnerability-reporting` to `CHECKED_KINDS`, so the old count is untrue; now `2 unchanged` (refused CodeQL read test)
 
 **Branch outcomes:**
 
