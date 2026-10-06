@@ -67,9 +67,23 @@ Details of the sweep:
 
 ## Test Plan
 
-- `deno task test:unit` on the touched test files: 221 passed, 0 failed.
+- `deno task test:unit` on the touched test files: 223 passed, 0 failed (221 plus the 2 added for the cache-key review finding below).
 - `./quality.sh < /dev/null` passes. Only config integration is skipped, because there is no local `.config.json`. `worker/deno/tests/native_sub_issue_refs_test.ts` uses `assertLinearGrowth`, so it is registered in `WALL_CLOCK_TEST_FILES` (`worker/deno/lib/parallel_unsafe_test_manifest.ts`) and runs in the serial pass.
 - Regression: `worker/deno/tests/issue_fetcher_sub_issues_test.ts` "checkParentBlocked - a parent with more than 30 children is not truncated, across paginated pages (Issue #3319)" fails against the base single-page read. The open #135 sits on page 2.
+
+**Review fix:** the sub-issue cache entry changed shape (`number[]` →
+`SubIssueRef[]`) but kept the `issue_sub_issues_v1_` key, so an entry a
+relaunching worker's old code cached within the 600s TTL would be read
+back under the new shape and throw in `checkParentBlocked`'s `childKey`,
+failing the parent/child gate open. Fixed by bumping the key to
+`issue_sub_issues_v2_` (`worker/deno/lib/issue_cache.ts`, following the
+`issue_state_v1`→`v2` precedent from Issue #2173) and adding a shape
+guard (`isSubIssueRefArray` in `worker/deno/lib/issue_finder_common.ts`)
+that rejects a malformed cached hit under the current key. Two new tests
+in `worker/deno/tests/issue_fetcher_sub_issues_test.ts` seed a v1-shaped
+entry and assert a live read occurs and `checkParentBlocked` still
+blocks; both fail against the pre-fix code (confirmed by reverting the
+fix and re-running).
 
 Removed assertions (each replaced in place by the `SubIssueRef` form of the same expectation):
 
@@ -132,6 +146,9 @@ Branch outcomes:
   - Test: "fetchNativeSubIssueRefs - a throwing gh propagates the throw".
 - Regex on untrusted `repository_url`: "parseNativeSubIssueRefPages - a hostile repository_url scales linearly and falls back to the parent repo" uses `assertLinearGrowth`.
   - Swapping in a backtracking pattern turned it red.
+- `worker/deno/lib/issue_finder_common.ts`'s `cached()` helper: a malformed/old-shaped hit under `isSubIssueRefArray` is rejected and forces a live read; a well-shaped hit is still served from the cache.
+  - Tests: "getSubIssues - a v1-shaped (number[]) cache hit under the current key is rejected, forcing a live read" and "checkParentBlocked - still blocks on an open child when the sub-issues cache holds a v1-shaped entry" in `worker/deno/tests/issue_fetcher_sub_issues_test.ts`; the cache-hit path itself stays covered by "cached fetcher #1818 - a second scan in the same iteration serves state, body and sub-issues from the cache" in `worker/deno/tests/issue_finder_cached_fetcher_test.ts`.
+  - Reverting the key bump and the shape guard turns both new tests red (confirmed).
 
 ## Security self-check
 
