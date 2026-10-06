@@ -1106,7 +1106,12 @@ each given the finished diff and nothing from the author's context:
   named contract source, and a workflow invariant documented but not
   validated — a `.github/workflows/*` behaviour change the README or a
   comment calls load-bearing that the repository's workflow validator does
-  not assert.
+  not assert. A rule the target repository's standards say is **enforced by
+  review** — no lint, formatter or CI check catches it, such as
+  GRQ-AutoTrader's one `use` statement per module per file — is a
+  `violation` whenever a line the diff adds or changes breaches it, whatever
+  its effect on correctness, and the `clean` line names each review-enforced
+  rule the reviewer checked (Issue #3230).
 
 **A violation the diff introduced blocks the PR.** A Standards finding in a
 line this PR wrote — a doc comment the change made wrong, a cited test that
@@ -1552,9 +1557,14 @@ literal, except that a `\w*` or `\w+` stem marker matches a run of word
 characters, so `replac\w*` finds both forms. A hit is cleared when it sits
 on a line the branch's `git diff --unified=0 <base>...HEAD` added or
 changed, or when the line names it as `file:line` or `file:start-end`. Any
-other hit blocks the summary with a notice listing each `file:line` and its
-sentence (at most 20, then "and N more"), through the same single in-run
-recovery turn: fix it, or name it as `file:line — still true because …`. A
+other hit is advisory (Issue #3237, because the re-run was failing fleet
+runs): it is posted once, as a PR comment for the reviewer, listing each
+`file:line` and its sentence (at most 20, then "and N more"), and logged at
+WARN. When GitHub's secondary rate limit defers the PR to the next cycle
+(Issue #1951), the comment is parked with the deferred PR record and the
+drain posts it on the PR it raises. It never blocks the summary and triggers
+no recovery turn — fix it, or
+name it as `file:line — still true because …`. A
 term with more than 10 such hits in doc files the diff did not touch is a
 locator word, not a removed claim: those hits are set aside and the term
 is logged as not checked line by line, while its hits in files the diff
@@ -1577,7 +1587,9 @@ other common source extensions) and keeps only hits on a whole comment line
 (`isSourceCommentLine`: `//`, `/*`, a `*` continuation, or `#` and a space).
 A code line, or a comment trailing code, is not read. Those hits are cleared
 the same way — a line the diff changed, or `file:line` in the Docs sweep line
-— and block through the same recovery turn. The broad-term limit of 10 is
+— and are otherwise advisory too: posted once as a PR comment and logged at
+WARN, never blocking and never triggering a recovery turn. The broad-term
+limit of 10 is
 counted for source comments apart from docs, so a term common in comments
 never sets aside its doc hits.
 

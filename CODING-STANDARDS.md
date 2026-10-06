@@ -193,6 +193,15 @@ earns its place by meeting all four conditions:
    fenced code and throws when the heading is renamed. A whole-file `includes`
    is not a documentation-drift test: it still passes on a page that moved the
    rule into an unrelated section, or deleted the context that gave it meaning.
+
+   `deno check` now rejects a whole-file `flat(body)`: `section()` returns a
+   branded `DocSection`, and `flat()` accepts nothing else. The type does not
+   see a raw `includes` over a whole page, or a test's own
+   whitespace-collapsing helper, so those are still review findings.
+   `flatWholeFile` is the named exception for
+   text that is not a section of a page: a pinned-phrase literal, text a
+   module holds, or a whole file read for an absence check. A positive pin
+   over a page's text through `flatWholeFile(body)` is a finding.
 2. **What it pins is a rule the code cannot express.** A promise about the
    worker's behaviour that no module holds as a value — "no worker flips it",
    "the trial runs for 10% of claims". There is nothing to import, so the prose
@@ -1237,8 +1246,9 @@ for every PR summary — containing:
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
    check it: the worker re-runs the line's quoted terms over the head's docs
-   and the comment lines of its source files, and refuses a hit outside the
-   diff that the line does not name.
+   and the comment lines of its source files, and posts a hit outside the
+   diff that the line does not name as an advisory PR comment for the
+   reviewer, rather than blocking the PR.
 4. **Test Plan** — Tests added or modified.
 
 The summary describes the **final** state of the branch, not the history of the

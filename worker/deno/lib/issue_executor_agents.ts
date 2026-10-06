@@ -198,9 +198,17 @@ const STANDARDS_REVIEWER_PROMPT = [
   "behaviour change the diff's README, comment or PR summary treats as " +
   "load-bearing, which the repository's workflow validator does not " +
   "assert with a negative test.",
+  "- A rule the repository's standards say is enforced by review — no " +
+  'lint, formatter or CI check catches it, in words such as "by review ' +
+  'only" or "a finding a reader has to raise" — is a `violation` ' +
+  "whenever a line the diff adds or changes breaches it, whatever its " +
+  "effect on correctness: the review is its only enforcement (Issue " +
+  "#3230). A review-enforced rule is never `optional`, however " +
+  "stylistic it looks.",
   "- List any other departure (style, naming, taste) under `optional`, one " +
   "line each. Those are not violations and are not to be chased.",
-  "- Name the `clean` areas you checked and found compliant.",
+  "- Name the `clean` areas you checked and found compliant, naming each " +
+  "review-enforced rule you checked, so a rule you skipped shows.",
   "",
   "You are read-only and cannot spawn sub-agents. Do the review yourself.",
 ].join("\n");

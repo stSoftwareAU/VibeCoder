@@ -15,13 +15,14 @@
 
 import { assert, assertStringIncludes } from "@std/assert";
 import {
+  type DocSection,
   flat,
   readRepoDoc,
   section,
   withoutSection,
 } from "./support/markdown_docs.ts";
 
-async function loadSection(): Promise<string> {
+async function loadSection(): Promise<DocSection> {
   const prompt = await readRepoDoc("prompts/issue/prompt.md");
   return section(prompt, "PR Summary File");
 }

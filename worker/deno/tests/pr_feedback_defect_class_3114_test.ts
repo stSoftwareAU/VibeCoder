@@ -18,18 +18,22 @@
  */
 
 import { assert } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  type DocSection,
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const PARAGRAPH_START =
   "**Fix the defect everywhere it lives, not only where the finding points.**";
 
-function defectClassParagraph(sectionText: string): string {
+function defectClassParagraph(sectionText: DocSection): string {
   const start = sectionText.indexOf(PARAGRAPH_START);
   assert(start >= 0, "could not locate the 'fix the defect everywhere' rule");
   const end = sectionText.indexOf("\n\n", start);
-  const paragraph = end >= 0
-    ? sectionText.slice(start, end)
-    : sectionText.slice(start);
+  const paragraph = excerpt(sectionText, start, end >= 0 ? end : undefined);
   return flat(paragraph).trim().toLowerCase();
 }
 

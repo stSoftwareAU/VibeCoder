@@ -15,6 +15,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { prNumberFromUrl } from "./run_outcome.ts";
 import type { Result } from "../types.ts";
 import {
   clearDeferredPr,
@@ -163,6 +164,16 @@ export async function drainDeferredPrs(
         `✅ **PR raised** — the pull request deferred by GitHub's secondary ` +
           `(content-creation) rate limit is now open: ${created.value}`,
       );
+      // Issue #3237: the run's advisory comment (Docs sweep term hits) was
+      // meant for the PR, which did not exist yet — post it there now.
+      const prNumber = prNumberFromUrl(created.value);
+      if (record.advisoryComment && prNumber > 0) {
+        await bestEffortComment(
+          deps,
+          { ...record, issueNumber: prNumber },
+          record.advisoryComment,
+        );
+      }
       result.raised++;
       continue;
     }

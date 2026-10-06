@@ -86,7 +86,7 @@ calls it. Its row says so, and it is deliberately absent from
 
 | Toolchain                                          | Commands (or modules)                     | Exists for                                                                                    |
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `rust` 1.98.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
+| `rust` 1.99.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
@@ -114,12 +114,16 @@ added to one of the Containerfile's `install-toolchains.sh` runs.
 
 Eight consequences worth knowing:
 
-- **Rust is pinned to 1.98.0, not `stable`.** That is the channel
-  NEAT-AI-scorer, NEAT-AI-Lamarck, NEAT-AI-Backpropagation and NEAT-AI-Forests
-  pin in their `rust-toolchain.toml`. Forests was the fourth consumer this
-  list omitted until Issue #309 enumerated `rust-toolchain.toml` across the
-  fleet; it commits `Cargo.toml`, `deny.toml` and its own `quality.sh`, so it
-  is in the Rust gate like the other three. Bump those repos and this pin
+- **Rust is pinned to 1.99.0, not `stable`.** That is the channel
+  NEAT-AI-scorer, NEAT-AI-Discovery, NEAT-AI-Lamarck and NEAT-AI-Backpropagation
+  pin in their `rust-toolchain.toml`; they also declare `rust-version = "1.99"`,
+  so on the 1.98.0 image every `cargo check` on them failed with exit 101
+  (Issue #3258). NEAT-AI-Forests, NEAT-AI-Ockham, NEAT-AI-Rebase and
+  NEAT-AI-Refinery have their 1.99.0 pin open as PRs under NEAT-AI-core#747;
+  GRQ-AutoTrader, GRQ-AutoTraderBackTesting and template-rust still pin
+  1.98.0 (Issue #309 enumerated `rust-toolchain.toml` across the fleet).
+  There is no `rustup` in the image, so that file is not consulted here and
+  every crate builds with the baked 1.99.0. Bump those repos and this pin
   together — a new stable's clippy lints break their `-D warnings` gates with
   no code change.
 - **There is no `rustup`.** The toolchain is installed into `/usr/local`, so

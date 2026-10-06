@@ -15,12 +15,18 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  DocSection,
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const RULE_START = "- **Vet every regex on untrusted text";
 
 /** The rule's bullet, from its bold lead-in to the next bullet or paragraph. */
-function ruleBullet(sectionText: string, what: string): string {
+function ruleBullet(sectionText: DocSection, what: string): string {
   const start = sectionText.indexOf(RULE_START);
   assert(start >= 0, `could not locate the regex-vetting rule in ${what}`);
   const rest = sectionText.slice(start + RULE_START.length);
@@ -28,7 +34,9 @@ function ruleBullet(sectionText: string, what: string): string {
     i >= 0
   );
   const end = ends.length > 0 ? Math.min(...ends) : rest.length;
-  return flat(RULE_START + rest.slice(0, end)).trim();
+  return flat(
+    excerpt(sectionText, start, start + RULE_START.length + end),
+  ).trim();
 }
 
 const KEY_PHRASES = [

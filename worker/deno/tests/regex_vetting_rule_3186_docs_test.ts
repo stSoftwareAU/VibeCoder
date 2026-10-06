@@ -14,7 +14,12 @@
  */
 
 import { assert } from "@std/assert";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
+import {
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
 const KEY_PHRASES = [
   "A `(.*)$` tail can fail too, because `.` stops at a lone `\\r`",
@@ -37,7 +42,11 @@ Deno.test("both surfaces name the failing `(.*)$` tail in the regex-vetting rule
       i >= 0
     );
     const rule = flat(
-      rest.slice(0, ends.length > 0 ? Math.min(...ends) : undefined),
+      excerpt(
+        text,
+        start + 2,
+        ends.length > 0 ? start + 2 + Math.min(...ends) : undefined,
+      ),
     );
     for (const phrase of KEY_PHRASES) {
       assert(rule.includes(phrase), `${path} is missing "${phrase}"`);
