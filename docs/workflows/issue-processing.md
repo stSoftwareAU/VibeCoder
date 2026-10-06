@@ -1546,8 +1546,8 @@ reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
 folded into that gate's own notice (Issue #3085 review), and only a summary
 that passes all three reaches the late summary gates' own block, which reports
-every one of docs sweep, the placeholder-token gate and the branch-outcomes
-gate that fails, at once (Issue #3147).
+every one of docs sweep, the placeholder-token gate, the branch-outcomes gate
+and the summary claim check that fails, at once (Issue #3147, #3257).
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
@@ -1825,6 +1825,88 @@ every branch its own fix commits add and refreshes the committed summary's
 `Branch outcomes:` list to the head, rather than leaving the first round's
 entries standing (`prompts/pr_feedback/prompt.md`).
 
+## 🔎 A summary that describes named code wrongly blocks the PR (Issue #3257)
+
+A first-run PR summary has repeatedly described named code wrongly — quoting
+a function, file, test, regex or pattern and saying what it does, contains,
+matches or covers when the head says something else. VibeCoder#3252 cost
+three separate send-backs to three false claims in one summary; #3132 cited a
+Test Plan behaviour no test actually covered. The review-fix drift check
+(Issue #3143, `pr_feedback_drift_check.ts`) catches exactly this shape of
+problem, but only on a review-fix push — it never runs on the very first turn
+that writes the summary and raises the PR.
+
+**The gate.**
+[`summary_claim_check.ts`](../../worker/deno/lib/summary_claim_check.ts) runs
+from the issue-run completion phase (`completionBody` in
+[`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts))
+whenever a PR summary file was loaded, before the PR is raised. It reuses the
+review-fix drift check's question renderer (`renderDriftVerdictQuestion`),
+verdict parser (`parseDriftVerdict`) and read-only tool deny list
+(`DRIFT_CHECK_DISALLOWED_TOOLS`) rather than inventing a second copy of that
+machinery.
+
+Two independent checks feed one result:
+
+1. **One constrained, read-only model question.** The model runs
+   `git diff <base>...HEAD`, reads the summary file (fenced under a nonce),
+   and quotes every sentence that names a function, file, test, regex or
+   pattern and says what it does, contains, matches or covers but is false at
+   the head — an illustrative "for example `X`" counts too. A finding blocks
+   only when it names the summary file and its sentence is found in the
+   summary's own text; otherwise it is logged as unconfirmed and never acted
+   on. A base ref that cannot be resolved is logged at error level; a
+   question that cannot be launched, or a reply with no readable verdict, is
+   logged at warn level instead — the same as the review-fix drift check's
+   own model pass. All three are recorded in `notChecked` and never block on
+   their own — an unreachable model or an unreadable file is never reported
+   as a clean check, but it also never blocks a PR by itself.
+2. **A deterministic Test Plan backstop**
+   (`findTestPlanClaimProblems`). In the `## Test Plan` section, a list item
+   that names a test file in backticks and quotes a behaviour ("…" or
+   “…”, at least two significant words) attaches to the nearest preceding
+   test-file reference, provided no other backtick span (a command, a path,
+   an error message) lies between them — otherwise to the nearest following
+   one under the same condition, and otherwise it is not a coverage claim at
+   all. An attached claim must point to a test in that file (split at test
+   declarations) whose name or body, or the file's own preamble — the text
+   before the first declaration, where a fixture shared by more than one
+   test tends to live — shares at least half of the quote's significant
+   words; a named test file not tracked at the head blocks too. A reference
+   to a directory (trailing `/`), a glob or a directory prefix of tracked
+   paths is not a file; it, an ambiguous basename, an unreadable or oversized
+   file, a file with no recognised test declaration, or a claim past the
+   50-claim cap is logged as not checked rather than blocking. A corpus run of this backstop over the 876
+   summaries archived in `docs/archive/pr-summaries/` when it was run flagged 2
+   (pr-summary-658 and pr-summary-663, both quoting test names no longer
+   present in the named files); the adjacency and preamble rules above
+   removed four would-be false positives — pr-summary-1549 and -3222
+   (shared fixture constants) and pr-summary-599 and -3178 (quoted error
+   messages sitting beside other backtick spans).
+
+Either kind of hit is a summary-rule block, folded into whichever summary
+gate blocks first — it is last in the late-summary chain, after docs sweep,
+removed assertions, the result placeholder and branch outcomes — and goes
+through the existing [in-run
+recovery](#-the-in-run-recovery-from-a-summary-rule-block) path: one recovery
+turn, then the second block fails the run (or finalises an existing PR as
+`summary_incomplete`). The claim check runs again on the re-run after
+recovery.
+
+```mermaid
+flowchart TD
+    A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
+    A --> C{"Base ref known?"}
+    C -- no --> D["Not checked"]
+    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code"]
+    E --> F["Confirm each finding against<br/>the summary's own text"]
+    B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
+    F --> G
+    D --> G
+    G -- yes --> H["Summary-rule block —<br/>one recovery turn, then fail/finalise"]
+    G -- no --> I["PR raised"]
+```
+
 ## 🔧 Changed workflow files are checked before the PR
 
 Issue #1755 hardens the provisioning path **by construction**: the workflow
@@ -1877,7 +1959,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the seven summary gates above, a finding
+Like the security-fix gate and unlike the eight summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -1915,19 +1997,20 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the seven summary-rule gates — closure,
+with **no** PR yet, each of the eight summary-rule gates — closure,
 independent review, reproduction status, docs sweep, removed test
-assertions, the placeholder-token gate and the branch-outcomes gate — still
-pre-empts the guard: a follow-up filed there would promise "that run's PR still
-completes #N on merge" for a PR any of those gates can still prevent from ever being
-raised, so whichever gate blocks first fails the run and the guard never
-runs. On an existing-PR branch the guard instead runs from inside
-`reportSummaryRuleBlock` itself (Issue #3092), after whichever gate's own
-comment is posted but before that gate's recovery finalises the PR. Before
-Issue #3092, only the docs-sweep gate took the guard on an existing-PR branch,
-because that gate ran after the guard; the closure, independent-review and
-reproduction-status gates ran ahead of the guard and skipped it. Once all
-seven gates pass, `completionBody` runs the same guard once more — via the
+assertions, the placeholder-token gate, the branch-outcomes gate and the
+summary claim check — still pre-empts the guard: a follow-up filed there
+would promise "that run's PR still completes #N on merge" for a PR any of
+those gates can still prevent from ever being raised, so whichever gate
+blocks first fails the run and the guard never runs. On an existing-PR
+branch the guard instead runs from inside `reportSummaryRuleBlock` itself
+(Issue #3092), after whichever gate's own comment is posted but before that
+gate's recovery finalises the PR. Before Issue #3092, only the docs-sweep
+gate took the guard on an existing-PR branch, because that gate ran after
+the guard; the closure, independent-review and reproduction-status gates ran
+ahead of the guard and skipped it. Once all eight gates pass, `completionBody`
+runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
 
@@ -2010,10 +2093,11 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The seven summary gates above — acceptance-criteria closure, independent review,
+The eight summary gates above — acceptance-criteria closure, independent review,
 reproduction status, docs sweep, removed test assertions, the
-placeholder-token gate and the branch-outcomes gate — sit at the completion
-phase's PR-creation chokepoint, so blocking one normally costs the next
+placeholder-token gate, the branch-outcomes gate and the summary claim check
+— sit at the completion phase's PR-creation chokepoint, so blocking one
+normally costs the next
 attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
 the execute phase often enough that the completion phase carries a self-healing
@@ -2208,10 +2292,11 @@ takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before: finalised as `summary_incomplete`
 when a PR exists, failed when none does.
 
-All seven summary gates route through it: closure (#518), independent review
+All eight summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
-assertions (#3131), the placeholder-token gate (#3124) and the
-branch-outcomes gate (#3147). The two exceptions above do not — the
+assertions (#3131), the placeholder-token gate (#3124), the
+branch-outcomes gate (#3147) and the summary claim check (#3257). The two
+exceptions above do not — the
 security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.
 
