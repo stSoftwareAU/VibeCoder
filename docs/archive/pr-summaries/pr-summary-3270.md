@@ -42,27 +42,30 @@ monitored repos' disclosure routes, still true.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- "Both private routes are named, PVR first." — `SECURITY.md` step 2 lists
-  **Preferred:** GitHub private vulnerability reporting before
-  **Alternative:** `security@stsoftware.com.au`. reviewer: met
-- "The "no public issue" rule is stated." — step 1: "**Do not** file a public
-  issue or pull request for a vulnerability." reviewer: met
-- "The TOC link still lands on the section." — the heading
-  `## 📢 Responsible Disclosure Policy` is unchanged, so `SECURITY.md:23`
-  `#responsible-disclosure-policy` resolves. reviewer: met
-- "markdownlint passes." — `./quality.sh` reports `markdownlint: PASSED`; the
-  reviewer could not run the linter itself and marked it unverified.
-  reviewer: partial
+- **met** — Both private routes are named, PVR first — evidence:
+  `SECURITY.md:2029` (**Preferred:** GitHub private vulnerability reporting,
+  linking `security/advisories/new`) before `SECURITY.md:2032`
+  (**Alternative:** `security@stsoftware.com.au`) — reviewer: met
+- **met** — The "no public issue" rule is stated — evidence: `SECURITY.md:2023`
+  "**Do not** file a public issue or pull request for a vulnerability." —
+  reviewer: met
+- **met** — The TOC link still lands on the section — evidence:
+  `SECURITY.md:2017` heading `## 📢 Responsible Disclosure Policy` unchanged;
+  `SECURITY.md:23` `#responsible-disclosure-policy` resolves — reviewer: met
+- **met** — markdownlint passes — evidence: `markdownlint-cli2 SECURITY.md`
+  with the repo's `.markdownlint-cli2.jsonc` reports 0 issues; `./quality.sh`
+  reports `markdownlint: PASSED` — reviewer: met
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- Clean: no violations; prose-only change in Australian English, minimal and
-  in scope.
-- Optional note (not a violation): the advisory URL hard-codes
-  `stSoftwareAU/VibeCoder`; kept, because a relative link cannot reach the
-  GitHub Security tab.
+- **clean** — Australian English, KISS/minimal scope, DRY (no other non-archive
+  doc repeats the old wording; `docs/THREAT-MODEL.md:357` anchor still
+  resolves), link correctness (`SECURITY.md:2029` matches the `origin` remote,
+  well-formed `mailto:`), and markdown list indentation and wrapping. Optional
+  non-blocking note: unchanged item 3 (`SECURITY.md:2039`) has no closing full
+  stop; left as is, because the issue rules out other changes.
 
 ## Test Plan
 
