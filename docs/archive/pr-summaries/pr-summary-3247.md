@@ -102,6 +102,12 @@ rule agrees with each; the "explicitly required" carve-outs are addressed by
   `issue_prompt_spec_section_docs_test.ts`, `test_audit_template_test.ts`,
   `test_audit_prompt_v12_test.ts`): 39 passed.
 - No existing test edited; no assertions removed.
-- `./quality.sh` — QUALITY_RESULT
+- `./quality.sh` — every stage before the unit tests passed on head
+  (completeness, chokepoints, workflow hygiene, mermaid, markdownlint,
+  semgrep, release-tag ruleset). The full unit-test stage did not finish
+  inside a 570s foreground run: the doc edits invalidated the gate's test
+  cache. So the gate result is not claimed here.
+
+<!-- vibe-quality-gate-skipped reason="full unit-test stage did not finish within the 570s foreground limit (cache invalidated by the doc edits); all static stages passed, and the touched docs tests pass — CI and the worker's pre-PR gate run the full suite" -->
 
 **Branch outcomes:** none added
