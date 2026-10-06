@@ -4,14 +4,16 @@ Five drift tests pinned prompt phrases over the whole flattened file, so a
 phrase surviving in an unrelated section kept them green. Each presence pin is
 now read with `readRepoDoc` and narrowed with `section()` to the heading that
 carries its rule. The string pins then flatten that section with `flat()`;
-`sleep_poll_guidance_1954_test.ts` instead tests its `WAIT_CONTRACT` regexes
-against the raw `section(...)` text, without `flat()`. The two "must not appear
+the `WAIT_CONTRACT` regexes test the raw `section(...)` text, without `flat()`,
+and now live in the new `sleep_poll_guidance_drift_test.ts` rather than
+`sleep_poll_guidance_1954_test.ts` — the same `markdown_docs.ts`-import hazard
+that moved the `no_verify_ban_test.ts` pins. The two "must not appear
 anywhere" checks stay on `flatWholeFile`. The tests, and the pins they hold, are
 the same as before; only where each pin looks has changed. Closes #3302.
 
 - [x] `standing_violation_3196_test.ts` — pins scoped to "Independent Review Before the PR"
 - [x] `reviewer_verdict_rule_test.ts` — pins scoped to "Independent Review Before the PR"
-- [x] `sleep_poll_guidance_1954_test.ts` — wait contract scoped per template
+- [x] `sleep_poll_guidance_1954_test.ts` — wait contract scoped per template; split into `sleep_poll_guidance_drift_test.ts` to keep the `check:manifests` family (Issue #1483)
 - [x] `reuse_existing_owner_3084_test.ts` — pins scoped per doc
 - [x] `no_verify_ban_test.ts` — section pins split into `no_verify_ban_drift_test.ts`
 - [x] Per-pin red check (44 checks)
@@ -45,6 +47,13 @@ the phrase disappears from the whole prompt. This PR applies the #3307 bar:
   So the section pins moved to the new
   `worker/deno/tests/no_verify_ban_drift_test.ts`.
   `no_verify_ban_test.ts` keeps the whole-tree scan and the `familyText(BAN_OWNER)` check.
+- **`sleep_poll_guidance_1954_test.ts` was split the same way.** Its
+  `WAIT_CONTRACT` section-scoped pins need `markdown_docs.ts` too, which drops
+  it from the `check:manifests` family for the same `HEAVY_RE` reason. Those
+  pins moved to the new `worker/deno/tests/sleep_poll_guidance_drift_test.ts`;
+  `sleep_poll_guidance_1954_test.ts` keeps the whole-tree sleep-poll scan and
+  the `gh`-guard checks, and `completeness_checks_test.ts` now pins it as a
+  family member.
 - **No pin is a substring of another pin in the same scoped list,** so no pin
   is subsumed.
 
@@ -67,10 +76,11 @@ the phrase disappears from the whole prompt. This PR applies the #3307 bar:
 
 Backend-only change: only test files are touched.
 
-- `./quality.sh < /dev/null` PASSED at ecefcab1. The config integration
-  step was SKIPPED (no live config in the container). HEAD's content equals
-  ecefcab1 apart from this summary (`git diff --stat ecefcab1 HEAD -- worker prompts`
-  is empty).
+- `./quality.sh < /dev/null` PASSED at e8e0a12b (which includes the
+  `sleep_poll_guidance_1954_test.ts`/`sleep_poll_guidance_drift_test.ts` split
+  below and the vacuous-pin re-check that fixed this Test Plan — both from a
+  PR #3310 review round, applied after the ecefcab1 run). The config
+  integration step was SKIPPED (no live config in the container).
 - Docs sweep: no symbol, flag or documented command was renamed or changed.
   Only test-internal scoping moved, so no doc needed updating. The module doc
   of `worker/deno/tests/reuse_existing_owner_3084_test.ts` was updated to
@@ -144,8 +154,11 @@ issue. Where each one went:
   `reviewer verdict - the prompt no longer demands verbatim reviewer text (Issue #886)`.
 - Removed from `worker/deno/tests/sleep_poll_guidance_1954_test.ts` (one) —
   re-asserted against the raw `section(...)` text from
-  `WAIT_CONTRACT_SECTION`, with a message naming the section, in
-  `sleep_poll_guidance_1954_test.ts::${template} - names a wait command that works in the container`.
+  `WAIT_CONTRACT_SECTION`, with a message naming the section, now in
+  `sleep_poll_guidance_drift_test.ts::${template} - names a wait command that works in the container`
+  (moved out of `sleep_poll_guidance_1954_test.ts` to keep that file in the
+  `check:manifests` family — see Essential Design Decisions; caught by
+  PR review, not in the first push).
 - Removed from `worker/deno/tests/standing_violation_3196_test.ts` (the last
   five) — the load check went with `loadPrompt`. The `/why it stands/i`
   absence check is still whole-file, now on `flatWholeFile(doc)`. The three
@@ -153,34 +166,43 @@ issue. Where each one went:
   in `Issue #3196 - the issue prompt offers only fixed or filed as a violation's reason`.
 - Base: every pinned phrase is already in its target section on origin/main
   (416fd710). This is a refactor, so the tests are expected green on base.
-- Per-pin red check: for each pin, I deleted exactly one occurrence of the
-  phrase, from the target section only, and ran the test. Each run FAILED,
-  then I restored the phrase. 44 checks; no vacuous or misplaced pin.
+- Per-pin red check: for each pin, I deleted every occurrence of the phrase
+  within the target section only — the `Removed` column — and ran the test.
+  Each run FAILED, then I restored the phrase(s). 44 checks; no vacuous or
+  misplaced pin. A review on this PR found that five of these rows (the
+  `reason: fixed in this diff`, `` `met` ``, `` `partial` ``, `` `missing` ``
+  and `` `unrequested` `` pins in `standing_violation_3196_test.ts` and
+  `reviewer_verdict_rule_test.ts`) had originally been checked by removing only
+  one of several in-section occurrences, which left the test green — those
+  phrases recur 2–7 times in "Independent Review Before the PR" (the worked
+  examples and later prose restate them). The rows below now record the
+  actual in-section occurrence count, and each was re-verified by deleting
+  every one of them and confirming the test goes red.
 
 | Test file | Doc | Section | Pin | Removed | Result |
 |---|---|---|---|---|---|
-| standing_violation_3196 | issue | Independent Review Before the PR | reason: fixed in this diff | 1 | FAILED |
+| standing_violation_3196 | issue | Independent Review Before the PR | reason: fixed in this diff | 2 | FAILED |
 | standing_violation_3196 | issue | Independent Review Before the PR | reason: pre-existing, filed #<n> | 1 | FAILED |
 | standing_violation_3196 | issue | Independent Review Before the PR | A breach in a line this diff adds or changes may not be deferred | 1 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | `reviewer:` is a verdict, not a quotation | 1 | FAILED |
-| reviewer_verdict_rule | issue | Independent Review Before the PR | `met` | 1 | FAILED |
-| reviewer_verdict_rule | issue | Independent Review Before the PR | `partial` | 1 | FAILED |
-| reviewer_verdict_rule | issue | Independent Review Before the PR | `missing` | 1 | FAILED |
-| reviewer_verdict_rule | issue | Independent Review Before the PR | `unrequested` | 1 | FAILED |
+| reviewer_verdict_rule | issue | Independent Review Before the PR | `met` | 3 | FAILED |
+| reviewer_verdict_rule | issue | Independent Review Before the PR | `partial` | 2 | FAILED |
+| reviewer_verdict_rule | issue | Independent Review Before the PR | `missing` | 3 | FAILED |
+| reviewer_verdict_rule | issue | Independent Review Before the PR | `unrequested` | 7 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | put the **nearest** of the four in `reviewer:` | 1 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | quote what it actually said in `reason:` | 1 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | not assessed | 1 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | traceable, not creep | 1 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | add a one-line `reason:` saying why you departed | 1 | FAILED |
 | reviewer_verdict_rule | issue | Independent Review Before the PR | An unrecorded departure is the self-assessment … | 1 | FAILED |
-| sleep_poll_guidance_1954 | coding_guidelines | Long-Horizon Runs | gh pr checks --watch | 1 | FAILED |
-| sleep_poll_guidance_1954 | coding_guidelines | Long-Horizon Runs | gh run watch --exit-status | 1 | FAILED |
-| sleep_poll_guidance_1954 | coding_guidelines | Long-Horizon Runs | foreground `sleep` refusal | 1 | FAILED |
-| sleep_poll_guidance_1954 | coding_guidelines | Long-Horizon Runs | bounded by the Bash tool's … timeout | 1 | FAILED |
-| sleep_poll_guidance_1954 | ci_fix | CI Fix Mode | gh pr checks --watch | 1 | FAILED |
-| sleep_poll_guidance_1954 | ci_fix | CI Fix Mode | gh run watch --exit-status | 1 | FAILED |
-| sleep_poll_guidance_1954 | ci_fix | CI Fix Mode | foreground `sleep` refusal | 1 | FAILED |
-| sleep_poll_guidance_1954 | ci_fix | CI Fix Mode | bounded by the Bash tool's … timeout | 1 | FAILED |
+| sleep_poll_guidance_drift | coding_guidelines | Long-Horizon Runs | gh pr checks --watch | 1 | FAILED |
+| sleep_poll_guidance_drift | coding_guidelines | Long-Horizon Runs | gh run watch --exit-status | 1 | FAILED |
+| sleep_poll_guidance_drift | coding_guidelines | Long-Horizon Runs | foreground `sleep` refusal | 1 | FAILED |
+| sleep_poll_guidance_drift | coding_guidelines | Long-Horizon Runs | bounded by the Bash tool's … timeout | 1 | FAILED |
+| sleep_poll_guidance_drift | ci_fix | CI Fix Mode | gh pr checks --watch | 1 | FAILED |
+| sleep_poll_guidance_drift | ci_fix | CI Fix Mode | gh run watch --exit-status | 1 | FAILED |
+| sleep_poll_guidance_drift | ci_fix | CI Fix Mode | foreground `sleep` refusal | 1 | FAILED |
+| sleep_poll_guidance_drift | ci_fix | CI Fix Mode | bounded by the Bash tool's … timeout | 1 | FAILED |
 | reuse_existing_owner_3084 | issue | Instructions | call the existing owner | 1 | FAILED |
 | reuse_existing_owner_3084 | issue | Instructions | formats, orders, ranks, validates or decides | 1 | FAILED |
 | reuse_existing_owner_3084 | issue | Instructions | every component or function the issue names | 1 | FAILED |
