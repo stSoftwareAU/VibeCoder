@@ -103,6 +103,8 @@ flowchart TD
 
 ## Test Plan
 
+- Removed from `worker/deno/tests/repo_settings_scanner_test.ts`: `assertEquals(ids, [ "BP-REPO-ACTIONS-ALLOW-ALL", "BP-REPO-ACTIONS-MAY-APPROVE-PRS", "BP-REPO-DEFAULT-TOKEN-WRITE", "BP-REPO-PUSH-PROTECTION-OFF", "BP-REPO-RULESET-NO-REVIEW", "BP-REPO-SECRET-SCANNING-OFF", "BP-REPO-SHA-PIN-NOT-ENFORCED", ]);`. #3268 makes a public repository with PVR off file `BP-REPO-PVR-OFF`, so the old list is untrue. The same test now asserts that list plus `"BP-REPO-PVR-OFF"`.
+- Removed from `worker/deno/tests/setup_repo_settings_audit_close_test.ts`: `assertEquals( [...ids].sort(), [ "BP-REPO-ACTIONS-MAY-APPROVE-PRS", "BP-REPO-DEFAULT-TOKEN-WRITE", "BP-REPO-RULESET-NO-REVIEW", ], );`. #3268 maps `BP-REPO-PVR-OFF` in `FINDING_STEP_KIND`, and that kind is absent from the outcome, so it is eligible. The same test now asserts that list plus `"BP-REPO-PVR-OFF"`.
 - `./quality.sh < /dev/null` on the head before this summary commit: `Result: PASSED (with skipped checks)` — only `config integration` was skipped; deno tests, lint, type check, fmt, semgrep and markdownlint all passed.
 - `deno task test:unit tests/repo_settings_scanner_test.ts tests/github_actions_audit_template_test.ts tests/setup_repo_settings_audit_close_test.ts < /dev/null` (from `worker/deno`): 116 passed, 0 failed.
 - Added to `worker/deno/tests/repo_settings_scanner_test.ts`:
@@ -122,9 +124,6 @@ flowchart TD
   - the `HARDENED`/`OPEN` fixtures gain a PVR entry;
   - the private/internal secret-protection tests filter `onCheckSkipped` to `SECRET_PROTECTION_SKIP_CHECK`;
   - one title is now "records no secret-protection skip (Issue #2225)".
-- Removed assertions (multi-line assertions with a line changed):
-  - In `worker/deno/tests/repo_settings_scanner_test.ts`: `assertEquals(ids, [ "BP-REPO-ACTIONS-ALLOW-ALL", "BP-REPO-ACTIONS-MAY-APPROVE-PRS", "BP-REPO-DEFAULT-TOKEN-WRITE", "BP-REPO-PUSH-PROTECTION-OFF", "BP-REPO-RULESET-NO-REVIEW", "BP-REPO-SECRET-SCANNING-OFF", "BP-REPO-SHA-PIN-NOT-ENFORCED", ]);`. #3268 makes a public repository with PVR off file `BP-REPO-PVR-OFF`, so the old list is untrue. The same test now asserts that list plus `"BP-REPO-PVR-OFF"`.
-  - In `worker/deno/tests/setup_repo_settings_audit_close_test.ts`: `assertEquals( [...ids].sort(), [ "BP-REPO-ACTIONS-MAY-APPROVE-PRS", "BP-REPO-DEFAULT-TOKEN-WRITE", "BP-REPO-RULESET-NO-REVIEW", ], );`. #3268 maps `BP-REPO-PVR-OFF` in `FINDING_STEP_KIND`, and that kind is absent from the outcome, so it is eligible. The same test now asserts that list plus `"BP-REPO-PVR-OFF"`.
 
 **Branch outcomes:**
 
