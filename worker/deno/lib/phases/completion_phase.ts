@@ -2848,6 +2848,7 @@ async function completionBody(
       state,
       prBody,
       deps,
+      docsSweepHitsComment,
     );
   }
 
