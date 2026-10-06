@@ -13,11 +13,15 @@
  * `` - `./quality.sh < /dev/null` on the head: GATE_OUTCOME_PENDING ``. Since
  * Issue #3248, a second, structural rule backstops the suffix one: on a line
  * whose raw text cites a known gate command (`./quality.sh`, `deno test`,
- * `cargo test`, etc.), the text after the line's last `:` is checked as a
- * whole — a bare ALL-CAPS identifier with at least one underscore there
- * (optionally followed by a full stop) is a fill-in-later token regardless of
- * its suffix. `PASSED` and `OK` (no underscore) are not flagged; a line with
- * no cited gate command is not flagged.
+ * `cargo test`, etc.), the text after the line's last result separator is
+ * checked as a whole — a bare ALL-CAPS identifier with at least one
+ * underscore there (optionally followed by a full stop) is a fill-in-later
+ * token regardless of its suffix. `PASSED` and `OK` (no underscore) are not
+ * flagged; a line with no cited gate command is not flagged. A result
+ * separator is a `:` anywhere on the line, or — since Issue #3287, after a
+ * PR (#3283) escaped the colon form with
+ * `` - `./quality.sh` — GATE_RESULT `` — an em dash, en dash, spaced hyphen
+ * or double hyphen, or `=`, each counted only after the cited command.
  *
  * A left-over placeholder, caught by either rule, is therefore treated the
  * same as an unreported result: the PR-creation path blocks on it (folded
@@ -57,6 +61,36 @@ const GATE_COMMAND_RE =
 
 /** A bare ALL-CAPS identifier with at least one underscore, optionally ending in a full stop. */
 const BARE_IDENTIFIER_RE = /^([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\.?$/;
+
+/**
+ * Result separators counted only after the cited gate command (Issue #3287);
+ * a colon counts anywhere on the line (Issue #3248). Restricting these to
+ * after the command keeps a list bullet's `- ` or an option's `=` before it
+ * from reading as one.
+ */
+const POST_COMMAND_SEPARATORS = ["—", "–", " -- ", " - ", "="] as const;
+
+/** Offset just past the line's last result separator, or -1 when it has none. */
+function resultTailStart(maskedLine: string, commandEnd: number): number {
+  let bestAt = -1;
+  let tailStart = -1;
+
+  const colon = maskedLine.lastIndexOf(":");
+  if (colon !== -1) {
+    bestAt = colon;
+    tailStart = colon + 1;
+  }
+
+  for (const sep of POST_COMMAND_SEPARATORS) {
+    const at = maskedLine.lastIndexOf(sep);
+    if (at >= commandEnd && at > bestAt) {
+      bestAt = at;
+      tailStart = at + sep.length;
+    }
+  }
+
+  return tailStart;
+}
 
 /**
  * Split text into alternating "outside code" / "inside code" segments, so
@@ -242,9 +276,12 @@ interface TokenMatch {
  * Two independent rules run over the code-masked text (so offsets still line
  * up with the original): the suffix rule ({@link PLACEHOLDER_TOKEN_RE}), and
  * a structural backstop for result lines — a line whose RAW text cites a
- * known gate command, where the text after the line's last `:` (taken from
- * the masked line) is a bare ALL-CAPS identifier with an underscore,
- * optionally followed by a full stop. The backstop and the suffix rule can
+ * known gate command, where the text after the line's last result separator
+ * (taken from the masked line) is a bare ALL-CAPS identifier with an
+ * underscore, optionally followed by a full stop. A result separator is a
+ * `:` anywhere on the line, or (Issue #3287) an em dash, en dash, spaced
+ * hyphen or double hyphen, or `=`, counted only after the cited command (see
+ * {@link resultTailStart}). The backstop and the suffix rule can
  * both find the same token (e.g. `GATE_OUTCOME_PENDING`); overlapping
  * matches are de-duplicated, keeping the earlier one.
  */
@@ -266,16 +303,20 @@ function findTokenMatches(text: string): TokenMatch[] {
     const lineEnd = nl === -1 ? masked.length : nl;
     const rawLine = text.slice(lineStart, lineEnd);
     const maskedLine = masked.slice(lineStart, lineEnd);
-    if (GATE_COMMAND_RE.test(rawLine)) {
-      const colon = maskedLine.lastIndexOf(":");
-      if (colon !== -1) {
-        const tail = maskedLine.slice(colon + 1);
+    const command = rawLine.match(GATE_COMMAND_RE);
+    if (command) {
+      const tailStart = resultTailStart(
+        maskedLine,
+        command.index! + command[0].length,
+      );
+      if (tailStart !== -1) {
+        const tail = maskedLine.slice(tailStart);
         const trimmed = tail.trim();
         const identMatch = trimmed.match(BARE_IDENTIFIER_RE);
         if (identMatch) {
           const name = identMatch[1]!;
           const leadingWhitespace = tail.length - tail.trimStart().length;
-          const start = lineStart + colon + 1 + leadingWhitespace;
+          const start = lineStart + tailStart + leadingWhitespace;
           matches.push({ start, end: start + name.length, name });
         }
       }
