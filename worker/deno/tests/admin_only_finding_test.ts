@@ -60,6 +60,44 @@ Deno.test("isAdminOnlyRepoSettingsIssue - matching is case-insensitive and white
   );
 });
 
+Deno.test("isAdminOnlyRepoSettingsIssue - the worker-fixable security-policy finding is NOT admin-only (Issue #3266)", () => {
+  for (
+    const body of [
+      "<!-- finding-id: BP-REPO-SECURITY-POLICY-MISSING -->\n\n## Finding\n\nNo SECURITY.md.",
+      "<!--   finding-id:   bp-repo-security-policy-missing   -->",
+    ]
+  ) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), false, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the admin-action prose still wins over a worker-fixable id", () => {
+  assertEquals(
+    isAdminOnlyRepoSettingsIssue(
+      "<!-- finding-id: BP-REPO-SECURITY-POLICY-MISSING -->" +
+        "\n\nRepository admin action — the worker cannot change repository settings.",
+    ),
+    true,
+  );
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - every other BP-REPO id stays admin-only", () => {
+  for (
+    const id of [
+      "BP-REPO-PVR-OFF",
+      "BP-REPO-CODEOWNERS-REVIEW-OFF",
+      "BP-REPO-SECURITY-POLICY",
+      "BP-REPO-SECURITY-POLICY-MISSING-X",
+    ]
+  ) {
+    assertEquals(
+      isAdminOnlyRepoSettingsIssue(`<!-- finding-id: ${id} -->\n\nbody`),
+      true,
+      id,
+    );
+  }
+});
+
 // ---------------------------------------------------------------------------
 // parseRepoSettingsFindingId — the one source of truth for the marker, shared
 // with setup's audit-issue close-out (Issue #2629).
@@ -113,4 +151,13 @@ Deno.test("parseRepoSettingsFindingId - a body with no marker yields null", () =
   ) {
     assertEquals(parseRepoSettingsFindingId(body), null, body);
   }
+});
+
+Deno.test("parseRepoSettingsFindingId - still yields the worker-fixable security-policy id (Issue #3266)", () => {
+  assertEquals(
+    parseRepoSettingsFindingId(
+      "<!-- finding-id: bp-repo-security-policy-missing -->",
+    ),
+    "BP-REPO-SECURITY-POLICY-MISSING",
+  );
 });

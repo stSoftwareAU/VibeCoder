@@ -13,7 +13,9 @@
  *
  * This is the pure detection used by the up-front hand-off in `issue_worker.ts`
  * — recognise the finding from its body and hand it to a human before cloning
- * the repo or running Claude.
+ * the repo or running Claude. The ids in `WORKER_FIXABLE_REPO_FINDINGS` are the
+ * exception: their fix is an ordinary commit, so they run through the normal
+ * pipeline (Issue #3266).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -46,12 +48,20 @@ export function parseRepoSettingsFindingId(issueBody: string): string | null {
  */
 const REPO_ADMIN_ACTION_PROSE = /the worker cannot change repository settings/i;
 
+/** `BP-REPO-*` findings fixed by an ordinary commit (e.g. a `SECURITY.md`), so a worker PR resolves them (Issue #3266). */
+const WORKER_FIXABLE_REPO_FINDINGS: ReadonlySet<string> = new Set([
+  "BP-REPO-SECURITY-POLICY-MISSING",
+]);
+
 /**
  * True when the issue body identifies a repository-admin finding the worker
- * cannot action (a `BP-REPO-*` finding, or the scanner's admin-action prose).
+ * cannot action: the scanner's admin-action prose, or a `BP-REPO-*`
+ * finding-id marker naming an id outside {@link WORKER_FIXABLE_REPO_FINDINGS}.
+ * The prose wins even for an allowlisted id.
  */
 export function isAdminOnlyRepoSettingsIssue(issueBody: string): boolean {
   if (!issueBody) return false;
-  return parseRepoSettingsFindingId(issueBody) !== null ||
-    REPO_ADMIN_ACTION_PROSE.test(issueBody);
+  if (REPO_ADMIN_ACTION_PROSE.test(issueBody)) return true;
+  const findingId = parseRepoSettingsFindingId(issueBody);
+  return findingId !== null && !WORKER_FIXABLE_REPO_FINDINGS.has(findingId);
 }
