@@ -16,7 +16,8 @@ flowchart LR
     P -->|"{repo, number}<br/>repo from repository_url"| F["getSubIssues"]
     F --> C["checkParentBlocked<br/>getIssueState(child.repo, n)"]
     F --> W["buildWorkOnDependencyGraph<br/>same-repo children only"]
-    C --> M["formatParentBlockedMessage<br/>#N or owner/repo#N"]
+    C --> K["check_parent_dependencies command"]
+    K --> M["formatParentBlockedMessage<br/>#N or owner/repo#N"]
 ```
 
 - [x] `fetchNativeSubIssueRefs` (`worker/deno/lib/native_sub_issues.ts`) reads every page with `per_page=100 --paginate`. It keeps each child's repo, taken from `repository_url`, and falls back to the parent repo when the URL is absent or malformed. It parses one array per line and throws on a malformed page.
@@ -41,17 +42,23 @@ Real `gh` behaviour this PR relies on, observed on 2026-10-06:
 
 - `checkParentBlocked`, `buildWorkOnDependencyGraph` and `isDependencyBlocked` were updated as described above.
 - `commands/check_parent_dependencies.ts` and `lib/diagnose_issue.ts` were adapted. The cached fetcher in `issue_finder_common.ts` passes the refs through.
-- `formatParentBlockedMessage` is called only from `checkParentBlocked`.
+- `formatParentBlockedMessage` has one non-test caller, `checkParentDepsCommand` in `worker/deno/commands/check_parent_dependencies.ts:162`, which now passes the parent `repo`.
 - `fetchNativeSubIssueNumbers` is unchanged, as are its callers `planning_processor.ts` and `failure_detection_resume.ts`.
 
 **Fakes:** the fetcher fakes in the touched tests now return `SubIssueRef[]`. They stand in for `uncachedIssueFetcher().getSubIssues`, and the property relied on is "returns `{repo, number}` for every child across every page". The argv test runs `fetchNativeSubIssueRefs`, the production path, against a stubbed `gh` that prints two page lines.
 
-**Docs sweep:**
+**Docs sweep** — grep: `getSubIssues`, `SubIssueRef`, `fetchNativeSubIssueRefs`, `parseNativeSubIssueRefPages`, `fetchNativeSubIssueNumbers`, `formatParentBlockedMessage`, `checkParentBlocked`, `isDependencyBlocked`, `buildWorkOnDependencyGraph`, `openChildren`, `sub_issues`, `check_parent_dependencies`, "never combine `--paginate` with `--jq`"; section: `docs/GH-API-OPTIMISATION.md` (the `--paginate` / `--jq` rule), `docs/INTERNALS.md` ("TypeScript dependency resolution"), `docs/workflows/issue-processing.md` (step 4, "Dependency blocking"); updated: `docs/GH-API-OPTIMISATION.md`
+
+Details of the sweep:
 
 - `docs/GH-API-OPTIMISATION.md` (~L287–297) was updated. The bullet that banned `--paginate` with `--jq` now describes the one-array-per-page parse and cites `parseMarkerCommentPages` and `parseNativeSubIssueRefPages`.
 - `DESIGN-PRINCIPLES.md` L1121–1141 is still true. It describes `fetchNativeSubIssueNumbers`, which is unchanged.
 - `docs/audits/security-sweep-1218-commands-cli.md` is a historical audit and is left as written.
 - The `has_open_sub_issues` reference in `docs/INTERNALS.md` describes legacy bash and does not touch this path.
+- `docs/INTERNALS.md` L3044 ("`checkParentBlocked()` … Fails closed (treats unreachable children as open for safety)") is still true. The `catch` in `checkParentBlocked` still pushes the child into `openChildren`.
+- `docs/workflows/issue-processing.md` L375 (dependency blocking, "Cross-repo dependencies … are supported", "Fails open on API errors") is still true.
+- `docs/workflows/planning-and-questions.md` L778 describes the planning-side `sub_issues` read through `fetchNativeSubIssueNumbers`, which is unchanged.
+- The `isDependencyBlocked` mentions in `docs/IDLE-TASK-FRAMEWORK.md` L948–953 and `DESIGN-PRINCIPLES.md` L2789 describe body-marker dependencies, which this diff does not change. The `docs/audits/*` hits are historical and are left as written.
 
 **Overlapping rules checked:**
 
@@ -63,6 +70,34 @@ Real `gh` behaviour this PR relies on, observed on 2026-10-06:
 - `deno task test:unit` on the touched test files: 221 passed, 0 failed.
 - `./quality.sh < /dev/null` passes. Only config integration is skipped, because there is no local `.config.json`. `worker/deno/tests/native_sub_issue_refs_test.ts` uses `assertLinearGrowth`, so it is registered in `WALL_CLOCK_TEST_FILES` (`worker/deno/lib/parallel_unsafe_test_manifest.ts`) and runs in the serial pass.
 - Regression: `worker/deno/tests/issue_fetcher_sub_issues_test.ts` "checkParentBlocked - a parent with more than 30 children is not truncated, across paginated pages (Issue #3319)" fails against the base single-page read. The open #135 sits on page 2.
+
+Removed assertions (each replaced in place by the `SubIssueRef` form of the same expectation):
+
+- Removed from `worker/deno/tests/check_parent_dependencies_test.ts`: `assertEquals(subs, [7, 8]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/diagnose_issue_test.ts`: `assertEquals([...subs].sort((a, b) => a - b), [11, 12]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [2, 3]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [10, 20]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.closedChildren, [30]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [805, 806, 807]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.closedChildren, [808]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.closedChildren, [2, 3]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [102]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.closedChildren, [101, 103]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [20, 30]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [20]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [2]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [101]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.closedChildren, [102]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [201]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(parentResult.value.openChildren, [483, 484]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(parentResult.value.closedChildren, [485]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [10, 11, 12]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.openChildren, [10]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_dependencies_test.ts`: `assertEquals(result.value.closedChildren, [11]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_fetcher_sub_issues_test.ts`: `assertEquals(subIssues.sort((a, b) => a - b), [101, 102]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_fetcher_sub_issues_test.ts`: `assertEquals(result.value.openChildren, [200]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_finder_cached_fetcher_test.ts`: `assertEquals(await first.getSubIssues("o/r", 7), [8, 9]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
+- Removed from `worker/deno/tests/issue_finder_cached_fetcher_test.ts`: `assertEquals(await second.getSubIssues("o/r", 7), [8, 9]);` — #3319 changes `getSubIssues` and `ParentBlockedResult.openChildren`/`closedChildren` from `number[]` to `SubIssueRef[]` so each child keeps its own repo, so a bare-number list is untrue; the same test now asserts the same children as `{ repo, number }` refs
 
 Branch outcomes:
 
@@ -82,20 +117,20 @@ Branch outcomes:
   - Test: "isDependencyBlocked records a cross-repo child blocker with the child's own repo" in `worker/deno/tests/cross_repo_dependency_gate_test.ts`.
   - Pushing `repo` instead turned it red.
 - `worker/deno/lib/native_sub_issues.ts:124` and `:126`: the repo falls back to `parentRepo` when `repository_url` is not a string or does not match.
-  - Test: the fallback test (L56) in `worker/deno/tests/native_sub_issue_refs_test.ts`.
-  - The case where the URL matches is covered by the L48 test.
+  - Test: "parseNativeSubIssueRefPages - falls back to parentRepo when repository_url is missing, null or malformed" in `worker/deno/tests/native_sub_issue_refs_test.ts`.
+  - The case where the URL matches is covered by "parseNativeSubIssueRefPages - takes the repo from repository_url".
 - Malformed page line: the parser throws.
-  - Test: the L82 test in `worker/deno/tests/native_sub_issue_refs_test.ts`.
+  - Test: "parseNativeSubIssueRefPages - a malformed line throws" in `worker/deno/tests/native_sub_issue_refs_test.ts`.
 - Duplicate child across pages, matched case-insensitively: the duplicate is dropped.
-  - Test: the L70 test in `worker/deno/tests/native_sub_issue_refs_test.ts`.
+  - Test: "parseNativeSubIssueRefPages - dedupes the same repo#number across pages, case-insensitive on repo" in `worker/deno/tests/native_sub_issue_refs_test.ts`.
 - `--paginate` and `per_page=100` are in the argv (`native_sub_issues.ts:208`).
   - Tests: "fetchNativeSubIssueRefs - queries the paginated sub_issues endpoint with a jq filter" and the >30-children test.
   - Dropping `--paginate` turned both red.
 - An invalid slug or issue number returns `[]` without calling `gh`.
-  - Test: "fetchNativeSubIssueRefs - issue number 0 returns [] without calling gh" and the L129 slug test.
+  - Tests: "fetchNativeSubIssueRefs - issue number 0 returns [] without calling gh" and "fetchNativeSubIssueRefs - invalid repo slug returns [] without calling gh".
 - A `gh` failure propagates out of `fetchNativeSubIssueRefs`.
   - Test: "fetchNativeSubIssueRefs - a throwing gh propagates the throw".
-- Regex on untrusted `repository_url`: the hostile-input test (L86) uses `assertLinearGrowth`.
+- Regex on untrusted `repository_url`: "parseNativeSubIssueRefPages - a hostile repository_url scales linearly and falls back to the parent repo" uses `assertLinearGrowth`.
   - Swapping in a backtracking pattern turned it red.
 
 ## Security self-check
