@@ -405,8 +405,14 @@ const TOKEN_RE =
 const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
 const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
 
-/** Join a wrapped list item or a slash-continued command into one claim. */
-function logicalBlocks(section: string): string[] {
+/**
+ * Join a wrapped list item or a slash-continued command into one claim.
+ *
+ * Exported for reuse by `summary_claim_check.ts` (Issue #3257), whose Test
+ * Plan backstop walks the same logical blocks looking for a quoted
+ * behaviour rather than a stale count.
+ */
+export function logicalBlocks(section: string): string[] {
   const lines = section.split("\n");
   const blocks: string[][] = [];
   let current: string[] | null = null;

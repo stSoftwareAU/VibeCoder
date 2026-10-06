@@ -1,0 +1,12 @@
+{
+  "issue": 3257,
+  "chunk": "top-up-3257",
+  "title": "top-up: first-run PR-summary claim check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3257",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: summary_claim_check.ts (#3257)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/summary_claim_check.ts"
+  ],
+  "sweptAt": "d557090c1665caeff8deffe61d343600bff99c25"
+}
