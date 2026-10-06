@@ -17,6 +17,7 @@
  */
 
 import type { Result } from "../types.ts";
+import type { SubIssueRef } from "./native_sub_issues.ts";
 
 /**
  * Represents the state of a GitHub issue for dependency checking.
@@ -186,8 +187,10 @@ export function execMarkerOutsideCode(
  */
 export interface ParentBlockedResult {
   isBlocked: boolean;
-  openChildren: number[];
-  closedChildren: number[];
+  /** Open children, each with its own repo (Issue #3319: may be cross-repo). */
+  openChildren: SubIssueRef[];
+  /** Closed children, each with its own repo. */
+  closedChildren: SubIssueRef[];
   totalChildren: number;
 }
 

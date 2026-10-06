@@ -34,15 +34,28 @@
  * @param parentIssueNumber - The parent (planning) issue number.
  * @param ghCommandFn - Injectable gh runner (`gh api ...`).
  */
+/**
+ * Validate a `repo`/`parentIssueNumber` pair the way every native sub-issue
+ * reader needs to: a malformed slug or non-positive number can never have
+ * native sub-issues, so the caller skips the API call entirely.
+ */
+function isValidSubIssueQuery(
+  repo: string,
+  parentIssueNumber: number,
+): boolean {
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return false;
+  if (!Number.isInteger(parentIssueNumber) || parentIssueNumber <= 0) {
+    return false;
+  }
+  return true;
+}
+
 export async function fetchNativeSubIssueNumbers(
   repo: string,
   parentIssueNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
 ): Promise<number[]> {
-  // Validate inputs defensively — a malformed repo or non-positive issue
-  // number can never have native sub-issues, so skip the API call entirely.
-  if (!/^[^/\s]+\/[^/\s]+$/.test(repo)) return [];
-  if (!Number.isInteger(parentIssueNumber) || parentIssueNumber <= 0) return [];
+  if (!isValidSubIssueQuery(repo, parentIssueNumber)) return [];
 
   let raw: string;
   try {
@@ -81,4 +94,121 @@ export function parseNativeSubIssueNumbers(raw: string): number[] {
     }
   }
   return [...numbers].sort((a, b) => a - b);
+}
+
+/**
+ * A native sub-issue, with the repository that owns it (Issue #3319).
+ *
+ * A sub-issue can live in a different repository from its parent — GitHub's
+ * native relationship is not confined to one repo — so `checkParentBlocked`
+ * must resolve each child against its *own* repo, not the parent's.
+ */
+export interface SubIssueRef {
+  /** The child issue's own `owner/repo`, independent of the parent's. */
+  repo: string;
+  /** The child issue number, within `repo`. */
+  number: number;
+}
+
+/** Anchored on the end of the URL so no overlapping quantifier can backtrack. */
+const REPOSITORY_URL_OWNER_NAME = /\/repos\/([^/\s]+)\/([^/\s]+)$/;
+
+/**
+ * Parse `owner/repo` out of a `repository_url`, falling back to `parentRepo`
+ * when it is absent or does not match the expected shape.
+ */
+function repoFromRepositoryUrl(
+  repositoryUrl: unknown,
+  parentRepo: string,
+): string {
+  if (typeof repositoryUrl !== "string") return parentRepo;
+  const match = REPOSITORY_URL_OWNER_NAME.exec(repositoryUrl);
+  if (!match) return parentRepo;
+  return `${match[1]}/${match[2]}`;
+}
+
+/**
+ * Parse sub-issue refs from a `gh api --paginate --jq '[…]'` sub_issues read.
+ *
+ * `--paginate` applies the `--jq` filter per page, so the payload is one JSON
+ * array per line (see {@link parseMarkerCommentPages} in
+ * `marker_comment_pages.ts`, which this follows) — `--slurp`, which would
+ * merge them into one array, is refused alongside `--jq`. A malformed line
+ * throws: an unreadable page is a failure the caller must handle.
+ *
+ * Each child's own repo comes from its `repository_url`; a sub-issue in
+ * another repository is not renumbered against `parentRepo`. Entries are
+ * de-duplicated on `repo#number` (case-insensitive on the repo), keeping the
+ * first-seen repo spelling, and sorted by repo (case-insensitive) then
+ * number.
+ *
+ * @param payload - Raw stdout from the paginated sub_issues read.
+ * @param parentRepo - The parent's own `owner/repo`, used as the fallback
+ *   repo when an entry's `repository_url` is missing or malformed.
+ */
+export function parseNativeSubIssueRefPages(
+  payload: string,
+  parentRepo: string,
+): SubIssueRef[] {
+  const seen = new Map<string, SubIssueRef>();
+
+  for (const line of payload.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) continue;
+
+    for (const entry of parsed) {
+      if (entry === null || typeof entry !== "object") continue;
+      const n = (entry as Record<string, unknown>).number;
+      if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) continue;
+      const repo = repoFromRepositoryUrl(
+        (entry as Record<string, unknown>).repository_url,
+        parentRepo,
+      );
+      const key = `${repo.toLowerCase()}#${n}`;
+      if (!seen.has(key)) seen.set(key, { repo, number: n });
+    }
+  }
+
+  return [...seen.values()].sort((a, b) => {
+    const repoCmp = a.repo.toLowerCase().localeCompare(b.repo.toLowerCase());
+    if (repoCmp !== 0) return repoCmp;
+    return a.number - b.number;
+  });
+}
+
+/**
+ * Fetch a parent issue's native GitHub sub-issues, each with its own repo
+ * (Issue #3319).
+ *
+ * Unlike {@link fetchNativeSubIssueNumbers}, this paginates explicitly
+ * (`per_page=100`, `--paginate`) rather than relying on a single
+ * `per_page=100` request — a parent with more than 100 children would
+ * otherwise silently lose the rest. Invalid inputs (malformed slug or
+ * non-positive issue number) return `[]`, matching the existing helper; a
+ * `gh` or parse failure throws, so a caller that must not treat "the read
+ * failed" the same as "there are no sub-issues" can tell them apart.
+ *
+ * @param repo - Repository in `owner/repo` form.
+ * @param parentIssueNumber - The parent issue number.
+ * @param ghCommandFn - Injectable gh runner (`gh api ...`).
+ */
+export async function fetchNativeSubIssueRefs(
+  repo: string,
+  parentIssueNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<SubIssueRef[]> {
+  if (!isValidSubIssueQuery(repo, parentIssueNumber)) return [];
+
+  const raw = await ghCommandFn([
+    "api",
+    `repos/${repo}/issues/${parentIssueNumber}/sub_issues?per_page=100`,
+    "--paginate",
+    "--jq",
+    "[.[] | {number: .number, repository_url: .repository_url}]",
+  ]);
+
+  return parseNativeSubIssueRefPages(raw, repo);
 }
