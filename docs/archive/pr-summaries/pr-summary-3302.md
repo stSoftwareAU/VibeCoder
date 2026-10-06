@@ -65,12 +65,11 @@ the phrase disappears from the whole prompt. This PR applies the #3307 bar:
 - Importing `markdown_docs.ts` quietly removes a test from the completeness
   family; see the split above. Follow-up #3309 records this for the remaining conversions.
 - Periodic WIP checkpoint commits caught two of the red check's temporary
-  deletions:
-  - 75a876f8 in `prompts/issue/prompt.md`;
-  - a7ed93c2 in `prompts/coding_guidelines/prompt.md`.
-
-  0bae9ab9 restores them. The net diff touches only `worker/deno/tests/`
-  and this summary; no prompt changed.
+  deletions: 75a876f8 deleted a phrase in `prompts/issue/prompt.md`, which
+  a7ed93c2 restored. a7ed93c2 also deleted a line in
+  `prompts/coding_guidelines/prompt.md`, which 0bae9ab9 restored. The net
+  diff touches only `worker/deno/tests/` and this summary; no prompt
+  changed.
 
 ## Evidence
 
