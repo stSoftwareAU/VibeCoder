@@ -21,10 +21,15 @@
  * comment this push answers), so it could not notice that a reviewer-quoted
  * sentence was still standing, often with a "PR-feedback round N" correction
  * appended below it rather than a rewrite. Both are fixed here: the model
- * pass now runs whenever this push changed anything and there are files to
- * check (not only when `changesBehaviour`), and a deterministic,
- * no-model-needed check (`change_request_quotes.ts`) looks for the change
- * request's quoted sentences still present in the PR summaries it names.
+ * pass now runs whenever this push changes a code *or* test file (a
+ * docs-only push still gets none); the question is given the change
+ * request, fenced, and asks for each quoted sentence to be confirmed
+ * rewritten or removed, and for an earlier sentence a later one
+ * contradicts; and a deterministic, no-model-needed check
+ * (`change_request_quotes.ts`) looks for every 4+-word quoted span in a
+ * change-request finding filed against a `pr-summary-*.md` that is still
+ * present in that summary at the head — a hit gets the same one recovery
+ * turn as the model pass's findings, then is reported.
  *
  * ```mermaid
  * flowchart TD
@@ -32,7 +37,7 @@
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
  *     C --> D["Deterministic checks:<br/>Test Plan recount,<br/>Docs sweep gate,<br/>stale change-request quotes"]
- *     C --> E{"Any files to check?"}
+ *     C --> E{"Code or test changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]
  *     E -- no --> G["No model pass"]
  *     D --> H{"Any hit at all?"}
@@ -503,6 +508,14 @@ export interface DriftResidual {
   staleQuotes?: string[];
   /** Set when the model pass returned no usable verdict at all. */
   modelPassUnavailable?: string;
+  /**
+   * Set when a change-request finding names a `pr-summary-*.md` that could
+   * not be read at the head, so its quoted sentences were never checked
+   * (Issue #3244). Fails loud like `modelPassUnavailable`, but is not a hit
+   * on its own: it never drives the recovery turn and never leads the
+   * "found text" intro by itself.
+   */
+  quoteCheckUnavailable?: string;
 }
 
 /** Collapse a quoted sentence or reason to one line for the reply. */
@@ -525,9 +538,10 @@ export function formatDriftResidual(residual: DriftResidual): string {
   const lines: string[] = [];
   lines.push("### Drift check (Issue #3143)");
   lines.push("");
-  // When there is nothing but an unavailable model pass, the "found text…"
-  // intro would claim a hit that was never actually found — say only that
-  // the pass could not be run.
+  // When there is nothing but an unavailable model pass or an unchecked
+  // change-request quote, the "found text…" intro would claim a hit that
+  // was never actually found — say only that the pass could not be run, or
+  // that the named summary could not be checked.
   if (hasHits) {
     lines.push(
       "The worker's drift check found text this push leaves out of step " +
@@ -564,6 +578,10 @@ export function formatDriftResidual(residual: DriftResidual): string {
     );
     lines.push("");
   }
+  if (residual.quoteCheckUnavailable) {
+    lines.push(flatten(residual.quoteCheckUnavailable));
+    lines.push("");
+  }
 
   return lines.join("\n").trimEnd();
 }
@@ -590,11 +608,14 @@ export interface DriftCheckInput {
   repoPath: string;
   beforeSha: string | undefined;
   /**
-   * The review or comment body this push answers (Issue #3244). Parsed for
-   * findings quoting sentences the reviewer says are wrong, and fed into
-   * the drift question so the model can confirm each quoted sentence was
-   * actually rewritten or removed rather than left standing under a
-   * "PR-feedback round N" correction.
+   * The review or comment body this push answers (Issue #3244). Parsed
+   * once (`parseChangeRequestFindings`) into findings quoting sentences the
+   * reviewer says are wrong: fed into the drift question so the model can
+   * confirm each quoted sentence was actually rewritten or removed rather
+   * than left standing under a "PR-feedback round N" correction, and
+   * checked deterministically (`findStaleQuotes`) against the PR summaries
+   * the findings name, both before the model pass and again after the
+   * recovery turn.
    */
   changeRequest?: string;
 }
@@ -708,6 +729,33 @@ function normaliseWhitespace(text: string): string {
 /** Whether `sentence` appears (whitespace-normalised) inside `content`. */
 function sentenceFoundIn(sentence: string, content: string): boolean {
   return normaliseWhitespace(content).includes(normaliseWhitespace(sentence));
+}
+
+/**
+ * Check a change request's findings against the PR summaries they name
+ * (Issue #3244).
+ *
+ * Reads each path {@link summaryFilesNamedBy} names with {@link readIfExists}
+ * — already constrained to `pr-summary-*.md` by {@link isPrSummaryPath}, a
+ * fixed-shape regex, so no traversal risk — and runs {@link findStaleQuotes}
+ * against the result. `stale` is formatted `${file}: "${quote}"`, ready for
+ * the recovery prompt and the residual; `unchecked` lists the named
+ * summaries that could not be read.
+ */
+async function checkStaleQuotes(
+  repoPath: string,
+  findings: readonly ChangeRequestFinding[],
+): Promise<{ stale: string[]; unchecked: string[] }> {
+  const named = summaryFilesNamedBy(findings);
+  const summaries = new Map<string, string | undefined>();
+  for (const path of named) {
+    summaries.set(path, await readIfExists(repoPath, path));
+  }
+  const { stale, unchecked } = findStaleQuotes(findings, summaries);
+  return {
+    stale: stale.map((s) => `${s.file}: "${s.quote}"`),
+    unchecked,
+  };
 }
 
 /** Append the residual drift to `.pr_response_message`, keeping any existing text first. */
@@ -857,12 +905,27 @@ export async function runPrFeedbackDriftCheck(
     changesBehaviour,
   );
 
-  // One constrained, read-only model question — only when code changed.
+  // Deterministic, no-model-needed check: sentences the change request
+  // quotes that are still present in the PR summaries it names (Issue
+  // #3244). Parsed once, checked before the model pass and again after
+  // the recovery turn.
+  const changeRequestFindings = parseChangeRequestFindings(
+    input.changeRequest ?? "",
+  );
+  const initialStaleQuotes = await checkStaleQuotes(
+    repoPath,
+    changeRequestFindings,
+  );
+
+  // One constrained, read-only model question — when this push changed a
+  // code or test file (Issue #3244); a docs-only push gets none.
   const findingsWithStatus: { finding: DriftFinding; foundBefore: boolean }[] =
     [];
   let modelPassUnavailable: string | undefined;
   let files: string[] = [];
-  if (changesBehaviour) {
+  const modelPassNeeded = changesBehaviour ||
+    pushFiles.some((f) => isTestFilePath(f));
+  if (modelPassNeeded) {
     const docFiles = prFiles.filter(
       (p) => isDocsSweepExemptPath(p) && !isTestFilePath(p),
     );
@@ -882,6 +945,7 @@ export async function runPrFeedbackDriftCheck(
         beforeSha,
         baseRef,
         files,
+        changeRequest: input.changeRequest,
       });
       const result = await deps.runAgent({ prompt, readOnly: true });
       if (!result.ok) {
@@ -925,17 +989,23 @@ export async function runPrFeedbackDriftCheck(
     findingsWithStatus.length === 0 &&
     initialChecks.mismatches.length === 0 &&
     initialChecks.docsSweepProblems.length === 0 &&
+    initialStaleQuotes.stale.length === 0 &&
+    initialStaleQuotes.unchecked.length === 0 &&
     modelPassUnavailable === undefined
   ) {
     return { status: "clean", checked };
   }
 
   // One recovery turn, only when there is a genuine hit to recover from.
+  // An unchecked (unreadable) named summary is reported but never drives
+  // this turn on its own (Issue #3244) — there is nothing a recovery turn
+  // could fix about a file this check could not even read.
   let recoveryRan = false;
   if (
     findingsWithStatus.length > 0 ||
     initialChecks.mismatches.length > 0 ||
-    initialChecks.docsSweepProblems.length > 0
+    initialChecks.docsSweepProblems.length > 0 ||
+    initialStaleQuotes.stale.length > 0
   ) {
     logger.warn(
       "Drift check found hits — running one recovery turn (Issue #3143)",
@@ -945,6 +1015,7 @@ export async function runPrFeedbackDriftCheck(
         findings: findingsWithStatus.length,
         mismatches: initialChecks.mismatches.length,
         docsSweepProblems: initialChecks.docsSweepProblems.length,
+        staleQuotes: initialStaleQuotes.stale.length,
       },
     );
     const recoveryResult = await deps.runAgent({
@@ -954,6 +1025,7 @@ export async function runPrFeedbackDriftCheck(
         findings: findingsWithStatus.map((f) => f.finding),
         mismatches: initialChecks.mismatches,
         docsSweepProblems: initialChecks.docsSweepProblems,
+        staleQuotes: initialStaleQuotes.stale,
       }),
       readOnly: false,
     });
@@ -989,19 +1061,37 @@ export async function runPrFeedbackDriftCheck(
     prFiles,
     changesBehaviour,
   );
+  const freshStaleQuotes = await checkStaleQuotes(
+    repoPath,
+    changeRequestFindings,
+  );
 
   const residual: DriftResidual = {
     findings: remainingFindings,
     mismatches: freshChecks.mismatches,
     docsSweepProblems: freshChecks.docsSweepProblems,
+    ...(freshStaleQuotes.stale.length > 0
+      ? { staleQuotes: freshStaleQuotes.stale }
+      : {}),
     ...(modelPassUnavailable !== undefined ? { modelPassUnavailable } : {}),
+    ...(freshStaleQuotes.unchecked.length > 0
+      ? {
+        quoteCheckUnavailable:
+          `the change request names ${
+            freshStaleQuotes.unchecked.join(", ")
+          } but it could not be read at the head, so its quoted sentences ` +
+          "were not checked",
+      }
+      : {}),
   };
 
   if (
     residual.findings.length === 0 &&
     residual.mismatches.length === 0 &&
     residual.docsSweepProblems.length === 0 &&
-    residual.modelPassUnavailable === undefined
+    (residual.staleQuotes?.length ?? 0) === 0 &&
+    residual.modelPassUnavailable === undefined &&
+    residual.quoteCheckUnavailable === undefined
   ) {
     logger.info(
       "Drift check's recovery turn resolved everything it found",
@@ -1018,7 +1108,9 @@ export async function runPrFeedbackDriftCheck(
       findings: residual.findings.length,
       mismatches: residual.mismatches.length,
       docsSweepProblems: residual.docsSweepProblems.length,
+      staleQuotes: residual.staleQuotes?.length ?? 0,
       modelPassUnavailable: residual.modelPassUnavailable,
+      quoteCheckUnavailable: residual.quoteCheckUnavailable,
     },
   );
   await appendResidualToResponseMessage(repoPath, residual);

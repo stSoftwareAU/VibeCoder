@@ -79,8 +79,7 @@ export function parseChangeRequestFindings(
     const file = (colonIdx >= 0 ? captured.slice(0, colonIdx) : captured)
       .trim();
     const restOfLine = line.slice(match[0].length).trim();
-    const problemLines: string[] = [];
-    if (restOfLine !== "") problemLines.push(restOfLine);
+    const problemLines: string[] = [restOfLine];
     i++;
     while (i < lines.length) {
       const next = lines[i]!;
@@ -343,7 +342,6 @@ export function findStaleQuotes(
     const normalisedContent = normaliseForQuoteMatch(content);
     for (const quote of extractQuotedSpans(finding.problem)) {
       const normalisedQuote = normaliseForQuoteMatch(quote);
-      if (normalisedQuote === "") continue;
       if (!normalisedContent.includes(normalisedQuote)) continue;
       const key = `${finding.file}\u0000${normalisedQuote}`;
       if (staleSeen.has(key)) continue;

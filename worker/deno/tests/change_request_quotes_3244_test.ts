@@ -63,6 +63,54 @@ Deno.test("parseChangeRequestFindings - strips a trailing :line, and excludes th
   assert(!findings[1]!.problem.includes("This PR fixes the drift check"));
 });
 
+Deno.test("parseChangeRequestFindings - an empty rest-of-line after the header, problem continues on the next line", () => {
+  const body = [
+    "**`CODING-STANDARDS.md`**:",
+    "The absolute-claim rule is broken because it misses several documented " +
+    "edge cases in this finding.",
+    "",
+    "**Fix:** tidy it up.",
+  ].join("\n");
+  const findings = parseChangeRequestFindings(body);
+  assertEquals(findings.length, 1);
+  assertEquals(findings[0]!.file, "CODING-STANDARDS.md");
+  assertEquals(
+    findings[0]!.problem,
+    "The absolute-claim rule is broken because it misses several " +
+      "documented edge cases in this finding.",
+  );
+});
+
+Deno.test("parseChangeRequestFindings - a **Fix:** line directly after the problem with no blank line stops the problem there", () => {
+  const body = [
+    "**`a.md`**: Problem starts here and keeps going for a while.",
+    "**Fix:** Do the fix right now.",
+  ].join("\n");
+  const findings = parseChangeRequestFindings(body);
+  assertEquals(findings.length, 1);
+  assertEquals(
+    findings[0]!.problem,
+    "Problem starts here and keeps going for a while.",
+  );
+  assert(!findings[0]!.problem.includes("Do the fix"));
+});
+
+Deno.test("parseChangeRequestFindings - the next finding header directly after the problem with no blank line starts a new finding", () => {
+  const body = [
+    "**`a.md`**: Problem one text goes here for a while.",
+    "**`b.md`**: Problem two text goes here as well.",
+  ].join("\n");
+  const findings = parseChangeRequestFindings(body);
+  assertEquals(findings.length, 2);
+  assertEquals(findings[0]!.file, "a.md");
+  assertEquals(findings[0]!.problem, "Problem one text goes here for a while.");
+  assertEquals(findings[1]!.file, "b.md");
+  assertEquals(
+    findings[1]!.problem,
+    "Problem two text goes here as well.",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // extractQuotedSpans
 // ---------------------------------------------------------------------------
@@ -144,6 +192,42 @@ Deno.test("extractQuotedSpans - a quote whose opener and closer are on different
     'this opens "across a line\nand closes here" nope',
   );
   assertEquals(spans, []);
+});
+
+Deno.test('extractQuotedSpans - an escaped \\" outside a span opens one, closed by a bare quote', () => {
+  const spans = extractQuotedSpans(
+    'pin \\"the lists pin every phrase here" now',
+  );
+  assertEquals(spans, ["the lists pin every phrase here"]);
+});
+
+Deno.test("extractQuotedSpans - a nested “ inside a curly-double span is kept literally", () => {
+  const spans = extractQuotedSpans(
+    "“the editor noted “temporary” fixes should not ship” end.",
+  );
+  assertEquals(spans, ["the editor noted “temporary"]);
+});
+
+Deno.test("extractQuotedSpans - a single-quote opener at the very start of the text", () => {
+  const spans = extractQuotedSpans(
+    "'this opening quote starts the text right here' and more.",
+  );
+  assertEquals(spans, ["this opening quote starts the text right here"]);
+});
+
+Deno.test("extractQuotedSpans - a single quote mid-word never opens a span", () => {
+  const spans = extractQuotedSpans(
+    "we don't think this closes the span here' after all.",
+  );
+  assertEquals(spans, []);
+});
+
+Deno.test("extractQuotedSpans - a duplicated span is returned once", () => {
+  const spans = extractQuotedSpans(
+    '"the same long quoted sentence appears twice here" and then later ' +
+      '"the same long quoted sentence appears twice here" again.',
+  );
+  assertEquals(spans, ["the same long quoted sentence appears twice here"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -278,6 +362,35 @@ Deno.test("findStaleQuotes - a summary mapped to undefined is reported unchecked
   );
   assertEquals(stale, []);
   assertEquals(unchecked, [SUMMARY_PATH]);
+});
+
+Deno.test("findStaleQuotes - two findings naming the same unreadable summary report it once in unchecked", () => {
+  const findings = [
+    finding(SUMMARY_PATH, "a"),
+    finding(SUMMARY_PATH, "b"),
+  ];
+  const { stale, unchecked } = findStaleQuotes(
+    findings,
+    new Map([[SUMMARY_PATH, undefined]]),
+  );
+  assertEquals(stale, []);
+  assertEquals(unchecked, [SUMMARY_PATH]);
+});
+
+Deno.test("findStaleQuotes - two findings quoting the same sentence in the same summary report it once", () => {
+  const sentence = "the shared sentence that both findings quote right here";
+  const summary = `## Summary\n\n${sentence}.\n`;
+  const findings = [
+    finding(SUMMARY_PATH, `Still says "${sentence}".`),
+    finding(SUMMARY_PATH, `Also still says "${sentence}".`),
+  ];
+  const { stale, unchecked } = findStaleQuotes(
+    findings,
+    new Map([[SUMMARY_PATH, summary]]),
+  );
+  assertEquals(unchecked, []);
+  assertEquals(stale.length, 1);
+  assertEquals(stale[0]!.quote, sentence);
 });
 
 Deno.test("summaryFilesNamedBy - unique PR summary paths, first-seen order", () => {
