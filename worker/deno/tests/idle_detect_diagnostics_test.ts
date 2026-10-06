@@ -25,6 +25,7 @@ import {
   auditClaimableState,
   classifyIssues,
   classifyProbeFailure,
+  normaliseIssue,
   pickDominantReason,
   type ProbeFailureKind,
 } from "../lib/idle_detect_diagnostics.ts";
@@ -1400,6 +1401,77 @@ Deno.test("classifyIssues - the hold lifts once the dependency's milestone close
   assertEquals(verdicts[0]!.claimable, true);
   assertEquals(verdicts[0]!.excludedBy, undefined);
 });
+
+// ---------------------------------------------------------------------------
+// Native sub-issue blocking (Issue #3314)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "classifyIssues - an issue with open native sub-issues is dependency_blocked, independent of openIssueNumbers/openMilestones (Issue #3314)",
+  () => {
+    const verdicts = classifyIssues(
+      [
+        {
+          number: 2503,
+          labels: ["work-on"],
+          assignees: [],
+          milestone: "",
+          subIssuesSummary: { total: 4, completed: 0 },
+        },
+      ],
+      { workerUser: "vibebot" },
+    );
+    assertEquals(verdicts[0]!.claimable, false);
+    assertEquals(verdicts[0]!.excludedBy, "dependency_blocked");
+  },
+);
+
+Deno.test(
+  "classifyIssues - an issue whose sub-issues are all completed is not excluded (Issue #3314)",
+  () => {
+    const verdicts = classifyIssues(
+      [
+        {
+          number: 2503,
+          labels: ["work-on"],
+          assignees: [],
+          milestone: "",
+          subIssuesSummary: { total: 2, completed: 2 },
+        },
+      ],
+      { workerUser: "vibebot" },
+    );
+    assertEquals(verdicts[0]!.claimable, true);
+    assertEquals(verdicts[0]!.excludedBy, undefined);
+  },
+);
+
+Deno.test("normaliseIssue - keeps a valid subIssuesSummary (Issue #3314)", () => {
+  const issue = normaliseIssue({
+    number: 2503,
+    title: "Parent issue",
+    labels: [],
+    assignees: [],
+    milestone: null,
+    subIssuesSummary: { total: 4, completed: 1, percentCompleted: 25 },
+  });
+  assertEquals(issue?.subIssuesSummary, { total: 4, completed: 1 });
+});
+
+Deno.test(
+  "normaliseIssue - drops a malformed subIssuesSummary (Issue #3314)",
+  () => {
+    const issue = normaliseIssue({
+      number: 2503,
+      title: "Parent issue",
+      labels: [],
+      assignees: [],
+      milestone: null,
+      subIssuesSummary: { total: "4", completed: 1 },
+    });
+    assertEquals(issue?.subIssuesSummary, undefined);
+  },
+);
 
 Deno.test(
   "auditClaimableState - applies the cross-milestone hold from openMilestonesFn (Issue #2533)",

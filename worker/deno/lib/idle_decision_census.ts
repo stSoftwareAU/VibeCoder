@@ -556,23 +556,6 @@ export interface CensusIssue {
   subIssuesSummary?: { total: number; completed: number };
 }
 
-/**
- * Does `issue` have any open native GitHub sub-issues?
- *
- * SIMPLE-ON-PURPOSE: native sub-issue counts only — body task-list children
- * (`checkParentBlocked`'s back-referenced refs) are not modelled, and
- * `completed` may not count not-planned closures (over-holds, the safe
- * direction) — upgrade when an inversion alert names a task-list-only or
- * not-planned-closed parent.
- */
-export function hasOpenSubIssues(
-  issue: { subIssuesSummary?: { total: number; completed: number } },
-): boolean {
-  const summary = issue.subIssuesSummary;
-  if (summary === undefined) return false;
-  return summary.total > summary.completed;
-}
-
 /** Per-repo input to {@link buildIdleDecisionCensus}. */
 export interface RepoCensusInput {
   /** Repository in `owner/repo` form. */
