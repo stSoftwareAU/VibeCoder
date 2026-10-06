@@ -222,8 +222,12 @@ export interface WorkOrderResult {
 export interface IssueFetcher {
   /** Get the state of an issue */
   getIssueState(repo: string, issueNumber: number): Promise<IssueState>;
-  /** Get sub-issue numbers for a given issue */
-  getSubIssues(repo: string, issueNumber: number): Promise<number[]>;
+  /**
+   * Get an issue's sub-issues, each with its own repo (Issue #3319). A
+   * native sub-issue can live in a different repository from its parent, so
+   * the repo is carried per child rather than assumed to be the parent's.
+   */
+  getSubIssues(repo: string, issueNumber: number): Promise<SubIssueRef[]>;
   /** Get the issue body text */
   getIssueBody(repo: string, issueNumber: number): Promise<string>;
 }
@@ -428,6 +432,16 @@ export function extractDependencyReferences(body: string): number[] {
 export type OpenIssueStateMap = Map<number, "OPEN">;
 
 /**
+ * Build a case-insensitive, trimmed "is this the parent's own repo" test
+ * (Issue #3319). Mirrors `isSameRepo` in `issue_finder_common.ts`'s
+ * `isDependencyBlocked`.
+ */
+function childIsSameRepo(parentRepo: string): (repo: string) => boolean {
+  const normalised = parentRepo.trim().toLowerCase();
+  return (repo: string) => repo.trim().toLowerCase() === normalised;
+}
+
+/**
  * Check whether a parent issue is blocked by open child issues.
  *
  * A parent issue is blocked if it has sub-issues and any of them are still open.
@@ -450,25 +464,29 @@ export async function checkParentBlocked(
   openStateMap?: OpenIssueStateMap,
 ): Promise<Result<ParentBlockedResult>> {
   try {
-    // Get sub-issues for this issue
-    const subIssueNumbers = await fetcher.getSubIssues(repo, issueNumber);
+    // Get sub-issues for this issue — each keeps its own repo (Issue #3319).
+    const apiChildren = await fetcher.getSubIssues(repo, issueNumber);
 
     // Also check the issue body for task list references, but only include
     // those where the referenced issue links back (e.g. "Part of #parent").
     // Without this bi-directional check, plain checklist items like
     // "- [ ] #747 body updated" are wrongly treated as blocking sub-issues
-    // (see FLEET#1472).
-    const childSet = new Set(subIssueNumbers);
+    // (see FLEET#1472). Body-derived refs are always same-repo.
+    const childMap = new Map<string, SubIssueRef>();
+    const childKey = (ref: SubIssueRef) =>
+      `${ref.repo.trim().toLowerCase()}#${ref.number}`;
+    for (const child of apiChildren) childMap.set(childKey(child), child);
 
     try {
       const body = await fetcher.getIssueBody(repo, issueNumber);
       const bodyRefs = extractSubIssueReferences(body, repo);
       for (const ref of bodyRefs) {
-        if (childSet.has(ref)) continue; // Already confirmed via API
+        const candidate: SubIssueRef = { repo, number: ref };
+        if (childMap.has(childKey(candidate))) continue; // Already confirmed via API
         try {
           const refBody = await fetcher.getIssueBody(repo, ref);
           if (hasBackReference(refBody, issueNumber)) {
-            childSet.add(ref);
+            childMap.set(childKey(candidate), candidate);
           }
         } catch {
           // Can't verify back-reference — do NOT assume it's a child
@@ -478,10 +496,10 @@ export async function checkParentBlocked(
       // If we can't get the body, continue with just sub-issues from API
     }
 
-    const allChildNumbers = [...childSet];
+    const allChildren = [...childMap.values()];
 
     // No children at all — not blocked
-    if (allChildNumbers.length === 0) {
+    if (allChildren.length === 0) {
       return {
         ok: true,
         value: {
@@ -494,40 +512,45 @@ export async function checkParentBlocked(
     }
 
     // Check the state of each child
-    const openChildren: number[] = [];
-    const closedChildren: number[] = [];
+    const openChildren: SubIssueRef[] = [];
+    const closedChildren: SubIssueRef[] = [];
+    const sameRepo = childIsSameRepo(repo);
 
-    for (const childNumber of allChildNumbers) {
-      // Issue #1808: prefer the cached open-state map. A hit means
-      // the child is currently open; a miss means it is either
-      // closed or absent from the open-issues snapshot, so we
-      // delegate to the fetcher to confirm.
-      if (openStateMap?.has(childNumber)) {
-        openChildren.push(childNumber);
+    for (const child of allChildren) {
+      // Issue #1808: prefer the cached open-state map, but only for a
+      // same-repo child — the map is per-repository and a cross-repo
+      // child's number has no meaning in it.
+      if (sameRepo(child.repo) && openStateMap?.has(child.number)) {
+        openChildren.push(child);
         continue;
       }
       try {
-        const childState = await fetcher.getIssueState(repo, childNumber);
+        const childState = await fetcher.getIssueState(child.repo, child.number);
         if (childState.state === "OPEN") {
-          openChildren.push(childNumber);
+          openChildren.push(child);
         } else {
-          closedChildren.push(childNumber);
+          closedChildren.push(child);
         }
       } catch {
         // If we can't check a child's state, assume it's open (fail closed
         // for parent blocking — we don't want to work on a parent if we
         // can't verify children are done)
-        openChildren.push(childNumber);
+        openChildren.push(child);
       }
     }
+
+    const byRepoThenNumber = (a: SubIssueRef, b: SubIssueRef) => {
+      const repoCmp = a.repo.toLowerCase().localeCompare(b.repo.toLowerCase());
+      return repoCmp !== 0 ? repoCmp : a.number - b.number;
+    };
 
     return {
       ok: true,
       value: {
         isBlocked: openChildren.length > 0,
-        openChildren: openChildren.sort((a, b) => a - b),
-        closedChildren: closedChildren.sort((a, b) => a - b),
-        totalChildren: allChildNumbers.length,
+        openChildren: openChildren.sort(byRepoThenNumber),
+        closedChildren: closedChildren.sort(byRepoThenNumber),
+        totalChildren: allChildren.length,
       },
     };
   } catch (error) {
@@ -869,12 +892,17 @@ export async function buildWorkOnDependencyGraph(
       // Unreadable body — skip forward edges for this node.
     }
 
-    // Parent/child edges: each genuine sub-issue is a child of `n`.
+    // Parent/child edges: each genuine sub-issue is a child of `n`. The graph
+    // is single-repo, so a cross-repo sub-issue with the same number as one
+    // of this repo's nodes is not treated as that node's child (Issue
+    // #3319).
     try {
       const children = await fetcher.getSubIssues(repo, n);
+      const sameRepo = childIsSameRepo(repo);
       for (const child of children) {
-        if (!set.has(child)) continue;
-        const childNode = nodes.get(child);
+        if (!sameRepo(child.repo)) continue;
+        if (!set.has(child.number)) continue;
+        const childNode = nodes.get(child.number);
         if (childNode) childNode.childOf = n;
       }
     } catch {
@@ -890,11 +918,14 @@ export async function buildWorkOnDependencyGraph(
  *
  * @param issueNumber - The parent issue number
  * @param result - The blocked check result
+ * @param repo - The parent's own repo (Issue #3319): a same-repo child
+ *   renders as `#n`, a cross-repo child as `owner/repo#n`.
  * @returns Formatted message string
  */
 export function formatParentBlockedMessage(
   issueNumber: number,
   result: ParentBlockedResult,
+  repo: string,
 ): string {
   if (!result.isBlocked) {
     if (result.totalChildren === 0) {
@@ -903,7 +934,10 @@ export function formatParentBlockedMessage(
     return `Issue #${issueNumber} — all ${result.totalChildren} sub-issues are closed. Ready to work on.`;
   }
 
-  const openRefs = result.openChildren.map((n) => `#${n}`).join(", ");
+  const sameRepo = childIsSameRepo(repo);
+  const refLabel = (child: SubIssueRef) =>
+    sameRepo(child.repo) ? `#${child.number}` : `${child.repo}#${child.number}`;
+  const openRefs = result.openChildren.map(refLabel).join(", ");
   return `Issue #${issueNumber} is blocked by ${result.openChildren.length} open sub-issue(s): ${openRefs}. ` +
     `${result.closedChildren.length}/${result.totalChildren} sub-issues completed.`;
 }

@@ -33,6 +33,8 @@ import type {
   IssueState,
   OpenIssueStateMap,
 } from "./issue_dependencies.ts";
+import { fetchNativeSubIssueRefs } from "./native_sub_issues.ts";
+import type { SubIssueRef } from "./native_sub_issues.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import type { InFlightClaim } from "./work_stream.ts";
 import { fetchOpenMilestoneClosedCounts } from "./issue_query.ts";
@@ -245,7 +247,7 @@ export function isRateLimitError(err: unknown): boolean {
  */
 export function memoiseIssueFetcher(fetcher: IssueFetcher): IssueFetcher {
   const bodyCache = new Map<string, Promise<string>>();
-  const subCache = new Map<string, Promise<number[]>>();
+  const subCache = new Map<string, Promise<SubIssueRef[]>>();
   const stateCache = new Map<string, Promise<IssueState>>();
   // Issue #222: keyed by repo AND number. A cross-repo dependency
   // (`Depends on owner/repo#560`) is now resolved against its own repo, so a
@@ -468,7 +470,7 @@ export function seedIssueFetcherFromListing(
       }
       return fetcher.getIssueState(repo, issueNumber);
     },
-    getSubIssues(repo: string, issueNumber: number) {
+    getSubIssues(repo: string, issueNumber: number): Promise<SubIssueRef[]> {
       return fetcher.getSubIssues(repo, issueNumber);
     },
     getIssueBody(repo: string, issueNumber: number) {
@@ -582,16 +584,18 @@ function uncachedIssueFetcher(
       // `- [ ] #N` acceptance-criteria checkbox. The native endpoint
       // returns only genuine sub-issues (and `[]` when there are none),
       // so the body path keeps running with its back-reference check.
+      //
+      // Issue #3319: the unpaginated single-page read silently dropped a
+      // parent's children past the first 30, and discarded each child's own
+      // repo — so a cross-repo sub-issue was resolved as if it were this
+      // repo's own issue of the same number. `fetchNativeSubIssueRefs`
+      // paginates at `per_page=100` and keeps each child's own repo.
       try {
-        const output = await ghCommandFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}/sub_issues`,
-        ]);
-        const parsed = JSON.parse(output) as Array<{ number?: number }>;
-        if (!Array.isArray(parsed)) return [];
-        return parsed
-          .map((sub) => sub.number)
-          .filter((n): n is number => typeof n === "number");
+        return await fetchNativeSubIssueRefs(
+          repo,
+          issueNumber,
+          ghCommandFn,
+        );
       } catch {
         return [];
       }
@@ -624,7 +628,7 @@ function fetchSubIssues(
   ghCommandFn: (args: string[]) => Promise<string>,
   repo: string,
   issueNumber: number,
-): Promise<number[]> {
+): Promise<SubIssueRef[]> {
   return uncachedIssueFetcher(ghCommandFn).getSubIssues(repo, issueNumber);
 }
 
@@ -826,7 +830,11 @@ export async function isDependencyBlocked(
       if (parentResult.ok && parentResult.value.openChildren) {
         for (const child of parentResult.value.openChildren) {
           if (blockers) {
-            blockers.push({ repo, number: child, kind: "child" });
+            blockers.push({
+              repo: child.repo,
+              number: child.number,
+              kind: "child",
+            });
           }
           if (!blockers) return true;
         }
