@@ -4626,11 +4626,11 @@ Two properties follow from reading the record off the pull request:
   `_PLACEHOLDER`, `_PENDING`, `_TBD` or `_TODO` the agent forgot to resolve —
   e.g. `QUALITY_RESULT_PLACEHOLDER` — or, on a line citing a gate command, a
   bare ALL-CAPS identifier with at least one underscore left standing in for
-  the result after the line's last colon — e.g. `GATE_OUTCOME_PENDING` — is
-  replaced at the same `readPrResponseMessage` chokepoint with
-  `[result not reported]` and logged as an error, so the posted reply never
-  carries an unresolved token as if it were the real result (Issues #3124,
-  #3248).
+  the result after the line's last colon, or after a dash or `=` following
+  the cited command — e.g. `GATE_OUTCOME_PENDING` — is replaced at the same
+  `readPrResponseMessage` chokepoint with `[result not reported]` and logged
+  as an error, so the posted reply never carries an unresolved token as if
+  it were the real result (Issues #3124, #3248, #3287).
 - **Nor can the failing check's name.** On a `pull_request`-triggered workflow
   the job name comes from the head ref, so a fork chooses it — and the CI-fix
   replies interpolate it into the same fleet-authored bodies. The same helper

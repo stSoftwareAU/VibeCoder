@@ -1124,11 +1124,12 @@ The file MUST contain:
    to fill in later. The worker catches an unfilled ALL-CAPS token ending in
    _PLACEHOLDER, _PENDING, _TBD or _TODO written outside backticks and code
    blocks — for example SOMETHING_PLACEHOLDER in prose — or a bare ALL-CAPS
-   identifier with an underscore left as the result after the colon on a
-   line that cites a gate command — for example GATE_OUTCOME_PENDING in
-   prose. It blocks PR creation, or records the shortfall against a PR the
-   run already raised. A token inside backticks or a code block is not
-   caught, and it is still never acceptable in place of a result. If a gate
+   identifier with an underscore left as the result after a colon, dash or
+   `=` on a line that cites a gate command — for example
+   GATE_OUTCOME_PENDING in prose. It blocks PR creation, or records the
+   shortfall against a PR the run already raised. A token inside backticks
+   or a code block is not caught, and it is still never acceptable in
+   place of a result. If a gate
    was not run, say so plainly with the
    `<!-- vibe-quality-gate-skipped … -->` note the Quality check loop rule
    above describes. Every test named here or
