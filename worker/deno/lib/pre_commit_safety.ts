@@ -54,7 +54,8 @@ export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   /(^|\/)\.env(\.[^/]*)?(\/|$)/,
   // Matched as any path segment (Issue #3311).
   /(^|\/)\.config[^/]*\.json(\/|$)/,
-  /.*\.secret\.json$/,
+  // Plain suffix match; a leading `.*` backtracked quadratically (Issue #3316).
+  /\.secret\.json$/,
   // Matched as any path segment (Issue #3311).
   /(^|\/)\.secrets\//,
   // Private key material and credential files (Issue #3660). Matched on the
