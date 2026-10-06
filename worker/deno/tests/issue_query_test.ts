@@ -76,6 +76,65 @@ Deno.test("issue_query - parseIssueListJson returns empty for invalid JSON", () 
   assertEquals(parseIssueListJson(""), []);
 });
 
+// -----------------------------------------------------------------------
+// subIssuesSummary (Issue #3314)
+// -----------------------------------------------------------------------
+
+function issueJson(subIssuesSummary: unknown): string {
+  return JSON.stringify([
+    {
+      number: 1,
+      title: "Parent issue",
+      url: "",
+      assignees: [],
+      labels: [],
+      createdAt: "2024-01-01T00:00:00Z",
+      author: { login: "alice" },
+      milestone: null,
+      subIssuesSummary,
+    },
+  ]);
+}
+
+Deno.test("issue_query - parseIssueListJson keeps a valid subIssuesSummary, dropping percentCompleted", () => {
+  const result = parseIssueListJson(
+    issueJson({ total: 4, completed: 0, percentCompleted: 0 }),
+  );
+  assertEquals(result[0]?.subIssuesSummary, { total: 4, completed: 0 });
+});
+
+Deno.test("issue_query - parseIssueListJson drops a non-numeric subIssuesSummary", () => {
+  const result = parseIssueListJson(issueJson({ total: "4", completed: 0 }));
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
+Deno.test("issue_query - parseIssueListJson drops a null subIssuesSummary", () => {
+  const result = parseIssueListJson(issueJson(null));
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
+Deno.test("issue_query - parseIssueListJson drops a negative subIssuesSummary", () => {
+  const result = parseIssueListJson(issueJson({ total: -1, completed: 0 }));
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
+Deno.test("issue_query - parseIssueListJson leaves subIssuesSummary absent when the raw field is absent", () => {
+  const json = JSON.stringify([
+    {
+      number: 1,
+      title: "No sub-issues field",
+      url: "",
+      assignees: [],
+      labels: [],
+      createdAt: "2024-01-01T00:00:00Z",
+      author: { login: "alice" },
+      milestone: null,
+    },
+  ]);
+  const result = parseIssueListJson(json);
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
 // =============================================================================
 // parsePRListJson tests
 // =============================================================================

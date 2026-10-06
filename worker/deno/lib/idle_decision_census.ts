@@ -249,6 +249,7 @@ import type { SkipReason } from "./issue_finder_logger.ts";
 import {
   type ClosedPR,
   getBlockingPRForIssue,
+  hasOpenSubIssues,
   isBlockedByRecentlyClosedPR,
   type OpenPR,
 } from "./issue_query.ts";

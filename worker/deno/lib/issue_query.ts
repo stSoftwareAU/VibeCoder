@@ -251,6 +251,27 @@ export function parseSubIssuesSummary(
 }
 
 /**
+ * Does `issue` have any open native GitHub sub-issues?
+ *
+ * SIMPLE-ON-PURPOSE: native sub-issue counts only — body task-list children
+ * (`checkParentBlocked`'s back-referenced refs) are not modelled, and
+ * `completed` may not count not-planned closures (over-holds, the safe
+ * direction) — upgrade when an inversion alert names a task-list-only or
+ * not-planned-closed parent.
+ *
+ * Lives here (not in `idle_decision_census.ts`, its only prior home) so both
+ * the census and the audit (`idle_detect_diagnostics.ts`) can import it
+ * without a circular dependency between those two modules (Issue #3314).
+ */
+export function hasOpenSubIssues(
+  issue: { subIssuesSummary?: { total: number; completed: number } },
+): boolean {
+  const summary = issue.subIssuesSummary;
+  if (summary === undefined) return false;
+  return summary.total > summary.completed;
+}
+
+/**
  * Parse raw gh issue list JSON into FilterableIssue array.
  *
  * @param jsonStr - Raw JSON string from gh CLI

@@ -96,8 +96,10 @@ import { runGhCommand } from "./github.ts";
 import {
   type ClosedPR,
   getBlockingPRForIssue,
+  hasOpenSubIssues,
   isBlockedByRecentlyClosedPR,
   type OpenPR,
+  parseSubIssuesSummary,
 } from "./issue_query.ts";
 import {
   DEFAULT_STREAM_SHARING_TIERS,
@@ -112,8 +114,6 @@ import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 import { recordRepoProbeBestEffort } from "./monitored_repo_access.ts";
 import { extractDependencyReferencesDetailed } from "./issue_dependencies.ts";
 import { isTimeDeferred } from "./time_deferral.ts";
-import { parseSubIssuesSummary } from "./issue_query.ts";
-import { hasOpenSubIssues } from "./idle_decision_census.ts";
 
 // ---------------------------------------------------------------------------
 // Label sets
