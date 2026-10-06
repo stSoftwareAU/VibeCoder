@@ -1127,11 +1127,20 @@ async function _processFeedbackWithHeartbeat(
   // push below, so a recovery-turn edit rides the same push and a residual
   // hit reaches the reply through `.pr_response_message`, read later by
   // `readPrResponseMessage`. Wrapped so an unexpected throw never aborts an
-  // otherwise-successful run — the check is a backstop, not a gate.
+  // otherwise-successful run — the check is a backstop, not a gate. The
+  // change request body is passed through so the check can confirm a
+  // sentence the reviewer quoted was rewritten or removed rather than left
+  // sitting under an appended correction (Issue #3244).
   try {
     const driftCheck = processorDeps.driftCheckFn ?? runPrFeedbackDriftCheck;
     const driftOutcome = await driftCheck(
-      { repo, prNumber, repoPath: processorDeps.workDir, beforeSha },
+      {
+        repo,
+        prNumber,
+        repoPath: processorDeps.workDir,
+        beforeSha,
+        changeRequest: processedBody,
+      },
       {
         runGit: async (args: string[]) => {
           const r = await deps.git.runGitCommand(args, {
