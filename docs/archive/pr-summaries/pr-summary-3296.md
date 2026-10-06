@@ -35,9 +35,9 @@ is not widened. Closes #3296.
   `mergedInUnchanged` and default-ref exemptions. `classifyStagedPath` is
   unchanged, so its other callers keep the strict answer.
 - The `.gitignore` must exist at `HEAD` (`cat-file -e HEAD:.gitignore`) and
-  be unmodified in the index and working tree (`diff --quiet HEAD --
-  .gitignore`). Otherwise an agent could opt a path in within the very
-  commit being judged.
+  its working tree must match `HEAD` (`diff --quiet HEAD -- .gitignore`).
+  This catches the usual same-commit edit. A staged-only edit whose
+  working-tree file has been put back is not caught (see Standards Review).
 - `check-ignore` exit 1 is the only exempting answer. Exit 0, any other
   code, or a spawn failure leaves the path refused. A `run` test seam
   exists only because `runGitCommand` reports a timeout as `ok:true` with
@@ -60,7 +60,9 @@ is not widened. Closes #3296.
 - Residual risk: the gate reads `.gitignore` at `HEAD`, not on the base
   branch, so a re-allow committed earlier on the same branch counts.
   Secrets stay refused regardless, and the prompt rule tells agents never
-  to add a re-allow rule themselves.
+  to add a re-allow rule themselves. `check-ignore` exit 1 also covers a
+  hidden path no rule mentions, and a path re-allowed by an untracked
+  nested `.gitignore` (see Standards Review).
 
 ## Evidence
 
@@ -96,25 +98,25 @@ $ git check-ignore -v -n --no-index -- .claude/skills/review-fleet-prs/SKILL.md;
 The code relies on exit 1 meaning "not ignored", and exit 0 meaning
 "ignored".
 
-- `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts`: 19
+- `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts`: 18
   tests. Real-repo fixtures (with a local git identity) cover the
   acceptance criteria and the `.gitignore` guards. Stub tests cover a
   spawn failure and an unexpected exit code.
 - That file, `worker/deno/tests/pre_commit_safety_test.ts` and
   `worker/deno/tests/hidden_files_safety_integration_test.ts`: 69 passed,
   0 failed. `deno fmt --check`, lint and check are clean.
-- **Docs sweep**: grep `ALLOWED_HIDDEN_PATHS`, `classifyStagedPath`,
+- **Docs sweep** — grep: `ALLOWED_HIDDEN_PATHS`, `classifyStagedPath`,
   `REQUIRED_GITIGNORE_PATTERNS`, `hidden path`, `Pre-commit safety gate`,
-  `allowlist`; updated: `CODING-STANDARDS.md`, `DESIGN-PRINCIPLES.md`,
+  `allowlist`; section: `docs/MERGE.md#read-only-default-branch` (the
+  staged-path gate's exemption bullets) and `SECURITY.md` "Configuration
+  File (.config.json)" (the `assertSafeToCommit()` exemption paragraphs);
+  updated: `CODING-STANDARDS.md`, `DESIGN-PRINCIPLES.md`,
   `SECURITY.md`, `docs/MERGE.md`, `docs/THREAT-MODEL.md` (C26),
   `prompts/coding_guidelines/prompt.md`, and the module and helper doc
-  comments in `worker/deno/lib/pre_commit_safety.ts`. Still true:
+  comments in `worker/deno/lib/pre_commit_safety.ts`. `README.md` and
+  `docs/CONFIGURATION.md`: no hits. Still true:
   - `docs/AGENT-ACCOUNTABILITY.md:729` — still true because it describes
     the enforcer's allowlist, which is unchanged;
-  - `README.md:505` — still true because it lists the enforcer's
-    re-allowed paths, not the gate's decision;
-  - `docs/CONFIGURATION.md:5223` — still true because it describes
-    `REQUIRED_GITIGNORE_PATTERNS`, which is not widened;
   - `worker/deno/lib/git_push.ts:453` — still true because it describes
     worker state files, which no repo re-allows;
   - `worker/deno/lib/milestone_merge_state.ts:188` — still true because
@@ -175,22 +177,44 @@ An independent reviewer was given only the diff and the issue body.
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-No material departures found. Removed or weakened assertions: none (the
-only test file is new). Rules checked: Language and Spelling; Never Fail
-Silently — Fail Loud; Commit Safety (including the per-repo opt-in); A
-Code Change Owes a Docs Change; the TDD rules, A named test must exist, A
-stub mirrors the real callee's contract, Observe the real tool before you
-rely on it, Every outcome of a branch you add needs a test; Prompt
-Engineering (check existing rules, apply a new rule to your own diff,
-scope a rule); PR Summary absolute-word claims. Style note, not a
-violation: the optional `run` test seam slightly widens
-`gitignoreReallowed`'s public signature.
+An independent reviewer was given only the diff and `CODING-STANDARDS.md`.
+
+- **violation** — PR Summary and Evidence, "Prose about the PR's own
+  change": the docs say the root `.gitignore` must be unmodified "in both
+  the index and the working tree", but the code only runs
+  `git diff --quiet HEAD -- .gitignore`, which compares `HEAD` with the
+  working tree. A staged `.gitignore` edit whose working-tree file has been
+  put back passes the guard, and no test covers that index-only case —
+  evidence: `worker/deno/lib/pre_commit_safety.ts:321`, `SECURITY.md:727`,
+  `CODING-STANDARDS.md:1101`, `docs/MERGE.md:735` — reason: not fixed in
+  this diff; this retry may correct only the PR summary, so the code or
+  manual wording needs a follow-up.
+- **violation** — PR Summary and Evidence, the same rule: the docs say the
+  gate exempts a path the `.gitignore` "re-allows", but exit 1 from
+  `git check-ignore -q --no-index` means "not ignored". That also covers a
+  hidden path no rule mentions, in a repo without a `.*` ignore line, and a
+  path re-allowed by an untracked nested `.gitignore`. Neither case is
+  tested — evidence: `worker/deno/lib/pre_commit_safety.ts:333`,
+  `CODING-STANDARDS.md:1096`, `SECURITY.md:721`,
+  `prompts/coding_guidelines/prompt.md:1013` — reason: not fixed in this
+  diff, for the same reason.
+- **clean** — Language and Spelling; Never Fail Silently (every
+  `cat-file`, `diff` or `check-ignore` failure leaves the path refused);
+  log levels (each exemption is logged at INFO); TDD, every branch outcome
+  tested; refusal and negative tests with a positive control; parallel-safe
+  unit tests (no `Deno.env` or `Deno.chdir` calls, no sleeps, a temp
+  directory per test); Deno/TypeScript conventions (`Result`,
+  `@std/assert`, an injected `run` seam); KISS/DRY (reuses
+  `FORBIDDEN_STAGED_PATTERNS` and `runGitCommand`); Commit Safety (secret
+  patterns are never exempt); A Code Change Owes a Docs Change; Check
+  existing rules first; A named test must exist. No existing test assertion
+  was removed or weakened, because the only test file is new.
 
 ## Test Plan
 
 - Removed assertions: none. No existing test was edited.
 - New file
-  `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts` (19
+  `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts` (18
   tests). The existing tests expecting the hidden-path refusal were
   re-run and still reach it:
   `worker/deno/tests/pre_commit_safety_test.ts` and
@@ -236,9 +260,11 @@ All mutations were restored.
 
 **Guards kept and excluded:** kept: the secret patterns stay absolute;
 the merged-in and default-ref exemptions run first, unchanged; the Issue
-#1758 message is unchanged. Excluded: `assertAdoptedMergeIsSafe`, covered
-by "an agent-added .env or .claude/secret during a merge is still refused
-with no re-allowing .gitignore present (Issue #3296 sanity)".
+#1758 message is unchanged. Excluded: `assertAdoptedMergeIsSafe`
+(`worker/deno/lib/milestone_merge_state.ts:234`), which still calls
+`classifyStagedPath` directly and is not touched by this diff; no new test
+exercises it. The "(Issue #3296 sanity)" test only stages `.env` in a plain
+commit and checks `assertSafeToCommit` still refuses it.
 
 **Callers checked:** `assertSafeToCommit` is called by
 `commitAndPushPending` (`worker/deno/lib/git_push.ts:625`),
