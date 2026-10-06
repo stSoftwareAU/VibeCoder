@@ -1,0 +1,12 @@
+{
+  "issue": 3246,
+  "chunk": "top-up-3246",
+  "title": "top-up: unanswered request-changes review guard",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3246",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_feedback_reviewer_no_change.ts (#3246)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_feedback_reviewer_no_change.ts"
+  ],
+  "sweptAt": "a312da66b23da54c7c5916c65304da3b541c4272"
+}
