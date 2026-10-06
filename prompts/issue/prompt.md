@@ -1022,6 +1022,13 @@ rewrite it, never append to it:
   status, each test's pass/fail result, any "known defect" note, and every
   function, file and helper it names — each must exist at the head and be used
   as described.
+- Re-derive the Summary, Evidence and Acceptance Criteria sections from that
+  diff, not from memory of the run. Every file or behaviour the summary says
+  this PR changes must appear in `git diff <base>...HEAD` — existing at the
+  head is not enough, because a merge from the base branch can bring in the
+  same change and leave this PR's own diff without it. When a design
+  iteration was abandoned, replace its description with the one that
+  shipped.
 - Drop the interim notes from earlier attempts: a superseded approach, a red
   test that is now green, a helper "not imported anywhere" that now is. A
   summary saying the fix is broken or unfinished when the head holds a working,
@@ -1279,11 +1286,3 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 - `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px` — restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows
 ```
-
-- Re-derive the Summary, Evidence and Acceptance Criteria sections from that
-  diff, not from memory of the run. Every file or behaviour the summary says
-  this PR changes must appear in `git diff <base>...HEAD` — existing at the
-  head is not enough, because a merge from the base branch can bring in the
-  same change and leave this PR's own diff without it. When a design
-  iteration was abandoned, replace its description with the one that
-  shipped.
