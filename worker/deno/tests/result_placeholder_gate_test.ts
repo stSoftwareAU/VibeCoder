@@ -335,6 +335,88 @@ Deno.test("findResultPlaceholders - a result inside backticks is not flagged eve
 });
 
 // ---------------------------------------------------------------------------
+// Dash and equals result separators (Issue #3287)
+// ---------------------------------------------------------------------------
+
+Deno.test("findResultPlaceholders - the PR #3283 escape (em dash before GATE_RESULT) is caught", () => {
+  const text = "- `./quality.sh` — GATE_RESULT";
+  assertEquals(findResultPlaceholders(text), ["GATE_RESULT"]);
+  assertEquals(
+    replaceResultPlaceholders(text, "[result not reported]"),
+    "- `./quality.sh` — [result not reported]",
+  );
+});
+
+Deno.test("findResultPlaceholders - the PR #3233 escape (command not in backticks) is caught", () => {
+  const text = "- ./quality.sh — QUALITY_RESULT";
+  assertEquals(findResultPlaceholders(text), ["QUALITY_RESULT"]);
+});
+
+Deno.test("findResultPlaceholders - an en dash before the result is caught", () => {
+  const text = "- `deno test` – GATE_RESULT";
+  assertEquals(findResultPlaceholders(text), ["GATE_RESULT"]);
+});
+
+Deno.test("findResultPlaceholders - a spaced hyphen before the result is caught", () => {
+  const text = "- `cargo test` - GATE_RESULT";
+  assertEquals(findResultPlaceholders(text), ["GATE_RESULT"]);
+});
+
+Deno.test("findResultPlaceholders - a spaced double hyphen before the result is caught", () => {
+  const text = "- `cargo test` -- GATE_RESULT";
+  assertEquals(findResultPlaceholders(text), ["GATE_RESULT"]);
+});
+
+Deno.test("findResultPlaceholders - an equals sign before the result is caught, spaced or not", () => {
+  assertEquals(findResultPlaceholders("- `./quality.sh` = GATE_RESULT"), [
+    "GATE_RESULT",
+  ]);
+  assertEquals(findResultPlaceholders("- `./quality.sh`=GATE_RESULT"), [
+    "GATE_RESULT",
+  ]);
+});
+
+Deno.test("findResultPlaceholders - an unspaced em dash with a trailing full stop is caught, and replace keeps the full stop", () => {
+  const text = "- `./quality.sh`—GATE_RESULT.";
+  assertEquals(findResultPlaceholders(text), ["GATE_RESULT"]);
+  assertEquals(
+    replaceResultPlaceholders(text, "[result not reported]"),
+    "- `./quality.sh`—[result not reported].",
+  );
+});
+
+Deno.test("findResultPlaceholders - a legitimate result after a dash or equals separator is not flagged", () => {
+  for (
+    const text of [
+      "- `./quality.sh` — passed",
+      "- `./quality.sh` — OK",
+      "- `./quality.sh` — PASSED",
+      "- `deno test` – passed",
+      "- `cargo test` - OK",
+      "- `./quality.sh` = OK",
+    ]
+  ) {
+    assertEquals(findResultPlaceholders(text), []);
+  }
+});
+
+Deno.test("findResultPlaceholders - an indented list bullet's dash before the command is not a separator", () => {
+  const text = "  - GATE_RESULT `deno test`";
+  assertEquals(findResultPlaceholders(text), []);
+  assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
+});
+
+Deno.test("findResultPlaceholders - an equals sign before the command is not a separator", () => {
+  const text = "- MODE=FAST_PATH `cargo test`";
+  assertEquals(findResultPlaceholders(text), []);
+});
+
+Deno.test("findResultPlaceholders - a dash inside a code span is not a separator", () => {
+  const text = "- `./quality.sh — GATE_RESULT`";
+  assertEquals(findResultPlaceholders(text), []);
+});
+
+// ---------------------------------------------------------------------------
 // Hostile-input growth (Issue #3248)
 // ---------------------------------------------------------------------------
 
@@ -365,6 +447,18 @@ Deno.test("BARE_IDENTIFIER_RE - a long run of letters that never full-matches sc
   const build = (chars: number) => `- \`./quality.sh\`: ${"A".repeat(chars)}!`;
   const result = assertLinearGrowth(
     "BARE_IDENTIFIER_RE long letter run",
+    build,
+    (input) => findResultPlaceholders(input),
+    { baseChars: 25_000 },
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("POST_COMMAND_SEPARATORS - a long run of em dashes that never completes a bare identifier scales linearly", () => {
+  const build = (chars: number) =>
+    `- \`./quality.sh\` ${"— ".repeat(Math.floor(chars / 2))}A_B!`;
+  const result = assertLinearGrowth(
+    "POST_COMMAND_SEPARATORS long em dash run",
     build,
     (input) => findResultPlaceholders(input),
     { baseChars: 25_000 },
