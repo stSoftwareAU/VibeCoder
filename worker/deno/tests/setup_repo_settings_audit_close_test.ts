@@ -60,6 +60,7 @@ const HARDENED: Record<string, unknown> = {
     },
   },
   [`repos/${REPO}/contents/.github/CODEOWNERS`]: { name: "CODEOWNERS" },
+  [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: true },
 };
 
 /** The workflow token still read-write — the re-scan reports it. */
@@ -532,6 +533,143 @@ Deno.test("never throws — a gh seam that throws synchronously is a warning", a
 });
 
 // ---------------------------------------------------------------------------
+// Issue #3268 — BP-REPO-PVR-OFF closes once the re-read shows PVR enabled
+// ---------------------------------------------------------------------------
+
+function pvrOutcome(status: HardenResult["status"]): HardenRepoOutcome {
+  return outcome([
+    {
+      step: {
+        kind: "private-vulnerability-reporting",
+        title: "Enable private vulnerability reporting",
+        method: "PUT",
+        endpoint: "private-vulnerability-reporting",
+      },
+      status,
+    },
+  ]);
+}
+
+const PVR_ISSUE: Issue = {
+  number: 80,
+  body: marker("BP-REPO-PVR-OFF"),
+  author: "stservice",
+};
+
+Deno.test("BP-REPO-PVR-OFF closes once hardening applied and the re-read shows enabled: true", async () => {
+  const stub = stubGh(HARDENED, [PVR_ISSUE]);
+  const { result } = await run(stub, pvrOutcome("applied"));
+
+  assertEquals(result.closed, [80]);
+  assertEquals(result.warnings, []);
+  assertEquals(stub.comments.length, 1);
+  const body = stub.comments[0]![stub.comments[0]!.indexOf("--body") + 1]!;
+  assertStringIncludes(body, "Enable private vulnerability reporting");
+  assertEquals(stub.closes.length, 1);
+  assertEquals(stub.closes[0], [
+    "issue",
+    "close",
+    "80",
+    "--repo",
+    REPO,
+    "--reason",
+    "completed",
+  ]);
+});
+
+Deno.test("BP-REPO-PVR-OFF stays open when the re-read shows enabled: false", async () => {
+  const stub = stubGh(
+    {
+      ...HARDENED,
+      [`repos/${REPO}/private-vulnerability-reporting`]: { enabled: false },
+    },
+    [PVR_ISSUE],
+  );
+  const { result } = await run(stub, pvrOutcome("applied"));
+
+  assertEquals(result.closed, []);
+  assertEquals(stub.comments, []);
+  assertEquals(stub.closes, []);
+});
+
+Deno.test("BP-REPO-PVR-OFF never closes on a dry run (planned/failed/skipped this run)", async () => {
+  for (const status of ["planned", "failed", "skipped"] as const) {
+    const stub = stubGh(HARDENED, [PVR_ISSUE]);
+    const { result } = await run(stub, pvrOutcome(status));
+    assertEquals(result.closed, [], status);
+    assertEquals(stub.closes, [], status);
+  }
+});
+
+Deno.test("BP-REPO-PVR-OFF stays open when the read-back has no enabled field (scanner reports a lookup failure)", async () => {
+  const stub = stubGh(
+    { ...HARDENED, [`repos/${REPO}/private-vulnerability-reporting`]: {} },
+    [PVR_ISSUE],
+  );
+  const { result } = await run(stub, pvrOutcome("applied"));
+
+  assertEquals(result.closed, []);
+  assertEquals(stub.closes, []);
+  assertEquals(result.warnings.length, 1);
+});
+
+Deno.test("BP-REPO-PVR-OFF stays open when the repo is private (PVR not read at all)", async () => {
+  const privateRepo = {
+    ...HARDENED,
+    [`repos/${REPO}`]: {
+      visibility: "private",
+      private: true,
+      security_and_analysis: {
+        secret_scanning: { status: "enabled" },
+        secret_scanning_push_protection: { status: "enabled" },
+      },
+    },
+  };
+  const stub = stubGh(privateRepo, [PVR_ISSUE]);
+  const apiCalls: string[][] = [];
+  const recordingGh = (args: string[]): Promise<string> => {
+    if (args[0] === "api") apiCalls.push(args);
+    return stub.gh(args);
+  };
+  const { result } = await run(
+    { ...stub, gh: recordingGh },
+    pvrOutcome("applied"),
+  );
+
+  assertEquals(result.closed, []);
+  assertEquals(stub.closes, []);
+  assert(
+    !apiCalls.some((a) =>
+      a[1] === `repos/${REPO}/private-vulnerability-reporting`
+    ),
+    "the PVR endpoint must not be read for a private repo",
+  );
+});
+
+Deno.test("BP-REPO-PVR-OFF stays open and warns when the PVR read-back rejects", async () => {
+  const stub = stubGh(
+    {
+      ...HARDENED,
+      [`repos/${REPO}/private-vulnerability-reporting`]: new Error(
+        "HTTP 403: Must have admin rights to Repository.",
+      ),
+    },
+    [PVR_ISSUE],
+  );
+  const { result } = await run(stub, pvrOutcome("applied"));
+
+  assertEquals(result.closed, []);
+  assertEquals(result.warnings.length, 1);
+  assertStringIncludes(result.warnings[0]!, "re-scan");
+});
+
+Deno.test("BP-REPO-PVR-OFF closes when already compliant (no step of its kind) and the re-read shows enabled: true", async () => {
+  const stub = stubGh(HARDENED, [PVR_ISSUE]);
+  const { result } = await run(stub, outcome([]));
+  assertEquals(result.closed, [80]);
+});
+
+// ---------------------------------------------------------------------------
 // The mapping itself
 // ---------------------------------------------------------------------------
 
@@ -549,6 +687,7 @@ Deno.test("eligibleFindingIds - applied or absent kinds are eligible; failed, pl
     [
       "BP-REPO-ACTIONS-MAY-APPROVE-PRS",
       "BP-REPO-DEFAULT-TOKEN-WRITE",
+      "BP-REPO-PVR-OFF",
       "BP-REPO-RULESET-NO-REVIEW",
     ],
   );
