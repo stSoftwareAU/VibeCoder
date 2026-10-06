@@ -217,6 +217,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // line by line; only a growth measurement separates its capped, anchored
   // scans from a backtracking pattern (Issue #3255).
   "tests/milestone_merge_gate_test.ts",
+  // The per-repo sub-issue ref parser merges pages built from a hostile
+  // `repository_url`; only a growth measurement separates its linear scan
+  // from a backtracking one (Issue #3319).
+  "tests/native_sub_issue_refs_test.ts",
   // The first-run summary claim check's Test Plan backstop scans an
   // agent-written summary and a test file with bounded span and declaration
   // regexes; only a growth measurement pins them (#3257).

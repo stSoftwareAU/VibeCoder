@@ -33,7 +33,12 @@ function ghStub(calls: string[][]) {
       return Promise.resolve(JSON.stringify({ body: "Depends on #3" }));
     }
     if (command.includes("/sub_issues")) {
-      return Promise.resolve(JSON.stringify([{ number: 8 }, { number: 9 }]));
+      return Promise.resolve(
+        JSON.stringify([
+          { number: 8, repository_url: "https://api.github.com/repos/o/r" },
+          { number: 9, repository_url: "https://api.github.com/repos/o/r" },
+        ]) + "\n",
+      );
     }
     return Promise.resolve("");
   };
@@ -50,14 +55,20 @@ Deno.test("cached fetcher #1818 - a second scan in the same iteration serves sta
     const first = createIssueFetcher(gh, cache);
     assertEquals((await first.getIssueState("o/r", 7)).state, "OPEN");
     assertEquals(await first.getIssueBody("o/r", 7), "Depends on #3");
-    assertEquals(await first.getSubIssues("o/r", 7), [8, 9]);
+    assertEquals(await first.getSubIssues("o/r", 7), [
+      { repo: "o/r", number: 8 },
+      { repo: "o/r", number: 9 },
+    ]);
     assertEquals(calls.length, 3);
 
     // Scan 2: another fresh fetcher — the idle re-scan — reads nothing.
     const second = createIssueFetcher(gh, cache);
     assertEquals((await second.getIssueState("o/r", 7)).state, "OPEN");
     assertEquals(await second.getIssueBody("o/r", 7), "Depends on #3");
-    assertEquals(await second.getSubIssues("o/r", 7), [8, 9]);
+    assertEquals(await second.getSubIssues("o/r", 7), [
+      { repo: "o/r", number: 8 },
+      { repo: "o/r", number: 9 },
+    ]);
     assertEquals(calls.length, 3, "the re-scan issued no gh call");
 
     // The keys are per repo: another repo's #7 is its own read.

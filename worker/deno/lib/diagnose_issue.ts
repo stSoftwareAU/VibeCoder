@@ -180,7 +180,8 @@ export function createDiagnosticIssueFetcher(
         const { extractSubIssueReferences } = await import(
           "./issue_dependencies.ts"
         );
-        return extractSubIssueReferences(validated.value.body, repo);
+        return extractSubIssueReferences(validated.value.body, repo)
+          .map((number) => ({ repo, number }));
       } catch {
         return [];
       }

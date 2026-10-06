@@ -162,7 +162,10 @@ Deno.test("createGhIssueFetcher - getSubIssues returns genuine native sub-issues
   const fetcher = createGhIssueFetcher(gh);
   const subs = await fetcher.getSubIssues("owner/repo", 42);
 
-  assertEquals(subs, [7, 8]);
+  assertEquals(subs, [
+    { repo: "owner/repo", number: 7 },
+    { repo: "owner/repo", number: 8 },
+  ]);
 });
 
 Deno.test("checkParentBlocked - a forged cross-reference does not block the parent", async () => {
