@@ -16,7 +16,7 @@ the same as before; only where each pin looks has changed. Closes #3302.
 - [x] `sleep_poll_guidance_1954_test.ts` — wait contract scoped per template; split into `sleep_poll_guidance_drift_test.ts` to keep the `check:manifests` family (Issue #1483)
 - [x] `reuse_existing_owner_3084_test.ts` — pins scoped per doc
 - [x] `no_verify_ban_test.ts` — section pins split into `no_verify_ban_drift_test.ts`
-- [x] Per-pin red check (44 checks)
+- [x] Per-pin red check (45 checks)
 - [x] Full gate
 
 ## Spec
@@ -168,14 +168,14 @@ issue. Where each one went:
   (416fd710). This is a refactor, so the tests are expected green on base.
 - Per-pin red check: for each pin, I deleted every occurrence of the phrase
   within the target section only — the `Removed` column — and ran the test,
-  then restored the phrase(s). 44 checks. Five of them (the
+  then restored the phrase(s). 45 checks. Five of them (the
   `reason: fixed in this diff`, `` `met` ``, `` `partial` ``, `` `missing` ``
   and `` `unrequested` `` pins in `standing_violation_3196_test.ts` and
   `reviewer_verdict_rule_test.ts`) were first checked by deleting only one of
   several in-section occurrences — those phrases recur 2–7 times in the issue
   prompt's "Independent Review Before the PR" section (the worked examples
   and later prose restate them) — which left the test green: a vacuous check.
-  The rows below record the actual in-section occurrence count for all 44
+  The rows below record the actual in-section occurrence count for all 45
   checks, each re-verified by deleting every occurrence and confirming the
   test goes red.
 
