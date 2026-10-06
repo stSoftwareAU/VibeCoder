@@ -19,6 +19,9 @@ const READY = JSON.stringify({
 // The App token stub prints `tokenOutput` (empty = no pr_reviewer_app) and
 // exits `tokenExit`; the gate stub records its token and arguments; the
 // escalate stub records its arguments and GH_TOKEN, and exits `escalateExit`.
+// `credential` is what the claude_credential.ts stub answers for the round's
+// subscription ({"label":null} = no pool, the host login as before), and
+// `credentialRetry` what it answers once a label is excluded (Issue #3289).
 async function fixture(
   gateOutput: string,
   gateExit = 0,
@@ -26,6 +29,8 @@ async function fixture(
   tokenExit = 0,
   escalateExit = 0,
   gateStderr = "",
+  credential = '{"label":null}',
+  credentialRetry = '{"label":null}',
 ) {
   const home = await Deno.makeTempDir();
   const bin = `${home}/bin`;
@@ -43,6 +48,12 @@ async function fixture(
     exit ${tokenExit} ;;
   *post.ts*) for a in "$@"; do case "$a" in --input=*) cat "\${a#--input=}" >> "$HOME/post-inputs"; echo >> "$HOME/post-inputs" ;; esac; done
     echo '{"posted":true,"outcome":"changes_requested"}'; exit 0 ;;
+  *claude_credential.ts*--usage-limit-log=*) for a in "$@"; do case "$a" in --usage-limit-log=*) f="\${a#--usage-limit-log=}" ;; esac; done
+    echo "$*" >> "$HOME/credential-args"
+    if grep -qi 'usage limit' "$f" 2>/dev/null; then echo true; else echo false; fi; exit 0 ;;
+  *claude_credential.ts*) echo "$*" >> "$HOME/credential-args"
+    case "$*" in *--exclude=*) printf '%s' '${credentialRetry}' ;; *) printf '%s' '${credential}' ;; esac
+    echo "claude credential pool: stub ranking" >&2; exit 0 ;;
   *escalate.ts*) echo "$*" >> "$HOME/escalate-args"
     echo "GH_TOKEN=\${GH_TOKEN:-unset}" >> "$HOME/escalate-env"
     [ ${escalateExit} = 0 ] || echo "escalate: boom" >&2
@@ -57,10 +68,17 @@ echo '${gateOutput}'; exit ${gateExit}`,
     "claude",
     `echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
 echo "BG_WAIT=\${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-unset}" >> "$HOME/claude-args"
+echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-args"
+echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
 printf '%s\\n' "$@" >> "$HOME/claude-args"`,
   );
   return home;
 }
+
+const POOL_PRIMARY =
+  '{"label":"provider","name":"CLAUDE_CODE_OAUTH_TOKEN","value":"tok-1-secret"}';
+const POOL_SECOND =
+  '{"label":"provider-2","name":"CLAUDE_CODE_OAUTH_TOKEN","value":"tok-2-secret"}';
 
 async function run(home: string, ...args: string[]) {
   return runBash(home, [RUNNER, ...args]);
@@ -424,5 +442,112 @@ Deno.test("run.sh keeps auditBlocked PRs out of the Claude round's prompt (Issue
   assertEquals(
     ((await recorded(home, "post-inputs")) ?? "").includes('"number":9'),
     true,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3289: the round runs on the subscription the credential pool ranks
+// first, and a usage-limit round is retried once on the next one.
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh exports the pool's selected subscription to the Claude round and logs its label (Issue #3289)", async () => {
+  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY);
+  const result = await run(home, "--once");
+  assertEquals(result.code, 0, result.output);
+  assertStringIncludes((await claudeArgs(home))!, "OAUTH=tok-1-secret");
+  assertStringIncludes(result.output, "round on Claude subscription provider");
+  assertEquals(
+    result.output.includes("tok-1-secret"),
+    false,
+    "the token value never reaches the log",
+  );
+});
+
+Deno.test("run.sh runs the round on the host's claude login when the pool holds nothing (Issue #3289)", async () => {
+  const home = await fixture(READY);
+  const result = await run(home, "--once");
+  assertEquals(result.code, 0, result.output);
+  assertStringIncludes((await claudeArgs(home))!, "OAUTH=unset");
+  assertEquals(result.output.includes("round on Claude subscription"), false);
+});
+
+// The first call refuses with the CLI's usage-limit wording; the second
+// succeeds, as it would on a subscription with budget.
+const USAGE_LIMIT_THEN_OK =
+  `if [ ! -f "$HOME/claude-once" ]; then touch "$HOME/claude-once"
+echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
+echo "You've hit your usage limit · resets 1:50pm (UTC)"; exit 1; fi
+echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
+echo "Round done: approved owner/repo#7"`;
+
+Deno.test("run.sh retries a usage-limit round once on the next subscription, and the pass succeeds (Issue #3289)", async () => {
+  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY, POOL_SECOND);
+  await claudeStub(home, USAGE_LIMIT_THEN_OK);
+  const result = await run(home, "--once");
+  assertEquals(result.code, 0, result.output);
+  assertEquals(
+    await recorded(home, "claude-calls"),
+    "OAUTH=tok-1-secret\nOAUTH=tok-2-secret\n",
+  );
+  assertStringIncludes(
+    result.output,
+    "round hit the usage limit on subscription provider; selecting another",
+  );
+  assertStringIncludes(
+    result.output,
+    "retrying the round once on subscription provider-2",
+  );
+  assertStringIncludes(
+    (await recorded(home, "credential-args"))!,
+    "--exclude=provider",
+  );
+  assertStringIncludes(result.output, "round done:");
+});
+
+Deno.test("run.sh does not retry a usage-limit round when no other subscription has budget (Issue #3289)", async () => {
+  const home = await fixture(
+    READY,
+    0,
+    "",
+    0,
+    0,
+    "",
+    POOL_PRIMARY,
+    '{"label":null}',
+  );
+  await claudeStub(home, USAGE_LIMIT_THEN_OK);
+  const result = await run(home, "--once");
+  assertEquals(result.code, 1, result.output);
+  assertEquals(await recorded(home, "claude-calls"), "OAUTH=tok-1-secret\n");
+  assertStringIncludes(
+    result.output,
+    "no other subscription has budget; the round stays failed",
+  );
+  assertStringIncludes(result.output, "round failed (exit 1)");
+});
+
+Deno.test("run.sh does not retry a round that failed for another reason (Issue #3289)", async () => {
+  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY, POOL_SECOND);
+  await claudeStub(
+    home,
+    `echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
+echo "model overloaded" >&2; exit 3`,
+  );
+  const result = await run(home, "--once");
+  assertEquals(result.code, 1, result.output);
+  assertEquals(await recorded(home, "claude-calls"), "OAUTH=tok-1-secret\n");
+  assertEquals(result.output.includes("retrying the round"), false);
+  assertStringIncludes(result.output, "round failed (exit 3)");
+});
+
+Deno.test("run.sh never traces the subscription token, even under bash -x (Issue #3289)", async () => {
+  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY);
+  const result = await runTraced(home, "--once");
+  assertEquals(result.code, 0, result.output);
+  assertStringIncludes((await claudeArgs(home))!, "OAUTH=tok-1-secret");
+  assertEquals(
+    result.output.includes("tok-1-secret"),
+    false,
+    "bash -x must not print the token",
   );
 });
