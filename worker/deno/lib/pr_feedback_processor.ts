@@ -1346,7 +1346,28 @@ async function _processFeedbackWithHeartbeat(
   // Refresh the PR body from a rewritten summary file (Issue #3089). Only
   // on the PR's own branch — a fix branch's push is not yet visible on the
   // PR head, so there is nothing to refresh until the fix PR lands.
-  if (pushSucceeded && hasChanges && fixBranch === undefined) {
+  //
+  // Issue #3315: a run that pushed nothing still needs to resync, because an
+  // earlier push may have rewritten the summary without the body ever being
+  // refreshed — the sync itself decides staleness by comparing the summary
+  // digest recorded in the body, so calling it when nothing moved is safe.
+  // A run that still has commits left unpushed, or one whose unpushed count
+  // was never measured, must not sync: the local summary may not be on the
+  // remote yet, so the body could be rewritten to describe content the
+  // reviewer cannot see.
+  //
+  // PR #3353 review: "nothing left unpushed" only proves this checkout is not
+  // AHEAD of the remote branch — it can still be BEHIND a concurrent
+  // CI-fix or merge-conflict run that pushed a newer head. It is NOT the
+  // same as "HEAD is the remote head". `syncPrBodyFromSummary` itself
+  // compares this checkout's `HEAD` against the PR's `headRefOid` before
+  // rebuilding, so calling it from a stale checkout is safe: it skips
+  // rather than overwriting a newer push.
+  const nothingLeftToPush = !hasChanges && finalUnpushedCount === 0;
+  if (
+    fixBranch === undefined &&
+    ((pushSucceeded && hasChanges) || nothingLeftToPush)
+  ) {
     const syncFn = processorDeps.syncPrBodyFn ?? syncPrBodyFromSummary;
     await runPrBodySync(
       {
