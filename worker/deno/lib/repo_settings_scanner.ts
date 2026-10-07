@@ -9,8 +9,8 @@
  * CODEOWNERS the Develop ruleset never consults, secret scanning and push
  * protection disabled. Only an admin can flip those; the worker cannot. So
  * the weekly audit reads them (read-only `gh api` calls) and files one
- * stable finding per open setting; each settings finding says plainly a
- * human must act — drift becomes visible on the board instead of living in
+ * stable finding per open setting; each finding about a setting says plainly
+ * a human must act — drift becomes visible on the board instead of living in
  * a report. Private vulnerability reporting (Issue #3268) is also read:
  * GitHub offers it on public repositories only, so a public repository with
  * it off is filed as `BP-REPO-PVR-OFF`.
@@ -465,7 +465,7 @@ export async function scanRepoSettings(
       if (policy.state === "error") {
         options.onLookupFailure?.(SECURITY_POLICY_CHECK, policy.message);
       } else if (policy.state === "absent") {
-        out.push({
+        add({
           findingId: "BP-REPO-SECURITY-POLICY-MISSING",
           severity: "low",
           title:

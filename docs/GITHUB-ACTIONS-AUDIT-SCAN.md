@@ -1073,18 +1073,22 @@ whether SHA pinning is enforced (`actions/permissions`), the default
 branch's pull-request rule (`rules/branches/<default>` — the approval
 count; code-owner review is deliberately off fleet-wide and never a
 finding, see THREAT-MODEL R14),
-secret scanning / push protection (`security_and_analysis`), and private
+secret scanning / push protection (`security_and_analysis`), private
 vulnerability reporting (`private-vulnerability-reporting`, public
-repositories only). Each open
+repositories only), and, on a public repository, whether a security policy
+exists (`contents/SECURITY.md`, `.github/SECURITY.md` or
+`docs/SECURITY.md`). Each open
 setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
 `BP-REPO-SECRET-SCANNING-OFF`,
-`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`, and — when the repository
+`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`,
+`BP-REPO-SECURITY-POLICY-MISSING`, and — when the repository
 runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
 workflows need that the list omits, composite steps included,)
-whose fix text says plainly that a
+whose fix text — for every id but `BP-REPO-SECURITY-POLICY-MISSING` — says
+plainly that a
 repository admin must act — the worker cannot change settings; it makes
 the drift visible on the board instead of in a report. An unreadable
 endpoint is logged and yields nothing. Wording avoids the literal
@@ -1130,6 +1134,21 @@ fine-grained read permission, not "Actions policies" (GitHub's
 `GET /repos/{owner}/{repo}/private-vulnerability-reporting` under
 Administration).
 
+**A missing security policy is checked on a public repository only (Issue
+#3269).** The scanner reads the three locations GitHub recognises a
+security policy at — `SECURITY.md`, `.github/SECURITY.md`,
+`docs/SECURITY.md` — through the contents API on the default branch; a
+404 at all three files `BP-REPO-SECURITY-POLICY-MISSING`. Any other read
+error is a lookup failure and no finding. A private or internal repository
+is not read, and the skip is named in the audit summary as `security
+policy (SECURITY.md) (private repository — the security-policy check
+covers public repositories only)`, logged at `INFO`. The fix is committing
+a `SECURITY.md` through a normal pull request, so the fix text carries no
+admin-action prose and the worker can take the issue (#3266). Setup never
+writes the file and `repo-settings-harden` has no step for it, so the
+audit closer never closes this finding — the pull request that adds the
+file does.
+
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
 same thing on every run of every affected repository, and logging it at
@@ -1137,8 +1156,10 @@ same thing on every run of every affected repository, and logging it at
 is logged once at `WARNING`, naming the fine-grained read permission it would
 take — the repository "Actions policies" permission for the Actions-policy
 endpoints, the repository "Administration" permission for
-`private-vulnerability-reporting` (Issue #3268). A 5xx, a network failure or a
-malformed response is a genuine fault and still logs `ERROR`. Either way the
+`private-vulnerability-reporting` (Issue #3268), and the repository
+"Contents" permission for the security-policy read (Issue #3269). A 5xx, a
+network failure or a malformed response is a genuine fault and still logs
+`ERROR`. Either way the
 check is recorded as **skipped** and named in the audit's own summary —
 `Checks skipped — NOT covered by this audit: …` — because an audit that
 silently omits a check reads as one that passed, and that gap is invisible in
