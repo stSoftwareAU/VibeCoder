@@ -87,11 +87,19 @@ committed to the repository as permanent documentation and contains:
 - A test plan listing tests added or modified
 
 The worker reads this file and includes its contents in the PR body. If no PR
-summary file is created, a warning note is included in the PR body. A later
-PR-feedback, CI-fix or merge-conflict run that pushes a change to this file
-has the PR description re-synced from it by `syncPrBodyFromSummary`
-(`worker/deno/lib/pr_body_sync.ts`), so the description never drifts from a
-summary rewritten after creation.
+summary file is created, a warning note is included in the PR body. PR
+creation records a SHA-256 digest of the summary's content in the PR body as
+a hidden marker. A later CI-fix or merge-conflict run re-syncs the PR
+description from the summary, via `syncPrBodyFromSummary`
+(`worker/deno/lib/pr_body_sync.ts`), after a verified push to the PR's own
+head when the summary at the head differs from that recorded digest —
+whichever push changed it, this run's or an earlier one. A PR-feedback run
+re-syncs under the same condition, and also when it pushed nothing and has no
+commits left unpushed, so a feedback run that only answers a finding still
+refreshes a stale body. A body raised before this digest marker existed keeps
+the older rule: rebuilt only when this run's own push changed the summary
+file. So the description never drifts from a summary rewritten after
+creation, for as long as that run's conditions are met.
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
