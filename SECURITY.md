@@ -775,7 +775,7 @@ default branch's tip cannot be read nothing is exempt (fail closed).
 
 2. **`.git/info/exclude`**: A local-only exclusion file that provides the same protection as `.gitignore` but cannot be modified by repository updates. This protects against scenarios where `.gitignore` is accidentally modified.
 
-3. **Pre-commit hook**: The final safety net. Even if someone force-adds a config file with `git add -f`, the pre-commit hook will reject the commit with a clear error message. This can only be bypassed with `git commit --no-verify`, which requires explicit intent.
+3. **Pre-commit hook**: The final safety net. Even if someone force-adds a config file with `git add -f`, the pre-commit hook will reject the commit with a clear error message. This can only be bypassed with `git commit --no-verify`, which requires explicit intent. It reads staged paths NUL-separated (`git diff --cached --name-only -z`), so a path git would quote — a non-ASCII byte, a quote or a backslash — is checked as written, and it rejects the commit if it cannot list the staged files (Issue #3370).
 
 **Installation:**
 
