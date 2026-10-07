@@ -12,12 +12,22 @@
  * span's contents as prose a reference can hide in.
  *
  * A paragraph also ends — without a blank line — at any line that starts a
- * new block: an ATX heading, a list-item marker, or a block quote marker
- * (Issue #3351 review). CommonMark never lets a span cross into one of
- * these, so a literal unmatched backtick in one list item or heading must
- * not pair with a backtick in a later block and hide the prose between them.
- * An ATX heading is additionally a one-line block on its own: nothing after
- * it continues the same paragraph, even without a blank line.
+ * new block: an ATX heading, a list-item marker, a table row, or a setext
+ * underline / thematic break (Issue #3351 review, two rounds). CommonMark
+ * never lets a span cross into one of these, so a literal unmatched
+ * backtick in one list item or heading must not pair with a backtick in a
+ * later block and hide the prose between them. These markers are matched at
+ * any indentation (`^[ \t]*`, not CommonMark's 0-3-space limit): a Markdown
+ * renderer still treats a deeply-nested list item or a tab-indented one as a
+ * list item, and archived summaries indent list content well past three
+ * spaces (see {@link parseFenceLine}). An ATX heading is additionally a
+ * one-line block on its own: nothing after it continues the same paragraph,
+ * even without a blank line.
+ *
+ * A block quote marker (`>`) is different: CommonMark lets consecutive `>`
+ * lines form one quoted *paragraph*, so a span may still wrap across them.
+ * The paragraph only ends where the quote starts or ends — a quoted line
+ * following an unquoted one, or the reverse — not on every `>` line.
  *
  * A fenced block opens on a line whose first non-space characters are three
  * or more backticks or tildes (an optional info string may follow on the
@@ -140,30 +150,58 @@ function splitInlineSpans(block: string): MarkdownSegment[] {
 }
 
 /**
- * An ATX heading: up to three leading spaces, 1-6 `#`, then whitespace or
- * end of line. CommonMark gives it no continuation line — the heading is the
- * whole block, so `splitMarkdownCode` flushes the paragraph buffer both
- * before *and* immediately after one.
+ * An ATX heading: leading whitespace, 1-6 `#`, then whitespace or end of
+ * line. CommonMark gives it no continuation line — the heading is the whole
+ * block, so `splitMarkdownCode` flushes the paragraph buffer both before
+ * *and* immediately after one. Indentation is unbounded (`^[ \t]*`), like
+ * {@link parseFenceLine} — `#{1,6}` is capped, so widening the leading
+ * whitespace adds no backtracking risk.
  */
-const ATX_HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
+const ATX_HEADING_RE = /^[ \t]*#{1,6}(?:[ \t]|$)/;
 
 /**
- * A list-item marker: up to three leading spaces, a bullet (`-`, `*`, `+`)
- * or an ordered marker (`1.` / `1)`), then whitespace or end of line.
+ * A list-item marker: leading whitespace, a bullet (`-`, `*`, `+`) or an
+ * ordered marker (`1.` / `1)`), then whitespace or end of line. Indentation
+ * is unbounded, so a nested or tab-indented item still counts — see
+ * {@link ATX_HEADING_RE}.
  */
-const LIST_ITEM_RE = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+const LIST_ITEM_RE = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
 
-/** A block-quote marker: up to three leading spaces, then `>`. */
-const BLOCK_QUOTE_RE = /^ {0,3}>/;
+/** A block-quote marker: leading whitespace, then `>`. */
+const BLOCK_QUOTE_RE = /^[ \t]*>/;
+
+/**
+ * A GFM table row: leading whitespace, then `|`. A table row ends a
+ * paragraph the same way a heading does, even without one of GFM's
+ * delimiter rows present — a stray backtick in one cell must not pair with
+ * one in a later row.
+ */
+const TABLE_ROW_RE = /^[ \t]*\|/;
+
+/**
+ * A setext heading underline (`===` / `---`) or a thematic break (`---`,
+ * `***`, `___`): leading whitespace, then one of `=*_-` repeated with no
+ * other character, then trailing whitespace and an optional line
+ * terminator — `splitMarkdownCode`'s lines keep their own `\n`, so `$`
+ * alone would never match a line that still carries one. The three
+ * quantifiers never match the same characters: the backreference `\1*`
+ * matches only the fixed marker character, the leading/trailing `[ \t]*`
+ * only space/tab, so there is no catastrophic backtracking on a long run
+ * (Issue #3351 review; same class of risk as Issue #3186).
+ */
+const SETEXT_OR_THEMATIC_BREAK_RE = /^[ \t]*([=*_-])\1*[ \t]*(?:\r?\n)?$/;
 
 /**
  * Does `line` start a new CommonMark block that a paragraph never continues
- * into (Issue #3351 review)? A literal backtick in one list item or heading
- * must not pair with a backtick in a later block.
+ * into (Issue #3351 review)? A literal backtick in one list item, heading,
+ * table row or setext/thematic-break line must not pair with a backtick in
+ * a later block. A block-quote marker is handled separately by the caller,
+ * since consecutive `>` lines form one quoted paragraph rather than each
+ * ending it.
  */
 function startsNewBlock(line: string): boolean {
   return ATX_HEADING_RE.test(line) || LIST_ITEM_RE.test(line) ||
-    BLOCK_QUOTE_RE.test(line);
+    TABLE_ROW_RE.test(line) || SETEXT_OR_THEMATIC_BREAK_RE.test(line);
 }
 
 /**
@@ -183,6 +221,11 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
   let paragraph = "";
   let inFence = false;
   let opener: FenceLine | null = null;
+  // Whether the open paragraph is inside a block quote — tracked
+  // separately from `startsNewBlock` because consecutive `>` lines form one
+  // quoted paragraph (Issue #3351 review): the paragraph flushes only where
+  // the quote starts or ends, not on every `>` line.
+  let inQuote = false;
 
   function pushSegment(value: string, inCode: boolean) {
     if (value.length === 0) return;
@@ -204,6 +247,7 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     const fenceMatch = parseFenceLine(line);
     if (fenceMatch && !inFence) {
       flushParagraph();
+      inQuote = false;
       inFence = true;
       opener = fenceMatch;
       fenceCursor += line;
@@ -228,11 +272,21 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     if (line.trim() === "") {
       flushParagraph();
       pushSegment(line, false);
+      inQuote = false;
       i++;
       continue;
     }
-    // A heading, list item or block quote also ends the paragraph, the same
-    // way a blank line does (Issue #3351 review).
+    // Entering or leaving a block quote ends the paragraph; staying inside
+    // one (or outside one) does not, so consecutive quoted lines stay one
+    // paragraph and a span may still wrap across them (Issue #3351 review).
+    const isQuoteLine = BLOCK_QUOTE_RE.test(line);
+    if (isQuoteLine !== inQuote) {
+      flushParagraph();
+      inQuote = isQuoteLine;
+    }
+    // A heading, list item, table row or setext/thematic-break line also
+    // ends the paragraph, the same way a blank line does (Issue #3351
+    // review).
     if (startsNewBlock(line)) {
       flushParagraph();
       paragraph += line;

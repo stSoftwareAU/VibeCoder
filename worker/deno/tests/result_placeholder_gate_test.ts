@@ -71,6 +71,16 @@ Deno.test("findResultPlaceholders - a backtick-quoted token after a wrapped span
   assertEquals(replaceResultPlaceholders(text, "[result not reported]"), text);
 });
 
+// PR #3351 review (round 2): BLOCK_QUOTE_RE used to reset the paragraph on
+// every `>` line, breaking the base result_placeholder_gate splitter's
+// handling of a span wrapped across consecutive quoted lines — GitHub
+// renders such a span as one code span, so no placeholder may be reported.
+Deno.test("findResultPlaceholders - a token wrapped across two block-quote lines is code, so nothing is reported (look-alike)", () => {
+  const text =
+    "> The gate ignores tokens such as `the\n> REDACTION_PLACEHOLDER` token.";
+  assertEquals(findResultPlaceholders(text), []);
+});
+
 Deno.test("findResultPlaceholders - finds a bare token in prose", () => {
   const text = "- Full `./quality.sh`: QUALITY_RESULT_PLACEHOLDER";
   assertEquals(findResultPlaceholders(text), ["QUALITY_RESULT_PLACEHOLDER"]);

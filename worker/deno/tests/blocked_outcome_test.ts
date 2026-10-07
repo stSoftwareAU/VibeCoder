@@ -146,6 +146,23 @@ Deno.test("detectBlockedOutcome: an ATX heading ends the paragraph, so a stray b
   assertEquals(blocked.dependency.number, 5);
 });
 
+// PR #3351 review (round 2): the block-start markers only matched indent
+// 0-3, so a 4-space nested list item never ended the paragraph and a stray
+// backtick in it hid the "Depends on" declaration line from the committed
+// path's declaredHeadingOnly mode — the shape `declared_handoff.ts` uses, so
+// an unfixed defect here means a run is claimed while its dependency is
+// still open, rather than deferred.
+Deno.test("detectBlockedOutcome: a 4-space nested list item ends the paragraph under declaredHeadingOnly", () => {
+  const output =
+    "## Blocked: parser work stalled\n- Steps\n    - the ` key breaks parsing\n    - Depends on org/dep#5\n    - per `foo`";
+  const blocked = detectBlockedOutcome(output, SELF, {
+    declaredHeadingOnly: true,
+  });
+  assert(blocked, "expected a blocked outcome");
+  assertEquals(blocked.dependency.repo, "org/dep");
+  assertEquals(blocked.dependency.number, 5);
+});
+
 Deno.test("detectBlockedOutcome returns undefined for empty output", () => {
   assertEquals(detectBlockedOutcome("", SELF), undefined);
   assertEquals(detectBlockedOutcome("   \n\n ", SELF), undefined);

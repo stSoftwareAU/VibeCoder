@@ -428,6 +428,49 @@ Deno.test("extractDependencyReferences - a list item marker ends the paragraph, 
   assertEquals(extractDependencyReferences(body), [5]);
 });
 
+// PR #3351 review (round 2): the block-start markers only matched indent
+// 0-3, so a nested (4-space) list item did not end the paragraph.
+Deno.test("extractDependencyReferences - a 4-space nested list item ends the paragraph (evasion)", () => {
+  const body =
+    "- Parser work\n    - Handle the ` key in the parser\n    - Depends on #5\n    - See `docs` for details";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a table row ends the paragraph (evasion)", () => {
+  const body =
+    "| key | the ` key |\n| dep | Depends on #5 |\n| docs | see `docs` |";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a setext heading underline ends the paragraph (evasion)", () => {
+  const body = "Handle the ` key\n---\nDepends on #5 per `docs`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+// PR #3351 review (round 2): BLOCK_QUOTE_RE reset the paragraph on every
+// `>` line, so a span wrapped across two quoted lines never paired — a
+// regression for the base result_placeholder_gate splitter's handling of
+// quoted paragraphs. A "Depends on #N" inside such a wrapped span must stay
+// hidden, the same as it would unquoted.
+Deno.test("extractDependencyReferences - a reference inside a span wrapped across two quoted lines is not a dependency (evasion)", () => {
+  const body = "> Use `foo\n> Depends on #5` here";
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+Deno.test("extractDependencyReferences - a genuine dependency still found alongside nested-list, table and setext code (look-alike)", () => {
+  const body = [
+    "- Parser work",
+    "    - the ` key breaks parsing",
+    "    - Depends on #5",
+    "| key | the ` key |",
+    "| dep | Depends on #6 |",
+    "Heading",
+    "---",
+    "Depends on #7 per `docs`",
+  ].join("\n");
+  assertEquals(extractDependencyReferences(body), [5, 6, 7]);
+});
+
 Deno.test("extractDependencyReferences - a genuine span still pairs within one list item (look-alike)", () => {
   const body = "- See `docs` for details, not #5";
   assertEquals(stripCodeSpans(body).includes("docs"), false);

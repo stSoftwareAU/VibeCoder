@@ -100,6 +100,79 @@ Deno.test("splitMarkdownCode: a genuine span still pairs within one list item (l
   assertEquals(codeSegment!.value, "`docs`");
 });
 
+// PR #3351 review (round 2): the block-start markers only matched indent
+// 0-3; a 4-space (or deeper) nested list item, a GFM table row, and a
+// setext/thematic-break line all failed to end the paragraph.
+
+Deno.test("splitMarkdownCode resets an unclosed span at a 4-space nested list item", () => {
+  const text =
+    "    - item one has a lone ` backtick\n    - item two has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a deeply-indented list-item boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a tab-indented list item", () => {
+  const text =
+    "\t- item one has a lone ` backtick\n\t- item two has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a tab-indented list-item boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a table row", () => {
+  const text = "| key | the ` key |\n| dep | has ` another one |";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a table-row boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a setext underline", () => {
+  const text = "Handle the ` key\n---\nbody has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a setext-underline boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a thematic break", () => {
+  const text = "intro has a lone ` backtick\n***\nbody has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a thematic-break boundary",
+  );
+});
+
+// PR #3351 review (round 2): BLOCK_QUOTE_RE reset the paragraph on every
+// `>` line, so a span could not wrap across two quoted lines even though
+// CommonMark treats them as one quoted paragraph. A span wrapped across
+// quoted lines must still pair, the same as it would unquoted.
+
+Deno.test("splitMarkdownCode: a span still pairs across two consecutive block-quote lines", () => {
+  const text = "> see `start of span\n> end of span` here";
+  const segments = splitMarkdownCode(text);
+  const codeSegment = segments.find((s) => s.inCode);
+  assert(codeSegment, "expected an in-code segment spanning the quoted lines");
+  assertEquals(codeSegment!.value, "`start of span\n> end of span`");
+});
+
+Deno.test("splitMarkdownCode still resets an unclosed span where a quote begins or ends", () => {
+  const text = "plain text has a lone ` backtick\n> quoted has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across the quote-entry boundary",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // parseFenceLine / isClosingFence (exported for blocked_outcome.ts)
 // ---------------------------------------------------------------------------
@@ -287,3 +360,47 @@ Deno.test("splitMarkdownCode scales linearly on many distinct-length unmatched r
  * design note for future readers, not a runnable test, since the old code
  * has already been deleted.
  */
+
+// PR #3351 review (round 2): hostile cases for the block-start markers
+// widened from `^ {0,3}` to `^[ \t]*`, and for the new table-row /
+// setext-or-thematic-break patterns — one per pattern, as
+// "Vet every regex on untrusted text" (CODING-STANDARDS.md) requires.
+
+Deno.test("splitMarkdownCode scales linearly on a long non-matching indent before an ATX/list/table probe", () => {
+  // Many leading spaces then a character none of ATX_HEADING_RE,
+  // LIST_ITEM_RE or TABLE_ROW_RE accept: each pattern's widened `[ \t]*`
+  // prefix must fully unwind without ever finding a match, on every line.
+  const build = (chars: number): string => `${" ".repeat(chars - 1)}x`;
+  assertLinearGrowth(
+    "splitMarkdownCode on a long non-matching leading-whitespace run",
+    build,
+    (input) => splitMarkdownCode(input).length,
+    { baseChars: 150_000, sizeFactor: 8 },
+  );
+});
+
+Deno.test("splitMarkdownCode scales linearly on a long block-quote-marker run", () => {
+  // Many leading spaces before `>`: BLOCK_QUOTE_RE's widened `[ \t]*` prefix
+  // must match without backtracking on every line.
+  const build = (chars: number): string => `${" ".repeat(chars - 1)}>`;
+  assertLinearGrowth(
+    "splitMarkdownCode on a long leading-whitespace run before a block quote marker",
+    build,
+    (input) => splitMarkdownCode(input).length,
+    { baseChars: 150_000, sizeFactor: 8 },
+  );
+});
+
+Deno.test("splitMarkdownCode scales linearly on a long dash run rejected by a trailing character", () => {
+  // SETEXT_OR_THEMATIC_BREAK_RE's `\1*` backtracks down a long matching run
+  // once, and the disjoint trailing `[ \t]*$` never re-matches the same
+  // characters as `\1*` — so a long run of `-` followed by a rejecting
+  // character stays linear rather than quadratic.
+  const build = (chars: number): string => `${"-".repeat(chars - 1)}x`;
+  assertLinearGrowth(
+    "splitMarkdownCode on a long dash run rejected by a trailing non-dash character",
+    build,
+    (input) => splitMarkdownCode(input).length,
+    { baseChars: 150_000, sizeFactor: 8 },
+  );
+});
