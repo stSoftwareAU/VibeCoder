@@ -1,0 +1,114 @@
+# PR Summary — Issue #3315
+
+## Summary
+
+On stSoftwareAU/GRQ#5175 the PR body kept describing the first iteration even though later pushes had rewritten `pr-summary-5167.md`. The PR body sync only rebuilt the body when *the current run's own push* changed the summary file (a `git diff <beforeSha> HEAD` check). Once a summary change landed without a sync, every later run reported "summary unchanged", and the review sent the PR back over the same body finding each round.
+
+This PR records a SHA-256 digest of the summary in the body as `<!-- vibe-pr-summary sha256="…" -->`. The sync rebuilds the body whenever the summary at HEAD differs from that digest, whichever push changed it. A PR-feedback run now also syncs when it pushed nothing and has no commits left unpushed, so a run that answers a description finding without a push still refreshes the body. The pr_feedback prompt now says how to stop a PR closing its issue: writing `Refs #N` is not enough; mark each unmet criterion `missing`.
+
+**PR #3353 review fixes two gaps in the digest gate itself:** `issueNumberFromMarker` used to take the FIRST `<!-- vibe-worker-issue-N -->` occurrence in the body — often the one the summary quotes verbatim while explaining the marker grammar — so a body quoting another issue's marker (or this PR's own summary, which quotes `<!-- vibe-worker-issue-N -->` as a placeholder) could rebuild from the wrong issue's archived summary or skip with "no worker marker". It now reads the LAST valid occurrence, skipping invalid ones, matching `summaryDigestFromBody`. Separately, the no-push sync path in `pr_feedback_processor.ts` only proved this checkout was not AHEAD of the remote branch, not that it was AT the remote head — a concurrent CI-fix or merge-conflict run could push a newer head while this checkout stayed behind, and the sync would rewrite the description back to the superseded summary. `syncPrBodyFromSummary` now reads `headRefOid` from `gh pr view` and skips with "checkout is not the PR head" when the local `HEAD` disagrees, protecting every caller (feedback, CI-fix, merge-conflict) through the one shared function.
+
+**PR #3353 review, round 2: the `headRefOid` check above was itself stale-prone.** GitHub updates a PR's `headRefOid` asynchronously after a push, so for a short window after the CI-fix, merge-conflict or feedback path's own verified push, `gh pr view` can still report the pre-push SHA — exactly the push that just rewrote the summary. The equality check could not tell that case apart from a genuinely stale checkout left behind by a concurrent run, so it skipped the sync and left the digest-rewriting push undescribed until a later, unrelated run happened to sync again. `syncPrBodyFromSummary` now falls back to `git merge-base --is-ancestor <headRefOid> <localHead>` when the two SHAs differ: when the PR's reported head is an ancestor of this checkout's `HEAD`, GitHub simply has not caught up with this run's own push yet, and the sync proceeds; only a head that is not an ancestor — actually behind or diverged — still skips.
+
+Closes #3315.
+
+## Spec
+
+### Intent and Rationale
+
+- Recording a digest makes staleness a property of the body itself, not of one run. Any later sync heals a body that was missed by a human push, by a run that ended on a path with no sync, or by a processor with no sync call. Diffing against one pre-push SHA can only catch a change made by the run doing the diff.
+- An unconditional rebuild was rejected because it would overwrite the body on every fix run, even when the summary is unchanged.
+
+### Essential Design Decisions
+
+- The marker sits directly after `<!-- vibe-worker-issue-N -->`. `summaryDigestFromBody` reads the **last** valid marker, because the summary opens the body and could quote an earlier one. `issueNumberFromMarker` now reads the body the same way (PR #3353 review) — it originally took the first occurrence, which is the one most likely to be a quote.
+- Checkout freshness is checked against `headRefOid` from `gh pr view`, not against the local unpushed count (PR #3353 review): the unpushed count only measures "ahead of remote", so a checkout left behind by a concurrent push would otherwise look safe to sync from.
+- A `headRefOid` mismatch is resolved by ancestry, not treated as an automatic skip (PR #3353 review, round 2): `view.headRefOid` being an ancestor of local `HEAD` means this run's own already-verified push simply has not reached GitHub's PR-object cache yet, so it is not the same case as a concurrent run's newer push. Only a non-ancestor mismatch — behind or diverged — still skips.
+- Persisted-shape choice: **read the old shape**. A body without the digest marker (any PR raised before this change) keeps the old `beforeSha` diff rule exactly. The existing `baseBody()` sync tests are those old-shape tests.
+- The feedback processor syncs after a no-push run only when `finalUnpushedCount === 0`. With unpushed commits or an unmeasured count, the local summary may not be on the remote.
+- The marker follows the canonical `vibe-*` grammar (`key="value"`), so `marker_grammar_test.ts` (Issue #842) accepts it without a declared deviation.
+
+### Undiscoverable Facts
+
+- From the GRQ#5175 history on GitHub: `a6df76b4` was committed from a human laptop (committer `Nigel@Laptop`), so no worker run existed that could sync. `40ea1419` came from worker run `vibe-muwnll3g-735ee6` and was followed by no worker reply. The next fleet push, `2dc0719f`, came from the spelling processor, which has no sync call. The GRQ host's worker log was not reachable from this host, so the exact exit path of the `40ea1419` run is undiagnosed. The digest gate heals the body whatever that path was.
+- Bodies raised before this change heal only once a run whose push changes the summary syncs them and so writes the digest.
+- A separate cause of the same loop on GRQ#5175 was filed as #3350: the leading "Degraded run" banner is copied forward unconditionally and cannot be edited from the summary.
+
+## Evidence
+
+Backend/CLI change; no UI files touched.
+
+```mermaid
+flowchart TD
+    V[gh pr view body] --> M{worker marker?}
+    M -- no --> S0[skip: no worker marker]
+    M -- yes --> D{digest marker in body?}
+    D -- no, legacy body --> L{beforeSha and summary changed since it?}
+    L -- no --> S1[skip]
+    L -- yes --> R{summary at HEAD exists?}
+    D -- yes --> R
+    R -- no --> S2[skip: summary file deleted]
+    R -- yes --> C{digest equals recorded?}
+    C -- yes --> S3[skip: summary unchanged]
+    C -- no --> H{local HEAD == headRefOid?}
+    H -- yes --> B[rebuild body + new digest]
+    H -- no --> A{headRefOid ancestor of local HEAD?}
+    A -- no --> S4[skip: checkout is not the PR head]
+    A -- yes --> B
+    B --> E[gh pr edit]
+```
+
+- Issue numbers cited in the diff: #3089: the original PR body re-sync issue (cited as before); #3315: this issue; #3177: missing-criterion close guard (existing behaviour the prompt now explains). The two review-round fixes below cite "PR #3353 review" rather than an issue number — they answer this PR's own review, not a filed issue.
+- The prompt claim that `Closes #N` is appended unless a closing keyword is present is backed by `ensurePrReferencesIssue` (`worker/deno/lib/pr_body.ts`). The `Part of #N` / `## Not closing #N` behaviour is backed by `assemblePrBody`, `withholdIssueClose` and `buildMissingCriteriaPrNote` (`worker/deno/lib/missing_criterion_close_guard.ts`).
+- Related rules checked: the "Keep the PR summary true to the head" rule in `prompts/pr_feedback/prompt.md` (its rebuild sentence was edited to agree); the rebuild sentences in `prompts/ci_fix/prompt.md` and `prompts/merge_conflict/prompt.md` ("After your push the worker rebuilds…") are still true and were left alone. I applied the new prompt rule to this PR's own diff: this PR closes its issue, so no criterion needed `missing`, and nothing it would flag was found.
+- **Docs sweep** — grep: `rebuil\w* the (PR|pull request) description`, `re-sync\w*`, `resync\w*`, `pr_body_sync`, "when that push changed"; section: `docs/workflows/pr-feedback.md#every-finding-ends-fixed-or-rebutted-issue-2917`; updated: `docs/USAGE.md`, `docs/workflows/pr-feedback.md`, `docs/workflows/ci-fix.md`, `docs/workflows/merge-conflicts.md`, `docs/INTERNALS.md`, `prompts/pr_feedback/prompt.md`; `prompts/ci_fix/prompt.md:96` and `prompts/ci_fix/prompt.md:112` — still true because a verified CI-fix push still triggers a rebuild; `prompts/merge_conflict/prompt.md:123` — still true for the same reason; `docs/workflows/issue-processing.md:1051` — still true because it describes what the assembly does during a re-sync, not when one runs
+- **Docs sweep (PR #3353 review)** — grep: `issueNumberFromMarker`, `headRefOid`, `body,files`, `HEAD is the remote head`. `headRefOid` has hits in `docs/GH-API-OPTIMISATION.md:116` and `docs/workflows/merge-conflicts.md:598,666`, but both describe the *merge-conflict scan's* unrelated `gh pr view --json headRefOid,mergeable,author` call (verdict staleness) — not `pr_body_sync.ts`'s own `gh pr view` — so neither needed a change. The other three terms, and the old misleading "HEAD is the remote head" comment text, had no hits outside the two source files fixed here (`pr_body_sync.ts`, `pr_feedback_processor.ts`), both listed under Test Plan below.
+- **Docs sweep (PR #3353 review, round 2)** — grep: `headRefOid`, `checkout is not the PR head`, `HEAD is the remote head`, `PR's remote head` across `docs/` and `prompts/`. Every hit outside this summary file is the unrelated merge-conflict-scan usage already cleared above; no doc describes `pr_body_sync.ts`'s freshness check in prose, so only this summary (the `Summary`, `Essential Design Decisions`, mermaid diagram, Test Plan and Branch outcomes sections above/below) needed updating.
+
+## Test Plan
+
+- `worker/deno/tests/pr_body_sync_test.ts` — added:
+  - `assemblePrBody - records the summary digest marker right after the worker marker`
+  - three `prSummaryDigest - …` tests
+  - three `summaryDigestFromBody - …` tests (no marker, malformed marker, last occurrence wins)
+  - `sync - recorded digest of an OLDER summary, no before-push SHA, git stub reports unchanged: still updates` (GRQ#5175 regression; asserts no `git diff` call)
+  - `sync - recorded digest equals the current summary's digest: skips even though the git stub reports changed`
+  - `sync - round trip: a body produced by one sync is skipped as unchanged by the next`
+  - `sync - recorded digest present and summary file deleted: skips without editing`
+  - (PR #3353 review) `sync - a summary quoting an earlier numeric worker marker is not mistaken for this PR's issue`
+  - (PR #3353 review) `sync - a non-numeric placeholder marker in the summary does not block the real marker`
+  - (PR #3353 review) `sync - checkout HEAD differs from the PR's remote head: skips without editing`
+  - (PR #3353 review, round 2) `sync - PR's reported head lags behind this checkout's own verified push: still edits (PR #3353 review, round 2)`
+- `worker/deno/tests/pr_feedback_processor_test.ts` — added `processPrFeedback - does not sync the PR body when commits are left unpushed` and `processPrFeedback - does not sync the PR body when the final commit-and-push failed`. Renamed `processPrFeedback - does not sync the PR body when nothing was pushed` to `processPrFeedback - syncs the PR body when nothing was pushed and nothing is left unpushed (Issue #3315)`.
+- `worker/deno/tests/missing_criterion_close_guard_3177_test.ts` — only adds the new required `summaryDigest` input to its three `assemblePrBody` calls.
+- Removed assertions:
+  - `assertEquals(syncCalled, false);` in the renamed feedback test. It is now `assertEquals(syncCallCount, 1);`, because #3315 names "`hasChanges` being false" as a path the sync must cover.
+  - Removed from `worker/deno/tests/pr_body_sync_test.ts`: `assertEquals(second.value, { status: "skipped", reason: "body already current", });` in `sync - keeps a leading degraded-run section (Issue #2562)`. It is now `assertEquals(second.value, { status: "skipped", reason: "summary unchanged", });`, because the second sync stops at the new digest check (#3315) before the body comparison. The test still asserts a skip with no edit.
+- Red runs: an executor reverted each change on purpose and confirmed the tests went red, then restored it. With the digest branch ignored, the older-digest regression test and the digest-present/deleted test failed. With the old feedback condition, the renamed test failed. Dropping `finalUnpushedCount === 0` made both no-sync tests fail.
+- (PR #3353 review) Red runs confirmed by reverting `pr_body_sync.ts` alone and re-running the three new tests:
+  - quoting test: `- reason: "summary file deleted", status: "skipped" / + issueNumber: 42, status: "updated"` — old `issueNumberFromMarker` took the quoted `#7` marker first, and no `pr-summary-7.md` exists.
+  - placeholder test: `- reason: "no worker marker", status: "skipped" / + issueNumber: 42, status: "updated"` — old code stopped at the first (non-numeric) occurrence.
+  - checkout-head test: `- issueNumber: 42, status: "updated" / + reason: "checkout is not the PR head", status: "skipped"` — no freshness check existed before the fix.
+- (PR #3353 review, round 2) Red run confirmed by reverting `pr_body_sync.ts`'s ancestry check alone (back to the plain equality check) and re-running the new lagging-head test: `- issueNumber: 42, status: "updated" / + reason: "checkout is not the PR head", status: "skipped"` — the plain equality check could not tell GitHub's own lag apart from a genuinely stale checkout.
+- `deno test -A tests/pr_body_sync_test.ts tests/marker_grammar_test.ts tests/missing_criterion_close_guard_3177_test.ts` — 44 passed (30 in `pr_body_sync_test.ts`, including the 3 added in the PR #3353 review round, the 1 added in round 2, and the 1 added in round 3). `deno test -A tests/pr_feedback_processor_test.ts` — 41 passed.
+- `./quality.sh` on the final code head — `Result: PASSED (with skipped checks)` (config integration skipped: no `.config.json` on this host).
+
+**Branch outcomes:**
+
+- `worker/deno/lib/pr_body_sync.ts:393`, no digest marker (legacy body): the old `beforeSha` gate applies. Reached by the existing `sync - no before-push SHA: skips without editing` and `sync - summary unchanged: skips without editing`. Ignoring the digest makes the older-digest test go red.
+- `worker/deno/lib/pr_body_sync.ts:393`, digest marker present: `git diff` is skipped. Reached by `sync - recorded digest of an OLDER summary, no before-push SHA, git stub reports unchanged: still updates`. Forcing the legacy path turned it red.
+- `worker/deno/lib/pr_body_sync.ts:442`, digest equal: skip "summary unchanged". Reached by `sync - recorded digest equals the current summary's digest: skips even though the git stub reports changed` and the round-trip test.
+- `worker/deno/lib/pr_body_sync.ts:442`, digest differs: rebuild. Reached by the older-digest regression test.
+- Digest present but summary deleted: skip. Reached by `sync - recorded digest present and summary file deleted: skips without editing`. Forcing the legacy path turned it red.
+- `worker/deno/lib/pr_body_sync.ts:258`, `issueNumberFromMarker` finds a valid marker only after an earlier quoted/placeholder occurrence (PR #3353 review): reached by the two new quoting/placeholder tests above; each goes red when the function is reverted to take the first occurrence (shown above).
+- `worker/deno/lib/pr_body_sync.ts:473`, local `HEAD` matches `view.headRefOid`: proceeds straight to rebuild, no ancestry check run. Reached by every existing "updated" test (default `viewJson` `headRefOid` equals the git stub's `HEAD_SHA`).
+- `worker/deno/lib/pr_body_sync.ts:489`, `HEAD` differs from `view.headRefOid` and `view.headRefOid` is NOT an ancestor of `HEAD` (PR #3353 review): skip "checkout is not the PR head". Reached by `sync - checkout HEAD differs from the PR's remote head: skips without editing`; goes red without the check (shown above).
+- `worker/deno/lib/pr_body_sync.ts:489`, `HEAD` differs from `view.headRefOid` but `view.headRefOid` IS an ancestor of `HEAD` (PR #3353 review, round 2): proceeds to rebuild — GitHub's own reporting lag, not a concurrent newer push. Reached by `sync - PR's reported head lags behind this checkout's own verified push: still edits (PR #3353 review, round 2)`; goes red without the ancestry fallback (shown above).
+- `worker/deno/lib/pr_feedback_processor.ts:1359`, nothing pushed and nothing unpushed: sync runs. Reached by `processPrFeedback - syncs the PR body when nothing was pushed and nothing is left unpushed (Issue #3315)`. Restoring the old condition turned it red.
+- Commits left unpushed: no sync. Reached by `processPrFeedback - does not sync the PR body when commits are left unpushed`. Dropping `finalUnpushedCount === 0` turned it red.
+- Commit-and-push failed (count unmeasured): no sync. Reached by `processPrFeedback - does not sync the PR body when the final commit-and-push failed`. Dropping `finalUnpushedCount === 0` turned it red.
+- A verified push still syncs, and a gated-head fix branch still does not. Covered by the existing `processPrFeedback - syncs the PR body once after a verified push` and `processPrFeedback - does not sync the PR body on a gated-head fix branch`.
+
+Callers checked for the new required `summaryDigest` input of `assemblePrBody`: `completion_phase.ts` (PR creation) passes the digest of its summary content, and `syncPrBodyFromSummary` passes the digest of the summary at HEAD. The CI and merge-conflict processors pick up the digest gate through `syncPrBodyFromSummary`, and their call conditions are unchanged. The spelling processor still has no sync call; with this change, the next sync-calling run heals what it leaves stale.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -24,7 +24,11 @@ import { LABEL_DEFAULTS } from "../config_defaults.ts";
 import { buildWorkerFooter } from "../worker_identity.ts";
 import { getRunId } from "../run_id.ts";
 import { buildMilestonePrSection } from "../pr_body.ts";
-import { assemblePrBody, finalisePrBodyImages } from "../pr_body_sync.ts";
+import {
+  assemblePrBody,
+  finalisePrBodyImages,
+  prSummaryDigest,
+} from "../pr_body_sync.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
@@ -1993,6 +1997,7 @@ async function completionBody(
     issueNumber,
     extraSections,
     footer,
+    summaryDigest: await prSummaryDigest(summaryContent),
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
