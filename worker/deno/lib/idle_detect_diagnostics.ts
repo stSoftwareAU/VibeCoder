@@ -96,8 +96,10 @@ import { runGhCommand } from "./github.ts";
 import {
   type ClosedPR,
   getBlockingPRForIssue,
+  hasOpenSubIssues,
   isBlockedByRecentlyClosedPR,
   type OpenPR,
+  parseSubIssuesSummary,
 } from "./issue_query.ts";
 import {
   DEFAULT_STREAM_SHARING_TIERS,
@@ -243,9 +245,11 @@ interface GhIssue {
   labels?: GhIssueLabel[];
   assignees?: GhIssueAssignee[];
   milestone?: GhIssueMilestone | null;
+  /** Raw GitHub native sub-issue counts, validated by `parseSubIssuesSummary`. */
+  subIssuesSummary?: unknown;
 }
 
-function normaliseIssue(raw: unknown): {
+export function normaliseIssue(raw: unknown): {
   number: number;
   title: string;
   labels: string[];
@@ -253,6 +257,8 @@ function normaliseIssue(raw: unknown): {
   milestone: string;
   /** Issue #857: carries the dependency references the scan's gate reads. */
   body?: string;
+  /** GitHub native sub-issue counts (Issue #3314); absent when invalid/missing. */
+  subIssuesSummary?: { total: number; completed: number };
 } | null {
   if (typeof raw !== "object" || raw === null) return null;
   const v = raw as GhIssue;
@@ -293,6 +299,8 @@ function normaliseIssue(raw: unknown): {
   const body = typeof (v as { body?: unknown }).body === "string"
     ? (v as { body: string }).body
     : undefined;
+  // Issue #3314: native sub-issue counts, kept only when valid.
+  const subIssuesSummary = parseSubIssuesSummary(v.subIssuesSummary);
   return {
     number: v.number,
     title,
@@ -300,6 +308,7 @@ function normaliseIssue(raw: unknown): {
     assignees,
     milestone,
     ...(body === undefined ? {} : { body }),
+    ...(subIssuesSummary === undefined ? {} : { subIssuesSummary }),
   };
 }
 
@@ -527,9 +536,11 @@ export interface ClassifyOptions {
  * same-repo `#N` absent from the open set is closed and does not block, and a
  * cross-repo reference cannot be resolved from this repo's issues, so it
  * counts as blocking — the scan fails safe the same way. Parent/child
- * blocking is not modelled: it needs a per-issue API call, and omitting it
- * under-counts, which merely alerts on work that will not be claimed rather
- * than inventing a blocker.
+ * blocking's native sub-issue half is handled separately, by
+ * `hasOpenSubIssues` on `subIssuesSummary` from the same `gh issue list` call
+ * (Issue #3314). Its body task-list half is still not modelled here: it
+ * would need a per-issue API call, and omitting it under-counts, which merely
+ * alerts on work that will not be claimed rather than inventing a blocker.
  *
  * `knownRepos` bounds that unresolvable case (Issue #1249, finding 11). An
  * issue body is text anybody who can open an issue writes, so
@@ -596,6 +607,8 @@ export function classifyIssues(
     milestone: string;
     /** Issue #857: body, for the dependency gate. Absent → not blocked. */
     body?: string;
+    /** GitHub native sub-issue counts (Issue #3314); absent → not blocked. */
+    subIssuesSummary?: { total: number; completed: number };
   }>,
   opts: ClassifyOptions,
 ): IssueVerdict[] {
@@ -768,6 +781,18 @@ export function classifyIssues(
         number: issue.number,
         claimable: false,
         excludedBy: "time_deferred",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
+    // Issue #3314: native sub-issue blocking, read from `subIssuesSummary` on
+    // the same `gh issue list` call — independent of `openIssueNumbers` /
+    // `openMilestones`, since it needs neither to be known.
+    if (hasOpenSubIssues(issue)) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "dependency_blocked",
         milestone: issue.milestone,
       });
       continue;
@@ -1165,7 +1190,9 @@ export async function auditClaimableState(
           // Issue #1050: `title` for the same reason — it is the fallback
           // `isMilestoneTrackingIssue` falls back to for trackers filed before
           // the body marker existed.
-          "number,title,labels,assignees,milestone,body",
+          // Issue #3314: `subIssuesSummary` for native sub-issue blocking,
+          // same free field as the census's own call.
+          "number,title,labels,assignees,milestone,body,subIssuesSummary",
           "--limit",
           String(limit),
         ]);

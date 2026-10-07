@@ -26,6 +26,8 @@ import {
 } from "../lib/issue_query.ts";
 import { IssueCache } from "../lib/issue_cache.ts";
 import { TimelineCache } from "../lib/timeline_cache.ts";
+import { classifyIssues } from "../lib/idle_detect_diagnostics.ts";
+import { buildIdleDecisionCensus } from "../lib/idle_decision_census.ts";
 
 // =============================================================================
 // parseIssueListJson tests
@@ -74,6 +76,65 @@ Deno.test("issue_query - parseIssueListJson handles null milestone", () => {
 Deno.test("issue_query - parseIssueListJson returns empty for invalid JSON", () => {
   assertEquals(parseIssueListJson("not json"), []);
   assertEquals(parseIssueListJson(""), []);
+});
+
+// -----------------------------------------------------------------------
+// subIssuesSummary (Issue #3314)
+// -----------------------------------------------------------------------
+
+function issueJson(subIssuesSummary: unknown): string {
+  return JSON.stringify([
+    {
+      number: 1,
+      title: "Parent issue",
+      url: "",
+      assignees: [],
+      labels: [],
+      createdAt: "2024-01-01T00:00:00Z",
+      author: { login: "alice" },
+      milestone: null,
+      subIssuesSummary,
+    },
+  ]);
+}
+
+Deno.test("issue_query - parseIssueListJson keeps a valid subIssuesSummary, dropping percentCompleted", () => {
+  const result = parseIssueListJson(
+    issueJson({ total: 4, completed: 0, percentCompleted: 0 }),
+  );
+  assertEquals(result[0]?.subIssuesSummary, { total: 4, completed: 0 });
+});
+
+Deno.test("issue_query - parseIssueListJson drops a non-numeric subIssuesSummary", () => {
+  const result = parseIssueListJson(issueJson({ total: "4", completed: 0 }));
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
+Deno.test("issue_query - parseIssueListJson drops a null subIssuesSummary", () => {
+  const result = parseIssueListJson(issueJson(null));
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
+Deno.test("issue_query - parseIssueListJson drops a negative subIssuesSummary", () => {
+  const result = parseIssueListJson(issueJson({ total: -1, completed: 0 }));
+  assertEquals(result[0]?.subIssuesSummary, undefined);
+});
+
+Deno.test("issue_query - parseIssueListJson leaves subIssuesSummary absent when the raw field is absent", () => {
+  const json = JSON.stringify([
+    {
+      number: 1,
+      title: "No sub-issues field",
+      url: "",
+      assignees: [],
+      labels: [],
+      createdAt: "2024-01-01T00:00:00Z",
+      author: { login: "alice" },
+      milestone: null,
+    },
+  ]);
+  const result = parseIssueListJson(json);
+  assertEquals(result[0]?.subIssuesSummary, undefined);
 });
 
 // =============================================================================
@@ -1461,6 +1522,88 @@ Deno.test("issue_query - fetchAllIssues rejects unparseable gh output without ca
   }
 });
 
+// =============================================================================
+// gh < 2.94.0 rejects `subIssuesSummary` (Issue #3318)
+// =============================================================================
+
+Deno.test("issue_query - fetchAllIssues retries without subIssuesSummary when gh rejects it (Issue #3318)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const issues = await fetchAllIssues(
+      "org/repo",
+      cache,
+      100,
+      (args) => {
+        calls++;
+        const fields = args[args.indexOf("--json") + 1] ?? "";
+        if (fields.includes("subIssuesSummary")) {
+          // The exact message cli/cli's query_builder.go emits for a field
+          // unknown to the running gh version (confirmed against gh 2.93.0,
+          // which predates `subIssuesSummary`).
+          return Promise.reject(
+            new Error(
+              'Unknown JSON field: "subIssuesSummary"\nAvailable fields:\n  number\n  title',
+            ),
+          );
+        }
+        return Promise.resolve(
+          JSON.stringify([{ number: 9, title: "Pre-2.94 gh" }]),
+        );
+      },
+    );
+    assertEquals(calls, 2, "must retry once without the unsupported field");
+    assertEquals(issues.length, 1);
+    assertEquals(issues[0]?.number, 9);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchAllIssues surfaces the retry's own error when the fallback also fails (Issue #3318)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    await assertRejects(
+      () =>
+        fetchAllIssues("org/repo", cache, 100, (args) => {
+          calls++;
+          const fields = args[args.indexOf("--json") + 1] ?? "";
+          if (fields.includes("subIssuesSummary")) {
+            return Promise.reject(
+              new Error('Unknown JSON field: "subIssuesSummary"'),
+            );
+          }
+          return Promise.reject(new Error("gh: network unreachable"));
+        }),
+      Error,
+      "network unreachable",
+    );
+    assertEquals(calls, 2, "must have attempted the retry before failing");
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchAllIssues does not retry a genuine gh failure (Issue #3318)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    await assertRejects(
+      () =>
+        fetchAllIssues("org/repo", cache, 100, () => {
+          calls++;
+          return Promise.reject(new Error("gh: rate limit exceeded"));
+        }),
+      Error,
+      "rate limit",
+    );
+    assertEquals(calls, 1, "an unrelated gh failure must not be retried");
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchAllIssues caches a genuine empty list (Issue #4257)", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
@@ -1593,6 +1736,64 @@ Deno.test("issue_query - a legacy bare-array cache entry is still readable (Issu
     await cleanup();
   }
 });
+
+Deno.test(
+  "issue_query - a pre-#3314 issues_all entry (no subIssuesSummary field) is served, and the census/audit treat it as not sub-issue-blocked (Issue #3318)",
+  async () => {
+    const { cache, cleanup } = await makeTempCache();
+    try {
+      // Simulates a row written by the release before #3314 — the field is
+      // absent from the object entirely, not merely `undefined`, matching
+      // what the file-backed cache actually held pre-deploy.
+      const oldShapeIssue = {
+        number: 2503,
+        title: "Parent with open sub-issues",
+        url: "https://github.com/org/repo/issues/2503",
+        author: "someone",
+        assignees: [],
+        labels: ["work-on"],
+        createdAt: "2024-01-01T00:00:00Z",
+        milestone: "",
+      };
+      await cache.write("org/repo", "issues_all", {
+        limit: 100,
+        issues: [oldShapeIssue],
+      });
+
+      const issues = await fetchAllIssues("org/repo", cache, 100, () => {
+        throw new Error("a pre-#3314 entry must be served, not refetched");
+      });
+      assertEquals(issues, [oldShapeIssue]);
+      assert(
+        !("subIssuesSummary" in issues[0]!),
+        "the old-shape row must carry no subIssuesSummary field at all",
+      );
+
+      // CODING-STANDARDS.md "Changing the Shape of Persisted Data": the key
+      // (`issues_all`) is kept, and both production readers of the new field
+      // already treat its absence as "not blocked" — the pre-#3314 reading —
+      // for up to the cache's 600s TTL after a deploy.
+      const verdicts = classifyIssues(issues, { workerUser: "vibebot" });
+      assertEquals(verdicts[0]?.claimable, true);
+
+      const census = buildIdleDecisionCensus({
+        decisionPoint: "filing",
+        workerUser: "vibebot",
+        repos: [{
+          repo: "org/repo",
+          monitored: true,
+          scannedThisCycle: true,
+          nice: 0,
+          issues,
+        }],
+      });
+      assertEquals(census.perRepo[0]?.unblocked.workOn, 1);
+      assertEquals(census.perRepo[0]?.dependencyBlocked, 0);
+    } finally {
+      await cleanup();
+    }
+  },
+);
 
 Deno.test("issue_query - fetchMergedPRsByUser rejects empty gh output instead of caching [] (Issue #4257)", async () => {
   const { cache, cleanup } = await makeTempCache();
