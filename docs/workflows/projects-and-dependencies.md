@@ -89,7 +89,7 @@ So milestone issues always branch off the milestone branch when present, keeping
 3. **User must break the cycle** — Until a user edits the issues to remove or change a "Depends on" / "Blocked by" so that the cycle is broken, none of the issues in the cycle will be worked on. The worker does not arbitrarily "ignore" one dependency to break the cycle.
 4. **Must report** — The worker **must** report circular dependencies on GitHub so users can see and fix them. Machines are unattended; logging alone is not sufficient. For each issue in a detected cycle:
    - **Comment** on the issue explaining that it is part of a circular dependency (list the cycle, e.g. "This issue is in a dependency cycle: #A → #B → #C → #A. Please remove or change a 'Depends on' / 'Blocked by' to break the cycle.").
-   - **Apply a dedicated label** (e.g. `circular-dependency` or as configured) so the issue is visible in issue lists and filters. The label must be auto-created with a consistent colour and description (see [Workflow labels](#workflow-labels)).
+   - **Apply a dedicated label** (e.g. `circular-dependency` or as configured) so the issue is visible in issue lists and filters. The label must be auto-created with a consistent colour and description (see [Workflow labels](#%EF%B8%8F-workflow-labels)).
 
 **Summary:** Detect circular dependencies; never pick circular issues; **always** comment and label so users are informed; require human intervention to fix the dependency graph.
 

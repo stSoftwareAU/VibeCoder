@@ -67,7 +67,7 @@ oldest first across all repos). The table below is the canonical ladder; the
 dispatch table in `worker/deno/lib/run_core.ts` is the source of truth and a
 test keeps the two in step. With `max_concurrent_issues` above `1` the four
 agent-backed PR passes (1, 1.5, 1.55, 1.61) run in a
-[maintenance lane](#-maintenance-lane-agent-backed-pr-passes-beside-the-pool)
+[maintenance lane](#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool)
 beside the issue pool rather than ahead of it, so a long CI fix no longer idles
 the slots. One work item per iteration, then sleep and repeat. All
 interaction is via GitHub — no local UI (User Interface). When the same item
@@ -108,12 +108,12 @@ implemented internally, see **Further reading** in each workflow doc.
 
 ## 📋 Table of Contents
 
-- [For repo owners and developers (e.g. ST)](#for-repo-owners-and-developers-eg-st)
-- [TL;DR](#tldr)
-- [Workflow document set](#workflow-document-set)
-- [Lifecycle overview](#lifecycle-overview)
-- [Shared invariants](#shared-invariants)
-- [Related documentation](#related-documentation)
+- [For repo owners and developers (e.g. ST)](#-for-repo-owners-and-developers-eg-st)
+- [TL;DR](#-tldr)
+- [Workflow document set](#-workflow-document-set)
+- [Lifecycle overview](#-lifecycle-overview)
+- [Shared invariants](#-shared-invariants)
+- [Related documentation](#-related-documentation)
 
 ## 📚 Workflow document set
 

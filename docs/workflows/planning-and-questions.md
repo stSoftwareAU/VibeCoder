@@ -816,7 +816,7 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 - **One milestone per file-area group.** When the publish turn posts a
   `## Milestones` table grouping its sub-issues by file area and that table
   passes the
-  [structural gate](#-milestones-table-and-structural-gate-issue-2172), the
+  [structural gate](#%EF%B8%8F-milestones-table-and-structural-gate-issue-2172), the
   worker creates **one milestone per group** that carries two or more
   sub-issues, and assigns each sub-issue to its own group's milestone only.
   Each is titled `#<N> <area>: <short description>` — for example
@@ -901,7 +901,7 @@ therefore group the plan by **file area** — the top-level directory or
 subsystem each sub-issue touches — so groups that cannot collide are delivered
 as parallel milestones. The grouping is **planner judgement**; the structural
 gate above ([Milestones table and structural
-gate](#-milestones-table-and-structural-gate-issue-2172)) only checks the shape
+gate](#%EF%B8%8F-milestones-table-and-structural-gate-issue-2172)) only checks the shape
 of what was published.
 
 The draft prompt (`prompts/planning/prompt.md`) carries the rule:
@@ -936,7 +936,7 @@ for the inheritance path where the parent already owns one.
 **What the worker does with the table today.** It reads and gates it, and
 nothing more: `closePlanningIssue()` logs a sound grouping and still creates
 the **legacy single milestone** for the whole plan, exactly as the [#2172
-section](#-milestones-table-and-structural-gate-issue-2172) describes. Creating
+section](#%EF%B8%8F-milestones-table-and-structural-gate-issue-2172) describes. Creating
 one milestone per group — and assigning each group's sub-issues to it — is
 **Issue #2175**. Until that lands, a published grouping is recorded rather than
 acted on, so the prompts teach the grouping ahead of the machinery that

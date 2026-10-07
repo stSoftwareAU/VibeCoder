@@ -3946,7 +3946,7 @@ Common bot accounts you may want to add (only add those you actively use):
 | `cursor[bot]`         | Cursor IDE     | Alternative account format |
 
 > **🔒 Security Note:** Bot accounts can trigger code changes without human
-> approval. See [SECURITY.md](../SECURITY.md#bot-account-security-issue-36) for
+> approval. See [SECURITY.md](../SECURITY.md#-bot-account-security-issue-36) for
 > detailed security implications.
 
 ## 🤖 Trusted Review Bots
