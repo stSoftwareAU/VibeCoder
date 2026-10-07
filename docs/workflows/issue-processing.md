@@ -1867,6 +1867,27 @@ blocks, fail closed. A test identifier with no test-file path (for example a
 Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
 none added` is accepted when the diff adds no branch.
 
+It also blocks an entry that admits its own outcome is unreached. A strong
+admission — "no test reaches", "covers" or "exercises" it, "not reached by
+any test", or a negation directly governing a go/turn verb ("never went
+red", "did not go red", "no test went red", "does not turn red") — blocks
+whatever the entry names. A weaker admission — "unreached", "untested",
+"unreachable", or a flip that "stayed green" or "left … the suite green" —
+blocks only when the entry names no test-file path and records no red
+flip. The admission must be in the entry's own prose, not inside
+backticks: a closed code span containing `::` is read only up to that
+`::`, any other code span containing whitespace (a quoted test name, a
+command such as `cargo test --workspace`) is not read at all, and a span
+with no whitespace (a path, `path:line`, an identifier) is read as is — so
+bold prose carries the admission, but backticks around it do not. Lines
+the list parser otherwise skips — table rows, prose after the list,
+entries past the 100-entry cap — are still checked for this admission. The
+one exception is an entry written `exempt (out of scope): <reason>` or
+`exempt (untestable): <reason>` with a reason of at least three words; an
+exemption with no reason blocks too (Issue #3288, after
+GRQ-AutoTrader#2682 and VibeCoder#3282 raised with admitted-untested
+entries).
+
 It is a summary-rule gate like docs sweep and the placeholder-token gate: its
 verdict is folded into an earlier summary gate's own notice when that one
 blocks first, it shares the single
