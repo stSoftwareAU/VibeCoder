@@ -94,7 +94,7 @@ real one, because that turns the gate into a silent pass.
   so no regex was added or changed. No prompt or standards rule changed.
   Applied to this PR's own diff: nothing found.
 
-**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name. This round's reorder does change a gate verdict (a heading-form header previously swallowed into `wrap` now ends `collectEntries` and blocks `validateBranchOutcomes`, per `worker/deno/tests/branch_outcomes_gate_test.ts:144`'s "a deeper heading-form header after a prose mention still names the invented test"), but no doc describes where the parser's scan stops or how a header is recognised (same regexes, same fields), so no further doc hit was found.
+**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name. This round's reorder does change a gate verdict (a heading-form header previously hit base's `if (lvl > 0) continue` — line 312 — and was skipped as a deeper grouping heading, never reaching `wrap` or `entries`; it now ends `collectEntries` and blocks `validateBranchOutcomes`, per `worker/deno/tests/branch_outcomes_gate_test.ts:144`'s "a deeper heading-form header after a prose mention still names the invented test"), but no doc describes where the parser's scan stops or how a header is recognised (same regexes, same fields), so no further doc hit was found.
 
 ## Test Plan
 
@@ -102,10 +102,13 @@ All tests are in `worker/deno/tests/branch_outcomes_gate_test.ts`.
 
 **Red on base.** I swapped in the base copy of
 `worker/deno/lib/branch_outcomes_gate.ts` (commit `8958b3c3`) and ran the
-suite. Result: 77 passed, 2 failed. The two failures:
+current, 80-test suite (74 on `main` plus 6 new this PR). Result: 76 passed,
+4 failed:
 
 - `validateBranchOutcomes - a prose mention separated by a blank line still does not hide the real header's inline citation`
 - `parseBranchOutcomes - a later Branch outcomes header is parsed on its own, so its region is scanned`
+- `validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test` (passes `valid: true` on base: the `### Branch outcomes` line hits base's `if (lvl > 0) continue` and is skipped as a deeper grouping heading)
+- `parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary` (base's `scanText` is still `"outcome one"`, missing the second header's region)
 
 **New tests that also pass on base.** These pin the behaviour around the fix:
 
@@ -134,9 +137,10 @@ mid-scan hit the `continue` before ever being tested against
 Fixed by moving the whole check above that skip, matching the order
 `scanRegionText` already used.
 
-**Red on base (this round).** I swapped in this round's pre-fix copy of
-`worker/deno/lib/branch_outcomes_gate.ts` (HEAD before this round, commit
-`9a3e30f8`) and ran the suite: 78 passed, 2 failed —
+**Red at round start, not base (commit `9a3e30f8`).** I swapped in this
+round's pre-fix copy of `worker/deno/lib/branch_outcomes_gate.ts` (HEAD
+before this round, commit `9a3e30f8` — not the PR's base) and ran the
+current head test file against it: 78 passed, 2 failed —
 
 - `validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test`
 - `parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary`
