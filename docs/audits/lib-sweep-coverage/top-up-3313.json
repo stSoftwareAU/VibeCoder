@@ -1,0 +1,12 @@
+{
+  "issue": 3313,
+  "chunk": "top-up-3313",
+  "title": "top-up: shared Markdown code-span splitter",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3313",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: markdown_code_spans.ts (#3313)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/markdown_code_spans.ts"
+  ],
+  "sweptAt": "78ea621e2c5af23084ff69978c3c1e933a49a5e8"
+}

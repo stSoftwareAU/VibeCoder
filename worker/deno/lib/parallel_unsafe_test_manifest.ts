@@ -230,6 +230,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // agent-written summary and a test file with bounded span and declaration
   // regexes; only a growth measurement pins them (#3257).
   "tests/summary_claim_check_test.ts",
+  // The shared Markdown code-span splitter pairs backtick runs in untrusted
+  // issue bodies and PR summaries; only a growth measurement separates its
+  // linear pairing from the quadratic forward scan it replaced (Issue
+  // #3313).
+  "tests/markdown_code_spans_test.ts",
 ];
 
 /**
