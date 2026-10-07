@@ -940,7 +940,8 @@ async function checkLineCitations(
       ]);
       if (diff === null || diff.code !== 0) continue;
       const hunks = parseDiffHunks(diff.stdout);
-      hunksByPath.set(path, hunks ?? []);
+      if (hunks === null) continue;
+      hunksByPath.set(path, hunks);
     }
 
     const found = findStaleCitations({
