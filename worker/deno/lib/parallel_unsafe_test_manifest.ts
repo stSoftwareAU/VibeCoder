@@ -164,6 +164,11 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
+  // The admin-only hand-off strips code fences and inline code spans from an
+  // untrusted issue body before matching; only a growth measurement separates
+  // that linear strip from a backtracking one on hostile backtick runs
+  // (Issue #3295).
+  "tests/admin_only_finding_test.ts",
   // The closure-block render scans an agent-authored summary line by line for
   // the two review headings; only a growth measurement separates that scan
   // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
