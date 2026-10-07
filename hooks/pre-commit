@@ -7,9 +7,10 @@
 # This hook blocks commits containing:
 # - .config*.json files (configuration files with secrets)
 # - *.secret.json files (explicitly marked secret files)
-# - private key material and credential files (Issue #3660):
-#   *.pem, *.key, *.p12, *.pfx, id_rsa[.*], credentials.json,
-#   service-account*.json
+# - private key material and credential files (Issue #3660, #3336):
+#   *.pem, *.key, *.p12, *.pfx,
+#   id_rsa, id_dsa, id_ecdsa, id_ed25519, id_ecdsa_sk, id_ed25519_sk [.*],
+#   credentials.json, service-account*.json
 # - anything under a .secrets/ directory, at any depth (Issue #3957)
 #
 # To bypass this hook in exceptional circumstances, use:
@@ -44,9 +45,11 @@ while IFS= read -r file; do
         blocked_files="${blocked_files}${file}"$'\n'
     fi
     # Private key material and credential files (Issue #3660) — these are
-    # not hidden files, so .gitignore's `.*` rule never covered them.
+    # not hidden files, so .gitignore's `.*` rule never covered them. This
+    # also covers the other OpenSSH default key names, not just id_rsa
+    # (Issue #3336).
     if [[ "$basename_file" =~ ^.+\.(pem|key|p12|pfx)$ ]] \
-        || [[ "$basename_file" =~ ^id_rsa(\..*)?$ ]] \
+        || [[ "$basename_file" =~ ^id_(rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)(\..*)?$ ]] \
         || [[ "$basename_file" == "credentials.json" ]] \
         || [[ "$basename_file" =~ ^service-account.*\.json$ ]]; then
         blocked_files="${blocked_files}${file}"$'\n'

@@ -121,6 +121,45 @@ Deno.test({
 
 Deno.test({
   name:
+    "pre-commit hook - blocks other OpenSSH private key names, not just id_rsa (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "id_ecdsa_sk",
+        "id_ed25519_sk",
+        "keys/id_ed25519.pub",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(run.code, 1, `expected hook to block '${path}'`);
+      assertStringIncludes(run.stdout, path);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "pre-commit hook - allows source files merely named after OpenSSH keys (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    const dir = await makeRepo();
+    try {
+      await stage(dir, "src/id_ed25519_helper.ts");
+      await stage(dir, "src/id_ecdsa_parser.ts");
+      const run = await runHook(dir);
+      assertEquals(run.code, 0, `hook rejected safe files: ${run.stdout}`);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
     "pre-commit hook - blocks force-added files under .secrets/ regardless of extension (Issue #3957)",
   ignore: windows,
   fn: async () => {
