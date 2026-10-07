@@ -8,7 +8,11 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assemblePrBody,
+  buildSummaryDigestMarker,
+  PR_SUMMARY_DIGEST_PREFIX,
+  prSummaryDigest,
   runPrBodySync,
+  summaryDigestFromBody,
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
 } from "../lib/pr_body_sync.ts";
@@ -137,6 +141,7 @@ Deno.test("assemblePrBody - uses the summary content when present", () => {
     issueNumber: 42,
     extraSections: "",
     footer: "\n---\n\nfooter",
+    summaryDigest: "deadbeef",
   });
   assertStringIncludes(body, "Did the thing.");
   assertStringIncludes(body, "footer");
@@ -149,6 +154,7 @@ Deno.test("assemblePrBody - falls back to a minimal body when the summary is emp
     issueNumber: 42,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
   });
   assertStringIncludes(body, "## Summary");
   assertStringIncludes(body, "Closes #42.");
@@ -160,8 +166,80 @@ Deno.test("assemblePrBody - appends a closing keyword when the summary lacks one
     issueNumber: 42,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
   });
   assertStringIncludes(body, "Closes #42");
+});
+
+Deno.test("assemblePrBody - records the summary digest marker right after the worker marker", () => {
+  const digest = "a".repeat(64);
+  const body = assemblePrBody({
+    summaryContent: "## Summary\n\nDid the thing. Closes #42.",
+    issueNumber: 42,
+    extraSections: "",
+    footer: "\n---\n\nfooter",
+    summaryDigest: digest,
+  });
+  const markerIdx = body.indexOf(marker(42));
+  const digestMarker = buildSummaryDigestMarker(digest);
+  const digestIdx = body.indexOf(digestMarker);
+  assert(markerIdx !== -1, "expected worker marker to be present");
+  assert(digestIdx !== -1, "expected digest marker to be present");
+  assert(
+    digestIdx > markerIdx,
+    "expected digest marker to follow the worker marker",
+  );
+  assertEquals(
+    body.slice(markerIdx + marker(42).length, digestIdx + digestMarker.length)
+      .trim(),
+    digestMarker,
+  );
+  assertEquals(summaryDigestFromBody(body), digest);
+});
+
+// --- prSummaryDigest / summaryDigestFromBody -------------------------------
+
+Deno.test("prSummaryDigest - produces 64 lowercase hex characters", async () => {
+  const digest = await prSummaryDigest("## Summary\n\nSome content.\n");
+  assertEquals(digest.length, 64);
+  assert(
+    /^[0-9a-f]{64}$/.test(digest),
+    `expected lowercase hex, got ${digest}`,
+  );
+});
+
+Deno.test("prSummaryDigest - same content yields the same digest", async () => {
+  const a = await prSummaryDigest("## Summary\n\nSame content.\n");
+  const b = await prSummaryDigest("## Summary\n\nSame content.\n");
+  assertEquals(a, b);
+});
+
+Deno.test("prSummaryDigest - different content yields a different digest", async () => {
+  const a = await prSummaryDigest("## Summary\n\nContent A.\n");
+  const b = await prSummaryDigest("## Summary\n\nContent B.\n");
+  assert(a !== b);
+});
+
+Deno.test("summaryDigestFromBody - returns undefined when no marker is present", () => {
+  assertEquals(summaryDigestFromBody(baseBody(ISSUE_NUMBER)), undefined);
+});
+
+Deno.test("summaryDigestFromBody - ignores a malformed marker (not 64 hex characters)", () => {
+  const body = `${
+    baseBody(ISSUE_NUMBER)
+  }\n${PR_SUMMARY_DIGEST_PREFIX}abc123 -->`;
+  assertEquals(summaryDigestFromBody(body), undefined);
+});
+
+Deno.test("summaryDigestFromBody - the last occurrence wins when the summary quotes an earlier marker", () => {
+  const earlier = "b".repeat(64);
+  const real = "c".repeat(64);
+  const body =
+    `## Summary\n\nQuoting an old marker: ${
+      buildSummaryDigestMarker(earlier)
+    }\n\n` +
+    `${baseBody(ISSUE_NUMBER)}\n${buildSummaryDigestMarker(real)}`;
+  assertEquals(summaryDigestFromBody(body), real);
 });
 
 // --- syncPrBodyFromSummary -------------------------------------------------
@@ -611,16 +689,226 @@ Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () 
     assertEquals(synced.includes("Old preamble that must not survive."), false);
     assertEquals(synced.includes("Original summary."), false);
 
+    // Issue #3315: the first sync recorded the summary digest inside the
+    // body, so the second call now short-circuits on that recorded digest
+    // (reason "summary unchanged") rather than reaching the "body already
+    // current" comparison — same observable outcome (skipped, no edit).
     const second = await syncPrBodyFromSummary(input, deps);
     assert(second.ok);
     if (second.ok) {
       assertEquals(second.value, {
         status: "skipped",
-        reason: "body already current",
+        reason: "summary unchanged",
       });
     }
     assertEquals(ghCalls.length, 1);
     assertEquals(live, synced);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- recorded-digest staleness (Issue #3315 / GRQ#5175) -------------------
+
+Deno.test("sync - recorded digest of an OLDER summary, no before-push SHA, git stub reports unchanged: still updates", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const oldDigest = await prSummaryDigest(
+      "## Summary\n\nOlder summary text.\n",
+    );
+    const liveBody =
+      `## Summary\n\nOlder summary text.\n\n---\n\n🤖 Processed by: old-worker\n${
+        marker(ISSUE_NUMBER)
+      }\n${buildSummaryDigestMarker(oldDigest)}`;
+
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody, ["src/a.ts"]));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      // A missed-sync GRQ#5175 shape: the pre-push SHA diff would report
+      // "unchanged" (it only catches a change made by *this* run), but the
+      // recorded digest is stale regardless.
+      runGitCommand: stubGit(gitCalls, { diffChanged: false }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+    assertEquals(
+      gitCalls.filter((c) => c[0] === "diff").length,
+      0,
+      "expected no git diff call when a recorded digest decides staleness",
+    );
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, "Rewritten summary text.");
+    const currentDigest = await prSummaryDigest(
+      `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`,
+    );
+    assertEquals(summaryDigestFromBody(newBody), currentDigest);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - recorded digest equals the current summary's digest: skips even though the git stub reports changed", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const currentDigest = await prSummaryDigest(
+      `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`,
+    );
+    const liveBody =
+      `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n\n---\n\n🤖 Processed by: old-worker\n${
+        marker(ISSUE_NUMBER)
+      }\n${buildSummaryDigestMarker(currentDigest)}`;
+
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "summary unchanged",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - round trip: a body produced by one sync is skipped as unchanged by the next", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    let live = baseBody(ISSUE_NUMBER);
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: async (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return viewJson(live);
+        }
+        const out = await stubGh(ghCalls)(args);
+        const edited = ghCalls.at(-1)?.bodyFileContent;
+        if (args[0] === "pr" && args[1] === "edit" && edited) live = edited;
+        return out;
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+    const input = {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    };
+
+    const first = await syncPrBodyFromSummary(input, deps);
+    assert(first.ok);
+    if (first.ok) assertEquals(first.value.status, "updated");
+    assertEquals(ghCalls.length, 1);
+
+    const second = await syncPrBodyFromSummary(input, deps);
+    assert(second.ok);
+    if (second.ok) {
+      assertEquals(second.value, {
+        status: "skipped",
+        reason: "summary unchanged",
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - recorded digest present and summary file deleted: skips without editing", async () => {
+  const repoPath = await makeRepo({ withSummary: false });
+  try {
+    const digest = "d".repeat(64);
+    const liveBody = `${baseBody(ISSUE_NUMBER)}\n${
+      buildSummaryDigestMarker(digest)
+    }`;
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "summary file deleted",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

@@ -187,10 +187,23 @@ other exit is the existing escape hatch above: a filed follow-up issue named in
 `.pr_response_message`. When a finding is fixed, the PR summary text that
 recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
-rule). After a verified push to the PR's own head, when that push changed
-`pr-summary-<N>.md`, the worker rebuilds the description from the summary.
-Fix branches are skipped, and only a worker-authored PR is edited. A failed
-sync is logged once at warning and does not fail the run (Issue #3089).
+rule). After a verified push to the PR's own head, the worker re-syncs the
+description from `pr-summary-<N>.md` when the summary at the head differs
+from the SHA-256 digest recorded in the body's hidden marker — whichever push
+changed it, this run's or an earlier one. A pr_feedback run also re-syncs
+when it pushed nothing and has no commits left unpushed, so a run that
+answers a finding without a push still refreshes a stale body (Issue #3315).
+A body raised before the digest marker existed keeps the older rule:
+rebuilt only when this run's own push changed the summary file. Fix branches
+for a gated milestone head are skipped, and only a worker-authored PR is
+edited. A failed sync is logged once at warning and does not fail the run
+(Issue #3089).
+
+Writing `Refs #N` in the summary does not stop the rebuilt description from
+closing the issue, since the rebuild appends `Closes #N` unless a closing
+keyword is already present; marking each unmet acceptance criterion
+`missing` is the way to keep the PR open against the issue instead (Issue
+#3315).
 
 Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 <branch>`, and confirms `origin/<branch>` contains every cited fix commit

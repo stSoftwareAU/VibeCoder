@@ -11,12 +11,21 @@
  *
  * This module gives the completion phase's body-assembly logic a second
  * caller: a fix run that pushed only new commits (no PR yet created on this
- * invocation) diffs the summary file against the pre-push head, and when it
- * changed, rebuilds the body the same way PR creation did and pushes the
- * update with `gh pr edit`. It never touches a PR body the worker did not
- * originally author (no {@link WORKER_PR_MARKER_PREFIX} marker), and it
- * never overwrites the body when the summary file was deleted — a missing
- * file is treated as "nothing to refresh", not as "blank the body".
+ * invocation) rebuilds the body from the summary file and pushes the update
+ * with `gh pr edit`, but only when the summary actually changed. Staleness
+ * is decided by a digest of the summary content the live body was built
+ * from, recorded inside the body itself (see {@link PR_SUMMARY_DIGEST_PREFIX}).
+ * Comparing that recorded digest against the summary at HEAD survives any
+ * number of missed syncs — a human push, a run that ended on a path with no
+ * sync call, or a processor that never called this module — unlike diffing
+ * against a single pre-push SHA, which only catches a change made by *this*
+ * run (Issue #3315). A body built before this change carries no digest
+ * marker; for that legacy shape the before-push-SHA diff this module always
+ * used is still how staleness is decided. It never touches a PR body the
+ * worker did not originally author (no {@link WORKER_PR_MARKER_PREFIX}
+ * marker), and it never overwrites the body when the summary file was
+ * deleted — a missing file is treated as "nothing to refresh", not as
+ * "blank the body".
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -52,14 +61,58 @@ function prSummaryPath(issueNumber: number): string {
 }
 
 /**
+ * Marker prefix recording the SHA-256 digest of the summary content a PR
+ * body was assembled from (Issue #3315). Followed by 64 lowercase hex
+ * characters and ` -->`.
+ */
+export const PR_SUMMARY_DIGEST_PREFIX = "<!-- vibe-pr-summary-sha256:";
+
+/** Lowercase hex SHA-256 digest of `summaryContent`, encoded as UTF-8. */
+export async function prSummaryDigest(summaryContent: string): Promise<string> {
+  const bytes = new TextEncoder().encode(summaryContent);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** The HTML-comment marker recording `digest` inside a PR body. */
+export function buildSummaryDigestMarker(digest: string): string {
+  return `${PR_SUMMARY_DIGEST_PREFIX}${digest} -->`;
+}
+
+/**
+ * The digest a PR body's marker records, or undefined when the body carries
+ * none.
+ *
+ * Reads the LAST occurrence: the summary content opening the body may quote
+ * an earlier sync's marker verbatim, and the real marker for this body
+ * always follows the footer. Uses a fixed-width `{64}` quantifier rather
+ * than a greedy/backtracking one.
+ */
+export function summaryDigestFromBody(body: string): string | undefined {
+  const pattern = new RegExp(
+    `${PR_SUMMARY_DIGEST_PREFIX}([0-9a-f]{64}) -->`,
+    "g",
+  );
+  let last: string | undefined;
+  for (const match of body.matchAll(pattern)) {
+    last = match[1];
+  }
+  return last;
+}
+
+/**
  * Build the PR body text the same way PR creation does.
  *
  * Mirrors the assembly order in `completion_phase.ts`: summary (or the
  * fallback when it is empty), the already-formatted extra sections
  * (evidence, milestone, bump note — concatenated by the caller in creation
- * order), the worker footer, then the idempotency marker. The result is run
- * through `ensureReferences` last, exactly as PR creation runs it through
- * `ensurePrReferencesIssue`.
+ * order), the worker footer, the idempotency marker, then the summary-digest
+ * marker (Issue #3315) recording `input.summaryDigest` so a later sync can
+ * tell whether the summary has moved on without needing a pre-push SHA. The
+ * result is run through `ensureReferences` last, exactly as PR creation runs
+ * it through `ensurePrReferencesIssue`.
  *
  * Issue #3177: a summary whose `## Acceptance Criteria` block marks any
  * criterion `missing` does not close the issue. Its closing keywords for the
@@ -71,6 +124,8 @@ export function assemblePrBody(input: {
   issueNumber: number;
   extraSections: string;
   footer: string;
+  /** SHA-256 digest (hex) of `summaryContent`, recorded in the body (Issue #3315). */
+  summaryDigest: string;
   ensureReferences?: (body: string, issueNumber: number) => string;
 }): string {
   const ensureReferences = input.ensureReferences ?? ensurePrReferencesIssue;
@@ -85,6 +140,7 @@ export function assemblePrBody(input: {
   body += input.extraSections;
   body += input.footer;
   body += buildIdempotencyMarker(input.issueNumber);
+  body += "\n" + buildSummaryDigestMarker(input.summaryDigest);
   if (missing.length > 0) return body;
   return ensureReferences(body, input.issueNumber);
 }
@@ -148,7 +204,13 @@ export interface SyncPrBodyInput {
   prNumber: number;
   /** Checkout of the PR head, after the push. */
   repoPath: string;
-  /** Branch head before this fix run, or undefined when it could not be resolved. */
+  /**
+   * Branch head before this fix run, or undefined when it could not be
+   * resolved. Only used when the live body carries no summary-digest marker
+   * (Issue #3315) — a legacy body built before that marker existed. When the
+   * body carries a digest marker, staleness is decided by comparing that
+   * recorded digest against the summary at HEAD, and this field is ignored.
+   */
   beforeSha: string | undefined;
   /** Configured worker name (may be empty). */
   workerName: string;
@@ -240,10 +302,13 @@ function extractDegradedRunSection(body: string): string {
  *
  * - the PR carries the worker's own marker (never overwrite a body the
  *   worker did not author);
- * - a before-push SHA is available to diff against;
- * - the summary file actually changed since that SHA;
- * - the summary file was not deleted by that change (a deleted summary
- *   means "nothing to refresh", not "blank the body"); and
+ * - the summary file was not deleted (a deleted summary means "nothing to
+ *   refresh", not "blank the body");
+ * - the summary actually changed:
+ *   - when the live body carries a summary-digest marker (Issue #3315), that
+ *     recorded digest differs from the digest of the summary at HEAD; or
+ *   - for a legacy body with no digest marker, a before-push SHA is
+ *     available and `git diff` shows the summary file changed since it; and
  * - the freshly assembled body actually differs from what is live.
  */
 export async function syncPrBodyFromSummary(
@@ -299,34 +364,40 @@ export async function syncPrBodyFromSummary(
     };
   }
 
-  if (!input.beforeSha) {
-    logger.warn(
-      "No before-push SHA available — skipping PR body sync (Issue #3089)",
-    );
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "no before-push sha" },
-    };
-  }
+  const recordedDigest = summaryDigestFromBody(view.body ?? "");
 
-  const summaryRelPath = prSummaryPath(issueNumber);
-  const diffResult = await deps.runGitCommand(
-    ["diff", "--name-only", input.beforeSha, "HEAD", "--", summaryRelPath],
-    { cwd: input.repoPath },
-  );
-  if (!diffResult.ok) {
-    return {
-      ok: false,
-      error: new Error(
-        `Failed to diff ${summaryRelPath}: ${diffResult.error.message}`,
-      ),
-    };
-  }
-  if (diffResult.value.stdout.trim().length === 0) {
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "summary unchanged" },
-    };
+  if (recordedDigest === undefined) {
+    // Legacy body, built before the summary-digest marker existed (Issue
+    // #3315): fall back to the original before-push-SHA diff.
+    if (!input.beforeSha) {
+      logger.warn(
+        "No before-push SHA available — skipping PR body sync (Issue #3089)",
+      );
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "no before-push sha" },
+      };
+    }
+
+    const summaryRelPath = prSummaryPath(issueNumber);
+    const diffResult = await deps.runGitCommand(
+      ["diff", "--name-only", input.beforeSha, "HEAD", "--", summaryRelPath],
+      { cwd: input.repoPath },
+    );
+    if (!diffResult.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to diff ${summaryRelPath}: ${diffResult.error.message}`,
+        ),
+      };
+    }
+    if (diffResult.value.stdout.trim().length === 0) {
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "summary unchanged" },
+      };
+    }
   }
 
   const summaryResult = await loadPrSummary(input.repoPath, issueNumber);
@@ -342,6 +413,14 @@ export async function syncPrBodyFromSummary(
 
   const changedFiles = (view.files ?? []).map((f) => f.path);
   const summaryContent = summaryResult.value.content;
+  const currentDigest = await prSummaryDigest(summaryContent);
+
+  if (recordedDigest !== undefined && recordedDigest === currentDigest) {
+    return {
+      ok: true,
+      value: { status: "skipped", reason: "summary unchanged" },
+    };
+  }
 
   let extraSections = "";
   const branchEvidence = findBranchEvidenceImages(changedFiles);
@@ -365,6 +444,7 @@ export async function syncPrBodyFromSummary(
     issueNumber,
     extraSections,
     footer,
+    summaryDigest: currentDigest,
   });
 
   const headShaResult = await deps.runGitCommand(
