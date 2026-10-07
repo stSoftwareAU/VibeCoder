@@ -408,19 +408,30 @@ function overlapsRemoval(
  *     old number — from pre-empting that sibling's own, not-yet-seen
  *     renumbered occurrence and reading as "still here unrenamed" (a
  *     single interleaved pass tried the fallback before the real match was
- *     reached); the entry-identity check (2) then catches what the
- *     number-only match still cannot — a previous citation whose own old
- *     number coincides with a *different*, correctly-renumbered sibling's
- *     new number, so the number-only match explains the one current
- *     occurrence as that sibling and never reaches the stale one — because
- *     an unrenumbered entry's exact (old) text keeps surviving in the
- *     current summary regardless of which number another citation lands on
- *     (PR #3375 review; real case: `branch_outcomes_gate.ts:378` in the PR
- *     #3160 replay stays genuinely stale even though its surrounding entry
- *     text was independently reworded, which the entry-identity check
- *     alone would have missed — this is why the number-based match stays
- *     the primary signal and the entry check is additive, not a
- *     replacement);
+ *     reached). Pass one itself withholds an occurrence from claiming
+ *     ANY new-key match when that occurrence's own key is a *different*,
+ *     still-unrenumbered citation's only possible explanation — i.e. that
+ *     other citation's own new key never appears among this push's
+ *     occurrences at all — so a coincidental collision between one
+ *     citation's new number and a sibling's old number can no longer let
+ *     pass one explain the occurrence away before pass two ever sees it
+ *     (PR #3375 review, round 4; real case: on the PR #3160 push, old
+ *     `branch_outcomes_gate.ts:210`'s correct new landing, `:238`, is also
+ *     old `:238`'s own number — reserving `:238`'s old key, since `:266`
+ *     \(`:238`'s own new landing\) never appears among the occurrences,
+ *     lets pass two correctly pair both citations as stale). The
+ *     entry-identity check (2) then catches what the number-only match
+ *     still cannot — a previous citation whose own old number coincides
+ *     with a *different*, correctly-renumbered sibling's new number, so
+ *     the number-only match explains the one current occurrence as that
+ *     sibling and never reaches the stale one — because an unrenumbered
+ *     entry's exact (old) text keeps surviving in the current summary
+ *     regardless of which number another citation lands on (PR #3375
+ *     review; real case: `branch_outcomes_gate.ts:378` in the PR #3160
+ *     replay stays genuinely stale even though its surrounding entry text
+ *     was independently reworded, which the entry-identity check alone
+ *     would have missed — this is why the number-based match stays the
+ *     primary signal and the entry check is additive, not a replacement);
  *   - the cited line(s) were changed or removed by this push's diff (not
  *     just moved) and the entry's own text is unchanged (apart from
  *     whitespace) from the previous head → stale: the result was carried
@@ -497,20 +508,46 @@ export function findStaleCitations(
   // renumbered one's). Pass two then explains each occurrence pass one
   // left unmatched as the unrenumbered leftover of a still-unclaimed
   // previous citation at the same old number.
+  //
+  // A previous citation is "orphaned" when no current occurrence sits at
+  // its own new (renumbered) key — its only possible explanation left is
+  // its OLD key turning up as a leftover in pass two. Its old key is
+  // reserved before pass one runs, so pass one can never let a sibling's
+  // coincidentally-equal new key steal that occurrence first (PR #3375
+  // review, round 4: on the real PR #3160 push, `:210`'s correct new
+  // landing (`:238`) is also `:238`'s own old number; claiming `:238`'s
+  // occurrence for `:210` in pass one left `:238` with nothing to pair
+  // against, even though `:238` was never renumbered and `:266` — its own
+  // new landing — never appeared anywhere in the current summary). A
+  // citation whose own new key IS present among the occurrences is not
+  // orphaned, so its old key stays unreserved and pass one still claims
+  // the coincidental occurrence normally when a sibling needs it (test
+  // (s2) below).
   const leftoverStale = new Set<LineCitation>();
   for (const [path, mapped] of mappedByPath) {
     const occurrences = (curByPath.get(path) ?? [])
       .slice()
       .sort((a, b) => a.start - b.start);
+    const occurrenceKeys = new Set(occurrences.map((o) => o.key));
+
+    const reservedOldKeys = new Set<string>();
+    for (const m of mapped) {
+      if (m.newKey === null || !occurrenceKeys.has(m.newKey)) {
+        reservedOldKeys.add(m.oldKey);
+      }
+    }
+
     const unclaimed = mapped.slice();
     const unmatched: typeof occurrences = [];
     for (const occ of occurrences) {
-      const idx = unclaimed.findIndex((m) => m.newKey === occ.key);
-      if (idx === -1) {
-        unmatched.push(occ);
-        continue;
+      if (!reservedOldKeys.has(occ.key)) {
+        const idx = unclaimed.findIndex((m) => m.newKey === occ.key);
+        if (idx !== -1) {
+          unclaimed.splice(idx, 1);
+          continue;
+        }
       }
-      unclaimed.splice(idx, 1);
+      unmatched.push(occ);
     }
     for (const occ of unmatched) {
       const idx = unclaimed.findIndex((m) => m.oldKey === occ.key);

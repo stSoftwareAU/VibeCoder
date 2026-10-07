@@ -849,6 +849,43 @@ Deno.test("findStaleCitations: (t) a sibling's unchanged entry is caught even th
   assert(result.stale[0]!.includes(`${PATH}:266`));
 });
 
+Deno.test("findStaleCitations: (u) an unrenumbered cascade with both entries reworded are both stale (real PR #3160 shape, PR #3375 review round 4)", () => {
+  // Mirrors the real PR #3160 push: previous `:210` (A) and `:238` (B), a
+  // +28 insertion shifts A onto B's old number (`:238`) and B onto `:266`.
+  // Neither citation is renumbered, and BOTH entries are reworded (not
+  // verbatim) — unlike test (t), `curEntries.has` cannot catch either one,
+  // so this exercises the number-only match alone. A's correct new number
+  // (`:238`) coincides with B's old number, which previously let pass one
+  // claim `:238` for A and leave B with nothing to pair against.
+  const previous = summaryWithEntries(
+    `\`${PATH}:210\` — first outcome, test went red`,
+    `\`${PATH}:238\` — second outcome, test went red`,
+  );
+  const current = summaryWithEntries(
+    `\`${PATH}:210\` — first outcome (reworded), test went red`,
+    `\`${PATH}:238\` — second outcome (reworded), test went red`,
+  );
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(181, 28),
+  });
+  assertEquals(result.unchecked, []);
+  assertEquals(result.stale.length, 2);
+  assert(
+    result.stale.some((m) =>
+      m.includes(`${PATH}:210`) && m.includes(`${PATH}:238`)
+    ),
+  );
+  assert(
+    result.stale.some((m) =>
+      m.includes(`${PATH}:238`) && m.includes(`${PATH}:266`)
+    ),
+  );
+});
+
 Deno.test("findStaleCitations: a comma-joined citation only flags the line that moved", () => {
   const previous = summaryWithEntries(
     `\`${PATH}:10,20\` — error flipped, test went red`,
