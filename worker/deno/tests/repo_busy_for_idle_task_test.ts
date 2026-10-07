@@ -494,6 +494,38 @@ Deno.test(
 );
 
 Deno.test(
+  "anyRepoHasUnblockedRealWork - a work-on issue with open native sub-issues does not count (Issue #3314)",
+  async () => {
+    // The only work-on issue carries no blocking label, but its native
+    // sub-issues are not all complete — classifyIssues' Issue #3314 gate
+    // must see this via the same `gh issue list` row the audit and census
+    // read, or the fleet gate counts GRQ-AutoTrader#2503-shaped work as
+    // startable while the audit/census call it dependency_blocked.
+    const recorder = makeRepoRecorder((repo, _label) =>
+      repo === "org/sub-issue-blocked"
+        ? '[{"number":11,"labels":[{"name":"work-on"}],"assignees":[],' +
+          '"subIssuesSummary":{"total":4,"completed":0}}]'
+        : "[]"
+    );
+    const hasWork = await anyRepoHasUnblockedRealWork({
+      repos: ["org/sub-issue-blocked"],
+      ghCommandFn: recorder.fn,
+    });
+    assertEquals(hasWork, false);
+    // The request must ask GitHub for the field in the first place.
+    const listCall = recorder.calls.find((c) =>
+      c.args.includes("org/sub-issue-blocked")
+    );
+    assert(listCall !== undefined);
+    const jsonIdx = listCall!.args.indexOf("--json");
+    assert(
+      (listCall!.args[jsonIdx + 1] ?? "").includes("subIssuesSummary"),
+      "the --json field list must request subIssuesSummary",
+    );
+  },
+);
+
+Deno.test(
   "anyRepoHasUnblockedRealWork - idle-task label alone does not count",
   async () => {
     // An open idle-task wrapper is handled by the cross-repo dedup, not by

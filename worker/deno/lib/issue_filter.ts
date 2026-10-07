@@ -34,6 +34,8 @@ export interface FilterableIssue {
    * stale-workflow scan can read from the shared `issues_all` cache).
    */
   updatedAt?: string;
+  /** GitHub native sub-issue counts (Issue #3314); absent on old cache entries. */
+  subIssuesSummary?: { total: number; completed: number };
 }
 
 /**
