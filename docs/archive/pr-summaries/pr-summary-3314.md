@@ -88,7 +88,7 @@ parent/child gate is still not modelled. Closes #3314.
    `classifyIssues` and `buildIdleDecisionCensus` count the row as claimable
    / not `dependency_blocked`.
 
-**Docs sweep (review follow-up, item 3)** — grep: `subIssuesSummary`,
+**Docs sweep** — review follow-up (item 3): grep: `subIssuesSummary`,
 `fetchAllIssues`, "apt-get install -y gh", "gh version", "2.94" over
 `docs/SETUP.md`, `docs/DEPLOYMENT.md`, `docs/TROUBLESHOOTING.md`,
 `docs/USAGE.md`; section:
@@ -101,7 +101,7 @@ sentence to fix. The retry is an internal fallback that restores pre-#3314
 behaviour on old `gh` — it adds no new documented contract, so no doc update
 is owed for it.
 
-**Docs sweep (original)** — grep: `subIssuesSummary`, `hasOpenSubIssues`,
+**Docs sweep** — original: grep: `subIssuesSummary`, `hasOpenSubIssues`,
 `parseSubIssuesSummary`, `normaliseIssue`, `checkParentBlocked`, "parent/child",
 "Parent/child", "per-issue API call", "not modelled", "unmodelled",
 `dependency_blocked`, `classifyIssues`, "idle-detect"; section:
