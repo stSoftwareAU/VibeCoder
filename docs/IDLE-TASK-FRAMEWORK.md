@@ -1060,7 +1060,15 @@ idle-task filer with it. It now applies the hold as its last gate, reporting
 `reason=run_local_hold` on the per-repo line, exactly as it took the open-PR
 gate in Issue #4223 and the merged-PR gate in GRQ#4419. A hold source that
 throws falls back to no hold, so a failure restores the old over-count rather
-than reporting a repo as having nothing to do.
+than reporting a repo as having nothing to do. The audit also reports
+`reason=dependency_blocked` and `reason=time_deferred` on the per-repo line
+(Issue #3334), in place of the defensive `reason=label_filter` it used to fall
+back to when every refused issue was blocked on an open `Depends on` issue or
+open sub-issues, or deferred to a future `Deferred until` date — a label
+filter was never the reason. Both rank below the PR gates and
+`pace_suppressed`/`run_local_hold`, and above `stream_occupied`;
+`dependency_blocked` outranks `time_deferred` because `classifyIssues` applies
+it later, and the later gate is the more specific one.
 
 That incident also exposed the other half of the fault, in the scan's own
 reporting: the cooldown filters logged their skip and recorded nothing in
