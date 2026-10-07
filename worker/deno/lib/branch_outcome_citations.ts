@@ -394,19 +394,33 @@ function overlapsRemoval(
  *   - the cited path is ambiguous among the changed files → unchecked;
  *   - this push's diff of the resolved path was not supplied (or was
  *     binary) → unchecked;
- *   - the cited line(s) moved (mapped to a different line number) and a
- *     current citation at the OLD number is left over after every current
- *     citation that a previous citation's mapped (new) line legitimately
- *     explains has claimed one → stale: the citation needs renumbering.
- *     Matching is greedy, walking this push's current citations for the
- *     path in line order and preferring a still-unclaimed previous
- *     citation's new-line match over an old-line (leftover) match — the
- *     mapping is monotonic, so this is enough to tell a current citation
- *     that is really a *different* previous citation correctly renumbered
- *     onto this one's old number (e.g. previous `:941` and `:943` both
- *     shift to `:943` and `:945`, so a correctly-renumbered summary citing
- *     `:943` must not read as "`:943` is still here unrenamed") apart from
- *     a citation genuinely left at its own old number;
+ *   - the cited line(s) moved (mapped to a different line number) and
+ *     either (1) a current citation at the OLD number is left over after a
+ *     two-pass per-path match — pass one claims every current citation that
+ *     a previous citation's mapped (new) line legitimately explains, pass
+ *     two then explains each still-unmatched current citation as the
+ *     leftover of a still-unclaimed previous citation's OLD line — or (2)
+ *     the citation's own entry, verbatim apart from whitespace, is still
+ *     present somewhere in the current summary → stale: the citation needs
+ *     renumbering. Running pass one to completion across every occurrence
+ *     on the path before pass two starts is what stops a brand-new
+ *     occurrence — one this push added, coincidentally sharing a sibling's
+ *     old number — from pre-empting that sibling's own, not-yet-seen
+ *     renumbered occurrence and reading as "still here unrenamed" (a
+ *     single interleaved pass tried the fallback before the real match was
+ *     reached); the entry-identity check (2) then catches what the
+ *     number-only match still cannot — a previous citation whose own old
+ *     number coincides with a *different*, correctly-renumbered sibling's
+ *     new number, so the number-only match explains the one current
+ *     occurrence as that sibling and never reaches the stale one — because
+ *     an unrenumbered entry's exact (old) text keeps surviving in the
+ *     current summary regardless of which number another citation lands on
+ *     (PR #3375 review; real case: `branch_outcomes_gate.ts:378` in the PR
+ *     #3160 replay stays genuinely stale even though its surrounding entry
+ *     text was independently reworded, which the entry-identity check
+ *     alone would have missed — this is why the number-based match stays
+ *     the primary signal and the entry check is additive, not a
+ *     replacement);
  *   - the cited line(s) were changed or removed by this push's diff (not
  *     just moved) and the entry's own text is unchanged (apart from
  *     whitespace) from the previous head → stale: the result was carried
@@ -424,13 +438,15 @@ export function findStaleCitations(
   const old = branchOutcomeCitations(input.previousSummary);
   const cur = branchOutcomeCitations(input.currentSummary);
 
-  const curEntries = new Set<string>();
+  // Every entry's exact (whitespace-normalised) text found anywhere in the
+  // current summary — the additive signal (2) in the doc comment above.
+  const curEntries = new Set<string>(cur.citations.map((c) => c.entry));
+
   // This push's current citations resolved to a changed file, grouped by
   // path with their key and start line, so each path's occurrences can be
   // walked in line order below.
   const curByPath = new Map<string, { key: string; start: number }[]>();
   for (const citation of cur.citations) {
-    curEntries.add(citation.entry);
     const resolved = resolveCitedPath(citation.path, input.changedFiles);
     if (resolved.kind !== "match") continue;
     const list = curByPath.get(resolved.path) ?? [];
@@ -470,30 +486,37 @@ export function findStaleCitations(
     mappedByPath.set(resolved.path, list);
   }
 
-  // Greedy per-path matching: walk this push's current citations for a
-  // path in line order and explain each one as either the renumbering of
-  // an unclaimed previous citation whose mapped line matches (tried
-  // first), or the unrenumbered leftover of an unclaimed previous citation
-  // whose OLD line matches. Because the diff's line mapping is monotonic,
-  // trying the new-line match first is enough to stop a citation that
-  // correctly renumbers onto a sibling's old number (PR #3375 review) from
-  // reading as that sibling still sitting there unrenamed — while a
-  // leftover match on a citation that moved is a genuine stale citation.
+  // Two-pass per-path matching. Pass one claims every occurrence a
+  // previous citation's mapped (new) line legitimately explains, across
+  // the WHOLE path, before pass two tries any old-line (leftover) match —
+  // so a brand-new occurrence that merely coincides with an unrelated
+  // citation's old number can never pre-empt that citation's own,
+  // still-to-be-seen renumbered occurrence (PR #3375 review: an
+  // interleaved single pass, walking occurrences in line order, let
+  // exactly that happen when the new occurrence's line sorted before the
+  // renumbered one's). Pass two then explains each occurrence pass one
+  // left unmatched as the unrenumbered leftover of a still-unclaimed
+  // previous citation at the same old number.
   const leftoverStale = new Set<LineCitation>();
   for (const [path, mapped] of mappedByPath) {
     const occurrences = (curByPath.get(path) ?? [])
       .slice()
       .sort((a, b) => a.start - b.start);
     const unclaimed = mapped.slice();
+    const unmatched: typeof occurrences = [];
     for (const occ of occurrences) {
-      let idx = unclaimed.findIndex((m) => m.newKey === occ.key);
+      const idx = unclaimed.findIndex((m) => m.newKey === occ.key);
       if (idx === -1) {
-        idx = unclaimed.findIndex((m) => m.oldKey === occ.key);
-        if (idx !== -1 && unclaimed[idx]!.moved) {
-          leftoverStale.add(unclaimed[idx]!.citation);
-        }
+        unmatched.push(occ);
+        continue;
       }
-      if (idx !== -1) unclaimed.splice(idx, 1);
+      unclaimed.splice(idx, 1);
+    }
+    for (const occ of unmatched) {
+      const idx = unclaimed.findIndex((m) => m.oldKey === occ.key);
+      if (idx === -1) continue;
+      if (unclaimed[idx]!.moved) leftoverStale.add(unclaimed[idx]!.citation);
+      unclaimed.splice(idx, 1);
     }
   }
 
@@ -564,7 +587,9 @@ export function findStaleCitations(
     const moved = (ms.kind === "kept" && ms.line !== citation.start) ||
       (me.kind === "kept" && me.line !== citation.end);
 
-    if (moved && leftoverStale.has(citation)) {
+    if (
+      moved && (leftoverStale.has(citation) || curEntries.has(citation.entry))
+    ) {
       const newText = newCitationText(path, ms, me);
       const plural = citation.start !== citation.end;
       pushStale(

@@ -774,6 +774,81 @@ Deno.test("findStaleCitations: (r) a three-citation chain correctly renumbered i
   assertEquals(result.unchecked, []);
 });
 
+Deno.test("findStaleCitations: (s) a new entry landing on a renumbered citation's old number is clean (PR #3375 review)", () => {
+  // Previous: `:40` (a guard check). A 3-line insertion directly above
+  // shifts it to `:43`. The agent renumbers it to `:43` and adds a new,
+  // unrelated entry for the inserted guard at `:40` — the new entry's line
+  // number coincides with the renamed citation's OLD number, but it is a
+  // different entry, so it must not be read as that citation sitting there
+  // unrenamed.
+  const previous = summaryWithEntries(
+    `\`${PATH}:40\` — existing guard check, test went red`,
+  );
+  const current = summaryWithEntries(
+    `\`${PATH}:40\` — new guard check, new test went red`,
+    `\`${PATH}:43\` — existing guard check, test went red`,
+  );
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(39, 3),
+  });
+  assertEquals(result.stale, []);
+  assertEquals(result.unchecked, []);
+});
+
+Deno.test("findStaleCitations: (s2) a two-sibling cascade with a new entry on the lower sibling's old number is clean (PR #3375 review)", () => {
+  // Previous `:210` and `:238`, a +28 insertion shifts both to `:238` and
+  // `:266`. Both are renamed correctly, plus a new entry lands on `:210` —
+  // none of this should be read as a leftover.
+  const previous = summaryWithEntries(
+    `\`${PATH}:210\` — first outcome, test went red`,
+    `\`${PATH}:238\` — second outcome, test went red`,
+  );
+  const current = summaryWithEntries(
+    `\`${PATH}:210\` — new outcome, new test went red`,
+    `\`${PATH}:238\` — first outcome, test went red`,
+    `\`${PATH}:266\` — second outcome, test went red`,
+  );
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(181, 28),
+  });
+  assertEquals(result.stale, []);
+  assertEquals(result.unchecked, []);
+});
+
+Deno.test("findStaleCitations: (t) a sibling's unchanged entry is caught even though another citation's new landing coincides with its old number (PR #3375 review)", () => {
+  // Previous `:210` (A) and `:238` (B), a +28 insertion shifts A onto B's
+  // old number (`:238`) and B onto `:266`. A's entry is dropped/rewritten
+  // (absent from the current summary); B's entry is left completely
+  // unchanged, still citing `:238`. B is genuinely stale even though
+  // `:238` is also where A's citation would legitimately land.
+  const previous = summaryWithEntries(
+    `\`${PATH}:210\` — first outcome, test went red`,
+    `\`${PATH}:238\` — second outcome, test went red`,
+  );
+  const current = summaryWithEntries(
+    `\`${PATH}:238\` — second outcome, test went red`,
+  );
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(181, 28),
+  });
+  assertEquals(result.unchecked, []);
+  assertEquals(result.stale.length, 1);
+  assert(result.stale[0]!.includes(`${PATH}:238`));
+  assert(result.stale[0]!.includes(`${PATH}:266`));
+});
+
 Deno.test("findStaleCitations: a comma-joined citation only flags the line that moved", () => {
   const previous = summaryWithEntries(
     `\`${PATH}:10,20\` — error flipped, test went red`,
