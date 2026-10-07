@@ -102,20 +102,20 @@ it is cited. Nothing needed changing.
 - Red without the change: with `CODING-STANDARDS.md` restored to base, the
   CODING-STANDARDS test failed (2 passed, 1 failed).
 - `deno task drift-pins-on-base origin/main …` was run for each section.
-  Every pinned phrase is absent on base:
-  - `CODING-STANDARDS.md` "PR Summary and Evidence": "An issue number cited
-    as provenance is one you looked up", "`_<N>_test.ts` in a test file
-    name", "Never cite a follow-up by number before it is filed", "file the
-    follow-up with `gh issue create` and cite the number it returns",
-    "(`PR #N review`)", "as `#N: <title>` in the PR summary's Evidence".
-  - `prompts/issue/prompt.md` "Instructions": "An issue number the diff adds
-    as provenance", "Never cite a follow-up by number before it is filed",
-    "file it with `gh issue create` and cite the number it returns", "as
-    `#N: <title>` in the PR summary's Evidence".
-  - `prompts/pr_feedback/prompt.md` "Making Changes": "An issue number you
-    cite as provenance is one you looked up", "Never cite a follow-up by
-    number before it is filed", "(`PR #{{PR_NUMBER}} review`)", "as
-    `#N: <title>` in the PR summary's Evidence".
+  Every phrase pinned by the three tests in
+  `worker/deno/tests/provenance_citation_rule_3338_docs_test.ts` is absent
+  on base:
+  - "CODING-STANDARDS.md states the provenance-citation rule in PR Summary
+    and Evidence (Issue #3338)": the rule's bold title, the test-file-name
+    example, the never-before-filed sentence, the `gh issue create` clause,
+    the `PR #N review` alternative and the `#N: <title>` Evidence list.
+  - "issue prompt Instructions section states the provenance-citation rule
+    (Issue #3338)": the rule's lead-in, the never-before-filed sentence, the
+    `gh issue create` clause and the `#N: <title>` Evidence list.
+  - "pr_feedback prompt Making Changes section states the
+    provenance-citation rule (Issue #3338)": the rule's bold title, the
+    never-before-filed sentence, the `PR #{{PR_NUMBER}} review` alternative
+    and the `#N: <title>` Evidence list.
 - markdownlint: no new findings. The MD018 at `CODING-STANDARDS.md:1017` is
   on base.
 - `timeout 900 ./quality.sh < /dev/null`: **PASSED** (exit 0). Config
