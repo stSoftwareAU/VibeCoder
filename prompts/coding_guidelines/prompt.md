@@ -1211,11 +1211,15 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A test that
-only pins current behaviour — the fault was unreproduced
-or already fixed, and no production change was made — is expected green on
-base, and the Test Plan says so. **A negative test must be able to fail**
-below is this rule for an assertion that something does *not* happen.
+the base section already held is a blocking self-review finding. A pin a
+change only moves, while converting an existing whole-file drift test to
+`section()`, is meant to be on base, so this check does not apply to it:
+**Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
+each moved check in its own section instead. A test that only pins current
+behaviour — the fault was unreproduced or already fixed, and no production
+change was made — is expected green on base, and the Test Plan says so.
+**A negative test must be able to fail** below is this rule for an
+assertion that something does *not* happen.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null

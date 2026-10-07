@@ -1187,7 +1187,14 @@ The file MUST contain:
    drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
    `worker/deno` does this), and record here that each pinned phrase is
    absent from the base section; a phrase the base section already held is a
-   blocking self-review finding. A test that only pins current behaviour, because the
+   blocking self-review finding. A pin the diff only moves, while converting
+   an existing whole-file drift test to `section()`, is meant to be on base,
+   so that check does not apply to it; follow **Re-scoping an existing drift
+   test** in `CODING-STANDARDS.md` instead: scope each pin to the section
+   holding the sentence it was written for, leave no pin a substring of
+   another in the same list, keep each whole-file absence check on
+   `flatWholeFile`, and record here one line per moved check — the pin, its
+   section and the red-check result. A test that only pins current behaviour, because the
    fault was unreproduced or already fixed and no production change was made,
    is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard

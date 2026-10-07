@@ -262,6 +262,35 @@ earns its place by meeting all four conditions:
    prints one `doc not on base` line. Record the result for every pinned
    phrase in the PR's Test Plan.
 
+**Re-scoping an existing drift test.** Converting an existing whole-file drift
+test to `section()` moves pins whose phrases are meant to be on base, so
+condition 4 and "the test goes red against the base" say nothing about them.
+Keeping every pinned string is not enough. Two fleet PRs were sent back for
+this: a review round of VibeCoder#3240 had narrowed two absence checks to one
+section, and one of VibeCoder#3297 had moved the pin "In an issue run" into a
+list where a longer pin already contained it, leaving the
+Blocked-on-another-issue sentence unguarded. For every check the conversion
+moves:
+
+- **Map each pin to its rule.** Find the sentence the pin was written for —
+  `git log -S '<pin>'` on the test names the commit and the doc line it
+  guarded — and scope the pin to the heading that holds that sentence, not to
+  any heading where the phrase happens to appear.
+- **No subsumed pins.** A pin that is a substring of another pin in the same
+  scoped list checks nothing: make it the full sentence of its rule, or move
+  it to its rule's section. `assertPins(section, pins)` from
+  `worker/deno/tests/support/markdown_docs.ts` throws on a subsumed pin, so
+  assert a scoped list through it.
+- **Absence checks keep their reach.** An absence check (`=== false`,
+  `assertNotMatch`, `assertFalse`) that read the whole file stays on
+  `flatWholeFile`. Narrowing it to a section weakens it, which is a finding
+  unless the issue asks for it.
+- **Red-check each moved check, not the test.** Delete the rule's text from
+  its section only, leaving every other copy of the phrase alone, run the
+  test, see it fail, then restore it. For an absence check, add the forbidden
+  text under a different heading instead. The Test Plan records one line per
+  moved check: the pin, its section and the red-check result.
+
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
 without being listed or a link stops resolving, which is a fact about the tree
@@ -389,11 +418,15 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A test that
-only pins current behaviour — the fault was unreproduced
-or already fixed, and no production change was made — is expected green on
-base, and the Test Plan says so. **A negative test must be able to fail**
-below is this rule for an assertion that something does *not* happen.
+the base section already held is a blocking self-review finding. A pin a
+change only moves, while converting an existing whole-file drift test to
+`section()`, is meant to be on base, so this check does not apply to it:
+**Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
+each moved check in its own section instead. A test that only pins current
+behaviour — the fault was unreproduced or already fixed, and no production
+change was made — is expected green on base, and the Test Plan says so.
+**A negative test must be able to fail** below is this rule for an
+assertion that something does *not* happen.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
