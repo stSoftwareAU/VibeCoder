@@ -50,7 +50,6 @@ import {
   AWS_EMULATOR_FINDING_ID,
   BEST_PRACTICES_ISSUE_TITLE,
   bucketSlug,
-  buildAwsEmulatorFinding,
   createBestPracticesTemplate,
   hasAwsEmulatorWaiver,
   isLanguageBucket,
