@@ -89,41 +89,94 @@ flowchart LR
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **`floci --version` works on amd64 and arm64** — partial. reviewer: the
-  fragment maps both arches and both sha256 pins come from the real image.
-  Container Build CI builds amd64 only, though: both jobs run on `ubuntu-latest`
-  with no arch matrix, a gap that predates this PR. The arm64 build is therefore
-  unexercised in CI.
-- **The build log shows the 4566 response** — met (mechanism); pending CI.
-  reviewer: the smoke check echoes the HTTP status and fails the build on `000`.
-- **The image is digest-pinned** — met. reviewer: `FLOCI_IMAGE` and `images[]`
-  carry `@sha256:e97cd0c1…`.
-- **The manifest test passes and Container Build is green** — partial; pending
-  CI. reviewer: local `quality.sh` passed, including `check:manifests`;
-  Container Build awaits CI.
-- **The entrypoint does not start floci** — met. reviewer: the entrypoint is
-  unchanged, and the smoke-check server is stopped inside the fragment.
-- **Verify the binary first and record its path** — met. reviewer:
-  `/app/application` is recorded in `tools.json` notes and the docs, and the
-  verification is stated under Undiscoverable Facts.
-- **Unrequested: loopback exemption, inventory regeneration, selfcheck fixture,
-  image-hash input, `FLOCI_PREFIX` seam** — unrequested. reviewer: each is
-  needed for the gate to accept the requested fragment, or to test it.
+- **partial** — `floci --version` succeeds in the built image, on amd64 and
+  arm64 — evidence: `container/toolchains/floci.sh:61-65` maps both arches,
+  `container/tools.json:353-357` pins both sha256 values, and
+  `tests/install_toolchains_test.ts::container/toolchains/floci.sh - installs the wrapper and passes the smoke check on an HTTP answer`
+  — reviewer: partial — reason: Container Build
+  (`.github/workflows/container-build.yml:49,97`) builds amd64 only on
+  `ubuntu-latest`, so arm64 is never built in CI, and the amd64 run is still
+  pending.
+- **partial** — The build log shows the smoke check getting a response from
+  `127.0.0.1:4566` — evidence: `container/toolchains/floci.sh:128-139` and
+  `tests/install_toolchains_test.ts::container/toolchains/floci.sh - a smoke check that gets no HTTP answer fails the build`
+  — reviewer: partial — reason: the Container Build job on this PR is still
+  pending, so no build log shows the `answered HTTP` line yet.
+- **met** — The image is pinned by sha256 digest in `container/tools.json`,
+  never by tag alone — evidence: `container/tools.json:40-45` and
+  `container/Containerfile:17` (`@sha256:e97cd0c1…`) — reviewer: met
+- **partial** — `container_manifest_test.ts` passes, and the Container Build
+  workflow is green — evidence:
+  `tests/container_manifest_test.ts::findToolchainInstallViolations - a loopback smoke probe of a server the fragment started is not a download (Issue #3367)`
+  passes locally — reviewer: partial — reason: `container-build / container`
+  on this PR is still pending.
+- **met** — `container/entrypoint.sh` does not start `floci` — evidence:
+  `container/entrypoint.sh` is untouched by the diff and holds no `floci`
+  mention — reviewer: met
+- **met** — Verify first that the image ships a native binary for amd64 and
+  arm64, and record its path — evidence: `container/tools.json:45`,
+  `container/tools.json:357`, `docs/CONTAINER.md:211-221` and
+  `container/Containerfile:170` record `/app/application` — reviewer: met
+- **unrequested** — Loopback exemption in the fragment retry rule — evidence:
+  `worker/deno/lib/container_manifest.ts:1409-1439` — reviewer: unrequested —
+  reason: without it the shared `${CURL_RETRY}` rule rejects `floci.sh`'s
+  smoke-check `curl`.
+- **unrequested** — `floci.sh` added to the image-hash inputs — evidence:
+  `worker/deno/lib/container_image_hash.ts:102-105` — reviewer: unrequested —
+  reason: every fragment must be an image-hash input, so a fragment change
+  changes the image tag.
+- **unrequested** — Regenerated dependency inventory — evidence:
+  `docs/audits/dependency-inventory.md` — reviewer: unrequested — reason: the
+  `check:manifests` gate fails unless the inventory matches the manifests.
+- **unrequested** — `floci` self-check fixture — evidence:
+  `worker/deno/tests/toolchain_selfcheck_test.ts:308-311` — reviewer:
+  unrequested — reason: the self-check test needs captured output for every
+  manifest toolchain.
+- **unrequested** — `FLOCI_PREFIX` / `FLOCI_SOURCE` test seam — evidence:
+  `container/toolchains/floci.sh:35-37` — reviewer: unrequested — reason: lets
+  the seven `floci.sh` tests run the fragment end to end without root.
+- **unrequested** — Extra docs beyond the requested `docs/CONTAINER.md` row —
+  evidence: `docs/CONTAINER-IMAGE.md:72-91`, `docs/CONTAINER.md:211-229` and
+  `docs/CONTAINER.md:412-416` — reviewer: unrequested — reason: a code change
+  owes a docs change, so the new fragment and the exemption are described.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **Every outcome of a branch you add needs a test that reaches it** — the smoke
-  check's failure and success branches had no test. reason: fixed in this diff
-  (two new tests in `worker/deno/tests/install_toolchains_test.ts`, using the
-  `FLOCI_PREFIX` seam).
-- **Clean** against these rules: fail loud; cross-platform bash; regex safety on
-  untrusted text (hostile-run test); a code change owes a docs change; a new
-  test must go red without its change; a named test must exist; a stub mirrors
-  the real callee's contract (the curl stub prints `000` and exits 7, as real
-  curl does on a refused connection); Australian English; commit safety; no
-  workflow change.
+- **violation** — Every outcome of a branch you add needs a test: the smoke
+  check's failure and success branches — evidence:
+  `container/toolchains/floci.sh:135` — reason: fixed in this diff (two tests
+  in `worker/deno/tests/install_toolchains_test.ts`).
+- **violation** — Every outcome of a branch you add needs a test: the
+  missing-manifest and wrong-version branches — evidence:
+  `container/toolchains/floci.sh:39-42` and
+  `container/toolchains/floci.sh:106-112` — reason: not yet fixed; neither
+  branch has a test.
+- **violation** — Test reliability (rendezvous, never sleep): the success
+  test races the background stub writing `app.log`, failing 3 of 24 parallel
+  runs — evidence: `worker/deno/tests/install_toolchains_test.ts:1459` — reason:
+  not yet fixed; the stub curl should answer only once `app.log` exists.
+- **violation** — Prose about the PR's own change matches the code: the docs
+  say the exemption applies when every URL is loopback, but the code checks
+  only literal `http(s)://` URLs, so a `${URL}` or uppercase `HTTPS://` beside
+  a loopback URL skips the retry check — evidence:
+  `worker/deno/lib/container_manifest.ts:1410-1435` and
+  `docs/CONTAINER.md:413` — reason: not yet fixed; fail closed or reword the
+  doc, and add evasion tests.
+- **violation** — Vet every regex on untrusted text, one hostile case per
+  pattern (plausible, low risk) — evidence:
+  `worker/deno/lib/container_manifest.ts:1417` and
+  `worker/deno/lib/container_manifest.ts:1435` — reason: not yet fixed;
+  `LOOPBACK_URL_RE` and the continuation regex have no hostile case.
+- **clean** — Fail loud (each failure exits 1 with a named cause); the other
+  fragment branches are tested; the curl `000`/exit 7 stub mirrors real curl;
+  docs updated with the code; digest and per-arch sha256 pins; Australian
+  English; anchored `LOOPBACK_URL_RE`; cross-platform bash; test
+  classification; no assertions removed; commit safety; KISS/DRY. Notes, not
+  violations: the bulk of the work sits in worker WIP checkpoint commits, and
+  the generated wrapper leaves `${FLOCI_PREFIX}` unquoted, which is harmless
+  for the production prefix `/usr/local`.
 
 ## Test Plan
 
