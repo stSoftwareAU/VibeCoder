@@ -196,6 +196,33 @@ Deno.test("entrypoint - forwards extra arguments to the driver", async () => {
   }
 });
 
+Deno.test("entrypoint - review-round runs one review round instead of the worker loop (Issue #3293)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
+  try {
+    const argvFile = await stubDeno(dir);
+    await fakeRepo(dir);
+
+    const { code } = await runEntrypoint({
+      dir,
+      path: `${dir}/bin`,
+      env: { VIBE_BASE_DIR: `${dir}/repo` },
+      args: ["review-round", "--prompt-file", "/round/prompt.md"],
+    });
+    assertEquals(code, 0);
+
+    const argv = (await Deno.readTextFile(argvFile)).trim().split("\n");
+    assertEquals(argv.slice(-3), [
+      "review-round",
+      "--prompt-file",
+      "/round/prompt.md",
+    ]);
+    assertEquals(argv.includes("run-entrypoint"), false);
+    assertEquals(argv.includes("--frozen"), true);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("entrypoint - fails loudly when deno is not on PATH", async () => {
   const dir = await Deno.makeTempDir({ prefix: "vibe-entrypoint-" });
   try {
