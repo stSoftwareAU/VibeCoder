@@ -1839,6 +1839,126 @@ Deno.test("validateBranchOutcomes - a wrapped line starting with a backticked Br
   assert(result.valid);
 });
 
+// ---------------------------------------------------------------------------
+// PR #3312 review, round 4: backtick pairing still broke across a line wrap
+// in two shapes the round-3 fix did not cover. (a) Each uncaptured line was
+// blanked on its own (`blankedUnitText(lines, [idx])`), so a span opened on
+// one uncaptured line and closed on the next re-paired from scratch on the
+// second line, reading the entry's own prose between the close and the next
+// span as still "inside a span" and blanking it away. (b) `blankedUnitText`
+// still ran the removed per-document `blankTestCitationNames` over one
+// entry's own joined lines, which reset pairing at every non-indented line —
+// a "lazy" (unindented) continuation line the parser folds into the entry
+// was therefore re-paired on its own, with the same effect.
+// ---------------------------------------------------------------------------
+
+// (a) An honest "none added" followed by wrapped uncaptured prose: the
+// admission sits after the close of a span that opens on one line and
+// closes on the next.
+Deno.test("validateBranchOutcomes - an admission in wrapped prose after 'none added' blocks (PR #3312 review, round 4)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n**Branch outcomes:** none added.\n\n" +
+      "The guard at `worker/deno/lib/foo.ts:9` was checked with `deno task\n" +
+      "test` but no test reaches it, see `cargo test -p x`.\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// (a) The same wrapped-span mis-pairing in a sibling bullet that
+// `collectEntries` stops short of (the header is itself a list item, so its
+// sibling bullet at the header's own indent ends the nested list and is
+// scanned as uncaptured text instead of a second entry).
+Deno.test("validateBranchOutcomes - an admission in a wrapped sibling-bullet span blocks (PR #3312 review, round 4)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "- Branch outcomes:\n" +
+      "  - `worker/deno/lib/foo.ts:1` — covered — " +
+      "`worker/deno/tests/foo_test.ts::ok` — flipped, test went red\n" +
+      "- `worker/deno/lib/foo.ts:2` — error — checked with `cargo test\n" +
+      "  --workspace` and no test reaches it — see `deno task test`\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// (b) A lazy (unindented) continuation line the parser folds onto the
+// previous entry (the header is an inline, non-list paragraph, so any
+// continuation line satisfies `indent > headerIndent`) must still pair its
+// backticks with the entry's own first line.
+Deno.test("validateBranchOutcomes - an admission on a lazy unindented continuation blocks (PR #3312 review, round 4)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:42` — error — " +
+      "`worker/deno/tests/foo_test.ts::rejects\n" +
+      "an unreadable file` — no test reaches it; ran `deno task test`\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// `groupUncapturedIndices` must reset at a GAP in the index sequence (a
+// blank line between two uncaptured regions) even when neither side is a
+// list-marker line: an unclosed backtick in the first uncaptured paragraph
+// must not flip parity for the second. Without the gap reset, the two
+// paragraphs would be joined as one unit and the dangling backtick would
+// swallow the real admission as a false "closed span containing
+// whitespace".
+Deno.test("validateBranchOutcomes - a stray backtick in one uncaptured paragraph does not blank an admission in a later, blank-line-separated paragraph (PR #3312 review, round 4)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:1` — covered — " +
+      "`worker/deno/tests/foo_test.ts::ok` — flipped, test went red\n\n" +
+      "stray `\n\n" +
+      "see `worker/deno/lib/foo.ts:3`: no test reaches it, ran " +
+      "`deno task test`\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// `groupUncapturedIndices` must also reset at a list-marker line even when
+// it is index-consecutive with the previous uncaptured line: the same
+// unclosed-backtick parity flip, but via adjacency rather than a blank-line
+// gap, so the two reset conditions are each independently exercised.
+Deno.test("validateBranchOutcomes - a stray backtick in uncaptured prose does not blank an admission in the immediately following uncaptured bullet (PR #3312 review, round 4)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:1` — covered — " +
+      "`worker/deno/tests/foo_test.ts::ok` — flipped, test went red\n\n" +
+      "stray `\n" +
+      "- here is `worker/deno/lib/foo.ts:2`: no test reaches it, ran " +
+      "`cargo test`\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// The reverse of (a): a wrapped `path::name` test name in uncaptured prose
+// after a list, whose wrapped half happens to contain an admission phrase,
+// must still be blanked (it is the test's NAME, not the entry's own prose).
+Deno.test("validateBranchOutcomes - a wrapped test name in prose after a list stays valid (PR #3312 review, round 4)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:1` — covered — " +
+      "`worker/deno/tests/foo_test.ts::ok` — flipped, test went red\n\n" +
+      "See also `worker/deno/tests/foo_test.ts::flags an entry no test\n" +
+      "reaches` for the pattern.\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
 Deno.test("lookupTestsAtHead - invokes git with --literal-pathspecs ls-tree -r --name-only HEAD --", async () => {
   let seenArgs: string[] = [];
   const runGit = (args: string[]) => {

@@ -584,13 +584,104 @@ function isBarePlaceholder(body: string): boolean {
 }
 
 /**
+ * Blank test/command citations across one unit's own raw lines (an entry,
+ * one body contribution, or one grouped run of uncaptured lines — see
+ * `groupUncapturedIndices`), then decoration-strip the result. The raw lines
+ * are joined with `\n` and passed through `blankLineCitationNames` as ONE
+ * string before being split back apart (PR #3312 review, round 4): a span
+ * opened on one line and closed on the next — hard-wrapped fleet summaries
+ * do this routinely — still pairs correctly, because `split("\`")` does not
+ * care that the joined string contains embedded newlines.
+ *
+ * Pairing is never reset partway through a unit's own lines, unlike the
+ * removed per-document `blankTestCitationNames` this replaced: the caller
+ * already isolated this text to exactly one entry, one body contribution, or
+ * one paragraph of uncaptured lines, so the cross-item leak that function's
+ * list-marker/blank-line reset guarded against cannot happen here — there is
+ * only one item in play. Operating on exactly the raw lines the real parse
+ * already attributed to the unit (Issue #3288, PR #3312 review round 3)
+ * also leaves nothing to re-derive: unlike blanking the whole document and
+ * re-parsing it from scratch, there is no second parse that can disagree in
+ * shape with the real one.
+ */
+function blankedUnitLines(
+  lines: readonly string[],
+  indices: readonly number[],
+): string[] {
+  // No early-return for an empty `indices` (e.g. a capEntry-truncated
+  // entry, see parseBranchOutcomes): `[].join("\n")` is already `""`, and
+  // blanking/splitting/filtering `""` produces `[]` too, so a guard here
+  // would be unreachable-observable dead code.
+  const rawSlice = indices.map((i) => lines[i]).join("\n");
+  return blankLineCitationNames(rawSlice)
+    .split(LINE_TERMINATOR_RE)
+    .map(stripDecoration)
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * `blankedUnitLines`, space-joined into one string — the shape
+ * `collectEntries`/`scanRegion` build entry and body text in.
+ */
+function blankedUnitText(
+  lines: readonly string[],
+  indices: readonly number[],
+): string {
+  return blankedUnitLines(lines, indices).join(" ");
+}
+
+/**
+ * Group consecutive uncaptured line indices into paragraphs, so
+ * `blankedUnitLines` can pair a backtick span across a wrapped line within
+ * one paragraph while never reaching into a different one (Issue #3288, PR
+ * #3312 review round 4). Each `Branch outcomes:` header's uncaptured lines
+ * are otherwise one flat list with no grouping at all — blanking each raw
+ * line on its own (the previous shape) mis-pairs a span that opens on one
+ * line and closes on the next, which can blank away the entry's OWN prose
+ * between the close and the next span and hide a real admission.
+ *
+ * A gap in the index sequence (a blank line, a captured line, or the end of
+ * a header's scanned region) always starts a new paragraph, and so does
+ * every list-marker line (`` `- ` ``, `` `* ` ``, `1. `, …) — the same
+ * cross-item isolation the removed `blankTestCitationNames` used to provide
+ * by resetting at every list-marker line, now applied before blanking
+ * rather than during it: a stray backtick in one bullet can never reach a
+ * later, unrelated bullet's text. A non-list, non-blank line that
+ * immediately follows (whether indented or not — a "lazy" unindented
+ * continuation is still one Markdown paragraph) stays in the current
+ * paragraph, so a span wrapped across that line break still pairs.
+ */
+function groupUncapturedIndices(
+  lines: readonly string[],
+  indices: readonly number[],
+): number[][] {
+  const groups: number[][] = [];
+  let current: number[] = [];
+  let prevIndex = Number.NaN;
+  for (const idx of indices) {
+    const startsNewGroup = current.length === 0 ||
+      idx !== prevIndex + 1 ||
+      LIST_MARKER_RE.test(lines[idx]!);
+    if (startsNewGroup) {
+      if (current.length > 0) groups.push(current);
+      current = [idx];
+    } else {
+      current.push(idx);
+    }
+    prevIndex = idx;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+/** A closed code-span segment containing whitespace somewhere. */
+const SPAN_HAS_WHITESPACE_RE = /\s/;
+
+/**
  * Blank the parts of a backtick code span that are not the entry's own
- * words, group by group (lines joined so a span opened on one line and
- * closed on the next — hard-wrapped fleet summaries do this routinely —
- * still pairs correctly; PR #3312 review), for every CLOSED span (an
- * odd-indexed segment of a `` ` ``-split group that is not the group's last
- * segment — an unterminated trailing backtick never closes, so the dangling
- * last segment is left alone):
+ * words, for every CLOSED span (an odd-indexed segment of a `` ` ``-split
+ * group that is not the group's last segment — an unterminated trailing
+ * backtick never closes, so the dangling last segment is left alone):
  *
  *  - a `path::name`-shaped span keeps only the part before the first `::`:
  *    `` `worker/deno/tests/foo_test.ts::flags no test reaches` `` becomes
@@ -612,96 +703,13 @@ function isBarePlaceholder(body: string): boolean {
  *    left unchanged — there is nothing to blank, and `namedTestPaths` /
  *    `unitLabel` still need to read it.
  *
- * Splits each group on the backtick character rather than using a regex, so
- * there is nothing here that can backtrack.
- *
- * Groups lines by more than blank-line boundaries (PR #3312 review, round
- * 2): a blank line always starts a fresh group, but so does EVERY
- * list-marker line (`` `- ` ``, `` `* ` ``, `1. `, …) and every other line
- * that is not an indented continuation of the line before it. A tight list
- * — no blank line between items, the shape this repo's own lists (including
- * this one) are written in — is otherwise one unbroken run of non-blank
- * lines; grouping the whole run together let a single stray backtick in one
- * item (an escaped `` \` ``, a double-backtick span, or any other odd
- * backtick) flip which segments count as "inside a span" for every LATER
- * item too, so a genuine admission in item 2 could be blanked away by a
- * pairing accident in item 1. Resetting at each list-marker line scopes
- * pairing to one item (plus its own indented continuation lines) at a time,
- * so one item's stray backtick can never reach another's. The same reset
- * applies to the header line itself and to any other non-indented line, so
- * a stray backtick in prose directly above the header cannot erase the
- * header once it is blanked.
- *
- * A line continues the current group only when it is NOT a list-marker line
- * and is indented relative to the start of the line (so it reads as a
- * continuation of a bullet or of wrapped prose, not a new block); any other
- * non-blank line starts its own fresh group. Lines within one group are
- * joined with `\n` and pass through `blankLineCitationNames` as a single
- * string — `split("\`")` does not care that the string contains embedded
- * newlines, so a span that opens on one line and closes on an indented
- * continuation line is still paired exactly as it would be if the two lines
- * had never been wrapped.
+ * `text` may contain embedded `\n`s (several joined raw lines): splits on
+ * the backtick character rather than using a regex, so there is nothing
+ * here that can backtrack, and a `\n` is just another character a span can
+ * contain.
  */
-function blankTestCitationNames(text: string): string {
-  const lines = text.split(LINE_TERMINATOR_RE);
-  const out: string[] = [];
-  let group: string[] = [];
-  const flushGroup = () => {
-    if (group.length === 0) return;
-    out.push(...blankLineCitationNames(group.join("\n")).split("\n"));
-    group = [];
-  };
-  for (const line of lines) {
-    if (line.trim() === "") {
-      flushGroup();
-      out.push(line);
-      continue;
-    }
-    const isContinuation = group.length > 0 &&
-      !LIST_MARKER_RE.test(line) &&
-      leadingIndent(line) > 0;
-    if (!isContinuation) flushGroup();
-    group.push(line);
-  }
-  flushGroup();
-  return out.join("\n");
-}
-
-/**
- * Blank test/command citations in the raw lines at `indices` (in document
- * order), then decoration-strip and space-join the result — the same shape
- * `collectEntries`/`scanRegion` build entry and uncaptured-line text in.
- * Operating on exactly the raw lines the real parse already attributed to
- * one entry, one body contribution, or one uncaptured line (Issue #3288, PR
- * #3312 review round 3) leaves nothing to re-derive, so there is nothing
- * that can disagree in shape with the real parse — unlike blanking the
- * whole document and re-parsing it from scratch, which can identify
- * different header/entry boundaries (a backtick-quoted mid-prose mention of
- * the header phrase reads as a header before blanking but not after) and
- * falsely block an honest summary on a "merged line" that never merged.
- */
-function blankedUnitText(
-  lines: readonly string[],
-  indices: readonly number[],
-): string {
-  // No early-return for an empty `indices` (e.g. a capEntry-truncated
-  // entry, see parseBranchOutcomes): `[].join("\n")` is already `""`, and
-  // blanking/splitting/filtering `""` produces `""` too, so a guard here
-  // would be unreachable-observable dead code.
-  const rawSlice = indices.map((i) => lines[i]).join("\n");
-  return blankTestCitationNames(rawSlice)
-    .split(LINE_TERMINATOR_RE)
-    .map(stripDecoration)
-    .filter((line) => line.length > 0)
-    .join(" ");
-}
-
-/** A closed code-span segment containing whitespace somewhere. */
-const SPAN_HAS_WHITESPACE_RE = /\s/;
-
-/** `blankTestCitationNames`' per-paragraph worker. */
-function blankLineCitationNames(line: string): string {
-  const segments = line.split("`");
+function blankLineCitationNames(text: string): string {
+  const segments = text.split("`");
   for (let k = 1; k < segments.length - 1; k += 2) {
     const segment = segments[k]!;
     const sep = segment.indexOf("::");
@@ -1106,7 +1114,10 @@ function evaluateApplicable(
     // the whole document, which could identify different header/entry
     // boundaries than the real parse and block an honest summary on a
     // shape mismatch that was never a real line merge (PR #3312 review,
-    // round 3; see `blankedUnitText`).
+    // round 3; see `blankedUnitLines`). Uncaptured lines are grouped into
+    // paragraphs first (`groupUncapturedIndices`) so a span wrapped across
+    // two of them still pairs, then blanked a paragraph at a time and split
+    // back into per-line units (PR #3312 review, round 4).
     const blanked: BlankedUnits = {
       entries: record.entryLineIndices.map((idxs) =>
         blankedUnitText(lines, idxs)
@@ -1114,9 +1125,10 @@ function evaluateApplicable(
       body: record.bodyLineIndexGroups
         .map((idxs) => blankedUnitText(lines, idxs))
         .join(" "),
-      uncapturedLines: record.uncapturedLineIndices.map((idx) =>
-        blankedUnitText(lines, [idx])
-      ),
+      uncapturedLines: groupUncapturedIndices(
+        lines,
+        record.uncapturedLineIndices,
+      ).flatMap((idxs) => blankedUnitLines(lines, idxs)),
     };
     const admission = evaluateUnreachedAdmissions(blanked);
     problems.push(...admission.problems);
