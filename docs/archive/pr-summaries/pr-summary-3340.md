@@ -86,7 +86,7 @@ real one, because that turns the gate into a silent pass.
   fix only reorders an existing check). No prompt or standards rule changed.
   Applied to this PR's own diff: nothing found.
 
-**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name. This round's reorder changes no externally-visible behaviour (same regexes, same fields), so no further doc hit was found.
+**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name. This round's reorder does change a gate verdict (a heading-form header previously swallowed into `wrap` now ends `collectEntries` and blocks `validateBranchOutcomes`, per `worker/deno/tests/branch_outcomes_gate_test.ts:144`'s "a deeper heading-form header after a prose mention still names the invented test"), but no doc describes where the parser's scan stops or how a header is recognised (same regexes, same fields), so no further doc hit was found.
 
 ## Test Plan
 
@@ -144,11 +144,18 @@ Branch outcomes:
   outer loop parses it on its own:
   - Test: `validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test`.
   - Flip: restoring the pre-fix order (skip before check) turned it red.
-- `worker/deno/lib/branch_outcomes_gate.ts:328`, the same check still breaks
-  `collectEntries` for the pre-existing inline header form, now exercised
-  with a sibling list that continues after the header check moves:
-  - Test: `parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary`.
-  - Flip: reverting the reorder turned it red (see "Red on base" above).
+- `worker/deno/lib/branch_outcomes_gate.ts:328`, the same check's
+  pre-existing inline-form half (`BRANCH_OUTCOMES_PREFIX_RE`), still breaking
+  `collectEntries` at the real header rather than the heading-form half
+  tested above:
+  - Tests: `validateBranchOutcomes - a prose mention separated by a blank
+    line still does not hide the real header's inline citation` and
+    `parseBranchOutcomes - a later Branch outcomes header is parsed on its
+    own, so its region is scanned`.
+  - Flip: deleting `BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||` from the
+    check (confirmed locally) turned both red; the heading-form test above
+    stayed green under that same flip, since its input never reaches the
+    inline half.
 - `worker/deno/lib/branch_outcomes_gate.ts:328`, a line that is not a header falls through to the existing entry and wrap handling:
   - Test: `validateBranchOutcomes - a bare header followed by a wrapped prose line naming an existing test passes`, among other existing tests.
   - Flip: breaking on every line turned it red.
