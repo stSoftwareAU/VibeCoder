@@ -62,7 +62,7 @@ You leave a comment, add a "Request changes" review, or ask for edits. The worke
 
 ## Step 7 — Auto-fixes: worker addresses feedback and/or spelling/quality/CI
 
-The worker checks out the PR branch, addresses your feedback (or fixes spelling/quality/CI — Continuous Integration — failures automatically), commits, pushes, and marks the feedback as processed. No need to re-request — it runs on a schedule. Details: [PR feedback](pr-feedback.md#priority-1--pr-feedback), [Spelling and quality](pr-feedback.md#priority-15--spelling-and-quality-fixes-automatic).
+The worker checks out the PR branch, addresses your feedback (or fixes spelling/quality/CI — Continuous Integration — failures automatically), commits, pushes, and marks the feedback as processed. No need to re-request — it runs on a schedule. Details: [PR feedback](pr-feedback.md#-priority-1--pr-feedback), [Spelling and quality](pr-feedback.md#-priority-15--spelling-and-quality-fixes-automatic).
 
 ![Auto-fixes pushed](images/step-7-auto-fixes-pushed.png)
 
@@ -78,7 +78,7 @@ When the quality gate passes, the PR **auto-merges into the milestone branch** (
 
 ## Step 9 — All milestone issues done: one final PR to review (required — protects default)
 
-When **all** issues in the milestone are completed (all those PRs have auto-merged into the milestone branch), the worker creates a **tracking issue** and opens **one PR** from the milestone branch to the **default** branch. **Your review of this final PR is required:** nothing goes into the default branch unless all quality gates have passed and you review (and approve) this PR. That’s the whole idea — protect the default branch. The worker monitors this final PR (CI, spelling, merge) and enables auto-merge when mergeable; you review when ready. Details: [Milestone completion](milestones.md#milestone-completion).
+When **all** issues in the milestone are completed (all those PRs have auto-merged into the milestone branch), the worker creates a **tracking issue** and opens **one PR** from the milestone branch to the **default** branch. **Your review of this final PR is required:** nothing goes into the default branch unless all quality gates have passed and you review (and approve) this PR. That’s the whole idea — protect the default branch. The worker monitors this final PR (CI, spelling, merge) and enables auto-merge when mergeable; you review when ready. Details: [Milestone completion](milestones.md#-milestone-completion).
 
 ![Tracking issue and final PR to default](images/step-9-tracking-issue-and-final-pr.png)
 
@@ -86,7 +86,7 @@ When **all** issues in the milestone are completed (all those PRs have auto-merg
 
 ## Step 10 — Final PR: CI and auto-fixes (e.g. integration tests)
 
-The final PR is the first time the combined milestone changes may run against the default branch’s CI (e.g. integration tests). The worker automatically fixes spelling, quality, and CI failures; keeps the branch up to date; and enables auto-merge when mergeable. Details: [PR feedback](pr-feedback.md), [Milestones — CI monitoring](milestones.md#milestone-completion).
+The final PR is the first time the combined milestone changes may run against the default branch’s CI (e.g. integration tests). The worker automatically fixes spelling, quality, and CI failures; keeps the branch up to date; and enables auto-merge when mergeable. Details: [PR feedback](pr-feedback.md), [Milestones — CI monitoring](milestones.md#-milestone-completion).
 
 ![Final PR: CI and auto-fixes](images/step-10-final-pr-ci-and-autofixes.png)
 

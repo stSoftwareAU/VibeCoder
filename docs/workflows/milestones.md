@@ -77,9 +77,9 @@ In a single repo, issues either target the **default branch** (no milestone) or 
 
 So with several milestones there are several milestone PRs at once, beside the default-branch PRs. Human-authored PRs never count. See [projects-and-dependencies.md](projects-and-dependencies.md) for the full model.
 
-**Enforced at issue selection:** When selecting an issue for implementation, the worker skips a milestone issue whose milestone branch already has an open fleet PR, and a non-milestone issue once the fleet's open PRs on the default branch reach the cap. This is enforced at **issue selection** time — the issue finder filters out blocked issues before one is chosen. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#one-pr-per-target-branch-open-pr-blocking).
+**Enforced at issue selection:** When selecting an issue for implementation, the worker skips a milestone issue whose milestone branch already has an open fleet PR, and a non-milestone issue once the fleet's open PRs on the default branch reach the cap. This is enforced at **issue selection** time — the issue finder filters out blocked issues before one is chosen. Issues with `ignore-open-prs` (added by an allowed author) bypass this check. See [resilience-and-concurrency.md](resilience-and-concurrency.md#-one-pr-per-target-branch-open-pr-blocking).
 
-**Implementation only:** This constraint applies only to **implementation** workflows (issues selected via `find_oldest_issue`). Planning, question, and refinement workflows are **exempt** — they never create branches or PRs, so open-PR blocking is irrelevant. See [planning-and-questions.md](planning-and-questions.md#open-pr-blocking-does-not-apply-issue-500).
+**Implementation only:** This constraint applies only to **implementation** workflows (issues selected via `find_oldest_issue`). Planning, question, and refinement workflows are **exempt** — they never create branches or PRs, so open-PR blocking is irrelevant. See [planning-and-questions.md](planning-and-questions.md#-open-pr-blocking-does-not-apply).
 
 ## 🔍 Milestone-aware repo availability
 

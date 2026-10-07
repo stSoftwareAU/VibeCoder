@@ -2706,7 +2706,7 @@ terminating backstop: once a freed-and-retried issue exceeds the threshold it is
 escalated to a human rather than re-claimed indefinitely.
 
 See
-[`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#1-worker-run-loop-and-process-lifecycle)
+[`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#-1-worker-run-loop-and-process-lifecycle)
 for where this sits in the claim/heartbeat lifecycle.
 
 ### Analysis-only / no-PR hand-off for `work-on`

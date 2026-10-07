@@ -4835,7 +4835,7 @@ therefore attempted no repair at all. `findIssuesByLabel` excludes any issue
 carrying `needsHumanLabel`, so an operator must remove that label after
 repairing the host's clone for the issue to become claimable again. See
 "`create_feature_branch_from_base()`" above and
-[docs/workflows/README.md](workflows/README.md#one-shared-store-means-one-repository-wide-fault-issue-1093)
+[docs/workflows/README.md](workflows/README.md#per-lane-worktrees-issue-394)
 for the sweep-then-re-clone repair ladder that produces this category.
 
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)

@@ -772,7 +772,7 @@ Settings are loaded in this order:
 1. Hardcoded defaults in code
 2. Values from `.config.json` (overrides defaults)
 
-Operational defaults (e.g., `WORK_DIR`, `CLAUDE_TIMEOUT`) that are not loaded from the config file can still be set via environment variables. See the [Configuration Reference](docs/CONFIGURATION.md#operational-defaults) for the full list.
+Operational defaults (e.g., `WORK_DIR`, `CLAUDE_TIMEOUT`) that are not loaded from the config file can still be set via environment variables. See the [Configuration Reference](docs/CONFIGURATION.md#-internal-operational-constants) for the full list.
 
 ## ✅ Configuration Validation (Issue #33)
 
@@ -2148,7 +2148,7 @@ The following security issues have been addressed. See the linked issues and SEC
 
 ## 🔗 Related Security Issues
 
-For open security issues, see the [Security](README.md#security) section in the README.
+For open security issues, see the [Security](README.md#-security) section in the README.
 
 ---
 

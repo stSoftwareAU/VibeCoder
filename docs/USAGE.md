@@ -67,7 +67,7 @@ When creating a PR, the worker includes appropriate evidence based on the type
 of change:
 
 - **UI (User Interface) Changes**: Include a screenshot (see
-  [Screenshot Support](DEPLOYMENT.md#screenshot-support-setup)). If a screenshot
+  [Screenshot Support](DEPLOYMENT.md#-screenshot-support-setup)). If a screenshot
   cannot be generated, you must explicitly state why in the PR summary.
 - **Performance Changes**: Include benchmark results (before/after). If no
   measurable improvement, document this finding.

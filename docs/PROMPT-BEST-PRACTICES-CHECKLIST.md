@@ -285,7 +285,7 @@ reason. Re-check this table when the guide changes.
   every shared term and section heading. This rubric never prescribes wording;
   that page records the wording already agreed, including why the `Optimize` and
   `Minimizing` spellings in this document are a deliberate exception.
-- [Extending the Worker](EXTENDING.md#prompt-templates) — how prompt templates
+- [Extending the Worker](EXTENDING.md#-prompt-templates) — how prompt templates
   are laid out and edited.
 - Prompt audit — code-health scan prompts
   and

@@ -283,7 +283,7 @@ If you want the Vibe Coder to authenticate as a service account instead of your 
 }
 ```
 
-See the [Configuration Reference](CONFIGURATION.md#service-account-authentication-ssh--gh-auth) for details on generating the SSH key and setting up the gh config dir.
+See the [Configuration Reference](CONFIGURATION.md#-service-account-authentication-ssh--gh-auth) for details on generating the SSH key and setting up the gh config dir.
 
 The setup script's prerequisite probe matches containment —
 container is the only run mode (Issue #4), and the report names it:

@@ -64,6 +64,21 @@ Deno.test("githubSlug - full issue-number heading keeps every token", () => {
   );
 });
 
+// Connector punctuation (`\p{Pc}`, e.g. `_`) survives slugging because
+// GitHub's `github-slugger` keeps it; ids observed from GitHub's rendered
+// HTML via `gh api repos/stSoftwareAU/VibeCoder/contents/docs/CALLBACKS.md
+// -H "Accept: application/vnd.github.html"` (Issue #3337).
+Deno.test("githubSlug - connector punctuation (underscore) survives (Issue #3337)", () => {
+  assertEquals(
+    githubSlug("Host-level failures — `callbacks.host_failure`"),
+    "host-level-failures--callbackshost_failure",
+  );
+  assertEquals(
+    githubSlug("Migrating from `fleet_health_dir` / `fleet_health_repo`"),
+    "migrating-from-fleet_health_dir--fleet_health_repo",
+  );
+});
+
 /**
  * In-scope anchor references: each link that the audit flagged, expressed as
  * the referencing file, the exact `target#fragment` string it must contain,

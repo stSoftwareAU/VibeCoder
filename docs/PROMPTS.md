@@ -5,7 +5,7 @@ instruct Claude. The full text of each prompt is long and not published here;
 this page summarises **the goal of each prompt type** so you know what the
 worker is being asked to do in each workflow. For versioning rules and how to
 extend prompts, see
-[Extending the Worker](EXTENDING.md#prompt-templates). For the
+[Extending the Worker](EXTENDING.md#-prompt-templates). For the
 rubric used to audit a prompt against Anthropic's prompting best-practices
 guide, see
 [Prompt best-practices checklist](PROMPT-BEST-PRACTICES-CHECKLIST.md). For the
