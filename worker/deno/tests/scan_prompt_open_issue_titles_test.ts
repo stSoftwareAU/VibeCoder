@@ -54,6 +54,12 @@ const SCAN_PROMPT_TYPES = [
  * scan prompt so the framework-wide contract is one reviewable thing; only the
  * heading style (bulleted or bold) and the line wrapping differ per prompt,
  * both of which whitespace normalisation removes.
+ *
+ * Pinned whole-file rather than section-scoped: this loops over every
+ * prompts/<type>/prompt.md in `SCAN_PROMPT_TYPES`, and the block sits under a
+ * different parent heading in each one (CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 1 exemption for a filesystem-derived,
+ * cross-file invariant).
  */
 const BLOCK_SENTENCES = [
   "**Open issues already in this repository** — every open issue in this " +

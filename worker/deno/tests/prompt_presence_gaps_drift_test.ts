@@ -63,7 +63,9 @@ Deno.test("the checklist records the wrapper-issue-body surface kind (Issue #841
 });
 
 Deno.test("row 5 exempts the surfaces no model reads (Issue #841)", async () => {
-  const rows = tableRows(section(await readRepoDoc(CHECKLIST_PATH), "Checklist"));
+  const rows = tableRows(
+    section(await readRepoDoc(CHECKLIST_PATH), "Checklist"),
+  );
   const row = rows.find((cells) => cells[0] === "5");
   assert(row, "the checklist's Checklist section has no row 5");
 

@@ -16,9 +16,9 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  *
  * Every pin here is a filesystem-derived invariant checked by looping over
- * every `prompts/*/prompt.md` on disk, so it stays whole-file rather than
- * scoped to a doc section (CODING-STANDARDS.md § Documentation-drift tests,
- * condition 4; Issue #3309).
+ * every prompt directory's `prompt.md` on disk, so it stays whole-file
+ * rather than scoped to a doc section (CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 4; Issue #3309).
  */
 
 import { assert, assertEquals } from "@std/assert";

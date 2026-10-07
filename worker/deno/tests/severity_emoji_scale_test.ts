@@ -21,8 +21,8 @@
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  *
- * The cross-scan pairing checks below loop over every `prompts/*/prompt.md`
- * on disk, so they stay whole-file (CODING-STANDARDS.md §
+ * The cross-scan pairing checks below loop over every prompt directory's
+ * `prompt.md` on disk, so they stay whole-file (CODING-STANDARDS.md §
  * Documentation-drift tests, condition 4). The one pin scoped to a single
  * doc's section — orphan_deps' no-critical-band rationale — moved to
  * `severity_emoji_scale_drift_test.ts` (Issue #3309); the absence check

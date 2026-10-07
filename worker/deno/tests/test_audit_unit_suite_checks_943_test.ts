@@ -31,6 +31,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { INTEGRATION_TEST_FILES } from "../lib/integration_test_manifest.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const TESTS_DIR = new URL(".", import.meta.url).pathname;
@@ -84,6 +85,18 @@ function exampleBody(prompt: string, name: string): string {
   return collapse(prompt.slice(start, end));
 }
 
+/** The Phase 3 triage rules, collapsed, read from the repo's own heading. */
+async function phase3Section(): Promise<string> {
+  const doc = await readRepoDoc("prompts/test_audit/prompt.md");
+  return flat(section(doc, "Phase 3 — Triage"));
+}
+
+/** The stable finding-ID recipe, collapsed, read from the repo's own heading. */
+async function stableIdSection(): Promise<string> {
+  const doc = await readRepoDoc("prompts/test_audit/prompt.md");
+  return flat(section(doc, "Stable finding ID recipe"));
+}
+
 // --- The catalogue stays contiguous ---
 
 Deno.test("test_audit - the Phase 2 catalogue runs 1..13 with no hole (Issue #943)", async () => {
@@ -99,6 +112,10 @@ Deno.test("test_audit - the Phase 2 catalogue runs 1..13 with no hole (Issue #94
 });
 
 Deno.test("test_audit - every surface counting the catalogue says thirteen (Issue #943)", async () => {
+  // Pinned whole-file: the three claims live in three different places (the
+  // front-matter overview above the first `##` heading, the Phase 2 heading
+  // itself, and the stable-ID recipe appendix), so there is no single
+  // section to scope this cross-document invariant to.
   const prompt = await promptText();
   for (
     const claim of [
