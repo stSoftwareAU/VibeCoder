@@ -4,7 +4,7 @@
 > (Issue
 >).
 > The sibling mitigation sub-issues this report scopes have since landed —
-> see the [Gap list](#gap-list--sibling-sub-issues).
+> see the [Gap list](#5-gap-list--sibling-sub-issues).
 
 ## 1. What "GhostCommit" is
 

@@ -49,6 +49,12 @@
     "MD039": true,
     "MD042": true,
 
+    // Link fragments: an in-file `#anchor` must match a real heading id
+    // (GitHub's algorithm — a leading emoji leaves a leading `-`, and a
+    // U+FE0F variation selector stays percent-encoded as `%EF%B8%8F`).
+    // Issue #3292.
+    "MD051": true,
+
     // Tables: pipe-style (MD055) and column-count (MD056) catch broken
     // rows like the SECURITY.md table column miscount that ships in
     // Issue #1685's first iteration.

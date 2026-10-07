@@ -37,10 +37,16 @@ Deno.test("githubSlug - leading emoji yields a leading hyphen", () => {
   );
 });
 
-Deno.test("githubSlug - slashes drop and emoji leads with a hyphen", () => {
+// A U+FE0F variation selector survives slugging, so the link form is
+// percent-encoded (Issue #3292).
+Deno.test("githubSlug - slashes drop and a variation selector survives", () => {
   assertEquals(
     githubSlug("🎚️ Model/effort precedence chain"),
-    "-modeleffort-precedence-chain",
+    "️-modeleffort-precedence-chain",
+  );
+  assertEquals(
+    encodeURIComponent(githubSlug("⚠️ Known Limitations")),
+    "%EF%B8%8F-known-limitations",
   );
 });
 
@@ -82,12 +88,14 @@ const REFERENCES: Array<{
     target: "DESIGN-PRINCIPLES.md",
     fragment: "security-scans",
   },
-  // Model/effort precedence chain — renamed heading + emoji slug.
+  // Model/effort precedence chain — renamed heading + emoji slug, the emoji
+  // keeps its U+FE0F variation selector so the link is percent-encoded
+  // (Issue #3292).
   {
     source: "docs/MODEL-AND-CACHING.md",
-    link: "#-modeleffort-precedence-chain",
+    link: "#%EF%B8%8F-modeleffort-precedence-chain",
     target: "docs/MODEL-AND-CACHING.md",
-    fragment: "-modeleffort-precedence-chain",
+    fragment: "️-modeleffort-precedence-chain",
   },
   // Issue selection priority — emoji leading-hyphen convention.
   {
