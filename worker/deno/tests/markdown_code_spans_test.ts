@@ -61,6 +61,45 @@ Deno.test("splitMarkdownCode resets an unclosed span at a blank line", () => {
   );
 });
 
+// PR #3351 review: a paragraph previously only ended at a blank line, so a
+// literal unmatched backtick in a list item, heading, or block quote paired
+// with a backtick in a later block and hid the prose between them.
+
+Deno.test("splitMarkdownCode resets an unclosed span at a new list item", () => {
+  const text = "- item one has a lone ` backtick\n- item two has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across the list-item boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at an ATX heading", () => {
+  const text = "## heading has a lone ` backtick\nbody text has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across the heading boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a block quote", () => {
+  const text = "plain text has a lone ` backtick\n> quoted has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across the block-quote boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode: a genuine span still pairs within one list item (look-alike)", () => {
+  const text = "- see `docs` for details";
+  const segments = splitMarkdownCode(text);
+  const codeSegment = segments.find((s) => s.inCode);
+  assert(codeSegment);
+  assertEquals(codeSegment!.value, "`docs`");
+});
+
 // ---------------------------------------------------------------------------
 // parseFenceLine / isClosingFence (exported for blocked_outcome.ts)
 // ---------------------------------------------------------------------------
@@ -69,6 +108,30 @@ Deno.test("parseFenceLine recognises a backtick and a tilde fence", () => {
   assertEquals(parseFenceLine("```js"), { char: "`", length: 3, rest: "js" });
   assertEquals(parseFenceLine("~~~~"), { char: "~", length: 4, rest: "" });
   assertEquals(parseFenceLine("not a fence"), null);
+});
+
+// PR #3351 review: `.` does not match a lone CR or a Unicode line/paragraph
+// separator, so a `(.*)$` tail after the fence run backtracked through every
+// run length on a line where one of those characters follows the run.
+Deno.test("parseFenceLine reads the rest of the line through a lone CR", () => {
+  const parsed = parseFenceLine("```\rjs");
+  assertEquals(parsed, { char: "`", length: 3, rest: "\rjs" });
+});
+
+Deno.test("parseFenceLine scales linearly on a long run followed by a character `.` rejects", () => {
+  // A long backtick run followed by a lone CR and then more text: `.` cannot
+  // cross the CR, so the old `(.*)$` tail backtracked the run length over and
+  // over, re-scanning to the end of the line each time — quadratic in the run
+  // length. The CR must not be the line's last character — `trim()` would
+  // strip it from the edge and hide the defect — so a trailing "x" keeps it
+  // in the middle.
+  const build = (chars: number): string => "`".repeat(chars - 2) + "\rx";
+  assertLinearGrowth(
+    "parseFenceLine on a long run followed by a lone CR",
+    build,
+    (input) => parseFenceLine(input) !== null,
+    { baseChars: 4_000, sizeFactor: 4 },
+  );
 });
 
 Deno.test("isClosingFence requires the same character, same-or-greater length, no info string", () => {

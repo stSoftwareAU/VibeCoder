@@ -419,6 +419,26 @@ Deno.test("extractDependencyReferences - a real dependency after a wrapped span 
   assertEquals(extractDependencyReferences(body), [7]);
 });
 
+// PR #3351 review: a paragraph only ended at a blank line, so a lone
+// unmatched backtick in one list item paired with a backtick two list items
+// later and hid a genuine "Depends on #5" line as if it were code.
+Deno.test("extractDependencyReferences - a list item marker ends the paragraph, so a stray backtick does not hide the next item (evasion)", () => {
+  const body =
+    "- Handle the ` key in the parser\n- Depends on #5\n- See `docs` for details";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a genuine span still pairs within one list item (look-alike)", () => {
+  const body = "- See `docs` for details, not #5";
+  assertEquals(stripCodeSpans(body).includes("docs"), false);
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+Deno.test("extractDependencyReferences - an ATX heading ends the paragraph, so a stray backtick does not hide the dependency on the next line (evasion)", () => {
+  const body = "## Blocked: the ` key breaks parsing\nDepends on #5 per `foo`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
 // =============================================================================
 // checkParentBlocked tests
 // =============================================================================

@@ -132,6 +132,20 @@ Deno.test("detectBlockedOutcome: a real dependency after a wrapped span is still
   assertEquals(blocked.dependency.number, 5);
 });
 
+// PR #3351 review: a paragraph previously only ended at a blank line, so
+// the lone unmatched backtick in a "## Blocked:" heading paired with a
+// backtick on the very next line and masked the "Depends on" declaration.
+Deno.test("detectBlockedOutcome: an ATX heading ends the paragraph, so a stray backtick in it does not hide the declaration line", () => {
+  const output =
+    "## Blocked: the ` key breaks parsing\nDepends on org/dep#5 per `foo`";
+  const blocked = detectBlockedOutcome(output, SELF, {
+    declaredHeadingOnly: true,
+  });
+  assert(blocked, "expected a blocked outcome");
+  assertEquals(blocked.dependency.repo, "org/dep");
+  assertEquals(blocked.dependency.number, 5);
+});
+
 Deno.test("detectBlockedOutcome returns undefined for empty output", () => {
   assertEquals(detectBlockedOutcome("", SELF), undefined);
   assertEquals(detectBlockedOutcome("   \n\n ", SELF), undefined);

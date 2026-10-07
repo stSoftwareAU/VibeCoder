@@ -11,6 +11,14 @@
  * happens to contain — masking real prose as code, and reading a wrapped
  * span's contents as prose a reference can hide in.
  *
+ * A paragraph also ends — without a blank line — at any line that starts a
+ * new block: an ATX heading, a list-item marker, or a block quote marker
+ * (Issue #3351 review). CommonMark never lets a span cross into one of
+ * these, so a literal unmatched backtick in one list item or heading must
+ * not pair with a backtick in a later block and hide the prose between them.
+ * An ATX heading is additionally a one-line block on its own: nothing after
+ * it continues the same paragraph, even without a blank line.
+ *
  * A fenced block opens on a line whose first non-space characters are three
  * or more backticks or tildes (an optional info string may follow on the
  * opening line). It closes only on a later line that starts with the *same*
@@ -51,7 +59,12 @@ export interface FenceLine {
  */
 export function parseFenceLine(line: string): FenceLine | null {
   // `split` keeps the line break, and `.` does not match it, so trim first.
-  const match = line.trim().match(/^(`{3,}|~{3,})(.*)$/);
+  // The rest is read with `([^\n]*)` and no `$`, not `(.*)$`: `.` stops at a
+  // lone `\r` or a Unicode line/paragraph separator, so a run-length
+  // backtrack through `(.*)$` rescanned to the end on every length — O(run
+  // length × line length) on a line where one of those follows a long fence
+  // run (Issue #3351 review; same shape as Issue #3186).
+  const match = line.trim().match(/^(`{3,}|~{3,})([^\n]*)/);
   if (!match) return null;
   return {
     char: match[1]![0]!,
@@ -127,6 +140,33 @@ function splitInlineSpans(block: string): MarkdownSegment[] {
 }
 
 /**
+ * An ATX heading: up to three leading spaces, 1-6 `#`, then whitespace or
+ * end of line. CommonMark gives it no continuation line — the heading is the
+ * whole block, so `splitMarkdownCode` flushes the paragraph buffer both
+ * before *and* immediately after one.
+ */
+const ATX_HEADING_RE = /^ {0,3}#{1,6}(?:[ \t]|$)/;
+
+/**
+ * A list-item marker: up to three leading spaces, a bullet (`-`, `*`, `+`)
+ * or an ordered marker (`1.` / `1)`), then whitespace or end of line.
+ */
+const LIST_ITEM_RE = /^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
+
+/** A block-quote marker: up to three leading spaces, then `>`. */
+const BLOCK_QUOTE_RE = /^ {0,3}>/;
+
+/**
+ * Does `line` start a new CommonMark block that a paragraph never continues
+ * into (Issue #3351 review)? A literal backtick in one list item or heading
+ * must not pair with a backtick in a later block.
+ */
+function startsNewBlock(line: string): boolean {
+  return ATX_HEADING_RE.test(line) || LIST_ITEM_RE.test(line) ||
+    BLOCK_QUOTE_RE.test(line);
+}
+
+/**
  * Split text into alternating "outside code" / "inside code" segments, so
  * callers can scan or rewrite only the prose a reader actually sees.
  * Fenced blocks (``` or ~~~, to the matching close or end of text) and
@@ -188,6 +228,17 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     if (line.trim() === "") {
       flushParagraph();
       pushSegment(line, false);
+      i++;
+      continue;
+    }
+    // A heading, list item or block quote also ends the paragraph, the same
+    // way a blank line does (Issue #3351 review).
+    if (startsNewBlock(line)) {
+      flushParagraph();
+      paragraph += line;
+      // An ATX heading has no continuation line, so it never merges with
+      // whatever follows it.
+      if (ATX_HEADING_RE.test(line)) flushParagraph();
       i++;
       continue;
     }
