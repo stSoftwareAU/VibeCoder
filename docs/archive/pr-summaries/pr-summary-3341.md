@@ -19,7 +19,7 @@ The review-fix drift check now catches `Branch outcomes:` `path:line` citations 
 ### Undiscoverable Facts
 
 - The drift check runs before the processor's commit, so "the push's diff" is `git diff <before-run head> -- <path>` (the working tree against the before-run head), not `<previous-head> HEAD` as the issue writes it.
-- Comma-joined, slash-joined and bare `:N` continuation forms (`:720-725,735-738`, `:1147/1158/1169`, `` `:820` and `:821` ``) are real forms. They appear in `pr-summary-3288.md` (one of the stale #3312 entries) and `pr-summary-3250.md`, so the parser reads them.
+- Comma-joined, slash-joined and bare `:N` continuation forms (`:720-725,735-738`, `:1147/1158/1169`, `` `:820` and `:821` ``) are real forms, so the parser reads them. The slash-joined form is in the archived `docs/archive/pr-summaries/pr-summary-3250.md` (`container_manifest.ts:1147/1158/1169`). The comma-joined and bare `:N` forms are in `pr-summary-3288.md` on the unmerged PR #3312 branch (`git show f8a3bc5c:docs/archive/pr-summaries/pr-summary-3288.md`: `branch_outcomes_gate.ts:720-725,735-738`, one of the issue's stale entries, and `` `:820` and `:821` ``). That file is not on `main`.
 
 ## Evidence
 
