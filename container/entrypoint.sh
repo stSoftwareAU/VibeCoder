@@ -626,12 +626,22 @@ cd "${BASE_DIR}"
 # bash reaps reparented children as they exit; the traps forward the
 # runtime's stop signals to the driver so graceful shutdown is unchanged,
 # and the driver's exit status is propagated verbatim.
+#
+# `review-round` as the first argument (Issue #3293) runs one headless
+# review-fleet-prs round instead of the worker loop: the skill's runner starts
+# it as `<runtime> run <image> review-round …`, so the round gets this
+# script's staging and the driver's own credential pool rather than an agent
+# login on the host.
+DRIVER_COMMAND=(run-entrypoint --base-dir "${BASE_DIR}")
+if [[ "${1:-}" == "review-round" ]]; then
+  shift
+  DRIVER_COMMAND=(review-round)
+fi
 deno run \
   --frozen --lock="${LOCKFILE}" \
   --allow-env --allow-read --allow-write --allow-run \
   --allow-net --allow-sys=hostname \
-  "${DRIVER}" run-entrypoint \
-  --base-dir "${BASE_DIR}" "$@" < /dev/null &
+  "${DRIVER}" "${DRIVER_COMMAND[@]}" "$@" < /dev/null &
 driver_pid=$!
 trap 'kill -TERM "${driver_pid}" 2>/dev/null' TERM INT
 driver_status=0
