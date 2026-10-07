@@ -198,6 +198,36 @@ Deno.test("splitMarkdownCode resets an unclosed span at a quoted list item", () 
   );
 });
 
+// PR #3351 review (round 4): the quote check tracked only *whether* a line
+// was quoted, so a nested quote opening inside a quote (`> > ...` after
+// `> ...`) did not end the outer quote's paragraph. Depth now matters: a
+// change of depth ends the paragraph, the same depth still joins.
+
+Deno.test("splitMarkdownCode resets an unclosed span where a nested quote opens", () => {
+  const text = "> outer has a lone ` backtick\n> > nested has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a quote-depth increase",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span where a nested quote closes", () => {
+  const text = "> > nested has a lone ` backtick\n> outer has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a quote-depth decrease",
+  );
+});
+
+Deno.test("splitMarkdownCode: a span still pairs across two lines at the same nested quote depth", () => {
+  const text = "> > see `start of span\n> > end of span` here";
+  const codeSegment = splitMarkdownCode(text).find((s) => s.inCode);
+  assert(codeSegment, "expected an in-code segment spanning the nested lines");
+  assertEquals(codeSegment!.value, "`start of span\n> > end of span`");
+});
+
 // PR #3351 review (round 3): a line starting an HTML comment (`<!--`) was
 // not treated as a block start, so a stray backtick before it paired with
 // a backtick in or after the comment.

@@ -327,6 +327,19 @@ Deno.test("hasBackReference - a quoted blank line ends the paragraph, so a stray
   assertEquals(hasBackReference(body, 796), true);
 });
 
+// PR #3351 review (round 4): a nested quote opening inside a quote did not
+// end the outer paragraph, so a stray backtick in the outer quote paired
+// with one in the nested quote and hid a nested "Parent: #N".
+Deno.test("hasBackReference - a nested quote ends the paragraph, so a stray backtick does not hide a nested parent link (evasion)", () => {
+  const body = "> Handle the ` key\n> > Parent: #796 per `docs`";
+  assertEquals(hasBackReference(body, 796), true);
+});
+
+Deno.test("hasBackReference - a parent link inside a span wrapped across two same-depth nested quote lines is not honoured (look-alike)", () => {
+  const body = "> > Write it as `the\n> > Parent: #796` link";
+  assertEquals(hasBackReference(body, 796), false);
+});
+
 // =============================================================================
 // extractDependencyReferences tests
 // =============================================================================
@@ -480,6 +493,20 @@ Deno.test("extractDependencyReferences - a quoted blank line ends the paragraph,
 Deno.test("extractDependencyReferences - a quoted list item ends the paragraph, so a stray backtick does not hide the next item's dependency (evasion)", () => {
   const body = "> - Handle the ` key\n> - Depends on #6\n> - See `docs`";
   assertEquals(extractDependencyReferences(body), [6]);
+});
+
+// PR #3351 review (round 4): a nested quote (`> > ...` after `> ...`)
+// interrupts the outer quote's paragraph in CommonMark and on GitHub, but
+// the boolean quote check kept both lines in one paragraph.
+
+Deno.test("extractDependencyReferences - a nested quote ends the paragraph, so a stray backtick does not hide the nested dependency (evasion)", () => {
+  const body = "> Handle the ` key\n> > Depends on #5 per `docs`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a dependency inside a span wrapped across two same-depth nested quote lines is not a dependency (look-alike)", () => {
+  const body = "> > Use `foo\n> > Depends on #5` here";
+  assertEquals(extractDependencyReferences(body), []);
 });
 
 // PR #3351 review (round 3): startsNewBlock did not treat a line starting

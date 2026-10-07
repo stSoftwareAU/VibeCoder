@@ -33,7 +33,11 @@
  * or break must end the paragraph the same way the unquoted form does, so
  * the blank-line and block-start checks run on the line with its quote
  * marker(s) stripped, not on the raw `>`-prefixed line (Issue #3351 review,
- * round 3).
+ * round 3). The quote is tracked by *depth* (how many `>` levels), not just
+ * whether a line is quoted: a nested quote opening inside a quote (`> > ...`
+ * after `> ...`) starts a new block quote that interrupts the outer quote's
+ * paragraph, so any change of depth ends the paragraph too, while lines at
+ * the same depth still join (Issue #3351 review, round 4).
  *
  * An HTML comment (`<!-- ... -->`) also interrupts a paragraph in
  * CommonMark: a line whose content, after optional indentation (and any
@@ -180,9 +184,6 @@ const ATX_HEADING_RE = /^[ \t]*#{1,6}(?:[ \t]|$)/;
  */
 const LIST_ITEM_RE = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
 
-/** A block-quote marker: leading whitespace, then `>`. */
-const BLOCK_QUOTE_RE = /^[ \t]*>/;
-
 /**
  * One or more quote-marker levels at the start of a line, plus at most one
  * space/tab right after the last `>` (CommonMark strips at most one). Every
@@ -202,6 +203,19 @@ const QUOTE_PREFIX_RE = /^(?:[ \t]*>)+[ \t]?/;
  */
 function stripQuotePrefix(line: string): string {
   return line.replace(QUOTE_PREFIX_RE, "");
+}
+
+/**
+ * How many block-quote levels open `line`: the number of `>` characters in
+ * its {@link QUOTE_PREFIX_RE} match, or 0 for an unquoted line. Counted with
+ * a single linear pass over the matched prefix, so it adds no backtracking
+ * risk (Issue #3351 review, round 4).
+ */
+function quoteDepth(line: string): number {
+  const prefix = QUOTE_PREFIX_RE.exec(line)?.[0] ?? "";
+  let depth = 0;
+  for (const ch of prefix) if (ch === ">") depth++;
+  return depth;
 }
 
 /**
@@ -264,11 +278,12 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
   let paragraph = "";
   let inFence = false;
   let opener: FenceLine | null = null;
-  // Whether the open paragraph is inside a block quote — tracked
-  // separately from `startsNewBlock` because consecutive `>` lines form one
-  // quoted paragraph (Issue #3351 review): the paragraph flushes only where
-  // the quote starts or ends, not on every `>` line.
-  let inQuote = false;
+  // How many block-quote levels the open paragraph sits in (0 = unquoted) —
+  // tracked separately from `startsNewBlock` because consecutive `>` lines
+  // at the same depth form one quoted paragraph (Issue #3351 review): the
+  // paragraph flushes only where the depth changes — a quote starting,
+  // ending, or nesting deeper / shallower (round 4) — not on every `>` line.
+  let currentQuoteDepth = 0;
   // Whether the current line is inside an HTML comment opened on an earlier
   // line that has not yet closed with `-->` (round 3).
   let inComment = false;
@@ -293,7 +308,7 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     const fenceMatch = parseFenceLine(line);
     if (fenceMatch && !inFence) {
       flushParagraph();
-      inQuote = false;
+      currentQuoteDepth = 0;
       inFence = true;
       opener = fenceMatch;
       fenceCursor += line;
@@ -335,17 +350,21 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
     if (content.trim() === "") {
       flushParagraph();
       pushSegment(line, false);
-      inQuote = false;
+      currentQuoteDepth = 0;
       i++;
       continue;
     }
-    // Entering or leaving a block quote ends the paragraph; staying inside
-    // one (or outside one) does not, so consecutive quoted lines stay one
-    // paragraph and a span may still wrap across them (Issue #3351 review).
-    const isQuoteLine = BLOCK_QUOTE_RE.test(line);
-    if (isQuoteLine !== inQuote) {
+    // Entering, leaving or changing the depth of a block quote ends the
+    // paragraph; staying at the same depth does not, so consecutive quoted
+    // lines stay one paragraph and a span may still wrap across them (Issue
+    // #3351 review). A deeper `> > ...` line opens a nested quote that
+    // interrupts the outer paragraph (round 4). A shallower line could be a
+    // CommonMark lazy continuation, but flushing there too is the safe
+    // direction: it can only stop a span pairing, never hide prose.
+    const lineQuoteDepth = quoteDepth(line);
+    if (lineQuoteDepth !== currentQuoteDepth) {
       flushParagraph();
-      inQuote = isQuoteLine;
+      currentQuoteDepth = lineQuoteDepth;
     }
     // A line starting an HTML comment ends the paragraph; the comment runs
     // to the line holding `-->`, which may be this same line (round 3).
