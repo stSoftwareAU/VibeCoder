@@ -119,6 +119,18 @@ underscore-stripping behaviour, and all pass.
     (`markdown_anchors_test.ts:88`) — actual slug keeps the stray
     `_name_`: `sec-1218-f5--an-unescaped-shell-variable-_name_-in-text-that-is-evald`
     vs the expected `...-name-in-text-that-is-evald`.
+  - Second review round (PR #3363): the code-span exclusion loop inside
+    `stripEmphasisUnderscores` (the `text.matchAll(CODE_SPAN)` loop) had no
+    test that failed if it broke — every existing heading had either only
+    intraword underscores inside its code spans or none at all. Replacing
+    the loop with a plain `text.replace(EMPHASIS_UNDERSCORES, "$2")` left
+    every other test green. Added
+    `githubSlug - word-boundary underscores inside a code span survive,
+    emphasis outside still drops (PR #3363 review)`
+    (`markdown_anchors_test.ts:104`), asserting
+    ``githubSlug("Overriding `__init__` and _x_") === "overriding-__init__-and-x"``.
+    Confirmed red with that exact loop-removal: actual
+    `overriding-init-and-x` vs expected `overriding-__init__-and-x`.
 - [x] `worker/deno/tests/cross_file_anchors_test.ts` uses `assertLinearGrowth`, so it is
   registered in `WALL_CLOCK_TEST_FILES`
   (`worker/deno/lib/parallel_unsafe_test_manifest.ts:196`). `check:manifests`
@@ -141,6 +153,7 @@ underscore-stripping behaviour, and all pass.
 - `worker/deno/lib/markdown_anchors.ts:46` — success (`_` kept by `githubSlug`) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - connector punctuation (underscore) survives (Issue #3337)` — removed `\p{Pc}`, test went red
 - `worker/deno/lib/markdown_anchors.ts:67-81` (review on PR #3363) — success (`_word_`/`__word__` emphasis pair at a word boundary stripped, outside code spans) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - underscore emphasis delimiters drop, unlike connector-punctuation underscores (PR #3363)` — removed the `stripEmphasisUnderscores` call, test went red
 - `worker/deno/lib/markdown_anchors.ts:67-81` (review on PR #3363) — absent (intraword underscore, e.g. `host_failure`, left alone — lookbehind/lookahead fail) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - connector punctuation (underscore) survives (Issue #3337)` — already covered above; re-ran after the review fix and it still passes, proving the new strip does not touch intraword underscores
+- `worker/deno/lib/markdown_anchors.ts:70-78` (second review round, PR #3363) — success (a word-boundary underscore pair inside a backtick code span, e.g. `` `__init__` ``, is excluded from the emphasis strip and left untouched, while a real emphasis pair outside the span still drops) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - word-boundary underscores inside a code span survive, emphasis outside still drops (PR #3363 review)` — replaced the `CODE_SPAN` loop with a plain whole-string `replace`, test went red (`overriding-init-and-x` vs expected `overriding-__init__-and-x`)
 - `worker/deno/tests/cross_file_anchors_test.ts:282` — error ("no heading produces this anchor" offender) — `worker/deno/tests/cross_file_anchors_test.ts::every cross-file #fragment link resolves to a heading in its target (Issue #3337)` — restored base `docs/SETUP.md`, test went red with 9 offenders
 - `worker/deno/tests/cross_file_anchors_test.ts:266` and `:274` — error (MISSING target file / UNDECODABLE fragment offenders) — no current corpus input reaches them; they are fail-loud reporting paths inside the sweep test itself, not production branches, and the decode-failure input is pinned by `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - returns null for a malformed percent-escape`
 
