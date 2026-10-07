@@ -13,7 +13,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildDriftRecoveryPrompt,
   type DriftCheckDeps,
@@ -231,6 +236,8 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line without renu
   try {
     await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
 
+    await assertRejects(() => Deno.lstat(prResponseMessagePath(dir)));
+
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent(
       [
@@ -268,6 +275,11 @@ Deno.test("runPrFeedbackDriftCheck - a push that moves a cited line without renu
     const message = await Deno.readTextFile(prResponseMessagePath(dir));
     assertStringIncludes(message, OLD_CITATION);
     assertStringIncludes(message, NEW_CITATION);
+    assertStringIncludes(
+      message,
+      "found text it leaves out of step with the code",
+    );
+    assert(!message.includes("could not check it fully"));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
