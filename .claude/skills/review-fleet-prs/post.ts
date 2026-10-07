@@ -12,6 +12,11 @@
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
+//          [--state-dir=<dir>]
+// --state-dir names the review state directory outright. A round inside the
+// worker container passes it (Issue #3293): there the host's log directory is
+// mounted at another path, so the resolution stateDir() makes on the host
+// would point somewhere else.
 // Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
 // branchUpdated?, branchUpdateError?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
@@ -215,7 +220,8 @@ async function main() {
 
   const removed = pr.testChanges.removed;
   const outcome = decideOutcome(review, removed);
-  const dir = stateDir();
+  const dir = Deno.args.find((a) => a.startsWith("--state-dir="))?.slice(12) ??
+    stateDir();
   const previous = latestByPr(await readLog(dir)).get(
     prKey(pr.repo, pr.number),
   );
