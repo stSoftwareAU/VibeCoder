@@ -249,6 +249,7 @@ import type { SkipReason } from "./issue_finder_logger.ts";
 import {
   type ClosedPR,
   getBlockingPRForIssue,
+  hasOpenSubIssues,
   isBlockedByRecentlyClosedPR,
   type OpenPR,
 } from "./issue_query.ts";
@@ -552,6 +553,8 @@ export interface CensusIssue {
    * preserving the pre-#460 behaviour exactly as `openPRs` does.
    */
   body?: string;
+  /** GitHub native sub-issue counts (Issue #3314); absent on old cache entries. */
+  subIssuesSummary?: { total: number; completed: number };
 }
 
 /** Per-repo input to {@link buildIdleDecisionCensus}. */
@@ -927,9 +930,11 @@ function isMergedPrBlocked(issue: CensusIssue, mergedPRs: ClosedPR[]): boolean {
  *   bounded-harm direction this module already prefers — rather than
  *   manufacturing an inversion against a scan that was right.
  *
- * Parent/child blocking (`checkParentBlocked`) is deliberately not modelled:
- * it needs a per-issue API call the census must not pay for, and it errs in
- * the same under-counting direction.
+ * Parent/child blocking (`checkParentBlocked`)'s native sub-issue half is now
+ * modelled via {@link hasOpenSubIssues}, read from `subIssuesSummary` on the
+ * same `gh issue list` call this census already uses (Issue #3314) — no new
+ * API call. Its body task-list half (back-referenced parent refs) is still
+ * unmodelled, and still errs in the same under-counting direction.
  *
  * The cross-milestone hold (Issue #2173) is modelled through `openMilestones`
  * (Issue #2455). The scan keeps refusing a dependant whose *closed* same-repo
@@ -1089,6 +1094,9 @@ function censusVisibleRefusal(
 ): SkipReason | undefined {
   if (isMergedPrBlocked(issue, mergedPRs)) return "merged-pr-permanent";
   if (isTimeDeferred(issue.body ?? "", nowMs)) return "time-deferred";
+  // Issue #3314: native sub-issue blocking, checked before the body-ref gate
+  // below so either signal alone is enough to mark the issue blocked.
+  if (hasOpenSubIssues(issue)) return "dependency-blocked";
   if (
     isDependencyBlockedByOpenIssue(
       issue,
@@ -1264,7 +1272,10 @@ function countUnblocked(
     // refused for a more fundamental reason keeps that reason, so
     // `dependency_blocked` marks only issues that would otherwise be
     // claimable right now.
+    // Issue #3314: native sub-issue blocking joins the body-ref check below —
+    // either signal alone marks the issue `dependency_blocked`.
     if (
+      hasOpenSubIssues(issue) ||
       isDependencyBlockedByOpenIssue(
         issue,
         repo,
