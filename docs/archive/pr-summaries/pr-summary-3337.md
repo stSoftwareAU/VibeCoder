@@ -67,14 +67,16 @@ Link fixes (old fragment → new fragment):
 | docs/workflows/resilience-and-concurrency.md | repository-scan-order, milestone-aware-repo-availability | leading `-` added |
 | docs/workflows/projects-and-dependencies.md | same kind of fixes | leading `-` / `%EF%B8%8F` |
 
-Docs sweep: grepped `githubSlug|anchorSet|headingSlugs|markdown_anchors` across
-`*.md` (no hits outside `docs/archive/`) and across `worker/deno`. The callers
-are `agents_md_pointer_anchors_test.ts`, `docs_provider_matrix_test.ts`,
-`release_integrity_docs_test.ts`, `threat_model_docs_test.ts`,
-`update_mode_docs_test.ts` and `markdown_anchors_test.ts`. None of them
-describes the old underscore-stripping behaviour, and all pass. The module doc
-in `worker/deno/lib/markdown_anchors.ts:10-31` was updated for `\p{Pc}`.
-`docs/archive/` links were left as they are.
+**Docs sweep** — grep: `githubSlug`, `anchorSet`, `headingSlugs`, `markdown_anchors`, `crossFileAnchorLinks`, `decodeFragment`, `cross_file_anchors`, `github-slugger`; section: none — `worker/deno/lib/markdown_anchors.ts` is a test-only helper and no manual in `README.md`, `*/README.md` or `docs/` (outside `docs/archive/`) documents GitHub heading-slug rules or the cross-file anchor check (the only hit is the file list in `docs/audits/lib-sweep-coverage.json:701`, which is a coverage audit, not a manual); updated: the module doc in `worker/deno/lib/markdown_anchors.ts:10-31` for `\p{Pc}`. `docs/archive/` links were left as they are.
+
+The callers of the widened helper are
+`worker/deno/tests/agents_md_pointer_anchors_test.ts`,
+`worker/deno/tests/docs_provider_matrix_test.ts`,
+`worker/deno/tests/release_integrity_docs_test.ts`,
+`worker/deno/tests/threat_model_docs_test.ts`,
+`worker/deno/tests/update_mode_docs_test.ts` and
+`worker/deno/tests/markdown_anchors_test.ts`. None of them describes the old
+underscore-stripping behaviour, and all pass.
 
 ## Test Plan
 
@@ -94,37 +96,33 @@ in `worker/deno/lib/markdown_anchors.ts:10-31` was updated for `\p{Pc}`.
     157 ms → 2439 ms against an allowance of 1255 ms. The code-span and
     REF_DEF growth tests (`:155`, `:164`, `:173`) pass under both versions,
     because those patterns were already linear. They stay as guards.
-- [x] `tests/cross_file_anchors_test.ts` uses `assertLinearGrowth`, so it is
+- [x] `worker/deno/tests/cross_file_anchors_test.ts` uses `assertLinearGrowth`, so it is
   registered in `WALL_CLOCK_TEST_FILES`
   (`worker/deno/lib/parallel_unsafe_test_manifest.ts:196`). `check:manifests`
   passes.
 - [x] No documentation-drift pins were added.
 
-Branch outcomes:
+**Branch outcomes:**
 
-- `worker/deno/lib/markdown_anchors.ts:162` scheme link → null: `crossFileAnchorLinks - skips…` (`cross_file_anchors_test.ts:84`). Flipping it went red.
-- `markdown_anchors.ts:165` no `#` → null: same test, `:84`. Flipping it went red.
-- `markdown_anchors.ts:169` non-`.md` target → null: same test, `:84`. Flipping it went red.
-- `markdown_anchors.ts:170` empty fragment → null: same test, `:84`. Flipping it went red.
-- `markdown_anchors.ts:159` angle-bracket destination unwrapped: `crossFileAnchorLinks - catches…` (`:34`). Flipping it went red.
-- `markdown_anchors.ts:193-202` reference definition matched → recorded; then `continue`: `:34`. Flipping it went red.
-- `markdown_anchors.ts:205` inline links: `:34`. Flipping it went red.
-- `markdown_anchors.ts:72-78` fence toggle and skip: `:84`. Flipping it went red.
-- `markdown_anchors.ts:147` code-span blanking: `:84`. Flipping it went red.
-- `markdown_anchors.ts:227` decodes: `decodeFragment - decodes…` (`:107`). Flipping it went red.
-- `markdown_anchors.ts:229` malformed → null: `decodeFragment - returns null…` (`:111`). Flipping it went red.
-- `cross_file_anchors_test.ts` MISSING, UNDECODABLE and "no heading" offender
-  arms: covered by the sweep's red run on base `docs/SETUP.md`
-  (no-heading arm) and by `decodeFragment` (`:111`). MISSING and UNDECODABLE
-  have no current corpus input. They are fail-loud reporting paths in the test
-  itself, not production branches.
+- `worker/deno/lib/markdown_anchors.ts:162` — absent (link with a scheme → null) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:165` — absent (no `#` → null) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:169` — absent (non-`.md` target → null) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:170` — absent (empty fragment → null) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:159` — success (angle-bracket destination unwrapped) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - catches every link shape it must (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:193-202` — success (reference definition recorded, then `continue`) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - catches every link shape it must (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:205` — success (inline links recorded) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - catches every link shape it must (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:72-78` — absent (fence toggle; lines inside a fence skipped) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:147` — absent (code spans blanked) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:227` — success (well-formed escapes decoded) — `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - decodes well-formed percent-escapes` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:229` — error (malformed escape → null) — `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - returns null for a malformed percent-escape` — flipped, test went red
+- `worker/deno/lib/markdown_anchors.ts:41` — success (`_` kept by `githubSlug`) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - connector punctuation (underscore) survives (Issue #3337)` — removed `\p{Pc}`, test went red
+- `worker/deno/tests/cross_file_anchors_test.ts:282` — error ("no heading produces this anchor" offender) — `worker/deno/tests/cross_file_anchors_test.ts::every cross-file #fragment link resolves to a heading in its target (Issue #3337)` — restored base `docs/SETUP.md`, test went red with 9 offenders
+- `worker/deno/tests/cross_file_anchors_test.ts:266` and `:274` — error (MISSING target file / UNDECODABLE fragment offenders) — no current corpus input reaches them; they are fail-loud reporting paths inside the sweep test itself, not production branches, and the decode-failure input is pinned by `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - returns null for a malformed percent-escape`
 
 Callers checked (shared helper widened, not narrowed): `githubSlug`,
-`headingSlugs` and `anchorSet` are used by `agents_md_pointer_anchors_test.ts`,
-`docs_provider_matrix_test.ts`, `release_integrity_docs_test.ts`,
-`threat_model_docs_test.ts`, `update_mode_docs_test.ts` and
-`markdown_anchors_test.ts`. The change only *keeps* `_`, which no previously
-passing heading slug relied on stripping. All of these pass in the gate.
+`headingSlugs` and `anchorSet` are used by the six suites listed under the
+Docs sweep above. The change only *keeps* `_`, which no previously passing
+heading slug relied on stripping. All of these pass in the gate.
 
 Rule self-application: this PR adds no prompt or coding-standard rule. I read
 the PR's own diff against the existing anchor and fence handling and found
