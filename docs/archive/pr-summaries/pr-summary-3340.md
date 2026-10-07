@@ -12,13 +12,16 @@ invented test path passed the gate. `collectEntries` now stops at the next
 `Branch outcomes` header, as `scanRegionText` already did, and the outer
 loop parses that header on its own.
 
-**PR #3372 review round:** the first fix only reordered the inline-header
-case; `collectEntries`'s `if (lvl > 0) continue` (the deeper-grouping-heading
-skip) still ran *before* the header check, so a real heading-form header
-(`### Branch outcomes`) reached mid-scan was treated as a skippable grouping
-sub-heading rather than a header in its own right, and its own region was
-never scanned. The header check now runs before that skip, matching the
-order `scanRegionText` already used.
+**PR #3372 review round:** `collectEntries` had no `Branch outcomes` header
+check at all before this PR; the first round added one, for both the inline
+and heading-form shapes, but placed it *after* `collectEntries`'s
+`if (lvl > 0) continue` (the deeper-grouping-heading skip). That left the
+heading-form half unreachable: a real heading-form header (`### Branch
+outcomes`) reached mid-scan hit the `continue` first and was treated as a
+skippable grouping sub-heading rather than a header in its own right, so its
+own region was never scanned. This round moves the whole check above that
+skip, matching the order `scanRegionText` already used — no regex changed,
+only where the check runs.
 
 ```mermaid
 flowchart LR
@@ -60,8 +63,11 @@ real one, because that turns the gate into a silent pass.
 
 - The issue's example, `docs/archive/pr-summaries/pr-summary-3249.md`,
   parses the same before and after. Its L46 prose mention is still read as
-  a header, but the list item at L53 already ended that scan. The real L88
-  header is `Branch outcomes: none added`, which has no citations to check.
+  a header; the scan it starts collects the L48-L54 list as entries (L53's
+  stripped text starts with "This summary", not the header prefix, so it is
+  an entry, not another header) and ends at the L56 prose line ("Nothing
+  needed changing."). The real L88 header is `Branch outcomes: none added`,
+  which has no citations to check.
 - Before this fix, the swallow needed a blank line between the prose line
   and the real header. With the header on the very next line, the existing
   wrap handling already caught the citation. That is why only the
@@ -82,8 +88,10 @@ real one, because that turns the gate into a silent pass.
   the container.
 - Related rules checked: **Every outcome of a branch you add needs a test
   that reaches it**, **A new test must go red without its change** and
-  **Vet every regex on untrusted text**. No regex was added or changed (the
-  fix only reorders an existing check). No prompt or standards rule changed.
+  **Vet every regex on untrusted text**. The fix adds a header check to
+  `collectEntries`, reusing the existing `BRANCH_OUTCOMES_PREFIX_RE` and
+  `BRANCH_OUTCOMES_HEADING_RE` and running it before the deeper-heading skip,
+  so no regex was added or changed. No prompt or standards rule changed.
   Applied to this PR's own diff: nothing found.
 
 **Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name. This round's reorder does change a gate verdict (a heading-form header previously swallowed into `wrap` now ends `collectEntries` and blocks `validateBranchOutcomes`, per `worker/deno/tests/branch_outcomes_gate_test.ts:144`'s "a deeper heading-form header after a prose mention still names the invented test"), but no doc describes where the parser's scan stops or how a header is recognised (same regexes, same fields), so no further doc hit was found.
@@ -116,13 +124,15 @@ suite. Result: 77 passed, 2 failed. The two failures:
 
 ### PR #3372 review round — heading-form headers
 
-The first round's fix only reordered `collectEntries`'s check for the
-*inline* header form; a heading-form header (`### Branch outcomes`) reached
-mid-scan still fell into the earlier `if (lvl > 0) continue` (deeper-heading
-skip) before ever being tested against `BRANCH_OUTCOMES_HEADING_RE`, so it
-was swallowed as a grouping sub-heading the same way the inline case used to
-be. Fixed by moving the header check above that skip, in both
-`collectEntries` and matching the order `scanRegionText` already used.
+The first round added `collectEntries`'s header check — both the inline and
+heading-form halves were new there, since `collectEntries` had no such check
+on `main` — but placed the whole check *after* the earlier
+`if (lvl > 0) continue` (deeper-heading skip). That left the heading-form
+half unreachable: a heading-form header (`### Branch outcomes`) reached
+mid-scan hit the `continue` before ever being tested against
+`BRANCH_OUTCOMES_HEADING_RE`, so it was swallowed as a grouping sub-heading.
+Fixed by moving the whole check above that skip, matching the order
+`scanRegionText` already used.
 
 **Red on base (this round).** I swapped in this round's pre-fix copy of
 `worker/deno/lib/branch_outcomes_gate.ts` (HEAD before this round, commit
@@ -145,7 +155,8 @@ Branch outcomes:
   - Test: `validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test`.
   - Flip: restoring the pre-fix order (skip before check) turned it red.
 - `worker/deno/lib/branch_outcomes_gate.ts:328`, the same check's
-  pre-existing inline-form half (`BRANCH_OUTCOMES_PREFIX_RE`), still breaking
+  inline-form half (`BRANCH_OUTCOMES_PREFIX_RE`, added in the first round and
+  reordered in this round along with the heading-form half), still breaking
   `collectEntries` at the real header rather than the heading-form half
   tested above:
   - Tests: `validateBranchOutcomes - a prose mention separated by a blank
