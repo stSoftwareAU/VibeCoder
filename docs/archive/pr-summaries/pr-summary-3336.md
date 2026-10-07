@@ -162,8 +162,9 @@ Branch outcomes:
 
 **Callers checked:**
 
-- `inspectStaged` and `assertSafeToCommit` in
-  `worker/deno/lib/pre_commit_safety.ts` consume `classifyStagedPath`.
+- `inspectStagedFiles` in `worker/deno/lib/pre_commit_safety.ts` calls
+  `classifyStagedPath` for each staged path, and `assertSafeToCommit` calls
+  `inspectStagedFiles`.
 - The worker's auto-commit path (`commitAndPushPending`) reaches the gate
   through `assertSafeToCommit`. The integration test drives
   `assertSafeToCommit` on a real repo.
