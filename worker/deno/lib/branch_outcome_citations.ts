@@ -395,8 +395,13 @@ function overlapsRemoval(
  *   - this push's diff of the resolved path was not supplied (or was
  *     binary) → unchecked;
  *   - the cited line(s) moved (mapped to a different line number) and the
- *     current summary still cites the OLD numbers → stale: the citation
- *     needs renumbering;
+ *     current summary cites the OLD numbers more times than previous
+ *     citations legitimately map onto them → stale: the citation needs
+ *     renumbering. The "legitimately map onto them" clause excludes a
+ *     current citation that is really a *different* previous citation
+ *     correctly renumbered onto this one's old number (e.g. previous `:941`
+ *     and `:943` both shift to `:943` and `:945`) — that coincidence must
+ *     not read as "`:943` is still here unrenamed";
  *   - the cited line(s) were changed or removed by this push's diff (not
  *     just moved) and the entry's own text is unchanged (apart from
  *     whitespace) from the previous head → stale: the result was carried
@@ -414,14 +419,34 @@ export function findStaleCitations(
   const old = branchOutcomeCitations(input.previousSummary);
   const cur = branchOutcomeCitations(input.currentSummary);
 
-  const curKeys = new Set<string>();
+  const curKeyCounts = new Map<string, number>();
   const curEntries = new Set<string>();
   for (const citation of cur.citations) {
     const resolved = resolveCitedPath(citation.path, input.changedFiles);
     if (resolved.kind === "match") {
-      curKeys.add(`${resolved.path}:${citation.start}-${citation.end}`);
+      const key = `${resolved.path}:${citation.start}-${citation.end}`;
+      curKeyCounts.set(key, (curKeyCounts.get(key) ?? 0) + 1);
     }
     curEntries.add(citation.entry);
+  }
+
+  // How many previous citations the diff maps onto each `path:newLine` key.
+  // A citation that correctly renumbers onto another previous citation's OLD
+  // number (e.g. 941/943 both shift to 943/945) must not read as "that other
+  // citation is still there unrenamed" — see the loop below, which only
+  // flags a `curKeyCounts` hit beyond what this multiset already explains
+  // (PR #3375 review).
+  const expectedAtKey = new Map<string, number>();
+  for (const citation of old.citations) {
+    const resolved = resolveCitedPath(citation.path, input.changedFiles);
+    if (resolved.kind !== "match") continue;
+    const hunks = input.hunksByPath.get(resolved.path);
+    if (hunks === undefined) continue;
+    const ms = mapOldLine(hunks, citation.start);
+    const me = mapOldLine(hunks, citation.end);
+    if (ms.kind !== "kept" || me.kind !== "kept") continue;
+    const key = `${resolved.path}:${ms.line}-${me.line}`;
+    expectedAtKey.set(key, (expectedAtKey.get(key) ?? 0) + 1);
   }
 
   const stale: string[] = [];
@@ -491,7 +516,10 @@ export function findStaleCitations(
     const moved = (ms.kind === "kept" && ms.line !== citation.start) ||
       (me.kind === "kept" && me.line !== citation.end);
 
-    if (moved && curKeys.has(`${path}:${citation.start}-${citation.end}`)) {
+    const oldKey = `${path}:${citation.start}-${citation.end}`;
+    const curCount = curKeyCounts.get(oldKey) ?? 0;
+    const expectedCount = expectedAtKey.get(oldKey) ?? 0;
+    if (moved && curCount > expectedCount) {
       const newText = newCitationText(path, ms, me);
       const plural = citation.start !== citation.end;
       pushStale(
