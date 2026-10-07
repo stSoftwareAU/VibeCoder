@@ -117,13 +117,16 @@ export interface CrossFileAnchorLink {
   fragment: string;
 }
 
+// SIMPLE-ON-PURPOSE: link text with nested brackets and destinations containing parentheses or `<` are not matched — upgrade when a docs link needs either.
 /**
  * Inline link destination: `[text](dest)` or `[text](<dest> "title")`.
- * Deliberately linear — a bounded negated class for the link text, then
- * either an angle-bracket form or a bare run of non-space/`)` characters for
- * the destination, with no overlapping quantifiers (Issue #3337).
+ * Deliberately linear — the link-text class excludes `[`, and the
+ * angle-bracket and bare destination classes exclude `<`/`(` respectively,
+ * so every scan is bounded at the next start candidate instead of running to
+ * end of line (Issue #3337).
  */
-const INLINE_LINK = /\[[^\]]*\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+"[^"]*")?\s*\)/g;
+const INLINE_LINK =
+  /\[[^\[\]]*\]\(\s*(<[^<>]*>|[^\s()<]+)(?:\s+"[^"]*")?\s*\)/g;
 
 /**
  * Reference-style link definition: `[label]: dest` or `[label]: <dest>`,

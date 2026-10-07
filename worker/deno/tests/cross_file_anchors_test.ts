@@ -125,6 +125,60 @@ Deno.test("crossFileAnchorLinks - stays linear against a hostile link-shaped inp
   );
 });
 
+Deno.test("crossFileAnchorLinks - stays linear against INLINE_LINK link-text brackets (Issue #3337)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on repeated unterminated link-text opens",
+    (chars) => "[".repeat(chars),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against INLINE_LINK bare-destination opens (Issue #3337)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on repeated unterminated bare destinations",
+    (chars) => "[](".repeat(Math.ceil(chars / 3)),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against INLINE_LINK angle-destination opens (Issue #3337)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on repeated unterminated angle destinations",
+    (chars) => "[](<".repeat(Math.ceil(chars / 4)),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against blankCodeSpans single-backtick runs (Issue #3337)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on a single backtick followed by a long run",
+    (chars) => "`" + "x".repeat(chars),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against blankCodeSpans repeated double-backtick spans (Issue #3337)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on repeated double-backtick code spans",
+    (chars) => "``x`".repeat(Math.ceil(chars / 4)),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
+Deno.test("crossFileAnchorLinks - stays linear against REF_DEF unterminated label opens (Issue #3337)", () => {
+  assertLinearGrowth(
+    "crossFileAnchorLinks on a single unterminated reference-definition label",
+    (chars) => "[" + "a".repeat(chars),
+    (input) => crossFileAnchorLinks(input),
+    { baseChars: 20_000 },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // 4. Repo-wide sweep
 // ---------------------------------------------------------------------------
