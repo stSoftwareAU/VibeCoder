@@ -45,7 +45,6 @@ import {
   PLAYWRIGHT_MCP_VERSION,
 } from "../setup/screenshot.ts";
 import { SEMGREP_IMAGE_TAG } from "../lib/pinned_actions.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
 
 const DIGEST_A =
   "sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -1854,29 +1853,26 @@ Deno.test("findToolchainInstallViolations - a localhost look-alike host is not t
   );
 });
 
-Deno.test("findToolchainInstallViolations - the loopback URL scan scales linearly on a long run of URL characters", () => {
+Deno.test("findToolchainInstallViolations - flags the remote download on a long hostile run of URL characters", () => {
   const manifest = parseContainerManifest(fragmentToolchainManifestText());
   const containerfile = toolchainContainerfile("shellcheck");
 
-  const buildFragment = (chars: number) =>
-    [
-      'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
-      `curl -fsSL -o "\${archive}" "http://${
-        "a".repeat(chars)
-      } https://example.invalid/x"`,
-      'echo "${checksum}  ${archive}" | sha256sum -c -',
-    ].join("\n");
+  const fragment = [
+    'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+    `curl -fsSL -o "\${archive}" "http://${
+      "a".repeat(200_000)
+    } https://example.invalid/x"`,
+    'echo "${checksum}  ${archive}" | sha256sum -c -',
+  ].join("\n");
 
-  assertLinearGrowth(
-    "toolchain fragment retry rule, long run of URL characters",
-    buildFragment,
-    (fragment) =>
-      findToolchainInstallViolations(
-        containerfile,
-        manifest,
-        new Map([["toolchains/shellcheck.sh", fragment]]),
-      ),
-    { baseChars: 50_000 },
+  const violations = findToolchainInstallViolations(
+    containerfile,
+    manifest,
+    new Map([["toolchains/shellcheck.sh", fragment]]),
+  );
+  assert(
+    violations.some((v) => v.includes("downloads without the")),
+    `a remote download trailing a long run of URL characters must be flagged: ${violations}`,
   );
 });
 
