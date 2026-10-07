@@ -488,7 +488,7 @@ Deno.test("processPrFeedback - syncs the PR body once after a verified push", as
   assertEquals(calls[0]?.beforeSha, DEFAULT_MOCK_HEAD_SHA);
 });
 
-Deno.test("processPrFeedback - does not sync the PR body when nothing was pushed", async () => {
+Deno.test("processPrFeedback - syncs the PR body when nothing was pushed and nothing is left unpushed (Issue #3315)", async () => {
   const mockClaude: Partial<ClaudeDeps> = {
     runClaudeWithRetry: (() =>
       Promise.resolve({
@@ -515,6 +515,55 @@ Deno.test("processPrFeedback - does not sync the PR body when nothing was pushed
     },
   });
 
+  let syncCallCount = 0;
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    syncPrBodyFn: () => {
+      syncCallCount++;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "skipped", reason: "no before-push sha" },
+      });
+    },
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(syncCallCount, 1);
+});
+
+Deno.test("processPrFeedback - does not sync the PR body when commits are left unpushed", async () => {
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "No changes needed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh(),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: true,
+          value: {
+            committedNewChanges: false,
+            commitsPushed: 0,
+            finalUnpushedCount: 1,
+          },
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
   let syncCalled = false;
   const processorDeps: PrFeedbackProcessorDeps = {
     promptsDir: PROMPTS_DIR,
@@ -527,7 +576,52 @@ Deno.test("processPrFeedback - does not sync the PR body when nothing was pushed
       syncCalled = true;
       return Promise.resolve({
         ok: true,
-        value: { status: "skipped", reason: "no before-push sha" },
+        value: { status: "updated", issueNumber: 42 },
+      });
+    },
+  };
+
+  const result = await processPrFeedback(makeInput(), processorDeps);
+  assertEquals(result.ok, true);
+  assertEquals(syncCalled, false);
+});
+
+Deno.test("processPrFeedback - does not sync the PR body when the final commit-and-push failed", async () => {
+  const mockClaude: Partial<ClaudeDeps> = {
+    runClaudeWithRetry: (() =>
+      Promise.resolve({
+        ok: true,
+        value: { output: "No changes needed", exitCode: 0, timedOut: false },
+      })) as unknown as ClaudeDeps["runClaudeWithRetry"],
+  };
+  const mockGithub: Partial<GitHubDeps> = {
+    runGhCommand: openPrGh(),
+  };
+  const deps = createMockDeps({
+    claude: mockClaude,
+    github: mockGithub,
+    git: {
+      commitAndPushPending: (() =>
+        Promise.resolve({
+          ok: false,
+          error: new Error("boom"),
+        })) as unknown as GitDeps["commitAndPushPending"],
+    },
+  });
+
+  let syncCalled = false;
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test",
+    workRoot: "/tmp/test-work-root",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    syncPrBodyFn: () => {
+      syncCalled = true;
+      return Promise.resolve({
+        ok: true,
+        value: { status: "updated", issueNumber: 42 },
       });
     },
   };
