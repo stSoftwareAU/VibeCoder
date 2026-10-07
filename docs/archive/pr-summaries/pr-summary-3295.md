@@ -58,28 +58,20 @@ markdown cannot hide a genuine finding.
   openers. The file is registered in `WALL_CLOCK_TEST_FILES`
   (`worker/deno/lib/parallel_unsafe_test_manifest.ts`).
 - Applied the rule to the PR's own diff: nothing found.
-- **Docs sweep:**
-  - Grep terms: `isAdminOnlyRepoSettingsIssue`, `parseRepoSettingsFindingId`,
-    `BP-REPO`, `admin-only`, `finding-id marker`.
-  - Sections checked: doc comments in `admin_only_finding.ts`, plus every hit
-    below.
-  - Files updated: none.
-  - Hits left in place:
-    - `docs/audits/security-sweep-2629-repo-settings-audit-close.md:31`: still
-      true, because the id still comes only from the marker regex.
-    - `docs/audits/security-sweep-2757-lib-delta-12d-12f.md:160`: still true,
-      because the regex is still linear.
-    - `docs/audits/security-sweep-2839-top-up-delta.md:347`: still true,
-      because the id still goes through `parseRepoSettingsFindingId`.
-    - `worker/deno/lib/issue_worker.ts:457-462`: still true, because it is
-      still recognised from its body.
-    - `worker/deno/setup/repo_settings_audit_close.ts:35-37`: still true,
-      because the marker is still parsed by the one parser.
-    - `docs/EXTENDING.md:571`, `docs/SUPPLY-CHAIN-DETECTION-SCAN.md:196` and
-      the `prompts/*/prompt.md` "finding-id marker in" hits: still true,
-      because they describe idle-task dedup markers, which is a different
-      subject.
-    - `docs/SECURITY-SCAN.md:475`: still true, because it is unrelated.
+
+**Docs sweep** — grep: `isAdminOnlyRepoSettingsIssue`, `parseRepoSettingsFindingId`, `admin_only_finding`, `BP-REPO`, `admin-only`, "cannot change repository settings", "finding-id marker", `WALL_CLOCK_TEST_FILES`; section: `docs/GITHUB-ACTIONS-AUDIT-SCAN.md#native-repository-settings-pre-filer` (the scanner whose bodies the detector reads) and `docs/SETUP.md` step 3 "Audit issues" (the close-out that reads `parseRepoSettingsFindingId`), both read through and still true; updated: none — no manual documents the admin-only hand-off itself (it lives only in the `issue_worker.ts:454-461` comment), and every hit below was read in its sentence and is still true
+
+Hits left in place:
+
+- `docs/GITHUB-ACTIONS-AUDIT-SCAN.md:1083-1085`: still true. The fix text still says a repository admin must act, and the scanner still writes it as plain prose.
+- `docs/SETUP.md:420-421`: still true. Fleet-filed `BP-REPO-*` audit issues carry the raw marker, so they are still closed.
+- `docs/audits/security-sweep-2629-repo-settings-audit-close.md:31`: still true, because the id still comes only from the marker regex.
+- `docs/audits/security-sweep-2757-lib-delta-12d-12f.md:160`: still true, because the regex is still linear.
+- `docs/audits/security-sweep-2839-top-up-delta.md:347`: still true, because the id still goes through `parseRepoSettingsFindingId`.
+- `worker/deno/lib/issue_worker.ts:454-461`: still true, because the issue is still recognised from its body.
+- `worker/deno/setup/repo_settings_audit_close.ts:35-37`: still true, because the marker is still parsed by the one parser.
+- `docs/EXTENDING.md:571`, `docs/SUPPLY-CHAIN-DETECTION-SCAN.md:196` and the `prompts/*/prompt.md` "finding-id marker in" hits: still true, because they describe idle-task dedup markers, which is a different subject.
+- `docs/SECURITY-SCAN.md:475`: still true, because it is about `SEC-*` dedup ids, not `BP-REPO-*` markers.
 
 ## Reproduction
 
@@ -135,7 +127,9 @@ Branch outcomes:
   fence/blockquote marker test and the quoted prose test.
 - `worker/deno/lib/admin_only_finding.ts:49-57`. Outcome: a matching closer
   ends the fence. Flip: never close it. Test that goes red: the scanner-format
-  body test, because its marker follows a closed fence.
+  body test, through its `proseOnly` body only. There the admin-action prose
+  follows the closed ` ```text ` fence. The `markerOnly` bodies start with the
+  marker, before the fence, so they would still match.
 - `worker/deno/lib/admin_only_finding.ts:61-67`. Outcome: a fence opener
   starts a dropped region. This is reached by the fenced cases in the
   fence/blockquote marker test and the quoted prose test.
