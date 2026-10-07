@@ -726,7 +726,8 @@ through the finding's `costSpeedReliability` flag.
 A language-targeted run with no linter-in-CI gate gives the
 missing-linter finding the first slot and leaves five slots for the
 LLM. A `general` or `design` run skips the linter check entirely and the
-LLM has all six slots — though the `design` guide caps its own runs at
+LLM has all six slots, less any pre-filed `BP-AWS-EMULATOR-MISSING`
+finding — though the `design` guide caps its own runs at
 three findings, none above `severity:medium`, because named smells
 over-report on any real codebase. A pre-filed `BP-AWS-EMULATOR-MISSING`
 id likewise reaches Claude in the known-open list — on every bucket,
