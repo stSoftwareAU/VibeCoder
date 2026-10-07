@@ -1,0 +1,12 @@
+{
+  "issue": 3341,
+  "chunk": "top-up-3341",
+  "title": "top-up: stale Branch-outcomes line-citation check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3341",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: branch_outcome_citations.ts (#3341)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/branch_outcome_citations.ts"
+  ],
+  "sweptAt": "d300013813936806eb06eb41fe2aa3b1f15ea1bb"
+}
