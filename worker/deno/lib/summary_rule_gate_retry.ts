@@ -159,15 +159,16 @@ export function buildSummaryRuleRetryPrompt(
   const itemBlocks: string[] = [];
   const itemBlockNames: string[] = [];
   for (let i = 0; i < items.length; i++) {
-    const blockName =
-      `${SUMMARY_RULE_NOTICE_BLOCK}, required item ${i + 1} of ${items.length}`;
+    const blockName = `${SUMMARY_RULE_NOTICE_BLOCK}, required item ${
+      i + 1
+    } of ${items.length}`;
     itemBlockNames.push(blockName);
     itemBlocks.push(
       fenceUntrustedIssueText(
         items[i]!,
-        `PR-SUMMARY GATE RETRY NOTICE — REQUIRED ITEM ${i + 1} of ${
-          items.length
-        } (untrusted data — quotes the PR summary and issue criteria):`,
+        `PR-SUMMARY GATE RETRY NOTICE — REQUIRED ITEM ${
+          i + 1
+        } of ${items.length} (untrusted data — quotes the PR summary and issue criteria):`,
         id,
       ).join("\n"),
     );
