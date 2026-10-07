@@ -183,6 +183,10 @@ export type ClaimableSkipReason =
   | "run_local_hold"
   /** Every candidate sits in a tier the week-pace guard skipped (#1915). */
   | "pace_suppressed"
+  /** Every candidate names an open dependency or has open sub-issues (Issue #3334). */
+  | "dependency_blocked"
+  /** Every candidate carries a future `Deferred until` line (Issue #3334). */
+  | "time_deferred"
   | "probe_error";
 
 /**
@@ -873,10 +877,14 @@ export function classifyIssues(
 /**
  * Pick the dominant skip reason for a repo when `claimable === 0`.
  * Specificity order (most → least specific):
- *   stream_occupied > assignee_filter > blocking_label > label_filter.
- * `stream_occupied` is most specific because it means the worker
- * already has work claimed in that stream — the most actionable signal
- * for operators investigating "why was nothing picked up".
+ *   merged_pr_blocked > pr_blocked > pace_suppressed > run_local_hold >
+ *   dependency_blocked > time_deferred > stream_occupied >
+ *   milestone_tracker > assignee_filter > blocking_label > label_filter.
+ * The two PR gates rank first because they describe fleet state that may
+ * need a human to resolve. Below them, each later gate in `classifyIssues`
+ * ranks above the ones it follows, because a later gate only ever refuses
+ * an issue every earlier gate already passed — making it the more specific
+ * answer.
  */
 export function pickDominantReason(
   verdicts: IssueVerdict[],
@@ -907,6 +915,11 @@ export function pickDominantReason(
   // specific than stream occupancy and the filters above that.
   if (seen.has("pace_suppressed")) return "pace_suppressed";
   if (seen.has("run_local_hold")) return "run_local_hold";
+  // Issue #3334: classifyIssues applies time_deferred, then dependency_blocked,
+  // after the PR gates and before the hold and pace gates — the later gate is
+  // the more specific, so dependency_blocked outranks time_deferred.
+  if (seen.has("dependency_blocked")) return "dependency_blocked";
+  if (seen.has("time_deferred")) return "time_deferred";
   if (seen.has("stream_occupied")) return "stream_occupied";
   // Issue #1050: below stream occupancy — a tracker is only ever refused
   // after the label, blocking-label and assignee gates have passed it, but
