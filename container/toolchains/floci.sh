@@ -144,4 +144,6 @@ kill "${floci_pid}" 2>/dev/null || true
 wait "${floci_pid}" 2>/dev/null || true
 floci_pid=""
 
+rm -f "${FLOCI_SOURCE}"
+
 echo "[${TOOLCHAIN_ID}] Installed floci ${version}"

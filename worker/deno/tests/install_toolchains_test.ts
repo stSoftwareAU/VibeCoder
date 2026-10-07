@@ -1396,7 +1396,10 @@ Deno.test("container/toolchains/floci.sh - a smoke check that gets no HTTP answe
       stdin: "null",
     }).output();
 
-    assert(result.code !== 0, "a binary that never answers must fail the build");
+    assert(
+      result.code !== 0,
+      "a binary that never answers must fail the build",
+    );
     assertStringIncludes(
       new TextDecoder().decode(result.stderr),
       "did not answer on http://127.0.0.1:4566/",
