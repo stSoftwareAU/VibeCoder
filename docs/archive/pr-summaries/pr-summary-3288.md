@@ -91,7 +91,8 @@ the coding guidelines, and the issue and pr_feedback prompts. Closes #3288.
   the text to one entry/body contribution/paragraph, so the cross-item leak
   the old reset guarded against cannot happen; and a new
   `groupUncapturedIndices` groups consecutive uncaptured line indices into
-  paragraphs (resetting at an index gap or a list-marker line) before
+  paragraphs (resetting at an index gap, a list-marker line, or a markdown
+  table row — the table-row reset added in PR #3312 review, round 6) before
   `evaluateApplicable` blanks them, instead of blanking each raw line
   alone. `blankTestCitationNames` and its `isContinuation` reset are
   removed entirely — the corpus run below re-confirms no false block.
@@ -213,7 +214,8 @@ helper renamed to `scanRegion`, and no doc names it.
   variant it checked for no longer exists; every other line in the test
   diffs is an addition.
 - `deno test --allow-all` over the three files from `worker/deno`: passed
-  (164 passed, 0 failed — 147 + 14 + 3).
+  (168 passed, 0 failed — 151 + 14 + 3, PR #3312 review round 6 adding 4
+  tests to `branch_outcomes_gate_test.ts`).
 - **Corpus run (PR #3312 review, round 5, rerun at this head)** —
   CODING-STANDARDS' "Writing a gate over text" rule 2: ran
   `validateBranchOutcomes` over every file in `docs/archive/pr-summaries/`
@@ -323,9 +325,9 @@ shifting every citation below it; see Summary).
 - **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:666-676`
   (`groupUncapturedIndices`, new this round) groups consecutive uncaptured
   line indices into paragraphs so `blankedUnitLines` can pair a span across
-  a wrapped uncaptured line, but resets at a gap in the index sequence and
-  at every list-marker line so one paragraph's stray backtick can never
-  reach another's:
+  a wrapped uncaptured line, but resets at a gap in the index sequence, at
+  every list-marker line, and (PR #3312 review, round 6) at every markdown
+  table row, so one paragraph's stray backtick can never reach another's:
   - the gap reset —
     `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a stray backtick in one uncaptured paragraph does not blank an admission in a later, blank-line-separated paragraph (PR #3312 review, round 4)`
     — dropping the `idx !== prevIndex + 1` disjunct, test went red
@@ -391,8 +393,11 @@ shifting every citation below it; see Summary).
   than 80 characters is cut and suffixed `…` —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a long admitting entry with no path:line gets an 80-character label ending in '…'`
   — never cutting, test went red (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:931` — the record's inline body
-  is checked as a unit —
+- `worker/deno/lib/branch_outcomes_gate.ts:931` — each header's own inline
+  body contribution is checked as its own unit (PR #3312 review, round 6 —
+  `body` moved from one joined string to one string per header, so a
+  citation in one header's body cannot clear a weak admission in
+  another's) —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline-body admission blocks`
   — flipped to false, test went red
 - `worker/deno/lib/branch_outcomes_gate.ts:941` and `:949` — an
