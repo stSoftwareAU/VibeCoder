@@ -5,7 +5,8 @@ Moved the paragraph-aware Markdown code splitter out of
 `worker/deno/lib/markdown_code_spans.ts`. It provides `splitMarkdownCode`
 (split), `maskMarkdownCode` (a same-length mask) and `stripMarkdownCode`. The
 splitter handles fences, and inline spans that cross lines within a paragraph
-and reset at a blank line. `result_placeholder_gate.ts`, `stripCodeSpans` /
+and reset at a blank line, an ATX heading, a list-item marker or a block-quote
+marker (PR #3351 review). `result_placeholder_gate.ts`, `stripCodeSpans` /
 `maskCodeSpans` in `issue_dependencies.ts`, and `fencedLines` in
 `blocked_outcome.ts` now call it. No per-line `` /`[^`\n]*`/g `` regex is left
 in `worker/deno/lib` code. CODING-STANDARDS.md **Writing a gate over text** now
@@ -51,7 +52,7 @@ flowchart LR
 ```
 
 - Corpus run over `docs/archive/pr-summaries/` (907 files), comparing the base branch's per-line `maskCodeSpans` with `maskMarkdownCode`: 451 files mask differently, i.e. the per-line rule mis-reads about half the corpus (the issue measured 417 of 834). The shared mask kept every file's length unchanged (0 length mismatches).
-- Red against base: with `lib/blocked_outcome.ts` and `lib/issue_dependencies.ts` restored from `origin/main`, `deno test tests/blocked_outcome_test.ts` gave `FAILED | 19 passed | 3 failed` (the three new tests). The executor's run against the old `stripCodeSpans` / `maskCodeSpans` bodies turned all 10 new caller tests red. The growth test failed against the old forward scan (150384 → 2401547 chars took 14 ms → 1008 ms against a 435 ms allowance).
+- Red against base: with `lib/blocked_outcome.ts` and `lib/issue_dependencies.ts` restored from `origin/main`, `deno test tests/blocked_outcome_test.ts` gave `FAILED | 19 passed | 3 failed` (the three new tests). The executor's run against the old `stripCodeSpans` / `maskCodeSpans` bodies turned all 10 new caller tests red. The growth test failed against the old forward scan (150384 → 2401547 chars took 14 ms → 1008 ms against a 435 ms allowance). A later push (PR #3351 review) added 4 more caller tests — 1 in `blocked_outcome_test.ts`, 3 in `issue_dependencies_test.ts` — for the heading/list/quote boundary fix, bringing the caller-test count to 14.
 - `grep -rn '`[^`\n]*`' worker/deno/lib` hits only the doc comment in `markdown_code_spans.ts` that describes the old defect.
 
 **Docs sweep** — grep: `splitOutsideCode`, `stripCodeSpans`, `maskCodeSpans`, `maskCode`, `splitInlineSpans`, "fence rule", "one line at a time"; section: `CODING-STANDARDS.md#writing-a-gate-over-text`; updated: `CODING-STANDARDS.md`, the doc comments on `stripCodeSpans` / `maskCodeSpans` (`worker/deno/lib/issue_dependencies.ts`) and `fencedLines` (`worker/deno/lib/blocked_outcome.ts`); `CODING-STANDARDS.md:678` — still true because it records the #3132 history ("paired inline code spans one line at a time"); `worker/deno/lib/issue_dependencies.ts:315` — still true because `stripCodeSpans` still preserves whitespace runs verbatim; no hits in README.md, `docs/` (excluding archive) or prompts.
@@ -82,8 +83,8 @@ Issue numbers the diff adds as provenance: #3313: Markdown gates keep pairing in
 
 ## Test Plan
 
-- Added `worker/deno/tests/markdown_code_spans_test.ts` (17 tests: round-trips, wrapped span, blank-line reset, fence variants, mask/strip, unmatched run, linear growth).
-- Added wrapped-span evasion and look-alike tests in `worker/deno/tests/issue_dependencies_test.ts`, `worker/deno/tests/blocked_outcome_test.ts` (plus the "```md closer" fence test), `worker/deno/tests/planning_handoff_test.ts` and `worker/deno/tests/time_deferral_test.ts`. All 10 went red against the base branch's per-line helpers.
+- Added `worker/deno/tests/markdown_code_spans_test.ts` (23 tests: round-trips, wrapped span, blank-line/heading/list/quote reset, look-alike, fence variants including the lone-CR and growth cases, mask/strip, unmatched run, linear growth).
+- Added wrapped-span evasion and look-alike tests in `worker/deno/tests/issue_dependencies_test.ts`, `worker/deno/tests/blocked_outcome_test.ts` (plus the "```md closer" fence test), `worker/deno/tests/planning_handoff_test.ts` and `worker/deno/tests/time_deferral_test.ts`. All 10 went red against the base branch's per-line helpers. A later push (PR #3351 review) added 4 more — 1 in `blocked_outcome_test.ts`, 3 in `issue_dependencies_test.ts` — for the heading/list/quote boundary fix, bringing the caller-test count to 14.
 - Added a drift test in `worker/deno/tests/text_gate_matcher_3149_test.ts`. `deno task drift-pins-on-base origin/main CODING-STANDARDS.md "Writing a gate over text" ...` reported `absent on base` for both pinned phrases (`markdown_code_spans.ts`, `never pairs backticks with a per-line regex`). Removing the sentence turned the test red.
 - Registered the module in `docs/audits/lib-sweep-coverage/top-up-3313.json`.
 - No existing test assertion was removed.
@@ -91,8 +92,8 @@ Issue numbers the diff adds as provenance: #3313: Markdown gates keep pairing in
 
 **Branch outcomes:**
 
-- `worker/deno/lib/markdown_code_spans.ts:97` — no later run of the same length (`-1`) — `worker/deno/tests/markdown_code_spans_test.ts::splitMarkdownCode: an unmatched run is literal prose` — always returning `-1` turned the wrapped-span tests red (no span is ever paired)
-- `worker/deno/lib/markdown_code_spans.ts:110` — opener with no closer is literal text — `worker/deno/tests/markdown_code_spans_test.ts::splitMarkdownCode resets an unclosed span at a blank line` — moved code, behaviour unchanged from `result_placeholder_gate.ts`, covered as before by `worker/deno/tests/result_placeholder_gate_test.ts`
+- `worker/deno/lib/markdown_code_spans.ts:110` — no later run of the same length (`-1`) — `worker/deno/tests/markdown_code_spans_test.ts::splitMarkdownCode: an unmatched run is literal prose` — always returning `-1` turned the wrapped-span tests red (no span is ever paired)
+- `worker/deno/lib/markdown_code_spans.ts:123` — opener with no closer is literal text — `worker/deno/tests/markdown_code_spans_test.ts::splitMarkdownCode resets an unclosed span at a blank line` — moved code, behaviour unchanged from `result_placeholder_gate.ts`, covered as before by `worker/deno/tests/result_placeholder_gate_test.ts`
 - `worker/deno/lib/blocked_outcome.ts:150` / `:159` — fence opened / closed only by a same-character, at-least-as-long closer with no info string — `worker/deno/tests/blocked_outcome_test.ts::detectBlockedOutcome: a fence 'closed' by a '```md' line keeps the following heading fenced` — the base branch's any-same-character close rule turned it red
 - `worker/deno/lib/issue_dependencies.ts` `stripCodeSpans` / `maskCodeSpans` delegation — `worker/deno/tests/issue_dependencies_test.ts::extractDependencyReferences - a real dependency after a wrapped span is still found (look-alike)`, `worker/deno/tests/planning_handoff_test.ts::hasPlanningRequestMarker - a real marker between a wrapped span's close and a later span on the same line is honoured` — restoring the per-line bodies turned all 10 caller tests red
 
