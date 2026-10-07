@@ -5,7 +5,10 @@
  * the commit when hidden or secret-bearing files are staged — including
  * the non-hidden private-key and credential filenames added by Issue
  * #3660 (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `credentials.json`,
- * `service-account*.json`).
+ * `service-account*.json`) and, added by Issue #3336, the other OpenSSH
+ * private-key names (`id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk`,
+ * `id_ed25519_sk`) and nested credential-store directories (`.ssh/`,
+ * `.aws/`, `.gnupg/`, `.netrc`) at any depth.
  *
  * Defence-in-depth: protects even when `.gitignore` is missing, has been
  * bypassed (`git add -f`), or the canonical patterns from #1757 have
@@ -36,10 +39,11 @@ export const ALLOWED_HIDDEN_PATHS: readonly string[] =
 /**
  * Always-forbidden patterns. Each regexp is matched against the full
  * staged path returned by `git diff --cached --name-only -z`. The dotenv,
- * config and secrets-directory patterns below are matched as any path
- * segment (Issue #3311), so `services/api/.env` is caught at any depth —
- * not just at the repo root — mirroring how the slash-free `.gitignore`
- * entries apply at every depth.
+ * config, secrets-directory and credential-store patterns below are
+ * matched as any path segment (Issues #3311, #3336), so
+ * `services/api/.env` and `deploy/.ssh/id_ed25519` are caught at any
+ * depth — not just at the repo root — mirroring how the slash-free
+ * `.gitignore` entries apply at every depth.
  */
 export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   // Matched as any path segment (Issue #3311).
@@ -50,11 +54,15 @@ export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   /\.secret\.json$/,
   // Matched as any path segment (Issue #3311).
   /(^|\/)\.secrets\//,
+  // Credential stores, matched as any path segment (Issue #3336).
+  /(^|\/)\.(aws|ssh|gnupg|netrc)(\/|$)/,
   // Private key material and credential files (Issue #3660). Matched on the
   // final path segment so nested paths (`certs/server.pem`) are caught too.
   /(^|\/)[^/]+\.(pem|key|p12|pfx)$/,
-  // Suffix bounded to one segment and line; `\..*` backtracked quadratically (Issue #3323).
-  /(^|\/)id_rsa(\.[^/\n]*)?$/,
+  // Suffix bounded to one segment and line; `\..*` backtracked quadratically
+  // (Issue #3323). Extended to the other OpenSSH private-key names (Issue
+  // #3336).
+  /(^|\/)id_(rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)(\.[^/\n]*)?$/,
   /(^|\/)credentials\.json$/,
   /(^|\/)service-account[^/]*\.json$/,
 ];
@@ -74,8 +82,8 @@ export interface InspectStagedResult {
  *
  * Order of checks:
  *   1. Explicit forbidden patterns (`.env`, `.config*.json`, `.secrets/`,
- *      etc.), each caught at any depth (Issue #3311), not just at the
- *      repo root.
+ *      `.ssh/`, `.aws/`, `.gnupg/`, `.netrc`, etc.), each caught at any
+ *      depth (Issues #3311, #3336), not just at the repo root.
  *   2. Generic "hidden top-level path outside the allowlist" check —
  *      `^\.[^/]+` minus the entries on the allowlist. The check is
  *      applied to the first path segment so that allowlisted directories
