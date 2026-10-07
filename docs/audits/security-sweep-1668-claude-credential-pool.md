@@ -66,5 +66,5 @@ assumption: the process environment is shared by every slot on the host, so a
 switch affects spawns that start after it while an agent already running keeps
 the environment it was given. That is the existing mount-versus-environment
 boundary recorded as R9 in
-[the threat model](../THREAT-MODEL.md#-residual-risks), not a new exposure —
+[the threat model](../THREAT-MODEL.md#%EF%B8%8F-residual-risks), not a new exposure —
 the pool narrows what the environment carries, it never widens it.
