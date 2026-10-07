@@ -81,6 +81,11 @@ function createMockGh(opts: {
    * with.
    */
   prAuthor?: string;
+  /**
+   * Native sub-issue numbers in the same repo (Issue #3329), answered on
+   * the `sub_issues` endpoint read.
+   */
+  subIssues?: number[];
 }): (args: string[]) => Promise<string> {
   return async (args: string[]): Promise<string> => {
     const command = args.join(" ");
@@ -131,7 +136,20 @@ function createMockGh(opts: {
       return JSON.stringify(opts.timeline ?? []);
     }
 
-    // API call for issue body (sub-issues check)
+    // Native sub-issues read (Issue #3329): one JSON array line, gh's
+    // real `--paginate --jq` shape.
+    if (command.includes("api") && command.includes("/sub_issues")) {
+      const numbers = opts.subIssues ?? [];
+      return JSON.stringify(
+        numbers.map((number) => ({
+          number,
+          repository_url: "https://api.github.com/repos/owner/repo",
+        })),
+      );
+    }
+
+    // API call for issue body (legacy getSubIssues shape, still used by
+    // some fixtures that stub a plain `issues/<n>` read)
     if (command.includes("api") && command.includes("issues/")) {
       return JSON.stringify({ body: opts.issueBody ?? "" });
     }
@@ -421,6 +439,104 @@ Deno.test(
       openMilestones: ["Milestone 34"],
     });
 
+    assertEquals(check.passed, true);
+  },
+);
+
+Deno.test(
+  "diagnose_issue - an unreadable sub-issue list fails the dependency check closed (Issue #3329)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({ issueView: makeIssueViewData() });
+    const ghFn = async (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      if (command.includes("/sub_issues")) {
+        throw new Error("gh: Not Found (HTTP 404)");
+      }
+      return await mockGh(args);
+    };
+
+    const report = await diagnoseIssue("owner/repo", 42, config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+    });
+
+    const check = findCheck(report.checks, "not-dependency-blocked");
+    assertEquals(check.passed, false);
+    assert(check.detail.includes("could not be read (treated as blocked)"));
+    assert(check.suggestion?.includes("gh access"));
+    assertEquals(report.wouldBePickedUp, false);
+  },
+);
+
+Deno.test(
+  "diagnose_issue - an open native sub-issue blocks the parent (Issue #3329)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issueView: makeIssueViewData(),
+      subIssues: [55],
+    });
+    const ghFn = async (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      if (
+        command.includes("issue view") && command.includes("state") &&
+        command.includes("55")
+      ) {
+        return JSON.stringify({
+          number: 55,
+          state: "OPEN",
+          title: "Child issue",
+        });
+      }
+      return await mockGh(args);
+    };
+
+    const report = await diagnoseIssue("owner/repo", 42, config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+    });
+
+    const check = findCheck(report.checks, "not-dependency-blocked");
+    assertEquals(check.passed, false);
+    assert(check.detail.includes("#55"));
+    assertEquals(
+      check.suggestion,
+      "Close the open sub-issues first, or remove the parent/child relationship",
+    );
+  },
+);
+
+Deno.test(
+  "diagnose_issue - a body checkbox without a native link does not block (Issue #3329)",
+  async () => {
+    const config = makeConfig();
+    const mockGh = createMockGh({
+      issueView: makeIssueViewData(),
+      issueBody: "- [ ] #55",
+      subIssues: [],
+    });
+    const ghFn = async (args: string[]): Promise<string> => {
+      const command = args.join(" ");
+      if (
+        command.includes("issue view") && command.includes("state") &&
+        command.includes("55")
+      ) {
+        return JSON.stringify({
+          number: 55,
+          state: "OPEN",
+          title: "Not actually a child",
+        });
+      }
+      return await mockGh(args);
+    };
+
+    const report = await diagnoseIssue("owner/repo", 42, config, {
+      githubUser: "bot",
+      ghCommandFn: ghFn,
+    });
+
+    const check = findCheck(report.checks, "not-dependency-blocked");
     assertEquals(check.passed, true);
   },
 );
@@ -758,23 +874,48 @@ Deno.test("createDiagnosticIssueFetcher - a malformed issue view fails loud", as
   );
 });
 
-Deno.test("createDiagnosticIssueFetcher - an unreadable body yields no sub-issues", async () => {
+Deno.test("createDiagnosticIssueFetcher - a failed sub-issue read rejects (Issue #3329)", async () => {
   const fetcher = createDiagnosticIssueFetcher(() =>
     Promise.reject(new Error("gh api failed"))
   );
 
-  assertEquals(await fetcher.getSubIssues("owner/repo", 7), []);
+  await assertRejects(() => fetcher.getSubIssues("owner/repo", 7));
 });
 
-Deno.test("createDiagnosticIssueFetcher - sub-issues come from the body references", async () => {
-  const fetcher = createDiagnosticIssueFetcher(() =>
-    Promise.resolve(JSON.stringify({ body: "- [ ] #11\n- [x] #12\n" }))
-  );
+Deno.test("createDiagnosticIssueFetcher - sub-issues come from the native endpoint (Issue #3329)", async () => {
+  const fetcher = createDiagnosticIssueFetcher((args: string[]) => {
+    assertEquals(args[1], "repos/owner/repo/issues/7/sub_issues?per_page=100");
+    assert(args.includes("--paginate"));
+    return Promise.resolve(
+      JSON.stringify([
+        {
+          number: 11,
+          repository_url: "https://api.github.com/repos/owner/repo",
+        },
+        {
+          number: 12,
+          repository_url: "https://api.github.com/repos/other/lib",
+        },
+      ]),
+    );
+  });
 
   const subs = await fetcher.getSubIssues("owner/repo", 7);
 
-  assertEquals(
-    [...subs].sort((a, b) => a.number - b.number),
-    [{ repo: "owner/repo", number: 11 }, { repo: "owner/repo", number: 12 }],
-  );
+  assertEquals(subs, [
+    { repo: "other/lib", number: 12 },
+    { repo: "owner/repo", number: 11 },
+  ]);
+});
+
+Deno.test("createDiagnosticIssueFetcher - a body task-list checkbox is not a sub-issue (Issue #3329)", async () => {
+  const fetcher = createDiagnosticIssueFetcher((args: string[]) => {
+    const command = args.join(" ");
+    if (command.includes("/sub_issues")) return Promise.resolve("[]");
+    return Promise.resolve(JSON.stringify({ body: "- [ ] #11\n" }));
+  });
+
+  const subs = await fetcher.getSubIssues("owner/repo", 7);
+
+  assertEquals(subs, []);
 });
