@@ -115,6 +115,119 @@ Deno.test("extractLineCitations: hostile ReDoS-shaped tokens resolve quickly", (
   assert(elapsed >= 0);
 });
 
+Deno.test("extractLineCitations: (a) comma-joined extra ranges in one token", () => {
+  const { citations, malformed } = extractLineCitations(
+    "worker/deno/lib/branch_outcomes_gate.ts:720-725,735-738 extra context",
+  );
+  assertEquals(malformed, []);
+  assertEquals(citations, [
+    {
+      path: "worker/deno/lib/branch_outcomes_gate.ts",
+      start: 720,
+      end: 725,
+      text: "worker/deno/lib/branch_outcomes_gate.ts:720-725",
+    },
+    {
+      path: "worker/deno/lib/branch_outcomes_gate.ts",
+      start: 735,
+      end: 738,
+      text: "worker/deno/lib/branch_outcomes_gate.ts:735-738",
+    },
+  ]);
+});
+
+Deno.test("extractLineCitations: (b) slash-joined extra lines in one token", () => {
+  const { citations, malformed } = extractLineCitations(
+    "worker/deno/lib/container_manifest.ts:1147/1158/1169",
+  );
+  assertEquals(malformed, []);
+  assertEquals(citations, [
+    {
+      path: "worker/deno/lib/container_manifest.ts",
+      start: 1147,
+      end: 1147,
+      text: "worker/deno/lib/container_manifest.ts:1147",
+    },
+    {
+      path: "worker/deno/lib/container_manifest.ts",
+      start: 1158,
+      end: 1158,
+      text: "worker/deno/lib/container_manifest.ts:1158",
+    },
+    {
+      path: "worker/deno/lib/container_manifest.ts",
+      start: 1169,
+      end: 1169,
+      text: "worker/deno/lib/container_manifest.ts:1169",
+    },
+  ]);
+});
+
+Deno.test("extractLineCitations: (c) a later bare :N inherits the previous path", () => {
+  const { citations, malformed } = extractLineCitations(
+    "worker/deno/lib/branch_outcomes_gate.ts:820 and :821 both flip",
+  );
+  assertEquals(malformed, []);
+  assertEquals(citations, [
+    {
+      path: "worker/deno/lib/branch_outcomes_gate.ts",
+      start: 820,
+      end: 820,
+      text: "worker/deno/lib/branch_outcomes_gate.ts:820",
+    },
+    {
+      path: "worker/deno/lib/branch_outcomes_gate.ts",
+      start: 821,
+      end: 821,
+      text: "worker/deno/lib/branch_outcomes_gate.ts:821",
+    },
+  ]);
+});
+
+Deno.test("extractLineCitations: a path containing /digits/ parses correctly", () => {
+  const { citations } = extractLineCitations("lib/2024/x.ts:5 ok");
+  assertEquals(citations, [
+    { path: "lib/2024/x.ts", start: 5, end: 5, text: "lib/2024/x.ts:5" },
+  ]);
+});
+
+Deno.test("extractLineCitations: a bare :N with no earlier citation is ignored", () => {
+  const { citations, malformed } = extractLineCitations(
+    ":5 alone, no path yet",
+  );
+  assertEquals(citations, []);
+  assertEquals(malformed, []);
+});
+
+Deno.test("extractLineCitations: a.ts:3,0 yields one citation and one malformed part", () => {
+  const { citations, malformed } = extractLineCitations("a.ts:3,0");
+  assertEquals(citations, [
+    { path: "a.ts", start: 3, end: 3, text: "a.ts:3" },
+  ]);
+  assertEquals(malformed, [{ token: "a.ts:3,0", path: "a.ts" }]);
+});
+
+Deno.test("extractLineCitations: hostile comma-chain token resolves quickly with no citation", () => {
+  const token = ":" + "1,".repeat(148) + "1x";
+  const { citations, malformed } = extractLineCitations(token);
+  assertEquals(citations, []);
+  assertEquals(malformed, []);
+});
+
+Deno.test("extractLineCitations: hostile slash-chain token resolves quickly with no citation", () => {
+  const token = "," + "1/".repeat(148) + "1x";
+  const { citations, malformed } = extractLineCitations(token);
+  assertEquals(citations, []);
+  assertEquals(malformed, []);
+});
+
+Deno.test("extractLineCitations: hostile long colon run resolves quickly with no citation", () => {
+  const token = ":".repeat(300);
+  const { citations, malformed } = extractLineCitations(token);
+  assertEquals(citations, []);
+  assertEquals(malformed, []);
+});
+
 // ---------------------------------------------------------------------------
 // branchOutcomeCitations (via parseBranchOutcomes)
 // ---------------------------------------------------------------------------
@@ -556,4 +669,23 @@ Deno.test("findStaleCitations: (n) malformed citation on an unchanged file is cl
   });
   assertEquals(result.stale, []);
   assertEquals(result.unchecked, []);
+});
+
+Deno.test("findStaleCitations: a comma-joined citation only flags the line that moved", () => {
+  const previous = summaryWithEntries(
+    `\`${PATH}:10,20\` — error flipped, test went red`,
+  );
+  const current = previous; // unchanged
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(14, 3), // 3 lines inserted above old line 15
+  });
+  assertEquals(result.unchecked, []);
+  assertEquals(result.stale.length, 1);
+  assert(result.stale[0]!.includes(`${PATH}:20`));
+  assert(result.stale[0]!.includes(`${PATH}:23`));
+  assert(!result.stale[0]!.includes(`${PATH}:10\``));
 });

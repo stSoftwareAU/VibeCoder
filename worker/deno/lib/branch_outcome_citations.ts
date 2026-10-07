@@ -3,11 +3,10 @@
  *
  * A `Branch outcomes:` entry cites the file and line a flipped outcome
  * lives at, e.g. `worker/deno/lib/foo.ts:42`. A review-fix round can edit
- * the cited file without renumbering the list — the list is only ever
- * refreshed by hand, so a citation can be left pointing at the previous
- * head's line numbers (PR #3160, PR #3312 review evidence: citations were
- * left at the previous head's line numbers after the fix push, e.g. a cited
- * check had moved from line 398 to 434).
+ * the cited file without renumbering the list, so a citation can be left
+ * pointing at the previous head's line numbers (PR #3160, PR #3312 review
+ * evidence: citations were left at the previous head's line numbers after
+ * the fix push, e.g. a cited check had moved from line 398 to 434).
  *
  * This module is the deterministic, pure check for that drift: given the
  * PR summary at the previous head, the PR summary now, the files this push
@@ -39,18 +38,36 @@ export interface LineCitation {
 /** URLs, excluded so a link such as `https://x/y.ts:12` is never read as a citation. */
 const URL_RE = /https?:\/\/\S+/g;
 
-/** Characters (besides whitespace) that split an entry into candidate tokens. */
-const TOKEN_SPLIT_RE = /[\s`()[\],;"'<>|*]+/;
+/**
+ * Characters (besides whitespace) that split an entry into candidate
+ * tokens. A comma is only a splitter when it is NOT directly followed by a
+ * digit: `worker/deno/lib/foo.ts:720-725,735-738` is a single token (so its
+ * second range survives), while `` `a.ts:12`, `b.ts:3` `` still splits on
+ * the comma that separates the two backticked citations (PR #3288 replay).
+ */
+const TOKEN_SPLIT_RE = /[\s`()[\];"'<>|*]+|,(?!\d)/;
 
 /** Cap on a single token's length before it is considered a candidate citation. */
 const MAX_TOKEN_CHARS = 300;
 
 /**
  * The trailing `:N` or `:N-M` (en-dash accepted) line suffix of a token,
- * with optional trailing punctuation. Unanchored at the start: `exec` finds
- * it wherever it starts, and everything before `match.index` is the path.
+ * with optional later `,N`/`,N-M`/`/N`/`/N-M` groups (comma- or
+ * slash-joined extra lines in the same citation, e.g.
+ * `foo.ts:720-725,735-738` or `foo.ts:1147/1158/1169`), and optional
+ * trailing punctuation. Unanchored at the start: `exec` finds it wherever
+ * it starts, and everything before `match.index` is the path — a path
+ * itself containing `/` followed by digits (`lib/2024/x.ts:5`) is
+ * unaffected, since the suffix only ever starts at the leading `:`. Each
+ * repeat group must start with `,` or `/`, characters digits cannot match,
+ * so the groups stay disjoint and the match stays linear in the token's
+ * length (no adjacent unbounded quantifiers over the same character class).
  */
-const LINE_SUFFIX_RE = /:(\d{1,7})(?:[-–](\d{1,7}))?[.:!]*$/;
+const LINE_SUFFIX_RE =
+  /:(\d{1,7}(?:[-–]\d{1,7})?(?:[,\/]\d{1,7}(?:[-–]\d{1,7})?)*)[.,:!]*$/;
+
+/** One `N` or `N-M` part split out of a `LINE_SUFFIX_RE` capture group. */
+const RANGE_PART_RE = /^(\d{1,7})(?:[-–](\d{1,7}))?$/;
 
 /** A path shaped like a repo-relative file with an extension. */
 const PATH_CHARS_RE = /^[A-Za-z0-9_.\-\/]+$/;
@@ -67,19 +84,31 @@ export interface MalformedCitation {
 /**
  * Extract every `path:N`/`path:N-M` line citation from free text, tokenised
  * the same way `branch_outcomes_gate.ts`'s `namedTestPaths` tokenises
- * entries: URLs removed, split on the same punctuation class, long tokens
- * skipped. A token whose line suffix is present but whose numbers are
- * nonsensical (line 0, or an end before its start) is reported in
- * `malformed` rather than silently dropped, so a caller can still flag it
- * as not checked — carrying its extracted `path` alongside the raw `token`
- * text, so a caller can resolve the path against changed files without
- * re-parsing the token itself.
+ * entries: URLs removed, split on the same punctuation class (plus a
+ * comma not directly followed by a digit — see `TOKEN_SPLIT_RE`), long
+ * tokens skipped.
+ *
+ * One token can carry more than one line reference —
+ * `foo.ts:720-725,735-738` and `foo.ts:1147/1158/1169` both parse into
+ * several citations sharing the same path (PR #3288, #3250 corpus replay).
+ * Each `N`/`N-M` part is checked on its own: line 0 or an end before its
+ * start makes only that part `malformed` (with the shared path), while the
+ * token's other, well-formed parts are still returned as citations.
+ *
+ * A token that is only a bare `:N`/`:N-M` suffix (no path before the
+ * colon, e.g. a later `` `:821` `` naming a second line for the citation
+ * `` `foo.ts:820` `` a few words earlier) inherits the path of the most
+ * recent citation or malformed citation already extracted from this same
+ * `text` — with no earlier citation to inherit from, it is ignored.
  *
  * Deliberately two small regexes (shape, then line suffix) rather than one
  * regex spanning path and extension and digits together: a single pattern
  * with adjacent `+`/`*` quantifiers over attacker-controlled text is the
  * classic ReDoS shape this repository's regexes are vetted against (see
- * CODING-STANDARDS "Vet every regex on untrusted text").
+ * CODING-STANDARDS "Vet every regex on untrusted text"). The line-suffix
+ * repeat group is bounded the same way: each repeat must start with a `,`
+ * or `/` that a digit cannot match, so the groups can never overlap or
+ * backtrack into each other.
  */
 export function extractLineCitations(
   text: string,
@@ -89,6 +118,7 @@ export function extractLineCitations(
 } {
   const citations: Omit<LineCitation, "entry">[] = [];
   const malformed: MalformedCitation[] = [];
+  let lastPath: string | undefined;
 
   const withoutUrls = text.replace(URL_RE, " ");
   for (const rawToken of withoutUrls.split(TOKEN_SPLIT_RE)) {
@@ -99,25 +129,43 @@ export function extractLineCitations(
     if (!match) continue;
 
     const pathPart = rawToken.slice(0, match.index);
-    let path = pathPart;
-    if (path.startsWith("./")) path = path.slice(2);
-    if (path.startsWith("/")) continue;
-    if (!path || !PATH_CHARS_RE.test(path) || !HAS_EXTENSION_RE.test(path)) {
-      continue;
+    let path: string;
+    if (pathPart === "") {
+      // A bare `:N`/`:N-M` suffix: inherit the most recent path.
+      if (lastPath === undefined) continue;
+      path = lastPath;
+    } else {
+      let candidate = pathPart;
+      if (candidate.startsWith("./")) candidate = candidate.slice(2);
+      if (candidate.startsWith("/")) continue;
+      if (
+        !candidate || !PATH_CHARS_RE.test(candidate) ||
+        !HAS_EXTENSION_RE.test(candidate)
+      ) {
+        continue;
+      }
+      path = candidate;
     }
 
-    const start = Number(match[1]);
-    const end = match[2] !== undefined ? Number(match[2]) : start;
+    lastPath = path;
 
-    if (start === 0 || end < start) {
-      malformed.push({ token: rawToken, path });
-      continue;
+    for (const part of match[1]!.split(/[,\/]/)) {
+      const rangeMatch = RANGE_PART_RE.exec(part);
+      if (!rangeMatch) continue; // Unreachable given LINE_SUFFIX_RE's shape.
+
+      const start = Number(rangeMatch[1]);
+      const end = rangeMatch[2] !== undefined ? Number(rangeMatch[2]) : start;
+
+      if (start === 0 || end < start) {
+        malformed.push({ token: rawToken, path });
+        continue;
+      }
+
+      const textForm = end === start
+        ? `${path}:${start}`
+        : `${path}:${start}-${end}`;
+      citations.push({ path, start, end, text: textForm });
     }
-
-    const textForm = end === start
-      ? `${path}:${start}`
-      : `${path}:${start}-${end}`;
-    citations.push({ path, start, end, text: textForm });
   }
 
   return { citations, malformed };

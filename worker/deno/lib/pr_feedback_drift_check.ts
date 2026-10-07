@@ -33,17 +33,16 @@
  *
  * Issue #3341 found a third gap: a review-fix push can edit a file a
  * `Branch outcomes:` entry cites as `path:line` without renumbering the
- * list — the list is only ever refreshed by hand, so a citation can be left
- * pointing at the previous head's line numbers (PR #3160, #3312 review
- * evidence: a cited check had moved from line 398 to 434 and the entry still
- * named 398). This is also deterministic and no-model-needed
- * (`branch_outcome_citations.ts`): for each PR summary readable at both the
- * previous head and now, it maps that summary's previous citations of a
- * file this push changed through `git diff -U0 <beforeSha>`, and flags a
- * citation still at the old line number for a line that moved, or an entry
- * left byte-for-byte unchanged although its cited lines were changed or
- * removed by this push — carrying a stale verdict forward rather than
- * re-reading the code at the head.
+ * list, leaving a citation pointing at the previous head's line numbers
+ * (PR #3160, #3312 review evidence: a cited check had moved from line 398
+ * to 434 and the entry still named 398). This is also deterministic and
+ * no-model-needed (`branch_outcome_citations.ts`): for each PR summary
+ * readable at both the previous head and now, it maps that summary's
+ * previous citations of a file this push changed through `git diff -U0
+ * <beforeSha>`, and flags a citation still at the old line number for a
+ * line that moved, or an entry left unchanged apart from whitespace
+ * although its cited lines were changed or removed by this push — carrying
+ * a stale verdict forward rather than re-reading the code at the head.
  *
  * ```mermaid
  * flowchart TD
@@ -941,8 +940,7 @@ async function checkLineCitations(
       ]);
       if (diff === null || diff.code !== 0) continue;
       const hunks = parseDiffHunks(diff.stdout);
-      if (hunks === null) continue;
-      hunksByPath.set(path, hunks);
+      hunksByPath.set(path, hunks ?? []);
     }
 
     const found = findStaleCitations({
@@ -1119,6 +1117,17 @@ export async function runPrFeedbackDriftCheck(
     changeRequestFindings,
   );
 
+  // Deterministic, no-model-needed check: Branch-outcomes `path:line`
+  // citations left at the previous head's line numbers (Issue #3341). Runs
+  // on every non-skipped push, not gated on `changesBehaviour` or the model
+  // pass — a citation can go stale on a docs-only push too.
+  const initialCitations = await checkLineCitations(
+    deps,
+    beforeSha,
+    summaries,
+    pushFiles,
+  );
+
   // One constrained, read-only model question — when this push changed a
   // code or test file (Issue #3244); a docs-only push gets none.
   const findingsWithStatus: { finding: DriftFinding; foundBefore: boolean }[] =
@@ -1193,6 +1202,8 @@ export async function runPrFeedbackDriftCheck(
     initialChecks.docsSweepProblems.length === 0 &&
     initialStaleQuotes.stale.length === 0 &&
     initialStaleQuotes.unchecked.length === 0 &&
+    initialCitations.stale.length === 0 &&
+    initialCitations.unchecked.length === 0 &&
     modelPassUnavailable === undefined
   ) {
     return { status: "clean", checked };
@@ -1207,7 +1218,8 @@ export async function runPrFeedbackDriftCheck(
     findingsWithStatus.length > 0 ||
     initialChecks.mismatches.length > 0 ||
     initialChecks.docsSweepProblems.length > 0 ||
-    initialStaleQuotes.stale.length > 0
+    initialStaleQuotes.stale.length > 0 ||
+    initialCitations.stale.length > 0
   ) {
     logger.warn(
       "Drift check found hits — running one recovery turn (Issue #3143)",
@@ -1218,6 +1230,7 @@ export async function runPrFeedbackDriftCheck(
         mismatches: initialChecks.mismatches.length,
         docsSweepProblems: initialChecks.docsSweepProblems.length,
         staleQuotes: initialStaleQuotes.stale.length,
+        staleCitations: initialCitations.stale.length,
       },
     );
     const recoveryResult = await deps.runAgent({
@@ -1228,6 +1241,7 @@ export async function runPrFeedbackDriftCheck(
         mismatches: initialChecks.mismatches,
         docsSweepProblems: initialChecks.docsSweepProblems,
         staleQuotes: initialStaleQuotes.stale,
+        staleCitations: initialCitations.stale,
       }),
       readOnly: false,
     });
@@ -1267,6 +1281,12 @@ export async function runPrFeedbackDriftCheck(
     repoPath,
     changeRequestFindings,
   );
+  const freshCitations = await checkLineCitations(
+    deps,
+    beforeSha,
+    freshSummaries,
+    pushFiles,
+  );
 
   const residual: DriftResidual = {
     findings: remainingFindings,
@@ -1274,6 +1294,9 @@ export async function runPrFeedbackDriftCheck(
     docsSweepProblems: freshChecks.docsSweepProblems,
     ...(freshStaleQuotes.stale.length > 0
       ? { staleQuotes: freshStaleQuotes.stale }
+      : {}),
+    ...(freshCitations.stale.length > 0
+      ? { staleCitations: freshCitations.stale }
       : {}),
     ...(modelPassUnavailable !== undefined ? { modelPassUnavailable } : {}),
     ...(freshStaleQuotes.unchecked.length > 0
@@ -1285,6 +1308,13 @@ export async function runPrFeedbackDriftCheck(
           "were not checked",
       }
       : {}),
+    ...(freshCitations.unchecked.length > 0
+      ? {
+        citationCheckUnavailable: `the line-citation check could not check: ${
+          freshCitations.unchecked.join("; ")
+        }`,
+      }
+      : {}),
   };
 
   if (
@@ -1292,8 +1322,10 @@ export async function runPrFeedbackDriftCheck(
     residual.mismatches.length === 0 &&
     residual.docsSweepProblems.length === 0 &&
     (residual.staleQuotes?.length ?? 0) === 0 &&
+    (residual.staleCitations?.length ?? 0) === 0 &&
     residual.modelPassUnavailable === undefined &&
-    residual.quoteCheckUnavailable === undefined
+    residual.quoteCheckUnavailable === undefined &&
+    residual.citationCheckUnavailable === undefined
   ) {
     logger.info(
       "Drift check's recovery turn resolved everything it found",
@@ -1311,8 +1343,10 @@ export async function runPrFeedbackDriftCheck(
       mismatches: residual.mismatches.length,
       docsSweepProblems: residual.docsSweepProblems.length,
       staleQuotes: residual.staleQuotes?.length ?? 0,
+      staleCitations: residual.staleCitations?.length ?? 0,
       modelPassUnavailable: residual.modelPassUnavailable,
       quoteCheckUnavailable: residual.quoteCheckUnavailable,
+      citationCheckUnavailable: residual.citationCheckUnavailable,
     },
   );
   await appendResidualToResponseMessage(repoPath, residual);
