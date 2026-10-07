@@ -549,12 +549,12 @@ function isBarePlaceholder(body: string): boolean {
 
 /**
  * Blank the parts of a backtick code span that are not the entry's own
- * words, paragraph by paragraph (lines joined by blank-line boundaries, so a
- * span opened on one line and closed on the next — hard-wrapped fleet
- * summaries do this routinely — still pairs correctly; PR #3312 review), for
- * every CLOSED span (an odd-indexed segment of a `` ` ``-split paragraph that
- * is not the paragraph's last segment — an unterminated trailing backtick
- * never closes, so the dangling last segment is left alone):
+ * words, group by group (lines joined so a span opened on one line and
+ * closed on the next — hard-wrapped fleet summaries do this routinely —
+ * still pairs correctly; PR #3312 review), for every CLOSED span (an
+ * odd-indexed segment of a `` ` ``-split group that is not the group's last
+ * segment — an unterminated trailing backtick never closes, so the dangling
+ * last segment is left alone):
  *
  *  - a `path::name`-shaped span keeps only the part before the first `::`:
  *    `` `worker/deno/tests/foo_test.ts::flags no test reaches` `` becomes
@@ -576,37 +576,58 @@ function isBarePlaceholder(body: string): boolean {
  *    left unchanged — there is nothing to blank, and `namedTestPaths` /
  *    `unitLabel` still need to read it.
  *
- * Splits each paragraph on the backtick character rather than using a
- * regex, so there is nothing here that can backtrack.
+ * Splits each group on the backtick character rather than using a regex, so
+ * there is nothing here that can backtrack.
  *
- * Groups lines into paragraphs at blank-line boundaries (never across one):
- * a blank line always separates one `Branch outcomes` entry's prose from the
- * next, so resetting span-pairing state there cannot merge two unrelated
- * entries' stray backticks into one false pair. Consecutive non-blank lines
- * (a bullet plus its indented continuation lines) are joined with `\n` and
- * pass through `blankLineCitationNames` as a single string — `split("\`")`
- * does not care that the string contains embedded newlines, so a span that
- * opens on one line and closes on the next is paired exactly as it would be
- * if the two lines had never been wrapped.
+ * Groups lines by more than blank-line boundaries (PR #3312 review, round
+ * 2): a blank line always starts a fresh group, but so does EVERY
+ * list-marker line (`` `- ` ``, `` `* ` ``, `1. `, …) and every other line
+ * that is not an indented continuation of the line before it. A tight list
+ * — no blank line between items, the shape this repo's own lists (including
+ * this one) are written in — is otherwise one unbroken run of non-blank
+ * lines; grouping the whole run together let a single stray backtick in one
+ * item (an escaped `` \` ``, a double-backtick span, or any other odd
+ * backtick) flip which segments count as "inside a span" for every LATER
+ * item too, so a genuine admission in item 2 could be blanked away by a
+ * pairing accident in item 1. Resetting at each list-marker line scopes
+ * pairing to one item (plus its own indented continuation lines) at a time,
+ * so one item's stray backtick can never reach another's. The same reset
+ * applies to the header line itself and to any other non-indented line, so
+ * a stray backtick in prose directly above the header cannot erase the
+ * header once it is blanked.
+ *
+ * A line continues the current group only when it is NOT a list-marker line
+ * and is indented relative to the start of the line (so it reads as a
+ * continuation of a bullet or of wrapped prose, not a new block); any other
+ * non-blank line starts its own fresh group. Lines within one group are
+ * joined with `\n` and pass through `blankLineCitationNames` as a single
+ * string — `split("\`")` does not care that the string contains embedded
+ * newlines, so a span that opens on one line and closes on an indented
+ * continuation line is still paired exactly as it would be if the two lines
+ * had never been wrapped.
  */
 function blankTestCitationNames(text: string): string {
   const lines = text.split(LINE_TERMINATOR_RE);
   const out: string[] = [];
-  let paragraph: string[] = [];
-  const flushParagraph = () => {
-    if (paragraph.length === 0) return;
-    out.push(...blankLineCitationNames(paragraph.join("\n")).split("\n"));
-    paragraph = [];
+  let group: string[] = [];
+  const flushGroup = () => {
+    if (group.length === 0) return;
+    out.push(...blankLineCitationNames(group.join("\n")).split("\n"));
+    group = [];
   };
   for (const line of lines) {
     if (line.trim() === "") {
-      flushParagraph();
+      flushGroup();
       out.push(line);
-    } else {
-      paragraph.push(line);
+      continue;
     }
+    const isContinuation = group.length > 0 &&
+      !LIST_MARKER_RE.test(line) &&
+      leadingIndent(line) > 0;
+    if (!isContinuation) flushGroup();
+    group.push(line);
   }
-  flushParagraph();
+  flushGroup();
   return out.join("\n");
 }
 
@@ -634,16 +655,15 @@ function blankLineCitationNames(line: string): string {
  * already an unambiguous confession that the outcome is unreached.
  */
 /**
- * Source of the negated-red pattern, shared (by construction, not by
- * duplicated literals) with `STRONG_ADMISSION_RES` below so the "strong,
- * always blocks" check can never drift from one half of what
- * `recordsRedFlip`'s global strip (below, `NEGATED_RED_GLOBAL_RE`) treats as
- * negated — the global strip also ORs in `OTHER_NEGATED_RED_SOURCES`, which
- * this single-match regex deliberately does NOT carry: those weaker
- * phrasings ("not red" with no verb, "instead of ... red") only disarm a
- * false red-flip reading, they are not on their own an unambiguous
- * admission.
+ * Source of the negated-red pattern, used by `STRONG_ADMISSION_RES` below.
+ * Deliberately NOT folded into `recordsRedFlip`'s global strip
+ * (`NEGATED_RED_GLOBAL_RE`): `admitsUnreached` runs `STRONG_ADMISSION_RES`
+ * first and returns immediately on any match, so by the time
+ * `recordsRedFlip` ever runs on a unit, that unit cannot match this source —
+ * including it in the global strip too is unreachable dead code, not a
+ * drift guard (PR #3312 review, round 2).
  *
+
  * Deliberately narrower than a bare "negation word, up to N words, `red`":
  * a corpus run over `docs/archive/pr-summaries/` turned up genuinely
  * COVERED entries that happen to carry an unrelated negation ahead of a
@@ -705,12 +725,15 @@ const OTHER_NEGATED_RED_SOURCES = [
 ];
 
 /**
- * Global variant of every negated-red pattern, for stripping before the red
- * check — built from `NEGATED_RED_SOURCE` (so it can never drift from the
- * strong regex above) plus `OTHER_NEGATED_RED_SOURCES`.
+ * Global variant of the weaker negated-red patterns, for stripping before
+ * the red check. Built from `OTHER_NEGATED_RED_SOURCES` only —
+ * `NEGATED_RED_SOURCE` is deliberately excluded (see its own doc comment
+ * above): a unit matching it has already made `admitsUnreached` return at
+ * the `STRONG_ADMISSION_RES` loop, so `recordsRedFlip` never sees one, and
+ * including it here was unreachable (PR #3312 review, round 2).
  */
 const NEGATED_RED_GLOBAL_RE = new RegExp(
-  [NEGATED_RED_SOURCE, ...OTHER_NEGATED_RED_SOURCES].join("|"),
+  OTHER_NEGATED_RED_SOURCES.join("|"),
   "gi",
 );
 
@@ -912,11 +935,16 @@ export interface ValidateBranchOutcomesInput {
  *      blocked (fail closed).
  *   8. A named test path absent from `testsAtHead` → blocked, named in
  *      `missingTests`.
- *   9. Present: any entry, the inline body, or a line the list parser itself
+ *   9. The blanked re-parse (used for the admission check below) has a
+ *      different entry or uncaptured-line count than the real list →
+ *      blocked — blanking a span straddling a line break can merge two
+ *      lines, so the blanked shape is no longer trustworthy (PR #3312
+ *      review, round 2).
+ *  10. Present: any entry, the inline body, or a line the list parser itself
  *      skipped (table row, sibling bullet, prose after the list, …) that
  *      admits no test reaches its outcome → blocked, labels named in
  *      `unreachedEntries` (Issue #3288).
- *  10. An `exempt (out of scope): <reason>` / `exempt (untestable): <reason>`
+ *  11. An `exempt (out of scope): <reason>` / `exempt (untestable): <reason>`
  *      clause with fewer than 3 real words of reason → blocked — an
  *      exemption with no stated reason is not an exemption.
  */
@@ -1025,6 +1053,23 @@ function evaluateApplicable(
         "were blanked for the admission check — write the header without " +
         "backticks around it (e.g. `Branch outcomes:` as plain text, not " +
         "`` `Branch outcomes:` ``)",
+    );
+  } else if (
+    record.present &&
+    (record.entries.length !== blankedRecord.entries.length ||
+      record.uncapturedLines.length !== blankedRecord.uncapturedLines.length)
+  ) {
+    // Blanking a span that straddles a line break removes the embedded
+    // newline along with it, so two list items (or an uncaptured line) can
+    // merge into one once code spans are blanked — the blanked re-parse no
+    // longer has the same shape as the real list, and the admission check
+    // below would be reading a corrupted shape. Fail closed rather than
+    // trust it (PR #3312 review, round 2).
+    problems.push(
+      "the `Branch outcomes:` list could not be re-read with the same " +
+        "number of entries once code spans were blanked for the admission " +
+        "check — a backtick span straddling a line break inside the list " +
+        "merged two lines; remove the span or keep it on one line",
     );
   } else if (record.present) {
     const admission = evaluateUnreachedAdmissions(blankedRecord);

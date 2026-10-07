@@ -1727,6 +1727,68 @@ Deno.test("validateBranchOutcomes - a plain-text header still runs the admission
   assert(!result.problems.some((p) => p.includes("could not be re-read")));
 });
 
+// ---------------------------------------------------------------------------
+// PR #3312 review, round 2: backtick pairing used to reset only at blank
+// lines, so a tight list (no blank line between items — how this repo's own
+// lists, including this file's, are written) was ONE paragraph. A stray
+// (odd) backtick in one item flipped which segments counted as "inside a
+// span" for every later item, so a genuine admission in a later item could
+// be blanked away by an unrelated pairing accident earlier in the list.
+// ---------------------------------------------------------------------------
+
+Deno.test("validateBranchOutcomes - a stray backtick in one tight-list item does not blank an admission in a later item", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:10` — splits on the ` character — " +
+      "`worker/deno/tests/foo_test.ts::splits` — flipped, test went red\n" +
+      "- `worker/deno/lib/foo.ts:20` — error path — no test reaches it — " +
+      "`cargo test --workspace` stayed green\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.unreachedEntries, ["worker/deno/lib/foo.ts:20"]);
+});
+
+// The same stray backtick directly above the header (same paragraph under
+// the old blank-line-only reset) used to erase the header itself once code
+// spans were blanked, blocking with the misleading "write the header
+// without backticks" message instead of running the real admission check.
+Deno.test("validateBranchOutcomes - a stray backtick in prose above the header still runs the real admission check", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent:
+      "Testing here with a stray ` backtick that never closes.\n" +
+      "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:10` — error path — no test reaches it\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+  assert(!result.problems.some((p) => p.includes("could not be re-read")));
+});
+
+// A backtick span straddling a line break can still be blanked away along
+// with its embedded newline, merging two physical lines once code spans are
+// blanked — here a nested list-form header (indent 2) with an entry at
+// indent 3 and a following indent-1 line the real parser treats as
+// uncaptured. The blanked re-parse ends up with one fewer uncaptured line
+// than the real parse, and the gate fails closed on that shape mismatch
+// rather than silently trusting the blanked (corrupted) re-parse.
+Deno.test("validateBranchOutcomes - a blanked span merging two lines fails closed on the entry/uncaptured-line count mismatch", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "  - Branch outcomes:\n" +
+      "   - `worker/deno/lib/foo.ts:1` — outcome admits `open span here\n" +
+      " closes` more text\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(
+    result.problems.some((p) => p.includes("same number of entries")),
+  );
+});
+
 Deno.test("lookupTestsAtHead - invokes git with --literal-pathspecs ls-tree -r --name-only HEAD --", async () => {
   let seenArgs: string[] = [];
   const runGit = (args: string[]) => {
