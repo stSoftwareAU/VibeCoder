@@ -14,32 +14,6 @@ Closes #3368.
 
 **Docs sweep** — grep: `fileMissingCIGateIssue`, `BP-AWS-EMULATOR-MISSING`, `checkAwsEmulator`, `pre-fil`, `missing-linter`, `known-open`, `severity:high`, "one slot may be consumed", "all six slots" over `README.md`, `docs/` (excluding `docs/archive/`), `DESIGN-PRINCIPLES.md` and `*/README.md`; section: `docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing`, `docs/BEST-PRACTICES-SCAN.md#6-issue-cap-and-priority-order`, `DESIGN-PRINCIPLES.md` (best-practices "AWS emulator in CI" / "Cap and priority order"), `docs/IDLE-TASK-FRAMEWORK.md` (template table, `best-practices` row); updated: `docs/BEST-PRACTICES-SCAN.md`. The cap paragraph said a `general`/`design` run gives "the LLM all six slots", which a pre-filed `BP-AWS-EMULATOR-MISSING` finding now makes false, so it now says "less any pre-filed `BP-AWS-EMULATOR-MISSING` finding". Every other hit was read in its sentence and is still true. `markdownlint-cli2` reports `0 issues in 0 files` across 222 files.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — AWS repo, no Floci workflow → exactly one issue, with the `severity:medium` label and finding-id `BP-AWS-EMULATOR-MISSING`. — evidence: `worker/deno/tests/best_practices_template_test.ts::runTask - AWS repo with no Floci files BP-AWS-EMULATOR-MISSING at severity:medium` — reviewer: met
-- **met** — An existing open issue with the same finding-id → no duplicate (`fileFindingOnce` dedup). — evidence: `worker/deno/tests/best_practices_template_test.ts::runTask - AWS finding already open under its finding-id is not re-filed` — reviewer: met
-- **met** — AWS repo with Floci in CI, a non-AWS repo, or a repo with no workflows loaded → no issue. — evidence: `worker/deno/tests/best_practices_template_test.ts::runTask - AWS-emulator pre-check skips filing and logs why (floci configured / no AWS / no workflow)` — reviewer: met
-- **met** — A valid unexpired waiver suppresses; an expired one does not. — evidence: `worker/deno/tests/best_practices_template_test.ts::runTask - a valid unexpired waiver marker in a workflow suppresses the AWS finding`, `::runTask - a valid waiver marker in an evidence file suppresses the AWS finding`, `::runTask - an expired waiver marker does not suppress: exactly one issue is filed`, `::runTask - a waiver marker missing author= does not suppress: one issue is filed` — reviewer: met
-- **met** — `BP-LINTER-*` findings still file at `severity:high`. — evidence: `worker/deno/tests/best_practices_template_test.ts::runTask - BP-LINTER missing-linter finding remains severity:high, not severity:medium` — reviewer: met
-- **met** — The issue body contains `CREATE_COMPLETE`, `::warning::`, `SKIPPED (needs Docker):` and a digest-pinned image reference. — evidence: `worker/deno/tests/best_practices_template_test.ts::runTask - AWS repo with no Floci files BP-AWS-EMULATOR-MISSING at severity:medium` — reviewer: met
-- **met** — `docs/BEST-PRACTICES-SCAN.md` documents the check, and markdown-lint is green. — evidence: `docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing`; `markdownlint-cli2` run here: `Summary: 0 issues in 0 files` (222 files) — reviewer: partial — reason: the reviewer saw only the diff and could not run markdown-lint; it was run here and passed
-- **unrequested** — "AWS emulator in CI" paragraph in `DESIGN-PRINCIPLES.md` — reviewer: unrequested — reason: keeps the design-principles summary of the best-practices scan in step with the manual
-- **unrequested** — AWS pre-check added to the `best-practices` row in `docs/IDLE-TASK-FRAMEWORK.md` — reviewer: unrequested — reason: docs sync, so the template table describes the new pre-check
-- **unrequested** — injectable `logger` dependency on `BestPracticesTemplateDeps` — reviewer: unrequested — reason: lets the tests observe the "log why" skip reasons the issue requires
-- **unrequested** — evidence list capped at 50 entries with a `- … and N more` line, and backticks in paths replaced — reviewer: unrequested — reason: defensive hardening of the issue body against huge or hostile path lists
-- **unrequested** — `assertRepoRelative` path guard and `NotFound` skip in `hasAwsEmulatorWaiver` — reviewer: unrequested — reason: path confinement under the Secure Coding standard, so the waiver scan never reads outside the checkout
-- **unrequested** — `checkAwsEmulatorFn` no-AWS stub injected into the existing best-practices tests and into the `idle_task_scan_dedup_conformance_test.ts` harness — reviewer: unrequested — reason: supporting change that keeps existing tests isolated from the real detector
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — Naming accuracy: a function's name must still describe what it does — evidence: `worker/deno/lib/idle_task_templates/best_practices_template.ts:575` — reason: not fixed in this diff. `fileMissingCIGateIssue` now also files `BP-AWS-EMULATOR-MISSING`, which is not a missing CI gate. This retry may change only the summary, so the rename (for example to `filePreFiledFinding`) is left as a follow-up.
-- **violation** — Doc-comment accuracy — evidence: `worker/deno/tests/best_practices_template_test.ts:217` — reason: not fixed in this diff. The `spyLogger` comment says it collects `info()` messages "(and their context)", but it stores only the message string. This retry may change only the summary, so the fix is left as a follow-up.
-- **clean** — Australian English; fail-loud (a detector throw returns `ok:false` through `runTask`'s catch; read errors in the waiver scan other than `NotFound` are re-thrown with context and `cause`); path safety on evidence paths (absolute and `..` rejected); INFO level for expected skips; Deno/TypeScript conventions (injected deps, strict types, `@std/assert`); DRY (`fileFindingOnce`, `findSuppressions`/`filterByFamily` and `loadWorkflows` reused); docs kept in sync; no existing test assertion removed.
-
 ## Test Plan
 
 - Tests for the new behaviour were added to `worker/deno/tests/best_practices_template_test.ts` (eleven `runTask`/`hasAwsEmulatorWaiver` tests). A no-AWS `checkAwsEmulatorFn` stub was added to `worker/deno/tests/idle_task_scan_dedup_conformance_test.ts`.
@@ -62,3 +36,23 @@ Closes #3368.
 - `worker/deno/lib/idle_task_templates/best_practices_template.ts:892` / `:894` — default `checkAwsEmulatorInCI` / `defaultLogger` when no dep is injected — not reached by a test: every test injects both, and replacing the default with a rejecting function stayed green
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — AWS repo, no Floci workflow → exactly one issue, with the severity:medium label and finding-id BP-AWS-EMULATOR-MISSING . — evidence: `worker/deno/tests/best practices template test.ts::runTask - AWS repo with no Floci files BP-AWS-EMULATOR-MISSING at severity:medium` — reviewer: met
+- **met** — An existing open issue with the same finding-id → no duplicate ( fileFindingOnce dedup). — evidence: `worker/deno/tests/best practices template test.ts::runTask - AWS finding already open under its finding-id is not re-filed` — reviewer: met
+- **met** — AWS repo with Floci in CI, a non-AWS repo, or a repo with no workflows loaded → no issue. — evidence: `worker/deno/tests/best practices template test.ts::runTask - AWS-emulator pre-check skips filing and logs why (floci configured / no AWS / no workflow)` — reviewer: met
+- **met** — A valid unexpired waiver suppresses; an expired one does not. — evidence: `worker/deno/tests/best practices template test.ts::runTask - a valid unexpired waiver marker in a workflow suppresses the AWS finding; ::runTask - an expired waiver marker does not suppress: exactly one issue is filed` — reviewer: met
+- **met** — BP-LINTER- findings still file at severity:high . — evidence: `worker/deno/tests/best practices template test.ts::runTask - BP-LINTER missing-linter finding remains severity:high, not severity:medium` — reviewer: met
+- **met** — The issue body contains CREATE COMPLETE , ::warning:: , SKIPPED (needs Docker): and a digest-pinned image reference. — evidence: `worker/deno/tests/best practices template test.ts:1552-1555 (asserts CREATE COMPLETE, ::warning::, SKIPPED (needs Docker):, floci/floci@sha256:)` — reviewer: met
+- **partial** — docs/BEST-PRACTICES-SCAN.md documents the check, and markdown-lint is green. — evidence: `docs/BEST-PRACTICES-SCAN.md aws-emulator-in-ci-bp-aws-emulator-missing` — reviewer: partial — reason: the docs section is present; markdown-lint was not re-run in this turn, but the previous run (recorded in docs/archive/pr-summaries/pr-summary-3368.md) reported 0 issues
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Naming accuracy: fileMissingCIGateIssue now also files BP-AWS-EMULATOR-MISSING, which is not a missing CI gate, so the name no longer describes what the function does — evidence: `worker/deno/lib/idle task templates/best practices template.ts:575` — reason: NOT fixed: this line is new in the diff, so it has to be fixed here, but this turn may not change code; it needs a retry that may edit code (rename to filePreFiledFinding and update the callers at :1030 and :1073)
+- **violation** — Doc-comment accuracy: the spyLogger comment says it collects info() messages "(and their context)", but it stores only the message string — evidence: `worker/deno/tests/best practices template test.ts:217` — reason: NOT fixed: this line is new in the diff, so it has to be fixed here, but this turn may not change code; it needs a retry that may edit code (drop "(and their context)")
+- **clean** — Australian English, TDD (a test for each criterion), fail-loud error handling (detector throw fails the run; unreadable evidence file throws with cause), DRY (shared pre-filed finding filer and fileFindingOnce dedup), path-escape guarding, docs updated alongside code
