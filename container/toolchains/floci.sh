@@ -23,6 +23,9 @@
 # unsupported architecture, or a binary that does not answer on its HTTP port
 # aborts the build.
 #
+# FLOCI_PREFIX overrides the install prefix (default /usr/local), letting
+# tests run the fragment end to end without root.
+#
 # Australian English spelling throughout (behaviour, organisation).
 
 set -euo pipefail
@@ -30,6 +33,8 @@ set -euo pipefail
 TOOLCHAIN_ID="floci"
 MANIFEST="${TOOLCHAIN_MANIFEST:-/tmp/tools.json}"
 FLOCI_SOURCE="${FLOCI_SOURCE:-/tmp/floci-application}"
+# Install prefix, overridable so tests can run the fragment end to end without root.
+FLOCI_PREFIX="${FLOCI_PREFIX:-/usr/local}"
 
 if [[ ! -f "${MANIFEST}" ]]; then
     echo "[${TOOLCHAIN_ID}] Manifest ${MANIFEST} is missing — cannot resolve the pinned version" >&2
@@ -77,8 +82,8 @@ fi
 
 echo "${checksum}  ${FLOCI_SOURCE}" | sha256sum -c -
 
-install -d /usr/local/lib/floci
-install -m 0755 "${FLOCI_SOURCE}" /usr/local/lib/floci/application
+install -d "${FLOCI_PREFIX}/lib/floci"
+install -m 0755 "${FLOCI_SOURCE}" "${FLOCI_PREFIX}/lib/floci/application"
 
 # The binary has no --version flag, so a thin wrapper answers it from the
 # version pinned at install time and otherwise execs the native binary.
@@ -90,13 +95,14 @@ if [[ "\${1:-}" == "--version" ]]; then
     echo "floci ${version}"
     exit 0
 fi
-exec /usr/local/lib/floci/application "\$@"
+exec ${FLOCI_PREFIX}/lib/floci/application "\$@"
 EOF
-install -m 0755 "${wrapper}" /usr/local/bin/floci
+install -d "${FLOCI_PREFIX}/bin"
+install -m 0755 "${wrapper}" "${FLOCI_PREFIX}/bin/floci"
 rm -f "${wrapper}"
 
 # Prove the installed wrapper runs in this image rather than assuming it does.
-installed="$(floci --version < /dev/null)"
+installed="$("${FLOCI_PREFIX}/bin/floci" --version < /dev/null)"
 case "${installed}" in
     *"${version}"*) ;;
     *)
@@ -119,7 +125,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-(cd "${workdir}" && exec timeout -k 5 120 /usr/local/lib/floci/application -Dquarkus.http.host=127.0.0.1) &
+(cd "${workdir}" && exec timeout -k 5 120 "${FLOCI_PREFIX}/lib/floci/application" -Dquarkus.http.host=127.0.0.1) &
 floci_pid=$!
 
 status="$(curl -sS -o /dev/null -w '%{http_code}' --retry 30 --retry-delay 1 \
@@ -137,7 +143,5 @@ fi
 kill "${floci_pid}" 2>/dev/null || true
 wait "${floci_pid}" 2>/dev/null || true
 floci_pid=""
-
-rm -f "${FLOCI_SOURCE}"
 
 echo "[${TOOLCHAIN_ID}] Installed floci ${version}"

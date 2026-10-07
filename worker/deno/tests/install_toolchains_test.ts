@@ -1321,3 +1321,147 @@ Deno.test("container/toolchains/floci.sh - a missing source binary aborts before
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/**
+ * Shared setup for the smoke-check tests below: a stub `floci-application`
+ * whose digest is pinned into a per-test copy of the manifest, and a stub
+ * `curl` on the PATH answering the HTTP code the caller asks for. Neither
+ * `install` nor the fragment's other behaviour is stubbed — these tests run
+ * the real fragment end to end, installing under `${dir}/prefix` via
+ * FLOCI_PREFIX so the build-time smoke check actually starts the stub
+ * application and probes it.
+ */
+async function setUpFlociSmokeCheck(
+  dir: string,
+  httpCode: { body: string; exitCode: number },
+): Promise<{ source: string; manifest: string; version: string }> {
+  const source = `${dir}/floci-application`;
+  await Deno.writeTextFile(
+    source,
+    `#!/bin/sh\necho "$@" >> "${dir}/app.log"\nexit 0\n`,
+  );
+  await Deno.chmod(source, 0o755);
+
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await Deno.readFile(source),
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
+  const key = await currentDigestKey();
+  const manifest = JSON.parse(
+    await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+  );
+  const floci = manifest.toolchains.find(
+    (t: Record<string, unknown>) => t.id === "floci",
+  );
+  assert(floci !== undefined, "container/tools.json must pin floci");
+  (floci.sha256 as Record<string, string>)[key] = hex;
+  const manifestPath = `${dir}/tools.json`;
+  await Deno.writeTextFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+  await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  await Deno.writeTextFile(
+    `${dir}/bin/curl`,
+    `#!/bin/sh\nprintf '${httpCode.body}'\nexit ${httpCode.exitCode}\n`,
+  );
+  await Deno.chmod(`${dir}/bin/curl`, 0o755);
+
+  return { source, manifest: manifestPath, version: floci.version as string };
+}
+
+Deno.test("container/toolchains/floci.sh - a smoke check that gets no HTTP answer fails the build", async () => {
+  // A stub curl mirrors real curl's `-w '%{http_code}'` contract: on a
+  // connection failure it prints 000 and exits 7, exactly as curl itself
+  // does when every retry is refused.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const { source, manifest } = await setUpFlociSmokeCheck(dir, {
+      body: "000",
+      exitCode: 7,
+    });
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: manifest,
+        FLOCI_SOURCE: source,
+        FLOCI_PREFIX: `${dir}/prefix`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "a binary that never answers must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "did not answer on http://127.0.0.1:4566/",
+    );
+    assertStringIncludes(
+      new TextDecoder().decode(result.stdout),
+      "answered HTTP 000",
+    );
+    assert(
+      await Deno.stat(source).then(() => true).catch(() => false),
+      "the source is only removed on success, so a failed smoke check must " +
+        "leave it in place",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/floci.sh - installs the wrapper and passes the smoke check on an HTTP answer", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const { source, manifest, version } = await setUpFlociSmokeCheck(dir, {
+      body: "200",
+      exitCode: 0,
+    });
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: manifest,
+        FLOCI_SOURCE: source,
+        FLOCI_PREFIX: `${dir}/prefix`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    const stdout = new TextDecoder().decode(result.stdout);
+    assertStringIncludes(stdout, "answered HTTP 200");
+    assertStringIncludes(stdout, `Installed floci ${version}`);
+
+    const wrapperVersion = await new Deno.Command(`${dir}/prefix/bin/floci`, {
+      args: ["--version"],
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+    assertEquals(
+      new TextDecoder().decode(wrapperVersion.stdout).trim(),
+      `floci ${version}`,
+    );
+
+    assertStringIncludes(
+      await Deno.readTextFile(`${dir}/app.log`),
+      "-Dquarkus.http.host=127.0.0.1",
+    );
+
+    assert(
+      !(await Deno.stat(source).then(() => true).catch(() => false)),
+      "a successful smoke check must remove FLOCI_SOURCE",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
