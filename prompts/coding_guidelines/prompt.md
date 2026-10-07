@@ -1044,7 +1044,8 @@ exception above to cover it:
 - `.secrets/` (secret directories)
 - `.aws/`, `.ssh/`, `.gnupg/`, `.netrc` (credential stores, forbidden at any
   depth — e.g. `deploy/.ssh/`, Issue #3336)
-- Any other hidden file not on the allowlist above
+- Any other hidden file not on the allowlist above and not already re-allowed
+  by the repository's own committed `.gitignore`
 
 **Also forbidden — private key material and credential files:** `*.pem`,
 `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`, `id_dsa.*`,

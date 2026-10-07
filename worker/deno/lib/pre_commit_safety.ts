@@ -26,11 +26,11 @@
  * explicit `!`-negation in the *root* `.gitignore` — exit 1 from a plain
  * `check-ignore -q` means only "no rule matches", which is equally true of a
  * repo whose `.gitignore` never governs the path at all, so that alone
- * cannot be trusted as a re-allow (Issue #3309). `HEAD:.gitignore` must also
- * match `.gitignore` on the local `origin/<default>` ref byte for byte, so a
+ * cannot be trusted as a re-allow (PR #3308 review). `HEAD:.gitignore` must
+ * also match `.gitignore` on the local `origin/<default>` ref byte for byte, so a
  * re-allow committed only on the branch under review — `.gitignore` is
  * itself on `ALLOWED_HIDDEN_PATHS` — cannot opt a path in that the repo's own
- * default branch has never published (Issue #3309 follow-up).
+ * default branch has never published (PR #3308 review).
  * `FORBIDDEN_STAGED_PATTERNS` (secret-bearing filenames, including `.aws/`,
  * `.ssh/`, `.gnupg/` and `.netrc`) are never exempt this way, and the check
  * fails closed — nothing is exempt — whenever the repo's `.gitignore` cannot
@@ -74,11 +74,7 @@ export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   /\.secret\.json$/,
   // Matched as any path segment (Issue #3311).
   /(^|\/)\.secrets\//,
-  // Credential-store directories and files (Issue #3309), matched as any
-  // path segment so a nested store (e.g. `deploy/.ssh/`) is caught too —
-  // SECURITY.md and CODING-STANDARDS.md already document these as
-  // always-forbidden, never exempt via the repo's-own-.gitignore route
-  // below (Issue #3336).
+  // Credential stores, matched as any path segment (Issue #3336).
   /(^|\/)\.(aws|ssh|gnupg|netrc)(\/|$)/,
   // Private key material and credential files (Issue #3660). Matched on the
   // final path segment so nested paths (`certs/server.pem`) are caught too.
@@ -326,7 +322,7 @@ function parseCheckIgnoreDecision(
 
 /**
  * The most specific `git check-ignore -v -n --no-index` decision governing
- * `path` (Issue #3309 hardening of #3296).
+ * `path` (PR #3308 review hardening of #3296).
  *
  * Walks `path` and its ancestor directories nearest-first (the path itself,
  * then its parent, grandparent, and so on up to the top-level segment),
@@ -383,7 +379,7 @@ async function nearestGovernance(
  *      reads), or the check could read a `.gitignore` the repository does
  *      not actually carry forward.
  *   3. `HEAD:.gitignore`'s blob is byte-identical to `.gitignore` on the
- *      local `origin/<default>` ref (Issue #3309 follow-up): `.gitignore`
+ *      local `origin/<default>` ref (PR #3308 review): `.gitignore`
  *      is itself on `ALLOWED_HIDDEN_PATHS`, so one worker commit could carry
  *      a `!`-negation, and a later commit on the *same* branch then stage
  *      the path it re-allows — the repo's own choice would otherwise be
@@ -443,7 +439,7 @@ export async function gitignoreReallowed(args: {
 
   // HEAD's own commit is not enough: a re-allow committed earlier on *this*
   // branch is not something the repo's default branch has ever published
-  // (Issue #3309 follow-up). Require HEAD:.gitignore to be the identical
+  // (PR #3308 review). Require HEAD:.gitignore to be the identical
   // blob as origin/<default>:.gitignore, read from the local remote-tracking
   // ref only — never fetched.
   const defaultRef = await originDefaultRef(options, run);

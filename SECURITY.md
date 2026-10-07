@@ -733,7 +733,7 @@ ancestor directories (the nearest decision wins), an explicit `!`-negation
 rule whose *source* is the repository's own root `.gitignore` itself — not a
 nested or untracked `.gitignore`. Exit 1 from a plain `check-ignore -q` alone
 is not enough: it means only "no rule matches", which is equally true of a
-repository whose `.gitignore` never governs the path at all (Issue #3309),
+repository whose `.gitignore` never governs the path at all (PR #3308 review),
 so the gate judges the deciding rule, not just the exit code. This is
 conditional on the root `.gitignore` itself: it must be tracked at `HEAD`,
 unmodified in both the index (`git diff --cached`) and the working tree
@@ -744,7 +744,7 @@ staged or only on disk — **and** byte-identical to `.gitignore` on the local
 `ALLOWED_HIDDEN_PATHS`, so without this last check a re-allow committed
 earlier on the same feature branch — never published on the repository's
 own default branch — could still exempt a later commit on that branch
-(Issue #3309 follow-up). `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
+(PR #3308 review). `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
 `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, `*.pem`,
 `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials.json`,
 `service-account*.json`, and the rest) are checked first and are **never**

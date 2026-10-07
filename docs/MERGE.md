@@ -737,8 +737,8 @@ This is enforced at the single git-push choke-point by
   `.gitignore` re-allows `.claude/skills/` and `.claude/agents/` (Issues
   #2675, #2976). `HEAD:.gitignore` must also match `.gitignore` on the local
   `origin/<default>` ref, so a re-allow committed only on the branch under
-  review cannot exempt a later commit on that branch (Issue #3309
-  follow-up). Every forbidden secret pattern stays refused regardless, and
+  review cannot exempt a later commit on that branch (PR #3308
+  review). Every forbidden secret pattern stays refused regardless, and
   if `.gitignore` cannot be read, has been modified, differs from
   `origin/<default>`'s copy, or no rule decides the path at all, nothing is
   exempt. See [SECURITY.md](../SECURITY.md) for the full rule.

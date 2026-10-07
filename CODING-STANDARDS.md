@@ -1186,13 +1186,13 @@ this repository's `.gitignore` re-allows `.claude/skills/` and
 `.claude/agents/` (Issues #2675, #2976). Exit 1 from a plain
 `check-ignore -q` alone is not enough, since that only means "no rule
 matches" — equally true of a repository whose `.gitignore` never governs
-the path at all (Issue #3309) — and a decision from a nested or untracked
+the path at all (PR #3308 review) — and a decision from a nested or untracked
 `.gitignore` does not count either. `HEAD:.gitignore` must also match
 `.gitignore` on the local `origin/<default>` ref byte for byte: `.gitignore`
 is itself on the fleet-wide allowlist, so a re-allow committed only on the
 branch under review — never published on the repository's own default
 branch — must not be able to exempt a later commit on that same branch
-(Issue #3309 follow-up). This never widens the fleet-wide allowlist above:
+(PR #3308 review). This never widens the fleet-wide allowlist above:
 it only recognises what a specific repository has already chosen to track.
 The forbidden patterns below are never exempt under this route, and if
 `.gitignore` cannot be read, has been modified (in the index or the working

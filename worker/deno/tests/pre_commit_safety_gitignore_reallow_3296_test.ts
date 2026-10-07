@@ -1,6 +1,6 @@
 /**
  * Tests for the repo-`.gitignore` re-allow exemption (Issue #3296, hardened
- * against #3309 and its follow-up).
+ * by the PR #3308 review).
  *
  * `ALLOWED_HIDDEN_PATHS` is the worker's one canonical allowlist, but a
  * target repo's own `.gitignore` may legitimately re-allow a hidden path
@@ -14,11 +14,11 @@
  * never a path matching `FORBIDDEN_STAGED_PATTERNS`. Exit 1 from a bare
  * `check-ignore -q` is not sufficient on its own: it means only "no rule
  * matches", which also holds for a repo whose `.gitignore` never governs the
- * path at all (Issue #3309). `HEAD:.gitignore` must also match
+ * path at all (PR #3308 review). `HEAD:.gitignore` must also match
  * `.gitignore` on the local `origin/<default>` ref byte for byte: a
  * re-allow committed only on the branch under review — never published on
  * the repository's own default branch — must not be able to exempt a later
- * commit on that same branch (Issue #3309 follow-up).
+ * commit on that same branch (PR #3308 review).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -114,7 +114,7 @@ const SKILL_PATH = ".claude/skills/x/SKILL.md";
  * publishes `SKILL_PATH` and, when given, a `.gitignore` with the given
  * contents — both committed in the same upstream commit, so `HEAD:.gitignore`
  * in the clone is tracked, unmodified, *and* byte-identical to
- * `origin/<default>:.gitignore` (Issue #3309 follow-up) for the edit that
+ * `origin/<default>:.gitignore` (PR #3308 review) for the edit that
  * follows. Returns `root` (containing both `upstream/` and `clone/`) for
  * cleanup, and `dir` (the clone) to operate on and pass as `cwd`.
  */
@@ -344,11 +344,19 @@ Deno.test("assertSafeToCommit - no .gitignore at all exempts nothing (Issue #329
 // --- Case 7: check-ignore cannot run — fail closed --------------------------
 
 Deno.test("gitignoreReallowed - empty candidates short-circuits without running git", async () => {
+  // Only FORBIDDEN_STAGED_PATTERNS paths: nothing is left to judge, so no
+  // git call may be made at all.
+  const calls: string[][] = [];
   const exempt = await gitignoreReallowed({
-    violations: [],
+    violations: [".env"],
     options: { cwd: "/does/not/matter" },
+    run: (args: string[]) => {
+      calls.push(args);
+      return Promise.resolve(okOutput(0));
+    },
   });
   assertEquals(exempt.size, 0);
+  assertEquals(calls, []);
 });
 
 Deno.test("gitignoreReallowed - a non-repo cwd (check-ignore cannot run) exempts nothing", async () => {
@@ -364,7 +372,7 @@ Deno.test("gitignoreReallowed - a non-repo cwd (check-ignore cannot run) exempts
   }
 });
 
-Deno.test("gitignoreReallowed - exempts a path check-ignore reports as not ignored (exit 1)", async () => {
+Deno.test("gitignoreReallowed - real repo: exempts a nested file whose ancestor directory the root .gitignore re-allows with a `!` rule", async () => {
   const { root, dir } = await makeSkillRepo(
     "pre_commit_3296_helper_exempt_",
     REALLOWING_GITIGNORE,
@@ -380,7 +388,7 @@ Deno.test("gitignoreReallowed - exempts a path check-ignore reports as not ignor
   }
 });
 
-Deno.test("gitignoreReallowed - does not exempt a path check-ignore reports as ignored (exit 0)", async () => {
+Deno.test("gitignoreReallowed - real repo: does not exempt a path a non-negation root .gitignore rule (`.claude/*`) decides", async () => {
   const { root, dir } = await makeSkillRepo(
     "pre_commit_3296_helper_not_exempt_",
     REALLOWING_GITIGNORE,
@@ -414,7 +422,7 @@ Deno.test("gitignoreReallowed - never exempts a FORBIDDEN_STAGED_PATTERNS path",
 });
 
 // --- Case 8: injected-runner seam probes the ancestor-walk governance ------
-// (Issue #3309 — exit 1 from a single `check-ignore -q` no longer decides
+// (PR #3308 review — exit 1 from a single `check-ignore -q` no longer decides
 // the exemption; the walk and the deciding rule's source/sign do.)
 
 function okOutput(code: number, stdout = ""): Result<GitCommandOutput> {
@@ -426,8 +434,8 @@ function okOutput(code: number, stdout = ""): Result<GitCommandOutput> {
  * `gitignoreReallowed` makes: `cat-file`/`diff` report the root `.gitignore`
  * as tracked and unmodified, `symbolic-ref` names `origin/main`, and
  * `rev-parse` reports the same blob id for `HEAD:.gitignore` and
- * `origin/main:.gitignore` — i.e. the default-branch-match check (Issue
- * #3309 follow-up) always passes, so these stubs isolate the ancestor-walk
+ * `origin/main:.gitignore` — i.e. the default-branch-match check (PR #3308
+ * review) always passes, so these stubs isolate the ancestor-walk
  * governance logic they were written to probe.
  */
 function withMatchingOrigin(
@@ -497,7 +505,7 @@ Deno.test("gitignoreReallowed - a check-ignore exit code other than 0 or 1 exemp
   assertEquals(exempt.size, 0);
 });
 
-Deno.test("gitignoreReallowed - positive control: a root .gitignore negation on an ancestor directory exempts a nested file (Issue #3309)", async () => {
+Deno.test("gitignoreReallowed - positive control: a root .gitignore negation on an ancestor directory exempts a nested file (PR #3308 review)", async () => {
   // SKILL_PATH itself and its nearer ancestors are undecided ("::", the
   // default); only ".claude/skills" is decided, by a root .gitignore
   // negation — the real shape the #3296 SKILL.md case takes (verified
@@ -513,7 +521,7 @@ Deno.test("gitignoreReallowed - positive control: a root .gitignore negation on 
   assertEquals(exempt.has(SKILL_PATH), true);
 });
 
-Deno.test("gitignoreReallowed - a decision from a nested/untracked .gitignore does not exempt (Issue #3309)", async () => {
+Deno.test("gitignoreReallowed - a decision from a nested/untracked .gitignore does not exempt (PR #3308 review)", async () => {
   // The file's own decision comes from a non-root source — the shape an
   // untracked nested `.claude/.gitignore` re-allow takes.
   const run = checkIgnoreStub({
@@ -527,7 +535,7 @@ Deno.test("gitignoreReallowed - a decision from a nested/untracked .gitignore do
   assertEquals(exempt.has(SKILL_PATH), false);
 });
 
-Deno.test("gitignoreReallowed - a non-negation decision from the root .gitignore does not exempt (Issue #3309)", async () => {
+Deno.test("gitignoreReallowed - a non-negation decision from the root .gitignore does not exempt (PR #3308 review)", async () => {
   const run = checkIgnoreStub({ [SKILL_PATH]: ".gitignore:4:.claude/*" });
   const exempt = await gitignoreReallowed({
     violations: [SKILL_PATH],
@@ -537,7 +545,7 @@ Deno.test("gitignoreReallowed - a non-negation decision from the root .gitignore
   assertEquals(exempt.has(SKILL_PATH), false);
 });
 
-Deno.test("gitignoreReallowed - no decision anywhere in the ancestor chain does not exempt (Issue #3309)", async () => {
+Deno.test("gitignoreReallowed - no decision anywhere in the ancestor chain does not exempt (PR #3308 review)", async () => {
   // Every probe is undecided ("::") — the shape an unpatched repo whose
   // .gitignore lacks the `.*` rule takes for a path it simply never governs.
   const run = checkIgnoreStub({});
@@ -549,11 +557,46 @@ Deno.test("gitignoreReallowed - no decision anywhere in the ancestor chain does 
   assertEquals(exempt.has(SKILL_PATH), false);
 });
 
+/** A `check-ignore` stub answering "decided" (exit 0) with a fixed line. */
+function decidedLineStub(
+  line: string,
+): (args: string[]) => Promise<Result<GitCommandOutput>> {
+  return withMatchingOrigin(() => Promise.resolve(okOutput(0, `${line}\n`)));
+}
+
+Deno.test("gitignoreReallowed - a decided check-ignore line with no tab cannot be parsed and exempts nothing (PR #3308 review)", async () => {
+  // Looks like a root negation but lacks the `\t<pathname>` field.
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run: decidedLineStub(".gitignore:5:!.claude/skills"),
+  });
+  assertEquals(exempt.has(SKILL_PATH), false);
+});
+
+Deno.test("gitignoreReallowed - a decided check-ignore line without the source:line:pattern shape exempts nothing (PR #3308 review)", async () => {
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run: decidedLineStub(`!.claude/skills\t${SKILL_PATH}`),
+  });
+  assertEquals(exempt.has(SKILL_PATH), false);
+});
+
+Deno.test("gitignoreReallowed - a decided check-ignore line with an empty source exempts nothing (PR #3308 review)", async () => {
+  const exempt = await gitignoreReallowed({
+    violations: [SKILL_PATH],
+    options: { cwd: "/does/not/matter" },
+    run: decidedLineStub(`:5:!.claude/skills\t${SKILL_PATH}`),
+  });
+  assertEquals(exempt.has(SKILL_PATH), false);
+});
+
 // --- Case 8b: injected-runner seam probes the default-branch-match check --
-// (Issue #3309 follow-up — a decided root negation alone is not enough; it
+// (PR #3308 review — a decided root negation alone is not enough; it
 // must also agree with origin/<default>.)
 
-Deno.test("gitignoreReallowed - an unresolvable origin/HEAD exempts nothing even with a decided root negation (Issue #3309 follow-up)", async () => {
+Deno.test("gitignoreReallowed - an unresolvable origin/HEAD exempts nothing even with a decided root negation (PR #3308 review)", async () => {
   const run = (args: string[]) => {
     const sub = args[0];
     if (sub === "cat-file" || sub === "diff") {
@@ -575,7 +618,7 @@ Deno.test("gitignoreReallowed - an unresolvable origin/HEAD exempts nothing even
   assertEquals(exempt.has(SKILL_PATH), false);
 });
 
-Deno.test("gitignoreReallowed - a HEAD .gitignore blob that differs from origin/<default>'s exempts nothing (Issue #3309 follow-up)", async () => {
+Deno.test("gitignoreReallowed - a HEAD .gitignore blob that differs from origin/<default>'s exempts nothing (PR #3308 review)", async () => {
   const run = (args: string[]) => {
     const sub = args[0];
     if (sub === "cat-file" || sub === "diff") {
@@ -605,6 +648,69 @@ Deno.test("gitignoreReallowed - a HEAD .gitignore blob that differs from origin/
   assertEquals(exempt.has(SKILL_PATH), false);
 });
 
+// --- Case 8c: each guard alone refuses, with every other answer passing ---
+// (PR #3308 review). The real-repo cases above cannot isolate the
+// `cat-file -e HEAD:.gitignore` guard — an untracked .gitignore also fails
+// the later `rev-parse HEAD:.gitignore` — so these stubs fail one guard at
+// a time while check-ignore reports a decided root negation.
+
+type Guard =
+  | "cat-file"
+  | "diff --cached"
+  | "diff"
+  | "rev-parse HEAD"
+  | "rev-parse origin";
+
+/** Which guard a `gitignoreReallowed` git call belongs to, or `null`. */
+function guardOf(args: string[]): Guard | null {
+  const sub = args[0];
+  if (sub === "cat-file") return "cat-file";
+  if (sub === "diff") return args[1] === "--cached" ? "diff --cached" : "diff";
+  if (sub === "rev-parse") {
+    const target = args[args.length - 1] ?? "";
+    return target.startsWith("HEAD:") ? "rev-parse HEAD" : "rev-parse origin";
+  }
+  return null;
+}
+
+function failOneGuard(
+  guard: Guard,
+): (args: string[]) => Promise<Result<GitCommandOutput>> {
+  const passing = checkIgnoreStub({
+    ".claude/skills": ".gitignore:5:!.claude/skills",
+  });
+  return (args: string[]) =>
+    // A failing guard still prints the blob id the passing stub prints, so
+    // only its exit code — not a blob mismatch — can be what refuses.
+    guardOf(args) === guard
+      ? Promise.resolve(
+        okOutput(1, "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n"),
+      )
+      : passing(args);
+}
+
+// The positive control for these stubs is Case 8's ancestor-directory
+// negation test, which uses the same answers with no guard failing.
+
+for (
+  const [guard, meaning] of [
+    ["cat-file", ".gitignore is not tracked at HEAD"],
+    ["diff --cached", ".gitignore differs from HEAD in the index"],
+    ["diff", ".gitignore differs from HEAD in the working tree"],
+    ["rev-parse HEAD", "HEAD:.gitignore's blob cannot be read"],
+    ["rev-parse origin", "origin/<default>:.gitignore does not exist"],
+  ] as const
+) {
+  Deno.test(`gitignoreReallowed - exempts nothing when only the ${guard} guard fails (${meaning}) (PR #3308 review)`, async () => {
+    const exempt = await gitignoreReallowed({
+      violations: [SKILL_PATH],
+      options: { cwd: "/does/not/matter" },
+      run: failOneGuard(guard),
+    });
+    assertEquals(exempt.has(SKILL_PATH), false);
+  });
+}
+
 // --- Existing #2737 guarantee must still hold (sanity, no re-allow here) ---
 
 Deno.test("assertSafeToCommit - an agent-added .env or .claude/secret during a merge is still refused with no re-allowing .gitignore present (Issue #3296 sanity)", async () => {
@@ -623,39 +729,47 @@ Deno.test("assertSafeToCommit - an agent-added .env or .claude/secret during a m
   }
 });
 
-// --- Case 9: real repo — exit 1 alone is not a re-allow (Issue #3309) -----
+// --- Case 9: real repo — an undecided ancestor chain is not a re-allow -----
+// (PR #3308 review). Built on the upstream-plus-clone fixture so
+// origin/<default> exists and matches HEAD: every guard before the ancestor
+// walk passes, so the refusal of .npmrc and .git-credentials — neither on
+// FORBIDDEN_STAGED_PATTERNS — can only come from nearestGovernance finding
+// no deciding rule anywhere in the chain.
 
 const UNPATCHED_GITIGNORE = "node_modules/\n";
 
-Deno.test("assertSafeToCommit - a tracked .gitignore lacking the `.*` rule exempts nothing for .aws/credentials, .netrc or .npmrc (Issue #3309)", async () => {
-  const dir = await makeRepo("pre_commit_3309_unpatched_");
+Deno.test("assertSafeToCommit - a published .gitignore lacking the `.*` rule exempts nothing for .npmrc or .git-credentials (PR #3308 review)", async () => {
+  const { root, dir } = await makeSkillRepo(
+    "pre_commit_3296_review_unpatched_",
+    UNPATCHED_GITIGNORE,
+  );
   try {
-    await stageFile(dir, ".gitignore", UNPATCHED_GITIGNORE);
-    await mustGit(["commit", "-q", "-m", "base"], dir);
-    await stageFile(dir, ".aws/credentials", "key=1\n");
-    await stageFile(dir, ".netrc", "machine example.com\n");
     await stageFile(dir, ".npmrc", "//registry.example.com/:_authToken=x\n");
+    await stageFile(
+      dir,
+      ".git-credentials",
+      "https://user:token@example.com\n",
+    );
     const result = await assertSafeToCommit({ cwd: dir });
     assert(
       !result.ok,
-      "check-ignore exit 1 means 'no rule matches', not 're-allowed'",
+      "no rule deciding a path anywhere in its chain is not a re-allow",
     );
     if (!result.ok) {
       const msg = result.error.message;
-      assert(msg.includes(".aws/credentials"), msg);
-      assert(msg.includes(".netrc"), msg);
       assert(msg.includes(".npmrc"), msg);
+      assert(msg.includes(".git-credentials"), msg);
     }
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await Deno.remove(root, { recursive: true });
   }
 });
 
 // --- Case 10: real repo — an untracked nested .gitignore is not the root's -
 
-Deno.test("assertSafeToCommit - an untracked nested .claude/.gitignore re-allowing settings.local.json is still refused (Issue #3309)", async () => {
+Deno.test("assertSafeToCommit - an untracked nested .claude/.gitignore re-allowing settings.local.json is still refused (PR #3308 review)", async () => {
   const { root, dir } = await makeSkillRepo(
-    "pre_commit_3309_nested_gi_",
+    "pre_commit_3296_review_nested_gi_",
     REALLOWING_GITIGNORE,
   );
   try {
@@ -677,11 +791,11 @@ Deno.test("assertSafeToCommit - an untracked nested .claude/.gitignore re-allowi
   }
 });
 
-// --- Case 11: real repo — index-only .gitignore edit (Issue #3309) --------
+// --- Case 11: real repo — index-only .gitignore edit (PR #3308 review) --------
 
-Deno.test("assertSafeToCommit - a .gitignore modified only in the index exempts nothing (Issue #3309)", async () => {
+Deno.test("assertSafeToCommit - a .gitignore modified only in the index exempts nothing (PR #3308 review)", async () => {
   const { root, dir } = await makeSkillRepo(
-    "pre_commit_3309_gi_index_only_",
+    "pre_commit_3296_review_gi_index_only_",
     REALLOWING_GITIGNORE,
   );
   try {
@@ -710,12 +824,12 @@ Deno.test("assertSafeToCommit - a .gitignore modified only in the index exempts 
   }
 });
 
-// --- Case 12: real repo — a branch-only re-allow is not origin's (#3309 follow-up) -
+// --- Case 12: real repo — a branch-only re-allow is not origin's (PR #3308 review) -
 
-Deno.test("assertSafeToCommit - a re-allow committed only on this branch, absent from origin/<default>, exempts nothing (Issue #3309 follow-up)", async () => {
+Deno.test("assertSafeToCommit - a re-allow committed only on this branch, absent from origin/<default>, exempts nothing (PR #3308 review)", async () => {
   // Upstream (and so origin/main) never re-allows .npmrc.
   const { root, dir } = await makeSkillRepo(
-    "pre_commit_3309_branch_only_reallow_",
+    "pre_commit_3296_review_branch_only_reallow_",
     REALLOWING_GITIGNORE,
   );
   try {
@@ -741,8 +855,8 @@ Deno.test("assertSafeToCommit - a re-allow committed only on this branch, absent
   }
 });
 
-Deno.test("assertSafeToCommit - a repo with no origin configured exempts nothing, even with a decided root negation (Issue #3309 follow-up)", async () => {
-  const dir = await makeRepo("pre_commit_3309_no_origin_");
+Deno.test("assertSafeToCommit - a repo with no origin configured exempts nothing, even with a decided root negation (PR #3308 review)", async () => {
+  const dir = await makeRepo("pre_commit_3296_review_no_origin_");
   try {
     await stageFile(dir, SKILL_PATH, "# skill\n");
     await stageFile(dir, ".gitignore", REALLOWING_GITIGNORE);
