@@ -6,11 +6,14 @@ repo's own `.gitignore` re-allows and tracks on purpose. That made #3293
 fail twice, on `.claude/skills/review-fleet-prs/SKILL.md`, `run.sh` and
 `review_log.ts`. The gate now also exempts a refused hidden path when an
 ancestor-directory walk finds an explicit `!`-negation decided by the
-repo's tracked, unmodified root `.gitignore` itself (Issue #3309
-hardening). Secret patterns and credential-store paths
-(`FORBIDDEN_STAGED_PATTERNS`) are never exempt this way, and every failure
-to read the answer leaves the path refused. `REQUIRED_GITIGNORE_PATTERNS`
-is not widened. Closes #3296.
+repo's tracked, unmodified root `.gitignore` itself, **and** that root
+`.gitignore` is byte-identical to `.gitignore` on the local
+`origin/<default>` ref (Issue #3309 hardening and its PR #3308 review
+follow-up — a re-allow committed only on the branch under review, never
+published on the repo's own default branch, no longer exempts anything).
+Secret patterns and credential-store paths (`FORBIDDEN_STAGED_PATTERNS`)
+are never exempt this way, and every failure to read the answer leaves the
+path refused. `REQUIRED_GITIGNORE_PATTERNS` is not widened. Closes #3296.
 
 - [x] Failing real-repo regression test first (verified red on base)
 - [x] `gitignoreReallowed` helper, wired into `assertSafeToCommit`
@@ -47,6 +50,16 @@ is not widened. Closes #3296.
   `.gitignore`, a non-negation decision, or a spawn failure leaves the
   path refused (Issue #3309). A `run` test seam exists only because
   `runGitCommand` reports a timeout as `ok:true` with code 124.
+- `HEAD:.gitignore`'s blob must also equal `origin/<default>:.gitignore`'s
+  (PR #3308 review follow-up to #3309). `.gitignore` is itself on
+  `ALLOWED_HIDDEN_PATHS`, so a worker commit could carry an agent's
+  `!`-negation and a later commit on the same branch then stage the path
+  it re-allows — without this check the repo's own choice would be
+  decided by the branch under review, not by what the repo's default
+  branch actually publishes. `originDefaultRef` (already used by the
+  #2774 exemption) gained a test-seam `run` parameter so this check shares
+  it. An unresolvable `origin/HEAD`, a missing `.gitignore` on either ref,
+  or a mismatched blob all leave nothing exempt (fail closed).
 - `assertAdoptedMergeIsSafe` (`worker/deno/lib/milestone_merge_state.ts`)
   is deliberately excluded: an agent-committed merge stays held to the
   strict classifier plus `mergedInUnchanged`.
@@ -62,13 +75,15 @@ is not widened. Closes #3296.
   re-allow, and `gitignore_enforcer.ts` never writes `info/exclude`.
   Reading them through `check-ignore` therefore cannot widen the
   exemption.
-- Residual risk: the gate reads `.gitignore` at `HEAD`, not on the base
-  branch, so a re-allow committed earlier on the same branch counts.
-  Secrets stay refused regardless, and the prompt rule tells agents never
-  to add a re-allow rule themselves. The ancestor-walk and root-source
-  requirement (Issue #3309) closes the residual risk that a bare
-  `check-ignore` exit 1 would otherwise cover a hidden path no rule
-  mentions, or a path re-allowed by an untracked nested `.gitignore`.
+- The ancestor-walk and root-source requirement (Issue #3309) closes the
+  risk that a bare `check-ignore` exit 1 would otherwise cover a hidden
+  path no rule mentions, or a path re-allowed by an untracked nested
+  `.gitignore`. The previously-noted residual risk — the gate read
+  `.gitignore` at `HEAD` only, so a re-allow committed earlier on the same
+  branch (never published on the repo's default branch) would still
+  count, since `.gitignore` is itself on `ALLOWED_HIDDEN_PATHS` — is now
+  closed by the `origin/<default>` blob-match requirement above (PR #3308
+  review follow-up).
 
 ## Evidence
 
@@ -103,14 +118,19 @@ $ git check-ignore -v -n --no-index -- .claude/skills/review-fleet-prs/SKILL.md;
 
 The code no longer treats a bare exit 1 as sufficient: it also requires the
 deciding rule found by the ancestor walk to be a root-`.gitignore`
-`!`-negation, not just the exit code (Issue #3309).
+`!`-negation, not just the exit code (Issue #3309), and requires that root
+`.gitignore` to match `origin/<default>`'s copy (PR #3308 review
+follow-up).
 
-- `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts`: 18
-  tests. Real-repo fixtures (with a local git identity) cover the
-  acceptance criteria and the `.gitignore` guards. Stub tests cover a
-  spawn failure and an unexpected exit code.
+- `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts`: 28
+  tests. Real-repo fixtures (built as an upstream-plus-clone pair, so
+  `origin/<default>` is configured and matches `HEAD` by construction)
+  cover the acceptance criteria and the `.gitignore` guards, including the
+  branch-only-reallow and no-origin cases. Stub tests cover a spawn
+  failure, an unexpected exit code, an unresolvable `origin/HEAD`, and a
+  `HEAD`/`origin/<default>` blob mismatch.
 - That file, `worker/deno/tests/pre_commit_safety_test.ts` and
-  `worker/deno/tests/hidden_files_safety_integration_test.ts`: 69 passed,
+  `worker/deno/tests/hidden_files_safety_integration_test.ts`: 86 passed,
   0 failed. `deno fmt --check`, lint and check are clean.
 - **Docs sweep** — grep: `ALLOWED_HIDDEN_PATHS`, `classifyStagedPath`,
   `REQUIRED_GITIGNORE_PATTERNS`, `hidden path`, `Pre-commit safety gate`,
@@ -159,19 +179,21 @@ deciding rule found by the ancestor walk to be a root-`.gitignore`
 
 ## Test Plan
 
-- Removed assertions: none. No existing test was edited.
-- New file
-  `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts` (18
-  tests). The existing tests expecting the hidden-path refusal were
-  re-run and still reach it:
+- Removed assertions: none. `makeSkillRepo` in
+  `pre_commit_safety_gitignore_reallow_3296_test.ts` was changed from a
+  plain `git init` fixture to an upstream-plus-clone pair (so
+  `origin/<default>` exists and matches `HEAD`); every existing test using
+  it was re-run and still reaches its original assertion (see below).
+- New file `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts`
+  (28 tests; 4 added for the PR #3308 review follow-up). The existing
+  tests expecting the hidden-path refusal were re-run and still reach it:
   `worker/deno/tests/pre_commit_safety_test.ts` and
-  `worker/deno/tests/hidden_files_safety_integration_test.ts` (69 passed
+  `worker/deno/tests/hidden_files_safety_integration_test.ts` (86 passed
   in total).
 - Named tests checked with `git ls-files` from the repository root: all
   three are tracked.
-- Full `./quality.sh < /dev/null` on the head: passed with skipped
-  checks. The only skip was config integration ("deno or .config.json not
-  available"), which is environmental.
+- Full `./quality.sh < /dev/null` re-run on this head after the PR #3308
+  review follow-up: see the PR reply for the actual outcome of this run.
 
 **Branch outcomes:**
 
@@ -202,6 +224,16 @@ deciding rule found by the ancestor walk to be a root-`.gitignore`
   turned the exit-128 test red. Dropping `--no-index` turned 2 red.
 - `worker/deno/lib/pre_commit_safety.ts:413` wiring: the AC1 regression
   test goes red on base without it.
+- `worker/deno/lib/pre_commit_safety.ts:443` unresolvable `origin/HEAD`:
+  reached by "an unresolvable origin/HEAD exempts nothing even with a
+  decided root negation" and "a repo with no origin configured exempts
+  nothing" (PR #3308 review follow-up).
+- `worker/deno/lib/pre_commit_safety.ts:455` blob mismatch: reached by "a
+  HEAD .gitignore blob that differs from origin/<default>'s exempts
+  nothing" and "a re-allow committed only on this branch, absent from
+  origin/<default>, exempts nothing" (PR #3308 review follow-up). Removing
+  the whole default-ref-match block (lines 438-457) turned all four new
+  tests red; restored.
 
 All mutations were restored.
 
@@ -239,3 +271,15 @@ three gain the exemption by intent. `classifyStagedPath` is unchanged, so
 - **fixed (Issue #3309)** — The docs said the root .gitignore must be unmodified 'in both the index and the working tree', but the code only ran git diff --quiet HEAD -- .gitignore, which compares HEAD with the working tree. A staged .gitignore edit whose working-tree copy had been put back would have passed. — evidence: `worker/deno/lib/pre_commit_safety.ts` now also runs `git diff --cached --quiet HEAD -- .gitignore`, and Case 11 in `worker/deno/tests/pre_commit_safety_gitignore_reallow_3296_test.ts` covers the index-only edit.
 - **fixed (Issue #3309)** — The docs said a path is exempt when the .gitignore 're-allows' it, but exit 1 from git check-ignore -q --no-index only means 'not ignored', which would also exempt a hidden path no rule mentions and a path re-allowed by an untracked nested .gitignore. — evidence: `gitignoreReallowed` now requires an ancestor-walk decision from the root `.gitignore` itself that is an explicit `!`-negation; Case 9 and Case 10 in the same test file cover both previously-untested scenarios.
 - **clean** — Australian English spelling, JSDoc on the new exported function, fail-closed handling when git cannot run or returns other exit codes, TDD (a dedicated 3296 test file with positive and negative controls), and secret patterns checked before any .gitignore exemption
+
+**PR #3308 review follow-up (hand-added, not a re-run of the automated
+reviews above):** a later review round found that `HEAD`'s `.gitignore`
+alone was still trusted, so a `!`-negation committed only on the branch
+under review — never published on the repo's own default branch — could
+still exempt a later commit on that branch, even though the two findings
+the same round raised about exit-1-alone and nested/untracked
+`.gitignore` were already fixed by the entries above. `gitignoreReallowed`
+now also requires `HEAD:.gitignore` to match `origin/<default>:.gitignore`
+byte for byte, fail-closed when `origin/HEAD` cannot be resolved or either
+`.gitignore` is missing. See the four new tests this adds, listed in
+Branch outcomes below.
