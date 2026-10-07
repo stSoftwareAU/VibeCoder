@@ -121,6 +121,7 @@ Deno.test("assemblePrBody - a summary with a `missing` criterion does not produc
     issueNumber: ISSUE,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
   });
   assertEquals(hasClosingKeyword(body, ISSUE), false);
   assertStringIncludes(body, `Part of #${ISSUE}`);
@@ -135,6 +136,7 @@ Deno.test("assemblePrBody - an all-met summary still closes the issue (Issue #31
     issueNumber: ISSUE,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
   });
   assertEquals(hasClosingKeyword(body, ISSUE), true);
   assertEquals(body.includes("leaves #"), false);
@@ -146,6 +148,7 @@ Deno.test("assemblePrBody - a `missing` summary with no keyword of its own gets 
     issueNumber: ISSUE,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
     ensureReferences: (b, n) => `${b}\n\nCloses #${n}`,
   });
   assertEquals(hasClosingKeyword(body, ISSUE), false);
