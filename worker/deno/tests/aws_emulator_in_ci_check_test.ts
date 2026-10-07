@@ -640,6 +640,13 @@ Deno.test("cargoTomlUsesAws - commented-out dependency line does not count", () 
   assert(!cargoTomlUsesAws('[dependencies]\n# aws-sdk-s3 = "1"\n'));
 });
 
+Deno.test("cargoTomlUsesAws - an aws-sdk-like key outside any dependency table does not count", () => {
+  // A [features] (or any non-dependency) table may happen to declare a key
+  // that looks like an AWS SDK crate name; only a key inside a genuine
+  // dependency table is evidence of an actual AWS dependency.
+  assert(!cargoTomlUsesAws('[features]\naws-sdk-s3 = []\n'));
+});
+
 Deno.test("packageJsonUsesAws - devDependencies @aws-sdk scope counts", () => {
   assert(
     packageJsonUsesAws(

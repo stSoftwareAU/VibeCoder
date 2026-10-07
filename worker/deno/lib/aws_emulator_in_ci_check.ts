@@ -180,8 +180,7 @@ function stripXmlComments(text: string): string {
   return result;
 }
 
-const REQUIREMENTS_AWS_PACKAGE =
-  /^(boto3|botocore|aiobotocore)(?![A-Za-z0-9._-])/i;
+const REQUIREMENTS_AWS_PACKAGE = /^(boto3|botocore|aiobotocore)/i;
 
 /**
  * True when `text` (a `requirements*.txt`) pins `boto3`, `botocore`, or
