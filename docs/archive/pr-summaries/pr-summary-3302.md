@@ -81,10 +81,11 @@ Backend-only change: only test files are touched.
   later correction to this Test Plan's Removed/Result columns (600db042) only
   edits this summary file, so no further `quality.sh` run was needed. The
   config integration step was SKIPPED (no live config in the container).
-- Docs sweep: no symbol, flag or documented command was renamed or changed.
-  Only test-internal scoping moved, so no doc needed updating. The module doc
-  of `worker/deno/tests/reuse_existing_owner_3084_test.ts` was updated to
-  describe the section scoping.
+- **Docs sweep** — grep: no symbol, flag or documented command was renamed or
+  changed; section: none — this is a test-internal scoping refactor with no
+  user-facing surface, so no manual section documents it; updated: the module
+  doc of `worker/deno/tests/reuse_existing_owner_3084_test.ts`, to describe the
+  section scoping.
 - Remaining whole-file presence pins in 26 other drift tests are out of scope
   here. They are tracked in follow-up #3309.
 
