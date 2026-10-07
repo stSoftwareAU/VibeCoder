@@ -190,6 +190,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // growth measurement separates its linear hand-written scanners from a
   // backtracking regex (#3244).
   "tests/change_request_quotes_3244_test.ts",
+  // The cross-file anchor link scanner reads every docs Markdown line; only a
+  // growth measurement separates its linear inline-link and code-span
+  // patterns from the quadratic link regex it replaced (Issue #3337).
+  "tests/cross_file_anchors_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).
