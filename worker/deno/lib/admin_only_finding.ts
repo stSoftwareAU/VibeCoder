@@ -48,8 +48,14 @@ export function parseRepoSettingsFindingId(issueBody: string): string | null {
  */
 const REPO_ADMIN_ACTION_PROSE = /the worker cannot change repository settings/i;
 
-/** `BP-REPO-*` findings fixed by an ordinary commit (e.g. a `SECURITY.md`), so a worker PR resolves them (Issue #3266). */
-const WORKER_FIXABLE_REPO_FINDINGS: ReadonlySet<string> = new Set([
+/**
+ * `BP-REPO-*` findings fixed by an ordinary commit (e.g. a `SECURITY.md`), so
+ * a worker PR resolves them (Issue #3266). These ids have no setup hardening
+ * step either — no entry in `FINDING_STEP_KIND`
+ * (`setup/repo_settings_audit_close.ts`) — so the audit closer leaves them to
+ * the pull request that fixes them to close (Issue #3269).
+ */
+export const WORKER_FIXABLE_REPO_FINDINGS: ReadonlySet<string> = new Set([
   "BP-REPO-SECURITY-POLICY-MISSING",
 ]);
 

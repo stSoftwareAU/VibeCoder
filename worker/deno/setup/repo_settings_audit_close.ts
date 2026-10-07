@@ -7,7 +7,10 @@
  * then closes that drift. Without this module the issues stayed open after
  * the settings were fixed, and a human closed each by hand. The setup pass
  * that hardens a repo (`repo_settings_harden_sync.ts`, Issue #2628) calls
- * {@link closeFixedRepoSettingsFindings} with that run's outcome.
+ * {@link closeFixedRepoSettingsFindings} with that run's outcome. The scanner
+ * also files findings outside this (worker-fixable ids such as
+ * `BP-REPO-SECURITY-POLICY-MISSING`, Issue #3269): those never close here —
+ * the pull request that commits their fix closes them instead.
  *
  * A finding counts as fixed only when all three hold:
  *
@@ -87,8 +90,12 @@ export interface CloseFixedFindingsResult {
 }
 
 /**
- * The hardening step kind that fixes each `BP-REPO-*` finding the scanner
- * files. A finding id absent from this map is never closed.
+ * The hardening step kind that fixes each `BP-REPO-*` finding setup's repo
+ * hardening resolves. The worker-fixable ids (`WORKER_FIXABLE_REPO_FINDINGS`
+ * in `admin_only_finding.ts`, e.g. `BP-REPO-SECURITY-POLICY-MISSING`) have no
+ * hardening step at all — the pull request that commits the fix closes them,
+ * not setup (Issue #3269) — so they are absent from this map along with any
+ * other finding id absent from it, and neither is ever closed here.
  */
 export const FINDING_STEP_KIND: Readonly<Record<string, HardenStep["kind"]>> = {
   "BP-REPO-DEFAULT-TOKEN-WRITE": "workflow-token",
