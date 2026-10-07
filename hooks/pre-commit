@@ -15,6 +15,10 @@
 # - nested credential-store paths, at any depth (Issue #3336):
 #   .aws/, .ssh/, .gnupg/, .netrc
 #
+# Staged paths are read NUL-separated (`git diff --cached --name-only -z`)
+# so a path git would otherwise C-quote (a non-ASCII byte, a quote or a
+# backslash) is checked as written, not as its quoted form (Issue #3370).
+#
 # To bypass this hook in exceptional circumstances, use:
 #   git commit --no-verify
 #
@@ -23,11 +27,17 @@
 
 set -euo pipefail
 
-# Get list of staged files
-staged_files=$(git diff --cached --name-only 2>/dev/null || echo "")
+# List staged paths NUL-separated (-z) so git never C-quotes them: a quoted
+# path ("caf\303\251/id_rsa") would slip past every check below (Issue #3370).
+staged_list=$(mktemp)
+trap 'rm -f "$staged_list"' EXIT
+if ! git diff --cached --name-only -z > "$staged_list"; then
+    echo "ERROR: pre-commit hook could not list staged files; refusing to commit." >&2
+    exit 1
+fi
 
 # Exit early if no files are staged
-if [[ -z "$staged_files" ]]; then
+if [[ ! -s "$staged_list" ]]; then
     exit 0
 fi
 
@@ -36,7 +46,7 @@ fi
 # Pattern 2: *.secret.json (any file explicitly marked as secret)
 blocked_files=""
 
-while IFS= read -r file; do
+while IFS= read -r -d '' file; do
     # Check for .config*.json pattern (file basename starts with .config and ends with .json)
     basename_file=$(basename "$file")
     if [[ "$basename_file" =~ ^\.config.*\.json$ ]]; then
@@ -69,7 +79,7 @@ while IFS= read -r file; do
     if [[ "$file" =~ (^|/)\.(aws|ssh|gnupg|netrc)(/|$) ]]; then
         blocked_files="${blocked_files}${file}"$'\n'
     fi
-done <<< "$staged_files"
+done < "$staged_list"
 
 # If any blocked files were found, reject the commit
 if [[ -n "$blocked_files" ]]; then
