@@ -65,22 +65,13 @@ real one, because that turns the gate into a silent pass.
   - So there are 0 new false positives and 0 new false negatives.
 - `./quality.sh`: PASSED. `config integration` was SKIPPED because
   `.config.json` is not present in the container.
-- Docs sweep:
-  - Grepped for `collectEntries`, `scanRegionText`, `Branch outcomes header`
-    and `stops at`.
-  - Updated the `collectEntries` doc comment in
-    `worker/deno/lib/branch_outcomes_gate.ts`.
-  - Still true:
-    - the `scanText` field doc (`worker/deno/lib/branch_outcomes_gate.ts:138`);
-    - the `scanRegionText` doc (`worker/deno/lib/branch_outcomes_gate.ts:247`), which already describes the same stop.
-  - Not related: `reproduction_status_gate.ts` has an unrelated
-    `collectEntries`. `CODING-STANDARDS.md` and `docs/*.md` say nothing about
-    where the parser stops.
 - Related rules checked: **Every outcome of a branch you add needs a test
   that reaches it**, **A new test must go red without its change** and
   **Vet every regex on untrusted text**. No regex was added or changed. No
   prompt or standards rule changed. Applied to this PR's own diff: nothing
   found.
+
+**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name
 
 ## Test Plan
 
@@ -102,6 +93,7 @@ suite. Result: 77 passed, 2 failed. The two failures:
 
 **Changed assertion.**
 
+- Removed from `worker/deno/tests/branch_outcomes_gate_test.ts`: `assertEquals(namedTestPaths(record), []);` — #3340 requires each real `Branch outcomes` header to be parsed on its own, so the second header's region is now scanned and `[]` is untrue; it is replaced by `assertEquals(namedTestPaths(record), ["worker/deno/tests/unrelated_test.ts"]);`.
 - The test `parseBranchOutcomes - the test-path scan stops at a later Branch outcomes header` was renamed to `parseBranchOutcomes - a later Branch outcomes header is parsed on its own, so its region is scanned`.
 - Its expectation changed from `[]` to `["worker/deno/tests/unrelated_test.ts"]`.
 - The old `[]` held only because of this bug: the first header's scan swallowed the second header, so the second header's region was never scanned.
