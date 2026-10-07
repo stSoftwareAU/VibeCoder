@@ -1211,7 +1211,7 @@ Use this checklist when deploying the worker:
 The design-level model for this surface — who can write to a public issue,
 comment, PR review or label, what each capability buys an attacker, and which
 attack path it opens — lives in
-[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md#-attacker-capabilities-per-surface).
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md#%EF%B8%8F-attacker-capabilities-per-surface).
 
 This section is the **implementation reference** for the controls that answer
 those paths: what each one does today, which module owns it, and the failure
@@ -2000,7 +2000,7 @@ The GitHub token needs write access to:
 
 The residual risks themselves — what remains open, and why each is accepted
 rather than closed — are enumerated in
-[docs/THREAT-MODEL.md → Residual risks](docs/THREAT-MODEL.md#-residual-risks).
+[docs/THREAT-MODEL.md → Residual risks](docs/THREAT-MODEL.md#%EF%B8%8F-residual-risks).
 What follows is what an **operator** does about them:
 
 | Residual risk | What you do about it |

@@ -2581,7 +2581,7 @@ costed at the Fable 5 row. Both rows are carried for exactly that reason: no
 configuration changes on either side of the flip. **Which CLI a run gets has two
 answers**: in the container the image is the update mechanism, so
 `container/tools.json` is the lever; on a host it is the
-[minimum-version floor](CONFIGURATION.md#-minimum-version-floor).
+[minimum-version floor](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor).
 
 ##### Which CLI version actually serves 5.1 (Issue #1362)
 

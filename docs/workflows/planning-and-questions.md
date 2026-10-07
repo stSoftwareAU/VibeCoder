@@ -1075,7 +1075,7 @@ getting good results. It does three things:
    the worker posts an escalation comment asking a trusted human to add the
    `planning` label so the issue can be broken into smaller sub-issues. The
    worker does not add `planning` itself — see
-   [Worker Label Policy](../../README.md#-supported-labels).
+   [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels).
 3. **Is it too large for a single PR?** If **clear but too complex** for one
    implementation, the worker posts an escalation comment and unassigns — a
    trusted human then adds the `planning` label and the issue is broken into
@@ -1118,7 +1118,7 @@ implementation attempts on issues that are inherently multi-PR tasks.
      subsequent run via the normal **planning** workflow (create sub-issues,
      comment, close parent). The worker does **not** add the `planning` label
      itself — it is operational and reserved for trusted humans (see
-     [Worker Label Policy](../../README.md#-supported-labels);,).
+     [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels);,).
 
 #### Criteria for automatic escalation
 

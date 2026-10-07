@@ -535,7 +535,7 @@ These existing docs remain the source of truth for their areas:
 | Deployment (cron, systemd, launchd, logs)        | [DEPLOYMENT.md](../DEPLOYMENT.md)                             |
 | Usage (labels, clarification, failure handling)  | [USAGE.md](../USAGE.md)                                       |
 | Security (threat model, tokens)                  | [SECURITY.md](../../SECURITY.md)                              |
-| Worker label policy (worker-added vs human-only) | [README.md](../../README.md#-supported-labels)              |
+| Worker label policy (worker-added vs human-only) | [README.md](../../README.md#%EF%B8%8F-supported-labels)              |
 | Extending (Deno, prompts)                        | [EXTENDING.md](../EXTENDING.md)                               |
 | Worker internals (run loop, selection, PRs)      | [INTERNALS.md](../INTERNALS.md)                               |
 | Troubleshooting                                  | [TROUBLESHOOTING.md](../TROUBLESHOOTING.md)                   |

@@ -687,7 +687,7 @@ for the config schema.
 **To replace a prompt without publishing it**: map the phase's label to a
 non-public file with `custom_label_prompts`
 ([Custom Label Prompts](CUSTOM-PROMPTS.md), key reference in
-[Configuration](CONFIGURATION.md#-custom-label-prompts)). The override is
+[Configuration](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts)). The override is
 validated at config load against the placeholders of the phase it replaces, and
 each turn of a two-turn phase (`planning` / `planning_critique`, `quorum` /
 `quorum_judge`) needs its own entry. The same key maps a **new** label to a

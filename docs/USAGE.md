@@ -198,7 +198,7 @@ getting good results. It does three things:
    the worker posts an escalation comment asking a trusted human to add the
    `planning` label so the issue can be broken into smaller sub-issues. The
    worker does not add `planning` itself — see
-   [Worker Label Policy](../README.md#-supported-labels).
+   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
 3. **Is it too large for a single PR?** If the issue is clear but too complex
    for one implementation, the worker posts an escalation comment asking a
    trusted human to add the `planning` label — once added, the planning workflow
@@ -610,7 +610,7 @@ runs when _either_ the interval has elapsed _or_ the installed version is below
 a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
-(see [Configuration](CONFIGURATION.md#-minimum-version-floor)). The
+(see [Configuration](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor)). The
 default floor pins `claude` to `2.1.280` — the oldest release that resolves the
 `opus` alias to Opus 5.5, the tier every substantive phase requests
 (Issue #2560).
@@ -852,7 +852,7 @@ run in a **maintenance lane** beside the Priority-2 pool instead of ahead of it,
 each leasing its repository from the pool's in-flight registry so no slot and no
 pass ever write the same clone. A 30-minute CI fix therefore runs concurrently
 with issue work rather than idling every slot until it finishes. See
-[Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
+[Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
 
 The Priority-1.6 branch-update pass takes no lease; it works in its own linked
 worktree under `${WORK_DIR}/worktrees/pr-branch-update/<repo>` instead, so it

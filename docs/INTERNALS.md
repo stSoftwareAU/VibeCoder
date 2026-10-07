@@ -265,7 +265,7 @@ Deno. Both launchers follow the same steps:
    container that outlives the deadline is reaped by `container-reap` and the
    launcher exits `87`, so a wedged container VM cannot block the supervisor
    indefinitely. The cap itself is the last stage of
-   [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) — the
+   [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model) — the
    only place a still-progressing agent is killed, and the worker stops itself
    before it so work in progress is committed and pushed.
 
@@ -602,7 +602,7 @@ configured at least one `custom_label_prompts` mapping of that target phase
 (`issue` for 1.86, `pr` for 1.87). A fleet that configured neither gets a
 byte-identical ladder, and a fleet that configured only `pr` mappings gets 1.87
 without 1.86 — an issue-scanning row that could never match is not added. See
-[Configuration Reference — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
+[Configuration Reference — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts).
 
 After Priority 2 — once every issue slot has drained — the cycle runs the
 auto-merge sweep **a second time** (`runPostScanAutoMerge` in
@@ -904,7 +904,7 @@ them:
 Healthy hosts stay silent — no log line, no reason string. The operator
 runbook for this condition — what it means, what the worker keeps doing, and the
 identity checks to run first — is
-[Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#-host-reports-unhealthy--repos-inaccessible).
+[Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#%EF%B8%8F-host-reports-unhealthy--repos-inaccessible).
 The whole chain is covered end to end by
 `worker/deno/tests/worker_health_fleet3_e2e_test.ts`, including the inverse
 guard that a rate-limit storm must stay healthy.
@@ -1607,7 +1607,7 @@ trusted label adder). The set is resolved from config by
 [operational_dispatch_labels.ts](../worker/deno/lib/operational_dispatch_labels.ts).
 
 Every label declared in `custom_label_prompts`
-([Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts)) joins that set
+([Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts)) joins that set
 (Issue #847). A custom label dispatches a privileged automation phase with an
 operator-supplied prompt, so it is gated exactly like `planning`: the adder must
 be on the allowlist, the comparison is case-insensitive, and an add that cannot

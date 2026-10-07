@@ -79,30 +79,32 @@ const REPOINTED: Array<{
   target: string;
   fragment: string;
 }> = [
-  // #worker-label-policy → README Supported Labels.
+  // #worker-label-policy → README Supported Labels. The heading's 🏷️ emoji
+  // keeps its U+FE0F variation selector (Issue #3292), so the in-repo
+  // `link` strings below carry it percent-encoded as `%EF%B8%8F`.
   {
     source: "DESIGN-PRINCIPLES.md",
-    link: "README.md#-supported-labels",
+    link: "README.md#%EF%B8%8F-supported-labels",
     target: "README.md",
-    fragment: "-supported-labels",
+    fragment: "️-supported-labels",
   },
   {
     source: "docs/workflows/planning-and-questions.md",
-    link: "../../README.md#-supported-labels",
+    link: "../../README.md#%EF%B8%8F-supported-labels",
     target: "README.md",
-    fragment: "-supported-labels",
+    fragment: "️-supported-labels",
   },
   {
     source: "docs/workflows/README.md",
-    link: "../../README.md#-supported-labels",
+    link: "../../README.md#%EF%B8%8F-supported-labels",
     target: "README.md",
-    fragment: "-supported-labels",
+    fragment: "️-supported-labels",
   },
   {
     source: "docs/SUPPLY-CHAIN-TRIAGE.md",
-    link: "../README.md#-supported-labels",
+    link: "../README.md#%EF%B8%8F-supported-labels",
     target: "README.md",
-    fragment: "-supported-labels",
+    fragment: "️-supported-labels",
   },
   // #commit-safety + #test-driven-development-tdd → CODING-STANDARDS.md.
   {

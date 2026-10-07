@@ -1770,7 +1770,7 @@ unless explicitly overridden.
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `120`      | Seconds between scans. Raised from `30` in Issue #2446: each cycle costs a fixed amount of GraphQL quota, so a longer sleep cuts the per-hour spend without changing any code path. Set it explicitly to scan more often.                                                                                                                                                             |
-| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
+| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
 | Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
 | Refinement kill-after          | `refinement_kill_after`          | `10`       | Grace period after refinement timeout                                                                                                                                                                |
@@ -4315,7 +4315,7 @@ flag. See
 [MODEL-AND-CACHING.md → Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing).
 
 The resolution order (most specific wins) is documented in full in
-[MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain).
+[MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#%EF%B8%8F-modeleffort-precedence-chain).
 In short: a phase-specific `CLAUDE_MODEL_<PHASE>` / `CLAUDE_EFFORT_<PHASE>` env
 var (operator escape hatch) beats a per-repo phase override, which beats the
 per-repo base `claude_model`, which beats the global config overrides, which
@@ -4349,7 +4349,7 @@ routing, so a premium tier never leaks into a filler repo.
 > The interaction is internally consistent — the degraded-model detector reads
 > the same precedence chain and does not false-flag the demotion — so this is a
 > routing surprise to be aware of, not a bug. See
-> [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain)
+> [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#%EF%B8%8F-modeleffort-precedence-chain)
 > for the full chain, and
 > /
 > for the
@@ -4404,7 +4404,7 @@ never starves its peers.
 >
 > 1. **Label tier first, across the whole fleet** — `top-priority` >
 >    `work-on` > self-scheduled diagnostic > `low-priority` > `idle-task`
->    (see [README → Supported labels](../README.md#-supported-labels)).
+>    (see [README → Supported labels](../README.md#%EF%B8%8F-supported-labels)).
 > 2. **`nice` orders repos within a label tier** — of two `top-priority`
 >    issues, the one in the lower-`nice` repo is worked first.
 > 3. Milestone priority and age break the remaining ties, unchanged.
