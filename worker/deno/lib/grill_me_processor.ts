@@ -1281,12 +1281,11 @@ async function _processGrillMeWithHeartbeat(
     // such event, a peer worker's re-add, or a timeline lookup that could not
     // answer — takes the clean-up path below unchanged.
     try {
-      // Exhaustive, not the page-1 `getLabelLastAddInfo`: this answer decides
-      // whether to invoke Claude and post a round. A grilling with several
-      // rounds, replies and claim comments easily exceeds 100 timeline events,
-      // and a page-1 read returns the *oldest* slice — the developer's fresh
-      // re-add would fall outside it and the label be stripped again, leaving
-      // the reported bug unfixed on exactly the issues this targets.
+      // Exhaustive, and errors propagate (unlike `getLabelLastAddInfo`, which
+      // returns null): this answer decides whether to invoke Claude and post a
+      // round. A grilling with several rounds, replies and claim comments
+      // easily exceeds 100 timeline events, so only the full timeline holds
+      // the developer's fresh re-add (Issues #3327, #3709).
       const addInfo = await getLabelLastAddInfoComplete(
         repo,
         issueNumber,

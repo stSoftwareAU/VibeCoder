@@ -8,12 +8,18 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  checkParentBlocked,
   extractDependencyReferences,
   extractDependencyReferencesDetailed,
+  formatParentBlockedMessage,
 } from "../lib/issue_dependencies.ts";
-import type { IssueFetcher, IssueState } from "../lib/issue_dependencies.ts";
+import type {
+  DependencyBlocker,
+  IssueFetcher,
+  IssueState,
+} from "../lib/issue_dependencies.ts";
 import {
   isDependencyBlocked,
   memoiseIssueFetcher,
@@ -139,4 +145,104 @@ Deno.test("memoiseIssueFetcher keys its cache by repo as well as number", async 
   // Cached per repo — a repeat call adds no fetch.
   assertEquals((await fetcher.getIssueState("org/a", 5)).state, "OPEN");
   assertEquals(calls, ["org/a#5", "org/b#5"]);
+});
+
+// ---------------------------------------------------------------------------
+// checkParentBlocked — a native sub-issue in another repository (Issue #3319)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetcher for a single parent `owner/app#1` with one native child
+ * `{repo:"other/lib", number:5}`. `states` is keyed `repo#number`, just as
+ * in {@link makeFetcher}.
+ */
+function makeCrossRepoParentFetcher(
+  states: Record<string, "OPEN" | "CLOSED">,
+): IssueFetcher {
+  return {
+    getIssueBody: () => Promise.resolve(""),
+    getSubIssues: (repo: string, issueNumber: number) => {
+      if (repo === "owner/app" && issueNumber === 1) {
+        return Promise.resolve([{ repo: "other/lib", number: 5 }]);
+      }
+      return Promise.resolve([]);
+    },
+    getIssueState: (repo: string, issueNumber: number) => {
+      const key = `${repo}#${issueNumber}`;
+      const state = states[key];
+      if (!state) return Promise.reject(new Error(`no such issue: ${key}`));
+      const value: IssueState = { number: issueNumber, state, title: key };
+      return Promise.resolve(value);
+    },
+  };
+}
+
+Deno.test("checkParentBlocked resolves a cross-repo child against its own repo, not the parent's same-numbered issue", async () => {
+  // owner/app#5 is OPEN but is a different issue from the actual child,
+  // other/lib#5, which is CLOSED. The child must not block the parent.
+  const fetcher = makeCrossRepoParentFetcher({
+    "owner/app#5": "OPEN",
+    "other/lib#5": "CLOSED",
+  });
+  const result = await checkParentBlocked(fetcher, "owner/app", 1);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.isBlocked, false);
+});
+
+Deno.test("checkParentBlocked blocks on an open cross-repo child, and the message names its own repo", async () => {
+  // owner/app#5 is CLOSED, but the real child, other/lib#5, is OPEN — the
+  // parent must be blocked, resolved against the child's own repo.
+  const fetcher = makeCrossRepoParentFetcher({
+    "owner/app#5": "CLOSED",
+    "other/lib#5": "OPEN",
+  });
+  const result = await checkParentBlocked(fetcher, "owner/app", 1);
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.isBlocked, true);
+  assertEquals(result.value.openChildren, [{ repo: "other/lib", number: 5 }]);
+  const message = formatParentBlockedMessage(1, result.value, "owner/app");
+  assertStringIncludes(message, "other/lib#5");
+});
+
+Deno.test("checkParentBlocked's same-repo open-state map never answers for a cross-repo child", async () => {
+  // The cached open-state map has #5 as open — but that cache is this
+  // repo's own issue numbers (Issue #1808); the real child lives in
+  // other/lib and is CLOSED there, so the parent must not be blocked.
+  const fetcher = makeCrossRepoParentFetcher({
+    "other/lib#5": "CLOSED",
+  });
+  const openStateMap = new Map<number, "OPEN">([[5, "OPEN"]]);
+  const result = await checkParentBlocked(
+    fetcher,
+    "owner/app",
+    1,
+    openStateMap,
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.isBlocked, false);
+});
+
+// ---------------------------------------------------------------------------
+// isDependencyBlocked blockers — a cross-repo native child (Issue #3319)
+// ---------------------------------------------------------------------------
+
+Deno.test("isDependencyBlocked records a cross-repo child blocker with the child's own repo", async () => {
+  const fetcher = makeCrossRepoParentFetcher({
+    "owner/app#5": "CLOSED",
+    "other/lib#5": "OPEN",
+  });
+  const blockers: DependencyBlocker[] = [];
+  const blocked = await isDependencyBlocked(
+    "owner/app",
+    1,
+    fetcher,
+    undefined,
+    undefined,
+    blockers,
+  );
+  assertEquals(blocked, true);
+  assertEquals(blockers, [{ repo: "other/lib", number: 5, kind: "child" }]);
 });

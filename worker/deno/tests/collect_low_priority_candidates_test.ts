@@ -419,6 +419,11 @@ Deno.test(
           );
         }
       }
+      if (command.includes("/sub_issues")) {
+        // Genuine empty array means no children (Issue #3321: a non-array
+        // sub_issues response now fails closed).
+        return Promise.resolve("[]");
+      }
       if (command.includes("api repos/")) {
         // Sub-issue extraction (checkParentBlocked) — no sub-issues.
         return Promise.resolve(JSON.stringify({ body: "Depends on #91" }));

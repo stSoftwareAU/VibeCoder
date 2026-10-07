@@ -382,6 +382,8 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "## Available Tools",
   "## CI Fix Mode",
   "## Change Scope",
+  // Issue #3328: the persisted-data shape rule in the guidelines' code layer.
+  "## Changing the Shape of Persisted Data",
   "## Commit Run-Id Trailer",
   "## Commit Safety",
   "## Conflict Resolution",
