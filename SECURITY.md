@@ -4,26 +4,26 @@ This document describes the security model, threat landscape, and best practices
 
 ## 📋 Table of Contents
 
-- [Threat Model](#-threat-model)
-- [Security Architecture](#security-architecture)
-  - [Bounded outbound fetches — every fetch has a timeout and a size cap](#-bounded-outbound-fetches--every-fetch-has-a-timeout-and-a-size-cap)
+- [Threat Model](#%EF%B8%8F-threat-model)
+- [Security Architecture](#%EF%B8%8F-security-architecture)
+  - [Bounded outbound fetches — every fetch has a timeout and a size cap](#%EF%B8%8F-bounded-outbound-fetches--every-fetch-has-a-timeout-and-a-size-cap)
   - [Guarded outbound fetches — where the call is allowed to go](#-guarded-outbound-fetches--where-the-call-is-allowed-to-go)
   - [Release-age quarantine — dependencies and host toolchains](#-release-age-quarantine--dependencies-and-host-toolchains)
   - [Dependency audit — fail-closed on an unreachable advisory service](#-dependency-audit--fail-closed-on-an-unreachable-advisory-service)
 - [Secret Redaction — Every Outbound Sink](#-secret-redaction--every-outbound-sink)
-- [Configuration Security](#configuration-security)
-- [Token Security](#token-security)
-- [Deployment Security](#deployment-security)
-- [Security Checklist](#security-checklist)
+- [Configuration Security](#%EF%B8%8F-configuration-security)
+- [Token Security](#-token-security)
+- [Deployment Security](#-deployment-security)
+- [Security Checklist](#-security-checklist)
 - [Public Repository Controls](#-public-repository-controls)
-- [Public Repository Hardening](#public-repository-hardening)
-- [Known Limitations](#known-limitations)
-  - [For managers: public code vs your deployment](#for-managers-public-code-vs-your-deployment)
-  - [Accepted residual risks](#accepted-residual-risks)
-- [Responsible Disclosure Policy](#responsible-disclosure-policy)
-- [Upstream Advisory Triage](#upstream-advisory-triage)
+- [Public Repository Hardening](#-public-repository-hardening)
+- [Known Limitations](#%EF%B8%8F-known-limitations)
+  - [For managers: public code vs your deployment](#-for-managers-public-code-vs-your-deployment)
+  - [Accepted residual risks](#-accepted-residual-risks)
+- [Responsible Disclosure Policy](#-responsible-disclosure-policy)
+- [Upstream Advisory Triage](#-upstream-advisory-triage)
   - [Emergency dependency override](#emergency-dependency-override)
-- [Known upstream advisories](#known-upstream-advisories)
+- [Known upstream advisories](#-known-upstream-advisories)
 
 ## ⚠️ Threat Model
 
@@ -754,7 +754,7 @@ exit code (126). The only escape hatch is deliberate: set
 **Configuration structure:** See the [Configuration Reference](docs/CONFIGURATION.md) for the full `.config.json` file format and field descriptions.
 
 **Security-relevant fields:**
-- `authorized_commenters`: The **known** bot logins whose input (test results, code reviews, PR comments) the worker acts on without a thumbs-up reaction. Never a grant of the right to direct work. Keep this list minimal (see [Bot Account Security](#bot-account-security-issue-36))
+- `authorized_commenters`: The **known** bot logins whose input (test results, code reviews, PR comments) the worker acts on without a thumbs-up reaction. Never a grant of the right to direct work. Keep this list minimal (see [Bot Account Security](#-bot-account-security-issue-36))
 - `work_on_label`: Controls the label that allows work on issues not created by allowed authors. Verified via GitHub timeline API
 
 ### 🔐 Environment Variables
@@ -1870,7 +1870,7 @@ Use this checklist when deploying the Vibe Coder against **public repositories**
   - `[UNTRUSTED_LABEL_CHANGE]` — indicates attempted label manipulation
   - `[WRITE_REPO_BLOCKED]` — a GitHub write to a repo not on the run's allowlist was refused (possible data-exfiltration attempt via a cross-repo write)
   - `[AUTH_FAILURE]` — indicates unauthorised access attempts
-- [ ] **Configure a separate security log file**: Set `SECURITY_LOG_FILE` to route security events to a dedicated log for easier monitoring (see [Security Audit Logging](#security-audit-logging-issue-32))
+- [ ] **Configure a separate security log file**: Set `SECURITY_LOG_FILE` to route security events to a dedicated log for easier monitoring (see [Security Audit Logging](#-security-audit-logging-issue-32))
 - [ ] **Review approved issues for unexpected modifications**: Periodically check that `work-on`-labelled issues have not been modified since approval, especially for long-lived issues
 - [ ] **Audit comment volume**: Watch for issues accumulating an unusual number of comments from unknown users
 
@@ -2126,25 +2126,25 @@ The following security issues have been addressed. See the linked issues and SEC
 
 | Issue | Description | Resolution |
 |-------|-------------|------------|
-| [#27](https://github.com/stSoftwareAU/VibeCoder/issues/27) | Fix jq filter injection vulnerability (CRITICAL) | Safe `--arg` parameter passing in all jq filters. See [Safe Parameter Handling](#defence-in-depth) |
+| [#27](https://github.com/stSoftwareAU/VibeCoder/issues/27) | Fix jq filter injection vulnerability (CRITICAL) | Safe `--arg` parameter passing in all jq filters. See [Safe Parameter Handling](#%EF%B8%8F-defence-in-depth) |
 | [#29](https://github.com/stSoftwareAU/VibeCoder/issues/29) | Add security documentation and threat model | This document (SECURITY.md) plus the design-level [Threat Model](docs/THREAT-MODEL.md) |
-| [#30](https://github.com/stSoftwareAU/VibeCoder/issues/30) | Add input validation for prompt injection mitigation | Suspicious pattern detection, section delimiters, length limits. See [Input Validation](#input-validation-issue-30) |
-| [#31](https://github.com/stSoftwareAU/VibeCoder/issues/31) | Document minimum GitHub token scopes | Optional scope validation on startup. See [Token Security](#token-security) |
-| [#32](https://github.com/stSoftwareAU/VibeCoder/issues/32) | Add audit logging for security events | Structured `[SECURITY]` prefix logging. See [Security Audit Logging](#security-audit-logging-issue-32) |
-| [#33](https://github.com/stSoftwareAU/VibeCoder/issues/33) | Add configuration validation on startup | Required field, format, and safety checks. See [Configuration Validation](#configuration-validation-issue-33) |
-| [#34](https://github.com/stSoftwareAU/VibeCoder/issues/34) | Prevent accidental commit of .config.json | Multi-layered protection (gitignore, exclude, pre-commit hook). See [Configuration Security](#configuration-security) |
-| [#35](https://github.com/stSoftwareAU/VibeCoder/issues/35) | Add repository allowlist validation | `is_repo_allowed()` and `validate_git_url()` functions. See [Repository Allowlist Validation](#repository-allowlist-validation-issue-35) |
-| [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) | Review and harden authorised commenters default list | Bot accounts are opt-in; documented security considerations. See [Bot Account Security](#bot-account-security-issue-36) |
+| [#30](https://github.com/stSoftwareAU/VibeCoder/issues/30) | Add input validation for prompt injection mitigation | Suspicious pattern detection, section delimiters, length limits. See [Input Validation](#-input-validation-issue-30) |
+| [#31](https://github.com/stSoftwareAU/VibeCoder/issues/31) | Document minimum GitHub token scopes | Optional scope validation on startup. See [Token Security](#-token-security) |
+| [#32](https://github.com/stSoftwareAU/VibeCoder/issues/32) | Add audit logging for security events | Structured `[SECURITY]` prefix logging. See [Security Audit Logging](#-security-audit-logging-issue-32) |
+| [#33](https://github.com/stSoftwareAU/VibeCoder/issues/33) | Add configuration validation on startup | Required field, format, and safety checks. See [Configuration Validation](#-configuration-validation-issue-33) |
+| [#34](https://github.com/stSoftwareAU/VibeCoder/issues/34) | Prevent accidental commit of .config.json | Multi-layered protection (gitignore, exclude, pre-commit hook). See [Configuration Security](#%EF%B8%8F-configuration-security) |
+| [#35](https://github.com/stSoftwareAU/VibeCoder/issues/35) | Add repository allowlist validation | `is_repo_allowed()` and `validate_git_url()` functions. See [Repository Allowlist Validation](#%EF%B8%8F-repository-allowlist-validation-issue-35) |
+| [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) | Review and harden authorised commenters default list | Bot accounts are opt-in; documented security considerations. See [Bot Account Security](#-bot-account-security-issue-36) |
 | | Include secure coding principles in default prompts | Secure coding guidelines embedded in coding prompts |
 | | Replace `eval` with safe variable assignment in config_loader.sh | Eliminated `eval` usage to prevent code injection |
 | | Replace raw `mktemp` with `safe_mktemp` in scripts | Consistent use of secure temporary file creation |
 | | Add unit tests for security.sh prompt injection defence | Dedicated tests for suspicious pattern detection |
 | | Defence in depth for public repository comments | Parent issue for public comment threat mitigations. See [Public Repository Controls](#-public-repository-controls) |
-| | Filter issue comments by author trust level | Trust-level annotation of comments in Claude prompts. See [Trust-Level Comment Filtering](#1-trust-level-comment-filtering-1340) |
-| | Detect issue body/title modification after approval | Content-hash TOCTOU protection for `work-on` labelled issues. See [TOCTOU Protection](#2-toctou-protection-for-issue-content-1341) |
-| | Rate limiting and size caps for untrusted comments | Comment budgets, per-comment limits, and flood detection. See [Comment Rate Limiting](#3-comment-rate-limiting-and-size-caps-1342) |
-| | Strengthen prompt delimiters against injection | Randomised boundaries, per-comment delimiters, sanitisation. See [Delimiter Hardening](#4-delimiter-hardening-1343) |
-| | Label manipulation detection for approved issues | Timeline API verification for operational labels. See [Label Manipulation Detection](#5-label-manipulation-detection-1344) |
+| | Filter issue comments by author trust level | Trust-level annotation of comments in Claude prompts. See [Trust-Level Comment Filtering](#1-trust-level-comment-filtering) |
+| | Detect issue body/title modification after approval | Content-hash TOCTOU protection for `work-on` labelled issues. See [TOCTOU Protection](#2-toctou-protection-for-issue-content) |
+| | Rate limiting and size caps for untrusted comments | Comment budgets, per-comment limits, and flood detection. See [Comment Rate Limiting](#3-comment-rate-limiting-and-size-caps) |
+| | Strengthen prompt delimiters against injection | Randomised boundaries, per-comment delimiters, sanitisation. See [Delimiter Hardening](#4-delimiter-hardening) |
+| | Label manipulation detection for approved issues | Timeline API verification for operational labels. See [Label Manipulation Detection](#5-label-manipulation-detection) |
 
 ## 🔗 Related Security Issues
 

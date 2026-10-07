@@ -30,7 +30,7 @@ and the full semantics of dispatch and override, live in
 - [Trust — who may add the label](#-trust--who-may-add-the-label)
 - [When a labelled issue is dispatched](#-when-a-labelled-issue-is-dispatched)
 - [Container operation](#-container-operation)
-- [No versioning convention](#-no-versioning-convention)
+- [No versioning convention](#%EF%B8%8F-no-versioning-convention)
 - [Failure modes and their exact symptoms](#-failure-modes-and-their-exact-symptoms)
 - [Syncing a private prompt repository](#-syncing-a-private-prompt-repository)
 

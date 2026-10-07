@@ -26,13 +26,13 @@ For the **user manual** (how to use the worker as a repo owner), see
 
 ## 📋 Table of Contents
 
-- [0. Deno module architecture](#0-deno-module-architecture)
-- [1. Worker run loop and process lifecycle](#1-worker-run-loop-and-process-lifecycle)
-- [2. Issue selection and claiming](#2-issue-selection-and-claiming)
-- [3. PR monitoring](#3-pr-monitoring)
-- [4. Milestone and dependency handling](#4-milestone-and-dependency-handling)
-- [5. Question answering](#5-question-answering)
-- [6. Recent features](#6-recent-features)
+- [0. Deno module architecture](#-0-deno-module-architecture)
+- [1. Worker run loop and process lifecycle](#-1-worker-run-loop-and-process-lifecycle)
+- [2. Issue selection and claiming](#-2-issue-selection-and-claiming)
+- [3. PR monitoring](#-3-pr-monitoring)
+- [4. Milestone and dependency handling](#-4-milestone-and-dependency-handling)
+- [5. Question answering](#-5-question-answering)
+- [6. Recent features](#-6-recent-features)
 
 ---
 
