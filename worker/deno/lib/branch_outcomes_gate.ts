@@ -189,9 +189,13 @@ export interface BranchOutcomesRecord {
   uncapturedLineIndices: number[];
   /**
    * Raw line indices behind each contribution folded into `body`, grouped
-   * in the same order `body` joins them (one group per inline header body
-   * or wrapped-prose contribution) — used to blank `body` per group, the
-   * same construction `entryLineIndices` supports for `entries`.
+   * in the same order `body` joins them — one group per header, joining an
+   * inline header's own body line with the wrap lines it continues onto
+   * (Issue #3288, PR #3312 review round 5), so a backtick span straddling
+   * that line break still pairs when `blankedUnitLines` blanks the group.
+   * A heading-form header with no inline text groups just its wrap lines.
+   * Used to blank `body` per group, the same construction `entryLineIndices`
+   * supports for `entries`.
    */
   bodyLineIndexGroups: number[][];
 }
@@ -281,10 +285,6 @@ export function parseBranchOutcomes(
     }
 
     onlyNone = false;
-    if (body) {
-      bodyParts.push(body);
-      bodyLineIndexGroups.push([i]);
-    }
     const headerIndent = inlineMatch && LIST_MARKER_RE.test(rawLine)
       ? leadingIndent(rawLine)
       : -1;
@@ -296,9 +296,21 @@ export function parseBranchOutcomes(
       entryLineIndices.push([...collected.entryLines[k]!]);
       for (const idx of collected.entryLines[k]!) capturedLines.add(idx);
     }
-    if (collected.bodyExtra) {
-      bodyParts.push(collected.bodyExtra);
-      bodyLineIndexGroups.push([...collected.bodyExtraLines]);
+    // The header's own inline body (text on the header's own line, `body`)
+    // and the wrap lines it continues onto (`collected.bodyExtra`) are
+    // recorded as ONE group, so `blankedUnitLines` pairs a backtick span
+    // across the line break between them. Two separate groups let
+    // backtick pairing reset partway through the inline body's own lines,
+    // hiding an admission that wraps a code span across the break (PR
+    // #3312 review, round 5). When there is no inline body text (a
+    // heading-form header), the group stays just the wrap lines, matching
+    // the earlier shape.
+    if (body || collected.bodyExtra) {
+      if (body) bodyParts.push(body);
+      if (collected.bodyExtra) bodyParts.push(collected.bodyExtra);
+      bodyLineIndexGroups.push(
+        body ? [i, ...collected.bodyExtraLines] : [...collected.bodyExtraLines],
+      );
       for (const idx of collected.bodyExtraLines) capturedLines.add(idx);
     }
     const region = scanRegion(lines, i + 1, boundaryLevel);

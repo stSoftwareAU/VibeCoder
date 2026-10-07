@@ -1635,6 +1635,27 @@ Deno.test("validateBranchOutcomes - a wrapped path::name test name containing an
   assert(result.valid);
 });
 
+// PR #3312 review, round 5: the header's own line and the wrap line it
+// continues onto were recorded as two separate bodyLineIndexGroups entries
+// for an INLINE body (no list), so backtick pairing restarted on the wrap
+// line — a span opened on the header line (`` `cargo test ``) and closed on
+// the wrap line (`` --workspace` ``) was never recognised as one span, so
+// the admission prose between its close and the next span was wrongly read
+// as still inside an open span and blanked away.
+Deno.test("validateBranchOutcomes - an admission after a backtick span wrapped across the inline body's own line break still blocks", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n" +
+      "**Branch outcomes:** `worker/deno/lib/foo.ts:42` — error — checked " +
+      "with `cargo test\n--workspace` and no test reaches it — see " +
+      "`deno task test`\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+  assertEquals(result.unreachedEntries, ["worker/deno/lib/foo.ts:42"]);
+});
+
 // ---------------------------------------------------------------------------
 // PR #3312 review: recordsRedFlip's bare `\bred\b` check cleared a weak
 // admission on ordinary ways of saying "no test went red" that happen to

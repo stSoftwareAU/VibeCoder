@@ -95,6 +95,19 @@ the coding guidelines, and the issue and pr_feedback prompts. Closes #3288.
   `evaluateApplicable` blanks them, instead of blanking each raw line
   alone. `blankTestCitationNames` and its `isContinuation` reset are
   removed entirely — the corpus run below re-confirms no false block.
+- **PR #3312 review, round 5**: the inline body was still blanked as TWO
+  separate `bodyLineIndexGroups` entries — the header's own line (pushed at
+  the old `[i]`) and its wrap lines (pushed separately as
+  `[...collected.bodyExtraLines]`) — so a backtick span opened on the header
+  line and closed on the wrap line was never recognised as closed:
+  `blankedUnitLines` restarts pairing from scratch at the start of each
+  group. `parseBranchOutcomes` now records one group per header,
+  `[i, ...collected.bodyExtraLines]`, whenever the header carries inline
+  text; a heading-form header with no inline text still groups just its wrap
+  lines, unchanged. The round-4 Test Plan entry for `blankedUnitLines`
+  claiming pairing "never resets partway through a unit's own lines" was
+  true for entries and uncaptured paragraphs but not for this one body
+  shape — the group itself was wrong, not the pairing function.
 
 **Docs sweep** — grep: `branch-outcomes gate`, `Branch outcomes`,
 `branch_outcomes_gate`, `scanRegionText`, `uncapturedLines`,
@@ -180,6 +193,17 @@ helper renamed to `scanRegion`, and no doc names it.
   valid. The two `groupUncapturedIndices` reset branches (the index-gap
   check and the list-marker check) were each individually disabled and
   confirmed to turn their own dedicated test red, then restored.
+- **PR #3312 review, round 5** — one test added to
+  `worker/deno/tests/branch_outcomes_gate_test.ts` (count: 146 → 147): an
+  admission after a backtick span wrapped across the INLINE body's own line
+  break (no list involved) still blocks. Confirmed red against the
+  pre-round-5 code — `assertEquals(result.valid, false)` failed with
+  `Values are not equal. Actual: true / Expected: false`, because the
+  old two-group split let the wrap line's backtick re-open and swallow the
+  admission — and green with the fix (reverting only the
+  `body ? [i, ...collected.bodyExtraLines] : [...collected.bodyExtraLines]`
+  ternary in `parseBranchOutcomes` to the old `[...collected.bodyExtraLines]`
+  reproduces the same red failure).
 - No existing assertion's *behaviour under correct input* was weakened —
   the two renamed tests pin the SAME inputs, with the outcome corrected to
   match the fix. Two further tests — "a plain-text header still runs the
@@ -189,21 +213,27 @@ helper renamed to `scanRegion`, and no doc names it.
   variant it checked for no longer exists; every other line in the test
   diffs is an addition.
 - `deno test --allow-all` over the three files from `worker/deno`: passed
-  (163 passed, 0 failed — 146 + 14 + 3).
-- **Corpus run (PR #3312 review, round 4, rerun at this head)** —
+  (164 passed, 0 failed — 147 + 14 + 3).
+- **Corpus run (PR #3312 review, round 5, rerun at this head)** —
   CODING-STANDARDS' "Writing a gate over text" rule 2: ran
   `validateBranchOutcomes` over every file in `docs/archive/pr-summaries/`
-  (904 files at this head, same count as the round-3 run), with
-  `testsAtHead` populated from each file's own named test paths so a
-  missing-test problem never masks the admission-check result. 33 files
-  carry a `Branch outcomes` header (1 more mentions the phrase only in
-  prose the header regex does not match). Of those 33, 19 carry a real list
-  or inline body (the rest are honest `none added` declarations). The gate
-  blocks exactly 1 of the 19, `pr-summary-3257.md`, flagging 7 units — the
-  same 1-of-N result the round-2 run reported, now reached without the
-  false-positive count-mismatch message that previously ALSO blocked
-  `pr-summary-3147.md`, `pr-summary-3242.md` and `pr-summary-3249.md` (see
-  Summary, round 3). All 7 flagged units in `pr-summary-3257.md` are true
+  (908 files at this head — 4 more than the round-4 run, from PRs merged
+  since), with `testsAtHead` populated from each file's own named test paths
+  so a missing-test problem never masks the admission-check result. 37 files
+  carry a `Branch outcomes` header. Of those, 20 carry a real list or inline
+  body (the rest are honest `none added` declarations). The gate blocks 2 of
+  the 20: `pr-summary-3257.md` (unchanged from round 4 — 7 true-positive
+  units, see below) and `pr-summary-3295.md` (new since round 4), flagging
+  one list-entry unit: "the `(?!`)` lookahead only affects how runs of
+  backticks pair up. Removing it leaves the suite green." — a genuine
+  admission, not a case this round's fix touches (it is a list entry,
+  resolved through `entryLineIndices`, not the inline-body
+  `bodyLineIndexGroups` this round changed). Re-running the same corpus with
+  the round-5 fix reverted gives the identical `{ blocked: 2 }` result with
+  the same two files, confirming this round's fix neither introduces nor
+  masks a corpus finding — no PR summary in the archive happens to carry an
+  inline `Branch outcomes:` body that wraps a backtick span onto a
+  continuation line. All 7 flagged units in `pr-summary-3257.md` are true
   positives: 6 name the exact words `no test reaches it`, `unreachable
   through`, or `does not go red when flipped` against real branches
   (`worker/deno/lib/summary_claim_check.ts:391,410,285,607,804` and
@@ -218,46 +248,57 @@ helper renamed to `scanRegion`, and no doc names it.
   whose suite stayed green under the mutation (that proves no coverage, not
   coverage) — it is `exempt (out of scope): pre-existing branch, not added
   by this diff`, which the gate's own exemption clause exists for.
+  `pr-summary-3295.md` is left as-is too, for the same reason — it is an
+  unrelated PR's archived summary, out of scope for this fix to edit.
 
 **Branch outcomes:**
 
 All line numbers below are renumbered against this PR's own head commit
-(PR #3312 review, round 4 — the round-3 numbering had drifted onto comments
-and unrelated declarations; see Summary).
+(PR #3312 review, round 5 — the round-5 fix added lines earlier in the file,
+shifting every citation below it; see Summary).
 
-- `worker/deno/lib/branch_outcomes_gate.ts:276-279` — a `none added` header's
+- `worker/deno/lib/branch_outcomes_gate.ts:280-283` — a `none added` header's
   trailing lines are all uncaptured — `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an admission after 'none added.' on a following line blocks`
   — dropping the push turned the test red
-- `worker/deno/lib/branch_outcomes_gate.ts:299-303` — wrapped inline-body
-  lines (`bodyExtra`) are folded into the body and marked captured —
+- `worker/deno/lib/branch_outcomes_gate.ts:308-310,314` — the header's own
+  inline body and/or its wrap lines are folded into the body text and
+  marked captured —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare header followed by a wrapped prose line naming an existing test passes`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:306-310` — a scanned line not
+- **PR #3312 review, round 5** — `worker/deno/lib/branch_outcomes_gate.ts:311-313`
+  — the header's own body line and the wrap lines it continues onto are
+  recorded as ONE `bodyLineIndexGroups` entry (`[i, ...collected.bodyExtraLines]`)
+  when the header carries inline text, instead of two separate groups
+  (the earlier defect — see Summary) —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an admission after a backtick span wrapped across the inline body's own line break still blocks`
+  — reverting the ternary to the old `[...collected.bodyExtraLines]` turned
+  the test red (`valid` was `true`, expected `false`)
+- `worker/deno/lib/branch_outcomes_gate.ts:318-322` — a scanned line not
   folded into an entry or body is uncaptured —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an admission in a markdown table row blocks via uncapturedLines`
   — inverted, five tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:365-368` — a non-empty scanned
+- `worker/deno/lib/branch_outcomes_gate.ts:377-380` — a non-empty scanned
   line records its index —
   `worker/deno/tests/branch_outcomes_gate_test.ts::parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary`
   — flipped to true, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:434` — an entry line cut by
+- `worker/deno/lib/branch_outcomes_gate.ts:446` — an entry line cut by
   `capEntry` is not counted as captured, so an admission past the cap
   still blocks —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an admission past the entry-length cap still blocks (capEntry truncation)`
   — always marking it captured, test went red (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:445-446` — a continuation line cut
+- `worker/deno/lib/branch_outcomes_gate.ts:457-458` — a continuation line cut
   by `capEntry` is not counted as captured —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an admission on a continuation line past the entry-length cap still blocks`
   — always pushing the continuation index, test went red (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:716-717` — a `path::name` span keeps
+- `worker/deno/lib/branch_outcomes_gate.ts:728-729` — a `path::name` span keeps
   the part before `::` —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a path::name span with spaces keeps the path and stays valid`
   — swapped to blank-on-whitespace-first, test went red (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:718-719` — any other span with
+- `worker/deno/lib/branch_outcomes_gate.ts:730-731` — any other span with
   whitespace is blanked —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a backticked whole-admission span is not treated as an admission (documented look-alike)`
   — flipped to false, test went red
-- **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:607-620`
+- **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:619-632`
   (`blankedUnitLines`, replacing the round-3 `blankedUnitText` + round-2
   `blankTestCitationNames` pair the review found still mis-paired a span
   across a unit's own lines — see Summary) operates on exactly the raw
@@ -275,8 +316,11 @@ and unrelated declarations; see Summary).
     `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an admission on a lazy unindented continuation blocks (PR #3312 review, round 4)`,
     `...::validateBranchOutcomes - an admission after a backtick span wrapped onto the next line still blocks`, and
     `...::validateBranchOutcomes - a wrapped path::name test name containing an admission phrase is blanked and valid`
-  — each confirmed red against the pre-round-4 code, green with the fix
-- **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:654-664`
+  — each confirmed red against the pre-round-4 code, green with the fix. The
+    GROUP this function is handed for the inline body was still wrong until
+    round 5 (see the round-5 entry above) — the pairing function itself was
+    never the defect.
+- **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:666-676`
   (`groupUncapturedIndices`, new this round) groups consecutive uncaptured
   line indices into paragraphs so `blankedUnitLines` can pair a span across
   a wrapped uncaptured line, but resets at a gap in the index sequence and
@@ -290,7 +334,7 @@ and unrelated declarations; see Summary).
     — dropping the `LIST_MARKER_RE` disjunct, test went red
   - the merge-when-consecutive-and-non-list path —
     `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - none added followed by a code-span-only uncaptured line is valid`
-- **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:1128-1131`
+- **PR #3312 review, round 4** — `worker/deno/lib/branch_outcomes_gate.ts:1140-1143`
   (`evaluateApplicable`) now groups uncaptured lines into paragraphs before
   blanking, instead of calling `blankedUnitText(lines, [idx])` once per raw
   line —
@@ -299,7 +343,7 @@ and unrelated declarations; see Summary).
   `...::validateBranchOutcomes - an admission in a wrapped sibling-bullet span blocks (PR #3312 review, round 4)`
   — each confirmed red against the pre-round-4 code (per-line blanking hid
   the admission), green with the fix
-- `worker/deno/lib/branch_outcomes_gate.ts:793-798` —
+- `worker/deno/lib/branch_outcomes_gate.ts:805-810` —
   `OTHER_NEGATED_RED_SOURCES` additionally treats a bare negation adjacent
   to `red`, an "instead of … red" contrast, a "needs/should … red" ask, and
   "red … still to add" as recording no red flip —
@@ -309,50 +353,53 @@ and unrelated declarations; see Summary).
   red (PR #3312 review). `NEGATED_RED_SOURCE` is NOT one of the sources
   the strip is built from (PR #3312 review round 2 — it was unreachable
   dead code there; see Summary)
-- `worker/deno/lib/branch_outcomes_gate.ts:817-818` — a unit that mentions red
+- `worker/deno/lib/branch_outcomes_gate.ts:829-830` — a unit that mentions red
   records a red flip —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a Rust covered entry with a blanked inline-test-name is valid`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:824` — a strong admission
+- `worker/deno/lib/branch_outcomes_gate.ts:836` — a strong admission
   blocks — `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a GRQ-shape admission blocks and names the label`
   — removed the return, sixteen tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:826` — a named test path or a
+- `worker/deno/lib/branch_outcomes_gate.ts:838` — a named test path or a
   red flip clears a weak admission —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a path-citing entry mentioning an unrelated 'stayed green' is valid`
   — removed the return, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:828` — a weak admission with no
+- `worker/deno/lib/branch_outcomes_gate.ts:840` — a weak admission with no
   path and no red blocks —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a mixed list of 3 flags exactly the strong and weak entries`
   — removed the return, four tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:864-867` — an exempt clause decides
+- `worker/deno/lib/branch_outcomes_gate.ts:876-879` — an exempt clause decides
   the unit —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:867` — an exemption reason of
+- `worker/deno/lib/branch_outcomes_gate.ts:879` — an exemption reason of
   three or more words passes —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with a real reason is valid`
   — threshold raised to 100, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:867` — an exemption with a
+- `worker/deno/lib/branch_outcomes_gate.ts:879` — an exemption with a
   shorter reason blocks —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one`
   — threshold lowered to 0, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:893` and `:895` — a
+- `worker/deno/lib/branch_outcomes_gate.ts:904` and `:906` — a
   `path:<digits>` token becomes the label —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare path:line span stays a label after blanking`
-  — each skip forced on, three tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:898-900` — a fallback label longer
+  — each skip forced on, three tests went red (corrected from the round-4
+  summary's `:893` and `:895`, which were one line off — those are the
+  `match`/`return` lines either side of the actual `continue` skips; PR
+  #3312 review, round 5)
+- `worker/deno/lib/branch_outcomes_gate.ts:910-912` — a fallback label longer
   than 80 characters is cut and suffixed `…` —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a long admitting entry with no path:line gets an 80-character label ending in '…'`
   — never cutting, test went red (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:919` — the record's inline body
+- `worker/deno/lib/branch_outcomes_gate.ts:931` — the record's inline body
   is checked as a unit —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline-body admission blocks`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:929` and `:937` — an
+- `worker/deno/lib/branch_outcomes_gate.ts:941` and `:949` — an
   exemption without a reason gets its own problem, not the admission one —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one`
   — each flipped, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:1110` — a present list is
+- `worker/deno/lib/branch_outcomes_gate.ts:1122` — a present list is
   checked for admissions (unconditionally — the round-2 fail-closed
   branches this used to gate on were removed in round 3) —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a Branch outcomes entry admitting no test reaches it blocks PR creation (Issue #3288)`
