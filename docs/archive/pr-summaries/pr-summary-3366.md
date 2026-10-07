@@ -28,6 +28,7 @@ rest of milestone #3346 does that. Closes #3366.
 ### Undiscoverable Facts
 
 - #3346 names VibeCoder (`infra/cloudformation/linux-verification-host.yaml`) as an AWS-using repo. A run against this checkout returned `{"usesAws":true,"awsEvidence":["infra/cloudformation/linux-verification-host.yaml"],"emulatorConfigured":false,"workflowsLoaded":true}`.
+- `docs/audits/lib-sweep-coverage/top-up-3366.json` claims the new module because the completeness gate (`lib_sweep_coverage_test.ts`) requires every new `worker/deno/lib/` module to be in a sweep slice.
 - The run was observed with `deno eval` on the real checkout; the symlink classification was observed with `Deno.readDir` on Deno 2.9.6 (`isFile: false, isDirectory: false, isSymlink: true`).
 
 ## Evidence
@@ -66,8 +67,6 @@ The fakes are temp-directory fixtures, not port doubles. `loadWorkflows` and
 - **met** — Files under `node_modules/` or `target/` never count as AWS evidence. — evidence: `worker/deno/tests/aws_emulator_in_ci_check_test.ts::checkAwsEmulatorInCI - manifests under node_modules/target/vendor/.git are never evidence` — reviewer: met
 - **met** — `deno task` lint, fmt, check and test are green. — evidence: `./quality.sh < /dev/null` on the final code head: deno tests, deno lint, deno type check and deno fmt all PASSED — reviewer: partial — reason: the reviewer saw only the diff and could not run the gate; it was run here and passed
 - **unrequested** — symlinks are never followed during the walk, and a test pins it — reviewer: unrequested — reason: path confinement under the Secure Coding standard; without it a symlink could pull evidence from outside the checkout or loop the walk
-- **unrequested** — `parseCfnDocument` exported from `cfn_cost_checks.ts` — reviewer: met — reason: the reviewer traced it to the issue's "reuse … for template discovery" instruction, so it is not creep; listed here for visibility because it widens an existing module's API
-- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3366.json` — reviewer: missing — reason: the reviewer did not assess it; the gate requires every new `worker/deno/lib/` module to be claimed by a sweep slice
 
 ## Standards Review
 
@@ -85,10 +84,10 @@ The fakes are temp-directory fixtures, not port doubles. `loadWorkflows` and
 
 **Branch outcomes:** (each was flipped on purpose, the named test went red, and the code was restored)
 
-- `worker/deno/lib/aws_emulator_in_ci_check.ts:86` — dotted Cargo dependency header counts — `cargoTomlUsesAws - dotted dependency header counts` — red when the branch was removed (`nested Cargo.toml with dotted dependency header`)
+- `worker/deno/lib/aws_emulator_in_ci_check.ts:86` — dotted Cargo dependency header counts — `cargoTomlUsesAws - dotted dependency header counts` — deleting the dotted-header block turned it and `nested Cargo.toml with dotted dependency header` red
 - `worker/deno/lib/aws_emulator_in_ci_check.ts:95` — key outside a dependency table ignored — `cargoTomlUsesAws - an aws-sdk-like key outside any dependency table does not count` — dropping the guard turned it red
-- `worker/deno/lib/aws_emulator_in_ci_check.ts:105` — `package = "aws-sdk-…"` rename counts — `cargoTomlUsesAws - package rename to aws-sdk counts` — fails without the branch
-- `worker/deno/lib/aws_emulator_in_ci_check.ts:133` — only dependency groups count — `packageJsonUsesAws - own name as aws-sdk does not count` / `devDependencies @aws-sdk scope counts`
+- `worker/deno/lib/aws_emulator_in_ci_check.ts:105` — `package = "aws-sdk-…"` rename counts — `cargoTomlUsesAws - package rename to aws-sdk counts` — deleting the block turned it red
+- `worker/deno/lib/aws_emulator_in_ci_check.ts:133` — only dependency groups count — `packageJsonUsesAws - devDependencies @aws-sdk scope counts` (narrowing the groups to `dependencies` turned it red) and `packageJsonUsesAws - own name as aws-sdk does not count` (also matching `name` turned it red)
 - `worker/deno/lib/aws_emulator_in_ci_check.ts:159` — groupId tested per `<dependency>` segment — `pom.xml with project-level groupId only does not count` — testing the whole text turned it red
 - `worker/deno/lib/aws_emulator_in_ci_check.ts:177` — XML comments stripped — `pomXmlUsesAws - commented-out dependency does not count` — skipping the strip turned it red
 - `worker/deno/lib/aws_emulator_in_ci_check.ts:196` — exact requirement name only — `boto3-stubs in requirements does not count` — dropping the look-ahead turned it red
