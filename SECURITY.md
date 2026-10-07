@@ -678,10 +678,17 @@ VibeCoder implements defence-in-depth to prevent accidental commits of configura
 - `.config*.json` - Any config variant (e.g., `.config-backup.json`, `.config.local.json`)
 - `*.secret.json` - Files explicitly marked as containing secrets
 - `.secrets/` - Directory for sensitive files
-- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*` - Private key material
+- `.aws/`, `.ssh/`, `.gnupg/`, `.netrc` - Credential store directories/files,
+  refused at any depth (e.g. `deploy/.ssh/`), not only at the repo root
+  (Issue #3336)
+- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`,
+  `id_dsa.*`, `id_ecdsa`, `id_ecdsa.*`, `id_ed25519`, `id_ed25519.*`,
+  `id_ecdsa_sk`, `id_ecdsa_sk.*`, `id_ed25519_sk`, `id_ed25519_sk.*` - Private
+  key material, refused at any depth (Issue #3336)
 - `credentials.json`, `service-account*.json` - Credential files
 
-The key and credential patterns are not hidden files, so the blanket `.*`
+The `*.pem`/`*.key`/`*.p12`/`*.pfx`/`id_rsa`/`credentials.json`/
+`service-account*.json` patterns are not hidden files, so the blanket `.*`
 rule never covered them. They matter here because the worker reads a GitHub
 App private key from disk (`GITHUB_APP_PRIVATE_KEY_PATH`), and a `.pem` parked
 beside the config would otherwise be staged by `git add -A`. A repo that
