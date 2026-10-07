@@ -415,4 +415,4 @@ adding `work-on` / `top-priority` is how a finding becomes real work.
 | End-to-end storyboard | [WORKED-EXAMPLE.md](WORKED-EXAMPLE.md) |
 | Workflows hub | [README.md](README.md) |
 | Label config keys | [CONFIGURATION.md](../CONFIGURATION.md) |
-| Supported Labels (repo index) | [README Supported Labels](../../README.md#-supported-labels) |
+| Supported Labels (repo index) | [README Supported Labels](../../README.md#%EF%B8%8F-supported-labels) |

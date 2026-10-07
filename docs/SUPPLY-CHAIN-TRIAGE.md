@@ -8,7 +8,7 @@ GitHub issues. Each finding carries only its **finding label** (one of
 `github-actions-audit`, `test-audit`) plus a `severity:high|medium|low`
 label. The pickup labels — `top-priority`, `work-on`, `low-priority`,
 `idle-task` — are **never applied by the worker** (see
-[Worker Label Policy](../README.md#-supported-labels)).
+[Worker Label Policy](../README.md#%EF%B8%8F-supported-labels)).
 
 Under a steady, growing inflow of findings, manually toggling `work-on`
 per issue becomes the triage bottleneck. This doc covers the two parts
@@ -136,5 +136,5 @@ abort the rest of the sweep — the next repo is processed cleanly.
   — supply-chain-readiness template operator manual.
 - [`docs/IDLE-TASK-FRAMEWORK.md`](IDLE-TASK-FRAMEWORK.md) — idle-task
   framework that files findings as standalone issues.
-- [Supported Labels in README.md](../README.md#-supported-labels)
+- [Supported Labels in README.md](../README.md#%EF%B8%8F-supported-labels)
   — why the worker cannot apply pickup labels itself.

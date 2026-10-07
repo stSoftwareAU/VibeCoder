@@ -5769,6 +5769,8 @@ export async function createProductionRunCoreDeps(
                 // Issue #460: `fetchAllIssues` already requests `body`, so
                 // the census's dependency gate costs no extra call.
                 body: i.body,
+                // Issue #3314: native sub-issue counts, same call as above.
+                subIssuesSummary: i.subIssuesSummary,
               })),
               openPRs,
               // Issue #2663: the per-repo slot cap the scan applies, so the
