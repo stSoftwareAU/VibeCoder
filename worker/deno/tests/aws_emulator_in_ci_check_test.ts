@@ -360,6 +360,25 @@ Deno.test("checkAwsEmulatorInCI - manifests under node_modules/target/vendor/.gi
   }
 });
 
+Deno.test("checkAwsEmulatorInCI - a symlink to an outside directory with AWS evidence is never followed", async () => {
+  const root = await makeTempRepo();
+  const outside = await makeTempRepo();
+  try {
+    await writeFile(
+      outside,
+      "Cargo.toml",
+      '[dependencies]\naws-sdk-s3 = "1"\n',
+    );
+    await Deno.symlink(outside, `${root}/escape`, { type: "dir" });
+    const result = await checkAwsEmulatorInCI(root);
+    assertEquals(result.usesAws, false);
+    assertEquals(result.awsEvidence, []);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Emulator detection — positive shapes
 // ---------------------------------------------------------------------------
@@ -644,7 +663,7 @@ Deno.test("cargoTomlUsesAws - an aws-sdk-like key outside any dependency table d
   // A [features] (or any non-dependency) table may happen to declare a key
   // that looks like an AWS SDK crate name; only a key inside a genuine
   // dependency table is evidence of an actual AWS dependency.
-  assert(!cargoTomlUsesAws('[features]\naws-sdk-s3 = []\n'));
+  assert(!cargoTomlUsesAws("[features]\naws-sdk-s3 = []\n"));
 });
 
 Deno.test("packageJsonUsesAws - devDependencies @aws-sdk scope counts", () => {

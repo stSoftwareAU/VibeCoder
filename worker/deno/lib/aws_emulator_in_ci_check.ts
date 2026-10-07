@@ -180,7 +180,8 @@ function stripXmlComments(text: string): string {
   return result;
 }
 
-const REQUIREMENTS_AWS_PACKAGE = /^(boto3|botocore|aiobotocore)/i;
+const REQUIREMENTS_AWS_PACKAGE =
+  /^(boto3|botocore|aiobotocore)(?![A-Za-z0-9._-])/i;
 
 /**
  * True when `text` (a `requirements*.txt`) pins `boto3`, `botocore`, or
@@ -339,14 +340,15 @@ async function walk(
     const path = `${dir}/${entry.name}`;
     const relPath = rel ? `${rel}/${entry.name}` : entry.name;
 
-    if (entry.isSymlink) continue; // never follow symlinks (loops / escape)
-
     if (entry.isDirectory) {
       if (SKIP_DIRS.has(entry.name)) continue;
       await walk(root, path, relPath, evidence);
       continue;
     }
 
+    // Deno.readDir reports a symlink as neither file nor directory, so
+    // symlinks are never followed here (no loops, no escape from the
+    // checkout).
     if (!entry.isFile) continue;
     await checkFile(entry.name, path, relPath, evidence);
   }
