@@ -89,6 +89,13 @@ interface GitStubOptions {
   diffChanged?: boolean;
   diffFails?: boolean;
   headSha?: string;
+  /**
+   * Exit code for `merge-base --is-ancestor` (0 = is an ancestor). Only
+   * consulted when the sync's headSha/headRefOid comparison disagrees, which
+   * is the only case that calls it. Defaults to "not an ancestor" (fails
+   * closed) since most tests never reach this branch.
+   */
+  mergeBaseIsAncestor?: boolean;
 }
 
 function stubGit(gitCalls: string[][], opts: GitStubOptions = {}) {
@@ -118,6 +125,16 @@ function stubGit(gitCalls: string[][], opts: GitStubOptions = {}) {
       return Promise.resolve({
         ok: true,
         value: { code: 0, stdout: `${opts.headSha ?? HEAD_SHA}\n`, stderr: "" },
+      });
+    }
+    if (args[0] === "merge-base") {
+      return Promise.resolve({
+        ok: true,
+        value: {
+          code: (opts.mergeBaseIsAncestor ?? false) ? 0 : 1,
+          stdout: "",
+          stderr: "",
+        },
       });
     }
     throw new Error(`unexpected git call: ${args.join(" ")}`);
@@ -534,6 +551,60 @@ Deno.test("sync - checkout HEAD differs from the PR's remote head: skips without
       });
     }
     assertEquals(ghCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - PR's reported head lags behind this checkout's own verified push: still edits (PR #3353 review, round 2)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // GitHub's API has not yet caught up with the push this run just
+          // made and verified against the remote: it still reports the
+          // PRE-push SHA as headRefOid, while local HEAD is already at the
+          // pushed HEAD_SHA (an ancestor relationship, not a divergence).
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), [], BEFORE_SHA),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, {
+        diffChanged: true,
+        mergeBaseIsAncestor: true,
+      }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    assertEquals(
+      gitCalls.some((call) => call[0] === "merge-base"),
+      true,
+      "expected the sync to check ancestry before deciding to skip",
+    );
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

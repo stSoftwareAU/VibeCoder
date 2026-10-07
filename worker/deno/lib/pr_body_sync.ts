@@ -328,11 +328,15 @@ function extractDegradedRunSection(body: string): string {
  *     recorded digest differs from the digest of the summary at HEAD; or
  *   - for a legacy body with no digest marker, a before-push SHA is
  *     available and `git diff` shows the summary file changed since it;
- * - this checkout's `HEAD` matches the PR's remote `headRefOid` (PR #3353
- *   review) — a caller that only measured "nothing left unpushed" has not
- *   shown this checkout is current, only that it is not ahead, so a
- *   concurrent run that pushed a newer head must not be overwritten by a
- *   rebuild from this (older) checkout's summary; and
+ * - this checkout's `HEAD` matches the PR's remote `headRefOid`, or
+ *   `headRefOid` is an ancestor of `HEAD` (PR #3353 review, round 2) — a
+ *   caller that only measured "nothing left unpushed" has not shown this
+ *   checkout is current, only that it is not ahead, so a concurrent run that
+ *   pushed a newer head must not be overwritten by a rebuild from this
+ *   (older) checkout's summary. `headRefOid` being an ancestor rather than
+ *   equal means GitHub's API has not yet caught up with this run's own
+ *   verified push — not that someone else pushed — so that case still
+ *   proceeds; and
  * - the freshly assembled body actually differs from what is live.
  */
 export async function syncPrBodyFromSummary(
@@ -467,8 +471,38 @@ export async function syncPrBodyFromSummary(
   }
   const headSha = headShaResult.value.stdout.trim();
   if (headSha !== view.headRefOid) {
-    logger.warn(
-      "Checkout HEAD does not match the PR's remote head — skipping body sync to avoid overwriting a newer push (PR #3353 review)",
+    // GitHub updates a PR's headRefOid asynchronously after a push (PR #3353
+    // review, round 2): a caller that just pushed and verified it on the
+    // remote (verifyPushLanded) can still see the PRE-push SHA here for a
+    // short window. That is not the same case this check exists to catch —
+    // a concurrent run that pushed something NEWER. Tell them apart by
+    // ancestry: when the PR's reported head is an ancestor of this
+    // checkout's HEAD, they are the same lineage and GitHub simply has not
+    // caught up yet, so the sync may proceed. Only a head that is actually
+    // behind or diverged — not an ancestor — means someone else pushed.
+    const ancestorResult = await deps.runGitCommand(
+      ["merge-base", "--is-ancestor", view.headRefOid, headSha],
+      { cwd: input.repoPath },
+    );
+    const remoteHeadIsStaleCopyOfOurs = ancestorResult.ok &&
+      ancestorResult.value.code === 0;
+    if (!remoteHeadIsStaleCopyOfOurs) {
+      logger.warn(
+        "Checkout HEAD does not match the PR's remote head — skipping body sync to avoid overwriting a newer push (PR #3353 review)",
+        {
+          repo: input.repo,
+          prNumber: input.prNumber,
+          headSha,
+          remoteHead: view.headRefOid,
+        },
+      );
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "checkout is not the PR head" },
+      };
+    }
+    logger.info(
+      "PR's reported head lags behind this checkout's own verified push — proceeding (PR #3353 review, round 2)",
       {
         repo: input.repo,
         prNumber: input.prNumber,
@@ -476,10 +510,6 @@ export async function syncPrBodyFromSummary(
         remoteHead: view.headRefOid,
       },
     );
-    return {
-      ok: true,
-      value: { status: "skipped", reason: "checkout is not the PR head" },
-    };
   }
 
   let extraSections = "";
