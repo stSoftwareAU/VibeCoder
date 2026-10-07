@@ -125,6 +125,6 @@ Callers checked:
 - `findCodeownersOnDefaultBranch` is called by `worker/deno/setup/repo_settings_harden_sync.ts:414-415` and `worker/deno/setup/codeowners_sync.ts`. Its signature and behaviour are unchanged, and `tests/codeowners_sync_test.ts` passes.
 - `scanRepoSettings` is called by the audit template and by the audit closer (`setup/repo_settings_audit_close.ts`). The closer's re-scan now also reads the contents API. A non-404 error there is a failed re-scan and closes nothing, as for every other read. The new id is never eligible, because it has no step mapping.
 
-Gate: `./quality.sh < /dev/null` was run on the head. The final result is recorded in the commit that adds this file.
+Gate: `./quality.sh < /dev/null` on the head passed: `Result: PASSED (with skipped checks)`. The one skip is `config integration`. The first run failed on markdownlint MD018 (a wrapped line began with `#3269).**`). The wrap was fixed and the gate re-run.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
