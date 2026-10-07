@@ -1202,14 +1202,18 @@ is exempt (fail closed). Each exemption is logged at INFO.
 
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,
-`.netrc`, and any other hidden file not on the allowlist or re-allowed by the
-repository's own tracked `.gitignore`.
+`.netrc` (credential stores, refused at any depth — e.g. `deploy/.ssh/`,
+Issue #3336), and any other hidden file not on the allowlist or re-allowed by
+the repository's own tracked `.gitignore`.
 
 **Also forbidden — private key material and credential files:** `*.pem`,
-`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`, `id_dsa.*`,
+`id_ecdsa`, `id_ecdsa.*`, `id_ed25519`, `id_ed25519.*`, `id_ecdsa_sk`,
+`id_ecdsa_sk.*`, `id_ed25519_sk`, `id_ed25519_sk.*`, `credentials.json`,
 `service-account*.json`. These are not hidden files, so the `.*` rule never
 covered them — the worker reads a GitHub App private key from disk, and a `.pem`
-left in a working tree would otherwise be staged by `git add -A`. If a repo
+left in a working tree would otherwise be staged by `git add -A`. The OpenSSH
+private-key names are refused at any depth (Issue #3336). If a repo
 intentionally tracks a fixture matching one of these patterns, negate it
 explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
 

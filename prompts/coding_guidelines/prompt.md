@@ -1042,17 +1042,21 @@ exception above to cover it:
 - `.config.json`, `.config*.json` (worker config; may contain API tokens)
 - `*.secret.json` (explicitly marked secret files)
 - `.secrets/` (secret directories)
-- `.aws/`, `.ssh/`, `.gnupg/`, `.netrc` (credential stores)
+- `.aws/`, `.ssh/`, `.gnupg/`, `.netrc` (credential stores, forbidden at any
+  depth — e.g. `deploy/.ssh/`, Issue #3336)
 - Any other hidden file not on the allowlist above
 
 **Also forbidden — private key material and credential files:** `*.pem`,
-`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`, `id_dsa.*`,
+`id_ecdsa`, `id_ecdsa.*`, `id_ed25519`, `id_ed25519.*`, `id_ecdsa_sk`,
+`id_ecdsa_sk.*`, `id_ed25519_sk`, `id_ed25519_sk.*`, `credentials.json`,
 `service-account*.json`. None of these begins with a dot, so the hidden-file
 rule above never covered them — the worker reads a GitHub App private key from
 disk, and a `.pem` left in a working tree would otherwise be staged by
-`git add -A`. If a repository intentionally tracks a fixture matching one of
-these patterns, negate it explicitly (e.g. `!tests/fixtures/*.pem`) rather than
-dropping the broad rule.
+`git add -A`. The OpenSSH private-key names are forbidden at any depth
+(Issue #3336). If a repository intentionally tracks a fixture matching one
+of these patterns, negate it explicitly (e.g. `!tests/fixtures/*.pem`) rather
+than dropping the broad rule.
 
 **Rules:**
 
