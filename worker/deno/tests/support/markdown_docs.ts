@@ -143,6 +143,36 @@ export function flatWholeFile(text: string): string {
 }
 
 /**
+ * Assert that every pin occurs in `text`, matched as `flat()` matches it, and
+ * that no pin is a substring of another pin in the list (Issue #3307). A
+ * subsumed pin passes whenever the longer pin does, so it guards nothing on
+ * its own — CODING-STANDARDS.md § Documentation-drift tests, "Re-scoping an
+ * existing drift test". An empty list pins nothing and throws too.
+ */
+export function assertPins(text: DocSection, pins: readonly string[]): void {
+  assert(
+    pins.length > 0,
+    "assertPins: no pins given — an empty list pins nothing",
+  );
+  const flatPins = pins.map(flatWholeFile);
+  flatPins.forEach((pin, index) => {
+    const container = flatPins.findIndex((other, otherIndex) =>
+      otherIndex !== index && other.includes(pin)
+    );
+    assert(
+      container === -1,
+      `pin "${pins[index]}" is subsumed by pin "${
+        pins[container]
+      }" — it checks nothing on its own`,
+    );
+  });
+  const body = flat(text);
+  flatPins.forEach((pin, index) => {
+    assert(body.includes(pin), `section is missing pin "${pins[index]}"`);
+  });
+}
+
+/**
  * The pinned phrases the base branch's version of a section already held
  * (Issue #3193). Such a pin stays green when the new rule is deleted, so it
  * guards nothing — CODING-STANDARDS.md § Documentation-drift tests,
