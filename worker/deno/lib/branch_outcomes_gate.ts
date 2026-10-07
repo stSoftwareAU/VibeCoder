@@ -29,14 +29,26 @@ import { codeChangingFiles } from "./docs_sweep_gate.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import type { Result } from "../types.ts";
 
-/** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
-const MAX_SCAN_CHARS = 200_000;
+/**
+ * Cap on untrusted text scanned by the gate's regexes (defence in depth).
+ * Also read by `branch_outcome_citations.ts` (Issue #3341) to report a
+ * truncated list as not checked.
+ */
+export const MAX_SCAN_CHARS = 200_000;
 
-/** Cap on one Branch-outcomes entry after continuation lines are joined. */
-const MAX_ENTRY_CHARS = 4_000;
+/**
+ * Cap on one Branch-outcomes entry after continuation lines are joined.
+ * Also read by `branch_outcome_citations.ts` (Issue #3341) to report a
+ * truncated list as not checked.
+ */
+export const MAX_ENTRY_CHARS = 4_000;
 
-/** Cap on the number of entries parsed out of one list. */
-const MAX_ENTRIES = 100;
+/**
+ * Cap on the number of entries parsed out of one list.
+ * Also read by `branch_outcome_citations.ts` (Issue #3341) to report a
+ * truncated list as not checked.
+ */
+export const MAX_ENTRIES = 100;
 
 /** Every line terminator, so a lone CR or Unicode separator cannot stay inside a line. */
 const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;

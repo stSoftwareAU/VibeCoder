@@ -306,7 +306,7 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Four checks run, each only when it applies:
+Five checks run, each only when it applies:
 
 1. **Model drift pass** — only when the push changes a code file or a test
    file (a docs-only push gets no model pass). A read-only question
@@ -351,27 +351,56 @@ Four checks run, each only when it applies:
    hit. A named summary that cannot be read at the head is reported as not
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
+5. **Deterministic line-citation check (Issue #3341)** — on every
+   non-skipped push, for each `docs/archive/pr-summaries/pr-summary-*.md`
+   the PR diff carries that also existed at the before-run head, the
+   summary as it stood at the before-run head is read with `git show`, and
+   its `Branch outcomes:` list entries — plus the header's own inline body,
+   not a table under the header — are parsed for `path:N` / `path:N-M`
+   citations. A citation naming a file this push changed (an exact path
+   match, or a unique `/`-boundary suffix match such as a bare basename) is
+   mapped through this push's diff of that file (`git diff -U0
+   <before-run head> -- <path>`, the working tree against the before-run
+   head). Two things count as a hit: the cited line(s) moved and the
+   `Branch outcomes:` entry still cites the old `path:N`/`N-M`, reported
+   naming the old and the new line numbers; or this push changed or removed
+   a cited line and the entry citing it is word-for-word unchanged from the
+   before-run head, reported as a flip result carried over. Rewriting the
+   entry — renumbered, with the flip re-run — clears it. A citation of a
+   file this push did not change is never a hit, and a citation this push
+   added (absent from the before-run summary) is not checked. The check
+   reports, as not-checked rather than a hit, a cited name matching more
+   than one changed file, a diff it cannot read as text (`git` failed, or a
+   binary file), a malformed citation (line `0`, a reversed range) of a
+   changed file, a before-run summary it could not read, and a before-run
+   `Branch outcomes:` list longer than the parser reads.
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
 rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
-line, and rewrite or remove each stale quoted sentence — without changing
-code. The checks are then re-run; a prose finding counts as fixed only when
-its quoted sentence was present before the recovery turn and is gone after
-it — a finding whose file was not one of the files the question was asked
-about is never read back, so it stays reported regardless of the recovery
-turn. A stale quoted sentence counts as fixed only when it is actually gone
-after the recovery turn — a correction appended below it leaves it standing,
-so it stays reported. A model pass that returns no verdict is not a hit and
-does not trigger a recovery turn on its own; it goes straight to the reply
-note, and a named summary the quoted-sentence check could not read at the
-head goes there too. Whatever remains after the recovery turn — plus a model
-pass that returned no verdict and a summary that could not be checked — is
-appended to `.pr_response_message` under `### Drift check (Issue #3143)`, so
-it reaches the PR reply instead of being pushed silently.
+line, rewrite or remove each stale quoted sentence, and renumber each
+listed line citation to the head — re-running the flip for any entry whose
+cited code this push changed rather than carrying the old result over —
+without changing code. The checks are then re-run; a prose finding counts
+as fixed only when its quoted sentence was present before the recovery turn
+and is gone after it — a finding whose file was not one of the files the
+question was asked about is never read back, so it stays reported
+regardless of the recovery turn. A stale quoted sentence counts as fixed
+only when it is actually gone after the recovery turn — a correction
+appended below it leaves it standing, so it stays reported. A line-citation
+hit counts as fixed only when the re-run check no longer reports it. A
+model pass that returns no verdict is not a hit and does not trigger a
+recovery turn on its own; it goes straight to the reply note, and a named
+summary the quoted-sentence or line-citation check could not read at the
+head goes there too, along with any not-checked citation case the
+line-citation check reported. Whatever remains after the recovery turn —
+plus a model pass that returned no verdict and a summary that could not be
+checked — is appended to `.pr_response_message` under `### Drift check
+(Issue #3143)`, so it reaches the PR reply instead of being pushed
+silently.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
