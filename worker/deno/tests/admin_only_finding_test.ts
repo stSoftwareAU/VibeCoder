@@ -10,6 +10,7 @@ import {
   isAdminOnlyRepoSettingsIssue,
   parseRepoSettingsFindingId,
 } from "../lib/admin_only_finding.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 Deno.test("isAdminOnlyRepoSettingsIssue - a BP-REPO finding-id marker matches", () => {
   for (
@@ -58,6 +59,84 @@ Deno.test("isAdminOnlyRepoSettingsIssue - matching is case-insensitive and white
     ),
     true,
   );
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the marker only inside an inline code span is NOT admin-only (Issue #3295)", () => {
+  for (
+    const body of [
+      "The scanner files `<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->` on each finding.",
+      "Double-backtick span: `` <!-- finding-id: BP-REPO-SECRET-SCANNING-OFF --> `` here.",
+    ]
+  ) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), false, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the marker only inside a fenced code block or blockquote is NOT admin-only (Issue #3295)", () => {
+  for (
+    const body of [
+      "Example body:\n\n```markdown\n<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->\n```\n\nEnd.",
+      "~~~\n<!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->\n~~~",
+      "> <!-- finding-id: BP-REPO-RULESET-NO-REVIEW -->\n\nQuoted above.",
+    ]
+  ) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), false, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the admin-action prose only inside backticks, a code fence or a blockquote is NOT admin-only (Issue #3295)", () => {
+  for (
+    const body of [
+      "The scanner writes `Repository admin action — the worker cannot change repository settings.` as its fix.",
+      "Fix text:\n\n```\nRepository admin action — the worker cannot change repository settings.\n```\n",
+      "> Repository admin action — the worker cannot change repository settings.\n\nThat line is wrong.",
+    ]
+  ) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), false, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - a scanner-format body is still admin-only with only the marker or only the prose (Issue #3295)", () => {
+  const markerOnly =
+    "<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->\n\n## Finding\n\n" +
+    "The default `GITHUB_TOKEN` is read-write.\n\n```text\npermissions: write-all\n```\n\n" +
+    "## Suggested fix\n\nSet the default token to read-only.";
+  const proseOnly =
+    "## Finding\n\nThe default `GITHUB_TOKEN` is read-write.\n\n" +
+    "```text\npermissions: write-all\n```\n\n## Suggested fix\n\n" +
+    "Repository admin action — the worker cannot change repository settings. " +
+    "Settings → Actions → read-only.";
+  const markerOnlyCrlf = markerOnly.replace(/\n/g, "\r\n");
+
+  for (const body of [markerOnly, proseOnly, markerOnlyCrlf]) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), true, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - hostile backtick and fence runs scale linearly (Issue #3295)", () => {
+  for (
+    const build of [
+      // Fence-opener hostile case: a long backtick run at the start of a line
+      // never reaches the inline-code-span regex at all — it is swallowed by
+      // the fence-opener branch instead, so this alone does not exercise the
+      // `(?<!`)` lookbehind that keeps that regex linear.
+      (chars: number) => "`".repeat(chars) + "x",
+      (chars: number) => "` ".repeat(chars / 2) + "``x",
+      (chars: number) => "```\n" + "x\n".repeat(chars / 2),
+      // Code-span hostile case: a long backtick run NOT at the start of a
+      // line falls through to the inline-code-span regex, which is the one
+      // the `(?<!`)` lookbehind keeps linear.
+      (chars: number) => "x" + "`".repeat(chars) + "x",
+    ]
+  ) {
+    const result = assertLinearGrowth(
+      "isAdminOnlyRepoSettingsIssue, hostile backtick/fence runs",
+      build,
+      isAdminOnlyRepoSettingsIssue,
+      { baseChars: 10_000 },
+    );
+    assertEquals(result, false);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -109,6 +188,17 @@ Deno.test("parseRepoSettingsFindingId - a body with no marker yields null", () =
       "",
       "Repository admin action — the worker cannot change repository settings.",
       "finding-id: BP-REPO-DEFAULT-TOKEN-WRITE (not inside an HTML comment)",
+    ]
+  ) {
+    assertEquals(parseRepoSettingsFindingId(body), null, body);
+  }
+});
+
+Deno.test("parseRepoSettingsFindingId - a marker only quoted in code yields null, so setup's close-out ignores it (Issue #3295)", () => {
+  for (
+    const body of [
+      "`<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->`",
+      "```\n<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->\n```",
     ]
   ) {
     assertEquals(parseRepoSettingsFindingId(body), null, body);
