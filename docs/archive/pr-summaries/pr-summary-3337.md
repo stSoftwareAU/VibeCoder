@@ -5,7 +5,14 @@ Closes #3337
 ## Summary
 
 - `githubSlug` now keeps connector punctuation (`\p{Pc}`, e.g. `_`), as
-  GitHub's `github-slugger` does (`worker/deno/lib/markdown_anchors.ts:41`).
+  GitHub's `github-slugger` does (`worker/deno/lib/markdown_anchors.ts:46`).
+- Review on PR #3363: keeping `\p{Pc}` wrongly kept `_word_` underscore
+  *emphasis* delimiters too — GitHub renders those as `<em>word</em>` and
+  drops them from the id. `githubSlug` now strips a matched `_..._` /
+  `__..__` pair at a word boundary, outside backtick code spans, before
+  applying `STRIP` (`stripEmphasisUnderscores`,
+  `worker/deno/lib/markdown_anchors.ts:67-81`); an intraword underscore
+  (`callbacks.host_failure`) is untouched.
 - New `crossFileAnchorLinks()` and `decodeFragment()` helpers in the same
   module. They find every relative `*.md#fragment` link (inline links,
   the angle-bracket form, optional title, reference definitions) and skip
@@ -38,6 +45,15 @@ The underscore survives. The test
 `githubSlug - connector punctuation (underscore) survives (Issue #3337)`
 (`worker/deno/tests/markdown_anchors_test.ts:71`) pins that id.
 
+Review fix (PR #3363): re-ran the same lookup against
+`docs/audits/security-sweep-1218-commands-cli.md`, whose `### SEC-1218-F5 —
+an unescaped shell variable _name_ in text that is \`eval\`'d` heading uses
+underscore emphasis. GitHub's rendered id is
+`user-content-sec-1218-f5--an-unescaped-shell-variable-name-in-text-that-is-evald`
+— no underscores around `name`. Pinned by
+`githubSlug - underscore emphasis delimiters drop, unlike connector-punctuation underscores (PR #3363)`
+(`worker/deno/tests/markdown_anchors_test.ts:88`).
+
 Link fixes (old fragment → new fragment):
 
 | File | Old | New |
@@ -67,7 +83,7 @@ Link fixes (old fragment → new fragment):
 | docs/workflows/resilience-and-concurrency.md | repository-scan-order, milestone-aware-repo-availability | leading `-` added |
 | docs/workflows/projects-and-dependencies.md | same kind of fixes | leading `-` / `%EF%B8%8F` |
 
-**Docs sweep** — grep: `githubSlug`, `anchorSet`, `headingSlugs`, `markdown_anchors`, `crossFileAnchorLinks`, `decodeFragment`, `cross_file_anchors`, `github-slugger`; section: none — `worker/deno/lib/markdown_anchors.ts` is a test-only helper and no manual in `README.md`, `*/README.md` or `docs/` (outside `docs/archive/`) documents GitHub heading-slug rules or the cross-file anchor check (the only hit is the file list in `docs/audits/lib-sweep-coverage.json:701`, which is a coverage audit, not a manual); updated: the module doc in `worker/deno/lib/markdown_anchors.ts:10-31` for `\p{Pc}`. `docs/archive/` links were left as they are.
+**Docs sweep** — grep: `githubSlug`, `anchorSet`, `headingSlugs`, `markdown_anchors`, `crossFileAnchorLinks`, `decodeFragment`, `cross_file_anchors`, `github-slugger`; section: none — `worker/deno/lib/markdown_anchors.ts` is a test-only helper and no manual in `README.md`, `*/README.md` or `docs/` (outside `docs/archive/`) documents GitHub heading-slug rules or the cross-file anchor check (the only hit is the file list in `docs/audits/lib-sweep-coverage.json:701`, which is a coverage audit, not a manual); updated: the module doc in `worker/deno/lib/markdown_anchors.ts:10-31` for `\p{Pc}`, and (review on PR #3363) the consequences list (`:28-32`) and a new doc comment for `EMPHASIS_UNDERSCORES`/`stripEmphasisUnderscores` (`:50-66`) for the emphasis-underscore fix. Re-ran the same grep after the review fix: no additional hits. `docs/archive/` links were left as they are.
 
 The callers of the widened helper are
 `worker/deno/tests/agents_md_pointer_anchors_test.ts`,
@@ -80,8 +96,9 @@ underscore-stripping behaviour, and all pass.
 
 ## Test Plan
 
-- [x] `timeout 900 ./quality.sh < /dev/null` from the repo root: **PASSED**.
-  Only `config integration` was skipped, because `.config.json` is absent.
+- [x] `timeout 1080 ./quality.sh < /dev/null` from the repo root (review
+  fix, PR #3363): **PASSED**. Only `config integration` was skipped,
+  because `.config.json` is absent.
 - [x] Corpus: 455 cross-file fragment links in 274 files. Broken links went
   56 at base → 46 with `\p{Pc}` → 0 after the doc fixes.
 - [x] Red checks. Each goal was removed on purpose and the named test went red:
@@ -96,6 +113,12 @@ underscore-stripping behaviour, and all pass.
     157 ms → 2439 ms against an allowance of 1255 ms. The code-span and
     REF_DEF growth tests (`:155`, `:164`, `:173`) pass under both versions,
     because those patterns were already linear. They stay as guards.
+  - Review fix (PR #3363): removing `stripEmphasisUnderscores` from
+    `githubSlug` fails
+    `githubSlug - underscore emphasis delimiters drop, unlike connector-punctuation underscores (PR #3363)`
+    (`markdown_anchors_test.ts:88`) — actual slug keeps the stray
+    `_name_`: `sec-1218-f5--an-unescaped-shell-variable-_name_-in-text-that-is-evald`
+    vs the expected `...-name-in-text-that-is-evald`.
 - [x] `worker/deno/tests/cross_file_anchors_test.ts` uses `assertLinearGrowth`, so it is
   registered in `WALL_CLOCK_TEST_FILES`
   (`worker/deno/lib/parallel_unsafe_test_manifest.ts:196`). `check:manifests`
@@ -115,7 +138,9 @@ underscore-stripping behaviour, and all pass.
 - `worker/deno/lib/markdown_anchors.ts:147` — absent (code spans blanked) — `worker/deno/tests/cross_file_anchors_test.ts::crossFileAnchorLinks - skips everything it must not report (Issue #3337)` — flipped, test went red
 - `worker/deno/lib/markdown_anchors.ts:227` — success (well-formed escapes decoded) — `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - decodes well-formed percent-escapes` — flipped, test went red
 - `worker/deno/lib/markdown_anchors.ts:229` — error (malformed escape → null) — `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - returns null for a malformed percent-escape` — flipped, test went red
-- `worker/deno/lib/markdown_anchors.ts:41` — success (`_` kept by `githubSlug`) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - connector punctuation (underscore) survives (Issue #3337)` — removed `\p{Pc}`, test went red
+- `worker/deno/lib/markdown_anchors.ts:46` — success (`_` kept by `githubSlug`) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - connector punctuation (underscore) survives (Issue #3337)` — removed `\p{Pc}`, test went red
+- `worker/deno/lib/markdown_anchors.ts:67-81` (review on PR #3363) — success (`_word_`/`__word__` emphasis pair at a word boundary stripped, outside code spans) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - underscore emphasis delimiters drop, unlike connector-punctuation underscores (PR #3363)` — removed the `stripEmphasisUnderscores` call, test went red
+- `worker/deno/lib/markdown_anchors.ts:67-81` (review on PR #3363) — absent (intraword underscore, e.g. `host_failure`, left alone — lookbehind/lookahead fail) — `worker/deno/tests/markdown_anchors_test.ts::githubSlug - connector punctuation (underscore) survives (Issue #3337)` — already covered above; re-ran after the review fix and it still passes, proving the new strip does not touch intraword underscores
 - `worker/deno/tests/cross_file_anchors_test.ts:282` — error ("no heading produces this anchor" offender) — `worker/deno/tests/cross_file_anchors_test.ts::every cross-file #fragment link resolves to a heading in its target (Issue #3337)` — restored base `docs/SETUP.md`, test went red with 9 offenders
 - `worker/deno/tests/cross_file_anchors_test.ts:266` and `:274` — error (MISSING target file / UNDECODABLE fragment offenders) — no current corpus input reaches them; they are fail-loud reporting paths inside the sweep test itself, not production branches, and the decode-failure input is pinned by `worker/deno/tests/cross_file_anchors_test.ts::decodeFragment - returns null for a malformed percent-escape`
 
@@ -134,6 +159,12 @@ nothing to change.
   `decodeFragment` returns null for a malformed escape instead of throwing.
 - [x] Every regex runs on Markdown text and was vetted for ReDoS. Each one has
   a hostile linear-growth case (`cross_file_anchors_test.ts:119-173`).
+  Review on PR #3363 added `CODE_SPAN` and `EMPHASIS_UNDERSCORES` to
+  `githubSlug`, but — like the pre-existing `STRIP` regex in the same
+  file — they run per heading (one Markdown line, already length-bounded
+  by `headingSlugs`'s line match), not over a whole document, so a
+  dedicated growth test is not warranted; worst case is one lazy scan to
+  end-of-line per unmatched underscore on a single short line.
 - [x] Secrets: no hidden or credential files are staged.
 - [x] Injection surface: none. The code only reads files.
 - [x] Path confinement: none added. Link targets resolve only to read docs in
