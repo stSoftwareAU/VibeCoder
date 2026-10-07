@@ -136,6 +136,26 @@ Deno.test("validateBranchOutcomes - 'none added.' followed by a refreshed list s
   assertEquals(result.missingTests, [INVENTED]);
 });
 
+// Issue #3340 fix was incomplete for heading-form headers (PR #3372 review):
+// `collectEntries`'s deeper-heading skip ran before the header check, so a
+// real `### Branch outcomes` reached mid-scan was treated as a skippable
+// grouping heading rather than a header in its own right, and its own
+// region — prose citing a test — was never scanned.
+Deno.test("validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "`Branch outcomes:` is mentioned here, with no list yet.\n" +
+      "\n" +
+      "### Branch outcomes\n" +
+      "\n" +
+      `Citing \`${INVENTED}\` as the test that reaches it.\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
 // ---------------------------------------------------------------------------
 // Section-boundary heading depth (PR #3160 review, seventh round): the
 // boundary that ends a Branch-outcomes scan is relative to the heading
@@ -387,6 +407,11 @@ Deno.test("parseBranchOutcomes - a later Branch outcomes header is parsed on its
   // so its region was never scanned (Issue #3340). A `none added` header's
   // own region is still scanned (PR #3160, seventh round).
   assertEquals(namedTestPaths(record), ["worker/deno/tests/unrelated_test.ts"]);
+  // The first header's own scan still stops at the second header (the
+  // `BRANCH_OUTCOMES_PREFIX_RE` check in `scanRegionText`) rather than
+  // swallowing its "none added" body — without that stop, `scanText` would
+  // start with the second header's own words (PR #3372 review).
+  assert(!record.scanText.includes("none added"));
 });
 
 Deno.test("parseBranchOutcomes - the test-path scan stops at the next markdown heading", () => {
@@ -412,7 +437,13 @@ Deno.test("parseBranchOutcomes - the test-path scan stops at a later heading-for
       "#### Branch outcomes\n" +
       "unrelated-marker-xyz\n",
   );
-  assertEquals(record.scanText, "outcome one");
+  // The first header's own scan still stops at "#### Branch outcomes" and
+  // never includes "unrelated-marker-xyz". That text now appears in
+  // `scanText` regardless, because the heading-form header is a real
+  // `Branch outcomes` header: the outer loop in `parseBranchOutcomes` parses
+  // it on its own and scans ITS region too (PR #3372 review fixes
+  // `collectEntries` treating it as a skippable grouping heading instead).
+  assertEquals(record.scanText, "outcome one unrelated-marker-xyz");
 });
 
 // PR #3160 review (seventh round), finding 2(3): the `inlineMatch &&`

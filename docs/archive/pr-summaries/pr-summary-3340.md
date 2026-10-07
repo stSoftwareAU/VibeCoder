@@ -12,6 +12,14 @@ invented test path passed the gate. `collectEntries` now stops at the next
 `Branch outcomes` header, as `scanRegionText` already did, and the outer
 loop parses that header on its own.
 
+**PR #3372 review round:** the first fix only reordered the inline-header
+case; `collectEntries`'s `if (lvl > 0) continue` (the deeper-grouping-heading
+skip) still ran *before* the header check, so a real heading-form header
+(`### Branch outcomes`) reached mid-scan was treated as a skippable grouping
+sub-heading rather than a header in its own right, and its own region was
+never scanned. The header check now runs before that skip, matching the
+order `scanRegionText` already used.
+
 ```mermaid
 flowchart LR
     P["prose line read as a header"] --> C["collectEntries scan"]
@@ -19,10 +27,15 @@ flowchart LR
     B --> O["outer loop parses the real header:<br/>inline body + citations checked"]
 ```
 
-- [x] `collectEntries` breaks at a `Branch outcomes` prefix or heading line.
-- [x] Five new tests, plus one existing test rewritten to assert the corrected behaviour.
-- [x] Corpus run over `docs/archive/pr-summaries/`: no new false positive or false negative.
-- [x] Full quality gate passed.
+- [x] `collectEntries` breaks at a `Branch outcomes` prefix or heading line —
+  including a heading-form header deeper than the enclosing boundary.
+- [x] Five new tests, plus one existing test rewritten to assert the
+  corrected behaviour (first round); one more new test, plus one existing
+  test updated and one strengthened, for the heading-form case (PR #3372
+  review round).
+- [x] Corpus run over `docs/archive/pr-summaries/`: no new false positive or
+  false negative (re-run after the heading-form fix: 0 files changed).
+- [x] Targeted tests passed; full quality gate run noted in Evidence.
 
 ## Spec
 
@@ -57,21 +70,23 @@ real one, because that turns the gate into a silent pass.
 ## Evidence
 
 - `deno task test:unit tests/branch_outcomes_gate_test.ts` (from
-  `worker/deno`): 79 passed, 0 failed.
-- **Corpus run:** all 913 files in `docs/archive/pr-summaries/` were parsed
-  before and after.
-  - Only `pr-summary-3147.md` changed. Its body gained the later header
-    region's prose. Its set of test paths was the same before and after.
-  - So there are 0 new false positives and 0 new false negatives.
-- `./quality.sh`: PASSED. `config integration` was SKIPPED because
-  `.config.json` is not present in the container.
+  `worker/deno`): first round 79 passed; this round (PR #3372 review) 80
+  passed, 0 failed.
+- **Corpus run:** all 915 files in `docs/archive/pr-summaries/` were parsed
+  before and after this round's heading-form fix.
+  - 0 files changed (entries, body, scanText and named paths identical).
+  - So there are 0 new false positives and 0 new false negatives from this
+    round's fix.
+- `./quality.sh`: PASSED (this round, re-run on the final head).
+  `config integration` was SKIPPED because `.config.json` is not present in
+  the container.
 - Related rules checked: **Every outcome of a branch you add needs a test
   that reaches it**, **A new test must go red without its change** and
-  **Vet every regex on untrusted text**. No regex was added or changed. No
-  prompt or standards rule changed. Applied to this PR's own diff: nothing
-  found.
+  **Vet every regex on untrusted text**. No regex was added or changed (the
+  fix only reorders an existing check). No prompt or standards rule changed.
+  Applied to this PR's own diff: nothing found.
 
-**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name
+**Docs sweep** — grep: `collectEntries`, `scanRegionText`, `parseBranchOutcomes`, "Branch outcomes header", "Branch outcomes", "stops at"; section: `docs/workflows/issue-processing.md#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147`; updated: the `collectEntries` doc comment in `worker/deno/lib/branch_outcomes_gate.ts`; `docs/workflows/issue-processing.md:1857` — still true because the section describes what a `Branch outcomes:` list must carry and never says where the parser's scan stops or how a second header is read; the `scanText` field doc and the `scanRegionText` doc in `worker/deno/lib/branch_outcomes_gate.ts` — still true, the latter already describes the same stop; `reproduction_status_gate.ts`'s `collectEntries` — unrelated function of the same name. This round's reorder changes no externally-visible behaviour (same regexes, same fields), so no further doc hit was found.
 
 ## Test Plan
 
@@ -99,11 +114,41 @@ suite. Result: 77 passed, 2 failed. The two failures:
 - The old `[]` held only because of this bug: the first header's scan swallowed the second header, so the second header's region was never scanned.
 - Once that header is parsed, its region is scanned like any other. A `none added` header's region is scanned too (PR #3160, seventh round).
 
+### PR #3372 review round — heading-form headers
+
+The first round's fix only reordered `collectEntries`'s check for the
+*inline* header form; a heading-form header (`### Branch outcomes`) reached
+mid-scan still fell into the earlier `if (lvl > 0) continue` (deeper-heading
+skip) before ever being tested against `BRANCH_OUTCOMES_HEADING_RE`, so it
+was swallowed as a grouping sub-heading the same way the inline case used to
+be. Fixed by moving the header check above that skip, in both
+`collectEntries` and matching the order `scanRegionText` already used.
+
+**Red on base (this round).** I swapped in this round's pre-fix copy of
+`worker/deno/lib/branch_outcomes_gate.ts` (HEAD before this round, commit
+`9a3e30f8`) and ran the suite: 78 passed, 2 failed —
+
+- `validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test`
+- `parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary`
+
+**Changed/strengthened assertions.**
+
+- `parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary`: expected `record.scanText` changed from `"outcome one"` to `"outcome one unrelated-marker-xyz"` — the heading-form header is now a real header the outer loop parses on its own, so its own region (`unrelated-marker-xyz`) is scanned too, same as the inline case above.
+- `parseBranchOutcomes - a later Branch outcomes header is parsed on its own, so its region is scanned`: added `assert(!record.scanText.includes("none added"))` — pins that `scanRegionText`'s own header-stop (the first header's scan must not swallow the second header's body) still holds; confirmed by temporarily removing that stop from `scanRegionText` and seeing this assertion fail.
+
 Branch outcomes:
 
-- `worker/deno/lib/branch_outcomes_gate.ts:321`, a `Branch outcomes` header is reached mid-scan, so the scan breaks:
-  - Tests: `validateBranchOutcomes - a prose mention separated by a blank line still does not hide the real header's inline citation` and `parseBranchOutcomes - a later Branch outcomes header is parsed on its own, so its region is scanned`.
-  - Flip: removing the `break` turned both red.
-- `worker/deno/lib/branch_outcomes_gate.ts:321`, a line that is not a header falls through to the existing entry and wrap handling:
+- `worker/deno/lib/branch_outcomes_gate.ts:328` (`collectEntries`'s header
+  check, now run before the deeper-heading skip): a heading-form `Branch
+  outcomes` header reached mid-scan is recognised and ends the call, so the
+  outer loop parses it on its own:
+  - Test: `validateBranchOutcomes - a deeper heading-form header after a prose mention still names the invented test`.
+  - Flip: restoring the pre-fix order (skip before check) turned it red.
+- `worker/deno/lib/branch_outcomes_gate.ts:328`, the same check still breaks
+  `collectEntries` for the pre-existing inline header form, now exercised
+  with a sibling list that continues after the header check moves:
+  - Test: `parseBranchOutcomes - the test-path scan stops at a later heading-form header, even when deeper than the boundary`.
+  - Flip: reverting the reorder turned it red (see "Red on base" above).
+- `worker/deno/lib/branch_outcomes_gate.ts:328`, a line that is not a header falls through to the existing entry and wrap handling:
   - Test: `validateBranchOutcomes - a bare header followed by a wrapped prose line naming an existing test passes`, among other existing tests.
   - Flip: breaking on every line turned it red.
