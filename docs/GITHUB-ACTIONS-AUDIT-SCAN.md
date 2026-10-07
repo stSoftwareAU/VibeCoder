@@ -1134,9 +1134,9 @@ fine-grained read permission, not "Actions policies" (GitHub's
 `GET /repos/{owner}/{repo}/private-vulnerability-reporting` under
 Administration).
 
-**A missing security policy is checked on a public repository only (Issue
-#3269).** The scanner reads the three locations GitHub recognises a
-security policy at — `SECURITY.md`, `.github/SECURITY.md`,
+**A missing security policy is checked on a public repository only
+(Issue #3269).** The scanner reads the three locations GitHub recognises
+a security policy at — `SECURITY.md`, `.github/SECURITY.md`,
 `docs/SECURITY.md` — through the contents API on the default branch; a
 404 at all three files `BP-REPO-SECURITY-POLICY-MISSING`. Any other read
 error is a lookup failure and no finding. A private or internal repository
