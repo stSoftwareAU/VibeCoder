@@ -204,6 +204,31 @@ Deno.test("detectPlanningHandoff - a similarly named marker does not match", () 
   );
 });
 
+// Issue #3313: the probe now uses the paragraph-aware splitter, so an inline
+// span that wraps across a line break is recognised as code throughout, and
+// a lone backtick on one line still pairs with one on the next as long as
+// no blank line comes between them.
+Deno.test("hasPlanningRequestMarker - a marker fully inside a span wrapped across two lines is not honoured", () => {
+  // The single opening backtick on line 1 has no closer until "more`" on
+  // line 2, so the whole marker sits inside one inline code span.
+  const output = '`<!-- vibe-needs-planning reason="x" -->\nmore` trailing';
+  assertEquals(hasPlanningRequestMarker(output), false);
+});
+
+Deno.test("hasPlanningRequestMarker - a real marker between a wrapped span's close and a later span on the same line is honoured", () => {
+  // "`abc\ndef`" is itself a span wrapped across two lines; the real marker
+  // follows it in plain prose on the second line, and a further span
+  // "`z`" follows the marker on that same line. A per-line regex pairs the
+  // closing backtick of "def`" with the next opening backtick it meets —
+  // the one before "z" — swallowing the marker text in between as if it
+  // were code, which hides a real marker. The paragraph-aware splitter
+  // must not do that: the marker sits in plain prose and must still be
+  // found.
+  const output = '`abc\ndef` <!-- vibe-needs-planning reason="y" --> and `z`';
+  assertEquals(hasPlanningRequestMarker(output), true);
+  assertEquals(detectPlanningHandoff(output), { reason: "y" });
+});
+
 // ---------------------------------------------------------------------------
 // hasPriorPlanningHandoff
 // ---------------------------------------------------------------------------

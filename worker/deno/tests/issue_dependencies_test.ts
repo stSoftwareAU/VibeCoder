@@ -307,6 +307,18 @@ Deno.test("hasBackReference - ignores a parent link inside an inline code span (
   );
 });
 
+// Issue #3313: same wrapped-span mechanics as stripCodeSpans's other
+// callers — a span may wrap across a line break within one paragraph.
+Deno.test("hasBackReference - a link inside a span wrapped across two lines is not honoured (evasion)", () => {
+  const body = "see `Parent: #5\nmore` text";
+  assertEquals(hasBackReference(body, 5), false);
+});
+
+Deno.test("hasBackReference - a real link after a wrapped span is still found (look-alike)", () => {
+  const body = "see `foo\nbar` and Parent: #7 after `baz`";
+  assertEquals(hasBackReference(body, 7), true);
+});
+
 // =============================================================================
 // extractDependencyReferences tests
 // =============================================================================
@@ -386,6 +398,25 @@ Deno.test("extractDependencyReferences - keeps a real prose dependency alongside
     "```",
   ].join("\n");
   assertEquals(extractDependencyReferences(body), [42]);
+});
+
+// Issue #3313: stripCodeSpans now delegates to the paragraph-aware
+// splitter, so an inline span may wrap across a line break within one
+// paragraph, and the stripper must follow it there rather than treating
+// each line in isolation.
+Deno.test("extractDependencyReferences - a reference inside a span wrapped across two lines is not a dependency (evasion)", () => {
+  // The opening backtick before "start of span" has no closer until the
+  // one right after "#5" on the next line, so the whole thing — including
+  // "Depends on #5" — sits inside one inline code span.
+  const body = "see `start of span\nDepends on #5` here";
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+Deno.test("extractDependencyReferences - a real dependency after a wrapped span is still found (look-alike)", () => {
+  // "`foo\nbar`" is a span wrapped across two lines; "depends on #7" sits
+  // in plain prose between it and the next span "`baz`", and must be kept.
+  const body = "see `foo\nbar` and depends on #7 and `baz`";
+  assertEquals(extractDependencyReferences(body), [7]);
 });
 
 // =============================================================================

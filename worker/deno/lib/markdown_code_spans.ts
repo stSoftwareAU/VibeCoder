@@ -5,9 +5,11 @@
  * time: CommonMark lets an inline span (`` `like this` ``) wrap across a line
  * break, and only resets at a *blank* line — a lone, unmatched backtick on
  * one line can legitimately pair with one on the very next line of the same
- * paragraph. A per-line regex such as `` /`[^`\n]*`/g `` therefore either
- * misses a span that wraps (treating its contents as prose) or pairs two
- * unrelated backticks across a paragraph boundary it should never cross.
+ * paragraph. A per-line regex such as `` /`[^`\n]*`/g `` never crosses a line
+ * at all, so it fails the other way: a span's closing backtick, alone on its
+ * own line, instead pairs with the *next* opening backtick that line
+ * happens to contain — masking real prose as code, and reading a wrapped
+ * span's contents as prose a reference can hide in.
  *
  * A fenced block opens on a line whose first non-space characters are three
  * or more backticks or tildes (an optional info string may follow on the
@@ -19,11 +21,12 @@
  * code, so a broken fence can never leak a reference out of a documentation
  * block.
  *
- * Every gate in this codebase that must ignore Markdown code — the
- * result-placeholder gate, the issue-dependency extractors, the blocked-
- * outcome detector, and the marker probes in `planning_handoff.ts` and
- * `time_deferral.ts` — calls into this module and never pairs backticks with
- * a per-line regex.
+ * Its callers today are the result-placeholder gate, `stripCodeSpans` /
+ * `maskCodeSpans` in `issue_dependencies.ts` (and through them the
+ * blocked-outcome detector and the marker probes in `planning_handoff.ts`
+ * and `time_deferral.ts`), and the blocked-outcome detector's fence scan. A
+ * new gate that must ignore Markdown code calls into this module rather
+ * than pairing backticks with a per-line regex.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
