@@ -80,7 +80,8 @@ export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   // Private key material and credential files (Issue #3660). Matched on the
   // final path segment so nested paths (`certs/server.pem`) are caught too.
   /(^|\/)[^/]+\.(pem|key|p12|pfx)$/,
-  /(^|\/)id_rsa(\..*)?$/,
+  // Suffix bounded to one segment and line; `\..*` backtracked quadratically (Issue #3323).
+  /(^|\/)id_rsa(\.[^/\n]*)?$/,
   /(^|\/)credentials\.json$/,
   /(^|\/)service-account[^/]*\.json$/,
 ];

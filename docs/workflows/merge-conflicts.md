@@ -627,7 +627,7 @@ scan reads that marker back and climbs rather than repeating it.
 - **Rung 2 — abandon and restart** (Issue #2280). Reached when GitHub still
   says `CONFLICTING` at the nudged head, or at a head a legacy merge/rebase
   marker names. It is the same rung a spent attempt budget uses
-  ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
+  ([below](#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked)), called with this PR
   and no thread — it fetches its own. Reached with fewer than
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts recorded on the PR since its
   last resolved marker, the rung **declines** as `attempts-not-spent` rather
@@ -1015,7 +1015,7 @@ Six details carry the weight:
   lease. There is no cap on how many times the issue has already been redone
   (Issue #3033) — the second trip abandons and redoes it exactly as any other
   exhaustion does,
-  [above](#-abandon-and-restart-before-a-human-is-asked).
+  [above](#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked).
 
 ### 🤫 Why #116 went silent
 
@@ -1256,7 +1256,7 @@ Three bounds keep the drain from becoming a monopoly:
 
 | Bound | Value | Why |
 | --- | --- | --- |
-| Cycle deadline | 20 minutes of agent budget must remain (after a four-minute allowance for the rest of the attempt), and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
+| Cycle deadline | 20 minutes of agent budget must remain (after a four-minute allowance for the rest of the attempt), and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#%EF%B8%8F-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 

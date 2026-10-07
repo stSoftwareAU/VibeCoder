@@ -1019,7 +1019,7 @@ whose originating issue cannot be found is closed too, and its flag carries
 (Issue #2310). There is no cap on restarts per issue (Issue #3033): every
 redo starts on a fresh branch cut from the base branch's current tip, never
 the abandoned one. Its preconditions and its exits are in
-[the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
+[the merge-conflict workflow](workflows/merge-conflicts.md#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked).
 
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
@@ -1061,7 +1061,7 @@ reads and writes the same shared marker comments, so a milestone branch and
 its rollup PR cannot each believe they hold separate budgets (Issue #2998).
 Only a **milestone branch with no open PR** falls back to the persisted
 per-branch ledger in `milestone_sync_failures.json`, described in
-[INTERNALS.md → the milestone conflict ledger](INTERNALS.md#-the-conflict-attempt-ledger-a-milestone-branch-spends).
+[INTERNALS.md → the milestone conflict ledger](INTERNALS.md#%EF%B8%8F-the-conflict-attempt-ledger-a-milestone-branch-spends).
 Either way a **success** is the only thing that refills the budget: a moved
 default tip never refills the attempt count.
 

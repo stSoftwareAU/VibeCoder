@@ -137,7 +137,7 @@ parent (ask → covering sub-issue → note, with deliberately dropped asks kept
 uncovered, unexplained ask at the same `closePlanningIssue()` chokepoint —
 escalating through the existing `escalateToHuman()` path rather than adding a
 second one. See [the coverage section of the planning
-manual](workflows/planning-and-questions.md#-plan-coverage-table-and-gate-issue-520).
+manual](workflows/planning-and-questions.md#%EF%B8%8F-plan-coverage-table-and-gate-issue-520).
 
 ### 4. Honest reproduction status for bug fixes (from the `bug` extension) — #521
 

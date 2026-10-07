@@ -54,7 +54,7 @@ point at.
 2.1.281) on its next launch, because the image tag is the hash of the container
 definition. A host that runs the CLI outside the container is checked against
 the new 2.1.280 floor on its next update pass — see
-[Minimum-Version Floor](CONFIGURATION.md#-minimum-version-floor).
+[Minimum-Version Floor](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor).
 
 ### Rollback
 

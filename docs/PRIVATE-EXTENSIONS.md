@@ -33,7 +33,7 @@ nobody has built.
 - [Step 1 — Lay out your private repository](#-step-1--lay-out-your-private-repository)
 - [Step 2 — Declare what to install](#-step-2--declare-what-to-install)
 - [Step 3 — Install from a private or credentialed source](#-step-3--install-from-a-private-or-credentialed-source)
-- [Step 4 — Configure a tool after it is installed](#-step-4--configure-a-tool-after-it-is-installed)
+- [Step 4 — Configure a tool after it is installed](#%EF%B8%8F-step-4--configure-a-tool-after-it-is-installed)
 - [Step 5 — Tell the agent what the work is](#-step-5--tell-the-agent-what-the-work-is)
 - [Step 6 — Build, and confirm it actually worked](#-step-6--build-and-confirm-it-actually-worked)
 - [Step 7 — Upgrades](#-step-7--upgrades)

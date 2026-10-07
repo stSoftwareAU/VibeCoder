@@ -429,7 +429,7 @@ actors in other countries (or anywhere else) a way to run code on _your_
 machines behind _your_ firewall. Your deployment is protected by design: only
 your config, your token, and who holds write access on a repo you monitor,
 can trigger work. See
-[SECURITY.md § For managers: public code vs your deployment](../SECURITY.md#for-managers-public-code-vs-your-deployment)
+[SECURITY.md § For managers: public code vs your deployment](../SECURITY.md#-for-managers-public-code-vs-your-deployment)
 for the full explanation. The points below are about other risks (e.g.
 trusted-author compromise), not "remote attackers reaching your worker."
 
@@ -445,7 +445,7 @@ trusted-author compromise), not "remote attackers reaching your worker."
 - **Bot accounts in AUTHORIZED_COMMENTERS:** Bots can trigger PR feedback
   without a thumbs-up; a compromised or misbehaving bot could trigger unwanted
   work. Bot accounts are opt-in and documented as a known limitation
-  ([SECURITY.md § Bot account security](../SECURITY.md#bot-account-security-issue-36)).
+  ([SECURITY.md § Bot account security](../SECURITY.md#-bot-account-security-issue-36)).
 - **Claude Code permissions:** The worker runs Claude with broad permissions
   (read/write repo, shell, network). We rely on allowed authors and code review
   (no code to default without your review) to limit impact.
@@ -457,7 +457,7 @@ the outstanding work below.
 ### What's outstanding
 
 - **Known limitations** in
-  [SECURITY.md § Known limitations](../SECURITY.md#known-limitations): Claude
+  [SECURITY.md § Known limitations](../SECURITY.md#%EF%B8%8F-known-limitations): Claude
   Code permissions, prompt injection mitigations (audit, not block), input
   length limits, repository write access. These are documented; further
   hardening is possible (e.g. stricter sandboxing, blocking on suspicious
@@ -465,7 +465,7 @@ the outstanding work below.
 - **Open security issues** in the repository (e.g. bot account behaviour, token
   lifecycle, or deployment hardening) — see the repo's issue list and
   [SECURITY.md](../SECURITY.md). The
-  [Responsible disclosure policy](../SECURITY.md#responsible-disclosure-policy)
+  [Responsible disclosure policy](../SECURITY.md#-responsible-disclosure-policy)
   explains how to report vulnerabilities.
 - **Further observability and usability improvements** are tracked in the repo
   as usual.

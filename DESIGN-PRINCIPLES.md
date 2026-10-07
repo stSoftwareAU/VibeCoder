@@ -1550,7 +1550,7 @@ such label added by the worker on the next scan, so the developer toggles the
 next-phase label manually after triage. The one exception is the audited
 `work-on` → `planning` hand-off of an oversized issue, which does not apply to
 filed findings ([SECURITY.md §5g](SECURITY.md), Issue #2688). See
-[Supported Labels in README.md](README.md#-supported-labels) for the full
+[Supported Labels in README.md](README.md#%EF%B8%8F-supported-labels) for the full
 list.
 
 **No milestone, no PR.** The `security-scan` template sets `skipMilestone: true`
@@ -2420,7 +2420,7 @@ generic per tool so `gh`/`deno` floors can be added later.
   style) keep the floor logic unit-tested with no real spawn or sleep.
 
 See
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#-minimum-version-floor),
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#%EF%B8%8F-minimum-version-floor),
 [`docs/USAGE.md`](docs/USAGE.md#-claude-cli-auto-update), and
 [`docs/INTERNALS.md`](docs/INTERNALS.md) for the operator-facing detail.
 
