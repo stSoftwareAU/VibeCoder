@@ -78,9 +78,17 @@ source that defines the bar — cite it, do not restate it.
     `user-scalable=no` or `maximum-scale=1`, or a fixed-pixel layout that
     scrolls sideways at narrow widths —
     <https://www.w3.org/WAI/WCAG22/Understanding/reflow.html>.
-15. **Motion with no opt-out.** Auto-playing, parallax or large animated
+15. **Open overlay or pinned bar off-screen.** A popover, menu, dropdown,
+    in-place confirm panel or sticky/fixed bar that fits when closed but,
+    once open at a phone portrait (e.g. 390x844) or short landscape size
+    (e.g. 844x390), runs past a viewport edge, sits under a fixed tab bar,
+    footer or header, or grows a pinned container taller than its space
+    with no `max-height` and overflow of its own (a `white-space: nowrap`
+    absolute popover is the usual culprit) —
+    <https://www.w3.org/WAI/WCAG22/Understanding/focus-not-obscured-minimum.html>.
+16. **Motion with no opt-out.** Auto-playing, parallax or large animated
     transitions with no `prefers-reduced-motion` fallback —
     <https://www.w3.org/WAI/WCAG22/Understanding/animation-from-interactions.html>.
-16. **Layout shift.** Images, embeds or late banners without reserved
+17. **Layout shift.** Images, embeds or late banners without reserved
     space (no `width`/`height` or `aspect-ratio`), so content jumps under
     the reader's cursor — <https://web.dev/articles/cls>.
