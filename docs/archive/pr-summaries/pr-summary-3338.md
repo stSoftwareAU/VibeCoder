@@ -118,9 +118,20 @@ it is cited. Nothing needed changing.
     `#N: <title>` in the PR summary's Evidence".
 - markdownlint: no new findings. The MD018 at `CODING-STANDARDS.md:1017` is
   on base.
-- `./quality.sh < /dev/null`: see the gate result below.
+- `timeout 900 ./quality.sh < /dev/null`: **PASSED** (exit 0). Config
+  integration was SKIPPED because `.config.json` is not available in this
+  checkout, which is expected.
 
 Branch outcomes: none added
+
+### Independent review
+
+- **Spec reviewer:** met on every acceptance criterion (CODING-STANDARDS,
+  issue prompt, pr_feedback prompt, rule content). The optional mechanical
+  check (item 3) is not implemented, and the reviewer agreed it is not a gap.
+- **Standards reviewer:** no violations. Optional note: the `owner/repo#N`
+  `--repo` clause is only in `CODING-STANDARDS.md`. The prompts point to that
+  rule by name, so the mirrors are left short.
 
 ### Process note
 
