@@ -88,15 +88,29 @@ back.
       `worker/deno/tests/markdown_anchors_test.ts` (variation-selector case).
 - [x] Red run: removing `decodeURIComponent` fails
       `worker/deno/tests/threat_model_docs_test.ts`.
+- Removed from `worker/deno/tests/claude_token_isolation_test.ts`:
+  `assert( section.includes("THREAT-MODEL.md#-residual-risks"), "the several-tokens setup section must point at the recorded residual risk", );`
+  — #3292 requires links to match GitHub's heading ids, and GitHub keeps
+  U+FE0F in `⚖️ Residual risks`, so `#-residual-risks` no longer resolves.
+  The same test now pins `THREAT-MODEL.md#%EF%B8%8F-residual-risks`.
+- Removed from `worker/deno/tests/docs_provider_matrix_test.ts`:
+  `` assert( anchors.has(anchor), `the ${MATRIX_HEADING} matrix links #${anchor}, which is not a heading ` + `in ${DOC_NAME}`, ); ``
+  — #3292 makes the private `slug()` (which dropped U+FE0F) untrue, so the
+  anchor set is now built from `githubSlug` and the matrix link is
+  percent-decoded first. The same check lives on in the same test with the
+  decoded anchor.
+- Removed from `worker/deno/tests/markdown_anchors_test.ts`:
+  `assertEquals( githubSlug("🎚️ Model/effort precedence chain"), "-modeleffort-precedence-chain", );`
+  — #3292 shows GitHub keeps U+FE0F, so the slug `-modeleffort-precedence-chain`
+  is untrue. The same test now expects `️-modeleffort-precedence-chain` and
+  adds the encoded `%EF%B8%8F-known-limitations` case.
 - Branch outcomes: none added.
-- Docs sweep: grepped `#-` link fragments that target a FE0F heading across
-  `*.md` outside `docs/archive/` and found none left. Remaining `#-foo`
-  links target headings whose emoji has no selector, so they are still
-  correct.
 - Rules checked: CODING-STANDARDS markdown/lint sections and the
   `.markdownlint-cli2.jsonc` rule comments. No rule conflicts with `MD051`.
   Applying the new lint rule to this PR's own diff found nothing.
 - Advisor note: the final two-literal fix was a continuation of the same
   executor task (via SendMessage), not a third re-task.
+
+**Docs sweep** — grep: `githubSlug`, `markdown_anchors`, `MD051`, `markdownlint`, `docs_provider_matrix_test`, "leading hyphen", `#-` fragments to FE0F headings; section: `CONTRIBUTING.md#local-quality-gate`; no hits — the section's markdownlint sentences stay true with `MD051` on, `docs/MODEL-AND-CACHING.md`'s `docs_provider_matrix_test.ts` sentence stays true, and no `#-` link to a FE0F heading is left outside `docs/archive/`
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
