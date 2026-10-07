@@ -223,6 +223,47 @@ interface GhIssueListItem {
   updatedAt?: string;
   author: { login: string };
   milestone?: { title: string } | null;
+  /** Raw GitHub native sub-issue counts, validated by {@link parseSubIssuesSummary}. */
+  subIssuesSummary?: unknown;
+}
+
+/**
+ * Validate a raw `subIssuesSummary` field from `gh issue list` (Issue #3314).
+ *
+ * Only `total` and `completed` are kept (`percentCompleted` is derivable and
+ * not needed); malformed shapes (non-numbers, negatives) return `undefined`
+ * so an absent or broken field behaves exactly like an issue with no
+ * sub-issues at all.
+ */
+export function parseSubIssuesSummary(
+  raw: unknown,
+): { total: number; completed: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const { total, completed } = raw;
+  if (
+    typeof total !== "number" || !Number.isFinite(total) || total < 0 ||
+    typeof completed !== "number" || !Number.isFinite(completed) ||
+    completed < 0
+  ) {
+    return undefined;
+  }
+  return { total, completed };
+}
+
+/**
+ * Does `issue` have any open native GitHub sub-issues?
+ *
+ * Lives here (not in `idle_decision_census.ts`, its only prior home) so both
+ * the census and the audit (`idle_detect_diagnostics.ts`) can import it
+ * without a circular dependency between those two modules (Issue #3314).
+ */
+export function hasOpenSubIssues(
+  issue: { subIssuesSummary?: { total: number; completed: number } },
+): boolean {
+  // SIMPLE-ON-PURPOSE: native sub-issue counts only, not body task-list children or not-planned closures (over-holds safely) — upgrade when an inversion alert names a task-list-only or not-planned-closed parent.
+  const summary = issue.subIssuesSummary;
+  if (summary === undefined) return false;
+  return summary.total > summary.completed;
 }
 
 /**
@@ -288,6 +329,11 @@ export function parseIssueListJson(jsonStr: string): FilterableIssue[] {
       const bodyValue = (item as unknown as { body?: unknown }).body;
       if (typeof bodyValue === "string") {
         issue.body = bodyValue;
+      }
+      // Issue #3314: GitHub native sub-issue counts, kept only when valid.
+      const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
+      if (subIssuesSummary !== undefined) {
+        issue.subIssuesSummary = subIssuesSummary;
       }
       return issue;
     });
@@ -412,6 +458,43 @@ function countListRows(output: string): number | null {
 const LEGACY_ALL_ISSUES_LIMIT = 100;
 
 /**
+ * gh < 2.94.0 doesn't know the `subIssuesSummary` field (added in cli/cli
+ * v2.94.0's `issueOnlyFields`) and rejects it with this message (Issue
+ * #3318). The worker container pins a newer gh, but `docs/SETUP.md`'s
+ * `apt-get install -y gh` gives operators 2.4.0 (Ubuntu 22.04), 2.23.0
+ * (Debian 12) or 2.45.0 (Ubuntu 24.04) — all too old — and
+ * `fetchAllIssues` backs the host-run `diagnose-repo`/`diagnose-issue`
+ * commands.
+ */
+const SUBISSUES_SUMMARY_UNSUPPORTED = /Unknown JSON field: "subIssuesSummary"/;
+
+const ALL_ISSUES_FIELDS =
+  "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body,subIssuesSummary";
+/** Same fields, without the field gh < 2.94.0 rejects (Issue #3318). */
+const ALL_ISSUES_FIELDS_NO_SUB_ISSUES =
+  "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body";
+
+function fetchAllIssuesJson(
+  repo: string,
+  limit: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  fields: string,
+): Promise<string> {
+  return ghCommandFn([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--json",
+    fields,
+    "--limit",
+    String(limit),
+  ]);
+}
+
+/**
  * Fetch all open issues for a repo with comprehensive fields.
  *
  * Issue #4037: this is the issue-list fetch the Priority 2 scan already
@@ -454,31 +537,48 @@ export async function fetchAllIssues(
     }
   }
 
+  // Issue #1784: include `updatedAt` so stale-workflow can read from this
+  // shared cache without triggering its own per-label gh calls.
+  // Issue #1805: include `body` so milestone-health dependency detection
+  // can read from the shared cache instead of issuing a second
+  // `gh issue list --milestone …` call per milestone.
+  // Issue #3314: include `subIssuesSummary` so native sub-issue blocking
+  // can be read from this call instead of a per-issue one.
   let output: string;
   try {
-    output = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
+    output = await fetchAllIssuesJson(
       repo,
-      "--state",
-      "open",
-      "--json",
-      // Issue #1784: include `updatedAt` so stale-workflow can read from
-      // this shared cache without triggering its own per-label gh calls.
-      // Issue #1805: include `body` so milestone-health dependency
-      // detection can read from the shared cache instead of issuing a
-      // second `gh issue list --milestone …` call per milestone.
-      "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body",
-      "--limit",
-      String(limit),
-    ]);
+      limit,
+      ghCommandFn,
+      ALL_ISSUES_FIELDS,
+    );
   } catch (err) {
-    // Best-effort bookkeeping only: the error is re-thrown untouched so
-    // every caller's control flow is exactly what it was before #4037.
     const message = err instanceof Error ? err.message : String(err);
-    recordRepoProbeBestEffort(repo, classifyProbeFailure(message));
-    throw err;
+    // Issue #3318: gh < 2.94.0 rejects `subIssuesSummary` outright. Retry
+    // once without it so host-run `diagnose-repo`/`diagnose-issue` keep
+    // working on the gh version `docs/SETUP.md` tells operators to
+    // `apt-get install`, exactly as they did before Issue #3314.
+    if (SUBISSUES_SUMMARY_UNSUPPORTED.test(message)) {
+      try {
+        output = await fetchAllIssuesJson(
+          repo,
+          limit,
+          ghCommandFn,
+          ALL_ISSUES_FIELDS_NO_SUB_ISSUES,
+        );
+      } catch (retryErr) {
+        const retryMessage = retryErr instanceof Error
+          ? retryErr.message
+          : String(retryErr);
+        recordRepoProbeBestEffort(repo, classifyProbeFailure(retryMessage));
+        throw retryErr;
+      }
+    } else {
+      // Best-effort bookkeeping only: the error is re-thrown untouched so
+      // every caller's control flow is exactly what it was before #4037.
+      recordRepoProbeBestEffort(repo, classifyProbeFailure(message));
+      throw err;
+    }
   }
   recordRepoProbeBestEffort(repo, "ok");
 
@@ -2163,17 +2263,22 @@ export interface LabelLastAddInfo {
 }
 
 /**
- * Fetch (or read from cache) the parsed timeline label events for the
- * given issue (Issue #1673).
+ * Fetch (or read from cache) the **complete** parsed timeline for the given
+ * issue, returning `null` instead of throwing (Issue #1673, #3327).
  *
- * Centralises the cache-then-API path used by both
- * `wasLabelAddedByAllowedAuthor` and `getLabelLastAddInfo`. On cache
- * hit returns the parsed events without calling `gh`; on miss issues
- * a single `gh api .../timeline` call, parses, validates, and writes
- * the result back to the cache.
+ * Every caller asks a "most recent event" question — the latest
+ * `needs-human` removal (#1878), the latest trusted re-approval, the latest
+ * reopen — so the answer must come from the whole timeline. This used to read
+ * `timeline?per_page=100` alone, which is page 1: the **oldest** 100 events.
+ * On a busy issue (GRQ-AutoTrader#2089, 131 events) the developer's removal
+ * sat on page 2, the lookup returned a removal from four days earlier, and the
+ * grill-me processor re-added `needs-human` on every scan (Issue #3327).
  *
- * Errors and validation failures fall through to a `null` return so
- * each caller can apply its own fail-safe behaviour.
+ * Delegates to {@link fetchCompleteTimeline}: a complete cache entry is
+ * honoured, a partial one is refused, and the REST timeline is paginated to
+ * exhaustion. Errors, validation failures and the page cap fall through to a
+ * `null` return so each caller keeps its own fail-safe behaviour — a timeline
+ * that could not be read in full is never treated as authoritative.
  */
 export async function fetchTimelineWithCache(
   repo: string,
@@ -2181,43 +2286,11 @@ export async function fetchTimelineWithCache(
   ghCommandFn: (args: string[]) => Promise<string>,
   cache?: TimelineCache,
 ): Promise<TimelineLabelEventJson[] | null> {
-  if (cache) {
-    const cached = await cache.read(repo, issueNumber);
-    if (cached !== null) return cached;
-  }
-
-  let raw: string;
   try {
-    // Use per_page=100 so recent events (including label removals) are not
-    // truncated to the default 30-item page. Without this, an issue with
-    // many events can miss the developer's most recent `needs-human` removal,
-    // causing `isNonWorkerRemovalAfterRound` to see only a stale removal
-    // that pre-dates the current round — returning false and re-adding the
-    // label even though the developer has signalled "go" (Issue #1878).
-    raw = await ghCommandFn([
-      "api",
-      `repos/${repo}/issues/${issueNumber}/timeline?per_page=100`,
-    ]);
+    return await fetchCompleteTimeline(repo, issueNumber, ghCommandFn, cache);
   } catch {
     return null;
   }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return null;
-  }
-
-  const validated = validateTimelineLabelEventsJson(parsed);
-  if (!validated.ok) return null;
-
-  // This reads only page 1 (the oldest 100 events), so cache it as a
-  // *partial* timeline (Issue #3296). The reserved-label trust gate
-  // (`wasLabelAddedByAllowedAuthor`) will not honour a partial entry and
-  // re-paginates instead, so a truncated slice can never bypass the gate.
-  if (cache) await cache.write(repo, issueNumber, validated.value, false);
-  return validated.value;
 }
 
 /**
@@ -2254,8 +2327,8 @@ export async function getLabelLastAddInfo(
 
 /**
  * Extract the most-recent `labeled` event for `labelName` from an already
- * fetched timeline. Shared by {@link getLabelLastAddInfo} (page-1, best
- * effort) and {@link getLabelLastAddInfoComplete} (exhaustive).
+ * fetched timeline. Shared by {@link getLabelLastAddInfo} (fail-safe `null`)
+ * and {@link getLabelLastAddInfoComplete} (errors propagate).
  *
  * Issue #1617: exported so a caller that needs *both* the last add and the
  * last remove — the content-approval gate, which counts a trusted
@@ -2286,16 +2359,12 @@ export function lastAddInfoFromTimeline(
  * Exhaustive variant of {@link getLabelLastAddInfo} for callers that **mutate**
  * on the answer (Issue #3709, SEC-c41e97b60238).
  *
- * `getLabelLastAddInfo` reads page 1 only and honours a partial cache entry —
- * fine for best-effort re-approval hints, but not for
- * `stripUntrustedWorkOnLabel`, which removes a label and names the adder in a
- * public comment. On a busy issue (>100 timeline events) the genuinely
- * most-recent `labeled` event falls beyond page 1, so a page-1 read can name
- * the wrong actor and strip a label a trusted author has since re-applied.
- *
- * This variant uses exactly the source of truth the sibling trust gate uses:
- * a fully paginated timeline, refusing partial cache entries. Errors and page
- * caps propagate so the caller can fail closed.
+ * Both variants read the fully paginated timeline and refuse partial cache
+ * entries (Issue #3327 brought `getLabelLastAddInfo` up to this source of
+ * truth). They differ only on failure: `getLabelLastAddInfo` returns `null`,
+ * while this variant lets errors and page caps propagate so a caller that
+ * removes a label and names the adder in a public comment
+ * (`stripUntrustedWorkOnLabel`) can fail closed rather than act on nothing.
  */
 export async function getLabelLastAddInfoComplete(
   repo: string,
@@ -2450,10 +2519,9 @@ async function paginateTimeline(
  * Fetch the full timeline for an issue, preferring a **complete** cache entry
  * (Issue #3709).
  *
- * Unlike {@link fetchTimelineWithCache} this never returns a page-1-only
- * slice: a partial cache entry is refused and the REST timeline is paginated
- * to exhaustion instead. Use it wherever a decision depends on the genuinely
- * most-recent timeline event.
+ * A partial cache entry is refused and the REST timeline is paginated to
+ * exhaustion instead. Errors and the page cap propagate; use
+ * {@link fetchTimelineWithCache} for the same read with a fail-safe `null`.
  */
 export async function fetchCompleteTimeline(
   repo: string,
@@ -2525,7 +2593,7 @@ export async function wasLabelAddedByAllowedAuthor(
   //
   // Issue #3296: only a *complete* (fully paginated) cached timeline is even
   // considered. A partial page-1-only entry — written by
-  // `fetchTimelineWithCache` — is truncated to the oldest 100 events, so on a
+  // `fetchTimelineWithCache` before Issue #3327 — holds the oldest 100 events, so on a
   // busy issue (>100 timeline events) it can hide the genuinely most-recent
   // reserved-label add behind a stale one.
   if (cache) {

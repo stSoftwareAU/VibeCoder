@@ -20,6 +20,7 @@ import {
   generateSummary,
   type IssueDiagnostic,
   type LabelConfig,
+  summariseDependencyBlockers,
 } from "../lib/diagnose_repo.ts";
 import type { FleetConfigValidation } from "../lib/fleet_config_validation.ts";
 import {
@@ -43,7 +44,6 @@ import { createDiagnosticIssueFetcher } from "../lib/diagnose_issue.ts";
 import type { DependencyBlocker } from "../lib/issue_finder_common.ts";
 import {
   createOpenMilestoneLookup,
-  describeDependencyBlockers,
   isDependencyBlocked,
 } from "../lib/issue_finder_common.ts";
 import { runGhCommand } from "../lib/github.ts";
@@ -222,14 +222,9 @@ export const diagnoseRepoCommand: Command = {
             },
             blockers,
           );
-          const children = blockers.filter((b) => b.kind === "child");
-          if (children.length > 0) {
-            openSubIssues = children.map((b) => `#${b.number}`).join(", ");
-          }
-          const forward = blockers.filter((b) => b.kind === "depends-on");
-          if (forward.length > 0) {
-            unmetDependencies = describeDependencyBlockers(repo, forward);
-          }
+          const summary = summariseDependencyBlockers(repo, blockers);
+          openSubIssues = summary.openSubIssues;
+          unmetDependencies = summary.unmetDependencies;
         } catch {
           // Dependency check failed — skip
         }

@@ -61,8 +61,14 @@ function createMockFetcher(
         title: issue.title ?? `Issue #${issueNumber}`,
       };
     },
-    async getSubIssues(_repo: string, issueNumber: number): Promise<number[]> {
-      return subIssues.get(issueNumber) ?? [];
+    async getSubIssues(
+      repo: string,
+      issueNumber: number,
+    ): Promise<{ repo: string; number: number }[]> {
+      return (subIssues.get(issueNumber) ?? []).map((number) => ({
+        repo,
+        number,
+      }));
     },
     async getIssueBody(_repo: string, issueNumber: number): Promise<string> {
       const issue = issues.get(issueNumber);
@@ -419,7 +425,10 @@ Deno.test("checkParentBlocked - blocked when has open sub-issues from API", asyn
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [2, 3]);
+    assertEquals(result.value.openChildren, [
+      { repo: "owner/repo", number: 2 },
+      { repo: "owner/repo", number: 3 },
+    ]);
     assertEquals(result.value.closedChildren, []);
     assertEquals(result.value.totalChildren, 2);
   }
@@ -445,8 +454,14 @@ Deno.test("checkParentBlocked - blocked when has open sub-issues from body task 
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [10, 20]);
-    assertEquals(result.value.closedChildren, [30]);
+    assertEquals(result.value.openChildren, [
+      { repo: "owner/repo", number: 10 },
+      { repo: "owner/repo", number: 20 },
+    ]);
+    assertEquals(result.value.closedChildren, [{
+      repo: "owner/repo",
+      number: 30,
+    }]);
     assertEquals(result.value.totalChildren, 3);
   }
 });
@@ -480,8 +495,15 @@ Deno.test("checkParentBlocked - blocked when children only say 'Parent: #N' (Iss
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [805, 806, 807]);
-    assertEquals(result.value.closedChildren, [808]);
+    assertEquals(result.value.openChildren, [
+      { repo: "owner/repo", number: 805 },
+      { repo: "owner/repo", number: 806 },
+      { repo: "owner/repo", number: 807 },
+    ]);
+    assertEquals(result.value.closedChildren, [{
+      repo: "owner/repo",
+      number: 808,
+    }]);
     assertEquals(result.value.totalChildren, 4);
   }
 });
@@ -503,7 +525,10 @@ Deno.test("checkParentBlocked - not blocked when all sub-issues are closed", asy
   if (result.ok) {
     assertEquals(result.value.isBlocked, false);
     assertEquals(result.value.openChildren, []);
-    assertEquals(result.value.closedChildren, [2, 3]);
+    assertEquals(result.value.closedChildren, [{
+      repo: "owner/repo",
+      number: 2,
+    }, { repo: "owner/repo", number: 3 }]);
     assertEquals(result.value.totalChildren, 2);
   }
 });
@@ -525,8 +550,14 @@ Deno.test("checkParentBlocked - partially completed children", async () => {
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [102]);
-    assertEquals(result.value.closedChildren, [101, 103]);
+    assertEquals(result.value.openChildren, [{
+      repo: "owner/repo",
+      number: 102,
+    }]);
+    assertEquals(result.value.closedChildren, [{
+      repo: "owner/repo",
+      number: 101,
+    }, { repo: "owner/repo", number: 103 }]);
     assertEquals(result.value.totalChildren, 3);
   }
 });
@@ -551,7 +582,10 @@ Deno.test("checkParentBlocked - merges API sub-issues and body task list referen
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [20, 30]);
+    assertEquals(result.value.openChildren, [
+      { repo: "owner/repo", number: 20 },
+      { repo: "owner/repo", number: 30 },
+    ]);
     assertEquals(result.value.totalChildren, 2);
   }
 });
@@ -575,7 +609,10 @@ Deno.test("checkParentBlocked - deduplicates sub-issues from API and body", asyn
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.totalChildren, 1); // Not 2
-    assertEquals(result.value.openChildren, [20]);
+    assertEquals(result.value.openChildren, [{
+      repo: "owner/repo",
+      number: 20,
+    }]);
   }
 });
 
@@ -594,7 +631,10 @@ Deno.test("checkParentBlocked - treats unreachable children as open (fail closed
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [2]);
+    assertEquals(result.value.openChildren, [{
+      repo: "owner/repo",
+      number: 2,
+    }]);
   }
 });
 
@@ -669,8 +709,14 @@ Deno.test("checkParentBlocked - blocked by body task list items WITH back-refere
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [101]);
-    assertEquals(result.value.closedChildren, [102]);
+    assertEquals(result.value.openChildren, [{
+      repo: "owner/repo",
+      number: 101,
+    }]);
+    assertEquals(result.value.closedChildren, [{
+      repo: "owner/repo",
+      number: 102,
+    }]);
     assertEquals(result.value.totalChildren, 2);
   }
 });
@@ -691,7 +737,10 @@ Deno.test("checkParentBlocked - API sub-issues always trusted (no back-reference
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [101]);
+    assertEquals(result.value.openChildren, [{
+      repo: "owner/repo",
+      number: 101,
+    }]);
   }
 });
 
@@ -716,7 +765,10 @@ Deno.test("checkParentBlocked - mixed API sub-issues and unconfirmed body refs",
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.isBlocked, true);
-    assertEquals(result.value.openChildren, [201]); // Only API child, not #747
+    assertEquals(result.value.openChildren, [{
+      repo: "owner/repo",
+      number: 201,
+    }]); // Only API child, not #747
     assertEquals(result.value.totalChildren, 1);
   }
 });
@@ -980,7 +1032,7 @@ Deno.test("formatParentBlockedMessage - not blocked with no children", () => {
     totalChildren: 0,
   };
 
-  const message = formatParentBlockedMessage(100, result);
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
   assertEquals(message, "Issue #100 has no sub-issues — not blocked.");
 });
 
@@ -988,11 +1040,14 @@ Deno.test("formatParentBlockedMessage - not blocked with all children closed", (
   const result: ParentBlockedResult = {
     isBlocked: false,
     openChildren: [],
-    closedChildren: [101, 102],
+    closedChildren: [
+      { repo: "owner/repo", number: 101 },
+      { repo: "owner/repo", number: 102 },
+    ],
     totalChildren: 2,
   };
 
-  const message = formatParentBlockedMessage(100, result);
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
   assertEquals(
     message,
     "Issue #100 — all 2 sub-issues are closed. Ready to work on.",
@@ -1002,15 +1057,65 @@ Deno.test("formatParentBlockedMessage - not blocked with all children closed", (
 Deno.test("formatParentBlockedMessage - blocked with open children", () => {
   const result: ParentBlockedResult = {
     isBlocked: true,
-    openChildren: [102, 103],
-    closedChildren: [101],
+    openChildren: [
+      { repo: "owner/repo", number: 102 },
+      { repo: "owner/repo", number: 103 },
+    ],
+    closedChildren: [{ repo: "owner/repo", number: 101 }],
     totalChildren: 3,
   };
 
-  const message = formatParentBlockedMessage(100, result);
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
   assertEquals(
     message,
     "Issue #100 is blocked by 2 open sub-issue(s): #102, #103. 1/3 sub-issues completed.",
+  );
+});
+
+Deno.test("formatParentBlockedMessage - a same-repo open child renders as a bare #N (Issue #3319)", () => {
+  const result: ParentBlockedResult = {
+    isBlocked: true,
+    openChildren: [{ repo: "owner/repo", number: 7 }],
+    closedChildren: [],
+    totalChildren: 1,
+  };
+
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
+  assertEquals(
+    message,
+    "Issue #100 is blocked by 1 open sub-issue(s): #7. 0/1 sub-issues completed.",
+  );
+});
+
+Deno.test("formatParentBlockedMessage - a cross-repo open child renders as owner/repo#N (Issue #3319)", () => {
+  const result: ParentBlockedResult = {
+    isBlocked: true,
+    openChildren: [{ repo: "other/lib", number: 5 }],
+    closedChildren: [],
+    totalChildren: 1,
+  };
+
+  const message = formatParentBlockedMessage(100, result, "owner/repo");
+  assertEquals(
+    message,
+    "Issue #100 is blocked by 1 open sub-issue(s): other/lib#5. 0/1 sub-issues completed.",
+  );
+});
+
+Deno.test("formatParentBlockedMessage - same-repo match on the child's repo is case-insensitive (Issue #3319)", () => {
+  // The child's own repo differs only in case from the parent's — still the
+  // same repo, so it must render as a bare #N, not "Owner/App#7".
+  const result: ParentBlockedResult = {
+    isBlocked: true,
+    openChildren: [{ repo: "Owner/App", number: 7 }],
+    closedChildren: [],
+    totalChildren: 1,
+  };
+
+  const message = formatParentBlockedMessage(100, result, "owner/app");
+  assertEquals(
+    message,
+    "Issue #100 is blocked by 1 open sub-issue(s): #7. 0/1 sub-issues completed.",
   );
 });
 
@@ -1047,8 +1152,14 @@ Deno.test("integration - realistic parent issue with sub-issues scenario", async
   assertEquals(parentResult.ok, true);
   if (parentResult.ok) {
     assertEquals(parentResult.value.isBlocked, true);
-    assertEquals(parentResult.value.openChildren, [483, 484]);
-    assertEquals(parentResult.value.closedChildren, [485]);
+    assertEquals(parentResult.value.openChildren, [{
+      repo: "owner/repo",
+      number: 483,
+    }, { repo: "owner/repo", number: 484 }]);
+    assertEquals(parentResult.value.closedChildren, [{
+      repo: "owner/repo",
+      number: 485,
+    }]);
   }
 
   // Build dependency graph for all issues
@@ -1188,7 +1299,11 @@ Deno.test(
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.isBlocked, true);
-      assertEquals(result.value.openChildren, [10, 11, 12]);
+      assertEquals(result.value.openChildren, [
+        { repo: "owner/repo", number: 10 },
+        { repo: "owner/repo", number: 11 },
+        { repo: "owner/repo", number: 12 },
+      ]);
       assertEquals(result.value.totalChildren, 3);
     }
     assertEquals(
@@ -1223,8 +1338,14 @@ Deno.test(
     assertEquals(result.ok, true);
     if (result.ok) {
       assertEquals(result.value.isBlocked, true);
-      assertEquals(result.value.openChildren, [10]);
-      assertEquals(result.value.closedChildren, [11]);
+      assertEquals(result.value.openChildren, [{
+        repo: "owner/repo",
+        number: 10,
+      }]);
+      assertEquals(result.value.closedChildren, [{
+        repo: "owner/repo",
+        number: 11,
+      }]);
     }
     // Exactly one fallback call — for the closed child only.
     assertEquals(stateCalls, [11]);
