@@ -16,6 +16,7 @@
 
 import { assert } from "@std/assert";
 import { agentProviderIds } from "../lib/agent_provider.ts";
+import { githubSlug } from "../lib/markdown_anchors.ts";
 
 const DOC_NAME = "docs/MODEL-AND-CACHING.md";
 const text = await Deno.readTextFile(
@@ -69,23 +70,6 @@ function collectHeadings(): Heading[] {
   return found;
 }
 
-/**
- * GitHub's heading anchor for a title.
- *
- * Lowercase, drop everything that is not a letter, digit, space, underscore or
- * hyphen (emoji, `&`, `/`, `:`, brackets and em dashes all go), then turn
- * spaces into hyphens — the same slug the document's own in-page links use.
- *
- * @param title - Heading text without the leading hashes.
- * @returns The anchor, without the leading `#`.
- */
-function slug(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9 _-]/g, "")
-    .replace(/ /g, "-");
-}
-
 /** Body of the matrix section: the heading through to the next `##`. */
 function matrixSection(): string[] {
   const start = lines.findIndex((line) => line === `## ${MATRIX_HEADING}`);
@@ -135,7 +119,7 @@ Deno.test("MODEL-AND-CACHING - every registered provider id appears in the docum
 
 Deno.test("MODEL-AND-CACHING - the matrix covers every documented heading", () => {
   for (const heading of documented) {
-    const anchor = `(#${slug(heading.title)})`;
+    const anchor = `(#${encodeURIComponent(githubSlug(heading.title))})`;
     assert(
       matrixText.includes(anchor),
       `the ${MATRIX_HEADING} matrix must carry a row linking "${heading.title}" ` +
@@ -145,9 +129,9 @@ Deno.test("MODEL-AND-CACHING - the matrix covers every documented heading", () =
 });
 
 Deno.test("MODEL-AND-CACHING - every matrix row links a heading that exists", () => {
-  const anchors = new Set(headings.map((h) => slug(h.title)));
-  for (const match of matrixText.matchAll(/\]\(#([a-z0-9_-]+)\)/g)) {
-    const anchor = match[1]!;
+  const anchors = new Set(headings.map((h) => githubSlug(h.title)));
+  for (const match of matrixText.matchAll(/\]\(#([a-z0-9_%-]+)\)/gi)) {
+    const anchor = decodeURIComponent(match[1]!);
     assert(
       anchors.has(anchor),
       `the ${MATRIX_HEADING} matrix links #${anchor}, which is not a heading ` +

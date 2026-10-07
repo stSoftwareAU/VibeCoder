@@ -185,6 +185,22 @@ guessing — the analysis-only hand-off then routes it to a human.
    net** under Error Recovery.
    Where the repository has no browser harness, the PR names that gap in
    its Test Plan rather than substituting a stylesheet regex.
+   **Measure overlays and pinned bars open.** When a change touches a
+   popover, menu, dropdown, in-place confirm panel, or a sticky or fixed
+   bar (or a container that holds one), that browser check measures it
+   **open**, at the narrowest supported portrait size (e.g. 390x844) and
+   at a short landscape height (e.g. 844x390). Every control in the open
+   content must sit fully inside the viewport on all four edges — left and
+   right as well as top and bottom — and clear of every fixed bar (tab
+   bar, footer, header), both at scroll 0 and when scrolled. A pinned
+   container that can grow taller than the space it has needs its own
+   `max-height` and overflow, or must unpin while open. WCAG 2.2 Reflow
+   (1.4.10) and Focus Not Obscured (Minimum) (2.4.11) set the bar. A
+   closed-state or single-size check stays green while open content runs
+   off-screen: a `text-nowrap` popover about 545px wide reached x=674 at a
+   390px viewport, and a sticky header holding a confirm panel grew to
+   486px at 844x390, pushing Confirm out of reach. Name both sizes and the
+   open state in the PR summary's Test Plan (Issue #3335).
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
@@ -273,7 +289,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    X, grep the docs the diff touches for that sibling's `#N`: each
    present-tense hit is backed by head code or reworded as planned (see
    **Behaviour another issue delivers is not described as present** in
-   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `CODING-STANDARDS.md`). An issue number the diff adds as provenance —
+   `Issue #N` or `#N follow-up` in a code comment, `_<N>_test.ts` in a test
+   file name, `(Issue #N)` in a doc — names an issue you ran
+   `gh issue view N` on in this run, whose title matches the reason you
+   cite it. Never cite a follow-up by number before it is filed, and never
+   guess the next free number: file it with `gh issue create` and cite the
+   number it returns, or cite what actually asked for the change — the
+   issue this PR closes, or the review that requested it
+   (`PR #N review`). List each such number the diff adds as
+   `#N: <title>` in the PR summary's Evidence (see **An issue number cited
+   as provenance is one you looked up** in `CODING-STANDARDS.md`). Before
+   adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and

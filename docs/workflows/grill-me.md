@@ -647,7 +647,7 @@ runs.
 ## 🤖 Reserved-label safety
 
 Grill-me mode follows the same [Worker Label
-Policy](../../README.md#-supported-labels) as every other workflow.
+Policy](../../README.md#%EF%B8%8F-supported-labels) as every other workflow.
 Two distinct actors touch labels on a grill-me issue, with strictly
 separated permissions:
 

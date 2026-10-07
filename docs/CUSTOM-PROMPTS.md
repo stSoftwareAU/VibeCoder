@@ -18,7 +18,7 @@ worked example you can follow verbatim, the contract a prompt file must
 satisfy, and the exact symptom of every way it can fail. It states only as much
 of the `.config.json` key as the example needs — the field-by-field reference,
 and the full semantics of dispatch and override, live in
-[Configuration — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
+[Configuration — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts).
 
 ## 📋 Table of Contents
 
@@ -30,7 +30,7 @@ and the full semantics of dispatch and override, live in
 - [Trust — who may add the label](#-trust--who-may-add-the-label)
 - [When a labelled issue is dispatched](#-when-a-labelled-issue-is-dispatched)
 - [Container operation](#-container-operation)
-- [No versioning convention](#-no-versioning-convention)
+- [No versioning convention](#%EF%B8%8F-no-versioning-convention)
 - [Failure modes and their exact symptoms](#-failure-modes-and-their-exact-symptoms)
 - [Syncing a private prompt repository](#-syncing-a-private-prompt-repository)
 
@@ -93,7 +93,7 @@ flowchart TD
   prompt inline and cannot be overridden.
 
 The full semantics of both live in
-[Configuration — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
+[Configuration — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts).
 
 ## 🧾 The config shape
 
@@ -483,7 +483,7 @@ Two rules make that safe:
 
 **See also**
 
-- [Configuration — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts)
+- [Configuration — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts)
   — the `.config.json` key reference.
 - [Extending the Worker](EXTENDING.md) — the in-tree extension points.
 - [Prompt goals (summary)](PROMPTS.md) — what each built-in prompt is for.
