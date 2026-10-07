@@ -123,6 +123,7 @@ import { branchCleanupCommand } from "./commands/branch_cleanup.ts";
 import { claudeAuthCommand } from "./commands/claude_auth.ts";
 import { codexBudgetCommand } from "./commands/codex_budget.ts";
 import { claudeRunnerCommand } from "./commands/claude_runner.ts";
+import { reviewRoundCommand } from "./commands/review_round.ts";
 import { answerSanitiserCommand } from "./commands/answer_sanitiser.ts";
 import { partialAnswerCommand } from "./commands/partial_answer.ts";
 import { promptBuilderCommand } from "./commands/prompt_builder.ts";
@@ -323,6 +324,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(claudeAuthCommand);
   registry.register(codexBudgetCommand);
   registry.register(claudeRunnerCommand);
+  registry.register(reviewRoundCommand);
   registry.register(answerSanitiserCommand);
   registry.register(partialAnswerCommand);
   registry.register(promptBuilderCommand);

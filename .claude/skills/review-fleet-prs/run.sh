@@ -3,8 +3,9 @@
 #
 # Every 5 minutes it runs one gate pass (a GitHub search, no model). Only
 # when a PR is ready is a headless Claude session started to review that
-# round, so an idle night costs no tokens. With `pr_reviewer_app` in
-# .config.json, reviews post as that GitHub App (see app_token.ts).
+# round, in the Vibe Coder's worker container, so an idle night costs no
+# tokens. With `pr_reviewer_app` in .config.json, reviews post as that
+# GitHub App (see app_token.ts).
 #
 #   run.sh [owner/name]           # loop for ever (all repos, or one)
 #   run.sh --once [owner/name]    # one pass: gate, then at most one round
@@ -108,72 +109,115 @@ EOF
   echo "Log:  tail -f $LOG"
 }
 
-# Picks the Claude subscription a round runs on, the way the worker picks
-# one at start-up (Issue #3289): claude_credential.ts ranks the host's
-# credential pool by remaining budget and leaves out the labels in $1 (a
-# comma list — the subscription a round just exhausted). Sets CRED_LABEL,
-# CRED_NAME and CRED_VALUE; an empty CRED_LABEL means the host's `claude`
-# login is used as before. The token value is never logged or traced: xtrace
-# is suspended while it is in a variable the shell would print.
-select_credential() {
-  local json cred_rc
-  { local xtrace=$-; set +x; } 2>/dev/null
-  CRED_LABEL="" CRED_NAME="" CRED_VALUE=""
-  json=$(cd "$SKILL_DIR" && deno run --allow-read --allow-env \
-    --allow-net=api.anthropic.com claude_credential.ts \
-    ${1:+"--exclude=$1"} 2>"$errfile")
-  cred_rc=$?
-  [[ -s "$errfile" ]] && errors <"$errfile"
-  if [[ $cred_rc -ne 0 ]]; then
-    log "credential selection failed; the round uses the host's claude login"
-  else
-    CRED_LABEL=$(jq -r '.label // empty' <<<"$json" 2>/dev/null)
-    CRED_NAME=$(jq -r '.name // empty' <<<"$json" 2>/dev/null)
-    CRED_VALUE=$(jq -r '.value // empty' <<<"$json" 2>/dev/null)
-    [[ -n $CRED_NAME && -n $CRED_VALUE ]] || CRED_LABEL=""
+# The container a round runs in (Issue #3293): the worker's own launch plan
+# (mod.ts container-launch-plan, the module run.sh at the checkout root
+# executes), so the round gets the worker image, its credential mounts and the
+# entrypoint's staging, and the driver's own Claude credential pool picks the
+# subscription and rotates past a spent one. Two changes to the worker's run:
+# its named volumes are left out, because the worker's container may hold
+# them and a round needs none of its durable state; and the reviewer App token
+# is passed by name alone (`--env GH_TOKEN`), so its value is never on a
+# command line, in a trace or on disk. Sets RUNTIME, ROUND_ARGS (everything up
+# to and including the image), C_BASE (the checkout inside the container) and
+# C_STATE_DIR (this state directory inside it). Returns non-zero, with
+# LAST_ERROR set, when the plan or the image is not usable.
+round_container() {
+  local name=$1 planfile token key value i arg src
+  local exists_args=() ensure_dirs=() volumes=() run_args=()
+  planfile="$STATE_DIR/round-plan"
+  RUNTIME="" ROUND_ARGS=() C_BASE="" C_STATE_DIR=""
+  if ! (cd "$CHECKOUT" && deno run --frozen --lock=worker/deno/deno.lock \
+    --allow-env --allow-read --allow-run \
+    --allow-sys=hostname,systemMemoryInfo \
+    --allow-write="$planfile,$planfile.Containerfile,$HOME/.vibe-coder/run-config" \
+    worker/deno/mod.ts container-launch-plan --base-dir "$CHECKOUT" \
+    --container-name "$name" --out "$planfile" </dev/null >/dev/null \
+    2>"$errfile"); then
+    errors <"$errfile"
+    LAST_ERROR="worker container plan failed: $(last_error_line "$errfile")"
+    return 1
   fi
-  [[ $xtrace == *x* ]] && set -x
+  while IFS= read -r -d '' token; do
+    key="${token%%=*}"
+    value="${token#*=}"
+    case "$key" in
+    runtime) RUNTIME=$value ;;
+    exists) exists_args+=("$value") ;;
+    ensure) ensure_dirs+=("$value") ;;
+    volume | volume-resettable) volumes+=("$value") ;;
+    run) run_args+=("$value") ;;
+    esac
+  done <"$planfile"
+  if [[ -z $RUNTIME || ${#run_args[@]} -eq 0 || ${#exists_args[@]} -eq 0 ]]; then
+    LAST_ERROR="worker container plan is incomplete"
+    return 1
+  fi
+  if ! command -v "$RUNTIME" >/dev/null; then
+    LAST_ERROR="cannot run $RUNTIME: the container runtime is not on PATH"
+    return 1
+  fi
+  if ! "$RUNTIME" "${exists_args[@]}" >/dev/null 2>&1; then
+    LAST_ERROR="the worker image is not built; start the Vibe Coder (./run.sh) once to build it"
+    return 1
+  fi
+  for arg in ${ensure_dirs[@]+"${ensure_dirs[@]}"}; do mkdir -p "$arg"; done
+  # The plan's last argument is the image; the round's own go after it.
+  for ((i = 0; i < ${#run_args[@]} - 1; i++)); do
+    arg=${run_args[i]}
+    if [[ $arg == --volume ]]; then
+      src=${run_args[i + 1]%%:*}
+      if [[ " ${volumes[*]} " == *" $src "* ]]; then
+        i=$((i + 1))
+        continue
+      fi
+      # The log directory's mount carries this state directory.
+      if [[ $src == "$(dirname "$STATE_DIR")" ]]; then
+        value=${run_args[i + 1]#*:}
+        C_STATE_DIR="${value%%:*}/$(basename "$STATE_DIR")"
+      fi
+    fi
+    [[ $i -gt 0 && ${run_args[i - 1]} == --workdir ]] && C_BASE=$arg
+    ROUND_ARGS+=("$arg")
+  done
+  if [[ -z $C_STATE_DIR || -z $C_BASE ]]; then
+    LAST_ERROR="the worker container does not mount $STATE_DIR"
+    return 1
+  fi
+  # Tested by name, not value: `bash -x` would print the value.
+  [[ -n ${GH_TOKEN+set} ]] && ROUND_ARGS+=(--env GH_TOKEN)
+  ROUND_ARGS+=("${run_args[${#run_args[@]} - 1]}")
   return 0
 }
 
-# Whether a round's log holds the CLI's usage-limit refusal (Issue #3289).
-round_hit_usage_limit() {
-  [[ "$(cd "$SKILL_DIR" && deno run --allow-read claude_credential.ts \
-    "--usage-limit-log=$1" 2>/dev/null)" == "true" ]]
-}
-
-# One headless Claude round, logged to $1. Runs on the subscription
-# select_credential chose, exported to `claude` alone; xtrace stays off in
-# the subshell so the export is never traced.
+# One headless Claude round in the worker container, logged to $1.
 #
-# `exec ... or die`: a bare exec that cannot start `claude` (not on PATH)
-# falls through and perl exits 0, which would read as a completed round.
-# `claude -p` otherwise kills its reviewer agents 600s in and ends the
-# round with their PRs unreviewed; the alarm is the round's only limit.
+# `exec ... or die`: a bare exec that cannot start the runtime (not on PATH)
+# falls through and perl exits 0, which would read as a completed round. The
+# alarm is the round's only limit; it kills the runtime's client, so the
+# container itself is then killed by name.
 run_round() {
-  (
-    { set +x; } 2>/dev/null
-    cd "$CHECKOUT" || exit 1
-    [[ -n $CRED_LABEL ]] && export "$CRED_NAME=$CRED_VALUE"
-    CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
-      "$ROUND_TIMEOUT" \
-      claude -p "$prompt" \
-      --model claude-opus-5-5 --effort xhigh \
-      --allowedTools "Agent" "Read" "Grep" "Glob" "Edit(/$dir/**)" \
-      "Bash(deno run:*)" "Bash(gh:*)" "Bash(jq:*)" "Bash(cat:*)" \
-      2>&1
-  ) | tee -a "$LOG" "$1"
+  local log=$1 rc claude_args
+  claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" '["--model",
+    "claude-opus-5-5", "--effort", "xhigh", "--allowedTools", "Agent",
+    "Read", "Grep", "Glob", $edit, "Bash(deno run:*)", "Bash(gh:*)",
+    "Bash(jq:*)", "Bash(cat:*)"]')
+  perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
+    "$ROUND_TIMEOUT" "$RUNTIME" "${ROUND_ARGS[@]}" review-round \
+    --prompt-file "$C_DIR/prompt.md" --claude-args "$claude_args" \
+    2>&1 | tee -a "$LOG" "$log"
   # The round's own status, not tee's: a killed or failed round is a failed
   # pass, so escalate_result counts it rather than seeing an ok.
-  return "${PIPESTATUS[0]}"
+  rc=${PIPESTATUS[0]}
+  [[ $rc -eq 142 ]] && "$RUNTIME" kill "$ROUND_NAME" >/dev/null 2>&1
+  return "$rc"
 }
 
 # One pass: a gate check, then a Claude round if anything is ready.
 # Returns non-zero when the App token, the gate or the Claude round failed;
 # sets $LAST_ERROR to a one-line gist of why, for escalate_result to report.
 pass() {
-  local reviewer=() ready dir prompt minted errfile token_rc gate_rc round_rc
-  local entry input spent
+  local reviewer=() ready dir minted errfile token_rc gate_rc round_rc
+  local entry input
   LAST_ERROR=""
   errfile="$STATE_DIR/last-error"
   # Reviews post as the reviewer App when .config.json sets pr_reviewer_app.
@@ -239,7 +283,16 @@ pass() {
   log "gate: $(jq -r '[.ready[] | "\(.repo)#\(.number)"] | join(", ")' \
     <<<"$ready" 2>/dev/null || echo "$ready")"
 
-  prompt="Use the review-fleet-prs skill to review ONE round, then stop.
+  ROUND_NAME="review-fleet-prs-$(basename "$dir")"
+  if ! round_container "$ROUND_NAME"; then
+    log "round not started: $LAST_ERROR"
+    return 1
+  fi
+  C_DIR="$C_STATE_DIR/rounds/$(basename "$dir")"
+  # The round runs in the container, so every path it is given is the
+  # container's; the prompt is a file in the round's own directory.
+  cat >"$dir/prompt.md" <<PROMPT
+Use the review-fleet-prs skill to review ONE round, then stop.
 The gate has already run for you; do NOT start gate.ts or the loop.
 Its output is:
 
@@ -247,30 +300,13 @@ $ready
 
 Follow the skill's 'Reviewing the ready PRs' section (Review, post,
 learn from recurring findings, report) for the ready PRs above. Run post.ts
-from $SKILL_DIR and write its input files under $dir. Skip the
-PushNotification step: this session is headless. Finish with the one-line
-round report."
+from $C_BASE/.claude/skills/review-fleet-prs with --state-dir=$C_STATE_DIR,
+and write its input files under $C_DIR. Skip the PushNotification step: this
+session is headless. Finish with the one-line round report.
+PROMPT
 
-  select_credential ""
-  [[ -n $CRED_LABEL ]] && log "round on Claude subscription $CRED_LABEL"
   run_round "$dir/claude.log"
   round_rc=$?
-  # Issue #3289: a round the subscription's usage limit stopped is run again
-  # once on the next-ranked subscription, so one exhausted window does not
-  # stop the fleet review while the pool still holds budget.
-  if [[ $round_rc -ne 0 && $round_rc -ne 142 && -n $CRED_LABEL ]] &&
-    round_hit_usage_limit "$dir/claude.log"; then
-    spent=$CRED_LABEL
-    log "round hit the usage limit on subscription $spent; selecting another"
-    select_credential "$spent"
-    if [[ -n $CRED_LABEL && $CRED_LABEL != "$spent" ]]; then
-      log "retrying the round once on subscription $CRED_LABEL"
-      run_round "$dir/claude-retry.log"
-      round_rc=$?
-    else
-      log "no other subscription has budget; the round stays failed"
-    fi
-  fi
   if [[ $round_rc -eq 142 ]]; then
     # 128 + SIGALRM: the alarm above killed a hung round.
     LAST_ERROR="round timed out after ${ROUND_TIMEOUT}s"
