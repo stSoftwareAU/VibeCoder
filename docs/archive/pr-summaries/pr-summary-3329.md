@@ -72,7 +72,8 @@ The mock in `createMockGh` returns the same one-line JSON array shape.
 - `./quality.sh`: PASSED, exit 0. The config integration check was SKIPPED;
   every other check passed, including deno tests, lint, type check, fmt,
   markdownlint, mermaid and semgrep.
-- Docs sweep:
+- **Docs sweep** — grep: `createDiagnosticIssueFetcher`, `getSubIssues`, `extractSubIssueReferences`, `diagnose-issue`, `diagnose-repo`, `diagnose_issue`, `diagnose_repo`; section: `docs/INTERNALS.md#-diagnose-issue-command`, `docs/INTERNALS.md#-repository-diagnostic-tool-diagnose-repo-deno-command`, `docs/TROUBLESHOOTING.md#-worker-not-picking-up-issues`; updated: none — every hit was read and is still true
+- Docs sweep notes:
   - No README, `docs/` page, prompt or agent instruction describes how the
     diagnose commands read sub-issues.
   - `docs/audits/security-sweep-2756-commands-setup-delta.md:112` names
@@ -116,10 +117,8 @@ fail.
 
 **Removed assertions:**
 
-- "an unreadable body yields no sub-issues" asserted `[]` on a failed read.
-  That is the swallowed failure #3329 removes.
-- "sub-issues come from the body references" no longer holds, because body
-  checkboxes are no longer sub-issues.
+- Removed from `worker/deno/tests/diagnose_issue_test.ts`: `assertEquals(await fetcher.getSubIssues("owner/repo", 7), []);` — #3329 makes a failed sub-issue read reject instead of returning no sub-issues, so the old value is untrue. The replacement is `createDiagnosticIssueFetcher - a failed sub-issue read rejects (Issue #3329)`.
+- Removed from `worker/deno/tests/diagnose_issue_test.ts`: `assertEquals( [...subs].sort((a, b) => a.number - b.number), [{ repo: "owner/repo", number: 11 }, { repo: "owner/repo", number: 12 }], );` — #3329 reads sub-issues from the native endpoint, so body task-list checkboxes are no longer sub-issues and the old value is untrue. The replacements are `createDiagnosticIssueFetcher - sub-issues come from the native endpoint (Issue #3329)` and `createDiagnosticIssueFetcher - a body task-list checkbox is not a sub-issue (Issue #3329)`.
 
 Branch outcomes:
 
@@ -142,8 +141,11 @@ Branch outcomes:
   a blocker.
 
 **Fakes mirror production:** `createMockGh`'s `/sub_issues` branch stands in
-for the gh call that `fetchNativeSubIssueRefs` makes. It returns the
-observed one-line JSON array, and a non-zero exit on failure.
+for the gh call that `fetchNativeSubIssueRefs` makes. It always returns the
+observed one-line JSON array built from `opts.subIssues`; it has no failure
+path. The failing reads come from test-local gh functions instead: the L447
+test's wrapper throws `gh: Not Found (HTTP 404)` on `/sub_issues`, and the
+L877 test's function rejects every call.
 
 **Follow-up:** the same swallowed failure in
 `worker/deno/commands/check_parent_dependencies.ts` (`catch { return []; }`)
