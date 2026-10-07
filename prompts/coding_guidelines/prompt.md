@@ -1270,9 +1270,14 @@ enumeration as a `Branch outcomes:` list in its Test Plan — one line per
 outcome naming `path:line`, the outcome, the test that reaches it, and that
 flipping it went red — or `Branch outcomes: none added` when the diff adds
 no branch; every test it names must exist at the head (see **A named test
-must exist**). A fix to an existing PR re-enumerates every branch its own
-commits add, not only those a review finding named, and refreshes the list
-to the head.
+must exist**). An entry that admits no test reaches its outcome is work
+still to do, not a record: add the test that goes red, or remove the
+branch. Only an outcome the issue puts out of scope, or one no test can
+reach, may stand, written `exempt (out of scope): <reason>` or `exempt
+(untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
+creation on any other admission (Issue #3288). A fix to an existing PR
+re-enumerates every branch its own commits add, not only those a review
+finding named, and refreshes the list to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
