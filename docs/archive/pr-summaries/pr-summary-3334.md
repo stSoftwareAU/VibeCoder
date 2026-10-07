@@ -53,9 +53,9 @@ None.
   docstring. Remaining hits:
   - `docs/IDLE-TASK-FRAMEWORK.md:914` — still true because it quotes a
     historical census log line (`reason=stream_occupied`).
-  - `docs/IDLE-TASK-FRAMEWORK.md:1407-1408` — still true because, under the
-    new ranking, pace_suppressed still loses to `pr_blocked`; "a more
-    fundamental refusal still wins" refers only to the PR gates.
+  - `docs/IDLE-TASK-FRAMEWORK.md:1407-1408` — still true because pace stays
+    the audit's last gate, and an issue an earlier gate refuses (now
+    including the dependency and deferral gates) keeps that earlier reason.
   - `docs/workflows/issue-processing.md:232` — still true because
     `reason=pace_suppressed` is unchanged.
   - `docs/INTERNALS.md:952,968` — still true because they describe the idle
@@ -86,7 +86,8 @@ None.
 
 - **Unit tests.** `deno task test:unit` over `idle_detect_diagnostics_test.ts`,
   `idle_detect_week_pace_1915_test.ts`, `idle_detect_dependency_gate_test.ts`
-  and `idle_detect_stream_occupancy_1050_test.ts`: 89 passed, 0 failed.
+  and `idle_detect_stream_occupancy_1050_test.ts`: 89 passed, 0 failed
+  (final run of `idle_detect_diagnostics_test.ts` alone: 66 passed).
 - **Quality gate.** `./quality.sh < /dev/null` PASSED. `config integration`
   was SKIPPED because there is no `.config.json`.
 - **Red check, both rungs deleted.** 6 of the 7 new tests failed. The
@@ -106,9 +107,8 @@ None.
     - deleting it went red;
     - swapping it above line 921 turned `dependency_blocked wins over
       time_deferred` red.
-  - Fall-through to `stream_occupied` and below when neither reason is
-    present: reached by `time_deferred wins over stream_occupied`'s
-    counterpart, the existing stream_occupied tests, which still pass.
+  - Fall-through when neither reason is present: unchanged, still reached
+    by the existing `stream_occupied` and filter tests, which pass.
 
 ## Pre-PR Security Self-Check
 
