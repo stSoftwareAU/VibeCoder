@@ -116,9 +116,17 @@ Deno.test("isAdminOnlyRepoSettingsIssue - a scanner-format body is still admin-o
 Deno.test("isAdminOnlyRepoSettingsIssue - hostile backtick and fence runs scale linearly (Issue #3295)", () => {
   for (
     const build of [
+      // Fence-opener hostile case: a long backtick run at the start of a line
+      // never reaches the inline-code-span regex at all — it is swallowed by
+      // the fence-opener branch instead, so this alone does not exercise the
+      // `(?<!`)` lookbehind that keeps that regex linear.
       (chars: number) => "`".repeat(chars) + "x",
       (chars: number) => "` ".repeat(chars / 2) + "``x",
       (chars: number) => "```\n" + "x\n".repeat(chars / 2),
+      // Code-span hostile case: a long backtick run NOT at the start of a
+      // line falls through to the inline-code-span regex, which is the one
+      // the `(?<!`)` lookbehind keeps linear.
+      (chars: number) => "x" + "`".repeat(chars) + "x",
     ]
   ) {
     const result = assertLinearGrowth(
