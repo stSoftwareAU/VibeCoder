@@ -1418,6 +1418,20 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Re-scoping an existing drift test keeps every check's reach
+(Issue #3307).** Fleet PRs converting whole-file drift tests to `section()`
+kept every pinned string and still lost a check, and were sent back for it:
+a review round of VibeCoder#3240 had narrowed two absence checks to one
+section, and one of VibeCoder#3297 had moved a pin into a list where a
+longer pin already contained it. Condition 4's base check cannot see this,
+because a moved pin is meant to be on base. `CODING-STANDARDS.md` §
+Documentation-drift tests now asks for each moved pin to be scoped to the
+section holding its rule and red-checked there, for no pin to be a substring
+of another in the same list (`assertPins` throws on one), and for
+whole-file absence checks to stay on `flatWholeFile`. The issue and
+pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
+check.
+
 **Check where you insert (Issue #3194).** Fleet PRs added a new item or
 paragraph at a point that cut existing text off from what it describes.
 GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
