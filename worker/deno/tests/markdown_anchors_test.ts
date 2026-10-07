@@ -79,6 +79,21 @@ Deno.test("githubSlug - connector punctuation (underscore) survives (Issue #3337
   );
 });
 
+// `_name_` is underscore emphasis at a word boundary, not connector
+// punctuation — GitHub renders it as `<em>name</em>` and drops the
+// delimiters. Id observed from GitHub's rendered HTML via `gh api
+// repos/stSoftwareAU/VibeCoder/contents/docs/audits/security-sweep-1218-commands-cli.md
+// -H "Accept: application/vnd.github.html"` (review on PR #3363, Issue
+// #3337).
+Deno.test("githubSlug - underscore emphasis delimiters drop, unlike connector-punctuation underscores (PR #3363)", () => {
+  assertEquals(
+    githubSlug(
+      "SEC-1218-F5 — an unescaped shell variable _name_ in text that is `eval`'d",
+    ),
+    "sec-1218-f5--an-unescaped-shell-variable-name-in-text-that-is-evald",
+  );
+});
+
 /**
  * In-scope anchor references: each link that the audit flagged, expressed as
  * the referencing file, the exact `target#fragment` string it must contain,

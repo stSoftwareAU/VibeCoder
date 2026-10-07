@@ -29,6 +29,11 @@
  *     underscore (connector punctuation) but drops the `.` and the
  *     backticks: `#host-level-failures--callbackshost_failure` (Issue
  *     #3337).
+ *   - `_name_` written as emphasis (word-boundary underscores, outside a
+ *     code span) is rendered by GitHub as `<em>name</em>` — the delimiters
+ *     are dropped from the slug, unlike the connector-punctuation
+ *     underscore in `callbacks.host_failure` above, which is intraword and
+ *     has no emphasis meaning (review on PR #3363, Issue #3337).
  *
  * Australian English spelling used throughout (behaviour, normalise, etc.).
  */
@@ -40,13 +45,51 @@
  */
 const STRIP = /[^\p{L}\p{M}\p{N}\p{Pc} -]/gu;
 
+/** A backtick code span: `` `x` ``, ``` ``x`` ```, of any backtick run length. */
+const CODE_SPAN = /(`+)(.*?)\1/g;
+
+/**
+ * An underscore emphasis/strong delimiter pair (`_word_`, `__word__`) at a
+ * word boundary on both sides — the shape GitHub's renderer turns into
+ * `<em>`/`<strong>` and drops from the text content. An underscore flanked
+ * by a letter/number/underscore on either side (`host_failure`) is
+ * intraword and left alone, matching CommonMark's underscore-emphasis rule
+ * (review on PR #3363, Issue #3337).
+ */
+const EMPHASIS_UNDERSCORES =
+  /(?<=^|[^\p{L}\p{N}_])(_{1,2})(?!\s)(.+?)(?<!\s)\1(?=$|[^\p{L}\p{N}_])/gu;
+
+/**
+ * Remove underscore emphasis delimiters outside backtick code spans, so the
+ * slug reflects GitHub's rendered text content rather than the raw
+ * Markdown source (review on PR #3363, Issue #3337).
+ */
+function stripEmphasisUnderscores(text: string): string {
+  let result = "";
+  let lastIndex = 0;
+  for (const span of text.matchAll(CODE_SPAN)) {
+    const start = span.index ?? 0;
+    result += text.slice(lastIndex, start).replace(
+      EMPHASIS_UNDERSCORES,
+      "$2",
+    );
+    result += span[0];
+    lastIndex = start + span[0].length;
+  }
+  result += text.slice(lastIndex).replace(EMPHASIS_UNDERSCORES, "$2");
+  return result;
+}
+
 /**
  * Slugify a single heading's text the way GitHub does. Does not apply the
  * duplicate-heading `-1`/`-2` suffixing — use {@link headingSlugs} for a whole
  * document where duplicates matter.
  */
 export function githubSlug(headingText: string): string {
-  return headingText.toLowerCase().replace(STRIP, "").replace(/ /g, "-");
+  return stripEmphasisUnderscores(headingText)
+    .toLowerCase()
+    .replace(STRIP, "")
+    .replace(/ /g, "-");
 }
 
 /** One line of a document, paired with its 1-based line number. */
