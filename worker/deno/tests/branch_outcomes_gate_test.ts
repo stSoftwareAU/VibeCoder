@@ -1980,6 +1980,83 @@ Deno.test("validateBranchOutcomes - a wrapped test name in prose after a list st
   assert(result.valid);
 });
 
+// ---------------------------------------------------------------------------
+// PR #3312 review, round 6: an admission a hard wrap splits across two
+// physical lines was never matched, because uncaptured text was split back
+// into one unit PER LINE after blanking — a phrase whose words straddle the
+// line break is never one string for `admitsUnreached` to test. The fix
+// checks each uncaptured paragraph as one joined unit instead. A second,
+// independent defect: a header's own inline body was joined with every
+// OTHER header's body into one string, so a test citation in one header
+// could clear a weak admission in a different header's body.
+// ---------------------------------------------------------------------------
+
+Deno.test("validateBranchOutcomes - a strong admission hard-wrapped across a line break in prose after a list blocks (PR #3312 review, round 6)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n**Branch outcomes:**\n\n" +
+      "- `worker/deno/lib/foo.ts:42` — error — " +
+      "`worker/deno/tests/foo_test.ts::rejects` — flipped, test went red\n\n" +
+      "The fail-open guard at `worker/deno/lib/foo.ts:50` is new too, but " +
+      "no test\nreaches it yet.\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+  assert(result.unreachedEntries.includes("worker/deno/lib/foo.ts:50"));
+});
+
+// The "left ... green" admission word ("left") and its completion ("green")
+// sit on opposite sides of the break, with the (blanked-to-empty) shell
+// command between them — splitting back into one unit PER LINE leaves
+// neither half holding both words, exactly the review's own example.
+Deno.test("validateBranchOutcomes - a weak admission hard-wrapped across a line break after 'none added.' blocks (PR #3312 review, round 6)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:** none added.\n\n" +
+      "The guard at `worker/deno/lib/foo.ts:9` is new; flipping it left\n" +
+      "`cargo test --workspace` green.\n",
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+// Table rows must stay separate units even once uncaptured paragraphs are
+// joined: merging all four rows into one paragraph would let row 1's test
+// citation and red flip clear row 2's bare "untested" admission, since
+// `admitsUnreached` returns early once a unit contains any test path or red
+// flip at all.
+Deno.test("validateBranchOutcomes - an admission in one markdown table row still blocks when a neighbouring row carries a test citation (PR #3312 review, round 6)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:** two arms added:\n" +
+      "\n" +
+      "| Outcome | Test |\n" +
+      "| --- | --- |\n" +
+      "| ok | `worker/deno/tests/foo_test.ts::ok` — flipped, went red |\n" +
+      "| edge | untested |\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+});
+
+Deno.test("validateBranchOutcomes - a test citation in one Branch-outcomes header does not clear a weak admission in another header (PR #3312 review, round 6)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n" +
+      "**Branch outcomes:** `worker/deno/lib/foo.ts:42` — error — untested\n\n" +
+      "## Later\n\n" +
+      "**Branch outcomes:** `worker/deno/lib/foo.ts:50` — ok — " +
+      "`worker/deno/tests/foo_test.ts` flipped, went red\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
+  assertEquals(result.unreachedEntries, ["worker/deno/lib/foo.ts:42"]);
+});
+
 Deno.test("lookupTestsAtHead - invokes git with --literal-pathspecs ls-tree -r --name-only HEAD --", async () => {
   let seenArgs: string[] = [];
   const runGit = (args: string[]) => {

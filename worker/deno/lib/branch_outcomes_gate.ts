@@ -55,6 +55,13 @@ const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
 
+/**
+ * A markdown table row. Each one is kept as its own paragraph group (PR
+ * #3312 review) — merging table rows into one joined unit would let a test
+ * citation in one row clear a weak admission in another.
+ */
+const TABLE_ROW_RE = /^\s*\|/;
+
 /** A markdown heading, capturing its `#` run so the level can be read off. */
 const HEADING_RE = /^\s{0,3}(#{1,6})\s/;
 
@@ -670,10 +677,14 @@ function groupUncapturedIndices(
   const groups: number[][] = [];
   let current: number[] = [];
   let prevIndex = Number.NaN;
+  let prevWasTableRow = false;
   for (const idx of indices) {
+    const isTableRow = TABLE_ROW_RE.test(lines[idx]!);
     const startsNewGroup = current.length === 0 ||
       idx !== prevIndex + 1 ||
-      LIST_MARKER_RE.test(lines[idx]!);
+      LIST_MARKER_RE.test(lines[idx]!) ||
+      isTableRow ||
+      prevWasTableRow;
     if (startsNewGroup) {
       if (current.length > 0) groups.push(current);
       current = [idx];
@@ -681,6 +692,7 @@ function groupUncapturedIndices(
       current.push(idx);
     }
     prevIndex = idx;
+    prevWasTableRow = isTableRow;
   }
   if (current.length > 0) groups.push(current);
   return groups;
@@ -912,23 +924,31 @@ function unitLabel(unit: string): string {
     : trimmed;
 }
 
-/** The blanked (test-citation-safe) text for each unit {@link evaluateUnreachedAdmissions} checks. */
+/**
+ * The blanked (test-citation-safe) text for each unit
+ * {@link evaluateUnreachedAdmissions} checks. `body` is one string per
+ * header's `bodyLineIndexGroups` entry, kept apart rather than joined into
+ * one string — joining let a test citation in one `Branch outcomes:`
+ * header clear a weak admission in a different header (PR #3312 review).
+ */
 interface BlankedUnits {
   entries: readonly string[];
-  body: string;
+  body: readonly string[];
   uncapturedLines: readonly string[];
 }
 
 /**
  * Run the unreached-outcome admission check (Issue #3288) over every
- * blanked unit of a `Branch outcomes` record: each entry, the record's own
- * body when non-empty, and every uncaptured line.
+ * blanked unit of a `Branch outcomes` record: each entry, each header's own
+ * body contribution when non-empty, and every uncaptured line/paragraph.
  */
 function evaluateUnreachedAdmissions(
   blanked: BlankedUnits,
 ): { problems: string[]; unreachedEntries: string[] } {
   const units: string[] = [...blanked.entries];
-  if (blanked.body) units.push(blanked.body);
+  for (const group of blanked.body) {
+    if (group) units.push(group);
+  }
   for (const line of blanked.uncapturedLines) units.push(line);
 
   const problems: string[] = [];
@@ -1127,20 +1147,27 @@ function evaluateApplicable(
     // boundaries than the real parse and block an honest summary on a
     // shape mismatch that was never a real line merge (PR #3312 review,
     // round 3; see `blankedUnitLines`). Uncaptured lines are grouped into
-    // paragraphs first (`groupUncapturedIndices`) so a span wrapped across
-    // two of them still pairs, then blanked a paragraph at a time and split
-    // back into per-line units (PR #3312 review, round 4).
+    // paragraphs first (`groupUncapturedIndices` — each table row its own
+    // group) and each paragraph is checked as ONE joined unit, so an
+    // admission a hard wrap splits across two lines still matches (PR
+    // #3312 review, round 6); a table row stays its own unit so one row's
+    // test citation cannot clear another row's weak admission. Each
+    // header's own `bodyLineIndexGroups` entry is likewise kept as its own
+    // unit rather than joined across headers, so a citation in one header
+    // cannot clear a weak admission in another (PR #3312 review, round 6).
     const blanked: BlankedUnits = {
       entries: record.entryLineIndices.map((idxs) =>
         blankedUnitText(lines, idxs)
       ),
-      body: record.bodyLineIndexGroups
-        .map((idxs) => blankedUnitText(lines, idxs))
-        .join(" "),
+      body: record.bodyLineIndexGroups.map((idxs) =>
+        blankedUnitText(lines, idxs)
+      ),
       uncapturedLines: groupUncapturedIndices(
         lines,
         record.uncapturedLineIndices,
-      ).flatMap((idxs) => blankedUnitLines(lines, idxs)),
+      )
+        .map((idxs) => blankedUnitText(lines, idxs))
+        .filter((text) => text.length > 0),
     };
     const admission = evaluateUnreachedAdmissions(blanked);
     problems.push(...admission.problems);
