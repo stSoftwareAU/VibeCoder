@@ -229,6 +229,19 @@ Deno.test("hasPlanningRequestMarker - a real marker between a wrapped span's clo
   assertEquals(detectPlanningHandoff(output), { reason: "y" });
 });
 
+// PR #3351 review (round 3): a line starting an HTML comment was not
+// treated as a block start, so a stray backtick on the line before a real
+// marker paired with a backtick inside the marker's own reason attribute,
+// masking the `<!--` opener itself as code.
+Deno.test("hasPlanningRequestMarker - a stray backtick on the line before the marker does not hide it, even with a backticked reason", () => {
+  const output =
+    'Split the ` operator out.\n<!-- vibe-needs-planning reason="split `lexer` and `parser`" -->';
+  assertEquals(hasPlanningRequestMarker(output), true);
+  assertEquals(detectPlanningHandoff(output), {
+    reason: "split `lexer` and `parser`",
+  });
+});
+
 // ---------------------------------------------------------------------------
 // hasPriorPlanningHandoff
 // ---------------------------------------------------------------------------

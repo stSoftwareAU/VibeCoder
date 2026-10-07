@@ -27,7 +27,20 @@
  * A block quote marker (`>`) is different: CommonMark lets consecutive `>`
  * lines form one quoted *paragraph*, so a span may still wrap across them.
  * The paragraph only ends where the quote starts or ends — a quoted line
- * following an unquoted one, or the reverse — not on every `>` line.
+ * following an unquoted one, or the reverse — not on every `>` line. But a
+ * quoted line can still open one of the blocks above *inside* the quote: a
+ * quoted blank line (`>` with nothing after), list item, heading, table row
+ * or break must end the paragraph the same way the unquoted form does, so
+ * the blank-line and block-start checks run on the line with its quote
+ * marker(s) stripped, not on the raw `>`-prefixed line (Issue #3351 review,
+ * round 3).
+ *
+ * An HTML comment (`<!-- ... -->`) also interrupts a paragraph in
+ * CommonMark: a line whose content, after optional indentation (and any
+ * quote prefix), starts with `<!--` opens an HTML block that the paragraph
+ * never continues into, and the block runs to the line containing `-->`
+ * (which may be the same line). A stray backtick before such a line must
+ * not pair with one on or after it (Issue #3351 review, round 3).
  *
  * A fenced block opens on a line whose first non-space characters are three
  * or more backticks or tildes (an optional info string may follow on the
@@ -171,6 +184,34 @@ const LIST_ITEM_RE = /^[ \t]*(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)/;
 const BLOCK_QUOTE_RE = /^[ \t]*>/;
 
 /**
+ * One or more quote-marker levels at the start of a line, plus at most one
+ * space/tab right after the last `>` (CommonMark strips at most one). Every
+ * repetition of the outer `+` must itself consume a literal `>`, so the
+ * match length is bounded by the number of `>` characters present — no
+ * quantifier here can backtrack over the same characters as another one
+ * (Issue #3351 review, round 3; same class of risk as Issue #3186).
+ */
+const QUOTE_PREFIX_RE = /^(?:[ \t]*>)+[ \t]?/;
+
+/**
+ * Strip the leading quote marker(s) from `line`, so the blank-line and
+ * block-start checks below see the quoted *content*, not the `>` prefix —
+ * a quoted blank line, list item, heading, table row or break must end the
+ * paragraph the same way the unquoted form does. A line with no `>` prefix
+ * is returned unchanged.
+ */
+function stripQuotePrefix(line: string): string {
+  return line.replace(QUOTE_PREFIX_RE, "");
+}
+
+/**
+ * An HTML comment opener: leading whitespace, then `<!--`. In CommonMark
+ * this starts an HTML block that interrupts a paragraph; the block runs to
+ * the line containing `-->` (Issue #3351 review, round 3).
+ */
+const HTML_COMMENT_START_RE = /^[ \t]*<!--/;
+
+/**
  * A GFM table row: leading whitespace, then `|`. A table row ends a
  * paragraph the same way a heading does, even without one of GFM's
  * delimiter rows present — a stray backtick in one cell must not pair with
@@ -195,9 +236,11 @@ const SETEXT_OR_THEMATIC_BREAK_RE = /^[ \t]*([=*_-])\1*[ \t]*(?:\r?\n)?$/;
  * Does `line` start a new CommonMark block that a paragraph never continues
  * into (Issue #3351 review)? A literal backtick in one list item, heading,
  * table row or setext/thematic-break line must not pair with a backtick in
- * a later block. A block-quote marker is handled separately by the caller,
- * since consecutive `>` lines form one quoted paragraph rather than each
- * ending it.
+ * a later block. The caller passes the line with any quote prefix already
+ * stripped, so a quoted list item, heading, table row or break is detected
+ * too (round 3) — a block-quote marker itself is handled separately by the
+ * caller, since consecutive `>` lines form one quoted paragraph rather than
+ * each ending it.
  */
 function startsNewBlock(line: string): boolean {
   return ATX_HEADING_RE.test(line) || LIST_ITEM_RE.test(line) ||
@@ -226,6 +269,9 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
   // quoted paragraph (Issue #3351 review): the paragraph flushes only where
   // the quote starts or ends, not on every `>` line.
   let inQuote = false;
+  // Whether the current line is inside an HTML comment opened on an earlier
+  // line that has not yet closed with `-->` (round 3).
+  let inComment = false;
 
   function pushSegment(value: string, inCode: boolean) {
     if (value.length === 0) return;
@@ -268,8 +314,25 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
       i++;
       continue;
     }
+    // A line inside an already-open HTML comment stays part of it until the
+    // line that closes it with `-->` — blank lines, list markers, etc. do
+    // not end an HTML block the way they end a paragraph (round 3).
+    if (inComment) {
+      paragraph += line;
+      if (line.includes("-->")) {
+        flushParagraph();
+        inComment = false;
+      }
+      i++;
+      continue;
+    }
+    // The blank-line and block-start checks below see the quoted *content*,
+    // with any `>` prefix stripped — a quoted blank line, list item,
+    // heading, table row or break must end the paragraph the same way the
+    // unquoted form does (Issue #3351 review, round 3).
+    const content = stripQuotePrefix(line);
     // A blank line ends the paragraph, so a code span cannot cross it.
-    if (line.trim() === "") {
+    if (content.trim() === "") {
       flushParagraph();
       pushSegment(line, false);
       inQuote = false;
@@ -284,15 +347,28 @@ export function splitMarkdownCode(text: string): MarkdownSegment[] {
       flushParagraph();
       inQuote = isQuoteLine;
     }
+    // A line starting an HTML comment ends the paragraph; the comment runs
+    // to the line holding `-->`, which may be this same line (round 3).
+    if (HTML_COMMENT_START_RE.test(content)) {
+      flushParagraph();
+      paragraph += line;
+      if (line.includes("-->")) {
+        flushParagraph();
+      } else {
+        inComment = true;
+      }
+      i++;
+      continue;
+    }
     // A heading, list item, table row or setext/thematic-break line also
     // ends the paragraph, the same way a blank line does (Issue #3351
     // review).
-    if (startsNewBlock(line)) {
+    if (startsNewBlock(content)) {
       flushParagraph();
       paragraph += line;
       // An ATX heading has no continuation line, so it never merges with
       // whatever follows it.
-      if (ATX_HEADING_RE.test(line)) flushParagraph();
+      if (ATX_HEADING_RE.test(content)) flushParagraph();
       i++;
       continue;
     }

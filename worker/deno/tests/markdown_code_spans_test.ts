@@ -173,6 +173,69 @@ Deno.test("splitMarkdownCode still resets an unclosed span where a quote begins 
   );
 });
 
+// PR #3351 review (round 3): the blank-line and block-start checks tested
+// the raw `>`-prefixed line, so nothing inside a quote except leaving it
+// ever ended a paragraph — a quoted blank line and a quoted list item,
+// heading or table row never flushed, and the whole quote became one
+// paragraph.
+
+Deno.test("splitMarkdownCode resets an unclosed span at a quoted blank line", () => {
+  const text = "> Handle the ` key in the parser\n>\n> see ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a quoted blank line",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a quoted list item", () => {
+  const text =
+    "> - item one has a lone ` backtick\n> - item two has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a quoted list-item boundary",
+  );
+});
+
+// PR #3351 review (round 3): a line starting an HTML comment (`<!--`) was
+// not treated as a block start, so a stray backtick before it paired with
+// a backtick in or after the comment.
+
+Deno.test("splitMarkdownCode resets an unclosed span at an HTML comment line", () => {
+  const text =
+    "intro has a lone ` backtick\n<!-- a comment -->\nbody has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across an HTML-comment boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode resets an unclosed span at a multi-line HTML comment", () => {
+  const text =
+    "intro has a lone ` backtick\n<!-- a\nmulti-line comment -->\nbody has ` another one";
+  const segments = splitMarkdownCode(text);
+  assert(
+    segments.every((s) => !s.inCode),
+    "the backticks must not pair across a multi-line HTML-comment boundary",
+  );
+});
+
+Deno.test("splitMarkdownCode: a stray backtick before an HTML comment does not pair into it", () => {
+  // Without the comment boundary, the stray backtick before "backtick" would
+  // pair with the backtick right before "lexer", masking the `<!--` marker
+  // itself as code. With the boundary, the stray backtick stays unmatched
+  // prose, and `lexer` pairs with itself inside the comment as intended.
+  const text =
+    'before has a lone ` backtick\n<!-- vibe-x reason="split `lexer`" -->';
+  const segments = splitMarkdownCode(text);
+  const codeSegment = segments.find((s) => s.inCode);
+  assert(codeSegment, "expected the self-contained `lexer` span");
+  assertEquals(codeSegment!.value, "`lexer`");
+  assertEquals(segments.map((s) => s.value).join(""), text);
+});
+
 // ---------------------------------------------------------------------------
 // parseFenceLine / isClosingFence (exported for blocked_outcome.ts)
 // ---------------------------------------------------------------------------
@@ -399,6 +462,19 @@ Deno.test("splitMarkdownCode scales linearly on a long dash run rejected by a tr
   const build = (chars: number): string => `${"-".repeat(chars - 1)}x`;
   assertLinearGrowth(
     "splitMarkdownCode on a long dash run rejected by a trailing non-dash character",
+    build,
+    (input) => splitMarkdownCode(input).length,
+    { baseChars: 150_000, sizeFactor: 8 },
+  );
+});
+
+// PR #3351 review (round 3): QUOTE_PREFIX_RE's outer `+` repeats a group
+// that must itself consume a `>` each time — a long run of `>` markers with
+// no separating spaces must still unwind in one linear pass per line.
+Deno.test("splitMarkdownCode scales linearly on a long block-quote-prefix run", () => {
+  const build = (chars: number): string => `${">".repeat(chars - 1)}x`;
+  assertLinearGrowth(
+    "splitMarkdownCode on a long repeated block-quote-marker prefix",
     build,
     (input) => splitMarkdownCode(input).length,
     { baseChars: 150_000, sizeFactor: 8 },
