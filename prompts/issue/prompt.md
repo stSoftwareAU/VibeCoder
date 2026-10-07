@@ -185,6 +185,22 @@ guessing — the analysis-only hand-off then routes it to a human.
    net** under Error Recovery.
    Where the repository has no browser harness, the PR names that gap in
    its Test Plan rather than substituting a stylesheet regex.
+   **Measure overlays and pinned bars open.** When a change touches a
+   popover, menu, dropdown, in-place confirm panel, or a sticky or fixed
+   bar (or a container that holds one), that browser check measures it
+   **open**, at the narrowest supported portrait size (e.g. 390x844) and
+   at a short landscape height (e.g. 844x390). Every control in the open
+   content must sit fully inside the viewport on all four edges — left and
+   right as well as top and bottom — and clear of every fixed bar (tab
+   bar, footer, header), both at scroll 0 and when scrolled. A pinned
+   container that can grow taller than the space it has needs its own
+   `max-height` and overflow, or must unpin while open. WCAG 2.2 Reflow
+   (1.4.10) and Focus Not Obscured (Minimum) (2.4.11) set the bar. A
+   closed-state or single-size check stays green while open content runs
+   off-screen: a `text-nowrap` popover about 545px wide reached x=674 at a
+   390px viewport, and a sticky header holding a confirm panel grew to
+   486px at 844x390, pushing Confirm out of reach. Name both sizes and the
+   open state in the PR summary's Test Plan (Issue #3335).
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
