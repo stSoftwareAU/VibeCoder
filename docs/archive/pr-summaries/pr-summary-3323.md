@@ -88,7 +88,8 @@ Full diff:
   line break: 80002 chars took 267 ms but 320002 chars (4.0x) took 4244 ms,
   over the 2134 ms a linear rule allows — the rule is super-linear`.
 - **Green after the fix:** `ok | 56 passed | 0 failed` for the whole file.
-- **Docs sweep:** grepped `id_rsa`, `FORBIDDEN_STAGED_PATTERNS` and the old pattern text `id_rsa(\.`. No doc quotes the regex. `CODING-STANDARDS.md:1182`, `SECURITY.md:681` and `prompts/coding_guidelines/prompt.md:1042` list `id_rsa` / `id_rsa.*` as glob-style names — still true, since `id_rsa` and every `id_rsa.<suffix>` final segment remain violations. `prompts/coding_guidelines/prompt.md:1014` (`.ssh/id_rsa` example) and `prompts/security_scan/prompt.md:920` (`id_rsa` in a list) are unaffected. The `FORBIDDEN_STAGED_PATTERNS` doc comment in `worker/deno/lib/pre_commit_safety.ts` still holds.
+- **Docs sweep** — grep: `id_rsa`, `FORBIDDEN_STAGED_PATTERNS`, `id_rsa(\.`, "pre-commit safety"; section: `SECURITY.md#-configuration-file-configjson` (Protected Patterns) and `CODING-STANDARDS.md#commit-safety--never-commit-hidden-files`; no updates needed — both list `id_rsa` / `id_rsa.*` as final-segment glob names, which still describe exactly what the gate now refuses.
+- **Docs sweep detail:** grepped `id_rsa`, `FORBIDDEN_STAGED_PATTERNS` and the old pattern text `id_rsa(\.`. No doc quotes the regex. `CODING-STANDARDS.md:1182`, `SECURITY.md:681` and `prompts/coding_guidelines/prompt.md:1042` list `id_rsa` / `id_rsa.*` as glob-style names — still true, since `id_rsa` and every `id_rsa.<suffix>` final segment remain violations. `prompts/coding_guidelines/prompt.md:1014` (`.ssh/id_rsa` example) and `prompts/security_scan/prompt.md:920` (`id_rsa` in a list) are unaffected. The `FORBIDDEN_STAGED_PATTERNS` doc comment in `worker/deno/lib/pre_commit_safety.ts` still holds.
 - **Cited issues:**
   - `#3311`: Pre-commit safety gate classifies a dotenv, .config*.json or
     .secrets/ file in a subdirectory as safe
@@ -118,8 +119,13 @@ Full diff:
 - [x] Input validation: `classifyStagedPath` still receives the same staged
       path strings from `git diff --cached --name-only -z`; no new input
       surface.
-- [x] Least privilege: the fix narrows the regex's suffix match (excludes
-      `/` and `\n`); it does not widen what is classified as safe.
+- [x] Least privilege: the fix narrows this entry's suffix match to the
+      final path segment (`[^/\n]*` excludes `/` and `\n`), which does widen
+      what `classifyStagedPath` classifies as safe: a file under a directory
+      named `id_rsa.<suffix>` (e.g. `keys/id_rsa.d/notes.txt`) matched the old
+      `(\..*)?` suffix and was a violation, and is now "safe". Every final
+      segment named `id_rsa` or `id_rsa.<suffix>` (`id_rsa.pub`,
+      `keys/id_rsa.old`) is still a violation.
 - [x] Secrets: none staged. The change itself is a regex literal and a test.
 - [x] Injection surface: no new shell, SQL, filesystem or HTTP calls.
 - [x] Authorisation: N/A — no change to who may commit or what is exempted.
