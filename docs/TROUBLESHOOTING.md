@@ -1071,7 +1071,7 @@ already in flight, and `progress_extension_enabled` is **on by default**
 (Issue #422), so a claim that keeps progressing keeps running. The whole model
 — soft claim gate, untruncated budget, extensions, hard-cap kill with the work
 in progress preserved — is on one page:
-[The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model).
+[The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
 
 So a run past `claude_timeout` means the deadline was re-armed while the run
 kept making progress. Reconstruct what happened from three places:

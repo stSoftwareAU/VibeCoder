@@ -2542,7 +2542,7 @@ template bypasses the wrapper.
 
 > The cycle deadline does **not** bound an issue claim's budget — it stops new
 > claims and lets in-flight work finish. That model is stated once, in
-> [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model).
+> [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
 > This section covers the one route it deliberately still bounds: a scan.
 
 The hour-long budget above is a **ceiling**, not an entitlement. A wrapper

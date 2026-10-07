@@ -410,7 +410,7 @@ Deno.test("the residual filesystem-read risk of a token pool is recorded, not le
   const setup = await Deno.readTextFile(new URL("docs/SETUP.md", root));
   const section = setup.slice(setup.indexOf("#### Several Claude tokens"));
   assert(
-    section.includes("THREAT-MODEL.md#-residual-risks"),
+    section.includes("THREAT-MODEL.md#%EF%B8%8F-residual-risks"),
     "the several-tokens setup section must point at the recorded residual risk",
   );
 });

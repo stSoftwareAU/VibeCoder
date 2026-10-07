@@ -303,7 +303,7 @@ relies on existing mechanisms:
 - The not-found / no-access escalation applies `needs-human` exclusively
   through `escalateToHuman`, which posts the same-run explanation comment
   alongside the label as required by the
-  [Worker Label Policy](../README.md#-supported-labels).
+  [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
 - The canonical label sync (step 4) **creates label definitions** on the target
   repo — it does not **apply** any reserved/operational label to an issue. It
   simply makes the canonical names/colours available so a human can schedule
