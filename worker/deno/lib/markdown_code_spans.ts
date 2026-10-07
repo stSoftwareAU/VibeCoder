@@ -1,0 +1,222 @@
+/**
+ * Shared, paragraph-aware Markdown code-span splitter (Issue #3313).
+ *
+ * A gate that must ignore Markdown code cannot pair backticks one line at a
+ * time: CommonMark lets an inline span (`` `like this` ``) wrap across a line
+ * break, and only resets at a *blank* line — a lone, unmatched backtick on
+ * one line can legitimately pair with one on the very next line of the same
+ * paragraph. A per-line regex such as `` /`[^`\n]*`/g `` therefore either
+ * misses a span that wraps (treating its contents as prose) or pairs two
+ * unrelated backticks across a paragraph boundary it should never cross.
+ *
+ * A fenced block opens on a line whose first non-space characters are three
+ * or more backticks or tildes (an optional info string may follow on the
+ * opening line). It closes only on a later line that starts with the *same*
+ * character, run at least as long as the opener's, and nothing but
+ * whitespace after the run — a shorter run, a different character, or a run
+ * with an info string does not close it. An opener with no matching closer
+ * runs fail-safe to the end of the text: everything after it is treated as
+ * code, so a broken fence can never leak a reference out of a documentation
+ * block.
+ *
+ * Every gate in this codebase that must ignore Markdown code — the
+ * result-placeholder gate, the issue-dependency extractors, the blocked-
+ * outcome detector, and the marker probes in `planning_handoff.ts` and
+ * `time_deferral.ts` — calls into this module and never pairs backticks with
+ * a per-line regex.
+ *
+ * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ */
+
+/** One segment of text, tagged with whether it sits inside Markdown code. */
+export interface MarkdownSegment {
+  value: string;
+  inCode: boolean;
+}
+
+/** A fence line: the marker character, how long the run is, and the rest of the line. */
+export interface FenceLine {
+  char: string;
+  length: number;
+  rest: string;
+}
+
+/**
+ * A line whose first non-space characters are a fence. Indent is ignored, so
+ * a fence under a list item counts. CommonMark's three-space limit does not:
+ * archived summaries indent list fences further than that.
+ */
+export function parseFenceLine(line: string): FenceLine | null {
+  // `split` keeps the line break, and `.` does not match it, so trim first.
+  const match = line.trim().match(/^(`{3,}|~{3,})(.*)$/);
+  if (!match) return null;
+  return {
+    char: match[1]![0]!,
+    length: match[1]!.length,
+    rest: match[2] ?? "",
+  };
+}
+
+/** A closer uses the opener's character, is at least as long, and has no info string. */
+export function isClosingFence(line: string, opener: FenceLine): boolean {
+  const parsed = parseFenceLine(line);
+  if (!parsed) return false;
+  return parsed.char === opener.char && parsed.length >= opener.length &&
+    parsed.rest.trim() === "";
+}
+
+/**
+ * Pair inline code spans inside one paragraph. A run of N backticks closes
+ * at the next run of exactly N, and that span may contain a line break.
+ * A run with no closer is literal text. CommonMark does not let a span
+ * cross a blank line, so the caller passes one paragraph at a time.
+ *
+ * Linear in the number of backtick runs: for each opener, the index of the
+ * next run of the same length is looked up in a map built with a single
+ * backwards pass, rather than re-scanning forward from every opener (which
+ * is quadratic when many distinct-length unmatched runs precede many runs of
+ * their own). This helper runs on untrusted issue bodies on the claim path.
+ */
+function splitInlineSpans(block: string): MarkdownSegment[] {
+  const runs: Array<{ index: number; length: number }> = [];
+  const runRe = /`+/g;
+  let found: RegExpExecArray | null;
+  while ((found = runRe.exec(block)) !== null) {
+    runs.push({ index: found.index, length: found[0].length });
+  }
+
+  // For each run, the index of the next run with the same length, found with
+  // a single backwards pass instead of a forward re-scan per opener.
+  const nextSameLength: number[] = new Array(runs.length).fill(-1);
+  const lastSeenAt = new Map<number, number>();
+  for (let k = runs.length - 1; k >= 0; k--) {
+    const seen = lastSeenAt.get(runs[k]!.length);
+    nextSameLength[k] = seen ?? -1;
+    lastSeenAt.set(runs[k]!.length, k);
+  }
+
+  const segments: MarkdownSegment[] = [];
+  let cursor = 0;
+  let r = 0;
+  while (r < runs.length) {
+    const open = runs[r]!;
+    if (open.index > cursor) {
+      segments.push({ value: block.slice(cursor, open.index), inCode: false });
+    }
+    const closeAt = nextSameLength[r]!;
+    if (closeAt === -1) {
+      const end = open.index + open.length;
+      segments.push({ value: block.slice(open.index, end), inCode: false });
+      cursor = end;
+      r++;
+      continue;
+    }
+    const close = runs[closeAt]!;
+    const end = close.index + close.length;
+    segments.push({ value: block.slice(open.index, end), inCode: true });
+    cursor = end;
+    r = closeAt + 1;
+  }
+  if (cursor < block.length) {
+    segments.push({ value: block.slice(cursor), inCode: false });
+  }
+  return segments;
+}
+
+/**
+ * Split text into alternating "outside code" / "inside code" segments, so
+ * callers can scan or rewrite only the prose a reader actually sees.
+ * Fenced blocks (``` or ~~~, to the matching close or end of text) and
+ * inline backtick spans are both "inside code" — a token named for
+ * discussion (`` `REDACTION_PLACEHOLDER` ``) is not an unfilled result.
+ *
+ * The returned segments concatenate back to `text` exactly.
+ */
+export function splitMarkdownCode(text: string): MarkdownSegment[] {
+  const segments: MarkdownSegment[] = [];
+  const lines = (text ?? "").split(/(?<=\n)/); // keep line terminators attached
+  let i = 0;
+  let fenceCursor = "";
+  let paragraph = "";
+  let inFence = false;
+  let opener: FenceLine | null = null;
+
+  function pushSegment(value: string, inCode: boolean) {
+    if (value.length === 0) return;
+    const last = segments[segments.length - 1];
+    if (last && last.inCode === inCode) last.value += value;
+    else segments.push({ value, inCode });
+  }
+
+  function flushParagraph() {
+    if (paragraph.length === 0) return;
+    for (const segment of splitInlineSpans(paragraph)) {
+      pushSegment(segment.value, segment.inCode);
+    }
+    paragraph = "";
+  }
+
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const fenceMatch = parseFenceLine(line);
+    if (fenceMatch && !inFence) {
+      flushParagraph();
+      inFence = true;
+      opener = fenceMatch;
+      fenceCursor += line;
+      i++;
+      continue;
+    }
+    if (inFence && opener && isClosingFence(line, opener)) {
+      fenceCursor += line;
+      pushSegment(fenceCursor, true);
+      fenceCursor = "";
+      inFence = false;
+      opener = null;
+      i++;
+      continue;
+    }
+    if (inFence) {
+      fenceCursor += line;
+      i++;
+      continue;
+    }
+    // A blank line ends the paragraph, so a code span cannot cross it.
+    if (line.trim() === "") {
+      flushParagraph();
+      pushSegment(line, false);
+      i++;
+      continue;
+    }
+    paragraph += line;
+    i++;
+  }
+  if (inFence) pushSegment(fenceCursor, true);
+  else flushParagraph();
+  return segments;
+}
+
+/**
+ * Replace every in-code character (everything but `\n`) with a space, so the
+ * result is the same length — and every offset lines up — as `text`, but
+ * carries only the prose a reader actually sees.
+ */
+export function maskMarkdownCode(text: string): string {
+  return splitMarkdownCode(text)
+    .map((segment) =>
+      segment.inCode ? segment.value.replace(/[^\n]/g, " ") : segment.value
+    )
+    .join("");
+}
+
+/**
+ * Remove all Markdown code (fenced blocks and inline spans, including the
+ * fence lines and their line breaks, and any line break inside an inline
+ * span) from `text`, leaving only the non-code prose joined back together.
+ */
+export function stripMarkdownCode(text: string): string {
+  return splitMarkdownCode(text)
+    .filter((segment) => !segment.inCode)
+    .map((segment) => segment.value)
+    .join("");
+}

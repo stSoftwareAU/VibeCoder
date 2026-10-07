@@ -659,7 +659,12 @@ stale. Before calling a gate done (Issue #3149):
    template literal, a skipped or ignored declaration (`Deno.test.ignore`,
    `it.skip`), an example inside a code block — add a test asserting it does
    **not** fire. A gate that reads source code blanks out comments and
-   literals before it matches, or uses a tokeniser.
+   literals before it matches, or uses a tokeniser. A gate that must ignore
+   Markdown code uses the shared helper in
+   `worker/deno/lib/markdown_code_spans.ts` (`splitMarkdownCode`,
+   `maskMarkdownCode` or `stripMarkdownCode`); it never pairs backticks with
+   a per-line regex, because a hard-wrapped span continues onto the next line
+   (VibeCoder#3132, Issue #3313).
 2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
    recent PR diffs, closure-verdict logs, the PR's own test files — run the
    matcher across it and report the false-positive and false-negative counts

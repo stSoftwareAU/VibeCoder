@@ -13,7 +13,9 @@
  * stale. CODING-STANDARDS.md and the issue prompt's Instructions must both
  * carry the four-point checklist: an evasion table run both ways, a corpus
  * run reporting false-positive and false-negative counts, no silent pass on
- * unread input, and comparing like with like.
+ * unread input, and comparing like with like. Issue #3313 adds the pointer
+ * to the shared Markdown code-span helper so a gate over Markdown never
+ * pairs backticks with a per-line regex.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -41,6 +43,27 @@ Deno.test("CODING-STANDARDS.md carries the Writing a gate over text checklist (I
   );
 
   for (const phrase of STANDARDS_KEY_PHRASES) {
+    assert(
+      text.includes(phrase),
+      `Writing a gate over text is missing "${phrase}": ${text}`,
+    );
+  }
+});
+
+Deno.test("CODING-STANDARDS.md Writing a gate over text points at the shared Markdown code-span helper (Issue #3313)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "Writing a gate over text",
+    ),
+  );
+
+  for (
+    const phrase of [
+      "markdown_code_spans.ts",
+      "never pairs backticks with a per-line regex",
+    ]
+  ) {
     assert(
       text.includes(phrase),
       `Writing a gate over text is missing "${phrase}": ${text}`,
