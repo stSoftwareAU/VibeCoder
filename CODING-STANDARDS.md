@@ -1450,6 +1450,26 @@ writes the policy after #2303 was closed as not planned
 deferred" while the refusal that makes it true was still-open sibling #3141
 (VibeCoder#3156) (Issue #3223).
 
+**An issue number cited as provenance is one you looked up.** Every issue
+number the diff adds as the reason a change exists — `Issue #N` or
+`#N follow-up` in a code comment, `_<N>_test.ts` in a test file name,
+`(Issue #N)` in a doc — names an issue you ran `gh issue view N` on in this
+run, and that issue's title matches the reason you cite it; for an
+`owner/repo#N` citation, run `gh issue view N --repo owner/repo`. Never cite
+a follow-up by number before it is filed, and never guess the next free
+number: file the follow-up with `gh issue create` and cite the number it
+returns, or cite what actually asked for the change — the issue this PR
+closes, or the review that requested it (`PR #N review`). This binds a
+review-fix push as much as the first commit. Before raising the PR or
+pushing a fix, list each such number the diff adds as `#N: <title>` in the
+PR summary's Evidence, so a number that resolves to an unrelated issue
+stands out to the self-review and the reviewer. A cited number that does not
+resolve, or whose title does not match the reason it is cited, is a blocking
+self-review finding. Fleet PRs sent back for this: new comments and a test
+cited a follow-up number that was never filed (VibeCoder#3068); guards and
+test names were attributed to #3309, an unrelated drift-test issue, when the
+hardening came from the review of PR #3308 (VibeCoder#3308) (Issue #3338).
+
 For changes to architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in a fenced `` ```mermaid `` block — it renders natively on
 GitHub and often tells the story better than prose.

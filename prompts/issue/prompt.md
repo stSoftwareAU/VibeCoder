@@ -273,7 +273,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    X, grep the docs the diff touches for that sibling's `#N`: each
    present-tense hit is backed by head code or reworded as planned (see
    **Behaviour another issue delivers is not described as present** in
-   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `CODING-STANDARDS.md`). An issue number the diff adds as provenance —
+   `Issue #N` or `#N follow-up` in a code comment, `_<N>_test.ts` in a test
+   file name, `(Issue #N)` in a doc — names an issue you ran
+   `gh issue view N` on in this run, whose title matches the reason you
+   cite it. Never cite a follow-up by number before it is filed, and never
+   guess the next free number: file it with `gh issue create` and cite the
+   number it returns, or cite what actually asked for the change — the
+   issue this PR closes, or the review that requested it
+   (`PR #N review`). List each such number the diff adds as
+   `#N: <title>` in the PR summary's Evidence (see **An issue number cited
+   as provenance is one you looked up** in `CODING-STANDARDS.md`). Before
+   adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and
