@@ -409,7 +409,11 @@ toolchain id is named by some `install-toolchains.sh` run — a pin the build
 never installs is a violation, because absence of a failure is not success —
 and that each fragment verifies its download with `sha256sum -c`, carries the
 shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
-version the manifest already pins.
+version the manifest already pins. A `curl`/`wget` command is exempt from the
+`${CURL_RETRY}` check only when every URL it names is loopback (`127.0.0.1` or
+`localhost`) — a build-time smoke probe of a server the fragment itself just
+started, as `floci.sh` runs against `http://127.0.0.1:4566/` (Issue #3367), is
+not a download.
 
 ## The image proves itself at start-up (Issue #1956)
 

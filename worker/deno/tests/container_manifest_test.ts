@@ -45,6 +45,7 @@ import {
   PLAYWRIGHT_MCP_VERSION,
 } from "../setup/screenshot.ts";
 import { SEMGREP_IMAGE_TAG } from "../lib/pinned_actions.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 const DIGEST_A =
   "sha256:1111111111111111111111111111111111111111111111111111111111111111";
@@ -1761,6 +1762,121 @@ Deno.test("findToolchainInstallViolations - reports a missing, unverified or sel
   assert(
     violations.some((v) => v.includes("CURL_RETRY")),
     "a fetch without the shared retry policy is reported",
+  );
+});
+
+Deno.test("findToolchainInstallViolations - a loopback smoke probe of a server the fragment started is not a download (Issue #3367)", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  // The fragment's only curl probes the server it itself just started, on
+  // loopback, split across a line continuation like floci.sh's smoke check —
+  // that probe is not a download, so it carries no ${CURL_RETRY} and still
+  // must not be flagged. The sha256sum -c verifies bytes a build stage
+  // already copied in, exactly as floci.sh's COPY --from stage does.
+  const fragment = [
+    'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+    'echo "${checksum}  ${binary}" | sha256sum -c -',
+    'status="$(curl -sS --retry 3 \\',
+    '  http://127.0.0.1:4566/)"',
+  ].join("\n");
+
+  assertEquals(
+    findToolchainInstallViolations(
+      toolchainContainerfile("shellcheck"),
+      manifest,
+      new Map([["toolchains/shellcheck.sh", fragment]]),
+    ),
+    [],
+  );
+});
+
+Deno.test("findToolchainInstallViolations - a remote download without the retry policy is still flagged", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  const fragment = [
+    'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+    'curl -fsSL -o "${archive}" "https://example.invalid/${version}"',
+    'echo "${checksum}  ${archive}" | sha256sum -c -',
+  ].join("\n");
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck"),
+    manifest,
+    new Map([["toolchains/shellcheck.sh", fragment]]),
+  );
+  assert(
+    violations.some((v) => v.includes("downloads without the")),
+    `a remote download without the retry policy must be flagged: ${violations}`,
+  );
+});
+
+Deno.test("findToolchainInstallViolations - one curl naming both loopback and a remote URL is flagged", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  // A single curl invocation that names a remote host alongside loopback is
+  // not a loopback-only probe, so it still needs the retry policy.
+  const fragment = [
+    'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+    'curl -fsSL -o "${archive}" http://127.0.0.1/ "https://example.invalid/${version}"',
+    'echo "${checksum}  ${archive}" | sha256sum -c -',
+  ].join("\n");
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck"),
+    manifest,
+    new Map([["toolchains/shellcheck.sh", fragment]]),
+  );
+  assert(
+    violations.some((v) => v.includes("downloads without the")),
+    `a curl naming a remote host alongside loopback must be flagged: ${violations}`,
+  );
+});
+
+Deno.test("findToolchainInstallViolations - a localhost look-alike host is not treated as loopback", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+
+  // http://localhost.example.com/ names a different host; the loopback
+  // exemption must not swallow it.
+  const fragment = [
+    'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+    'curl -fsSL -o "${archive}" "http://localhost.example.com/${version}"',
+    'echo "${checksum}  ${archive}" | sha256sum -c -',
+  ].join("\n");
+
+  const violations = findToolchainInstallViolations(
+    toolchainContainerfile("shellcheck"),
+    manifest,
+    new Map([["toolchains/shellcheck.sh", fragment]]),
+  );
+  assert(
+    violations.some((v) => v.includes("downloads without the")),
+    `http://localhost.example.com/ must not be treated as loopback: ${violations}`,
+  );
+});
+
+Deno.test("findToolchainInstallViolations - the loopback URL scan scales linearly on a long run of URL characters", () => {
+  const manifest = parseContainerManifest(fragmentToolchainManifestText());
+  const containerfile = toolchainContainerfile("shellcheck");
+
+  const buildFragment = (chars: number) =>
+    [
+      'version="$(jq -er \'.toolchains[] | select(.id == $id) | .version\' "${MANIFEST}")"',
+      `curl -fsSL -o "\${archive}" "http://${
+        "a".repeat(chars)
+      } https://example.invalid/x"`,
+      'echo "${checksum}  ${archive}" | sha256sum -c -',
+    ].join("\n");
+
+  assertLinearGrowth(
+    "toolchain fragment retry rule, long run of URL characters",
+    buildFragment,
+    (fragment) =>
+      findToolchainInstallViolations(
+        containerfile,
+        manifest,
+        new Map([["toolchains/shellcheck.sh", fragment]]),
+      ),
+    { baseChars: 50_000 },
   );
 });
 
