@@ -35,6 +35,14 @@
       "arg": "DENO_IMAGE",
       "provides": ["deno"],
       "notes": "Scratch image containing only the deno binary; copied in via a build stage so no archive extractor is needed."
+    },
+    {
+      "name": "docker.io/floci/floci",
+      "tag": "2.2.0",
+      "digest": "sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520",
+      "arg": "FLOCI_IMAGE",
+      "provides": [],
+      "notes": "The multi-arch floci image (OCI index digest) whose /app/application Quarkus native binary the floci fragment copies out via a COPY --from=floci stage; nothing from the image's own runtime is used (Issue #3367)."
     }
   ],
   "providers": [
@@ -336,6 +344,20 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "The RTK CLI trialled by the worker itself (Issue #2381, parent #2328). Like codegraph — and unlike every other entry here — this toolchain exists for the worker's own trial, not for a monitored repository's quality gate: nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the v0.49.0 release's own checksums.txt entries for rtk-x86_64-unknown-linux-musl.tar.gz and rtk-aarch64-unknown-linux-gnu.tar.gz, copied rather than computed from a download; the stable release is pinned, never a daily pre-release, and never built with cargo install. Each tarball carries a bare rtk binary at its top level, so the fragment installs it straight to /usr/local/bin/rtk and aborts if that layout ever changes. `rtk --version` prints \"rtk <version>\", so the manifest needs no versionArgs and the start-up self-check probes it unchanged. The image also sets RTK_TELEMETRY_DISABLED and RTK_SUPPRESS_HOOK_WARNING: RTK does not honour DO_NOT_TRACK, so telemetry needs its own switch, which the binary honours. The second asks for RTK's daily missing-hook warning to stay off stderr — noise where the hook reaches the agent CLI through an explicit --settings path rather than the CLI's own user settings file — but v0.49.0 reads no such variable (the warning is throttled by a stamp file under RTK's data dir), so it is declared and inert until a release honours it."
+    },
+    {
+      "id": "floci",
+      "version": "2.2.0",
+      "fragment": "toolchains/floci.sh",
+      "commands": ["floci"],
+      "versionCommand": "floci",
+      "source": "https://hub.docker.com/r/floci/floci",
+      "sha256": {
+        "amd64": "3d7b4e5c9bde62c0005e5d15878a2c32f4914304818d50c05f89ab2b60280667",
+        "arm64": "7137285fac8d0baf4f6f7dc3f72868a551b28d1d1dddb424c009dc5a1cca48f7"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "Floci, the MIT-licensed LocalStack drop-in on port 4566 that the worker's own runs use (Issue #3367, parent #3346). The sha256 pins are of /app/application inside each architecture's image under the pinned digest; the binary has no version flag, so the fragment installs a /usr/local/bin/floci wrapper that answers --version with \"floci <version>\" and execs the native binary otherwise. Not started by the entrypoint."
     }
   ],
   "tools": [
