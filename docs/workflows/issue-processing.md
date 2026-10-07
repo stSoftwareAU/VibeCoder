@@ -2312,7 +2312,10 @@ flowchart TD
     G -->|no| R{"First summary-rule block<br/>of this run?"}
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
+    R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
+    CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
+    CT --> G
+    CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
     Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -2321,6 +2324,8 @@ flowchart TD
     style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style RT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style CC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style CT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style F fill:#c45858,stroke:#6b2020,color:#fff
