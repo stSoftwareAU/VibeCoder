@@ -223,6 +223,47 @@ interface GhIssueListItem {
   updatedAt?: string;
   author: { login: string };
   milestone?: { title: string } | null;
+  /** Raw GitHub native sub-issue counts, validated by {@link parseSubIssuesSummary}. */
+  subIssuesSummary?: unknown;
+}
+
+/**
+ * Validate a raw `subIssuesSummary` field from `gh issue list` (Issue #3314).
+ *
+ * Only `total` and `completed` are kept (`percentCompleted` is derivable and
+ * not needed); malformed shapes (non-numbers, negatives) return `undefined`
+ * so an absent or broken field behaves exactly like an issue with no
+ * sub-issues at all.
+ */
+export function parseSubIssuesSummary(
+  raw: unknown,
+): { total: number; completed: number } | undefined {
+  if (!isRecord(raw)) return undefined;
+  const { total, completed } = raw;
+  if (
+    typeof total !== "number" || !Number.isFinite(total) || total < 0 ||
+    typeof completed !== "number" || !Number.isFinite(completed) ||
+    completed < 0
+  ) {
+    return undefined;
+  }
+  return { total, completed };
+}
+
+/**
+ * Does `issue` have any open native GitHub sub-issues?
+ *
+ * Lives here (not in `idle_decision_census.ts`, its only prior home) so both
+ * the census and the audit (`idle_detect_diagnostics.ts`) can import it
+ * without a circular dependency between those two modules (Issue #3314).
+ */
+export function hasOpenSubIssues(
+  issue: { subIssuesSummary?: { total: number; completed: number } },
+): boolean {
+  // SIMPLE-ON-PURPOSE: native sub-issue counts only, not body task-list children or not-planned closures (over-holds safely) — upgrade when an inversion alert names a task-list-only or not-planned-closed parent.
+  const summary = issue.subIssuesSummary;
+  if (summary === undefined) return false;
+  return summary.total > summary.completed;
 }
 
 /**
@@ -288,6 +329,11 @@ export function parseIssueListJson(jsonStr: string): FilterableIssue[] {
       const bodyValue = (item as unknown as { body?: unknown }).body;
       if (typeof bodyValue === "string") {
         issue.body = bodyValue;
+      }
+      // Issue #3314: GitHub native sub-issue counts, kept only when valid.
+      const subIssuesSummary = parseSubIssuesSummary(item.subIssuesSummary);
+      if (subIssuesSummary !== undefined) {
+        issue.subIssuesSummary = subIssuesSummary;
       }
       return issue;
     });
@@ -412,6 +458,43 @@ function countListRows(output: string): number | null {
 const LEGACY_ALL_ISSUES_LIMIT = 100;
 
 /**
+ * gh < 2.94.0 doesn't know the `subIssuesSummary` field (added in cli/cli
+ * v2.94.0's `issueOnlyFields`) and rejects it with this message (Issue
+ * #3318). The worker container pins a newer gh, but `docs/SETUP.md`'s
+ * `apt-get install -y gh` gives operators 2.4.0 (Ubuntu 22.04), 2.23.0
+ * (Debian 12) or 2.45.0 (Ubuntu 24.04) — all too old — and
+ * `fetchAllIssues` backs the host-run `diagnose-repo`/`diagnose-issue`
+ * commands.
+ */
+const SUBISSUES_SUMMARY_UNSUPPORTED = /Unknown JSON field: "subIssuesSummary"/;
+
+const ALL_ISSUES_FIELDS =
+  "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body,subIssuesSummary";
+/** Same fields, without the field gh < 2.94.0 rejects (Issue #3318). */
+const ALL_ISSUES_FIELDS_NO_SUB_ISSUES =
+  "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body";
+
+function fetchAllIssuesJson(
+  repo: string,
+  limit: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+  fields: string,
+): Promise<string> {
+  return ghCommandFn([
+    "issue",
+    "list",
+    "--repo",
+    repo,
+    "--state",
+    "open",
+    "--json",
+    fields,
+    "--limit",
+    String(limit),
+  ]);
+}
+
+/**
  * Fetch all open issues for a repo with comprehensive fields.
  *
  * Issue #4037: this is the issue-list fetch the Priority 2 scan already
@@ -454,31 +537,48 @@ export async function fetchAllIssues(
     }
   }
 
+  // Issue #1784: include `updatedAt` so stale-workflow can read from this
+  // shared cache without triggering its own per-label gh calls.
+  // Issue #1805: include `body` so milestone-health dependency detection
+  // can read from the shared cache instead of issuing a second
+  // `gh issue list --milestone …` call per milestone.
+  // Issue #3314: include `subIssuesSummary` so native sub-issue blocking
+  // can be read from this call instead of a per-issue one.
   let output: string;
   try {
-    output = await ghCommandFn([
-      "issue",
-      "list",
-      "--repo",
+    output = await fetchAllIssuesJson(
       repo,
-      "--state",
-      "open",
-      "--json",
-      // Issue #1784: include `updatedAt` so stale-workflow can read from
-      // this shared cache without triggering its own per-label gh calls.
-      // Issue #1805: include `body` so milestone-health dependency
-      // detection can read from the shared cache instead of issuing a
-      // second `gh issue list --milestone …` call per milestone.
-      "number,title,assignees,url,labels,createdAt,updatedAt,author,milestone,body",
-      "--limit",
-      String(limit),
-    ]);
+      limit,
+      ghCommandFn,
+      ALL_ISSUES_FIELDS,
+    );
   } catch (err) {
-    // Best-effort bookkeeping only: the error is re-thrown untouched so
-    // every caller's control flow is exactly what it was before #4037.
     const message = err instanceof Error ? err.message : String(err);
-    recordRepoProbeBestEffort(repo, classifyProbeFailure(message));
-    throw err;
+    // Issue #3318: gh < 2.94.0 rejects `subIssuesSummary` outright. Retry
+    // once without it so host-run `diagnose-repo`/`diagnose-issue` keep
+    // working on the gh version `docs/SETUP.md` tells operators to
+    // `apt-get install`, exactly as they did before Issue #3314.
+    if (SUBISSUES_SUMMARY_UNSUPPORTED.test(message)) {
+      try {
+        output = await fetchAllIssuesJson(
+          repo,
+          limit,
+          ghCommandFn,
+          ALL_ISSUES_FIELDS_NO_SUB_ISSUES,
+        );
+      } catch (retryErr) {
+        const retryMessage = retryErr instanceof Error
+          ? retryErr.message
+          : String(retryErr);
+        recordRepoProbeBestEffort(repo, classifyProbeFailure(retryMessage));
+        throw retryErr;
+      }
+    } else {
+      // Best-effort bookkeeping only: the error is re-thrown untouched so
+      // every caller's control flow is exactly what it was before #4037.
+      recordRepoProbeBestEffort(repo, classifyProbeFailure(message));
+      throw err;
+    }
   }
   recordRepoProbeBestEffort(repo, "ok");
 
