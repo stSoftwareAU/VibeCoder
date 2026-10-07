@@ -45,7 +45,12 @@ type Resource = { Type?: unknown; Properties?: Record<string, unknown> };
 /** Short-form intrinsic tag (`!Ref`, `!Sub`, `!GetAtt` …) before a value. */
 const SHORT_FORM_TAG = /(^|[\s[{,])![A-Z][A-Za-z]*(?=[\s[{]|$)/gm;
 
-function parseTemplate(text: string): Record<string, Resource> | null {
+/**
+ * Parse a template's text as JSON or YAML (short-form intrinsic tags such as
+ * `!Ref` stripped first); null when it is not a parseable mapping (parse
+ * failure, or the document is `null`, non-object, or an array).
+ */
+export function parseCfnDocument(text: string): Record<string, unknown> | null {
   let doc: unknown;
   try {
     doc = text.trimStart().startsWith("{")
@@ -54,8 +59,16 @@ function parseTemplate(text: string): Record<string, Resource> | null {
   } catch {
     return null;
   }
-  if (doc === null || typeof doc !== "object") return null;
-  const resources = (doc as { Resources?: unknown }).Resources;
+  if (doc === null || typeof doc !== "object" || Array.isArray(doc)) {
+    return null;
+  }
+  return doc as Record<string, unknown>;
+}
+
+function parseTemplate(text: string): Record<string, Resource> | null {
+  const doc = parseCfnDocument(text);
+  if (doc === null) return null;
+  const resources = doc.Resources;
   if (resources === null || typeof resources !== "object") return null;
   return resources as Record<string, Resource>;
 }
