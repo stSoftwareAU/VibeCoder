@@ -1691,14 +1691,14 @@ Deno.test("validateBranchOutcomes - an unrelated negation beside a genuine red f
 });
 
 // ---------------------------------------------------------------------------
-// PR #3312 review: a backticked `` `Branch outcomes:` `` header is found in
-// the unblanked parse (stripDecoration tolerates backticks) but vanishes
-// once code spans are blanked for the admission check (the span contains a
-// space, so it is blanked outright) — the admission check must fail closed
-// rather than silently never run.
+// PR #3312 review, round 3: a backticked `` `Branch outcomes:` `` header no
+// longer needs special handling at all — the admission check blanks test
+// citations straight from the raw lines the real (single) parse already
+// attributed to each entry, so there is no second, independently-parsed
+// "blanked record" whose header can vanish and need a fail-closed message.
 // ---------------------------------------------------------------------------
 
-Deno.test("validateBranchOutcomes - a backticked header that disappears under blanking blocks instead of skipping the check", () => {
+Deno.test("validateBranchOutcomes - a backticked header still runs the admission check", () => {
   const result = validateBranchOutcomes({
     changedFiles: [FOO_TS],
     prSummaryContent: "## Test Plan\n\n`Branch outcomes:`\n" +
@@ -1707,13 +1707,10 @@ Deno.test("validateBranchOutcomes - a backticked header that disappears under bl
     testsAtHead: new Set<string>(),
   });
   assertEquals(result.valid, false);
-  assert(
-    result.problems.some((p) => p.includes("could not be re-read")),
-  );
+  assert(result.problems.some((p) => p.includes("admits no test reaches")));
 });
 
-// A plain (non-backticked) header must be unaffected — present survives
-// blanking and the ordinary admission check still runs and still blocks.
+// A plain (non-backticked) header behaves identically.
 Deno.test("validateBranchOutcomes - a plain-text header still runs the admission check", () => {
   const result = validateBranchOutcomes({
     changedFiles: [FOO_TS],
@@ -1724,7 +1721,6 @@ Deno.test("validateBranchOutcomes - a plain-text header still runs the admission
   });
   assertEquals(result.valid, false);
   assert(result.problems.some((p) => p.includes("admits no test reaches")));
-  assert(!result.problems.some((p) => p.includes("could not be re-read")));
 });
 
 // ---------------------------------------------------------------------------
@@ -1750,10 +1746,9 @@ Deno.test("validateBranchOutcomes - a stray backtick in one tight-list item does
   assertEquals(result.unreachedEntries, ["worker/deno/lib/foo.ts:20"]);
 });
 
-// The same stray backtick directly above the header (same paragraph under
-// the old blank-line-only reset) used to erase the header itself once code
-// spans were blanked, blocking with the misleading "write the header
-// without backticks" message instead of running the real admission check.
+// The same stray backtick directly above the header no longer matters at
+// all: header identification comes from one parse only, so a stray
+// backtick elsewhere in the document cannot affect it.
 Deno.test("validateBranchOutcomes - a stray backtick in prose above the header still runs the real admission check", () => {
   const result = validateBranchOutcomes({
     changedFiles: [FOO_TS],
@@ -1765,17 +1760,26 @@ Deno.test("validateBranchOutcomes - a stray backtick in prose above the header s
   });
   assertEquals(result.valid, false);
   assert(result.problems.some((p) => p.includes("admits no test reaches")));
-  assert(!result.problems.some((p) => p.includes("could not be re-read")));
 });
 
-// A backtick span straddling a line break can still be blanked away along
-// with its embedded newline, merging two physical lines once code spans are
-// blanked — here a nested list-form header (indent 2) with an entry at
-// indent 3 and a following indent-1 line the real parser treats as
-// uncaptured. The blanked re-parse ends up with one fewer uncaptured line
-// than the real parse, and the gate fails closed on that shape mismatch
-// rather than silently trusting the blanked (corrupted) re-parse.
-Deno.test("validateBranchOutcomes - a blanked span merging two lines fails closed on the entry/uncaptured-line count mismatch", () => {
+// ---------------------------------------------------------------------------
+// PR #3312 review, round 3: the round-2 "same shape" fail-closed check
+// compared entry/uncaptured-line counts between the real parse and an
+// independent re-parse of a separately blanked copy of the document.
+// Blanking changed those counts for reasons that were never a real line
+// merge — a line that was only a whitespace-containing code span blanked to
+// an empty string and vanished from the blanked scan, and a backtick-quoted
+// mid-prose mention of the header phrase read as a header before blanking
+// but not after — so honest summaries were blocked with a misleading
+// "merged two lines" message. The fix blanks test citations straight from
+// the raw lines the real (single) parse already attributed to each unit, so
+// there is no second parse to disagree with.
+// ---------------------------------------------------------------------------
+
+// The exact shape (a backtick span straddling a line break inside a nested
+// list-form header) that used to trip the removed count-mismatch check — it
+// no longer falsely blocks, because there is nothing to compare shapes with.
+Deno.test("validateBranchOutcomes - a backtick span straddling a line break no longer falsely blocks (PR #3312 review, round 3)", () => {
   const result = validateBranchOutcomes({
     changedFiles: [FOO_TS],
     prSummaryContent: "  - Branch outcomes:\n" +
@@ -1783,10 +1787,56 @@ Deno.test("validateBranchOutcomes - a blanked span merging two lines fails close
       " closes` more text\n",
     testsAtHead: new Set<string>(),
   });
-  assertEquals(result.valid, false);
-  assert(
-    result.problems.some((p) => p.includes("same number of entries")),
-  );
+  assert(result.valid);
+});
+
+// A scanned line that is only a code span containing whitespace (a quoted
+// assertion) used to blank to an empty string and vanish from the blanked
+// scan, tripping the (now removed) count-mismatch check.
+Deno.test("validateBranchOutcomes - none added followed by a code-span-only uncaptured line is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n- Branch outcomes: none added.\n" +
+      "- Removed from a test:\n" +
+      "  `assertEquals(a, b);`\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
+});
+
+// Same defect, a different shape: a list followed by a blank line and then a
+// quoted shell command as its own uncaptured line.
+Deno.test("validateBranchOutcomes - a list followed by a backticked command line is valid", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "**Branch outcomes:**\n" +
+      "- `worker/deno/lib/foo.ts:42` — error — " +
+      "`worker/deno/tests/foo_test.ts::rejects bad input` — went red\n\n" +
+      "`cd worker/deno && deno task test`\n",
+    testsAtHead: new Set(["worker/deno/tests/foo_test.ts"]),
+  });
+  assert(result.valid);
+});
+
+// A hard-wrapped sentence whose SECOND line starts with a backtick-quoted
+// mention of the header phrase ("...the nouns the rule governs:
+// `flatWholeFile`,\n`Branch outcomes:`, ...") reads as a genuine header in
+// the raw parse (stripDecoration drops the backticks, and the line now
+// starts with "Branch outcomes:") but not once that span is blanked — this
+// exact shape, verbatim from `docs/archive/pr-summaries/pr-summary-3249.md`,
+// blocked under the old two-parse design even though the summary ends with
+// an honest `none added`.
+Deno.test("validateBranchOutcomes - a wrapped line starting with a backticked Branch-outcomes mention does not false-block an honest 'none added' (pr-summary-3249.md shape)", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: [FOO_TS],
+    prSummaryContent: "## Test Plan\n\n" +
+      "I grepped for the nouns the rule governs: `flatWholeFile`,\n" +
+      '`Branch outcomes:`, "example" and "helper doc comment".\n\n' +
+      "Nothing needed changing.\n\n" +
+      "Branch outcomes: none added\n",
+    testsAtHead: new Set<string>(),
+  });
+  assert(result.valid);
 });
 
 Deno.test("lookupTestsAtHead - invokes git with --literal-pathspecs ls-tree -r --name-only HEAD --", async () => {

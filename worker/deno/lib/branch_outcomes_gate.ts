@@ -147,6 +147,17 @@ export interface BranchOutcomesRecord {
   /** Parsed list entries (empty when `noneDeclared`, a heading, or no list follows). */
   entries: string[];
   /**
+   * Raw (pre-decoration) line indices behind each member of `entries`, in
+   * the same order — `entryLineIndices[2]` lists the lines that fed
+   * `entries[2]`, in document order. The admission check blanks test
+   * citations straight from these raw lines rather than re-parsing a
+   * separately blanked copy of the whole document (Issue #3288, PR #3312
+   * review round 3): an independent re-parse can identify different
+   * header/entry boundaries than the real one and block an honest summary
+   * on a shape mismatch that was never an actual line merge.
+   */
+  entryLineIndices: number[][];
+  /**
    * Every line between the header and the next section-boundary heading (or
    * the next `Branch outcomes` header, or the end of the document), scanned
    * for named test paths only — independent of the list-shaped
@@ -174,6 +185,15 @@ export interface BranchOutcomesRecord {
    * is policing more than the words in it).
    */
   uncapturedLines: string[];
+  /** Raw line index behind each member of `uncapturedLines`, in the same order. */
+  uncapturedLineIndices: number[];
+  /**
+   * Raw line indices behind each contribution folded into `body`, grouped
+   * in the same order `body` joins them (one group per inline header body
+   * or wrapped-prose contribution) — used to blank `body` per group, the
+   * same construction `entryLineIndices` supports for `entries`.
+   */
+  bodyLineIndexGroups: number[][];
 }
 
 /**
@@ -202,9 +222,12 @@ export function parseBranchOutcomes(
   const raw = (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS);
   const lines = raw.split(LINE_TERMINATOR_RE);
   const entries: string[] = [];
+  const entryLineIndices: number[][] = [];
   const bodyParts: string[] = [];
+  const bodyLineIndexGroups: number[][] = [];
   const scanTextParts: string[] = [];
   const uncapturedLines: string[] = [];
+  const uncapturedLineIndices: number[] = [];
   let present = false;
   let onlyNone = true;
   let lastHeadingLevel = 0;
@@ -238,7 +261,10 @@ export function parseBranchOutcomes(
       ? stripped.slice(inlineMatch[0].length).trim()
       : "";
     if (isNoneBody(body)) {
-      if (body) bodyParts.push(body);
+      if (body) {
+        bodyParts.push(body);
+        bodyLineIndexGroups.push([i]);
+      }
       // An honest `none` still gets its trailing region scanned for a named
       // test path: a review-fix rewording ("none added." + a refreshed list
       // of the earlier rounds' arms) must not let an invented citation past
@@ -249,12 +275,16 @@ export function parseBranchOutcomes(
       scanTextParts.push(region.text);
       for (const idx of region.indices) {
         uncapturedLines.push(stripDecoration(lines[idx]!));
+        uncapturedLineIndices.push(idx);
       }
       continue;
     }
 
     onlyNone = false;
-    if (body) bodyParts.push(body);
+    if (body) {
+      bodyParts.push(body);
+      bodyLineIndexGroups.push([i]);
+    }
     const headerIndent = inlineMatch && LIST_MARKER_RE.test(rawLine)
       ? leadingIndent(rawLine)
       : -1;
@@ -263,10 +293,12 @@ export function parseBranchOutcomes(
     for (let k = 0; k < collected.entries.length; k++) {
       if (entries.length >= MAX_ENTRIES) break;
       entries.push(collected.entries[k]!);
+      entryLineIndices.push([...collected.entryLines[k]!]);
       for (const idx of collected.entryLines[k]!) capturedLines.add(idx);
     }
     if (collected.bodyExtra) {
       bodyParts.push(collected.bodyExtra);
+      bodyLineIndexGroups.push([...collected.bodyExtraLines]);
       for (const idx of collected.bodyExtraLines) capturedLines.add(idx);
     }
     const region = scanRegion(lines, i + 1, boundaryLevel);
@@ -274,6 +306,7 @@ export function parseBranchOutcomes(
     for (const idx of region.indices) {
       if (!capturedLines.has(idx)) {
         uncapturedLines.push(stripDecoration(lines[idx]!));
+        uncapturedLineIndices.push(idx);
       }
     }
     i = collected.nextIndex - 1;
@@ -284,8 +317,11 @@ export function parseBranchOutcomes(
     noneDeclared: present && onlyNone,
     body: bodyParts.join(" "),
     entries,
+    entryLineIndices,
     scanText: scanTextParts.join(" "),
     uncapturedLines,
+    uncapturedLineIndices,
+    bodyLineIndexGroups,
   };
 }
 
@@ -631,6 +667,35 @@ function blankTestCitationNames(text: string): string {
   return out.join("\n");
 }
 
+/**
+ * Blank test/command citations in the raw lines at `indices` (in document
+ * order), then decoration-strip and space-join the result — the same shape
+ * `collectEntries`/`scanRegion` build entry and uncaptured-line text in.
+ * Operating on exactly the raw lines the real parse already attributed to
+ * one entry, one body contribution, or one uncaptured line (Issue #3288, PR
+ * #3312 review round 3) leaves nothing to re-derive, so there is nothing
+ * that can disagree in shape with the real parse — unlike blanking the
+ * whole document and re-parsing it from scratch, which can identify
+ * different header/entry boundaries (a backtick-quoted mid-prose mention of
+ * the header phrase reads as a header before blanking but not after) and
+ * falsely block an honest summary on a "merged line" that never merged.
+ */
+function blankedUnitText(
+  lines: readonly string[],
+  indices: readonly number[],
+): string {
+  // No early-return for an empty `indices` (e.g. a capEntry-truncated
+  // entry, see parseBranchOutcomes): `[].join("\n")` is already `""`, and
+  // blanking/splitting/filtering `""` produces `""` too, so a guard here
+  // would be unreachable-observable dead code.
+  const rawSlice = indices.map((i) => lines[i]).join("\n");
+  return blankTestCitationNames(rawSlice)
+    .split(LINE_TERMINATOR_RE)
+    .map(stripDecoration)
+    .filter((line) => line.length > 0)
+    .join(" ");
+}
+
 /** A closed code-span segment containing whitespace somewhere. */
 const SPAN_HAS_WHITESPACE_RE = /\s/;
 
@@ -827,17 +892,24 @@ function unitLabel(unit: string): string {
     : trimmed;
 }
 
+/** The blanked (test-citation-safe) text for each unit {@link evaluateUnreachedAdmissions} checks. */
+interface BlankedUnits {
+  entries: readonly string[];
+  body: string;
+  uncapturedLines: readonly string[];
+}
+
 /**
- * Run the unreached-outcome admission check (Issue #3288) over every unit of
- * a (test-citation-blanked) `Branch outcomes` record: each entry, the
- * record's own body when non-empty, and every uncaptured line.
+ * Run the unreached-outcome admission check (Issue #3288) over every
+ * blanked unit of a `Branch outcomes` record: each entry, the record's own
+ * body when non-empty, and every uncaptured line.
  */
 function evaluateUnreachedAdmissions(
-  blankedRecord: BranchOutcomesRecord,
+  blanked: BlankedUnits,
 ): { problems: string[]; unreachedEntries: string[] } {
-  const units: string[] = [...blankedRecord.entries];
-  if (blankedRecord.body) units.push(blankedRecord.body);
-  for (const line of blankedRecord.uncapturedLines) units.push(line);
+  const units: string[] = [...blanked.entries];
+  if (blanked.body) units.push(blanked.body);
+  for (const line of blanked.uncapturedLines) units.push(line);
 
   const problems: string[] = [];
   const unreachedEntries: string[] = [];
@@ -935,16 +1007,17 @@ export interface ValidateBranchOutcomesInput {
  *      blocked (fail closed).
  *   8. A named test path absent from `testsAtHead` → blocked, named in
  *      `missingTests`.
- *   9. The blanked re-parse (used for the admission check below) has a
- *      different entry or uncaptured-line count than the real list →
- *      blocked — blanking a span straddling a line break can merge two
- *      lines, so the blanked shape is no longer trustworthy (PR #3312
- *      review, round 2).
- *  10. Present: any entry, the inline body, or a line the list parser itself
+ *   9. Present: any entry, the inline body, or a line the list parser itself
  *      skipped (table row, sibling bullet, prose after the list, …) that
  *      admits no test reaches its outcome → blocked, labels named in
- *      `unreachedEntries` (Issue #3288).
- *  11. An `exempt (out of scope): <reason>` / `exempt (untestable): <reason>`
+ *      `unreachedEntries` (Issue #3288). Test/command citations are blanked
+ *      per-unit from the raw lines `parseBranchOutcomes` already attributed
+ *      to that unit (`entryLineIndices`, `bodyLineIndexGroups`,
+ *      `uncapturedLineIndices`), not by re-parsing a separately blanked
+ *      copy of the whole document — so there is no independent re-parse
+ *      that can disagree in shape with the real one (PR #3312 review,
+ *      round 3).
+ *  10. An `exempt (out of scope): <reason>` / `exempt (untestable): <reason>`
  *      clause with fewer than 3 real words of reason → blocked — an
  *      exemption with no stated reason is not an exemption.
  */
@@ -952,20 +1025,12 @@ export function validateBranchOutcomes(
   input: ValidateBranchOutcomesInput,
 ): BranchOutcomesGateResult {
   const record = parseBranchOutcomes(input.prSummaryContent ?? "");
-  const blankedRecord = parseBranchOutcomes(
-    blankTestCitationNames(
-      (input.prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS),
-    ),
-  );
+  const lines = (input.prSummaryContent ?? "")
+    .slice(0, MAX_SCAN_CHARS)
+    .split(LINE_TERMINATOR_RE);
 
   if (input.changedFiles === null) {
-    return evaluateApplicable(
-      record,
-      blankedRecord,
-      [],
-      false,
-      input.testsAtHead,
-    );
+    return evaluateApplicable(record, lines, [], false, input.testsAtHead);
   }
 
   const codeFiles = codeChangingFiles(input.changedFiles);
@@ -983,19 +1048,13 @@ export function validateBranchOutcomes(
     };
   }
 
-  return evaluateApplicable(
-    record,
-    blankedRecord,
-    codeFiles,
-    true,
-    input.testsAtHead,
-  );
+  return evaluateApplicable(record, lines, codeFiles, true, input.testsAtHead);
 }
 
 /** Shared rule evaluation for the `changedFiles === null` and known cases. */
 function evaluateApplicable(
   record: BranchOutcomesRecord,
-  blankedRecord: BranchOutcomesRecord,
+  lines: readonly string[],
   codeFiles: string[],
   changedFilesKnown: boolean,
   testsAtHead: ReadonlySet<string> | null,
@@ -1040,39 +1099,26 @@ function evaluateApplicable(
     }
   }
 
-  if (record.present && !blankedRecord.present) {
-    // The header itself was found in the unblanked parse (stripDecoration
-    // tolerates a backticked header) but vanished once code spans were
-    // blanked — a backticked `` `Branch outcomes:` `` header contains a
-    // space, so blanking the whole span erases the header text along with
-    // it. The admission check below reads ONLY the blanked text, so this
-    // means it never actually read this PR summary's list at all — fail
-    // closed rather than silently skip the check (PR #3312 review).
-    problems.push(
-      "the `Branch outcomes:` header could not be re-read once code spans " +
-        "were blanked for the admission check — write the header without " +
-        "backticks around it (e.g. `Branch outcomes:` as plain text, not " +
-        "`` `Branch outcomes:` ``)",
-    );
-  } else if (
-    record.present &&
-    (record.entries.length !== blankedRecord.entries.length ||
-      record.uncapturedLines.length !== blankedRecord.uncapturedLines.length)
-  ) {
-    // Blanking a span that straddles a line break removes the embedded
-    // newline along with it, so two list items (or an uncaptured line) can
-    // merge into one once code spans are blanked — the blanked re-parse no
-    // longer has the same shape as the real list, and the admission check
-    // below would be reading a corrupted shape. Fail closed rather than
-    // trust it (PR #3312 review, round 2).
-    problems.push(
-      "the `Branch outcomes:` list could not be re-read with the same " +
-        "number of entries once code spans were blanked for the admission " +
-        "check — a backtick span straddling a line break inside the list " +
-        "merged two lines; remove the span or keep it on one line",
-    );
-  } else if (record.present) {
-    const admission = evaluateUnreachedAdmissions(blankedRecord);
+  if (record.present) {
+    // Blank test/command citations straight from the raw lines the real
+    // parse already attributed to each entry, body contribution and
+    // uncaptured line — never by re-parsing a separately blanked copy of
+    // the whole document, which could identify different header/entry
+    // boundaries than the real parse and block an honest summary on a
+    // shape mismatch that was never a real line merge (PR #3312 review,
+    // round 3; see `blankedUnitText`).
+    const blanked: BlankedUnits = {
+      entries: record.entryLineIndices.map((idxs) =>
+        blankedUnitText(lines, idxs)
+      ),
+      body: record.bodyLineIndexGroups
+        .map((idxs) => blankedUnitText(lines, idxs))
+        .join(" "),
+      uncapturedLines: record.uncapturedLineIndices.map((idx) =>
+        blankedUnitText(lines, [idx])
+      ),
+    };
+    const admission = evaluateUnreachedAdmissions(blanked);
     problems.push(...admission.problems);
     unreachedEntries = admission.unreachedEntries;
   }

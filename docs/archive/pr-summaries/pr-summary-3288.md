@@ -55,6 +55,25 @@ the coding guidelines, and the issue and pr_feedback prompts. Closes #3288.
   match of that source before `recordsRedFlip` ever runs — so it is dropped;
   the strip is built from `OTHER_NEGATED_RED_SOURCES` alone, which the four
   existing red-lookalike tests already cover.
+- PR #3312 review, round 3: the round-2 fail-closed check compared the real
+  parse against an independent re-parse of a separately blanked copy of the
+  whole document, and blanking changed those parses' entry/uncaptured-line
+  counts for reasons that were never a real line merge — a line that was
+  only a whitespace-containing code span (a quoted command or assertion)
+  blanked to an empty string and vanished from the blanked scan, and a
+  hard-wrapped line starting with a backtick-quoted mention of the header
+  phrase read as a genuine header before blanking but not after (verbatim
+  shape in `pr-summary-3249.md`). Both false-blocked an honest summary with
+  a misleading "merged two lines" message. Fixed by removing the second,
+  independent re-parse entirely: `parseBranchOutcomes` now records the raw
+  line indices behind each entry, each body contribution, and each
+  uncaptured line (`entryLineIndices`, `bodyLineIndexGroups`,
+  `uncapturedLineIndices`), and a new `blankedUnitText` blanks test/command
+  citations straight from exactly those raw lines — never by re-deriving
+  header/entry boundaries from a separately blanked document, so there is
+  nothing left that can disagree in shape with the real parse. The two
+  fail-closed problem messages ("header could not be re-read", "could not
+  be re-read with the same number of entries") are gone.
 
 **Docs sweep** — grep: `branch-outcomes gate`, `Branch outcomes`,
 `branch_outcomes_gate`, `scanRegionText`, `uncapturedLines`,
@@ -88,8 +107,8 @@ helper renamed to `scanRegion`, and no doc names it.
   and stays valid), four red-lookalike evasions ("not red", "instead of …
   red", "never red", "a red test is still to add") each still blocking, an
   unrelated negation beside a genuine red flip staying valid, a backticked
-  header that disappears under blanking now blocking instead of being
-  skipped, and a plain-text header still running the admission check.
+  header still running the admission check, and a plain-text header still
+  running the admission check.
 - Added to `worker/deno/tests/completion_phase_branch_outcomes_test.ts`: an
   admitting entry blocks PR creation, and a recovery that cites a covered
   test raises the PR.
@@ -100,44 +119,71 @@ helper renamed to `scanRegion`, and no doc names it.
   `worker/deno/tests/branch_outcomes_gate_test.ts`: a tight list (no blank
   line between items) with a stray backtick in item 1 and a genuine
   admission in item 2 still blocks; a stray backtick in prose directly
-  above the header still runs the real admission check instead of the
-  misleading "header could not be re-read" message; and a backtick span
-  straddling a line break that merges two lines once blanked fails closed
-  on the entry/uncaptured-line count mismatch.
-- No existing test was edited, and no assertion was removed. The test diffs
-  contain only added lines.
+  above the header still runs the real admission check; and (at the time)
+  a backtick span straddling a line break that merged two lines once
+  blanked failed closed on the entry/uncaptured-line count mismatch.
+- **PR #3312 review, round 3** — the round-2 count-mismatch check itself was
+  the defect (see Summary): it false-blocked an honest summary whenever
+  blanking changed the parsed shape for a reason that was never a real line
+  merge. Fixed by removing the second independent re-parse; the admission
+  check now blanks test citations straight from the raw lines
+  `parseBranchOutcomes` already attributed to each entry/body/uncaptured
+  line. Two tests whose own premise was that (now-fixed) defect were edited
+  rather than only added to, since their expected outcome was wrong once
+  the premise was: "a backticked header that disappears under blanking
+  blocks instead of skipping the check" is renamed
+  "a backticked header still runs the admission check" and now asserts the
+  real admission message (not the removed "could not be re-read" one); "a
+  blanked span merging two lines fails closed on the entry/uncaptured-line
+  count mismatch" is renamed
+  "a backtick span straddling a line break no longer falsely blocks" and
+  now asserts the input is `valid` (confirmed red against the unfixed code,
+  not merely claimed). Three further tests are added (`Deno.test` count:
+  115 → 118), each confirmed red against the unfixed code and green with
+  the fix: `none added followed by a code-span-only uncaptured line is
+  valid`, `a list followed by a backticked command line is valid`, and `a
+  wrapped line starting with a backticked Branch-outcomes mention does not
+  false-block an honest 'none added'` (the last taken verbatim from
+  `pr-summary-3249.md`, the real corpus file this exact defect blocked).
+- No existing assertion's *behaviour under correct input* was weakened —
+  the two renamed tests pin the SAME inputs, with the outcome corrected to
+  match the fix. Two further tests — "a plain-text header still runs the
+  admission check" and "a stray backtick in prose above the header still
+  runs the real admission check" — each drop their now-obsolete
+  `could not be re-read` negative assertion, since the round-2 problem
+  variant it checked for no longer exists; every other line in the test
+  diffs is an addition.
 - `deno test --allow-all` over the three files from `worker/deno`: passed
-  (154 passed, 0 failed).
-- **Corpus run (PR #3312 review, round 2)** — CODING-STANDARDS' "Writing a
-  gate over text" rule 2: ran `validateBranchOutcomes` over every file in
-  `docs/archive/pr-summaries/` (903 files), with `testsAtHead` populated
-  from each file's own named test paths so a missing-test problem never
-  masks the admission-check result. 32 files carry a `Branch outcomes`
-  header (33 files mention the phrase; 1,
-  `pr-summary-3238.md`, mentions it only in prose the header regex does not
-  match). Of those 32, 18 carry a real list or inline body (the rest are
-  honest `none added` declarations). The gate blocks exactly 1 of the 18,
-  `pr-summary-3257.md`, flagging 7 units. 6 of the 7 are true positives:
-  that PR (merged before this gate existed) names the exact words `no test
-  reaches it`, `unreachable through`, or `does not go red when flipped`
-  against real branches (`worker/deno/lib/summary_claim_check.ts:391,410,
-  285,607,804` and `worker/deno/lib/phases/completion_phase.ts:2468`) — the
-  gate retroactively catches genuine pre-existing violations of the rule it
-  now enforces. The 7th, `pr-summary-3257.md:131`, is a false positive: "The
-  base-ref context line in `buildDriftQuestionPrompt` ... is an existing
-  branch that this diff moves ... It is not new, and inverting it left the
-  #3143 and #3244 drift suites green" — the weak-admission heuristic reads
-  "left ... green" with no named test path as an admission, when it is
-  actually a claim that an unmoved branch is covered elsewhere. Decision:
-  left as-is. Weak admissions are deliberately narrow (they only fire when
-  the unit names no test path and records no red flip), and carving out
-  "describes an existing branch" wording would reopen exactly the evasion
-  the gate exists to close — any genuinely untested new branch could claim
-  the same wording. The correct fix for this false positive is in the PR
-  summary's own words: name the actual covering test file
-  (e.g. `worker/deno/tests/pr_feedback_drift_check_3244_test.ts`) rather
-  than only the issue number, which clears the weak-admission check via the
-  named-test-path path it already has.
+  (157 passed, 0 failed).
+- **Corpus run (PR #3312 review, round 3, rerun at this head)** —
+  CODING-STANDARDS' "Writing a gate over text" rule 2: ran
+  `validateBranchOutcomes` over every file in `docs/archive/pr-summaries/`
+  (904 files at this head — one more than the round-2 run's 903, from
+  unrelated fleet merges landing on the base branch meanwhile), with
+  `testsAtHead` populated from each file's own named test paths so a
+  missing-test problem never masks the admission-check result. 33 files
+  carry a `Branch outcomes` header (1 more mentions the phrase only in
+  prose the header regex does not match). Of those 33, 19 carry a real list
+  or inline body (the rest are honest `none added` declarations). The gate
+  blocks exactly 1 of the 19, `pr-summary-3257.md`, flagging 7 units — the
+  same 1-of-N result the round-2 run reported, now reached without the
+  false-positive count-mismatch message that previously ALSO blocked
+  `pr-summary-3147.md`, `pr-summary-3242.md` and `pr-summary-3249.md` (see
+  Summary, round 3). All 7 flagged units in `pr-summary-3257.md` are true
+  positives: 6 name the exact words `no test reaches it`, `unreachable
+  through`, or `does not go red when flipped` against real branches
+  (`worker/deno/lib/summary_claim_check.ts:391,410,285,607,804` and
+  `worker/deno/lib/phases/completion_phase.ts:2468`). The 7th,
+  `pr-summary-3257.md:131`, was mis-described in the round-2 write-up as a
+  false positive ("a claim that an unmoved branch is covered elsewhere") —
+  re-reading the quoted text, "inverting it left the #3143 and #3244 drift
+  suites green" says the opposite: it is an honest admission that mutating
+  this (pre-existing, not newly-added) branch left both suites green, i.e.
+  no test caught it. The gate is correctly flagging a genuine admission.
+  Decision: left as-is. The correct remedy there was never to name a test
+  whose suite stayed green under the mutation (that proves no coverage, not
+  coverage) — it is `exempt (out of scope): pre-existing branch, not added
+  by this diff`, which the gate's own exemption clause exists for.
 
 **Branch outcomes:**
 
@@ -200,66 +246,65 @@ helper renamed to `scanRegion`, and no doc names it.
   red (PR #3312 review). `NEGATED_RED_SOURCE` is NOT one of the sources
   the strip is built from (PR #3312 review round 2 — it was unreachable
   dead code there; see Summary)
-- `worker/deno/lib/branch_outcomes_gate.ts:745` — a unit that mentions red
+- `worker/deno/lib/branch_outcomes_gate.ts:810` — a unit that mentions red
   records a red flip —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a Rust covered entry with a blanked inline-test-name is valid`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:751` — a strong admission
+- `worker/deno/lib/branch_outcomes_gate.ts:816` — a strong admission
   blocks — `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a GRQ-shape admission blocks and names the label`
   — removed the return, sixteen tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:753` — a named test path or a
+- `worker/deno/lib/branch_outcomes_gate.ts:818` — a named test path or a
   red flip clears a weak admission —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a path-citing entry mentioning an unrelated 'stayed green' is valid`
   — removed the return, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:755` — a weak admission with no
+- `worker/deno/lib/branch_outcomes_gate.ts:820` — a weak admission with no
   path and no red blocks —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a mixed list of 3 flags exactly the strong and weak entries`
   — removed the return, four tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:791` — an exempt clause decides
+- `worker/deno/lib/branch_outcomes_gate.ts:856` — an exempt clause decides
   the unit —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:794` — an exemption reason of
+- `worker/deno/lib/branch_outcomes_gate.ts:859` — an exemption reason of
   three or more words passes —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with a real reason is valid`
   — threshold raised to 100, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:794` — an exemption with a
+- `worker/deno/lib/branch_outcomes_gate.ts:859` — an exemption with a
   shorter reason blocks —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one`
   — threshold lowered to 0, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:820` and `:821` — a
+- `worker/deno/lib/branch_outcomes_gate.ts:886` and `:887` — a
   `path:<digits>` token becomes the label —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a bare path:line span stays a label after blanking`
   — each skip forced on, three tests went red
-- `worker/deno/lib/branch_outcomes_gate.ts:825` — a fallback label longer
+- `worker/deno/lib/branch_outcomes_gate.ts:891` — a fallback label longer
   than 80 characters is cut and suffixed `…` —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a long admitting entry with no path:line gets an 80-character label ending in '…'`
   — never cutting, test went red (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:839` — the record's inline body
+- `worker/deno/lib/branch_outcomes_gate.ts:911` — the record's inline body
   is checked as a unit —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - an inline-body admission blocks`
   — flipped to false, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:846` and `:849` — an
+- `worker/deno/lib/branch_outcomes_gate.ts:921` and `:928` — an
   exemption without a reason gets its own problem, not the admission one —
   `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - exempt (untestable) with no reason blocks with the exemption problem, not the admission one`
   — each flipped, test went red
-- `worker/deno/lib/branch_outcomes_gate.ts:1043` — the admission check
-  fails closed when the header is found in the unblanked parse but vanishes
-  under blanking (e.g. a header written entirely inside backticks) —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a backticked header that disappears under blanking blocks instead of skipping the check`
-  — dropping the branch (always falling to the `else if`), test went red;
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a plain-text header still runs the admission check`
-  pins the ordinary (non-backticked) header still reaching the normal
-  admission check (PR #3312 review)
-- `worker/deno/lib/branch_outcomes_gate.ts:1057-1061` — PR #3312 review
-  round 2: the admission check fails closed when blanking changes the
-  parsed entry or uncaptured-line count (a backtick span straddling a line
-  break can remove that line break when blanked, merging two lines) —
-  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a blanked span merging two lines fails closed on the entry/uncaptured-line count mismatch`
-  — dropping the branch (forcing the condition to `false`), the input that
-  test uses goes from blocked to wrongly `valid: true`
-- `worker/deno/lib/branch_outcomes_gate.ts:1074` — a present list (with a
-  shape-matching blanked re-parse) is checked for admissions —
+- **PR #3312 review, round 3** (replaces the two round-2 entries that used
+  to sit here — see Summary for why those two fail-closed branches were
+  removed, not fixed in place):
+  `worker/deno/lib/branch_outcomes_gate.ts:683-696` — `blankedUnitText`
+  blanks test/command citations from exactly the raw lines
+  `parseBranchOutcomes` attributed to one entry/body/uncaptured line, rather
+  than an independent re-parse of the whole document —
+  `worker/deno/tests/branch_outcomes_gate_test.ts::validateBranchOutcomes - a backtick span straddling a line break no longer falsely blocks (PR #3312 review, round 3)`,
+  `...::validateBranchOutcomes - none added followed by a code-span-only uncaptured line is valid`,
+  `...::validateBranchOutcomes - a list followed by a backticked command line is valid`, and
+  `...::validateBranchOutcomes - a wrapped line starting with a backticked Branch-outcomes mention does not false-block an honest 'none added' (pr-summary-3249.md shape)`
+  — each confirmed red against the pre-round-3 code (the removed
+  count-mismatch branch at the old `:1057-1061`), green with the fix
+- `worker/deno/lib/branch_outcomes_gate.ts:1102` — a present list is
+  checked for admissions (now unconditionally — the two header-vanish/
+  shape-mismatch branches that used to gate this are gone) —
   `worker/deno/tests/completion_phase_branch_outcomes_test.ts::completion - a Branch outcomes entry admitting no test reaches it blocks PR creation (Issue #3288)`
   — flipped to false, twenty-six tests went red
 
