@@ -109,7 +109,7 @@ Hits left in place:
 
 - [x] `timeout 900 ./quality.sh < /dev/null` at `83f0ca38`: `Result: PASSED (with skipped checks)`
 - [x] `deno test -A tests/admin_only_finding_test.ts`: 14 passed, 0 failed
-- [x] Red on base `8ce8da11`: the tests at lines 64, 75, 87 and 189 fail. The
+- [x] Red on base `8ce8da11`: the tests at lines 64, 75, 87 and 197 fail. The
   tests at lines 99 (scanner-format) and 116 (growth) pass on base, as
   expected. They pin existing behaviour against regression.
 
