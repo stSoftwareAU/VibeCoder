@@ -376,14 +376,17 @@ Deno.test("parseBranchOutcomes - an unindented lazy line is not joined onto a li
 // attributes an unrelated later mention to the wrong (or no) header.
 // ---------------------------------------------------------------------------
 
-Deno.test("parseBranchOutcomes - the test-path scan stops at a later Branch outcomes header", () => {
+Deno.test("parseBranchOutcomes - a later Branch outcomes header is parsed on its own, so its region is scanned", () => {
   const record = parseBranchOutcomes(
     "**Branch outcomes:** first arm, no test named yet.\n" +
       "\n" +
       "**Branch outcomes:** none added\n" +
       "Unrelated later prose mentions worker/deno/tests/unrelated_test.ts only in passing.\n",
   );
-  assertEquals(namedTestPaths(record), []);
+  // On base, the first header's collectEntries swallowed the second header,
+  // so its region was never scanned (Issue #3340). A `none added` header's
+  // own region is still scanned (PR #3160, seventh round).
+  assertEquals(namedTestPaths(record), ["worker/deno/tests/unrelated_test.ts"]);
 });
 
 Deno.test("parseBranchOutcomes - the test-path scan stops at the next markdown heading", () => {
@@ -873,6 +876,74 @@ Deno.test("validateBranchOutcomes - changedFiles null is applicable (fail closed
   });
   assert(result.applicable);
   assertEquals(result.valid, false);
+});
+
+// Issue #3340: a hard-wrapped prose line that happens to start with the
+// `Branch outcomes:` prefix (e.g. quoting the rule itself) must not read as
+// the header and swallow or hide the real header that follows it.
+
+Deno.test("validateBranchOutcomes - a prose mention read as a header does not hide the real header's inline citation", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "I grepped the diff for the nouns the rule governs:\n" +
+      '`Branch outcomes:`, "example" and "helper doc comment".\n' +
+      `**Branch outcomes:** lib/foo.ts:12 error arm → ${INVENTED}, flipped red.\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a prose mention separated by a blank line still does not hide the real header's inline citation", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "I grepped the diff for the nouns the rule governs:\n" +
+      '`Branch outcomes:`, "example" and "helper doc comment".\n' +
+      "\n" +
+      `**Branch outcomes:** lib/foo.ts:12 error arm → ${INVENTED}, flipped red.\n`,
+    testsAtHead: new Set<string>(),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a list-item header nested under a prose mention still names the invented test", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "**Branch outcomes:** grouped below\n" +
+      "\n" +
+      "- lib/a.ts:3 ok arm → worker/deno/tests/real_test.ts\n" +
+      `  - **Branch outcomes:** lib/b.ts:9 error arm → ${INVENTED}\n`,
+    testsAtHead: new Set(["worker/deno/tests/real_test.ts"]),
+  });
+  assertEquals(result.valid, false);
+  assertEquals(result.missingTests, [INVENTED]);
+});
+
+Deno.test("validateBranchOutcomes - a prose mention read as a header does not hide the real header's valid citation", () => {
+  const result = validateBranchOutcomes({
+    changedFiles: ["web/src/Foo.tsx"],
+    prSummaryContent: "## Test Plan\n" +
+      "I grepped the diff for the nouns the rule governs:\n" +
+      '`Branch outcomes:`, "example" and "helper doc comment".\n' +
+      "**Branch outcomes:** lib/foo.ts:12 error arm → worker/deno/tests/real_test.ts, flipped red.\n",
+    testsAtHead: new Set(["worker/deno/tests/real_test.ts"]),
+  });
+  assert(result.valid);
+  assert(result.namedTests.includes("worker/deno/tests/real_test.ts"));
+});
+
+Deno.test("parseBranchOutcomes - a prose mention read as a header does not hide the real header's inline body", () => {
+  const record = parseBranchOutcomes(
+    "## Test Plan\n" +
+      "I grepped the diff for the nouns the rule governs:\n" +
+      '`Branch outcomes:`, "example" and "helper doc comment".\n' +
+      `**Branch outcomes:** lib/foo.ts:12 error arm → ${INVENTED}, flipped red.\n`,
+  );
+  assertStringIncludes(record.body, "lib/foo.ts:12");
 });
 
 Deno.test("buildBranchOutcomesGateComment - names the problem and the required shape", () => {

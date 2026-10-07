@@ -285,7 +285,9 @@ function scanRegionText(
  * heading deeper than `boundaryLevel` (see `sectionBoundaryLevel`) is
  * skipped over rather than ending the scan, so a `#### path/to/file.ts`
  * grouping heading between the header and its list does not hide that list
- * from `entries` (PR #3160 review, sixth round).
+ * from `entries` (PR #3160 review, sixth round). The scan also stops at the
+ * next `Branch outcomes` header, same as `scanRegionText`, so the outer loop
+ * in `parseBranchOutcomes` is the one to parse that header (Issue #3340).
  */
 function collectEntries(
   lines: string[],
@@ -311,6 +313,18 @@ function collectEntries(
     if (lvl > 0 && lvl <= boundaryLevel) break;
     if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
+    const stripped = stripDecoration(line);
+    // A real `Branch outcomes` header reached mid-scan ends this call here
+    // rather than being swallowed into `wrap` or pushed as an entry; the
+    // outer loop in `parseBranchOutcomes` parses it on the next iteration
+    // (Issue #3340).
+    if (
+      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
+      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
+    ) {
+      break;
+    }
+
     const indent = leadingIndent(line);
     if (LIST_MARKER_RE.test(line)) {
       if (indent <= headerIndent) break;
@@ -322,7 +336,7 @@ function collectEntries(
       // `wrapping` is not reset here: `entries.length > 0` already shuts
       // the wrap branch below once any entry exists, making a reset here
       // unobservable dead code (PR #3160 review, seventh round).
-      entries.push(capEntry(stripDecoration(line)));
+      entries.push(capEntry(stripped));
       sawBlank = false;
       continue;
     }
@@ -331,14 +345,14 @@ function collectEntries(
     if (!sawBlank && entries.length > 0 && indent > headerIndent) {
       const lastIndex = entries.length - 1;
       entries[lastIndex] = capEntry(
-        `${entries[lastIndex]} ${stripDecoration(line)}`.trim(),
+        `${entries[lastIndex]} ${stripped}`.trim(),
       );
       continue;
     }
 
     // Lines an inline header wraps onto, before the first list item.
     if (entries.length === 0 && wrapping) {
-      wrap.push(stripDecoration(line));
+      wrap.push(stripped);
       continue;
     }
 
