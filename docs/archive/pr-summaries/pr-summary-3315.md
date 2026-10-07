@@ -90,7 +90,7 @@ flowchart TD
   - placeholder test: `- reason: "no worker marker", status: "skipped" / + issueNumber: 42, status: "updated"` — old code stopped at the first (non-numeric) occurrence.
   - checkout-head test: `- issueNumber: 42, status: "updated" / + reason: "checkout is not the PR head", status: "skipped"` — no freshness check existed before the fix.
 - (PR #3353 review, round 2) Red run confirmed by reverting `pr_body_sync.ts`'s ancestry check alone (back to the plain equality check) and re-running the new lagging-head test: `- issueNumber: 42, status: "updated" / + reason: "checkout is not the PR head", status: "skipped"` — the plain equality check could not tell GitHub's own lag apart from a genuinely stale checkout.
-- `deno test -A tests/pr_body_sync_test.ts tests/marker_grammar_test.ts tests/missing_criterion_close_guard_3177_test.ts` — 43 passed (29 in `pr_body_sync_test.ts`, including the 3 added in the PR #3353 review round and the 1 added in round 2). `deno test -A tests/pr_feedback_processor_test.ts` — 41 passed.
+- `deno test -A tests/pr_body_sync_test.ts tests/marker_grammar_test.ts tests/missing_criterion_close_guard_3177_test.ts` — 44 passed (30 in `pr_body_sync_test.ts`, including the 3 added in the PR #3353 review round, the 1 added in round 2, and the 1 added in round 3). `deno test -A tests/pr_feedback_processor_test.ts` — 41 passed.
 - `./quality.sh` on the final code head — `Result: PASSED (with skipped checks)` (config integration skipped: no `.config.json` on this host).
 
 **Branch outcomes:**
