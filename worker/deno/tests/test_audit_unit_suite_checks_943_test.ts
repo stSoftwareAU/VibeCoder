@@ -31,6 +31,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { INTEGRATION_TEST_FILES } from "../lib/integration_test_manifest.ts";
+import { escapeRegExp } from "../lib/regexp_escape.ts";
 import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -65,7 +66,16 @@ async function promptText(): Promise<string> {
 
 /** One numbered Phase 2 check, up to the next `###` heading, collapsed. */
 function checkBody(prompt: string, number: number): string {
-  const heading = new RegExp(`^### ${number}\\. .*$`, "m");
+  // `number` is a check number this suite's own callers pass as a literal
+  // (never external input), and it is converted to a digit string and
+  // metacharacter-escaped before reaching the constructor, so the compiled
+  // pattern is a fixed, backtrack-free literal. Same reasoning as
+  // `compileRepoName` in export_scrub_gate.ts.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
+  const heading = new RegExp(
+    `^### ${escapeRegExp(String(number))}\\. .*$`,
+    "m",
+  );
   const start = prompt.search(heading);
   assert(start >= 0, `the catalogue has no check ${number}`);
   const after = prompt.slice(start + 1);
