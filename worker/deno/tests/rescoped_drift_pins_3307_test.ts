@@ -138,6 +138,32 @@ Deno.test("pr_feedback prompt - a moved pin follows the re-scoping rule", async 
   );
 });
 
+Deno.test("coding guidelines - a moved pin is red-checked under the re-scoping rule", async () => {
+  assertPins(
+    section(
+      await readRepoDoc("prompts/coding_guidelines/prompt.md"),
+      "Test Coverage Expectations",
+    ),
+    [
+      "A pin a change only moves, while converting an existing whole-file drift test to `section()`",
+      "red-checks each moved check in its own section instead",
+    ],
+  );
+});
+
+Deno.test("CODING-STANDARDS - a new test's base check points a moved pin at the re-scoping rule", async () => {
+  assertPins(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "Test coverage expectations",
+    ),
+    [
+      "A pin a change only moves, while converting an existing whole-file drift test to `section()`",
+      "red-checks each moved check in its own section instead",
+    ],
+  );
+});
+
 Deno.test("test_audit prompt - a whole-file absence check is not a finding", async () => {
   assertPins(
     section(
