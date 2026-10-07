@@ -394,7 +394,13 @@ function scanRegion(
  * heading deeper than `boundaryLevel` (see `sectionBoundaryLevel`) is
  * skipped over rather than ending the scan, so a `#### path/to/file.ts`
  * grouping heading between the header and its list does not hide that list
- * from `entries` (PR #3160 review, sixth round).
+ * from `entries` (PR #3160 review, sixth round) — but only once it has been
+ * checked against the header forms below and found not to be a real
+ * `Branch outcomes` header. The scan stops at the next `Branch outcomes`
+ * header, inline or heading-form, however deep, same as `scanRegionText`, so
+ * the outer loop in `parseBranchOutcomes` is the one to parse that header
+ * (Issue #3340; the heading-form case was still missed on the first fix —
+ * PR #3372 review).
  *
  * Also reports, per entry, which line indices actually contributed to its
  * final (possibly `capEntry`-truncated) text, and which lines made up
@@ -434,6 +440,22 @@ function collectEntries(
     }
     const lvl = headingLevel(line);
     if (lvl > 0 && lvl <= boundaryLevel) break;
+
+    const stripped = stripDecoration(line);
+    // A real `Branch outcomes` header reached mid-scan ends this call here
+    // rather than being swallowed into `wrap` or pushed as an entry; the
+    // outer loop in `parseBranchOutcomes` parses it on the next iteration
+    // (Issue #3340). Checked before the deeper-heading skip below, same
+    // order `scanRegionText` uses — a heading-form header (e.g. `###
+    // Branch outcomes`) deeper than `boundaryLevel` is still a real header,
+    // not a grouping sub-heading, so it must not fall into that skip
+    // unexamined (PR #3372 review).
+    if (
+      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
+      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
+    ) {
+      break;
+    }
     if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
     const indent = leadingIndent(line);
@@ -447,10 +469,9 @@ function collectEntries(
       // `wrapping` is not reset here: `entries.length > 0` already shuts
       // the wrap branch below once any entry exists, making a reset here
       // unobservable dead code (PR #3160 review, seventh round).
-      const value = stripDecoration(line);
-      const capped = capEntry(value);
+      const capped = capEntry(stripped);
       entries.push(capped);
-      entryLines.push(capped.length < value.length ? [] : [j]);
+      entryLines.push(capped.length < stripped.length ? [] : [j]);
       sawBlank = false;
       continue;
     }
@@ -458,7 +479,7 @@ function collectEntries(
     // A continuation of the previous entry, indented past the header.
     if (!sawBlank && entries.length > 0 && indent > headerIndent) {
       const lastIndex = entries.length - 1;
-      const joinedRaw = `${entries[lastIndex]} ${stripDecoration(line)}`.trim();
+      const joinedRaw = `${entries[lastIndex]} ${stripped}`.trim();
       const capped = capEntry(joinedRaw);
       entries[lastIndex] = capped;
       if (capped.length === joinedRaw.length) {
@@ -469,7 +490,7 @@ function collectEntries(
 
     // Lines an inline header wraps onto, before the first list item.
     if (entries.length === 0 && wrapping) {
-      wrap.push(stripDecoration(line));
+      wrap.push(stripped);
       wrapLines.push(j);
       continue;
     }
