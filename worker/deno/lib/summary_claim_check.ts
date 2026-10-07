@@ -76,7 +76,7 @@ const SUMMARY_CLAIM_PATH_PATTERNS: readonly RegExp[] = [
 ];
 
 /** Whether `path` is a PR-summary path this check knows how to question. */
-function isSummaryClaimPath(path: string): boolean {
+export function isSummaryClaimPath(path: string): boolean {
   if (path === ".pr_summary") return true;
   return SUMMARY_CLAIM_PATH_PATTERNS.some((pattern) => pattern.test(path));
 }
