@@ -201,9 +201,8 @@ edited. A failed sync is logged once at warning and does not fail the run
 
 Writing `Refs #N` in the summary does not stop the rebuilt description from
 closing the issue, since the rebuild appends `Closes #N` unless a closing
-keyword is already present; marking each unmet acceptance criterion
-`missing` is the way to keep the PR open against the issue instead (Issue
-#3315).
+keyword is already present; marking each unmet acceptance criterion `missing`
+is the way to keep the PR open against the issue instead (Issue #3315).
 
 Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 <branch>`, and confirms `origin/<branch>` contains every cited fix commit

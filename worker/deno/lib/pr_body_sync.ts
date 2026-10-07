@@ -63,9 +63,9 @@ function prSummaryPath(issueNumber: number): string {
 /**
  * Marker prefix recording the SHA-256 digest of the summary content a PR
  * body was assembled from (Issue #3315). Followed by 64 lowercase hex
- * characters and ` -->`.
+ * characters and `" -->`.
  */
-export const PR_SUMMARY_DIGEST_PREFIX = "<!-- vibe-pr-summary-sha256:";
+export const PR_SUMMARY_DIGEST_PREFIX = '<!-- vibe-pr-summary sha256="';
 
 /** Lowercase hex SHA-256 digest of `summaryContent`, encoded as UTF-8. */
 export async function prSummaryDigest(summaryContent: string): Promise<string> {
@@ -78,7 +78,7 @@ export async function prSummaryDigest(summaryContent: string): Promise<string> {
 
 /** The HTML-comment marker recording `digest` inside a PR body. */
 export function buildSummaryDigestMarker(digest: string): string {
-  return `${PR_SUMMARY_DIGEST_PREFIX}${digest} -->`;
+  return `${PR_SUMMARY_DIGEST_PREFIX}${digest}" -->`;
 }
 
 /**
@@ -92,7 +92,9 @@ export function buildSummaryDigestMarker(digest: string): string {
  */
 export function summaryDigestFromBody(body: string): string | undefined {
   const pattern = new RegExp(
-    `${PR_SUMMARY_DIGEST_PREFIX}([0-9a-f]{64}) -->`,
+    `${
+      PR_SUMMARY_DIGEST_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    }([0-9a-f]{64})" -->`,
     "g",
   );
   let last: string | undefined;

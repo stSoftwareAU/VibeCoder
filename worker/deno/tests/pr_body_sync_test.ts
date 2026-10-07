@@ -227,7 +227,7 @@ Deno.test("summaryDigestFromBody - returns undefined when no marker is present",
 Deno.test("summaryDigestFromBody - ignores a malformed marker (not 64 hex characters)", () => {
   const body = `${
     baseBody(ISSUE_NUMBER)
-  }\n${PR_SUMMARY_DIGEST_PREFIX}abc123 -->`;
+  }\n${PR_SUMMARY_DIGEST_PREFIX}abc123" -->`;
   assertEquals(summaryDigestFromBody(body), undefined);
 });
 
