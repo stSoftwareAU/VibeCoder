@@ -684,7 +684,9 @@ interface WaiverCandidate {
 
 /**
  * Validate that an AWS-evidence path is repo-relative — never absolute,
- * never escaping the repo root via a `..` segment.
+ * never escaping the repo root via a `..` segment. The caller still
+ * canonicalises (follows symlinks) and re-checks the resolved path stays
+ * inside the repo root before reading it.
  */
 function assertRepoRelative(path: string): void {
   if (path.startsWith("/")) {
@@ -713,6 +715,10 @@ function assertRepoRelative(path: string): void {
  * Governance (author allowlist, verified commit identity, expiry, reason)
  * is applied by `findSuppressions` itself — an invalid or expired marker
  * never counts.
+ *
+ * Each evidence path is also canonicalised (symlinks followed) and the
+ * resolved path re-checked to stay inside the repo root — a `..`-free,
+ * repo-relative string can still resolve outside the repo via a symlink.
  */
 export async function hasAwsEmulatorWaiver(
   repoPath: string,
@@ -728,11 +734,40 @@ export async function hasAwsEmulatorWaiver(
     });
   }
 
+  // A missing repo root resolves no evidence either — every per-path
+  // `realPath` below hits the same NotFound and is skipped, so this
+  // matches the existing missing-file tolerance rather than failing loud
+  // on a repo checkout that simply is not there.
+  let root: string;
+  try {
+    root = await Deno.realPath(repoPath);
+  } catch (err) {
+    if (!(err instanceof Deno.errors.NotFound)) throw err;
+    root = repoPath;
+  }
   for (const rel of awsEvidence) {
     assertRepoRelative(rel);
+    let resolved: string;
+    try {
+      resolved = await Deno.realPath(`${repoPath}/${rel}`);
+    } catch (err) {
+      if (err instanceof Deno.errors.NotFound) continue;
+      throw new Error(
+        `best-practices: cannot resolve AWS-evidence path ${rel}: ${
+          (err as Error).message
+        }`,
+        { cause: err },
+      );
+    }
+    if (resolved !== root && !resolved.startsWith(root + "/")) {
+      throw new Error(
+        `best-practices: AWS-evidence path ${rel} resolves outside the ` +
+          "repo root",
+      );
+    }
     let text: string;
     try {
-      text = await Deno.readTextFile(`${repoPath}/${rel}`);
+      text = await Deno.readTextFile(resolved);
     } catch (err) {
       if (err instanceof Deno.errors.NotFound) continue;
       throw new Error(

@@ -36,9 +36,11 @@
  *     `checkAwsEmulatorFn` runs the real detector against the repo
  *     checkout.
  *   - hasAwsEmulatorWaiver: rejects an evidence path escaping the repo
- *     root or an absolute evidence path, skips (without throwing) an
- *     evidence path that does not exist on disk, and throws naming the
- *     path when a read fails for a reason other than NotFound.
+ *     root or an absolute evidence path, rejects an evidence path that
+ *     resolves outside the repo root via a symlink, skips (without
+ *     throwing) an evidence path that does not exist on disk, and throws
+ *     naming the path when a read fails for a reason other than
+ *     NotFound.
  *   - buildAwsEmulatorFinding: lists at most 50 evidence paths, then a
  *     `… and N more` line.
  */
@@ -2059,6 +2061,99 @@ Deno.test(
       );
     } finally {
       await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an evidence symlink pointing outside the repo rejects",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      const outsidePath = `${tmp}/outside`;
+      await Deno.mkdir(repoPath);
+      await Deno.mkdir(outsidePath);
+      await Deno.writeTextFile(
+        `${outsidePath}/secret.tf`,
+        "# best-practice-ignore: BP-AWS-EMULATOR-MISSING\n",
+      );
+      await Deno.symlink(
+        "../outside/secret.tf",
+        `${repoPath}/infra.tf`,
+      );
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(repoPath, ["infra.tf"]),
+        Error,
+        "resolves outside the repo root",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an evidence path through a symlinked directory pointing outside rejects",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      const outsidePath = `${tmp}/outside`;
+      await Deno.mkdir(repoPath);
+      await Deno.mkdir(outsidePath);
+      await Deno.writeTextFile(`${outsidePath}/main.tf`, "");
+      await Deno.symlink("../outside", `${repoPath}/link`, {
+        type: "dir",
+      });
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(repoPath, ["link/main.tf"]),
+        Error,
+        "resolves outside the repo root",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - '..' after a missing component landing on an outward symlink rejects",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      const outsidePath = `${tmp}/outside`;
+      await Deno.mkdir(repoPath);
+      await Deno.mkdir(outsidePath);
+      await Deno.writeTextFile(`${outsidePath}/main.tf`, "");
+      await Deno.symlink("../outside", `${repoPath}/link`, {
+        type: "dir",
+      });
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(repoPath, ["missing/../link/main.tf"]),
+        Error,
+        "escapes the repo root",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - a symlink to a file inside the repo is read",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      await Deno.mkdir(repoPath);
+      await Deno.writeTextFile(`${repoPath}/real.tf`, "");
+      await Deno.symlink("real.tf", `${repoPath}/alias.tf`);
+      const result = await hasAwsEmulatorWaiver(repoPath, ["alias.tf"]);
+      assertEquals(result, false);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
     }
   },
 );
