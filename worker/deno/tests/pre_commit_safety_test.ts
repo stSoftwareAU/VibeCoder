@@ -203,6 +203,18 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "classifyStagedPath - id_rsa pattern stays linear on hostile input (Issue #3323)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /id_rsa. prefixes before a line break",
+      (chars) => "/id_rsa.".repeat(chars) + "\nx",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
 Deno.test("classifyStagedPath - hidden top-level file is a violation", () => {
   assertEquals(classifyStagedPath(".aws"), "violation");
   assertEquals(classifyStagedPath(".npmrc"), "violation");
