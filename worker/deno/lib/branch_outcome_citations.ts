@@ -43,7 +43,8 @@ const URL_RE = /https?:\/\/\S+/g;
  * tokens. A comma is only a splitter when it is NOT directly followed by a
  * digit: `worker/deno/lib/foo.ts:720-725,735-738` is a single token (so its
  * second range survives), while `` `a.ts:12`, `b.ts:3` `` still splits on
- * the comma that separates the two backticked citations (PR #3288 replay).
+ * the comma that separates the two backticked citations (the PR #3312
+ * replay of `docs/archive/pr-summaries/pr-summary-3288.md`).
  */
 const TOKEN_SPLIT_RE = /[\s`()[\];"'<>|*]+|,(?!\d)/;
 
@@ -90,7 +91,8 @@ export interface MalformedCitation {
  *
  * One token can carry more than one line reference —
  * `foo.ts:720-725,735-738` and `foo.ts:1147/1158/1169` both parse into
- * several citations sharing the same path (PR #3288, #3250 corpus replay).
+ * several citations sharing the same path (seen in the archived
+ * `pr-summary-3288.md` and `pr-summary-3250.md`).
  * Each `N`/`N-M` part is checked on its own: line 0 or an end before its
  * start makes only that part `malformed` (with the shared path), while the
  * token's other, well-formed parts are still returned as citations.
