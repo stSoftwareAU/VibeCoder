@@ -1363,9 +1363,17 @@ async function setUpFlociSmokeCheck(
   await Deno.writeTextFile(manifestPath, JSON.stringify(manifest, null, 2));
 
   await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  // Real curl's --retry-connrefused only succeeds once the backgrounded
+  // server has actually started, which naturally gives the OS time to
+  // schedule it. This fake answers instantly, so without a wait here a
+  // loaded runner can kill the backgrounded `floci-application` before it
+  // is ever scheduled to run: app.log is then never written, and the
+  // test's Deno.readTextFile fails with NotFound (Issue #3367). Poll for
+  // the stub app's own log instead, so the fake only answers once the
+  // backgrounded process has actually run.
   await Deno.writeTextFile(
     `${dir}/bin/curl`,
-    `#!/bin/sh\nprintf '${httpCode.body}'\nexit ${httpCode.exitCode}\n`,
+    `#!/bin/sh\nfor _ in $(seq 1 100); do\n  [ -f "${dir}/app.log" ] && break\n  sleep 0.05\ndone\nprintf '${httpCode.body}'\nexit ${httpCode.exitCode}\n`,
   );
   await Deno.chmod(`${dir}/bin/curl`, 0o755);
 
