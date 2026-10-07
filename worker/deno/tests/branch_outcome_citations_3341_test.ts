@@ -719,6 +719,61 @@ Deno.test("findStaleCitations: (p) a genuinely stale leftover is still caught al
   assert(result.stale[0]!.includes(`${PATH}:945`));
 });
 
+Deno.test("findStaleCitations: (q) an unrenumbered pair whose gap equals the shift are both stale (PR #3375 review)", () => {
+  // Same shift as (o)/(p), but the current summary renumbered neither
+  // entry. `expectedAtKey`'s old multiset credited `:941`'s mapping onto
+  // `:943` against curCount(943), masking that `:943` itself never moved —
+  // the greedy per-occurrence match claims `:941`'s own old-line leftover
+  // first (line order), leaving `:943`'s occurrence to explain only
+  // itself.
+  const previous = summaryWithEntries(
+    `\`${PATH}:941\` — first outcome, test went red`,
+    `\`${PATH}:943\` — second outcome, test went red`,
+  );
+  const current = previous; // unchanged, still cites :941 and :943
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(940, 2),
+  });
+  assertEquals(result.unchecked, []);
+  assertEquals(result.stale.length, 2);
+  assert(
+    result.stale.some((m) =>
+      m.includes(`${PATH}:941`) && m.includes(`${PATH}:943`)
+    ),
+  );
+  assert(
+    result.stale.some((m) =>
+      m.includes(`${PATH}:943`) && m.includes(`${PATH}:945`)
+    ),
+  );
+});
+
+Deno.test("findStaleCitations: (r) a three-citation chain correctly renumbered is clean", () => {
+  const previous = summaryWithEntries(
+    `\`${PATH}:941\` — first outcome, test went red`,
+    `\`${PATH}:943\` — second outcome, test went red`,
+    `\`${PATH}:945\` — third outcome, test went red`,
+  );
+  const current = summaryWithEntries(
+    `\`${PATH}:943\` — first outcome, test went red`,
+    `\`${PATH}:945\` — second outcome, test went red`,
+    `\`${PATH}:947\` — third outcome, test went red`,
+  );
+  const result = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: previous,
+    currentSummary: current,
+    changedFiles: [PATH],
+    hunksByPath: insertAboveHunks(940, 2),
+  });
+  assertEquals(result.stale, []);
+  assertEquals(result.unchecked, []);
+});
+
 Deno.test("findStaleCitations: a comma-joined citation only flags the line that moved", () => {
   const previous = summaryWithEntries(
     `\`${PATH}:10,20\` — error flipped, test went red`,
