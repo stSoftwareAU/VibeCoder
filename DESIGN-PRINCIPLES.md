@@ -1655,6 +1655,23 @@ audit — **no linter or compiler is actually invoked**. The compile half was
 added in (extending) after a Deno syntax error reached `main` in a
 monitored repo because no `deno check` ran in CI.
 
+**AWS emulator in CI.** A second deterministic pre-filer runs on
+**every** best-practices scan, whatever bucket the draw picked, before
+Claude runs. `checkAwsEmulatorInCI()` detects AWS usage from dependency
+manifests, CloudFormation templates, or `.tf` files, and checks
+whether any GitHub Actions workflow runs the `floci/floci` emulator
+image as a service container, job container, `docker://` step, or
+`docker run` step. A repo that uses AWS without Floci wired into CI,
+and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
+waiver, gets one `severity:medium` finding with the fixed id
+`BP-AWS-EMULATOR-MISSING`, deduplicated through the same
+`fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the
+known-open list passed to Claude. No finding is filed when the repo
+does not use AWS, when no workflow loaded (status unknown — the same
+fail-safe as the zero-workflows rule), or when Floci already runs in
+CI. See [docs/BEST-PRACTICES-SCAN.md → AWS emulator in CI](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing)
+for the full trigger table, waiver syntax, and suggested-fix contract.
+
 **Cap and priority order.** A single run files at most six standalone findings,
 ordered missing-linter > `severity:high` > `severity:medium` > `severity:low`.
 There is no overflow tracker — surplus candidates are silently dropped and the

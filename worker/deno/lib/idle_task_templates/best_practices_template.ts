@@ -30,6 +30,16 @@
  *   - **Dedup.** The known-open list passed to Claude is built from the
  *     repo's existing open `best-practices` issues — Claude is
  *     instructed to skip any finding whose `BP-…` id is in the list.
+ *   - **AWS-emulator pre-check (Issue #3368).** Runs on every bucket
+ *     (unlike the linter pre-check, which is language-targeted): calls
+ *     `checkAwsEmulatorInCI()` and, when the repo uses AWS, a workflow
+ *     loaded, and no workflow runs `floci/floci`, files a
+ *     `BP-AWS-EMULATOR-MISSING` finding as a standalone `best-practices`
+ *     issue at `severity:medium`. A `# best-practice-ignore:
+ *     BP-AWS-EMULATOR-MISSING — …` marker in a loaded workflow or in one
+ *     of the AWS-evidence files waives it. Like the linter pre-filer,
+ *     the pre-filed id joins the known-open list so Claude does not
+ *     re-emit it.
  *
  * Australian English used throughout (behaviour, organisation,
  * authorised).
@@ -53,7 +63,17 @@ import {
 import {
   checkLinterInCI as defaultCheckLinterInCI,
   type LinterCheckResult,
+  loadWorkflows,
 } from "../linter_in_ci_check.ts";
+import {
+  type AwsEmulatorCheckResult,
+  checkAwsEmulatorInCI as defaultCheckAwsEmulatorInCI,
+} from "../aws_emulator_in_ci_check.ts";
+import {
+  filterByFamily,
+  findSuppressions,
+  type SupportedLanguage as CommentLanguage,
+} from "../suppression_comments.ts";
 import {
   detectRepoLanguages as defaultDetectLanguages,
   type RepoLanguages,
@@ -71,6 +91,7 @@ import { runIdleTaskClaude } from "../idle_task_claude_budget.ts";
 import { repoCheckoutPath } from "../repo_checkout_path.ts";
 import { RUN_ID_ENV_VAR } from "../run_id.ts";
 import { buildAttributionFooter } from "../idle_task_attribution.ts";
+import { defaultLogger } from "../logger.ts";
 import {
   diffNewlyFiled,
   fileFindingOnce,
@@ -81,7 +102,7 @@ import {
   type OpenIssueTitle,
   renderOpenIssueTitles,
 } from "../idle_task_snapshot.ts";
-import type { Result } from "../../types.ts";
+import type { Logger, Result } from "../../types.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -101,6 +122,9 @@ export const BEST_PRACTICES_ISSUE_TITLE = "Run a best-practices scan";
 
 /** Prompt template directory under `prompts/`. */
 const PROMPT_NAME = "best_practices";
+
+/** Stable finding id for the AWS-emulator-missing pre-check (Issue #3368). */
+export const AWS_EMULATOR_FINDING_ID = "BP-AWS-EMULATOR-MISSING";
 
 /**
  * Per-bucket relative path to the guide file. The file body is read at
@@ -240,6 +264,21 @@ export interface BestPracticesTemplateDeps {
     repoPath: string,
     language: SupportedLanguage,
   ) => Promise<LinterCheckResult>;
+  /**
+   * AWS-emulator-in-CI pre-check (Issue #3368) — defaults to
+   * `checkAwsEmulatorInCI`. A throw propagates out of `runTask` and fails
+   * the run rather than being read as "no AWS usage".
+   */
+  checkAwsEmulatorFn?: (
+    repoPath: string,
+  ) => Promise<AwsEmulatorCheckResult>;
+  /**
+   * Logger for the AWS-emulator pre-check (Issue #3368) — defaults to
+   * `defaultLogger`. Used to record why the `BP-AWS-EMULATOR-MISSING`
+   * finding was not filed (no AWS usage, no workflow loaded, the
+   * emulator is already configured, or a valid waiver marker applies).
+   */
+  logger?: Logger;
   /**
    * Best-practices scan runner — invokes Claude with the assembled
    * prompt. Defaults to the production `claude_runner` wrapper. Tests
@@ -471,32 +510,39 @@ function buildSuggestedFix(
   return sections.join("\n\n");
 }
 
+/** Severity a deterministic pre-filed finding carries. */
+type PreFiledSeverity = "high" | "medium";
+
+/** A deterministic pre-filed finding's title and body, ready to file. */
+interface PreFiledFinding {
+  findingId: string;
+  title: string;
+  body: string;
+}
+
+/** Severity the missing-CI-gate (`BP-LINTER-<bucket>`) finding carries. */
+const LINTER_GATE_SEVERITY: PreFiledSeverity = "high";
+
 /**
- * File a synthetic missing-CI-gate `best-practices` issue and return its
- * number. The finding carries:
+ * Build the synthetic missing-CI-gate finding for `bucket`. The finding
+ * carries:
  *   - `BP-LINTER-<bucket>` stable id (embedded in the body marker).
  *     **Back-compat:** the id retains the historical `BP-LINTER-` prefix
  *     even when only the compile gate is missing, so dedup against
  *     findings filed before Issue #2178 introduced the combined-gate
  *     finding continues to work. Do NOT split this into a separate
  *     `BP-COMPILE-<bucket>` id — see #2178.
- *   - `best-practices`, `lang:<bucket>`, `severity:high` labels.
  *   - A title that distinguishes the three failure modes: lint gate
  *     only, compile/syntax gate only, or both gates missing.
  *   - A body that carries the extended `details` string from
  *     `LinterCheckResult` verbatim under "Why this matters" plus a
  *     "Suggested fix" listing the accepted compile-gate commands for
  *     the bucket (when the compile gate is missing).
- *
- * Returns `null` on any gh failure — the caller logs the issue in the
- * summary and continues.
  */
-async function fileMissingCIGateIssue(
-  repo: string,
+function buildLinterGateFinding(
   bucket: SupportedLanguage,
   check: LinterCheckResult,
-  ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<{ number: number; findingId: string } | null> {
+): PreFiledFinding {
   const findingId = `BP-LINTER-${bucket}`;
   const { lintMissing, compileMissing, titlePhrase } = classifyMissingGates(
     check,
@@ -506,7 +552,7 @@ async function fileMissingCIGateIssue(
     `<!-- finding-id: ${findingId} -->`,
     "",
     `**Bucket:** \`${bucket}\``,
-    `**Severity:** high (missing CI ${titlePhrase})`,
+    `**Severity:** ${LINTER_GATE_SEVERITY} (missing CI ${titlePhrase})`,
     "",
     "## Why this matters",
     "",
@@ -516,11 +562,27 @@ async function fileMissingCIGateIssue(
     "",
     buildSuggestedFix(bucket, lintMissing, compileMissing),
   ].join("\n");
+  return { findingId, title, body };
+}
 
+/**
+ * File a deterministic pre-filed `best-practices` issue and return its
+ * number. Labels: `best-practices`, `lang:<bucket>`, `severity:<severity>`.
+ *
+ * Returns `null` on any gh failure — the caller logs the issue in the
+ * summary and continues.
+ */
+async function fileMissingCIGateIssue(
+  repo: string,
+  bucket: string,
+  finding: PreFiledFinding,
+  severity: PreFiledSeverity,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<{ number: number; findingId: string } | null> {
   // Built before the try: a refused label is a programming error and must
   // fail loud rather than look like a `gh` failure.
   const labelArgs = guardedLabelArgs(
-    [BEST_PRACTICES_LABEL, `lang:${bucket}`, "severity:high"],
+    [BEST_PRACTICES_LABEL, `lang:${bucket}`, `severity:${severity}`],
     "worker/deno/lib/idle_task_templates/best_practices_template.ts",
   );
   let raw: string;
@@ -531,9 +593,9 @@ async function fileMissingCIGateIssue(
       "--repo",
       repo,
       "--title",
-      title,
+      finding.title,
       "--body",
-      body,
+      finding.body,
       ...labelArgs,
     ]);
   } catch {
@@ -545,7 +607,159 @@ async function fileMissingCIGateIssue(
   if (!m || !m[1]) return null;
   const number = parseInt(m[1], 10);
   if (!Number.isFinite(number)) return null;
-  return { number, findingId };
+  return { number, findingId: finding.findingId };
+}
+
+/** Severity the AWS-emulator-missing (`BP-AWS-EMULATOR-MISSING`) finding carries. */
+const AWS_EMULATOR_SEVERITY: PreFiledSeverity = "medium";
+
+/** Maximum AWS-evidence paths listed in the finding body before truncating. */
+const AWS_EVIDENCE_CAP = 50;
+
+/**
+ * Build the synthetic AWS-emulator-missing finding (Issue #3368). The
+ * body lists up to {@link AWS_EVIDENCE_CAP} AWS-usage evidence paths,
+ * then a `- … and N more` line for the remainder; any backtick in a path
+ * is replaced with `'` so the Markdown code span cannot be broken out of.
+ */
+export function buildAwsEmulatorFinding(
+  check: AwsEmulatorCheckResult,
+): PreFiledFinding {
+  const findingId = AWS_EMULATOR_FINDING_ID;
+  const title = "🟡 No AWS emulator (Floci) in CI";
+  const shown = check.awsEvidence.slice(0, AWS_EVIDENCE_CAP);
+  const remainder = check.awsEvidence.length - shown.length;
+  const evidenceLines = shown.map((p) => `- \`${p.replaceAll("`", "'")}\``);
+  if (remainder > 0) {
+    evidenceLines.push(`- … and ${remainder} more`);
+  }
+  const body = [
+    `<!-- finding-id: ${findingId} -->`,
+    "",
+    `**Severity:** ${AWS_EMULATOR_SEVERITY} (no AWS emulator in CI)`,
+    "",
+    "## Why this matters",
+    "",
+    "This repository uses AWS, but no GitHub Actions workflow runs the " +
+    "`floci/floci` emulator, so its AWS templates and SDK calls are never " +
+    "exercised before they reach a real account.",
+    "",
+    "AWS usage was detected in:",
+    "",
+    ...evidenceLines,
+    "",
+    "## Suggested fix",
+    "",
+    "Add the emulator to this repository's own workflow — a per-repo " +
+    "change, never a shared reusable Action:",
+    "",
+    "- Run `floci/floci@sha256:<digest>` as a CI service container, " +
+    "pinned by digest, and mount `/var/run/docker.sock` for " +
+    "Docker-backed services — or start it with `docker run`.",
+    "- CloudFormation: deploy every template to Floci and fail the job " +
+    "unless each stack reaches `CREATE_COMPLETE`. Resource types Floci " +
+    "stubs (enabled with " +
+    "`FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES`) " +
+    "pass, with one `::warning::` annotation per stubbed type.",
+    "- SDK code: add at least one Floci test per AWS service the code " +
+    "calls. This audit checks only that Floci runs in CI, not " +
+    "per-service coverage.",
+    "- Test scripts start `floci` on demand. Where Docker is unavailable " +
+    "(as in the Vibe Coder worker) they print `SKIPPED (needs Docker): " +
+    "<name>` for each Docker-backed item; CI runs them and fails when no " +
+    "Docker socket is present.",
+    "",
+    "To waive this finding, add `# best-practice-ignore: " +
+    "BP-AWS-EMULATOR-MISSING — author=<login> expires=<YYYY-MM-DD> " +
+    "<reason>` to a workflow file or one of the files listed above.",
+  ].join("\n");
+  return { findingId, title, body };
+}
+
+/** The repo-relative candidate file's text and relative path for the AWS-emulator waiver scan. */
+interface WaiverCandidate {
+  rel: string;
+  text: string;
+}
+
+/**
+ * Validate that an AWS-evidence path is repo-relative — never absolute,
+ * never escaping the repo root via a `..` segment.
+ */
+function assertRepoRelative(path: string): void {
+  if (path.startsWith("/")) {
+    throw new Error(
+      `best-practices: AWS-evidence path ${path} is absolute, not ` +
+        "repo-relative",
+    );
+  }
+  if (path.split("/").some((segment) => segment === "..")) {
+    throw new Error(
+      `best-practices: AWS-evidence path ${path} escapes the repo root`,
+    );
+  }
+}
+
+/**
+ * Does any valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING` marker
+ * cover this repo (Issue #3368)?
+ *
+ * Candidate files are every loaded workflow plus every AWS-evidence path.
+ * JSON manifests (e.g. `package.json`) carry no comment syntax, so a repo
+ * whose only evidence is a manifest puts its waiver in a workflow file
+ * instead — a finding only ever files when a workflow loaded, so one
+ * always exists to carry the marker.
+ *
+ * Governance (author allowlist, verified commit identity, expiry, reason)
+ * is applied by `findSuppressions` itself — an invalid or expired marker
+ * never counts.
+ */
+export async function hasAwsEmulatorWaiver(
+  repoPath: string,
+  awsEvidence: readonly string[],
+): Promise<boolean> {
+  const candidates: WaiverCandidate[] = [];
+
+  const workflows = await loadWorkflows(repoPath);
+  for (const w of workflows) {
+    candidates.push({
+      rel: `.github/workflows/${w.filename}`,
+      text: w.rawContent,
+    });
+  }
+
+  for (const rel of awsEvidence) {
+    assertRepoRelative(rel);
+    let text: string;
+    try {
+      text = await Deno.readTextFile(`${repoPath}/${rel}`);
+    } catch (err) {
+      if (err instanceof Deno.errors.NotFound) continue;
+      throw new Error(
+        `best-practices: cannot read AWS-evidence file ${rel}: ${
+          (err as Error).message
+        }`,
+        { cause: err },
+      );
+    }
+    candidates.push({ rel, text });
+  }
+
+  const commentLanguages: readonly CommentLanguage[] = ["sh", "ts"];
+  for (const candidate of candidates) {
+    for (const lang of commentLanguages) {
+      const suppressions = filterByFamily(
+        findSuppressions(candidate.text, lang, { file: candidate.rel }),
+        "best-practices",
+      );
+      if (
+        suppressions.some((s) => s.valid && s.id === AWS_EMULATOR_FINDING_ID)
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,6 +889,9 @@ export function createBestPracticesTemplate(
   const dedupAuthors = deps.dedupAuthors ?? {};
   const checkLinterInCIFn = deps.checkLinterInCIFn ??
     ((path, lang) => defaultCheckLinterInCI(path, lang));
+  const checkAwsEmulatorFn = deps.checkAwsEmulatorFn ??
+    ((path) => defaultCheckAwsEmulatorInCI(path));
+  const logger = deps.logger ?? defaultLogger;
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn, readBucketGuideFn));
   const scanCfnCostFn = deps.scanCfnCostFn ?? scanCfnCostCandidates;
@@ -810,7 +1027,13 @@ export function createBestPracticesTemplate(
             ghCommandFn,
             dedupAuthors,
             fileFn: () =>
-              fileMissingCIGateIssue(opts.repo, bucket, check, ghCommandFn),
+              fileMissingCIGateIssue(
+                opts.repo,
+                bucket,
+                buildLinterGateFinding(bucket, check),
+                LINTER_GATE_SEVERITY,
+                ghCommandFn,
+              ),
           });
           if (filed !== null) {
             preFiled.push(filed.findingId);
@@ -818,8 +1041,50 @@ export function createBestPracticesTemplate(
         }
       }
 
+      // 3a. AWS-emulator pre-check (Issue #3368) — runs on every bucket,
+      //     unlike the linter pre-check above, which only runs for
+      //     language-targeted buckets.
+      const awsRepoPath = repoCheckoutPath(opts.workDir, opts.repo);
+      const aws = await checkAwsEmulatorFn(awsRepoPath); // a throw propagates to the catch below → ok:false
+      if (!aws.usesAws) {
+        logger.info(
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — no AWS usage detected`,
+        );
+      } else if (!aws.workflowsLoaded) {
+        logger.info(
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — no workflow loaded, so whether CI runs Floci is unknown`,
+        );
+      } else if (aws.emulatorConfigured) {
+        logger.info(
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs floci/floci`,
+        );
+      } else if (await hasAwsEmulatorWaiver(awsRepoPath, aws.awsEvidence)) {
+        logger.info(
+          `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — waived by a best-practice-ignore marker`,
+        );
+      } else {
+        const filed = await fileFindingOnce({
+          repo: opts.repo,
+          logLabel: BEST_PRACTICES_LABEL,
+          findingId: AWS_EMULATOR_FINDING_ID,
+          ghCommandFn,
+          dedupAuthors,
+          fileFn: () =>
+            fileMissingCIGateIssue(
+              opts.repo,
+              bucket,
+              buildAwsEmulatorFinding(aws),
+              AWS_EMULATOR_SEVERITY,
+              ghCommandFn,
+            ),
+        });
+        if (filed !== null) {
+          preFiled.push(filed.findingId);
+        }
+      }
+
       // 3b. Build the existing-known-open list now so the runner
-      //     pre-filer can dedup against it (and the post-runner-scan
+      //     pre-filers above can dedup against it (and the post-runner-scan
       //     known-open list).
       const existingIds = await listKnownOpenFindingIds(
         opts.repo,
@@ -835,8 +1100,10 @@ export function createBestPracticesTemplate(
       //    pre-filed ids from this run) so Claude does not re-emit
       //    findings the repo already tracks.
       //
-      //    Pre-file dedup (Issue #2882): the CI-gate pre-filer above routes
-      //    through `fileFindingOnce`, which looks up an existing open issue by
+      //    Pre-file dedup (Issue #2882): both pre-filers above (the
+      //    CI-gate pre-filer and the AWS-emulator pre-filer, Issue #3368)
+      //    route through `fileFindingOnce`, which looks up an existing
+      //    open issue by
       //    `finding-id` before creating, so one finding never yields two open
       //    issues (the duplicate observed in the previously-documented #2411
       //    race — BP-LINTER-typescript private-repo-14#2990/#2991). A residual
