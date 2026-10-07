@@ -23,12 +23,17 @@
  * explicit `!`-negation in the *root* `.gitignore` — exit 1 from a plain
  * `check-ignore -q` means only "no rule matches", which is equally true of a
  * repo whose `.gitignore` never governs the path at all, so that alone
- * cannot be trusted as a re-allow (Issue #3309). `FORBIDDEN_STAGED_PATTERNS`
- * (secret-bearing filenames, including `.aws/`, `.ssh/`, `.gnupg/` and
- * `.netrc`) are never exempt this way, and the check fails closed — nothing
- * is exempt — whenever the repo's `.gitignore` cannot be proven both tracked
- * at `HEAD` and unmodified in both the index and the working tree, or
- * `check-ignore` itself cannot be run.
+ * cannot be trusted as a re-allow (Issue #3309). `HEAD:.gitignore` must also
+ * match `.gitignore` on the local `origin/<default>` ref byte for byte, so a
+ * re-allow committed only on the branch under review — `.gitignore` is
+ * itself on `ALLOWED_HIDDEN_PATHS` — cannot opt a path in that the repo's own
+ * default branch has never published (Issue #3309 follow-up).
+ * `FORBIDDEN_STAGED_PATTERNS` (secret-bearing filenames, including `.aws/`,
+ * `.ssh/`, `.gnupg/` and `.netrc`) are never exempt this way, and the check
+ * fails closed — nothing is exempt — whenever the repo's `.gitignore` cannot
+ * be proven both tracked at `HEAD` and unmodified in both the index and the
+ * working tree, whenever it differs from `origin/<default>`'s copy or that
+ * ref cannot be resolved, or whenever `check-ignore` itself cannot be run.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -50,13 +55,21 @@ export const ALLOWED_HIDDEN_PATHS: readonly string[] =
 
 /**
  * Always-forbidden patterns. Each regexp is matched against the full
- * staged path returned by `git diff --cached --name-only -z`.
+ * staged path returned by `git diff --cached --name-only -z`. The dotenv,
+ * config and secrets-directory patterns below are matched as any path
+ * segment (Issue #3311), so `services/api/.env` is caught at any depth —
+ * not just at the repo root — mirroring how the slash-free `.gitignore`
+ * entries apply at every depth.
  */
 export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
-  /^\.env(\..*)?$/,
-  /^\.config.*\.json$/,
-  /.*\.secret\.json$/,
-  /^\.secrets\//,
+  // Matched as any path segment (Issue #3311).
+  /(^|\/)\.env(\.[^/]*)?(\/|$)/,
+  // Matched as any path segment (Issue #3311).
+  /(^|\/)\.config[^/]*\.json(\/|$)/,
+  // Plain suffix match; a leading `.*` backtracked quadratically (Issue #3316).
+  /\.secret\.json$/,
+  // Matched as any path segment (Issue #3311).
+  /(^|\/)\.secrets\//,
   // Credential-store directories and files (Issue #3309) — SECURITY.md and
   // CODING-STANDARDS.md already document these as always-forbidden, never
   // exempt via the repo's-own-.gitignore route below.
@@ -86,7 +99,9 @@ export interface InspectStagedResult {
  * Classify a single staged path as safe or a violation.
  *
  * Order of checks:
- *   1. Explicit forbidden patterns (`.env`, `.config*.json`, etc.).
+ *   1. Explicit forbidden patterns (`.env`, `.config*.json`, `.secrets/`,
+ *      etc.), each caught at any depth (Issue #3311), not just at the
+ *      repo root.
  *   2. Generic "hidden top-level path outside the allowlist" check —
  *      `^\.[^/]+` minus the entries on the allowlist. The check is
  *      applied to the first path segment so that allowlisted directories
@@ -361,7 +376,17 @@ async function nearestGovernance(
  *      content or the on-disk file `check-ignore --no-index` actually
  *      reads), or the check could read a `.gitignore` the repository does
  *      not actually carry forward.
- *   3. {@link nearestGovernance} finds, for that path or one of its
+ *   3. `HEAD:.gitignore`'s blob is byte-identical to `.gitignore` on the
+ *      local `origin/<default>` ref (Issue #3309 follow-up): `.gitignore`
+ *      is itself on `ALLOWED_HIDDEN_PATHS`, so one worker commit could carry
+ *      a `!`-negation, and a later commit on the *same* branch then stage
+ *      the path it re-allows — the repo's own choice would otherwise be
+ *      decided by whoever authored the branch, not by what the repo
+ *      actually publishes. Unresolvable `origin/HEAD`, a `.gitignore`
+ *      missing from either ref, or a `rev-parse` that cannot run, all leave
+ *      nothing exempt (fail closed) — the same posture as the #2774
+ *      default-branch exemption above.
+ *   4. {@link nearestGovernance} finds, for that path or one of its
  *      ancestor directories, an explicit `!`-negation decided by the root
  *      `.gitignore` file itself (source `.gitignore`, not a nested or
  *      untracked one). No decision anywhere in the chain, a decision from
@@ -410,6 +435,27 @@ export async function gitignoreReallowed(args: {
     return exempt;
   }
 
+  // HEAD's own commit is not enough: a re-allow committed earlier on *this*
+  // branch is not something the repo's default branch has ever published
+  // (Issue #3309 follow-up). Require HEAD:.gitignore to be the identical
+  // blob as origin/<default>:.gitignore, read from the local remote-tracking
+  // ref only — never fetched.
+  const defaultRef = await originDefaultRef(options, run);
+  if (defaultRef === null) return exempt;
+  const headBlob = await run(
+    ["rev-parse", "-q", "--verify", "HEAD:.gitignore"],
+    options,
+  );
+  if (!headBlob.ok || headBlob.value.code !== 0) return exempt;
+  const defaultBlob = await run(
+    ["rev-parse", "-q", "--verify", `${defaultRef}:.gitignore`],
+    options,
+  );
+  if (!defaultBlob.ok || defaultBlob.value.code !== 0) return exempt;
+  if (headBlob.value.stdout.trim() !== defaultBlob.value.stdout.trim()) {
+    return exempt;
+  }
+
   for (const path of candidates) {
     const governance = await nearestGovernance(path, options, run);
     if (
@@ -436,11 +482,15 @@ export async function gitignoreReallowed(args: {
  * `git remote set-head origin --auto` and so contact the remote. Returns
  * `null` — nothing vouches — unless the symbolic ref names a ref under
  * `refs/remotes/origin/`.
+ *
+ * @param run Git command runner override (test seam only); defaults to
+ *   `runGitCommand`.
  */
 async function originDefaultRef(
   options: GitCommandOptions,
+  run: typeof runGitCommand = runGitCommand,
 ): Promise<string | null> {
-  const result = await runGitCommand(
+  const result = await run(
     ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
     options,
   );

@@ -1318,6 +1318,23 @@ not need it, making a behaviour-carrying parameter required rather than
 defaulting it to a value that turns the behaviour off, and treating a caller
 left on the old hard-coded value as a blocking self-review finding.
 
+**A new state on an existing screen re-reads that screen's existing text
+(Issue #3259).** Fleet UI PRs added a state or mode to an existing screen
+and left the screen's existing messages describing the old state; tests
+rendered only the new rows, so the suite stayed green. GRQ-AutoTrader#2560
+added "Load older decisions" paging to Activity, and its empty state still
+read "Nothing happened in this period." above the load-older control.
+GRQ-AutoTrader#2615 added an earlier-date mode to Scores: every row still
+drew today's live `CurrentStars` badge beside that date's stars, and the
+unreadable-decisions note still said rows "may read as not evaluated"
+where every row read "Not considered". Unlike the caller-reach rule
+above, no caller is missed: the existing on-screen text is what goes
+unchecked. `CODING-STANDARDS.md` and the issue prompt now require listing
+every message the screen already renders, saying whether each is still
+true in the new state, rewording, hiding or marking each one that is
+not, a test asserting each message that differs, and the list of
+messages checked in the PR summary's Test Plan.
+
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran

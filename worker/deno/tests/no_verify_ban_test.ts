@@ -79,29 +79,10 @@ Deno.test("no-verify - no template outside the guidelines names the flag (Issue 
 
 Deno.test("no-verify - the guidelines still forbid it, categorically (Issue #783)", async () => {
   // The guard above is only meaningful while the ban it defers to exists.
+  // The section-scoped wording pins live in `no_verify_ban_drift_test.ts`,
+  // because that file's `markdown_docs.ts` import spawns git, which would
+  // drop this file from the `check:manifests` completeness family.
   const text = await familyText(BAN_OWNER);
   assert(text, "coding_guidelines must resolve");
   assertStringIncludes(text, NO_VERIFY);
-  // The wording wraps, so the ban is matched as one collapsed line.
-  const collapsed = text.replace(/\s+/g, " ");
-  assertStringIncludes(
-    collapsed,
-    "Bypassing either safeguard (e.g. `git commit --no-verify`, `git add -f`) " +
-      "is forbidden",
-  );
-  assertStringIncludes(collapsed, "fix the allowlist via PR — do not bypass");
-});
-
-Deno.test("no-verify - the two templates keep the rest of the reversibility bullet (Issue #783)", async () => {
-  // Only `--no-verify` leaves the list: `push --force`, `rm -rf` and branch
-  // deletion genuinely can be the only way forward, and keep their clause.
-  for (const family of ["issue", "pr_feedback"]) {
-    const text = await familyText(family);
-    assert(text, `${family} must resolve`);
-    assertStringIncludes(text, "Bound irreversible actions");
-    assertStringIncludes(text, "git push --force");
-    assertStringIncludes(text, "only way forward");
-    // …and each now says why the bypass is not among them.
-    assertStringIncludes(text, "Bypassing the pre-commit gate is");
-  }
 });

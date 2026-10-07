@@ -425,6 +425,24 @@ above cannot find this caller, because the diff never changed it and there
 is nothing to revert. List the callers and siblings checked in the PR summary
 (Issue #3253).
 
+**A new state on an existing screen re-reads that screen's existing text.**
+When a change adds a state or mode to a screen that already exists (an
+earlier date, a paged or partial load, a fallback, an empty or error case),
+list every message the screen already renders: notes, empty-state text,
+warnings, badges and labels. For each one, say whether it is still true in
+the new state. If it is not, reword it, hide it or mark it, so the new
+state never shows a message written for another state. Add a test that
+renders the new state and asserts each message that differs in that state,
+or is absent from it. A test that renders only the new rows stays green
+while an old message is wrong, and **Every changed call site needs a test
+that goes red without it** above cannot find it, because the diff never
+touched that message. A pre-existing message left unchanged that is false
+or misleading in the new state is a blocking self-review finding. This is
+the rendered-screen counterpart of the bullet under **A Code Change Owes
+a Docs Change** below on a change that alters what an existing state
+means. List the messages checked in the PR summary's Test Plan
+(Issue #3259).
+
 **Narrowing a shared helper changes every caller.** Before a helper that
 other code already calls starts rejecting, throwing on or dropping a value it
 used to accept (a validator, type guard, allowed-value set, required field,
@@ -1104,12 +1122,18 @@ this repository's `.gitignore` re-allows `.claude/skills/` and
 `check-ignore -q` alone is not enough, since that only means "no rule
 matches" — equally true of a repository whose `.gitignore` never governs
 the path at all (Issue #3309) — and a decision from a nested or untracked
-`.gitignore` does not count either. This never widens the fleet-wide
-allowlist above: it only recognises what a specific repository has already
-chosen to track. The forbidden patterns below are never exempt under this
-route, and if `.gitignore` cannot be read, has been modified (in the index
-or the working tree), or no rule in the path's ancestor chain decides it at
-all, nothing is exempt (fail closed). Each exemption is logged at INFO.
+`.gitignore` does not count either. `HEAD:.gitignore` must also match
+`.gitignore` on the local `origin/<default>` ref byte for byte: `.gitignore`
+is itself on the fleet-wide allowlist, so a re-allow committed only on the
+branch under review — never published on the repository's own default
+branch — must not be able to exempt a later commit on that same branch
+(Issue #3309 follow-up). This never widens the fleet-wide allowlist above:
+it only recognises what a specific repository has already chosen to track.
+The forbidden patterns below are never exempt under this route, and if
+`.gitignore` cannot be read, has been modified (in the index or the working
+tree), differs from `origin/<default>`'s copy, `origin/HEAD` cannot be
+resolved, or no rule in the path's ancestor chain decides it at all, nothing
+is exempt (fail closed). Each exemption is logged at INFO.
 
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,

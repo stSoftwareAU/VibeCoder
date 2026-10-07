@@ -729,16 +729,22 @@ is not enough: it means only "no rule matches", which is equally true of a
 repository whose `.gitignore` never governs the path at all (Issue #3309),
 so the gate judges the deciding rule, not just the exit code. This is
 conditional on the root `.gitignore` itself: it must be tracked at `HEAD`,
-and unmodified in both the index (`git diff --cached`) and the working tree
+unmodified in both the index (`git diff --cached`) and the working tree
 (`git diff`, which `check-ignore --no-index` reads directly), so a commit
 can never opt itself in by editing `.gitignore` in the same change, whether
-staged or only on disk. `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
+staged or only on disk — **and** byte-identical to `.gitignore` on the local
+`origin/<default>` ref, never fetched. `.gitignore` is itself on
+`ALLOWED_HIDDEN_PATHS`, so without this last check a re-allow committed
+earlier on the same feature branch — never published on the repository's
+own default branch — could still exempt a later commit on that branch
+(Issue #3309 follow-up). `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
 `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, `*.pem`,
 `*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials.json`,
 `service-account*.json`, and the rest) are checked first and are **never**
 exempt under this route, even when the repository's own `.gitignore`
-re-allows them. If `git check-ignore` cannot be run, or no rule anywhere in
-the path's ancestor chain decides it at all, nothing is exempt on this
+re-allows them. If `git check-ignore` cannot be run, no rule anywhere in the
+path's ancestor chain decides it at all, `origin/HEAD` cannot be resolved, or
+`.gitignore` differs between `HEAD` and that ref, nothing is exempt on this
 account (fail closed), and each exemption is logged at INFO naming the path.
 This closes the gap where this repository's own `.gitignore` re-allows
 `.claude/skills/` and `.claude/agents/` (Issues #2675, #2976) yet the gate

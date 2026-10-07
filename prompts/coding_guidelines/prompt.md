@@ -1335,6 +1335,24 @@ above cannot find this caller, because the diff never changed it and there
 is nothing to revert. List the callers and siblings checked in the PR summary
 (Issue #3253).
 
+**A new state on an existing screen re-reads that screen's existing text.**
+When a change adds a state or mode to a screen that already exists (an
+earlier date, a paged or partial load, a fallback, an empty or error case),
+list every message the screen already renders: notes, empty-state text,
+warnings, badges and labels. For each one, say whether it is still true in
+the new state. If it is not, reword it, hide it or mark it, so the new
+state never shows a message written for another state. Add a test that
+renders the new state and asserts each message that differs in that state,
+or is absent from it. A test that renders only the new rows stays green
+while an old message is wrong, and **Every changed call site needs a test
+that goes red without it** above cannot find it, because the diff never
+touched that message. A pre-existing message left unchanged that is false
+or misleading in the new state is a blocking self-review finding. This is
+the rendered-screen counterpart of the bullet under **A Code Change Owes
+a Docs Change** above on a change that alters what an existing state
+means. List the messages checked in the PR summary's Test Plan
+(Issue #3259).
+
 **Narrowing a shared helper changes every caller.** Before a helper that
 other code already calls starts rejecting, throwing on or dropping a value it
 used to accept (a validator, type guard, allowed-value set, required field,

@@ -735,10 +735,13 @@ This is enforced at the single git-push choke-point by
   by that repository's own tracked, unmodified root `.gitignore` itself, for
   the path or an ancestor directory — for example this repository's
   `.gitignore` re-allows `.claude/skills/` and `.claude/agents/` (Issues
-  #2675, #2976). Every forbidden secret pattern stays refused regardless, and
-  if `.gitignore` cannot be read, has been modified, or no rule decides the
-  path at all, nothing is exempt. See [SECURITY.md](../SECURITY.md) for the
-  full rule.
+  #2675, #2976). `HEAD:.gitignore` must also match `.gitignore` on the local
+  `origin/<default>` ref, so a re-allow committed only on the branch under
+  review cannot exempt a later commit on that branch (Issue #3309
+  follow-up). Every forbidden secret pattern stays refused regardless, and
+  if `.gitignore` cannot be read, has been modified, differs from
+  `origin/<default>`'s copy, or no rule decides the path at all, nothing is
+  exempt. See [SECURITY.md](../SECURITY.md) for the full rule.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes
