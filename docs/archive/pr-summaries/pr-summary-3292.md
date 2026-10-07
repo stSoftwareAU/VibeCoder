@@ -75,7 +75,11 @@ back.
 
 ## Test Plan
 
-- [x] `./quality.sh < /dev/null` passes (see final run below).
+- [x] `./quality.sh < /dev/null`: every check passed except one Deno test.
+      `deno tests` ran 26,136 passed and 1 failed. The failure was
+      `worker/deno/tests/launcher_parity_test.ts` (`VIBE_BUILD_COMMIT`
+      `…-dirty` vs a newer HEAD), because the worker's WIP checkpoint
+      committed mid-run. Re-run on the clean tree: 24 passed, 0 failed.
 - [x] `deno task test:unit` for `markdown_anchors_test.ts`,
       `threat_model_docs_test.ts`, `docs_provider_matrix_test.ts`,
       `agents_md_pointer_anchors_test.ts`, `deadline_model_docs_check_test.ts`
