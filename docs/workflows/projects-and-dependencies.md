@@ -89,7 +89,7 @@ So milestone issues always branch off the milestone branch when present, keeping
 3. **User must break the cycle** — Until a user edits the issues to remove or change a "Depends on" / "Blocked by" so that the cycle is broken, none of the issues in the cycle will be worked on. The worker does not arbitrarily "ignore" one dependency to break the cycle.
 4. **Must report** — The worker **must** report circular dependencies on GitHub so users can see and fix them. Machines are unattended; logging alone is not sufficient. For each issue in a detected cycle:
    - **Comment** on the issue explaining that it is part of a circular dependency (list the cycle, e.g. "This issue is in a dependency cycle: #A → #B → #C → #A. Please remove or change a 'Depends on' / 'Blocked by' to break the cycle.").
-   - **Apply a dedicated label** (e.g. `circular-dependency` or as configured) so the issue is visible in issue lists and filters. The label must be auto-created with a consistent colour and description (see [Workflow labels](#workflow-labels)).
+   - **Apply a dedicated label** (e.g. `circular-dependency` or as configured) so the issue is visible in issue lists and filters. The label must be auto-created with a consistent colour and description (see [Workflow labels](#%EF%B8%8F-workflow-labels)).
 
 **Summary:** Detect circular dependencies; never pick circular issues; **always** comment and label so users are informed; require human intervention to fix the dependency graph.
 
@@ -106,7 +106,7 @@ All workflow labels (e.g. `failed-once`, `failed`, `needs-human`, `refine-issue`
 - Dependencies can cross milestones (e.g. issue in milestone A depends on issue in milestone B). Closing the dependency is not enough when it belongs to **another milestone that is still open**: its merged code only reaches the default branch — and so the dependant's milestone branch — once that milestone's final PR merges. The dependant is therefore held until the dependency's milestone is closed (Issue #2173).
 - A dependency with **no milestone**, or one in the candidate's **own milestone**, is satisfied as soon as it closes — unchanged behaviour.
 - The **one PR per target branch** rule is independent: it limits how many concurrent PRs exist per base branch; dependency rules limit which **issue** is selected next.
-- The same cross-milestone rule also gates the milestone **summary PR**'s merge, not just issue selection: a pending dependency holds the summary PR open until it lands (Issue #3014). See [Pending dependencies hold the summary PR](milestones.md#-pending-dependencies-hold-the-summary-pr-issue-3014) in the milestones workflow doc.
+- The same cross-milestone rule also gates the milestone **summary PR**'s merge, not just issue selection: a pending dependency holds the summary PR open until it lands (Issue #3014). See [Pending dependencies hold the summary PR](milestones.md#%EF%B8%8F-pending-dependencies-hold-the-summary-pr-issue-3014) in the milestones workflow doc.
 
 ### 🚫 All issues in a milestone blocked
 

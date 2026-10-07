@@ -198,7 +198,9 @@ Deno.test("every in-repo link and anchor in the threat model resolves", () => {
     if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue; // external URL
 
     if (target.startsWith("#")) {
-      if (!selfAnchors.has(target.slice(1))) broken.push(target);
+      if (!selfAnchors.has(decodeURIComponent(target.slice(1)))) {
+        broken.push(target);
+      }
       continue;
     }
 
@@ -211,7 +213,7 @@ Deno.test("every in-repo link and anchor in the threat model resolves", () => {
       continue;
     }
     if (fragment && resolved.endsWith(".md")) {
-      if (!anchorSet(read(resolved)).has(fragment)) {
+      if (!anchorSet(read(resolved)).has(decodeURIComponent(fragment))) {
         broken.push(`${target} (no such heading in ${resolved})`);
       }
     }

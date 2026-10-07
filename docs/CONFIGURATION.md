@@ -5,22 +5,22 @@ overview, see the [main README](../README.md).
 
 ## 📋 Table of Contents
 
-- [Configuration File](#configuration-file)
+- [Configuration File](#-configuration-file)
 - [Two axes of trust](#two-axes-of-trust)
-- [Multiple Allowed Authors](#multiple-allowed-authors)
-- [Multiple PR (Pull Request) Reviewers](#multiple-pr-reviewers)
-- [Configuration Defaults](#configuration-defaults)
+- [Multiple Allowed Authors](#-multiple-allowed-authors)
+- [Multiple PR (Pull Request) Reviewers](#-multiple-pr-reviewers)
+- [Configuration Defaults](#-configuration-defaults)
 - [Effort Level Configuration](#-effort-level-configuration)
-- [The cycle-deadline model](#-the-cycle-deadline-model)
+- [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model)
 - [Session Resume](#-session-resume)
 - [Session Compaction](#-session-compaction)
 - [Context Budget Monitoring](#-context-budget-monitoring)
-- [Authorised Commenters](#authorised-commenters)
-- [Bot Accounts](#bot-accounts)
-- [Per-Repository Configuration](#per-repository-configuration)
-- [Pre-Setup Command](#pre-setup-command)
-- [Service Account Authentication (SSH (Secure Shell) + gh auth)](#service-account-authentication-ssh--gh-auth)
-- [Monitored Repositories](#monitored-repositories)
+- [Authorised Commenters](#-authorised-commenters)
+- [Bot Accounts](#-bot-accounts)
+- [Per-Repository Configuration](#-per-repository-configuration)
+- [Pre-Setup Command](#-pre-setup-command)
+- [Service Account Authentication (SSH (Secure Shell) + gh auth)](#-service-account-authentication-ssh--gh-auth)
+- [Monitored Repositories](#-monitored-repositories)
 
 ## 📂 Configuration File
 
@@ -451,9 +451,9 @@ explicitly overridden.
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
 | `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of a Sonnet executor (`medium` effort; `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) while the advisor — the main session — keeps the phase's own model and effort. Off, no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and the run's executor (Sonnet) tokens are costed separately from the advisor's (Opus) rather than all charged at the advisor's rate. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
 | `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
-| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#-idle-task-template-weights))                                                                                                                                                                      |
-| `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.280" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#-minimum-version-floor))                                                                                                                                                                       |
+| `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                      |
+| `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)) |
+| `software_min_versions`      | `{ "claude": "2.1.280" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
@@ -1565,7 +1565,7 @@ phase to it explicitly to get it back (`CLAUDE_MODEL_PLANNING=fable` is the
 documented rollback), e.g.
 `"phase_model_overrides": { "issue": "fable" }` or `CLAUDE_MODEL=fable`. The
 `opus` alias resolves to the latest Opus (Opus 5 as of July 2026) once the CLI
-version floor is met — see [Minimum-Version Floor](#-minimum-version-floor).
+version floor is met — see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor).
 
 ### 🔊 Verbosity Configuration
 
@@ -1602,7 +1602,7 @@ everywhere:
 **Resolution priority** for the `issue` phase (highest to lowest):
 
 1. Per-repo override in `repo_config` (see
-   [Per-Repository Configuration](#per-repository-configuration))
+   [Per-Repository Configuration](#-per-repository-configuration))
 2. Hard-coded default (`standard`) — this tier does not read the global
    `.config.json` `verbosity`
 
@@ -1770,7 +1770,7 @@ unless explicitly overridden.
 | Agent transcript tee | `agent_transcript_enabled` | `false` | Tee every agent invocation's raw stream-json to `~/logs/agent-<run-id>[-<issue>].jsonl` (Issue #1141). **Off by default, and it captures repository content** — read [Agent transcripts](#-agent-transcripts) before switching it on. |
 | Claude kill-after              | `claude_kill_after`              | `30`       | Grace period after timeout before force-kill                                                                                                                                                         |
 | Sleep interval                 | `sleep_interval`                 | `120`      | Seconds between scans. Raised from `30` in Issue #2446: each cycle costs a fixed amount of GraphQL quota, so a longer sleep cuts the per-hour spend without changing any code path. Set it explicitly to scan more often.                                                                                                                                                             |
-| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
+| Max concurrent issues | `max_concurrent_issues` | `2` | Issue slots worked concurrently per host (integer 1–8). Above `1` the Priority-2 scan runs as a pool, one clone per slot; the memory-pressure governor lowers the effective count (never raises it). `1` opts into the serial loop. Each slot keeps claiming for the whole cycle — after a success it sleeps `sleep_interval` and claims again, so a long execute in one slot never idles the others (Issue #178). A slot that finds nothing logs the scan's counts and re-scans every `sleep_interval` while a sibling still works, retiring only when nothing else is running (Issue #219). Above `1` the agent-backed PR passes also run in a **maintenance lane** beside the pool instead of ahead of it, so a long CI fix no longer idles the slots — see [Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool) (Issue #213). |
 | Credit wait interval           | `credit_wait_interval`           | `300`      | Seconds to wait when credits are exhausted                                                                                                                                                           |
 | Refinement timeout             | `refinement_timeout`             | `300`      | Timeout for issue refinement (5 minutes)                                                                                                                                                             |
 | Refinement kill-after          | `refinement_kill_after`          | `10`       | Grace period after refinement timeout                                                                                                                                                                |
@@ -1813,7 +1813,7 @@ unless explicitly overridden.
 | ImgBB API key | `imgbb_api_key` | _(empty)_ | API key for automatic screenshot uploads to ImgBB. Get a free key from https://api.imgbb.com/. `VIBE_IMGBB_API_KEY` applies when this key is unset; since 1.4.0 this key wins when both are set (Issue #1032). |
 | Worker name | `worker_name` | _(empty)_ | Human-readable worker name for multi-worker visibility |
 | Issue retry cooldown | `issue_retry_cooldown` | `600` | Seconds to skip a failed issue before retrying (10 minutes). Persisted to disk. Timeout-class failures escalate instead: 2 h → 6 h → 24 h for consecutive timeouts within 48 h, with a `needs-human` handoff on the third. See `min_claim_runway_seconds` below for the claim-runway floor that stops a late claim being taken at all. |
-| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
+| Minimum claim runway | `min_claim_runway_seconds` | `300` | Seconds of runway **to the supervisor hard cap** (`VIBE_RUN_MAX_SECONDS`) a new implementation claim must have; `0` disables the floor. A claim taken below it would be killed by the supervisor before it could finish setup. Measured against the hard cap, not the cycle deadline: since Issue #420 a claim keeps its full `claude_timeout` budget however late in the cycle it is taken, so cycle runway no longer says anything about whether a claim can fit — see [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). On a run with no hard cap the floor is inert, and the worker logs why once per cycle (Issues #289/#425). |
 | Long-job labels | `claim_long_job_labels` | `["size/l", "size/xl", "epic"]` | Labels that mark an issue as a long job for the [adaptive claim floor](#-adaptive-claim-floor) (Issue #245). Matched case-insensitively; the configured list replaces the defaults. |
 | Fast-failure threshold (seconds) | `fast_failure_seconds` | `60` | A failed run shorter than this died claiming or setting up — the repository's environment, not the issue. Counted by the [fast-failure repository back-off](#-fast-failure-repository-back-off) (Issue #1950). A `zero_output` failure or a setup fault (Issue #2954) counts however long it took. |
 | Fast failures before back-off | `repo_fast_failure_threshold` | `3` | Fast failures in one repository inside the window before that repository stops being claimed and one diagnostic issue is filed. |
@@ -2124,7 +2124,7 @@ issue in
 `adaptive_floor_deferrals.json` under the work directory. On the third it
 yields: the issue is claimed on whatever runway is left, and the hard-cap kill
 commits and pushes its WIP for the next run to resume — the last stage of
-[The cycle-deadline model](#-the-cycle-deadline-model). The override is logged
+[The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model). The override is logged
 as
 
 ```text
@@ -2514,7 +2514,7 @@ run plus a margin": with claims no longer truncated at the cycle deadline
 extensions inside it (Issue #423). It sits 600 s under the launcher's container
 watchdog (`VIBE_CONTAINER_WATCHDOG_SECONDS`, 11400 s by default), so the host
 never reaps a container this supervisor would still allow to run. The cap is
-the last stage of [The cycle-deadline model](#-the-cycle-deadline-model): the
+the last stage of [The cycle-deadline model](#%EF%B8%8F-the-cycle-deadline-model): the
 only place a still-progressing agent is stopped. Extensions are bounded by it:
 
 - The **ceiling** is `run start + VIBE_RUN_MAX_SECONDS`, less a reserve of
@@ -2992,7 +2992,7 @@ VIBE_SERVICE_ACCOUNTS="stsvcbot,Vibecoderbot" \
 
 `VIBE_SERVICE_ACCOUNTS` sets the worker identity guard allowlist. Omit it and setup defaults the allowlist to the login it
 authenticated as — see
-[Service-Account Identity Guard](#️-service-account-identity-guard-issue-3528).
+[Service-Account Identity Guard](#%EF%B8%8F-service-account-identity-guard).
 
 Operational settings can also be configured during setup:
 
@@ -3946,7 +3946,7 @@ Common bot accounts you may want to add (only add those you actively use):
 | `cursor[bot]`         | Cursor IDE     | Alternative account format |
 
 > **🔒 Security Note:** Bot accounts can trigger code changes without human
-> approval. See [SECURITY.md](../SECURITY.md#bot-account-security-issue-36) for
+> approval. See [SECURITY.md](../SECURITY.md#-bot-account-security-issue-36) for
 > detailed security implications.
 
 ## 🤖 Trusted Review Bots
@@ -4315,7 +4315,7 @@ flag. See
 [MODEL-AND-CACHING.md → Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing).
 
 The resolution order (most specific wins) is documented in full in
-[MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain).
+[MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#%EF%B8%8F-modeleffort-precedence-chain).
 In short: a phase-specific `CLAUDE_MODEL_<PHASE>` / `CLAUDE_EFFORT_<PHASE>` env
 var (operator escape hatch) beats a per-repo phase override, which beats the
 per-repo base `claude_model`, which beats the global config overrides, which
@@ -4349,7 +4349,7 @@ routing, so a premium tier never leaks into a filler repo.
 > The interaction is internally consistent — the degraded-model detector reads
 > the same precedence chain and does not false-flag the demotion — so this is a
 > routing surprise to be aware of, not a bug. See
-> [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#-modeleffort-precedence-chain)
+> [MODEL-AND-CACHING.md → Model/effort precedence](MODEL-AND-CACHING.md#%EF%B8%8F-modeleffort-precedence-chain)
 > for the full chain, and
 > /
 > for the
@@ -4404,7 +4404,7 @@ never starves its peers.
 >
 > 1. **Label tier first, across the whole fleet** — `top-priority` >
 >    `work-on` > self-scheduled diagnostic > `low-priority` > `idle-task`
->    (see [README → Supported labels](../README.md#-supported-labels)).
+>    (see [README → Supported labels](../README.md#%EF%B8%8F-supported-labels)).
 > 2. **`nice` orders repos within a label tier** — of two `top-priority`
 >    issues, the one in the lower-`nice` repo is worked first.
 > 3. Milestone priority and age break the remaining ties, unchanged.
@@ -4453,18 +4453,18 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 
 | Option                  | Type    | Description                                                                                                                                                                                                                                                                                                                                                               |
 | ----------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pre_setup_command`     | string  | Command to run before Claude starts working (e.g., `./scripts/setup-env.sh`). See [Pre-Setup Command](#pre-setup-command).                                                                                                                                                                                                                                                |
+| `pre_setup_command`     | string  | Command to run before Claude starts working (e.g., `./scripts/setup-env.sh`). See [Pre-Setup Command](#-pre-setup-command).                                                                                                                                                                                                                                                |
 | `skip_quality_check`    | boolean | When `true`, skips running quality checks entirely for this repository                                                                                                                                                                                                                                                                                                    |
 | `quality_command`       | string  | Custom command to run instead of `./quality.sh`                                                                                                                                                                                                                                                                                                                           |
 | `custom_instructions`   | string  | Additional instructions to include in the Claude prompt for this repository                                                                                                                                                                                                                                                                                               |
-| `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#docker-based-quality-checks).                                                                                                                                                                                                                           |
+| `docker_image`          | string  | Docker image to run quality checks in (e.g., `node:20`, `eclipse-temurin:21`). See [Docker-Based Quality Checks](#-docker-based-quality-checks).                                                                                                                                                                                                                           |
 | `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
-| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#-per-repo-nice-rotation-tier).                                                                                                                                                                         |
+| `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#%EF%B8%8F-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
 | `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
@@ -5279,7 +5279,7 @@ Two things make the order matter:
   [`gh_credential_stage.ts`](../worker/deno/lib/gh_credential_stage.ts)).
   Inside the container git runs over HTTPS with that token, so the SSH key
   never crosses into it; `ssh_key_path` serves host-side git.
-- The [identity guard](#-service-account-identity-guard) exits at startup
+- The [identity guard](#%EF%B8%8F-service-account-identity-guard) exits at startup
   on any login not in `service_accounts`, and every sibling host decides
   whether a PR is fleet work from the same lists. So the new account is
   allowed **everywhere first**, and the old one is removed **everywhere

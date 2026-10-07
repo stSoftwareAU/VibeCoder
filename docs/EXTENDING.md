@@ -6,17 +6,17 @@ Extending the worker **from outside** — reacting to a finished issue run witho
 
 ## 📋 Table of Contents
 
-- [Architecture](#architecture)
-- [Adding a New Command](#adding-a-new-command)
-- [Adding a CI Log Provider](#adding-a-ci-log-provider)
+- [Architecture](#%EF%B8%8F-architecture)
+- [Adding a New Command](#-adding-a-new-command)
+- [Adding a CI Log Provider](#-adding-a-ci-log-provider)
 - [Custom Label Prompts](CUSTOM-PROMPTS.md) — the operator-side extension
   point, on its own page
 - [Container Extension](CONTAINER-EXTENSION.md) — the image-side extension
   point, with a worked example
-- [Running Deno Commands](#running-deno-commands)
-- [Prompt Templates](#prompt-templates)
-- [Shell Integration (Internal)](#shell-integration-internal)
-- [Running Tests](#running-tests)
+- [Running Deno Commands](#%EF%B8%8F-running-deno-commands)
+- [Prompt Templates](#-prompt-templates)
+- [Shell Integration (Internal)](#-shell-integration-internal)
+- [Running Tests](#-running-tests)
 
 ## 🏗️ Architecture
 
@@ -676,7 +676,7 @@ flowchart LR
 CI log excerpt into that placeholder before invoking Claude — from a
 configured provider or, failing that, from the
 built-in GitHub Actions provider. See
-[Adding a CI Log Provider](#adding-a-ci-log-provider) for the extension point,
+[Adding a CI Log Provider](#-adding-a-ci-log-provider) for the extension point,
 [Private Extensions](PRIVATE-EXTENSIONS.md) for building one outside this
 repository, and the `ciProviders` row in
 [Per-repository configuration](CONFIGURATION.md#-per-repository-configuration)
@@ -687,7 +687,7 @@ for the config schema.
 **To replace a prompt without publishing it**: map the phase's label to a
 non-public file with `custom_label_prompts`
 ([Custom Label Prompts](CUSTOM-PROMPTS.md), key reference in
-[Configuration](CONFIGURATION.md#-custom-label-prompts)). The override is
+[Configuration](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts)). The override is
 validated at config load against the placeholders of the phase it replaces, and
 each turn of a two-turn phase (`planning` / `planning_critique`, `quorum` /
 `quorum_judge`) needs its own entry. The same key maps a **new** label to a
