@@ -10,7 +10,9 @@ The pre-commit safety gate now refuses credential stores at any depth:
 classified as safe. The gate also refuses every OpenSSH default private-key
 name, not only `id_rsa`. Those names are `id_dsa`, `id_ecdsa`, `id_ed25519`,
 `id_ecdsa_sk` and `id_ed25519_sk`, plus their dotted variants. The shell
-hook `hooks/pre-commit` is updated to match.
+hook `hooks/pre-commit` is updated to match: it now also refuses the
+nested credential-store paths (`.ssh/`, `.aws/`, `.gnupg/`, `.netrc`) at
+any depth, not only the widened key-name list (PR #3361 review).
 
 ```mermaid
 flowchart LR
@@ -51,8 +53,13 @@ with them, and closes the same gap for SSH keys that are not RSA.
   now behave the same. Public keys are rarely meant to be committed. A repo
   that genuinely needs one can rename it.
 - **The hook is kept in sync.** `hooks/pre-commit` matches the basename with
-  the same name list. The `(\..*)?` there runs in bash's `[[ =~ ]]` on a
-  single basename, so the #3323 backtracking concern does not apply.
+  the same key-name list. The `(\..*)?` there runs in bash's `[[ =~ ]]` on a
+  single basename, so the #3323 backtracking concern does not apply. A PR
+  #3361 review found the hook had no path-segment check for the nested
+  credential stores at all, so SECURITY.md's "Protected Patterns" list
+  (under the pre-commit-hook layer) did not match what the hook enforced.
+  The hook now matches `(^|/)\.(aws|ssh|gnupg|netrc)(/|$)` against the full
+  path, mirroring `FORBIDDEN_STAGED_PATTERNS` in `pre_commit_safety.ts`.
 - **`.gitignore` and `REQUIRED_GITIGNORE_PATTERNS` are unchanged.** The
   issue asks for the gate change only. The enforcer still writes just
   `id_rsa` and `id_rsa.*`. Adding the other key names there would be a
@@ -72,7 +79,7 @@ with them, and closes the same gap for SSH keys that are not RSA.
 
 - `worker/deno/tests/pre_commit_safety_test.ts`: 61 passed, 0 failed.
 - `worker/deno/tests/hidden_files_safety_integration_test.ts`: 4 passed.
-- `worker/deno/tests/hooks_pre_commit_test.ts`: 9 passed.
+- `worker/deno/tests/hooks_pre_commit_test.ts`: 11 passed.
 - `worker/deno/tests/hidden_allowlist_drift_test.ts`: 5 passed.
 - coding_guidelines and coding_standards drift tests: 59 passed.
 - `bash -n hooks/pre-commit` and shellcheck are clean.
@@ -131,6 +138,14 @@ New tests:
     id_rsa (Issue #3336)".
   - L146 "pre-commit hook - allows source files merely named after OpenSSH
     keys (Issue #3336)". This over-match guard is green on base by design.
+  - L162 "pre-commit hook - blocks nested credential-store paths at any
+    depth (Issue #3336)" (PR #3361 review). Covers `.aws/credentials`,
+    `services/api/.aws/credentials`, `.netrc`, `pkg/.netrc`,
+    `.gnupg/pubring.kbx`, `home/.gnupg/pubring.kbx` and `deploy/.ssh/config`.
+  - L185 "pre-commit hook - allows credential-store look-alikes
+    (Issue #3336)" (PR #3361 review). Covers `docs/ssh/setup.md`,
+    `aws/config`, `src/aws/client.ts`, `deploy/.sshrc`, `pkg/netrc.md` and
+    `pkg/foo.netrc.md`.
 
 **Red on base:**
 
@@ -141,6 +156,10 @@ New tests:
   'id_ed25519'".
 - The look-alike and linear-growth tests pin behaviour that is safe on base
   too, so they are green on base. The flips below show they can fail.
+- The L162 hook test fails against the hook as this PR first shipped it
+  (before the PR #3361 review fix), with "expected hook to block
+  '.aws/credentials'" — confirmed by reverting the hook's credential-store
+  check locally and re-running the test.
 
 Branch outcomes:
 
@@ -159,6 +178,11 @@ Branch outcomes:
   test. Reverting to `^id_rsa(\..*)?$` turned it red.
 - `hooks/pre-commit:52`, look-alike basename → allowed. Reached by the L146
   test.
+- `hooks/pre-commit:69`, nested credential-store segment present →
+  violation (PR #3361 review). Reached by the L162 test. Removing the new
+  `if` block turned it red.
+- `hooks/pre-commit:69`, credential-store look-alike → allowed (PR #3361
+  review). Reached by the L185 test.
 
 **Callers checked:**
 

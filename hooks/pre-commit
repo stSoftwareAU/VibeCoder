@@ -12,6 +12,8 @@
 #   id_rsa, id_dsa, id_ecdsa, id_ed25519, id_ecdsa_sk, id_ed25519_sk [.*],
 #   credentials.json, service-account*.json
 # - anything under a .secrets/ directory, at any depth (Issue #3957)
+# - nested credential-store paths, at any depth (Issue #3336):
+#   .aws/, .ssh/, .gnupg/, .netrc
 #
 # To bypass this hook in exceptional circumstances, use:
 #   git commit --no-verify
@@ -59,6 +61,12 @@ while IFS= read -r file; do
     # extension-less or arbitrarily named files force-added past .gitignore,
     # so match the path itself, at any depth like the .gitignore rule.
     if [[ "$file" == .secrets/* ]] || [[ "$file" == */.secrets/* ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+    # Nested credential-store directories/files (Issue #3336), matched as a
+    # whole path segment so a look-alike (e.g. src/aws/client.ts, deploy/.sshrc)
+    # is not caught — mirrors FORBIDDEN_STAGED_PATTERNS in pre_commit_safety.ts.
+    if [[ "$file" =~ (^|/)\.(aws|ssh|gnupg|netrc)(/|$) ]]; then
         blocked_files="${blocked_files}${file}"$'\n'
     fi
 done <<< "$staged_files"

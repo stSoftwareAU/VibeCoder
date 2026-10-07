@@ -160,6 +160,53 @@ Deno.test({
 
 Deno.test({
   name:
+    "pre-commit hook - blocks nested credential-store paths at any depth (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        ".aws/credentials",
+        "services/api/.aws/credentials",
+        ".netrc",
+        "pkg/.netrc",
+        ".gnupg/pubring.kbx",
+        "home/.gnupg/pubring.kbx",
+        "deploy/.ssh/config",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(run.code, 1, `expected hook to block '${path}'`);
+      assertStringIncludes(run.stdout, path);
+    }
+  },
+});
+
+Deno.test({
+  name: "pre-commit hook - allows credential-store look-alikes (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        "docs/ssh/setup.md",
+        "aws/config",
+        "src/aws/client.ts",
+        "deploy/.sshrc",
+        "pkg/netrc.md",
+        "pkg/foo.netrc.md",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(
+        run.code,
+        0,
+        `hook wrongly blocked '${path}': ${run.stdout}`,
+      );
+    }
+  },
+});
+
+Deno.test({
+  name:
     "pre-commit hook - blocks force-added files under .secrets/ regardless of extension (Issue #3957)",
   ignore: windows,
   fn: async () => {
