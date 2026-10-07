@@ -129,8 +129,16 @@ function baseBody(issueNumber: number): string {
     `🤖 Processed by: old-worker\n${marker(issueNumber)}`;
 }
 
-function viewJson(body: string, files: string[] = []): string {
-  return JSON.stringify({ body, files: files.map((path) => ({ path })) });
+function viewJson(
+  body: string,
+  files: string[] = [],
+  headRefOid: string = HEAD_SHA,
+): string {
+  return JSON.stringify({
+    body,
+    files: files.map((path) => ({ path })),
+    headRefOid,
+  });
 }
 
 // --- assemblePrBody -------------------------------------------------------
@@ -376,6 +384,156 @@ Deno.test("sync - no worker marker: skips without editing or diffing", async () 
     }
     assertEquals(ghCalls.length, 0);
     assertEquals(gitCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- issueNumberFromMarker: quoted markers in the summary (PR #3353 review) ---
+
+Deno.test("sync - a summary quoting an earlier numeric worker marker is not mistaken for this PR's issue", async () => {
+  const repoPath = await makeRepo(); // writes pr-summary-42.md only
+  try {
+    const quotedMarker = marker(7);
+    const liveBody =
+      `## Summary\n\nThe marker \`${quotedMarker}\` records the issue.\n\n` +
+      `---\n\n🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`;
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    // Pre-fix: issueNumberFromMarker took the FIRST occurrence (7), which
+    // has no pr-summary-7.md file, so the broken code would report
+    // {status: "skipped", reason: "summary file deleted"} instead.
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, "Rewritten summary text.");
+    assertStringIncludes(newBody, `Closes #${ISSUE_NUMBER}`);
+    assertEquals(newBody.includes("Closes #7"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a non-numeric placeholder marker in the summary does not block the real marker", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const placeholder = "<!-- vibe-worker-issue-N -->";
+    const liveBody =
+      `## Summary\n\nThe marker \`${placeholder}\` records the issue.\n\n` +
+      `---\n\n🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`;
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    // Pre-fix: issueNumberFromMarker stopped at the FIRST occurrence of the
+    // prefix (the placeholder), whose digits regex failed to match "N", so
+    // the broken code would report {status: "skipped", reason: "no worker
+    // marker"} instead of reaching the real marker that follows it.
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- checkout freshness vs the PR's remote head (PR #3353 review) ------------
+
+Deno.test("sync - checkout HEAD differs from the PR's remote head: skips without editing", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // A concurrent run pushed a newer head after this checkout was
+          // made — the remote's headRefOid no longer matches this
+          // checkout's local HEAD (which the git stub reports as
+          // HEAD_SHA below).
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), [], "newer-remote-head-sha"),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "checkout is not the PR head",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

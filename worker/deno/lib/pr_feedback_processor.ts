@@ -1355,7 +1355,14 @@ async function _processFeedbackWithHeartbeat(
   // was never measured, must not sync: the local summary may not be on the
   // remote yet, so the body could be rewritten to describe content the
   // reviewer cannot see.
-  // nothing pushed and no local commits left unpushed: HEAD is the remote head
+  //
+  // PR #3353 review: "nothing left unpushed" only proves this checkout is not
+  // AHEAD of the remote branch — it can still be BEHIND a concurrent
+  // CI-fix or merge-conflict run that pushed a newer head. It is NOT the
+  // same as "HEAD is the remote head". `syncPrBodyFromSummary` itself
+  // compares this checkout's `HEAD` against the PR's `headRefOid` before
+  // rebuilding, so calling it from a stale checkout is safe: it skips
+  // rather than overwriting a newer push.
   const nothingLeftToPush = !hasChanges && finalUnpushedCount === 0;
   if (
     fixBranch === undefined &&

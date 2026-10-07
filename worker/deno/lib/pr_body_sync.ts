@@ -236,21 +236,38 @@ export type SyncPrBodyOutcome =
   | { status: "updated"; issueNumber: number }
   | { status: "skipped"; reason: string };
 
-/** The `gh pr view --json body,files` shape this module reads. */
+/** The `gh pr view --json body,files,headRefOid` shape this module reads. */
 interface PrViewJson {
   body: string;
   files: Array<{ path: string }>;
+  /** The PR's current head SHA on the remote, used to detect a stale checkout. */
+  headRefOid: string;
 }
 
-/** The worker-issue number a PR body's marker names, or undefined if absent. */
+/**
+ * The worker-issue number a PR body's marker names, or undefined if absent.
+ *
+ * Reads the LAST valid occurrence, consistent with {@link
+ * summaryDigestFromBody}: the summary content opening the body may quote an
+ * earlier sync's marker verbatim (or a non-numeric placeholder such as
+ * `vibe-worker-issue-N`), and the real marker for this body always follows
+ * the footer. An invalid occurrence (non-numeric, or overflowing a safe
+ * integer) is skipped rather than stopping the search — the body's own
+ * marker can still be found after it (PR #3353 review).
+ */
 function issueNumberFromMarker(body: string): number | undefined {
-  const start = body.indexOf(WORKER_PR_MARKER_PREFIX);
-  if (start === -1) return undefined;
-  const rest = body.slice(start + WORKER_PR_MARKER_PREFIX.length);
-  const match = rest.match(/^(\d+) -->/);
-  if (!match) return undefined;
-  const issueNumber = Number(match[1]);
-  return Number.isSafeInteger(issueNumber) ? issueNumber : undefined;
+  const pattern = new RegExp(
+    `${
+      WORKER_PR_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    }(\\d+) -->`,
+    "g",
+  );
+  let last: number | undefined;
+  for (const match of body.matchAll(pattern)) {
+    const issueNumber = Number(match[1]);
+    if (Number.isSafeInteger(issueNumber)) last = issueNumber;
+  }
+  return last;
 }
 
 /** The `## Milestone` paragraph from an existing PR body, carried over verbatim. */
@@ -310,7 +327,12 @@ function extractDegradedRunSection(body: string): string {
  *   - when the live body carries a summary-digest marker (Issue #3315), that
  *     recorded digest differs from the digest of the summary at HEAD; or
  *   - for a legacy body with no digest marker, a before-push SHA is
- *     available and `git diff` shows the summary file changed since it; and
+ *     available and `git diff` shows the summary file changed since it;
+ * - this checkout's `HEAD` matches the PR's remote `headRefOid` (PR #3353
+ *   review) — a caller that only measured "nothing left unpushed" has not
+ *   shown this checkout is current, only that it is not ahead, so a
+ *   concurrent run that pushed a newer head must not be overwritten by a
+ *   rebuild from this (older) checkout's summary; and
  * - the freshly assembled body actually differs from what is live.
  */
 export async function syncPrBodyFromSummary(
@@ -346,7 +368,7 @@ export async function syncPrBodyFromSummary(
       "--repo",
       input.repo,
       "--json",
-      "body,files",
+      "body,files,headRefOid",
     ]);
     view = JSON.parse(raw) as PrViewJson;
   } catch (err) {
@@ -424,6 +446,42 @@ export async function syncPrBodyFromSummary(
     };
   }
 
+  // PR #3353 review: a caller that measured "nothing left unpushed" has only
+  // shown this checkout is not AHEAD of the remote — it can still be
+  // BEHIND. A concurrent CI-fix or merge-conflict run can push a newer head
+  // (with its own, newer summary) while this checkout's HEAD is still the
+  // one it started from. Confirm this checkout is actually the PR's current
+  // remote head before rebuilding the body from its local summary file, so
+  // a stale checkout never overwrites a newer sync with superseded content.
+  const headShaResult = await deps.runGitCommand(
+    ["rev-parse", "HEAD"],
+    { cwd: input.repoPath },
+  );
+  if (!headShaResult.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to resolve local HEAD for PR #${input.prNumber}: ${headShaResult.error.message}`,
+      ),
+    };
+  }
+  const headSha = headShaResult.value.stdout.trim();
+  if (headSha !== view.headRefOid) {
+    logger.warn(
+      "Checkout HEAD does not match the PR's remote head — skipping body sync to avoid overwriting a newer push (PR #3353 review)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        headSha,
+        remoteHead: view.headRefOid,
+      },
+    );
+    return {
+      ok: true,
+      value: { status: "skipped", reason: "checkout is not the PR head" },
+    };
+  }
+
   let extraSections = "";
   const branchEvidence = findBranchEvidenceImages(changedFiles);
   if (
@@ -448,14 +506,6 @@ export async function syncPrBodyFromSummary(
     footer,
     summaryDigest: currentDigest,
   });
-
-  const headShaResult = await deps.runGitCommand(
-    ["rev-parse", "HEAD"],
-    { cwd: input.repoPath },
-  );
-  const headSha = headShaResult.ok
-    ? headShaResult.value.stdout.trim()
-    : undefined;
 
   body = await finalisePrBodyImages(
     body,
