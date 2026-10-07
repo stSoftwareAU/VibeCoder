@@ -1,8 +1,9 @@
 /**
  * The unattended runner of the review-fleet-prs Claude Code skill (run.sh).
- * The gate and Claude are stubbed on PATH, so these pin the runner's own
- * contract: one headless Claude round per gate result, nothing when nothing
- * is ready, and one runner per machine.
+ * The gate, the worker's launch plan and the container runtime are stubbed on
+ * PATH, so these pin the runner's own contract: one headless round per gate
+ * result, run in the worker container (Issue #3293), nothing when nothing is
+ * ready, and one runner per machine.
  */
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 const fromFileUrl = (u: URL) => decodeURIComponent(u.pathname);
@@ -19,9 +20,9 @@ const READY = JSON.stringify({
 // The App token stub prints `tokenOutput` (empty = no pr_reviewer_app) and
 // exits `tokenExit`; the gate stub records its token and arguments; the
 // escalate stub records its arguments and GH_TOKEN, and exits `escalateExit`.
-// `credential` is what the claude_credential.ts stub answers for the round's
-// subscription ({"label":null} = no pool, the host login as before), and
-// `credentialRetry` what it answers once a label is excluded (Issue #3289).
+// The launch-plan stub writes a worker plan with one named volume, the log
+// directory's mount and the checkout's; the `container` stub records a run's
+// arguments and environment, then runs `$HOME/round` when there is one.
 async function fixture(
   gateOutput: string,
   gateExit = 0,
@@ -29,8 +30,6 @@ async function fixture(
   tokenExit = 0,
   escalateExit = 0,
   gateStderr = "",
-  credential = '{"label":null}',
-  credentialRetry = '{"label":null}',
 ) {
   const home = await Deno.makeTempDir();
   const bin = `${home}/bin`;
@@ -48,12 +47,19 @@ async function fixture(
     exit ${tokenExit} ;;
   *post.ts*) for a in "$@"; do case "$a" in --input=*) cat "\${a#--input=}" >> "$HOME/post-inputs"; echo >> "$HOME/post-inputs" ;; esac; done
     echo '{"posted":true,"outcome":"changes_requested"}'; exit 0 ;;
-  *claude_credential.ts*--usage-limit-log=*) for a in "$@"; do case "$a" in --usage-limit-log=*) f="\${a#--usage-limit-log=}" ;; esac; done
-    echo "$*" >> "$HOME/credential-args"
-    if grep -qi 'usage limit' "$f" 2>/dev/null; then echo true; else echo false; fi; exit 0 ;;
-  *claude_credential.ts*) echo "$*" >> "$HOME/credential-args"
-    case "$*" in *--exclude=*) printf '%s' '${credentialRetry}' ;; *) printf '%s' '${credential}' ;; esac
-    echo "claude credential pool: stub ranking" >&2; exit 0 ;;
+  *container-launch-plan*) out=""; prev=""
+    for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done
+    echo "$*" > "$HOME/plan-args"
+    [ -f "$HOME/no-plan" ] && { echo "Cannot launch: no config" >&2; exit 1; }
+    printf '%s\\000' runtime=fake-runtime image=vibe-coder:test \
+      exists=image exists=inspect exists=vibe-coder:test \
+      "ensure=$HOME/ensured" volume=vibe-work volume-resettable=vibe-work \
+      run=run run=--rm run=--name run=vibe-coder-plan \
+      run=--volume run=vibe-work:/home/vibe/auto-issue-work \
+      run=--volume "run=$HOME/logs:/home/vibe/logs" \
+      run=--volume "run=$HOME/repo:/workspace:ro" \
+      run=--workdir run=/workspace run=--env run=VIBE_BASE_DIR=/workspace \
+      run=vibe-coder:test > "$out"; exit 0 ;;
   *escalate.ts*) echo "$*" >> "$HOME/escalate-args"
     echo "GH_TOKEN=\${GH_TOKEN:-unset}" >> "$HOME/escalate-env"
     [ ${escalateExit} = 0 ] || echo "escalate: boom" >&2
@@ -64,36 +70,35 @@ esac
 echo "GH_TOKEN=\${GH_TOKEN:-} $*" > "$HOME/gate-args"
 echo '${gateOutput}'; exit ${gateExit}`,
   );
+  // Not `container`: run.sh appends the usual install directories to PATH,
+  // where a real runtime of that name may sit.
   await stub(
-    "claude",
-    `echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
-echo "BG_WAIT=\${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-unset}" >> "$HOME/claude-args"
-echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-args"
-echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
-printf '%s\\n' "$@" >> "$HOME/claude-args"`,
+    "fake-runtime",
+    `case "$1" in
+  image) [ -f "$HOME/no-image" ] && exit 1; exit 0 ;;
+  kill) echo "$*" >> "$HOME/container-kills"; exit 0 ;;
+esac
+echo "GH_TOKEN=\${GH_TOKEN:-}" > "$HOME/claude-args"
+printf '%s\\n' "$@" >> "$HOME/claude-args"
+[ -x "$HOME/round" ] && exec "$HOME/round"
+exit 0`,
   );
   return home;
 }
-
-const POOL_PRIMARY =
-  '{"label":"provider","name":"CLAUDE_CODE_OAUTH_TOKEN","value":"tok-1-secret"}';
-const POOL_SECOND =
-  '{"label":"provider-2","name":"CLAUDE_CODE_OAUTH_TOKEN","value":"tok-2-secret"}';
 
 async function run(home: string, ...args: string[]) {
   return runBash(home, [RUNNER, ...args]);
 }
 
-// Replaces the Claude stub with `body`, or removes it when `body` is null so
-// `claude` is not on PATH at all.
+// What the round inside the stub container does, or, when `body` is null,
+// no container runtime on PATH at all.
 async function claudeStub(home: string, body: string | null) {
-  const path = `${home}/bin/claude`;
   if (body === null) {
-    await Deno.remove(path);
+    await Deno.remove(`${home}/bin/fake-runtime`);
     return;
   }
-  await Deno.writeTextFile(path, `#!/bin/sh\n${body}\n`);
-  await Deno.chmod(path, 0o755);
+  await Deno.writeTextFile(`${home}/round`, `#!/bin/sh\n${body}\n`);
+  await Deno.chmod(`${home}/round`, 0o755);
 }
 
 // Runs under `bash -x`, to check the minted token is never traced.
@@ -129,21 +134,36 @@ async function recorded(home: string, file: string): Promise<string | null> {
 }
 const claudeArgs = (home: string) => recorded(home, "claude-args");
 
-Deno.test("run.sh --once reviews the gate's ready PRs in one headless Claude round", async () => {
+// The prompt the runner wrote for the (one) round.
+async function roundPrompt(home: string): Promise<string> {
+  const rounds = `${home}/logs/review-fleet-prs/rounds`;
+  for await (const entry of Deno.readDir(rounds)) {
+    return await Deno.readTextFile(`${rounds}/${entry.name}/prompt.md`);
+  }
+  throw new Error("no round directory");
+}
+
+Deno.test("run.sh --once reviews the gate's ready PRs in one headless round in the worker container", async () => {
   const home = await fixture(READY);
   const { code, output } = await run(home, "--once");
   assertEquals(code, 0, output);
   const args = await claudeArgs(home);
-  assert(args, "Claude was not started");
-  assertStringIncludes(args, "-p");
-  assertStringIncludes(args, '"repo":"owner/repo","number":7');
-  assertStringIncludes(args, "do NOT start gate.ts");
+  assert(args, "the round was not started");
+  // The worker image, run in the entrypoint's review-round mode.
+  assertStringIncludes(args, "vibe-coder:test\nreview-round\n--prompt-file\n");
+  assertStringIncludes(args, "--claude-args");
+  const prompt = await roundPrompt(home);
+  assertStringIncludes(prompt, '"repo":"owner/repo","number":7');
+  assertStringIncludes(prompt, "do NOT start gate.ts");
+  // Every path the round is given is the container's.
+  assertStringIncludes(prompt, "/workspace/.claude/skills/review-fleet-prs");
+  assertStringIncludes(prompt, "--state-dir=/home/vibe/logs/review-fleet-prs");
   // The headless session may write its round files: only an Edit rule on
   // an absolute (//-anchored) path allows that.
-  assertStringIncludes(args, "Edit(//");
-  // Reviewer agents may outlast claude -p's 600s default background wait;
-  // only the round's own alarm may cut them off.
-  assertStringIncludes(args, "BG_WAIT=0");
+  assertStringIncludes(
+    args,
+    '"Edit(//home/vibe/logs/review-fleet-prs/rounds/',
+  );
   // The log sits beside the Vibe Coder's own, not in a hidden directory.
   assertStringIncludes(
     await Deno.readTextFile(`${home}/logs/review-fleet-prs/runner.log`),
@@ -354,14 +374,14 @@ Deno.test("run.sh fails and escalates a Claude round that exits non-zero", async
   assertStringIncludes(args!, "model overloaded");
 });
 
-Deno.test("run.sh fails a round whose claude is not on PATH, rather than reporting it done", async () => {
+Deno.test("run.sh fails a round whose container runtime is not on PATH, rather than reporting it done", async () => {
   const home = await fixture(READY);
   await claudeStub(home, null);
   const { code } = await run(home, "--once");
   assertEquals(code, 1);
   const log = await runnerLog(home);
-  assertStringIncludes(log, "round failed");
-  assertStringIncludes(log, "cannot run claude");
+  assertStringIncludes(log, "round not started");
+  assertStringIncludes(log, "cannot run fake-runtime");
   assert(!log.includes("round done"), log);
   assertStringIncludes(
     (await recorded(home, "escalate-args"))!,
@@ -435,10 +455,10 @@ Deno.test("run.sh keeps auditBlocked PRs out of the Claude round's prompt (Issue
   }));
   const { code, output } = await run(home, "--once");
   assertEquals(code, 0, output);
-  const args = await claudeArgs(home);
-  assert(args, "Claude was not started");
-  assertStringIncludes(args, '"repo":"owner/repo","number":7');
-  assertEquals(args.includes("auditBlocked"), false, args);
+  assert(await claudeArgs(home), "the round was not started");
+  const prompt = await roundPrompt(home);
+  assertStringIncludes(prompt, '"repo":"owner/repo","number":7');
+  assertEquals(prompt.includes("auditBlocked"), false, prompt);
   assertEquals(
     ((await recorded(home, "post-inputs")) ?? "").includes('"number":9'),
     true,
@@ -446,108 +466,82 @@ Deno.test("run.sh keeps auditBlocked PRs out of the Claude round's prompt (Issue
 });
 
 // ---------------------------------------------------------------------------
-// Issue #3289: the round runs on the subscription the credential pool ranks
-// first, and a usage-limit round is retried once on the next one.
+// Issue #3293: the round runs in the worker container, from the worker's own
+// launch plan; the subscription and its rotation are the driver's (see
+// review_round_test.ts).
 // ---------------------------------------------------------------------------
 
-Deno.test("run.sh exports the pool's selected subscription to the Claude round and logs its label (Issue #3289)", async () => {
-  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY);
-  const result = await run(home, "--once");
-  assertEquals(result.code, 0, result.output);
-  assertStringIncludes((await claudeArgs(home))!, "OAUTH=tok-1-secret");
-  assertStringIncludes(result.output, "round on Claude subscription provider");
-  assertEquals(
-    result.output.includes("tok-1-secret"),
-    false,
-    "the token value never reaches the log",
-  );
-});
-
-Deno.test("run.sh runs the round on the host's claude login when the pool holds nothing (Issue #3289)", async () => {
+Deno.test("run.sh leaves the worker's named volumes out of the round's container (Issue #3293)", async () => {
   const home = await fixture(READY);
-  const result = await run(home, "--once");
-  assertEquals(result.code, 0, result.output);
-  assertStringIncludes((await claudeArgs(home))!, "OAUTH=unset");
-  assertEquals(result.output.includes("round on Claude subscription"), false);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = (await claudeArgs(home))!;
+  assertEquals(args.includes("vibe-work:"), false, args);
+  assertStringIncludes(args, `${home}/logs:/home/vibe/logs`);
+  assertStringIncludes(args, `${home}/repo:/workspace:ro`);
+  // The plan's ensured directories are made before the run.
+  assert((await Deno.stat(`${home}/ensured`)).isDirectory);
 });
 
-// The first call refuses with the CLI's usage-limit wording; the second
-// succeeds, as it would on a subscription with budget.
-const USAGE_LIMIT_THEN_OK =
-  `if [ ! -f "$HOME/claude-once" ]; then touch "$HOME/claude-once"
-echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
-echo "You've hit your usage limit · resets 1:50pm (UTC)"; exit 1; fi
-echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
-echo "Round done: approved owner/repo#7"`;
-
-Deno.test("run.sh retries a usage-limit round once on the next subscription, and the pass succeeds (Issue #3289)", async () => {
-  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY, POOL_SECOND);
-  await claudeStub(home, USAGE_LIMIT_THEN_OK);
-  const result = await run(home, "--once");
-  assertEquals(result.code, 0, result.output);
+Deno.test("run.sh passes the reviewer App token to the container by name only (Issue #3293)", async () => {
+  const home = await fixture(READY, 0, APP_TOKEN);
+  const { code, output } = await runTraced(home, "--once");
+  assertEquals(code, 0, output);
+  const args = (await claudeArgs(home))!;
+  assertStringIncludes(args, "--env\nGH_TOKEN\n");
+  // The value reaches the runtime's environment, never its command line,
+  // the trace or the round's files.
+  assertStringIncludes(args, "GH_TOKEN=ghs_test");
   assertEquals(
-    await recorded(home, "claude-calls"),
-    "OAUTH=tok-1-secret\nOAUTH=tok-2-secret\n",
-  );
-  assertStringIncludes(
-    result.output,
-    "round hit the usage limit on subscription provider; selecting another",
-  );
-  assertStringIncludes(
-    result.output,
-    "retrying the round once on subscription provider-2",
-  );
-  assertStringIncludes(
-    (await recorded(home, "credential-args"))!,
-    "--exclude=provider",
-  );
-  assertStringIncludes(result.output, "round done:");
-});
-
-Deno.test("run.sh does not retry a usage-limit round when no other subscription has budget (Issue #3289)", async () => {
-  const home = await fixture(
-    READY,
-    0,
-    "",
-    0,
-    0,
-    "",
-    POOL_PRIMARY,
-    '{"label":null}',
-  );
-  await claudeStub(home, USAGE_LIMIT_THEN_OK);
-  const result = await run(home, "--once");
-  assertEquals(result.code, 1, result.output);
-  assertEquals(await recorded(home, "claude-calls"), "OAUTH=tok-1-secret\n");
-  assertStringIncludes(
-    result.output,
-    "no other subscription has budget; the round stays failed",
-  );
-  assertStringIncludes(result.output, "round failed (exit 1)");
-});
-
-Deno.test("run.sh does not retry a round that failed for another reason (Issue #3289)", async () => {
-  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY, POOL_SECOND);
-  await claudeStub(
-    home,
-    `echo "OAUTH=\${CLAUDE_CODE_OAUTH_TOKEN:-unset}" >> "$HOME/claude-calls"
-echo "model overloaded" >&2; exit 3`,
-  );
-  const result = await run(home, "--once");
-  assertEquals(result.code, 1, result.output);
-  assertEquals(await recorded(home, "claude-calls"), "OAUTH=tok-1-secret\n");
-  assertEquals(result.output.includes("retrying the round"), false);
-  assertStringIncludes(result.output, "round failed (exit 3)");
-});
-
-Deno.test("run.sh never traces the subscription token, even under bash -x (Issue #3289)", async () => {
-  const home = await fixture(READY, 0, "", 0, 0, "", POOL_PRIMARY);
-  const result = await runTraced(home, "--once");
-  assertEquals(result.code, 0, result.output);
-  assertStringIncludes((await claudeArgs(home))!, "OAUTH=tok-1-secret");
-  assertEquals(
-    result.output.includes("tok-1-secret"),
+    args.split("\n").slice(1).join("\n").includes("ghs_test"),
     false,
-    "bash -x must not print the token",
+  );
+  assertEquals(output.includes("ghs_test"), false);
+  assertEquals((await roundPrompt(home)).includes("ghs_test"), false);
+});
+
+Deno.test("run.sh passes no GH_TOKEN to the container without a reviewer App (Issue #3293)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals((await claudeArgs(home))!.includes("--env\nGH_TOKEN\n"), false);
+});
+
+Deno.test("run.sh fails a pass whose worker image is not built, naming the fix (Issue #3293)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/no-image`, "");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(await runnerLog(home), "the worker image is not built");
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "--result=fail",
+  );
+});
+
+Deno.test("run.sh fails a pass whose worker launch plan fails (Issue #3293)", async () => {
+  const home = await fixture(READY);
+  await Deno.writeTextFile(`${home}/no-plan`, "");
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 1);
+  assertEquals(await claudeArgs(home), null);
+  assertStringIncludes(output, "Cannot launch: no config");
+  assertStringIncludes(
+    (await recorded(home, "escalate-args"))!,
+    "worker container plan failed",
+  );
+});
+
+Deno.test("run.sh kills a timed-out round's container by name (Issue #3293)", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exec sleep 30");
+  const { code } = await runBash(home, [RUNNER, "--once"], {
+    REVIEW_FLEET_PRS_ROUND_TIMEOUT: "1",
+  });
+  assertEquals(code, 1);
+  assertStringIncludes(
+    (await recorded(home, "container-kills"))!,
+    "kill review-fleet-prs-",
   );
 });
