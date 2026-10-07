@@ -32,10 +32,15 @@
  *     configured, no workflow loaded, an existing open issue already
  *     carries the finding id, or a valid `best-practice-ignore` waiver
  *     covers it; a detector throw fails the run without invoking the
- *     scan; BP-LINTER findings remain severity:high.
+ *     scan; BP-LINTER findings remain severity:high; the default
+ *     `checkAwsEmulatorFn` runs the real detector against the repo
+ *     checkout.
  *   - hasAwsEmulatorWaiver: rejects an evidence path escaping the repo
- *     root, and skips (without throwing) an evidence path that does not
- *     exist on disk.
+ *     root or an absolute evidence path, skips (without throwing) an
+ *     evidence path that does not exist on disk, and throws naming the
+ *     path when a read fails for a reason other than NotFound.
+ *   - buildAwsEmulatorFinding: lists at most 50 evidence paths, then a
+ *     `… and N more` line.
  */
 
 import {
@@ -50,6 +55,7 @@ import {
   AWS_EMULATOR_FINDING_ID,
   BEST_PRACTICES_ISSUE_TITLE,
   bucketSlug,
+  buildAwsEmulatorFinding,
   createBestPracticesTemplate,
   hasAwsEmulatorWaiver,
   isLanguageBucket,
@@ -65,6 +71,7 @@ import type {
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
 import type { RepoLanguages } from "../lib/language_detector.ts";
 import type { AwsEmulatorCheckResult } from "../lib/aws_emulator_in_ci_check.ts";
+import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import {
   _resetSuppressionAuthorAllowlist,
   _resetSuppressionCommitAuthors,
@@ -214,7 +221,7 @@ function stubNoAws(): Promise<AwsEmulatorCheckResult> {
   });
 }
 
-/** Spy logger collecting `info()` messages (and their context) in call order. */
+/** Spy logger collecting `info()` messages in call order. */
 function spyLogger(): { logger: Logger; infoMessages: string[] } {
   const infoMessages: string[] = [];
   const noop = () => {};
@@ -2017,6 +2024,139 @@ Deno.test(
     try {
       const result = await hasAwsEmulatorWaiver(workDir, ["nope.tf"]);
       assertEquals(result, false);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an absolute evidence path rejects",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(workDir, ["/etc/passwd"]),
+        Error,
+        "is absolute",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an unreadable evidence path other than NotFound throws naming the path",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/infra.tf`);
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(workDir, ["infra.tf"]),
+        Error,
+        "cannot read AWS-evidence file infra.tf",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// buildAwsEmulatorFinding (Issue #3368)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "buildAwsEmulatorFinding - lists 50 evidence paths then '… and N more'",
+  () => {
+    const awsEvidence = Array.from(
+      { length: 52 },
+      (_, i) => `a${i}.tf`,
+    );
+    const finding = buildAwsEmulatorFinding({
+      usesAws: true,
+      awsEvidence,
+      emulatorConfigured: false,
+      workflowsLoaded: true,
+    });
+    assertStringIncludes(finding.body, "`a49.tf`");
+    assert(!finding.body.includes("`a50.tf`"));
+    assertStringIncludes(finding.body, "- … and 2 more");
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - exactly 50 evidence paths has no '… and more' line",
+  () => {
+    const awsEvidence = Array.from(
+      { length: 50 },
+      (_, i) => `a${i}.tf`,
+    );
+    const finding = buildAwsEmulatorFinding({
+      usesAws: true,
+      awsEvidence,
+      emulatorConfigured: false,
+      workflowsLoaded: true,
+    });
+    assert(!/- … and \d+ more/.test(finding.body));
+  },
+);
+
+Deno.test(
+  "runTask - the default checkAwsEmulatorFn runs the real detector against the repo checkout",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      const repo = "org/repo";
+      const repoPath = repoCheckoutPath(workDir, repo);
+      await Deno.mkdir(`${repoPath}/.github/workflows`, { recursive: true });
+      await Deno.writeTextFile(
+        `${repoPath}/Cargo.toml`,
+        '[dependencies]\naws-sdk-s3 = "1"\n',
+      );
+      await Deno.writeTextFile(
+        `${repoPath}/.github/workflows/ci.yml`,
+        "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n" +
+          "    steps:\n      - run: echo hi\n",
+      );
+
+      const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+      const { gh, calls } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [900],
+        knownOpen: [],
+        issueView: { number: 50, body: wrapperBody },
+        fileMissingLinterReturnsNumber: 900,
+      });
+
+      const tpl = createBestPracticesTemplate({
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        checkLinterInCIFn: stubLinterConfigured,
+        runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      });
+
+      const result = await tpl.runTask({
+        repo,
+        workDir,
+        idleTaskIssueNumber: 50,
+      });
+
+      assert(result.ok);
+      const createCalls = calls.filter((c) =>
+        c.args[0] === "issue" && c.args[1] === "create"
+      );
+      assertEquals(createCalls.length, 1);
+
+      const created = readIssueCreate(calls);
+      assert(created !== null);
+      assert(created!.labels.includes("severity:medium"));
+      assertStringIncludes(
+        created!.body,
+        `<!-- finding-id: ${AWS_EMULATOR_FINDING_ID} -->`,
+      );
+      assertStringIncludes(created!.body, "Cargo.toml");
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }

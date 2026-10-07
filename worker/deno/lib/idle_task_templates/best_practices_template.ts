@@ -572,7 +572,7 @@ function buildLinterGateFinding(
  * Returns `null` on any gh failure — the caller logs the issue in the
  * summary and continues.
  */
-async function fileMissingCIGateIssue(
+async function filePreFiledFinding(
   repo: string,
   bucket: string,
   finding: PreFiledFinding,
@@ -1027,7 +1027,7 @@ export function createBestPracticesTemplate(
             ghCommandFn,
             dedupAuthors,
             fileFn: () =>
-              fileMissingCIGateIssue(
+              filePreFiledFinding(
                 opts.repo,
                 bucket,
                 buildLinterGateFinding(bucket, check),
@@ -1070,7 +1070,7 @@ export function createBestPracticesTemplate(
           ghCommandFn,
           dedupAuthors,
           fileFn: () =>
-            fileMissingCIGateIssue(
+            filePreFiledFinding(
               opts.repo,
               bucket,
               buildAwsEmulatorFinding(aws),
