@@ -14,32 +14,32 @@ detailed usage patterns below.
 
 ## 📋 Table of Contents
 
-- [Start here: label flows](#-start-here-label-flows)
-- [Creating an Issue](#creating-an-issue)
-- [PR (Pull Request) Requirements by Issue Type](#pr-requirements-by-issue-type)
+- [Start here: label flows](#%EF%B8%8F-start-here-label-flows)
+- [Creating an Issue](#-creating-an-issue)
+- [PR (Pull Request) Requirements by Issue Type](#-pr-requirements-by-issue-type)
 - [PR Summary File](#-pr-summary-file-docsarchivepr-summariespr-summary-issuemd)
-- [Auto Squash Merge](#auto-squash-merge)
-- [Skipping PR Reviewer Requests](#skipping-pr-reviewer-requests)
-- [Work-On Label (External Issues)](#signaling-work-on-external-issues-work-on-label)
-- [Ignoring Open PRs](#ignoring-open-prs-working-despite-pending-prs)
-- [Clarification Phase](#clarification-phase-handling-unclear-or-complex-issues)
-- [Issue Refinement Phase](#issue-refinement-phase-collaborative-issue-improvement)
-- [Failed Issue Handling](#failed-issue-handling)
+- [Auto Squash Merge](#-auto-squash-merge)
+- [Skipping PR Reviewer Requests](#%EF%B8%8F-skipping-pr-reviewer-requests)
+- [Work-On Label (External Issues)](#%EF%B8%8F-signaling-work-on-external-issues-work-on-label)
+- [Ignoring Open PRs](#-ignoring-open-prs-working-despite-pending-prs)
+- [Clarification Phase](#-clarification-phase-handling-unclear-or-complex-issues)
+- [Issue Refinement Phase](#%EF%B8%8F-issue-refinement-phase-collaborative-issue-improvement)
+- [Failed Issue Handling](#%EF%B8%8F-failed-issue-handling)
 - [Worker Escalation via `needs-human`](#-worker-escalation-via-needs-human)
-- [Question Clarification](#question-clarification)
-- [Partial Answers on Timeout](#partial-answers-on-timeout)
-- [Rate-Limit Circuit Breaker](#rate-limit-circuit-breaker)
-- [One Issue per Repository/Milestone](#one-issue-per-repositorymilestone)
-- [Self-Healing Disk Space](#self-healing-disk-space)
-- [Claude CLI (Command-Line Interface) Auto-Update](#claude-cli-auto-update)
-- [Health Reporting](#health-reporting)
-- [Feature Availability](#feature-availability)
-- [Reviewing and Requesting Fixes](#reviewing-and-requesting-fixes)
-- [Reaction System](#reaction-system)
-- [Security Scans (Idle)](#-security-scans-idle)
-- [Automatic Spelling Check Fixes](#automatic-spelling-check-fixes)
+- [Question Clarification](#-question-clarification)
+- [Partial Answers on Timeout](#-partial-answers-on-timeout)
+- [Rate-Limit Circuit Breaker](#-rate-limit-circuit-breaker)
+- [One Issue per Repository/Milestone](#-one-issue-per-repositorymilestone)
+- [Self-Healing Disk Space](#-self-healing-disk-space)
+- [Claude CLI (Command-Line Interface) Auto-Update](#-claude-cli-auto-update)
+- [Health Reporting](#-health-reporting)
+- [Feature Availability](#-feature-availability)
+- [Reviewing and Requesting Fixes](#-reviewing-and-requesting-fixes)
+- [Reaction System](#-reaction-system)
+- [Security Scans (Idle)](#%EF%B8%8F-security-scans-idle)
+- [Automatic Spelling Check Fixes](#-automatic-spelling-check-fixes)
 - [Work Prioritisation Order](#-work-prioritisation-order)
-- [Milestone Workflow](#milestone-workflow-grouped-issues)
+- [Milestone Workflow](#-milestone-workflow-grouped-issues)
 
 ## 📝 Creating an Issue
 
@@ -198,7 +198,7 @@ getting good results. It does three things:
    the worker posts an escalation comment asking a trusted human to add the
    `planning` label so the issue can be broken into smaller sub-issues. The
    worker does not add `planning` itself — see
-   [Worker Label Policy](../README.md#-supported-labels).
+   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
 3. **Is it too large for a single PR?** If the issue is clear but too complex
    for one implementation, the worker posts an escalation comment asking a
    trusted human to add the `planning` label — once added, the planning workflow
@@ -610,7 +610,7 @@ runs when _either_ the interval has elapsed _or_ the installed version is below
 a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
-(see [Configuration](CONFIGURATION.md#-minimum-version-floor)). The
+(see [Configuration](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor)). The
 default floor pins `claude` to `2.1.280` — the oldest release that resolves the
 `opus` alias to Opus 5.5, the tier every substantive phase requests
 (Issue #2560).
@@ -852,7 +852,7 @@ run in a **maintenance lane** beside the Priority-2 pool instead of ahead of it,
 each leasing its repository from the pool's in-flight registry so no slot and no
 pass ever write the same clone. A 30-minute CI fix therefore runs concurrently
 with issue work rather than idling every slot until it finishes. See
-[Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
+[Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
 
 The Priority-1.6 branch-update pass takes no lease; it works in its own linked
 worktree under `${WORK_DIR}/worktrees/pr-branch-update/<repo>` instead, so it

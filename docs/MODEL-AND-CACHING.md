@@ -11,7 +11,7 @@ the worker.
   under `claude`, `codex`, `gemini` and `deepseek`
 - [Model Selection](#model-selection)
   - [Phase-Specific Defaults](#phase-specific-defaults)
-  - [Model/effort precedence chain](#-modeleffort-precedence-chain)
+  - [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain)
   - [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)
   - [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase)
   - [Codex per-phase routing](#-codex-per-phase-routing)
@@ -99,7 +99,7 @@ a section without a marker, fails `deno test`.
 | [Phase-Specific Defaults](#phase-specific-defaults) | ✅ | ❌ | ❌ | ❌ | `CODEX_` / `GEMINI_` / `DEEPSEEK_PHASE_MODEL_DEFAULTS` cover the same phase keys with their own model ids |
 | [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
-| [Model/effort precedence chain](#-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
+| [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
 | [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
 | [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
@@ -2581,7 +2581,7 @@ costed at the Fable 5 row. Both rows are carried for exactly that reason: no
 configuration changes on either side of the flip. **Which CLI a run gets has two
 answers**: in the container the image is the update mechanism, so
 `container/tools.json` is the lever; on a host it is the
-[minimum-version floor](CONFIGURATION.md#-minimum-version-floor).
+[minimum-version floor](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor).
 
 ##### Which CLI version actually serves 5.1 (Issue #1362)
 
@@ -2814,7 +2814,7 @@ the table, or a non-Claude id the worker does not route to such as `gpt-4.1` or
 bound and it is named in `unpricedModels`: an over-estimate an operator can
 see, never a `$0`. A run whose usage could not be parsed at all has no tokens
 to charge, so it is counted in `unknownUsageInvocations` instead
-([above](#non-claude-providers-unknown-never-zero)).
+([above](#non-claude-providers-measured-or-unknown--never-zero)).
 
 `formatSummary` prints both an `Unpriced models` line and a `WARNING:` line for
 malformed log lines, and the spend-ceiling hook logs a `[SPEND_CEILING]` line

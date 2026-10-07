@@ -168,7 +168,7 @@ answer is enforced.
 
 Every control, the file that implements it, and the test that proves it. A
 control with no enforcing test names a gap id instead, and that gap is listed
-in [Known gaps](#-known-gaps--controls-with-no-enforcing-test). Both this table
+in [Known gaps](#%EF%B8%8F-known-gaps--controls-with-no-enforcing-test). Both this table
 and that list are machine-checked by
 `worker/deno/tests/threat_model_docs_test.ts`, which asserts every path cited
 here exists.
@@ -345,7 +345,7 @@ visible rather than assumed away.
 
 - **A new inbound surface** — anything new that the worker reads from GitHub or
   from a clone — needs a row in
-  [Attacker capabilities](#-attacker-capabilities-per-surface) and an attack
+  [Attacker capabilities](#%EF%B8%8F-attacker-capabilities-per-surface) and an attack
   path, before it ships.
 - **A new control** needs a row in
   [Traceability](#-traceability--control--code--test) naming its code and its
