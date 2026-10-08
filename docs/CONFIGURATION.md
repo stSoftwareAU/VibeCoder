@@ -403,7 +403,7 @@ lets the gate's Dependabot upkeep merge an already-clean PR with
 `gh pr merge --auto` and arm auto-merge, and lets the skill bring an approved
 fleet PR's branch up to date (`update-branch`); Workflows write lets it merge
 Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
-[the skill doc](../.claude/skills/review-fleet-prs/SKILL.md#as-a-github-app)
+[the skill doc](../.claude/skills/review-fleet-prs/references/running-unattended.md#as-a-github-app)
 for details.
 
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
