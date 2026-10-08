@@ -34,7 +34,7 @@ export const MAX_REVIEWER_NO_CHANGE_ATTEMPTS = 2;
  * `pr_review` only for a CHANGES_REQUESTED review from an authorised
  * commenter or trusted review bot, which is how the fleet reviewer App posts
  * its findings (`gh pr review --request-changes`,
- * `.claude/skills/review-fleet-prs/post.ts`); the App's login is not known to
+ * `.claude/skills/review-fleet-prs/scripts/post.ts`); the App's login is not known to
  * the worker (`pr_reviewer_app` is read only by that skill), so the review
  * state, not the login, decides. Inline (`review`) and top-level (`issue`)
  * comments keep the neutral reply.
