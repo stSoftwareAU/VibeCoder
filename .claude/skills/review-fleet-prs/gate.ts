@@ -235,8 +235,8 @@ export function noTestAdded(files: PrFile[], kind: ReadyPr["kind"]): boolean {
 // comment-only review counts only when this skill posted it (the owner's
 // own comments do not). A review carrying the skill's marker counts
 // whichever login posted it: the skill runs on several hosts (a laptop as
-// the gh user, GRQ-25 as the reviewer App), and one host's review must not
-// be repeated by another (Issue #3225).
+// the gh user, an always-on host as the reviewer App), and one host's
+// review must not be repeated by another (Issue #3225).
 function countsAsReview(r: Review, reviewer: string): boolean {
   if ((r.body ?? "").includes(REVIEW_MARKER)) return true;
   return sameLogin(r.author?.login, reviewer) &&
