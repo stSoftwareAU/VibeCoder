@@ -73,8 +73,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // override reaches the resolver and is written to.
   "tests/log_dir_launcher_test.ts",
   "tests/loop_supervisor_test.ts",
-  // Issue #2855: spawns .claude/skills/review-fleet-prs/run.sh under a
-  // stubbed PATH, the same shape as run_sh_launcher_test.ts below.
+  // Issue #2855: spawns .claude/skills/review-fleet-prs/scripts/run.sh under
+  // a stubbed PATH, the same shape as run_sh_launcher_test.ts below. It also
+  // runs the old-path forwarding shim at the skill root (Issue #3299).
   "tests/review_fleet_prs_runner_test.ts",
   "tests/run_sh_launcher_test.ts",
   "tests/run_sh_upgrade_test.ts",
