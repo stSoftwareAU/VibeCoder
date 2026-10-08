@@ -2,114 +2,180 @@
 
 ## Summary
 
-Implement banded per-model pricing for Claude Haiku 5.5 with per-request prompt-token-count thresholds. Requests with ≤100k prompt tokens use cheaper rates; requests with >100k prompt tokens use higher rates. Introduces `BandedRate` interface and optional `ModelPricing.lowerBand` field to support dual-rate models.
+Closes #3399
 
-## Design
+Adds banded pricing for Claude Haiku 5.5. Requests with a prompt of up to 100k
+tokens use the ≤100k rates (0.10 / 0.50 / 0.125 / 0.01 USD per million tokens).
+Larger requests, and estimates built from run totals only, use the >100k rates
+(0.50 / 2.50 / 0.625 / 0.05). Haiku 4.5 stays flat at 1 / 5 / 1.25 / 0.10. The
+`haiku` alias now resolves to Haiku 5.5.
 
-### Dual-Rate Structure
-- **Top-level rates** (conservative, >100k band): `inputPerMillion: 0.50`, `outputPerMillion: 2.50`, `cacheWritePerMillion: 0.625`, `cacheReadPerMillion: 0.05`
-- **Lower band** (≤100k band): `inputPerMillion: 0.10`, `outputPerMillion: 0.50`, `cacheWritePerMillion: 0.125`, `cacheReadPerMillion: 0.01`
-- **Threshold**: 100,000 prompt tokens per request (inclusive)
+- [x] `BandedRate` plus `ModelPricing.lowerBand`, and a `HAIKU_5_5_PRICING` row
+- [x] `lookupModelPricing` and the version parse send Haiku 5.5+ (including
+      dated ids) to the banded row, and the `haiku` alias to the current Haiku
+- [x] `estimateCost`, `estimateCostWithUpperBound` and `costFor` choose a band
+      per request, falling back to >100k when the prompt size is unknown
+- [x] Production callers (`cost_estimate.ts`, `credit_tracker.ts`) pass an
+      explicit `undefined`
+- [x] Tests, docs and the quality gate
 
-### Key Invariant: Upper-Bound Pricing Safety
-- `UNPRICED_UPPER_BOUND_PRICING` uses `Math.max` over **only top-level fields**, keeping `lowerBand` invisible
-- Readers ignoring `lowerBand` (including old code and external systems) over-estimate rather than under-estimate costs
-- Prevents silent degradation when code paths don't implement banding
+## Spec
 
-### Optional Parameter Pattern
-- `estimateCost()`, `estimateCostWithUpperBound()`, and `costFor()` accept optional `promptTokensPerRequest` parameter
-- When provided and ≤100k, selects cheaper `lowerBand` rates; when >100k or undefined, uses conservative top-level rates
-- Undefined argument defaults to conservative band (safe fallback)
+### Intent and Rationale
 
-## Files Changed
+Haiku 5.5 is priced in two bands keyed on the size of a single request's
+prompt. The worker's cost figures have to reflect that, and when the prompt
+size is unknown they must over-estimate, never under-estimate.
 
-### `worker/deno/lib/token_usage.ts`
-1. **Lines 48-56**: Added `lowerBand?: BandedRate` optional field to `ModelPricing` interface with docs explaining the invariant
-2. **Lines 59-71**: New `BandedRate` interface with `maxPromptTokens` threshold and four cost-per-million fields
-3. **Lines 183-206**: New `HAIKU_5_5_PRICING` constant with top-level rates and nested `lowerBand` with cheaper rates
-4. **Line 378**: Updated `TIER_CURRENT_PRICING["haiku"]` to reference `HAIKU_5_5_PRICING` (bare `haiku` alias now costs latest Haiku)
-5. **Line 435**: Added a single `["claude-haiku-5-5", HAIKU_5_5_PRICING]` row to `MODEL_PRICING`; there is no dated-id row — `claude-haiku-5-5-20261001` resolves through the substring/version lookup
-6. **Lines 594-601**: Added version constants `HAIKU_5_5_MIN_MAJOR = 5` and `HAIKU_5_5_MIN_MINOR = 5`
-7. **Lines 658-661**: Updated `lookupModelPricing` docstring to mention Haiku 5.5 banding classification
-8. **Lines 688-692**: Added haiku-specific version branch: if major ≥5 and minor ≥5, return `HAIKU_5_5_PRICING` (banded); else return `HAIKU_PRICING`
-9. **Lines 709-719**: Updated `estimateCost` signature with optional `promptTokensPerRequest?: number` parameter
-10. **Lines 744-762**: Updated `estimateCostWithUpperBound` signature and pass optional parameter to `costFor`
-11. **Lines 777-796**: Updated `costFor` function to:
-    - Accept optional `promptTokensPerRequest` parameter
-    - Apply band selection logic: if `pricing.lowerBand` exists, promptTokensPerRequest is defined, and ≤maxPromptTokens, use lowerBand; else use top-level rates
-    - Return selected band's cost calculation
+### Essential Design Decisions
 
-### `worker/deno/tests/token_usage_test.ts`
-1. **Lines 250-262**: New test asserting `lookupModelPricing("claude-haiku-5-5")` returns both top-level rates (0.50/2.50) and lowerBand rates (0.10/0.50)
-2. **Lines 313-319**: Updated bare `haiku` alias test to expect Haiku 5.5 rates (0.50/2.50 input/output) with comment explaining the change
-3. **Lines 488-599**: 7 new tests in the "Haiku 5.5 banded pricing" section (the 8th new test is the `lookupModelPricing` test at line 250, outside the section):
-   - **50k prompt tokens** → uses ≤100k band (cheaper)
-   - **Exactly 100k prompt tokens** → uses ≤100k band (boundary inclusive)
-   - **150k prompt tokens** → uses >100k band (conservative)
-   - **No promptTokensPerRequest argument** → defaults to conservative >100k band
-   - **estimateCostWithUpperBound without prompt-size argument** → defaults to conservative >100k band
-   - **Haiku 4.5/4.9 with optional argument** → unaffected (no lowerBand)
-   - **Sonnet with optional argument** → unaffected (no lowerBand)
+- **Top-level rates are the >100k band; the cheaper band sits in
+  `lowerBand`.** Any reader that ignores `lowerBand` therefore over-estimates.
+  This includes `UNPRICED_UPPER_BOUND_PRICING`'s `Math.max` over top-level
+  fields, which still produces a true ceiling.
+- **`promptTokensPerRequest: number | undefined` is required, not optional.**
+  Under CODING-STANDARDS ("A new argument or behaviour reaches every caller that
+  needs it"), a behaviour-carrying parameter must not have a default that turns
+  the behaviour off. Each totals-only caller passes `undefined` explicitly,
+  with a comment explaining why.
+- **The `haiku` alias now resolves to Haiku 5.5.** The issue requires it: "The
+  `haiku` alias resolves to the current Haiku".
+- **The 100k boundary is inclusive** (`<=`), which matches the issue's "≤100k".
 
-## Test Plan
+```mermaid
+flowchart LR
+    U[usage + model + promptTokensPerRequest] --> L[lookupModelPricing]
+    L --> B{lowerBand && size known && size <= 100k?}
+    B -- yes --> LB["lowerBand rates (≤100k)"]
+    B -- no --> TOP["top-level rates (>100k / flat)"]
+```
 
-- Removed from `worker/deno/tests/token_usage_test.ts` (`lookupModelPricing resolves bare 'sonnet'/'haiku' aliases`): `assertEquals(haiku?.inputPerMillion, 1);` — #3399 requires the `haiku` alias to resolve to the current Haiku (Haiku 5.5), so the old Haiku 4.5 rate is untrue; replaced in place by `assertEquals(haiku?.inputPerMillion, 0.50);`
-- Removed from `worker/deno/tests/token_usage_test.ts` (`lookupModelPricing resolves bare 'sonnet'/'haiku' aliases`): `assertEquals(haiku?.outputPerMillion, 5);` — same reason; replaced in place by `assertEquals(haiku?.outputPerMillion, 2.50);`
-- The Haiku 4.5 flat rate stays pinned by the unmodified `lookupModelPricing returns pricing for Haiku 4.5` test and the new `estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)` test.
-- `deno test --allow-all tests/token_usage_test.ts` passes 59/59.
+### Undiscoverable Facts
 
-## TDD Compliance
+- Credit-tracker entries are built from `claude_runner.ts`
+  (`const tokenUsage = agentOutput?.usage ?? providerUsage.usage;`), which is
+  the usage of one whole `claude -p` invocation summed over all of its API
+  requests. `entry.inputTokens` also leaves out cache reads, so it is not one
+  request's prompt size, and the >100k rate is the correct choice there.
+- `parseClaudeModernVersion` accepts only majors 4 and 5, so
+  `major >= 5 && minor >= 5` matches Haiku 5.5 and later 5.x minors exactly.
 
-### Tests Go Red Without Implementation
-Flipped the band selection condition in `costFor` to verify tests fail without correct logic:
-- **Result with flipped logic**: 17 tests failed, 42 passed
-- **Failing tests included**:
-  - All 8 new Haiku 5.5 banded pricing tests
-  - Several existing tests that call `costFor` without banding support (Sonnet, Fable, Opus 4.8)
-- **After restoring correct implementation**: 59 tests pass, 0 failed
+## Evidence
 
-### Branch Outcomes
-- Haiku 5.5 requests with ≤100k prompt tokens: band selection logic selects lowerBand → cheaper rates applied (test: 50k and 100k prompt cases)
-- Haiku 5.5 requests with >100k prompt tokens: band selection logic selects top-level → conservative rates applied (test: 150k prompt case)
-- No promptTokensPerRequest argument: band selection defaults to top-level → conservative fallback (test: no-argument cases)
-- Haiku 4.5/4.9 with optional argument: no lowerBand field → optional parameter ignored (test: legacy models)
-- Sonnet with optional argument: no lowerBand field → optional parameter ignored (test: `estimateCost for Sonnet ignores a promptTokensPerRequest argument`, which uses `claude-sonnet-4-6` — the legacy Sonnet 4.x row, not Sonnet 5)
+Backend-only change with no visual surface. The evidence is the unit tests
+listed below, and a `./quality.sh < /dev/null` run that ended in
+`Result: PASSED (with skipped checks)`. The one skip was config integration,
+which needs `.config.json`.
 
-Flip verification confirmed each outcome is reached and essential to tests passing.
+- #3399: Banded Claude Haiku 5.5 pricing in token_usage (≤100k / >100k prompt tokens)
 
-## Docs Sweep
-
-**Docs sweep** — grep: `ModelPricing`, `lookupModelPricing`, `estimateCost`, `estimateCostWithUpperBound`, `costFor`, `HAIKU_PRICING`, "Haiku uses a single rate", `haiku`/`Haiku` in `README.md`, `docs/` (excluding `docs/archive/`) and `*/README.md`; section: `docs/MODEL-AND-CACHING.md#model-pricing`; updated: `docs/MODEL-AND-CACHING.md`
-
-- `ModelPricing`, `costFor`, `HAIKU_PRICING` and "Haiku uses a single rate" have no hits outside `docs/archive/` and `docs/audits/`; `lookupModelPricing` appears only in `docs/MODEL-AND-CACHING.md`'s Model Pricing section (Opus 5.5 and Fable 5.1 paragraphs), whose sentences stay true.
-- The Model Pricing section's rate table, which says its rows mirror `MODEL_PRICING`, had no Haiku 5.5 row — added both Haiku 5.5 bands, plus a paragraph explaining the banded row, the conservative top-level rates, the optional per-request prompt size, and that the run-stats cost block and credit tracker (which pass no prompt size) cost Haiku 5.5 at the >100k rate.
-- Other `haiku` hits (`README.md`, `docs/CONFIGURATION.md`, `docs/IDLE-TASK-FRAMEWORK.md`, `docs/INTERNALS.md`, the rest of `docs/MODEL-AND-CACHING.md`) describe tier routing, context windows and cache minimums, which this diff does not change.
-
-## Verification
-
-- **Quality gate**: Passing (all linter/format/type/test checks)
-- **Branch outcomes**: All 8 outcomes enumerated and verified via flip-test
-- **Implementation matches tests**: Restored implementation passes all 59 tests (8 new + 51 existing)
-- **UNPRICED_UPPER_BOUND_PRICING**: Top-level rates only, confirmed by code inspection
-
-## References
-
-Issue #3399: Implement banded Claude Haiku 5.5 pricing with per-request prompt-token-count bands.
+Docs sweep: grepped `estimateCost`, `lowerBand`, `HAIKU_PRICING`,
+`haiku-4-5`, "current Haiku", "latest Haiku" and the `haiku` alias across `*.md`
+and `worker/deno/lib/*.ts`.
+- `docs/MODEL-AND-CACHING.md:2470`: Haiku 5.5 rows added to the price table.
+- `docs/MODEL-AND-CACHING.md:2553`: new paragraph on the bands, the required
+  parameter, and the `undefined` callers.
+- `docs/MODEL-AND-CACHING.md:173` and `:869`: these describe alias passing
+  only, so they are still true.
+- `docs/IDLE-TASK-FRAMEWORK.md:2026`, `:2118` and `:2132`: these list the alias
+  names only, so they are still true.
+- `worker/deno/lib/token_usage.ts:184`, `:427` and `:430`: updated in this diff
+  to name Haiku 5.5 as the current Haiku.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — A 50k-prompt-token Haiku 5.5 request is costed at the ≤100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
-- **met** — A 150k-prompt-token Haiku 5.5 request is costed at the >100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
-- **met** — A run-total-only Haiku 5.5 estimate uses the >100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399); worker/deno/tests/token usage test.ts::token usage - estimateCostWithUpperBound without a prompt-size argument uses the conservative >100k Haiku` — reviewer: met
-- **partial** — claude-haiku-4-5 costs are unchanged (existing tests in token usage test.ts still pass unmodified). — evidence: `worker/deno/tests/token usage test.ts::token usage - lookupModelPricing returns pricing for Haiku 4.5 (unmodified); worker/deno/lib/token usage.ts keeps the claude-haiku-4-5 → HAIKU PRICING row` — reviewer: partial — reason: claude-haiku-4-5 rates and their test are unchanged, but the existing bare-alias test (lookupModelPricing resolves bare 'sonnet'/'haiku' aliases) was changed from 1/5 to 0.50/2.50, because the issue moves the haiku alias to Haiku 5.5
-- **met** — Opus / Sonnet / Fable pricing is unchanged. — evidence: `worker/deno/lib/token usage.ts (diff changes no Opus/Sonnet/Fable pricing row or branch); existing Opus/Sonnet/Fable tests in worker/deno/tests/token usage test.ts are unmodified, e.g. token usage - lookupModelPricing returns pricing for Opus 4.8 (Issue #2389)` — reviewer: met
+- A 50k-prompt request uses the ≤100k rates. reviewer: met
+- A 150k-prompt request uses the >100k rates. reviewer: met
+- A run-total-only estimate uses the >100k rates. reviewer: met
+- `claude-haiku-4-5` costs are unchanged. reviewer: partial. The numeric costs
+  are unchanged, but the existing tests were edited:
+  - every call gained `, undefined` because the parameter is required;
+  - the alias test now expects Haiku 5.5 rates, because the issue requires the
+    `haiku` alias to resolve to the current Haiku.
+- Opus, Sonnet and Fable pricing are unchanged. reviewer: met
+- The required (not optional) parameter. reviewer: unrequested. It is required
+  by the CODING-STANDARDS rule cited above.
+- Docs prose in `docs/MODEL-AND-CACHING.md`. reviewer: unrequested. The
+  reviewer judged it benign, and it is owed under "A Code Change Owes a Docs
+  Change".
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — A new argument or behaviour reaches every caller that needs it: promptTokensPerRequest is an optional parameter, and leaving it out silently picks the >100k band. No production caller passes it (worker/deno/lib/cost estimate.ts:265, worker/deno/lib/credit tracker.ts:514, :543), so production never r — evidence: `worker/deno/lib/token usage.ts:720` — reason: NOT fixed in this diff, so neither accepted reason is true. The parameter is still optional on lines this diff adds (token usage.ts:720, :755, costFor). The fix is a code change this turn cannot make: make it a required number undefined and have each caller pass it explicitly. The PR should not be r
-- **violation** — Every outcome of a branch you add needs a test that reaches it: no test uses a Haiku 5.0–5.4 id, so removing the parsed.minor >= HAIKU 5 5 MIN MINOR half of the version check still leaves the suite green — evidence: `worker/deno/lib/token usage.ts:689` — reason: NOT fixed in this diff, so neither accepted reason is true. The branch was added by this diff and its Haiku 5.0–5.4 → HAIKU PRICING outcome still has no test. The fix is a new test asserting that e.g. claude-haiku-5-4 resolves to the flat Haiku 4.5 rates, which this turn cannot write. The PR should
-- **clean** — Australian English in new comments and test names, conservative fail-safe default (top-level fields are the >100k band so readers that ignore lowerBand over-estimate), doc comments state the run-total fallback as the issue requires, inclusive 100k boundary tested, no edits to Opus/Sonnet/Fable rows
+- `worker/deno/lib/credit_tracker.ts:516`: the reviewer said the
+  per-invocation cost hard-codes `undefined` where `entry.inputTokens` is
+  available. Investigation showed that value is invocation-wide usage summed
+  over many API requests, and it leaves out cache reads (see Undiscoverable
+  Facts). Passing `undefined` (the conservative >100k rate) is therefore
+  correct. The comment now states this. reason: fixed in this diff
+- The reviewer's optional note on a hypothetical Haiku 6.x was already
+  addressed by the comment at `worker/deno/lib/token_usage.ts:689-690`: the parser
+  never yields major 6. reason: fixed in this diff
+
+## Test Plan
+
+Ran `deno task test:unit` on `tests/token_usage_test.ts`,
+`tests/unpriced_spend_3870_test.ts`, `tests/cost_estimate_test.ts` and
+`tests/credit_tracker_test.ts`: 138 passed, 0 failed. Then ran the full
+`./quality.sh < /dev/null`, which passed.
+
+New tests in `worker/deno/tests/token_usage_test.ts`:
+
+- `token_usage - lookupModelPricing returns pricing for Haiku 5.5 (Issue #3399)` (bare and dated ids)
+- `token_usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)`
+- `token_usage - estimateCost treats exactly 100k prompt tokens as inside the <=100k band (Issue #3399)`
+- `token_usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)`
+- `token_usage - estimateCost with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399)`
+- `token_usage - estimateCostWithUpperBound with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399)`
+- `token_usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)`
+- `token_usage - lookupModelPricing keeps Haiku 5.0-5.4 on the flat Haiku 4.5 rate (Issue #3399)`
+- `token_usage - estimateCost for Sonnet ignores a promptTokensPerRequest argument (no lowerBand) (Issue #3399)`
+
+Removed assertions, quoted verbatim. Each became 0.50 and 2.50 in the alias
+test, because the `haiku` alias now resolves to Haiku 5.5:
+
+```text
+-  assertEquals(haiku?.inputPerMillion, 1);
+-  assertEquals(haiku?.outputPerMillion, 5);
+```
+
+In `token_usage_test.ts` and `unpriced_spend_3870_test.ts`, every other
+removed line is an `estimateCost(...)` or `estimateCostWithUpperBound(...)`
+call. Each was re-added with a third argument `undefined` and the same
+assertions.
+
+Branch outcomes:
+
+- `worker/deno/lib/token_usage.ts:782`, `lowerBand` present and size ≤ max →
+  `lowerBand`. Reached by the 50k test and the exactly-100k test. Flipping `<=`
+  to `<` turned the exactly-100k test red.
+- `worker/deno/lib/token_usage.ts:782`, `lowerBand` present and size > max →
+  top-level rates. Reached by the 150k test. Flipping the comparison so it
+  always picks `lowerBand` turned it red.
+- `worker/deno/lib/token_usage.ts:782`, `lowerBand` present and size
+  `undefined` → top-level rates. Reached by the two run-totals tests. Treating
+  `undefined` as inside the band turned them red.
+- `worker/deno/lib/token_usage.ts:782`, no `lowerBand` → top-level rates.
+  Reached by the Haiku 4.5/4.9 and Sonnet `promptTokensPerRequest` tests and by
+  the existing flat-rate tests. Selecting a missing `lowerBand` turned them red.
+- `worker/deno/lib/token_usage.ts:691`, Haiku 5.5+ → `HAIKU_5_5_PRICING`.
+  Reached by the Haiku 5.5 lookup test (bare and dated ids). Returning
+  `HAIKU_PRICING` turned it red.
+- `worker/deno/lib/token_usage.ts:691`, Haiku 4.x and 5.0–5.4 →
+  `HAIKU_PRICING`. Reached by the Haiku 5.0-5.4 test and the existing Haiku 4.5
+  test. Removing the minor clause made `claude-haiku-5-0` return 0.5 against an
+  expected 1, which went red.
+
+Callers checked: `cost_estimate.ts:266` and `credit_tracker.ts:516` and `:550`
+pass an explicit `undefined`, because each sees merged or invocation-wide
+totals. These are the only production callers.
+
+## Pre-PR Security Self-Check
+
+- [x] No new external input, shell, SQL or HTTP surface; pricing is pure arithmetic.
+- [x] No secrets or hidden files staged.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
