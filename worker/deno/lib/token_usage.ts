@@ -45,6 +45,29 @@ export interface ModelPricing {
    * marker.
    */
   apiEquivalent?: true;
+  /**
+   * A cheaper rate that applies when the per-request prompt token count is at
+   * or below {@link BandedRate.maxPromptTokens}. The top-level rates above are
+   * always the conservative (higher, >threshold) band, so any reader that
+   * ignores this field — including {@link UNPRICED_UPPER_BOUND_PRICING}'s
+   * `Math.max` derivation — still over-estimates rather than under-estimates
+   * (Issue #3399).
+   */
+  lowerBand?: BandedRate;
+}
+
+/** A cheaper rate that applies only up to a prompt-token-count threshold, per request (Issue #3399). */
+export interface BandedRate {
+  /** Prompt-token count at/below which this band applies (per request). */
+  maxPromptTokens: number;
+  /** Cost per million input tokens (USD) in this band. */
+  inputPerMillion: number;
+  /** Cost per million output tokens (USD) in this band. */
+  outputPerMillion: number;
+  /** Cost per million cache-write tokens (USD) in this band. */
+  cacheWritePerMillion: number;
+  /** Cost per million cache-read tokens (USD) in this band. */
+  cacheReadPerMillion: number;
 }
 
 /** Cost breakdown for a set of token counts. */
@@ -155,6 +178,30 @@ const HAIKU_PRICING: ModelPricing = {
   outputPerMillion: 5,
   cacheWritePerMillion: 1.25,
   cacheReadPerMillion: 0.10,
+};
+
+/**
+ * Claude Haiku 5.5 — current Haiku, banded by per-request prompt size (Issue
+ * #3399). Rates ≤100k prompt tokens are cheaper than Haiku 4.5; rates >100k
+ * are dearer. Top-level fields are the >100k (conservative) rates so any
+ * reader that ignores `lowerBand` — including the unpriced upper bound —
+ * still over-estimates.
+ *
+ * Source: issue #3399 (rates supplied in the issue text; not independently
+ * verifiable against a published vendor page at the time of writing).
+ */
+const HAIKU_5_5_PRICING: ModelPricing = {
+  inputPerMillion: 0.50,
+  outputPerMillion: 2.50,
+  cacheWritePerMillion: 0.625,
+  cacheReadPerMillion: 0.05,
+  lowerBand: {
+    maxPromptTokens: 100_000,
+    inputPerMillion: 0.10,
+    outputPerMillion: 0.50,
+    cacheWritePerMillion: 0.125,
+    cacheReadPerMillion: 0.01,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -328,7 +375,7 @@ export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["fable", FABLE_5_1_PRICING],
   ["opus", OPUS_5_5_PRICING],
   ["sonnet", SONNET_5_PRICING],
-  ["haiku", HAIKU_PRICING],
+  ["haiku", HAIKU_5_5_PRICING],
 ]);
 
 /**
@@ -377,8 +424,15 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["claude-sonnet-5", SONNET_5_PRICING],
   ["claude-sonnet-4-6", SONNET_4_PRICING],
   ["claude-sonnet-4", SONNET_4_PRICING],
-  // Claude Haiku 4.5 (Issue #1398) — current Haiku
+  // Claude Haiku 4.5 (Issue #1398) — superseded by Haiku 5.5 as current Haiku
+  // (Issue #3399)
   ["claude-haiku-4-5", HAIKU_PRICING],
+  // Claude Haiku 5.5 — current Haiku, banded by prompt size (Issue #3399).
+  // Must precede any future broader `claude-haiku-5` key for the same
+  // substring-match reason as Opus 5.5 / Fable 5.1 above: `lookupPricing` in
+  // `batch_api.ts` walks these rows in insertion order and takes the first
+  // whose key the model id contains.
+  ["claude-haiku-5-5", HAIKU_5_5_PRICING],
   // Legacy models
   ["claude-3-5-sonnet", SONNET_4_PRICING],
   ["claude-3-5-haiku", {
@@ -537,6 +591,12 @@ const FABLE_CHEAP_CACHE_MIN_MINOR = 1;
 /** Major version at/above which Sonnet uses the cheaper Sonnet 5 rate. */
 const SONNET_MODERN_MIN_MAJOR = 5;
 
+/** Major version at/above which Haiku uses the banded 5.5 rate. */
+const HAIKU_5_5_MIN_MAJOR = 5;
+
+/** Minor version at/above which Haiku 5 uses the banded 5.5 rate. */
+const HAIKU_5_5_MIN_MINOR = 5;
+
 /**
  * Parse the major/minor version of a modern (4 or 5 family) Claude id.
  *
@@ -595,7 +655,10 @@ export function lookupModelPricing(model: string): ModelPricing | null {
   //    row happens to match its prefix. Opus 5+ and Opus 4.5+ share the modern
   //    reduced rate and only Opus 4.0/4.1 are legacy (Issue #3559); Fable 5.1+
   //    reads cache at a quarter of the Fable 5 rate and Sonnet 5 is cheaper
-  //    than the Sonnet 4.x line (Issue #747). Haiku uses a single rate.
+  //    than the Sonnet 4.x line (Issue #747). Haiku 5.5 is banded by
+  //    per-request prompt size and only the bare alias / version
+  //    classification is resolved here — the band itself is applied by
+  //    `costFor` (Issue #3399).
   const parsed = parseClaudeModernVersion(normalised);
   if (parsed) {
     if (parsed.tier === "opus") {
@@ -622,6 +685,11 @@ export function lookupModelPricing(model: string): ModelPricing | null {
         ? SONNET_5_PRICING
         : SONNET_4_PRICING;
     }
+    if (parsed.tier === "haiku") {
+      const banded = parsed.major >= HAIKU_5_5_MIN_MAJOR &&
+        parsed.minor >= HAIKU_5_5_MIN_MINOR;
+      return banded ? HAIKU_5_5_PRICING : HAIKU_PRICING;
+    }
     return TIER_CURRENT_PRICING.get(parsed.tier) ?? null;
   }
 
@@ -639,15 +707,21 @@ export function lookupModelPricing(model: string): ModelPricing | null {
  *
  * @param usage - Token usage counts
  * @param model - Model identifier for pricing lookup
+ * @param promptTokensPerRequest - Per-request prompt token count, when known
+ *   (Issue #3399). Pass it to get the correct band for a banded row (e.g.
+ *   Haiku 5.5); when only an aggregated run total is available, omit it and
+ *   the conservative >100k-equivalent (top-level) rate is used automatically
+ *   via `costFor`'s fallback.
  * @returns Cost breakdown or null if model pricing is unknown
  */
 export function estimateCost(
   usage: TokenUsage,
   model: string,
+  promptTokensPerRequest?: number,
 ): CostBreakdown | null {
   const pricing = lookupModelPricing(model);
   if (!pricing) return null;
-  return costFor(usage, pricing);
+  return costFor(usage, pricing, promptTokensPerRequest);
 }
 
 /** A cost estimate plus whether it came from a real pricing row. */
@@ -668,28 +742,55 @@ export interface BoundedCostEstimate {
  *
  * @param usage - Token usage counts
  * @param model - Model identifier for pricing lookup
+ * @param promptTokensPerRequest - Per-request prompt token count, when known
+ *   (Issue #3399). Pass it to get the correct band for a banded row (e.g.
+ *   Haiku 5.5); when only an aggregated run total is available, omit it and
+ *   the conservative >100k-equivalent (top-level) rate is used automatically
+ *   via `costFor`'s fallback.
  * @returns The cost and whether real pricing was found
  */
 export function estimateCostWithUpperBound(
   usage: TokenUsage,
   model: string,
+  promptTokensPerRequest?: number,
 ): BoundedCostEstimate {
   const pricing = lookupModelPricing(model);
   return {
-    cost: costFor(usage, pricing ?? UNPRICED_UPPER_BOUND_PRICING),
+    cost: costFor(
+      usage,
+      pricing ?? UNPRICED_UPPER_BOUND_PRICING,
+      promptTokensPerRequest,
+    ),
     priced: pricing !== null,
   };
 }
 
-/** Apply a pricing row to a set of token counts. */
-function costFor(usage: TokenUsage, pricing: ModelPricing): CostBreakdown {
-  const inputCost = (usage.inputTokens / 1_000_000) * pricing.inputPerMillion;
+/**
+ * Apply a pricing row to a set of token counts.
+ *
+ * When `pricing` carries a `lowerBand` and `promptTokensPerRequest` is given
+ * and at or below `lowerBand.maxPromptTokens`, the cheaper banded rate is
+ * used; otherwise (including when `promptTokensPerRequest` is omitted — e.g.
+ * an aggregated run-total figure with no per-request prompt size) the
+ * top-level (conservative, >threshold) rate is used (Issue #3399).
+ */
+function costFor(
+  usage: TokenUsage,
+  pricing: ModelPricing,
+  promptTokensPerRequest?: number,
+): CostBreakdown {
+  const rate = pricing.lowerBand &&
+      promptTokensPerRequest !== undefined &&
+      promptTokensPerRequest <= pricing.lowerBand.maxPromptTokens
+    ? pricing.lowerBand
+    : pricing;
+  const inputCost = (usage.inputTokens / 1_000_000) * rate.inputPerMillion;
   const outputCost = (usage.outputTokens / 1_000_000) *
-    pricing.outputPerMillion;
+    rate.outputPerMillion;
   const cacheWriteCost = (usage.cacheCreationTokens / 1_000_000) *
-    pricing.cacheWritePerMillion;
+    rate.cacheWritePerMillion;
   const cacheReadCost = (usage.cacheReadTokens / 1_000_000) *
-    pricing.cacheReadPerMillion;
+    rate.cacheReadPerMillion;
 
   return {
     inputCost,
