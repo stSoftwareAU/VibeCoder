@@ -22,6 +22,7 @@ import { browserGranted } from "./browser_grant.ts";
 import type {
   CiProviderConfig,
   CustomLabelPromptMapping,
+  IssueSubAgentTier,
   Logger,
   RepoConfig,
   Result,
@@ -37,8 +38,10 @@ import { buildCiFailureContext, isCiFailureIssue } from "./ci_failure_issue.ts";
 import { isIssueExecutorSplitEnabled } from "./issue_executor_split.ts";
 import {
   buildIssueRunAgents,
+  HAIKU_ISSUE_EXECUTOR_MODEL,
   ISSUE_EXECUTOR_MODEL,
 } from "./issue_executor_agents.ts";
+import { resolveIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 import { generateBoundaryId } from "./prompt_delimiter.ts";
 import { resolveVerbosity } from "./verbosity.ts";
 import {
@@ -343,6 +346,15 @@ export interface ExecuteClaudePhaseOptions {
    * `config.issueReviewerAgents`; host-wide, no per-repository override.
    */
   issueReviewerAgents?: boolean;
+  /**
+   * Host-wide `issue_sub_agent_tier` (Issue #3402), threaded from
+   * `config.issueSubAgentTier` by `commands/execute_claude_phase.ts`. The
+   * repository's own `repo_config` override is layered over it here by
+   * `resolveIssueSubAgentTier`. Unset — the default — resolves to `"sonnet"`,
+   * whose `--agents` JSON is byte-identical to a run from before this key
+   * existed.
+   */
+  issueSubAgentTier?: IssueSubAgentTier;
   /**
    * Whether to filter this run's shell output through RTK (Issue #2383, part
    * of #2328, default: false).
@@ -1263,18 +1275,33 @@ async function executeClaudePhaseBody(
     repoConfig,
     { issueExecutorSplit: options.issueExecutorSplit === true },
   );
-  if (issueExecutorSplit) {
-    deps.log(
-      "Issue-executor split is on: the invocation carries " +
-        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
-    );
-  }
+  // The sub-agent tier (Issue #3402): host-wide `issueSubAgentTier`, with the
+  // repository's own `repo_config` override layered over it here. Resolved
+  // and logged unconditionally, every issue run, before the prompt is built.
+  const issueSubAgentTier = resolveIssueSubAgentTier(
+    { issueSubAgentTier: options.issueSubAgentTier ?? "sonnet" },
+    repoConfig,
+    deps.log,
+  );
+  deps.log(
+    `Issue sub-agent tier resolved to '${issueSubAgentTier}' (Issue #3402)`,
+  );
   // The reviewer sub-agents (Issue #2575): host-wide, off by default until
   // the pilot in docs/MODEL-AND-CACHING.md clears it.
   const issueRunAgents = buildIssueRunAgents({
     executorSplit: issueExecutorSplit,
     reviewerAgents: options.issueReviewerAgents === true,
+    subAgentTier: issueSubAgentTier,
   });
+  if (issueExecutorSplit) {
+    const executorModel = issueSubAgentTier === "haiku"
+      ? HAIKU_ISSUE_EXECUTOR_MODEL
+      : ISSUE_EXECUTOR_MODEL;
+    deps.log(
+      "Issue-executor split is on: the invocation carries " +
+        `${executorModel} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
 
   const promptResult = await deps.buildCachedIssuePrompt({
     repo,

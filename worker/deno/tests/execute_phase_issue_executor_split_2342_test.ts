@@ -17,23 +17,40 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import {
+  EXPLORER_AGENT_NAME,
   ISSUE_EXECUTOR_AGENT_NAME,
   SPEC_REVIEWER_AGENT_NAME,
   STANDARDS_REVIEWER_AGENT_NAME,
 } from "../lib/issue_executor_agents.ts";
 import type { AgentDefinition } from "../lib/agent_provider.ts";
+import type { IssueSubAgentTier } from "../types.ts";
 
 /** Run the phase with the given host and per-repo key, and report the argv options. */
 async function runPhase(
   hostEnabled: boolean,
   repoValue?: boolean,
   reviewerAgents = false,
+  tierOptions: {
+    hostTier?: IssueSubAgentTier;
+    repoTier?: unknown;
+    logs?: string[];
+  } = {},
 ): Promise<Record<string, unknown> | undefined> {
   const config = buildDefaultWorkerConfig();
   config.issueExecutorSplit = hostEnabled;
   config.issueReviewerAgents = reviewerAgents;
-  if (repoValue !== undefined) {
-    config.repoConfig = { "org/repo": { issueExecutorSplit: repoValue } };
+  if (tierOptions.hostTier !== undefined) {
+    config.issueSubAgentTier = tierOptions.hostTier;
+  }
+  if (repoValue !== undefined || tierOptions.repoTier !== undefined) {
+    config.repoConfig = {
+      "org/repo": {
+        ...(repoValue !== undefined ? { issueExecutorSplit: repoValue } : {}),
+        ...(tierOptions.repoTier !== undefined
+          ? { issueSubAgentTier: tierOptions.repoTier }
+          : {}),
+      },
+    };
   }
   const ctx: IssueContext = {
     repo: "org/repo",
@@ -57,6 +74,7 @@ async function runPhase(
     baselineQualityOutput: "",
   };
   const runOptions: Record<string, unknown>[] = [];
+  const logs = tierOptions.logs;
 
   const deps = createMockDeps({
     claude: {
@@ -72,6 +90,18 @@ async function runPhase(
       findExistingPrForIssue: (() =>
         Promise.resolve({ ok: true, value: null })) as never,
     },
+    ...(logs
+      ? {
+        logger: {
+          info: (message: string) => {
+            logs.push(message);
+          },
+          warn: (message: string) => {
+            logs.push(message);
+          },
+        },
+      }
+      : {}),
   });
 
   await workOnIssueExecuteClaude(ctx, state, deps);
@@ -231,5 +261,88 @@ Deno.test("execute_phase - reviewers and the split together carry all three defi
       SPEC_REVIEWER_AGENT_NAME,
       STANDARDS_REVIEWER_AGENT_NAME,
     ].sort(),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// The sub-agent tier (Issue #3402)
+// ---------------------------------------------------------------------------
+
+Deno.test("execute_phase - a haiku host tier carries the haiku executor, haiku standards reviewer, sonnet spec reviewer and an explorer (Issue #3402)", async () => {
+  const options = await runPhase(true, undefined, true, {
+    hostTier: "haiku",
+  });
+  const agents = options?.agents as Record<string, AgentDefinition>;
+
+  assert(agents, "a haiku-tier run must carry sub-agent definitions");
+  assertEquals(
+    Object.keys(agents).sort(),
+    [
+      ISSUE_EXECUTOR_AGENT_NAME,
+      SPEC_REVIEWER_AGENT_NAME,
+      STANDARDS_REVIEWER_AGENT_NAME,
+      EXPLORER_AGENT_NAME,
+    ].sort(),
+  );
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "haiku");
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "high");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "haiku");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "sonnet");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
+});
+
+Deno.test("execute_phase - a default config carries no explorer and a sonnet executor (Issue #3402)", async () => {
+  const executor = executorOf(await runPhase(true));
+  assert(executor, "the split run carries the executor");
+  assertEquals(executor.model, "sonnet");
+  assertEquals(executor.effort, "medium");
+
+  const options = await runPhase(true);
+  const agents = options?.agents as Record<string, AgentDefinition>;
+  assertEquals(
+    Object.keys(agents).includes(EXPLORER_AGENT_NAME),
+    false,
+    "the default tier carries no explorer",
+  );
+});
+
+Deno.test("execute_phase - a repo tier of sonnet beats a host-wide haiku (Issue #3402)", async () => {
+  const options = await runPhase(true, undefined, false, {
+    hostTier: "haiku",
+    repoTier: "sonnet",
+  });
+  const agents = options?.agents as Record<string, AgentDefinition>;
+
+  assertEquals(
+    Object.keys(agents),
+    [ISSUE_EXECUTOR_AGENT_NAME],
+    "the repo's sonnet override drops the explorer",
+  );
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "sonnet");
+});
+
+Deno.test("execute_phase - the resolved tier is logged exactly once (Issue #3402)", async () => {
+  const haikuLogs: string[] = [];
+  await runPhase(false, undefined, false, {
+    hostTier: "haiku",
+    logs: haikuLogs,
+  });
+  const haikuTierLogs = haikuLogs.filter((m) =>
+    m.includes("Issue sub-agent tier resolved to")
+  );
+  assertEquals(haikuTierLogs.length, 1, "logged exactly once per run");
+  assert(
+    haikuTierLogs[0]!.includes("Issue sub-agent tier resolved to 'haiku'"),
+  );
+
+  const sonnetLogs: string[] = [];
+  await runPhase(false, undefined, false, { logs: sonnetLogs });
+  const sonnetTierLogs = sonnetLogs.filter((m) =>
+    m.includes("Issue sub-agent tier resolved to")
+  );
+  assertEquals(sonnetTierLogs.length, 1, "logged exactly once per run");
+  assert(
+    sonnetTierLogs[0]!.includes("Issue sub-agent tier resolved to 'sonnet'"),
   );
 });

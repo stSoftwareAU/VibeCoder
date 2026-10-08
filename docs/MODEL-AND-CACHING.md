@@ -482,9 +482,13 @@ that default stays.
   dispatches and reviews, and a `PreToolUse` hook denies it `Edit` and `Write`
   so the plan cannot quietly become the implementation.
 - **Executors** — Claude CLI sub-agents pinned to a cheaper tier: `sonnet` at
-  `medium` effort, fixed as `ISSUE_EXECUTOR_MODEL` and `ISSUE_EXECUTOR_EFFORT`
-  in
-  [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts).
+  `medium` effort by default, fixed as `ISSUE_EXECUTOR_MODEL` and
+  `ISSUE_EXECUTOR_EFFORT` in
+  [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts),
+  or — when the host's `issue_sub_agent_tier` resolves `"haiku"` (Issue
+  #3402) — `haiku` at `high` effort (`HAIKU_ISSUE_EXECUTOR_MODEL` /
+  `HAIKU_ISSUE_EXECUTOR_EFFORT` in the same module; see
+  [Haiku sub-agent tier](#haiku-sub-agent-tier-issue-phase) below).
   Each gets exactly the tools it needs to edit files and run the tests —
   `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash` — and **no `Agent` tool**, so
   the topology is one level deep by construction and an executor cannot fan out
@@ -672,8 +676,8 @@ Issue #2575) defines them instead, in
 
 | Agent | Model | Effort | Tools | Inputs |
 | --- | --- | --- | --- | --- |
-| `spec-reviewer` | `sonnet` | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
-| `standards-reviewer` | `sonnet` | `low` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
+| `spec-reviewer` | `sonnet` (every tier) | `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and the issue body |
+| `standards-reviewer` | `sonnet` by default, `haiku` when `issue_sub_agent_tier` resolves `"haiku"` (Issue #3402) | `low` by default, `medium` on the Haiku tier | `Read`, `Grep`, `Glob`; `Agent` denied | the diff file and `CODING-STANDARDS.md` |
 
 The reviewers keep what makes them worth running: a fresh context that never
 sees the author's reasoning. The Standards reviewer is also scoped as the
@@ -714,6 +718,65 @@ These caps are spawn environment, not an operator setting. A value already in
 the worker's own environment wins, but no `.config.json` key sets them. The
 concurrency cap also bounds a split run's executors, which the split prompt
 itself does not cap.
+
+### Haiku sub-agent tier (issue phase)
+
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the
+> tier only changes `--agents` definitions, built the same way as the split's
+> executors and the reviewers above; `codex` and `gemini` never build the
+> argument, and `deepseek` strips it and warns.
+
+The `issue_sub_agent_tier` configuration key
+([CONFIGURATION.md](CONFIGURATION.md), Issue #3402; the host-wide key with a
+same-named `repo_config.<repo>` override, resolved by
+`resolveIssueSubAgentTier` in
+[`worker/deno/lib/issue_sub_agent_tier.ts`](../worker/deno/lib/issue_sub_agent_tier.ts))
+moves the cheaper sub-agents on an `issue`-phase run down from Sonnet to
+Haiku. It is read on every `issue`-phase run — the main-loop path
+([`worker/deno/lib/phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts))
+and the standalone `execute-claude-phase` command path alike — and the
+resolved tier is logged once per run (`Issue sub-agent tier resolved to
+'<tier>'`).
+
+| Agent | Sonnet tier (default) | Haiku tier | Tools | Rides the run when |
+| --- | --- | --- | --- | --- |
+| `executor` | `sonnet` · `medium` | `haiku` · `high` | `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; `Agent` denied | `issue_executor_split` resolves on |
+| `standards-reviewer` | `sonnet` · `low` | `haiku` · `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | `issue_reviewer_agents` is on |
+| `spec-reviewer` | `sonnet` · `medium` | `sonnet` · `medium` (unchanged) | `Read`, `Grep`, `Glob`; `Agent` denied | `issue_reviewer_agents` is on |
+| `explorer` | — (never built) | `haiku` · `medium` | `Read`, `Grep`, `Glob`; `Agent` denied | every Haiku-tier run, whatever the split and reviewer switches resolved to |
+
+The `explorer` is new: a read-only lookup sub-agent (where code lives, who
+calls what, what a function does) that rides every Haiku-tier `issue` run so
+the advisor can hand off a lookup instead of spending its own context reading
+code. It carries no `Bash` and no `Agent` tool, so it can look things up but
+change nothing and cannot spawn further sub-agents.
+
+Every Haiku-tier sub-agent's prompt — the executor's, the Standards
+reviewer's and the explorer's — ends with the same short guidance
+(`HAIKU_SUB_AGENT_GUIDANCE` in
+[`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts)):
+work to an explicit scope and stop condition, and return findings — naming
+each `file:line` — rather than file dumps. Haiku 5.5 needs that explicit
+steer where Sonnet-tier sub-agents do not, so Sonnet-tier prompts never carry
+it.
+
+`issue_sub_agent_tier: "sonnet"` (the default) leaves the `--agents` JSON
+byte-identical to the invocation built before the key existed: no definition
+changes shape, and a run with both the split and reviewer switches off still
+emits no `--agents` argument at all. Non-`issue` phases never read the key
+and never carry any of these definitions.
+
+**Opt-in trial, not a default change.** Unlike the executor split and
+reviewer sub-agents above, `issue_sub_agent_tier` is not on a before/after
+check of its own and `"sonnet"` is not expected to change. Per the owner's
+direction on Issue #3385, `"haiku"` is a trial a deployer opts a part of
+their fleet into — host-wide or per repository via the `repo_config`
+override — to compare code-review rejections and CI failures against the
+cost saved before any decision to widen it. No fleet figure is claimed yet.
+
+| Change | Phase measured | Revert with |
+| --- | --- | --- |
+| Haiku sub-agent tier | `issue` | `issue_sub_agent_tier: "sonnet"`, host-wide or per repository |
 
 ### 🤖 Codex per-phase routing
 

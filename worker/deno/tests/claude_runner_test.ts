@@ -1090,7 +1090,7 @@ Deno.test({
           ...(agents === undefined ? {} : { agents }),
         }));
     try {
-      await run(buildIssueExecutorAgents());
+      await run(buildIssueExecutorAgents("sonnet"));
       const argv = (await Deno.readTextFile(argvFile)).split("\n");
       const idx = argv.indexOf("--agents");
       assert(idx >= 0, `expected --agents in ${argv.join(" ")}`);
@@ -1138,7 +1138,7 @@ Deno.test({
             agentBinaryPath,
             timeoutSeconds: 30,
             killAfterSeconds: 2,
-            agents: buildIssueExecutorAgents(),
+            agents: buildIssueExecutorAgents("sonnet"),
           }, { maxRetries: 0 }),
       );
 

@@ -17,6 +17,7 @@ import {
   runExecuteClaudePhase,
 } from "../lib/execute_claude_phase.ts";
 import {
+  EXPLORER_AGENT_NAME,
   ISSUE_EXECUTOR_AGENT_NAME,
   SPEC_REVIEWER_AGENT_NAME,
   STANDARDS_REVIEWER_AGENT_NAME,
@@ -28,6 +29,8 @@ interface Observed {
   runOptions?: RunClaudeOptions;
   /** The options the prompt build was given (Issue #2343). */
   promptOptions?: Record<string, unknown>;
+  /** Every message `deps.log` was called with (Issue #3402). */
+  logs: string[];
 }
 
 function createDeps(observed: Observed): ExecuteClaudePhaseDeps {
@@ -71,7 +74,7 @@ function createDeps(observed: Observed): ExecuteClaudePhaseDeps {
     recordHeartbeat: () => Promise.resolve({ ok: true, value: undefined }),
     clearHeartbeat: () => Promise.resolve({ ok: true, value: undefined }),
     getPromptsCommit: () => Promise.resolve({ ok: true, value: "abc1234" }),
-    log: () => {},
+    log: (message: string) => observed.logs.push(message),
   };
 }
 
@@ -107,7 +110,7 @@ async function runWith(
 async function observeRun(
   overrides: Partial<ExecuteClaudePhaseOptions>,
 ): Promise<Observed> {
-  const observed: Observed = {};
+  const observed: Observed = { logs: [] };
   await runExecuteClaudePhase(options(overrides), createDeps(observed));
   return observed;
 }
@@ -322,12 +325,13 @@ Deno.test("execute_claude_phase - an invalid repo tier value is warned about and
     repoConfigs: { "owner/repo": { issueSubAgentTier: "opus" } },
   });
 
-  const warning = observed.logs.find((m) =>
-    m.includes("issue_sub_agent_tier")
-  );
+  const warning = observed.logs.find((m) => m.includes("issue_sub_agent_tier"));
   assert(warning, "an invalid repo value is warned about by name");
 
   const agents = observed.runOptions?.agents;
-  assert(agents, "falls back to the host's haiku tier, which still carries the explorer");
+  assert(
+    agents,
+    "falls back to the host's haiku tier, which still carries the explorer",
+  );
   assertEquals(Object.keys(agents), [EXPLORER_AGENT_NAME]);
 });
