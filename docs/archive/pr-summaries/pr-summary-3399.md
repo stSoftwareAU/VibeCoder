@@ -58,24 +58,6 @@ Implement banded per-model pricing for Claude Haiku 5.5 with per-request prompt-
 - The Haiku 4.5 flat rate stays pinned by the unmodified `lookupModelPricing returns pricing for Haiku 4.5` test and the new `estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)` test.
 - `deno test --allow-all tests/token_usage_test.ts` passes 59/59.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — A 50k-prompt-token Haiku 5.5 request is costed at the ≤100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
-- **met** — A 150k-prompt-token Haiku 5.5 request is costed at the >100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
-- **met** — A run-total-only Haiku 5.5 estimate uses the >100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399)`, `worker/deno/tests/token_usage_test.ts::token_usage - estimateCostWithUpperBound without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399)` — reviewer: met
-- **met** — `claude-haiku-4-5` costs are unchanged (existing tests in `token_usage_test.ts` still pass unmodified) — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - lookupModelPricing returns pricing for Haiku 4.5` (unmodified), `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)` — reviewer: met (the only edited existing test is the bare `haiku` alias test, which the issue's "the `haiku` alias resolves to the current Haiku" requires)
-- **met** — Opus / Sonnet / Fable pricing is unchanged — evidence: no Opus/Sonnet/Fable rows or branches change; existing tests pass unmodified; `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost for Sonnet ignores a promptTokensPerRequest argument (no lowerBand) (Issue #3399)` — reviewer: met
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — A new argument or behaviour reaches every caller that needs it (no behaviour-carrying optional parameter that silently turns the behaviour off) — evidence: `worker/deno/lib/token_usage.ts:720`, `worker/deno/lib/token_usage.ts:755`; callers `worker/deno/lib/cost_estimate.ts:265`, `worker/deno/lib/credit_tracker.ts:514`, `:543` pass no prompt size — reason: not fixed in this diff — the callers hold only run totals, for which the issue specifies the >100k fallback, so `lowerBand` is not yet reached in production
-- **violation** — Every outcome of an added branch needs a test that reaches it — evidence: `worker/deno/lib/token_usage.ts:689-690` — reason: not fixed in this diff — no test uses a Haiku 5.0–5.4 id, so dropping the `minor` half of the version check leaves the suite green
-- **clean** — Australian English in code, comments and test names; KISS/DRY (`costFor` is the single rate-selection path); no new dependencies; Deno/TypeScript conventions and `@std/assert`; doc comments match the head (`UNPRICED_UPPER_BOUND_PRICING` reads only top-level fields); tests exercise the inclusive 100k boundary, both bands, the no-argument fallback and both no-`lowerBand` cases; the edited alias assertions are justified by the issue
-
 ## TDD Compliance
 
 ### Tests Go Red Without Implementation
@@ -113,3 +95,21 @@ Flip verification confirmed each outcome is reached and essential to tests passi
 ## References
 
 Issue #3399: Implement banded Claude Haiku 5.5 pricing with per-request prompt-token-count bands.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A 50k-prompt-token Haiku 5.5 request is costed at the ≤100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
+- **met** — A 150k-prompt-token Haiku 5.5 request is costed at the >100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
+- **met** — A run-total-only Haiku 5.5 estimate uses the >100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399); worker/deno/tests/token usage test.ts::token usage - estimateCostWithUpperBound without a prompt-size argument uses the conservative >100k Haiku` — reviewer: met
+- **partial** — claude-haiku-4-5 costs are unchanged (existing tests in token usage test.ts still pass unmodified). — evidence: `worker/deno/tests/token usage test.ts::token usage - lookupModelPricing returns pricing for Haiku 4.5 (unmodified); worker/deno/lib/token usage.ts keeps the claude-haiku-4-5 → HAIKU PRICING row` — reviewer: partial — reason: claude-haiku-4-5 rates and their test are unchanged, but the existing bare-alias test (lookupModelPricing resolves bare 'sonnet'/'haiku' aliases) was changed from 1/5 to 0.50/2.50, because the issue moves the haiku alias to Haiku 5.5
+- **met** — Opus / Sonnet / Fable pricing is unchanged. — evidence: `worker/deno/lib/token usage.ts (diff changes no Opus/Sonnet/Fable pricing row or branch); existing Opus/Sonnet/Fable tests in worker/deno/tests/token usage test.ts are unmodified, e.g. token usage - lookupModelPricing returns pricing for Opus 4.8 (Issue #2389)` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — A new argument or behaviour reaches every caller that needs it: promptTokensPerRequest is an optional parameter, and leaving it out silently picks the >100k band. No production caller passes it (worker/deno/lib/cost estimate.ts:265, worker/deno/lib/credit tracker.ts:514, :543), so production never r — evidence: `worker/deno/lib/token usage.ts:720` — reason: NOT fixed in this diff, so neither accepted reason is true. The parameter is still optional on lines this diff adds (token usage.ts:720, :755, costFor). The fix is a code change this turn cannot make: make it a required number undefined and have each caller pass it explicitly. The PR should not be r
+- **violation** — Every outcome of a branch you add needs a test that reaches it: no test uses a Haiku 5.0–5.4 id, so removing the parsed.minor >= HAIKU 5 5 MIN MINOR half of the version check still leaves the suite green — evidence: `worker/deno/lib/token usage.ts:689` — reason: NOT fixed in this diff, so neither accepted reason is true. The branch was added by this diff and its Haiku 5.0–5.4 → HAIKU PRICING outcome still has no test. The fix is a new test asserting that e.g. claude-haiku-5-4 resolves to the flat Haiku 4.5 rates, which this turn cannot write. The PR should
+- **clean** — Australian English in new comments and test names, conservative fail-safe default (top-level fields are the >100k band so readers that ignore lowerBand over-estimate), doc comments state the run-total fallback as the issue requires, inclusive 100k boundary tested, no edits to Opus/Sonnet/Fable rows
