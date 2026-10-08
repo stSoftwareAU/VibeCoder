@@ -138,7 +138,7 @@ async function checkLinksInFile(
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
     const rel = absFile.slice(root.length + 1);
-    // DISABLED: problems.push(`missing file: ${rel}`);
+    problems.push(`missing file: ${rel}`);
     return;
   }
   for (const link of relativeLinks(body)) {
@@ -379,5 +379,19 @@ Deno.test("skillLinkProblems - missing SKILL.md", async () => {
     const problems = await skillLinkProblems(root);
     assertEquals(problems.length, 1);
     assertMatch(problems[0]!, /^missing file: .*SKILL\.md$/);
+  });
+});
+
+Deno.test("skillLinkProblems - missing CONFIGURATION.md", async () => {
+  // Drop docs/CONFIGURATION.md itself; the only expected problem is the
+  // missing CONFIGURATION.md file.
+  const { "docs/CONFIGURATION.md": _configurationMd, ...rest } = CLEAN_FIXTURE;
+  await withFixture(rest, async (root) => {
+    const problems = await skillLinkProblems(root);
+    assertEquals(
+      problems.filter((p) => p === "missing file: docs/CONFIGURATION.md")
+        .length,
+      1,
+    );
   });
 });
