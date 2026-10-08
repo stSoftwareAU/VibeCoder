@@ -14,6 +14,7 @@ the worker.
   - [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain)
   - [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)
   - [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase)
+  - [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase)
   - [Codex per-phase routing](#-codex-per-phase-routing)
   - [Gemini per-phase routing](#-gemini-per-phase-routing)
   - [DeepSeek per-phase routing](#-deepseek-per-phase-routing)
@@ -102,6 +103,7 @@ a section without a marker, fails `deno test`.
 | [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
 | [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
 | [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
+| [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
 | [DeepSeek per-phase routing](#-deepseek-per-phase-routing) | ❌ | ❌ | ❌ | ✅ | Claude uses the precedence chain; Codex and Gemini use their own sections |
