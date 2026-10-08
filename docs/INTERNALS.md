@@ -935,6 +935,7 @@ fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
   hook_failures=0 success_rate=0.57
   issue_runs=12 issue_split_runs=12 issue_usd=3.9120
   issue_gate_first_attempt_passes=9 issue_duration=18400s
+  issue_tier_runs=sonnet=10,haiku=2 issue_tier_usd=sonnet=3.4120,haiku=0.5000
   idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
   failures_by_class=execute=9,timeout=3,setup=1 utilisation=serial=0.57
 ```
@@ -993,6 +994,13 @@ flowchart LR
   beside the cost and gates nothing. The counters accumulate into the same
   sidecar as the rest; a sidecar written before they existed loads with them at
   zero.
+- **`issue_tier_runs` / `issue_tier_usd`** split the same runs and spend by the
+  resolved `issue_sub_agent_tier` — `sonnet` or `haiku` (Issue #3403) — so a
+  tier migration's cost and volume are visible without reading every run-stats
+  comment. They are shown only once a `haiku` run has actually been recorded:
+  a sonnet-only host's summary line stays byte-identical to the one above,
+  with no tier tokens at all. A sidecar written before the split existed
+  loads its accumulated runs and spend as `sonnet`.
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
   counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and

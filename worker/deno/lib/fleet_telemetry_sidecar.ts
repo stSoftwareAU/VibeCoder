@@ -100,6 +100,11 @@ export function emptyTotals(): FleetTelemetryTotals {
     issuePhaseFirstAttemptGatePasses: 0,
     issuePhaseDurationSeconds: 0,
     issuePhaseSplitRuns: 0,
+    // Issue #3403 — the per-tier split of the counters above.
+    issuePhaseSonnetRuns: 0,
+    issuePhaseSonnetUsd: 0,
+    issuePhaseHaikuRuns: 0,
+    issuePhaseHaikuUsd: 0,
   };
 }
 
@@ -110,27 +115,52 @@ function counterFrom(value: unknown): number {
 
 /**
  * Fill the issue-phase counters a sidecar written before they existed does not
- * carry (Issue #2347).
+ * carry (Issue #2347), and the per-tier split a sidecar written before that
+ * existed does not carry either (Issue #3403).
  *
  * A missing — or unusable — counter reads as zero, so the host's accumulated
  * history survives the upgrade instead of the merge producing `NaN` totals.
- * The schema version deliberately does **not** move for this: the addition is
- * purely additive, every prior file still loads, and bumping it would make an
- * older worker treat the new file as `future-schema` and drop the very history
- * this preserves.
+ * The schema version deliberately does **not** move for either addition: same
+ * reasoning as #2347 — the addition is purely additive, every prior file
+ * still loads, and bumping it would make an older worker treat the new file
+ * as `future-schema` and drop the very history this preserves.
+ *
+ * The per-tier split carries one extra rule (issue requirement: "older JSON
+ * without tier fields loads as all-sonnet, no crash"): `haiku` reads
+ * straight off the stored value (0 when absent), but `sonnet` is read from
+ * the stored value only when it is itself a finite number — otherwise it is
+ * backfilled as `max(0, issuePhaseRuns − haikuRuns)` (and the USD equivalent)
+ * so a legacy file's pre-split runs and spend are attributed to `sonnet`
+ * rather than vanishing from both tiers.
  */
 function withIssuePhaseCounters<T extends PriorFleetTelemetryTotals>(
   totals: T,
 ): T & IssuePhaseCounters {
+  const issuePhaseRuns = counterFrom(totals.issuePhaseRuns);
+  const issuePhaseUsd = counterFrom(totals.issuePhaseUsd);
+  const issuePhaseHaikuRuns = counterFrom(totals.issuePhaseHaikuRuns);
+  const issuePhaseHaikuUsd = counterFrom(totals.issuePhaseHaikuUsd);
+  const storedSonnetRuns = totals.issuePhaseSonnetRuns;
+  const storedSonnetUsd = totals.issuePhaseSonnetUsd;
   return {
     ...totals,
-    issuePhaseRuns: counterFrom(totals.issuePhaseRuns),
-    issuePhaseUsd: counterFrom(totals.issuePhaseUsd),
+    issuePhaseRuns,
+    issuePhaseUsd,
     issuePhaseFirstAttemptGatePasses: counterFrom(
       totals.issuePhaseFirstAttemptGatePasses,
     ),
     issuePhaseDurationSeconds: counterFrom(totals.issuePhaseDurationSeconds),
     issuePhaseSplitRuns: counterFrom(totals.issuePhaseSplitRuns),
+    issuePhaseSonnetRuns: typeof storedSonnetRuns === "number" &&
+        Number.isFinite(storedSonnetRuns)
+      ? storedSonnetRuns
+      : Math.max(0, issuePhaseRuns - issuePhaseHaikuRuns),
+    issuePhaseSonnetUsd: typeof storedSonnetUsd === "number" &&
+        Number.isFinite(storedSonnetUsd)
+      ? storedSonnetUsd
+      : Math.max(0, issuePhaseUsd - issuePhaseHaikuUsd),
+    issuePhaseHaikuRuns,
+    issuePhaseHaikuUsd,
   };
 }
 
@@ -183,6 +213,15 @@ export function mergeCumulative(
       run.issuePhaseDurationSeconds,
     issuePhaseSplitRuns: priorIssuePhase.issuePhaseSplitRuns +
       run.issuePhaseSplitRuns,
+    // Issue #3403 — the per-tier split of the counters above.
+    issuePhaseSonnetRuns: priorIssuePhase.issuePhaseSonnetRuns +
+      run.issuePhaseSonnetRuns,
+    issuePhaseSonnetUsd: priorIssuePhase.issuePhaseSonnetUsd +
+      run.issuePhaseSonnetUsd,
+    issuePhaseHaikuRuns: priorIssuePhase.issuePhaseHaikuRuns +
+      run.issuePhaseHaikuRuns,
+    issuePhaseHaikuUsd: priorIssuePhase.issuePhaseHaikuUsd +
+      run.issuePhaseHaikuUsd,
   };
 }
 
@@ -230,6 +269,8 @@ export async function readFleetTelemetryFile(
   // typed as a number. `run` is normalised only when the file carries one —
   // the cumulative totals are what a later run merges onto, and rejecting a
   // file for a missing `run` would throw away the very history this preserves.
+  // Issue #3403: a file written before the per-tier split existed loads its
+  // runs and spend as `sonnet`, so the upgrade is silent rather than a crash.
   return {
     ...parsed,
     ...(parsed.run ? { run: withIssuePhaseCounters(parsed.run) } : {}),

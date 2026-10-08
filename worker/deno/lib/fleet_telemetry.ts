@@ -53,6 +53,7 @@
  */
 
 import type { RepoCensusSkipReason } from "./idle_decision_census.ts";
+import type { IssueSubAgentTier } from "../types.ts";
 
 /**
  * Why the fleet was idle. The census's own skip reasons are reused
@@ -96,7 +97,7 @@ export type FleetRunOutcome = "success" | "failure" | "skip";
  * The advisor/executor pilot compares one host against the control hosts, and
  * `successes` / `failures` / `successRate` carry no cost and no quality signal
  * — so the comparison had no per-host source short of reading every run-stats
- * comment on every issue the fleet touched. These five counters are the same
+ * comment on every issue the fleet touched. These counters are the same
  * figures that comment renders, accumulated per host:
  *
  *   - the implementation runs this host completed,
@@ -104,9 +105,12 @@ export type FleetRunOutcome = "success" | "failure" | "skip";
  *   - how many passed the quality gate on the **first** attempt — so the
  *     first-attempt pass rate is a division of two recorded numbers rather
  *     than a grep,
- *   - how long they took, reported beside the cost and gating nothing, and
+ *   - how long they took, reported beside the cost and gating nothing,
  *   - how many of them had the executor split on, so a half-configured host
- *     is visible instead of silently averaging pilot and control runs.
+ *     is visible instead of silently averaging pilot and control runs, and
+ *   - the same runs and spend split by the resolved sub-agent tier
+ *     (`sonnet`/`haiku`, Issue #3403), so a tier migration's cost and volume
+ *     are visible without reading every run-stats comment.
  */
 export interface IssuePhaseCounters {
   /** Completed `issue`-phase runs recorded on this host. */
@@ -119,6 +123,14 @@ export interface IssuePhaseCounters {
   issuePhaseDurationSeconds: number;
   /** Those runs that had the advisor/executor split on. */
   issuePhaseSplitRuns: number;
+  /** Those runs whose resolved sub-agent tier was `sonnet` (Issue #3403). */
+  issuePhaseSonnetRuns: number;
+  /** Summed estimated spend, in USD, across the `sonnet`-tier runs. */
+  issuePhaseSonnetUsd: number;
+  /** Those runs whose resolved sub-agent tier was `haiku` (Issue #3403). */
+  issuePhaseHaikuRuns: number;
+  /** Summed estimated spend, in USD, across the `haiku`-tier runs. */
+  issuePhaseHaikuUsd: number;
 }
 
 /** One completed `issue`-phase run, as {@link recordIssuePhaseRun} takes it. */
@@ -136,6 +148,8 @@ export interface IssuePhaseRun {
   durationSeconds?: number;
   /** Whether the advisor/executor split was on for the run. */
   split?: boolean;
+  /** The sub-agent tier the run resolved (Issue #3403). */
+  subAgentTier: IssueSubAgentTier;
 }
 
 /** Additive totals — the fields that can be summed across runs. */
@@ -277,6 +291,10 @@ function zeroIssuePhaseCounters(): IssuePhaseCounters {
     issuePhaseFirstAttemptGatePasses: 0,
     issuePhaseDurationSeconds: 0,
     issuePhaseSplitRuns: 0,
+    issuePhaseSonnetRuns: 0,
+    issuePhaseSonnetUsd: 0,
+    issuePhaseHaikuRuns: 0,
+    issuePhaseHaikuUsd: 0,
   };
 }
 
@@ -508,7 +526,8 @@ function contribution(value: number | undefined): number {
  * spend, first-attempt gate pass rate and duration are comparable with the
  * control hosts' straight off the fleet summary.
  *
- * @param run - The run's cost, gate attempt, duration and split state
+ * @param run - The run's cost, gate attempt, duration, split state and
+ *   resolved sub-agent tier
  */
 export function recordIssuePhaseRun(run: IssuePhaseRun): void {
   const counters = state.issuePhase;
@@ -519,6 +538,18 @@ export function recordIssuePhaseRun(run: IssuePhaseRun): void {
     counters.issuePhaseFirstAttemptGatePasses += 1;
   }
   if (run.split === true) counters.issuePhaseSplitRuns += 1;
+  // Issue #3403 — only the resolved tier's pair moves, so a tier's spend
+  // and volume never leak into the other tier's figures.
+  switch (run.subAgentTier) {
+    case "sonnet":
+      counters.issuePhaseSonnetRuns += 1;
+      counters.issuePhaseSonnetUsd += contribution(run.usd);
+      break;
+    case "haiku":
+      counters.issuePhaseHaikuRuns += 1;
+      counters.issuePhaseHaikuUsd += contribution(run.usd);
+      break;
+  }
 }
 
 function secondsFrom(ms: number): number {
@@ -647,6 +678,19 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
     `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
     `issue_duration=${s.issuePhaseDurationSeconds}s`,
+    // Issue #3403: the tier split is only ever shown once a haiku run has
+    // actually been recorded. A sonnet-only fleet — still every host today —
+    // never resolves a haiku run, so its summary line stays byte-identical
+    // to the one every existing scraper/dashboard already parses; the tier
+    // tokens appear only on a host where the split is actually in play.
+    ...(s.issuePhaseHaikuRuns > 0
+      ? [
+        `issue_tier_runs=sonnet=${s.issuePhaseSonnetRuns},haiku=${s.issuePhaseHaikuRuns}`,
+        `issue_tier_usd=sonnet=${s.issuePhaseSonnetUsd.toFixed(4)},haiku=${
+          s.issuePhaseHaikuUsd.toFixed(4)
+        }`,
+      ]
+      : []),
     `idle_by_reason=${joinCounts(s.idleByReason, "s")}`,
     `failures_by_class=${joinCounts(s.failuresByClass, "")}`,
     `utilisation=${utilisation.length > 0 ? utilisation.join(",") : "none"}`,

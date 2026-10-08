@@ -238,6 +238,7 @@ Deno.test("fleet_telemetry_sidecar - issue-phase counters persist and accumulate
       gatePassedOnAttempt: 1,
       durationSeconds: 900,
       split: true,
+      subAgentTier: "sonnet",
     });
     await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
 
@@ -250,6 +251,7 @@ Deno.test("fleet_telemetry_sidecar - issue-phase counters persist and accumulate
       gatePassedOnAttempt: 2,
       durationSeconds: 600,
       split: false,
+      subAgentTier: "sonnet",
     });
     await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 60_000 });
 
@@ -303,6 +305,12 @@ Deno.test("fleet_telemetry_sidecar - a snapshot written before the counters exis
     assertEquals(prior?.cumulative.issuePhaseDurationSeconds, 0);
     assertEquals(prior?.cumulative.issuePhaseSplitRuns, 0);
     assertEquals(prior?.run.issuePhaseRuns, 0);
+    // Issue #3403 — a file from before the split, and before the
+    // issue-phase counters themselves, loads every tier counter at zero.
+    assertEquals(prior?.cumulative.issuePhaseSonnetRuns, 0);
+    assertEquals(prior?.cumulative.issuePhaseSonnetUsd, 0);
+    assertEquals(prior?.cumulative.issuePhaseHaikuRuns, 0);
+    assertEquals(prior?.cumulative.issuePhaseHaikuUsd, 0);
 
     // …and this run merges onto it without poisoning any total with NaN.
     resetFleetTelemetry();
@@ -313,6 +321,7 @@ Deno.test("fleet_telemetry_sidecar - a snapshot written before the counters exis
       gatePassedOnAttempt: 1,
       durationSeconds: 300,
       split: true,
+      subAgentTier: "sonnet",
     });
     const written = await writeFleetTelemetryFile(dir, {
       hostname: "host-1",
@@ -331,6 +340,120 @@ Deno.test("fleet_telemetry_sidecar - a snapshot written before the counters exis
   });
 });
 
+// --- per-tier issue-phase counters (Issue #3403) ----------------------
+
+Deno.test("fleet_telemetry_sidecar - a legacy sidecar (pre-split) loads its runs and spend as sonnet", async () => {
+  await withTempDir(async (dir) => {
+    // Exactly the shape a pre-#3403 worker wrote: schema 1, the #2347
+    // issue-phase counters present, but no tier fields at all.
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: {
+          idleSeconds: 30,
+          successes: 1,
+          issuePhaseRuns: 2,
+          issuePhaseUsd: 3.5,
+        },
+        cumulative: {
+          wallSeconds: 100,
+          idleSeconds: 90,
+          idleByReason: { served: 90 },
+          occupiedSeconds: 10,
+          busySeconds: 10,
+          busyByStream: { serial: 10 },
+          tokenBlockedSeconds: 0,
+          rateLimitedSeconds: 0,
+          rateLimitWaits: 0,
+          tokenBlockedWaits: 0,
+          claims: 2,
+          successes: 2,
+          failures: 0,
+          skips: 0,
+          failuresByClass: {},
+          issuePhaseRuns: 3,
+          issuePhaseUsd: 4.5,
+          issuePhaseFirstAttemptGatePasses: 2,
+          issuePhaseDurationSeconds: 900,
+          issuePhaseSplitRuns: 0,
+        },
+      }),
+    );
+
+    const prior = await readUsable(dir, "host-1");
+    assertEquals(prior?.cumulative.issuePhaseSonnetRuns, 3);
+    assertAlmostEquals(prior?.cumulative.issuePhaseSonnetUsd ?? -1, 4.5, 1e-9);
+    assertEquals(prior?.cumulative.issuePhaseHaikuRuns, 0);
+    assertEquals(prior?.cumulative.issuePhaseHaikuUsd, 0);
+    assertEquals(prior?.run.issuePhaseSonnetRuns, 2);
+    assertAlmostEquals(prior?.run.issuePhaseSonnetUsd ?? -1, 3.5, 1e-9);
+    assertEquals(prior?.run.issuePhaseHaikuRuns, 0);
+    assertEquals(prior?.run.issuePhaseHaikuUsd, 0);
+  });
+});
+
+Deno.test("fleet_telemetry_sidecar - a legacy sidecar plus a haiku run accumulates per tier", async () => {
+  await withTempDir(async (dir) => {
+    // A legacy sidecar with three pre-split runs, all implicitly sonnet.
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: { idleSeconds: 30, successes: 1 },
+        cumulative: {
+          wallSeconds: 100,
+          idleSeconds: 90,
+          idleByReason: { served: 90 },
+          occupiedSeconds: 10,
+          busySeconds: 10,
+          busyByStream: { serial: 10 },
+          tokenBlockedSeconds: 0,
+          rateLimitedSeconds: 0,
+          rateLimitWaits: 0,
+          tokenBlockedWaits: 0,
+          claims: 2,
+          successes: 2,
+          failures: 0,
+          skips: 0,
+          failuresByClass: {},
+          issuePhaseRuns: 3,
+          issuePhaseUsd: 6,
+          issuePhaseFirstAttemptGatePasses: 3,
+          issuePhaseDurationSeconds: 900,
+          issuePhaseSplitRuns: 0,
+        },
+      }),
+    );
+
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    startFleetCycle(0);
+    recordIssuePhaseRun({
+      usd: 1,
+      gatePassedOnAttempt: 1,
+      durationSeconds: 60,
+      subAgentTier: "haiku",
+    });
+    const written = await writeFleetTelemetryFile(dir, {
+      hostname: "host-1",
+      nowMs: 60_000,
+    });
+    assertEquals(written.ok, true);
+
+    const merged = await readUsable(dir, "host-1");
+    assertEquals(merged?.cumulative.issuePhaseSonnetRuns, 3);
+    assertAlmostEquals(merged?.cumulative.issuePhaseSonnetUsd ?? -1, 6, 1e-9);
+    assertEquals(merged?.cumulative.issuePhaseHaikuRuns, 1);
+    assertAlmostEquals(merged?.cumulative.issuePhaseHaikuUsd ?? -1, 1, 1e-9);
+    assertEquals(merged?.cumulative.issuePhaseRuns, 4);
+  });
+});
+
 Deno.test("mergeCumulative - a prior without the issue-phase counters reads them as zero", () => {
   resetFleetTelemetry();
   startFleetTelemetry(0);
@@ -340,6 +463,7 @@ Deno.test("mergeCumulative - a prior without the issue-phase counters reads them
     gatePassedOnAttempt: 1,
     durationSeconds: 120,
     split: true,
+    subAgentTier: "sonnet",
   });
   const run = getFleetTelemetry(1_000);
 
@@ -366,6 +490,12 @@ Deno.test("mergeCumulative - a prior without the issue-phase counters reads them
   assertEquals(merged.issuePhaseFirstAttemptGatePasses, 1);
   assertEquals(merged.issuePhaseDurationSeconds, 120);
   assertAlmostEquals(merged.issuePhaseUsd, 2, 1e-9);
+  // Issue #3403 — a prior with no tier fields at all reads as zero, and the
+  // run's sonnet figures come through untouched.
+  assertEquals(merged.issuePhaseSonnetRuns, 1);
+  assertAlmostEquals(merged.issuePhaseSonnetUsd, 2, 1e-9);
+  assertEquals(merged.issuePhaseHaikuRuns, 0);
+  assertEquals(merged.issuePhaseHaikuUsd, 0);
 });
 
 Deno.test("mergeCumulative - adds every additive total", () => {
