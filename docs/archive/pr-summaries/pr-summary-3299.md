@@ -26,7 +26,7 @@ move keep working. `--install` now writes the `scripts/run.sh` path, and
 
 ### Intent and Rationale
 
-- The skills guide keeps executable helpers under `scripts/`, so only `SKILL.md` and the shim stay at the skill root.
+- The skills guide keeps executable helpers under `scripts/`. `SKILL.md` and the `run.sh` shim were meant to be the only things left at the skill root; PR #3417's review added five more root-level forwarders (`app_token.ts`, `escalate.ts`, `gate.ts`, `post.ts`, `review_log.ts`), kept until every installed runner has restarted onto `scripts/run.sh` (see `.claude/skills/review-fleet-prs/app_token.ts`'s comment).
 - Existing launchd and systemd services still start the old path. The shim keeps them running until the operator re-runs `--install`.
 
 ### Essential Design Decisions
@@ -50,13 +50,13 @@ Acceptance grep on the final head:
 `grep -rnE 'skills/review-fleet-prs/[a-z_]+\.(ts|sh)' --exclude-dir=archive --exclude-dir=.git .`
 → one hit, `./worker/deno/tests/review_fleet_prs_runner_test.ts:21`, which is the `SHIM` constant the criterion allows.
 
-**Docs sweep** — grep: `skills/review-fleet-prs/[a-z_]+\.(ts|sh)`, `review-fleet-prs/(run\.sh|scripts)` and `SKILL_DIR` over the repo outside `docs/archive/`. Updated: `.claude/skills/review-fleet-prs/SKILL.md:33-39`, `docs/CONFIGURATION.md:382`, `worker/deno/lib/review_round.ts:5`, `worker/deno/lib/pr_feedback_reviewer_no_change.ts:36`, `worker/deno/lib/change_request_quotes.ts:17` and `:58`, and `worker/deno/lib/integration_test_manifest.ts:76`. Remaining hits: `worker/deno/tests/review_fleet_prs_runner_test.ts:21` is still correct because it is the shim test's intended old path. No `SKILL_DIR` remains. `docs/CONFIGURATION.md:174` and `:406` are also still correct: they name the skill and link `SKILL.md`, not a helper path.
+**Docs sweep** — grep: `skills/review-fleet-prs/[a-z_]+\.(ts|sh)`, `review-fleet-prs/(run\.sh|scripts)` and `SKILL_DIR` over the repo outside `docs/archive/`; section: `docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews`. Updated: `.claude/skills/review-fleet-prs/SKILL.md:33-39`, `docs/CONFIGURATION.md:382`, `worker/deno/lib/review_round.ts:5`, `worker/deno/lib/pr_feedback_reviewer_no_change.ts:36`, `worker/deno/lib/change_request_quotes.ts:17` and `:58`, and `worker/deno/lib/integration_test_manifest.ts:76`. Remaining hits: `worker/deno/tests/review_fleet_prs_runner_test.ts:21` is still correct because it is the shim test's intended old path. No `SKILL_DIR` remains. `docs/CONFIGURATION.md:174` and `:406` are also still correct: they name the skill and link `SKILL.md`, not a helper path.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — Only the forwarding `run.sh` shim remains at the skill root. Every other `.ts` and `.sh` helper is under `scripts/`. — evidence: `.claude/skills/review-fleet-prs/` holds `SKILL.md`, `run.sh` (shim) and `scripts/` — reviewer: met
+- **met** — The forwarding `run.sh` shim remains at the skill root, and every helper's authoritative body is under `scripts/`. — evidence: `.claude/skills/review-fleet-prs/` holds `SKILL.md`, `run.sh` (shim) and `scripts/`; PR #3417's review added five more root-level forwarders (`app_token.ts`, `escalate.ts`, `gate.ts`, `post.ts`, `review_log.ts`) that each import their `scripts/` counterpart — reviewer: met
 - **met** — Outside `docs/archive/`, the grep finds no root-level helper path, apart from the shim test. — evidence: the grep output above — reviewer: met
 - **met** — `review_fleet_prs_runner_test.ts` passes against `scripts/run.sh`. — evidence: `worker/deno/tests/review_fleet_prs_runner_test.ts:11` (`RUNNER`), and the suite passes in `./quality.sh` — reviewer: met (by inspection)
 - **met** — A new test runs the old path with `--once` under the stubbed PATH. It asserts the call reaches `scripts/run.sh` and returns its exit status, including a non-zero one. — evidence: `worker/deno/tests/review_fleet_prs_runner_test.ts:566` and `:580` — reviewer: met

@@ -461,7 +461,10 @@ async function realRunGh(args: string[]): Promise<string> {
   return new TextDecoder().decode(stdout);
 }
 
-if (import.meta.main) {
+// Exported, not just `import.meta.main`-gated, so the root-level forwarding
+// shim (Issue #3299 continuity gap — PR #3417 review) can call this same
+// body for a runner still started from the pre-move layout.
+export async function runCli() {
   const parsed = parseArgs(Deno.args);
   if (!parsed) {
     console.error(usage());
@@ -480,3 +483,5 @@ if (import.meta.main) {
     Deno.exit(1);
   }
 }
+
+if (import.meta.main) await runCli();

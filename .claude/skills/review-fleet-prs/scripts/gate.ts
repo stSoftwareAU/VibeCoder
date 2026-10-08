@@ -941,7 +941,10 @@ async function auditBlockedCheck(
   return auditCheckCiFixReplied(checks, comments, [...fleet], pr.headRefOid);
 }
 
-async function main() {
+// Exported, not just `import.meta.main`-gated, so the root-level forwarding
+// shim (Issue #3299 continuity gap — PR #3417 review) can call this same
+// body for a runner still started from the pre-move layout.
+export async function main() {
   await migrateLegacyStateDir(stateDir());
   const config = JSON.parse(
     await Deno.readTextFile(arg("config") ?? DEFAULT_CONFIG),
