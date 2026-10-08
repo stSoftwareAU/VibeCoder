@@ -1141,10 +1141,11 @@ async function _processFeedbackWithHeartbeat(
   }
 
   // In-run retry for an unanswered request-changes review (Issue #3246). A
-  // `pr_review` claim dismisses the review, and a dismissal cannot be
-  // undone, so a later cycle can never retry it — give the agent a second
-  // run inside this one before the worker posts the agent's rebuttal or
-  // escalates to `needs-human`.
+  // run that ends with no fix and no rebuttal escalates to `needs-human`
+  // rather than looping forever (Issue #3383: a `pr_review` claim no longer
+  // dismisses the review at claim time, but that escalation is still this
+  // run's one conclusion) — give the agent a second run inside this one
+  // first, before the worker posts the agent's rebuttal or escalates.
   let reviewerAttempts = 1;
   let lastAttempt = {
     exitCode: claudeResult.value.exitCode,
@@ -1736,9 +1737,10 @@ async function _processFeedbackWithHeartbeat(
     // Issue #3383: the rebuttal answers the review — dismiss it.
     await retireReview();
   } else if (isReviewerChangeRequest(commentType)) {
-    // Issue #3246: no fix and no rebuttal after every in-run attempt — a
-    // dismissed review cannot be rediscovered next cycle, so escalate now
-    // rather than post the neutral "could not identify a code change" reply.
+    // Issue #3246: no fix and no rebuttal after every in-run attempt —
+    // escalate now rather than post the neutral "could not identify a code
+    // change" reply (Issue #3383: the review is retired, not left
+    // outstanding, once the escalation below is attempted).
     logger.warn(
       "PR feedback: request-changes review left unanswered after every " +
         "in-run attempt — escalating to needs-human (Issue #3246)",

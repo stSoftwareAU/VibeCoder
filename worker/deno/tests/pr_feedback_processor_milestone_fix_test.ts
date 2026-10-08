@@ -414,15 +414,19 @@ Deno.test("processPrFeedback - gated head: PR branch held elsewhere => stands do
   if (!deleted) throw new Error("expected the eyes reaction to be released");
 });
 
-Deno.test("processPrFeedback - gated head: pr_review branch_held => replies directly since the mark cannot come back", async () => {
-  // Regression for the PR #2909 review's round-2 finding: `claim_pr_comment`
-  // marks a `pr_review` comment processed by dismissing the review, and
-  // GitHub offers no un-dismissal — so `removeProcessedMark` always errors
-  // for this comment type, and the earlier fix's "take the mark back" path
-  // never fires. A dismissed CHANGES_REQUESTED review would otherwise never
-  // gate the merge, never be rediscovered, and never be answered.
+Deno.test("processPrFeedback - gated head: pr_review branch_held => releases without a reply or a charge", async () => {
+  // Regression for the PR #2909 review's round-2 finding, reworked for
+  // Issue #3383: a `pr_review` claim no longer dismisses the review at
+  // claim time, so there is nothing for `removeProcessedMark` to take
+  // back — it is a no-op for this comment type. `branch_held` is host-local
+  // contention, not the review's fault, so nothing is posted and nothing is
+  // charged: the lease simply lapses once this run stops renewing it, and
+  // the review is rediscovered and retried once the contention clears.
   const captured: CapturedGh = { comments: [], calls: [] };
   const gitCalls: string[][] = [];
+
+  const markCommentProcessedSpy: string[] = [];
+  const handlePrCommentFailureSpy: string[] = [];
 
   const deps = createMockDeps({
     claude: makeClaudeOk(),
@@ -447,6 +451,18 @@ Deno.test("processPrFeedback - gated head: pr_review branch_held => replies dire
         });
       }) as unknown as GitDeps["runGitCommand"],
     },
+    pr: {
+      markCommentProcessed: ((repo: string) => {
+        markCommentProcessedSpy.push(repo);
+        return Promise.resolve({ ok: true, value: undefined });
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+      handlePrCommentFailure: ((repo: string) => {
+        handlePrCommentFailureSpy.push(repo);
+        return Promise.resolve();
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    },
   });
 
   const processorDeps: PrFeedbackProcessorDeps = {
@@ -468,23 +484,23 @@ Deno.test("processPrFeedback - gated head: pr_review branch_held => replies dire
   assertEquals(result.value.processed, false);
   assertEquals(result.value.changesPushed, false);
 
-  // A dismissed review cannot be un-dismissed, so removeProcessedMark never
-  // even looks up a reaction to delete for this comment type.
+  // A `pr_review` claim never dismissed anything, so removeProcessedMark
+  // never even looks up a reaction to delete for this comment type.
   const deleted = captured.calls.find((c) =>
     c[0] === "api" && c[1] === "-X" && c[2] === "DELETE" &&
     c[3]?.includes("reactions")
   );
   assertEquals(deleted, undefined, "pr_review cannot un-dismiss; no DELETE");
 
+  // Issue #3383: nothing was dismissed, so the review is rediscovered once
+  // the lease lapses — no direct reply is posted, and the branch-prepare
+  // failure is neither retired nor charged as a failed attempt.
   const reply = captured.comments.find((body) =>
     body.includes("I could not check out") && body.includes(MILESTONE_HEAD)
   );
-  if (!reply) {
-    throw new Error(
-      "expected a direct PR reply since the processed mark cannot be taken back",
-    );
-  }
-  assertStringIncludes(reply, "No changes were made.");
+  assertEquals(reply, undefined, "no direct reply expected (Issue #3383)");
+  assertEquals(markCommentProcessedSpy.length, 0);
+  assertEquals(handlePrCommentFailureSpy.length, 0);
 });
 
 Deno.test("processPrFeedback - gated head: branch_held with a failed reaction DELETE => replies directly", async () => {
