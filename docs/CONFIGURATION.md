@@ -3869,7 +3869,8 @@ performance, or failures.
    prompt component (issue body, comments, custom instructions, recent activity,
    etc.) using a characters-per-token heuristic (~4 characters per token).
 2. The total is compared against the model's context window (1,000,000 tokens
-   for Opus/Sonnet, 200,000 for Haiku —).
+   for Opus/Sonnet/Haiku — Haiku 5.5, Issue #3400 — or 200,000 for a Haiku 4.x
+   id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
 4. If usage reaches `context_budget_block_percent`, the check fails closed

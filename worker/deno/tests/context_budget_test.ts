@@ -663,8 +663,8 @@ Deno.test("context_budget - Sonnet context window is 1M tokens (Issue #1399)", (
   assertEquals(MODEL_CONTEXT_WINDOWS["sonnet"], 1_000_000);
 });
 
-Deno.test("context_budget - Haiku context window remains 200k tokens (Issue #1399)", () => {
-  assertEquals(MODEL_CONTEXT_WINDOWS["haiku"], 200_000);
+Deno.test("context_budget - Haiku context window is 1M tokens (Issue #3400)", () => {
+  assertEquals(MODEL_CONTEXT_WINDOWS["haiku"], 1_000_000);
 });
 
 Deno.test("context_budget - default context window is 200k tokens (Issue #1399)", () => {
@@ -698,6 +698,22 @@ Deno.test("context_budget - getContextWindowSize returns 1M for claude-sonnet-4-
 
 Deno.test("context_budget - getContextWindowSize returns 200k for claude-haiku-4-5 (Issue #1399)", () => {
   assertEquals(getContextWindowSize("claude-haiku-4-5"), 200_000);
+});
+
+Deno.test("context_budget - getContextWindowSize returns 1M for haiku and claude-haiku-5-5 (Issue #3400)", () => {
+  assertEquals(getContextWindowSize("haiku"), 1_000_000);
+  assertEquals(getContextWindowSize("claude-haiku-5-5"), 1_000_000);
+});
+
+Deno.test("context_budget - checkContextBudget uses 1M window for haiku (Issue #3400)", () => {
+  const components: ContextComponent[] = [
+    { name: "system", tokens: 300_000 },
+  ];
+  const result = checkContextBudget(components, "haiku");
+  assertEquals(result.contextWindowSize, 1_000_000);
+  assertEquals(result.ok, true);
+  assertEquals(result.warning, undefined);
+  assertEquals(result.error, undefined);
 });
 
 Deno.test("context_budget - checkContextBudget uses 1M window for opus (Issue #1399)", () => {

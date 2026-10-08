@@ -209,7 +209,7 @@ availability.
 | pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | spelling_fix | Haiku | low | unchanged |
-| summarise | Haiku | low | unchanged (large-input escalation still applies) |
+| summarise | Haiku | low | unchanged (large-input escalation still applies if pinned to a Haiku 4.x id) |
 | health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
@@ -271,10 +271,12 @@ extremes.**
 - The three trivial phases (**spelling_fix**, **summarise**, **health**) stay
   on **Haiku**. The Opus↔Haiku gap is still ~5×; these tasks are mechanical;
   `summarise` in particular is fed the largest inputs, so the cheaper tier
-  matters most there. The large-input escalation
+  matters most there. Since Haiku 5.5 (Issue #3400) the `haiku` alias itself
+  has a 1M-token window — the same as Sonnet — so the large-input escalation
   ([`phase_model_escalation.ts`](../worker/deno/lib/phase_model_escalation.ts),
-  ) still lifts a Haiku phase to a 1M-window tier whenever an input
-  would otherwise truncate.
+  ) no longer lifts it; it still escalates a phase pinned to a Haiku 4.x id
+  (e.g. `claude-haiku-4-5`) or an unrecognised model whenever an input would
+  otherwise truncate against the 200k window.
 
 Tier remains fully tunable through the override chain below, so an operator can
 pin any phase to a different tier without code changes.
@@ -2643,6 +2645,11 @@ Same leniency as the tier-level rule: one invocation served by the current model
 keeps the run healthy. An operator who pins `best_planning_model` to an older
 generation is never flagged — they were served the model they asked for.
 
+`CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue
+#3400), so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
+`claude-haiku-4-5`) as a previous generation too. The `degraded-model` label
+is not yet wired up for haiku-tier issue runs — that is open Issue #3405.
+
 Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
 thinking blocks bound to the model and to an unedited conversation prefix — do
 **not** reach the worker: it drives the Claude Code CLI, which owns request
@@ -2847,13 +2854,16 @@ for consistency.
 #### Context Window Sizes
 
 As of the Claude 5 generation, Fable, Opus and Sonnet have 1M-token context
-windows, while Haiku retains the original 200k window:
+windows. Haiku joined them at 1M with Haiku 5.5 (Issue #3400); the `haiku`
+alias resolves to Haiku 5.5, while a phase pinned to a Haiku 4.x id such as
+`claude-haiku-4-5` keeps the older 200k window:
 
 | Model | Context Window |
 |-------|---------------|
 | Claude Fable 5 | 1,000,000 tokens |
 | Claude Opus 5 | 1,000,000 tokens |
 | Claude Sonnet 4.6 | 1,000,000 tokens |
+| Claude Haiku 5.5 | 1,000,000 tokens |
 | Claude Haiku 4.5 | 200,000 tokens |
 
 #### Component Breakdown

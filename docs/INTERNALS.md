@@ -5032,7 +5032,8 @@ Additional behaviours:
 [context_budget.ts](../worker/deno/lib/context_budget.ts) estimates prompt token
 usage across components (system prompt, dynamic context, issue content) and
 compares the total against the model's context window (1M tokens for
-Opus/Sonnet, 200k for Haiku —):
+Opus/Sonnet/Haiku — Haiku 5.5, Issue #3400 — or 200k for a Haiku 4.x id such
+as `claude-haiku-4-5`):
 
 - **Heuristic estimation** — `estimateComponentTokens()` approximates token
   count as `Math.floor(text.length / 4)`.
