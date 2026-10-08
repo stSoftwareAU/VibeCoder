@@ -37,6 +37,9 @@ export type UpdateMode = "dynamic" | "frozen";
  */
 export type CopilotCodeReviewMode = "on" | "off" | "leave";
 
+/** Model tier of the `issue`-phase executor sub-agents (Issue #3401). */
+export type IssueSubAgentTier = "sonnet" | "haiku";
+
 /**
  * Exact tool versions a frozen host installs (Issue #622, part of #583).
  *
@@ -492,6 +495,14 @@ export interface WorkerConfig {
    * repository. Default `false` — an unconfigured host is unchanged.
    */
   issueExecutorSplit: boolean;
+  /**
+   * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
+   * Host-wide; default `"sonnet"`. An invalid value is warned about and
+   * replaced by the default at load. A `repo_config` entry of the same name
+   * overrides it per repository — resolve both with
+   * `resolveIssueSubAgentTier`.
+   */
+  issueSubAgentTier: IssueSubAgentTier;
   /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
    * defined cheaper sub-agents (Issue #2575). Host-wide only. Default `false`.
@@ -1091,6 +1102,15 @@ export interface RepoConfig {
    */
   issueExecutorSplit?: boolean;
   /**
+   * Per-repo issue sub-agent tier (Issue #3401). Same meaning as the global
+   * `issue_sub_agent_tier` key, but scoped to this repo — a valid value wins
+   * over the host-wide one; an invalid one is warned about and ignored.
+   * `unknown` because `repo_config` is loosely typed and the resolver
+   * validates it. Operator-only — configured in `.config.json` (no in-repo
+   * config mechanism — Issue #2626).
+   */
+  issueSubAgentTier?: unknown;
+  /**
    * Per-repo per-phase effort overrides (Issue #2625). Same shape as the global
    * `phase_effort_overrides` key, but scoped to this repo. Operator-only —
    * configured in `.config.json` (no in-repo config mechanism — Issue #2626).
@@ -1434,6 +1454,8 @@ export interface ConfigFile {
   deepseek_phase_model_overrides?: Record<string, string>;
   /** Whether `issue`-phase runs use the split executor (Issue #2341) */
   issue_executor_split?: boolean;
+  /** Model tier of issue-phase executor sub-agents: "sonnet" | "haiku" (Issue #3401) */
+  issue_sub_agent_tier?: string;
   /** Whether `issue` runs use the defined reviewer sub-agents (Issue #2575) */
   issue_reviewer_agents?: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
