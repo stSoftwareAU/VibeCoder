@@ -74,6 +74,7 @@ import {
   findSuppressions,
   type SupportedLanguage as CommentLanguage,
 } from "../suppression_comments.ts";
+import { blameFileLineLogins } from "../suppression_identity.ts";
 import {
   detectRepoLanguages as defaultDetectLanguages,
   type RepoLanguages,
@@ -272,6 +273,12 @@ export interface BestPracticesTemplateDeps {
   checkAwsEmulatorFn?: (
     repoPath: string,
   ) => Promise<AwsEmulatorCheckResult>;
+  /**
+   * Per-file `git blame` lookup for the AWS-emulator waiver check (Issue
+   * #269) — defaults to {@link blameFileLineLogins}. Tests inject a stub
+   * so they do not need a real git checkout.
+   */
+  blameFileFn?: BlameFileFn;
   /**
    * Logger for the AWS-emulator pre-check (Issue #3368) — defaults to
    * `defaultLogger`. Used to record why the `BP-AWS-EMULATOR-MISSING`
@@ -683,6 +690,16 @@ interface WaiverCandidate {
 }
 
 /**
+ * Per-file `git blame` lookup injected into {@link hasAwsEmulatorWaiver}
+ * (Issue #269) — defaults to {@link blameFileLineLogins}. Tests inject a
+ * stub so they do not need a real git checkout.
+ */
+export type BlameFileFn = (
+  repoPath: string,
+  file: string,
+) => Promise<Readonly<Record<number, string>>>;
+
+/**
  * Validate that an AWS-evidence path is repo-relative — never absolute,
  * never escaping the repo root via a `..` segment. The caller still
  * canonicalises (follows symlinks) and re-checks the resolved path stays
@@ -714,7 +731,10 @@ function assertRepoRelative(path: string): void {
  *
  * Governance (author allowlist, verified commit identity, expiry, reason)
  * is applied by `findSuppressions` itself — an invalid or expired marker
- * never counts.
+ * never counts. The verified commit identity is bound by blaming each
+ * candidate file (Issue #269) the same way `orphan_deps_suppression_scan.ts`
+ * does — a fork PR that writes `author=<allowlisted-login>` still blames as
+ * the attacker, so the marker is rejected.
  *
  * Each evidence path is also canonicalised (symlinks followed) and the
  * resolved path re-checked to stay inside the repo root — a `..`-free,
@@ -723,6 +743,7 @@ function assertRepoRelative(path: string): void {
 export async function hasAwsEmulatorWaiver(
   repoPath: string,
   awsEvidence: readonly string[],
+  blameFileFn: BlameFileFn = blameFileLineLogins,
 ): Promise<boolean> {
   const candidates: WaiverCandidate[] = [];
 
@@ -782,9 +803,18 @@ export async function hasAwsEmulatorWaiver(
 
   const commentLanguages: readonly CommentLanguage[] = ["sh", "ts"];
   for (const candidate of candidates) {
+    // Issue #269: bind the marker's `author=` to the blamed login for its
+    // line. An empty blame (no git history visible, a stubbed test reader)
+    // omits the key entirely so the process-wide commit-author list still
+    // applies — matching `collectInSourceSuppressions`'s fallback.
+    const blamed = await blameFileFn(repoPath, candidate.rel);
+    const lineAuthors = Object.keys(blamed).length > 0 ? blamed : undefined;
     for (const lang of commentLanguages) {
       const suppressions = filterByFamily(
-        findSuppressions(candidate.text, lang, { file: candidate.rel }),
+        findSuppressions(candidate.text, lang, {
+          file: candidate.rel,
+          ...(lineAuthors ? { lineAuthors } : {}),
+        }),
         "best-practices",
       );
       if (
@@ -926,6 +956,7 @@ export function createBestPracticesTemplate(
     ((path, lang) => defaultCheckLinterInCI(path, lang));
   const checkAwsEmulatorFn = deps.checkAwsEmulatorFn ??
     ((path) => defaultCheckAwsEmulatorInCI(path));
+  const blameFileFn = deps.blameFileFn ?? blameFileLineLogins;
   const logger = deps.logger ?? defaultLogger;
   const runScanFn = deps.runScanFn ??
     ((opts) => defaultRunScan(opts, loadPromptFn, readBucketGuideFn));
@@ -1093,7 +1124,9 @@ export function createBestPracticesTemplate(
         logger.info(
           `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — a workflow runs floci/floci`,
         );
-      } else if (await hasAwsEmulatorWaiver(awsRepoPath, aws.awsEvidence)) {
+      } else if (
+        await hasAwsEmulatorWaiver(awsRepoPath, aws.awsEvidence, blameFileFn)
+      ) {
         logger.info(
           `best-practices: ${AWS_EMULATOR_FINDING_ID} not filed for ${opts.repo} — waived by a best-practice-ignore marker`,
         );

@@ -56,6 +56,7 @@ import {
   assembleBestPracticesPrompt,
   AWS_EMULATOR_FINDING_ID,
   BEST_PRACTICES_ISSUE_TITLE,
+  type BlameFileFn,
   bucketSlug,
   buildAwsEmulatorFinding,
   createBestPracticesTemplate,
@@ -76,9 +77,7 @@ import type { AwsEmulatorCheckResult } from "../lib/aws_emulator_in_ci_check.ts"
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import {
   _resetSuppressionAuthorAllowlist,
-  _resetSuppressionCommitAuthors,
   setSuppressionAuthorAllowlist,
-  setSuppressionCommitAuthors,
 } from "../lib/suppression_comments.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -1698,13 +1697,24 @@ Deno.test(
 
 async function withAwsWaiverGovernance<T>(fn: () => Promise<T>): Promise<T> {
   setSuppressionAuthorAllowlist(["nigel"]);
-  setSuppressionCommitAuthors(["nigel"]);
   try {
     return await fn();
   } finally {
     _resetSuppressionAuthorAllowlist();
-    _resetSuppressionCommitAuthors();
   }
+}
+
+/**
+ * Stub {@link BlameFileFn} binding a marker's commit identity without a
+ * real git checkout (Issue #269) — mirrors how production blames each
+ * waiver candidate file. Only `file` blames as `login`; every other
+ * candidate blames empty, so a waiver on the wrong file still fails
+ * closed (no process-wide commit-author fallback is configured in these
+ * tests any more).
+ */
+function stubBlame(file: string, line: number, login: string): BlameFileFn {
+  return (_repoPath, candidateFile) =>
+    Promise.resolve(candidateFile === file ? { [line]: login } : {});
 }
 
 Deno.test(
@@ -1742,6 +1752,11 @@ Deno.test(
           ghCommandFn: gh,
           checkLinterInCIFn: stubLinterConfigured,
           checkAwsEmulatorFn: () => stubAwsNoFloci(["Cargo.toml"]),
+          blameFileFn: stubBlame(
+            ".github/workflows/ci.yml",
+            4,
+            "nigel",
+          ),
           logger,
           runScanFn: () => Promise.resolve({ ok: true, value: true }),
         });
@@ -1904,6 +1919,7 @@ Deno.test(
           ghCommandFn: gh,
           checkLinterInCIFn: stubLinterConfigured,
           checkAwsEmulatorFn: () => stubAwsNoFloci(["main.tf"]),
+          blameFileFn: stubBlame("main.tf", 2, "nigel"),
           runScanFn: () => Promise.resolve({ ok: true, value: true }),
         });
 
