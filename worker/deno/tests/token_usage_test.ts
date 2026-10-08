@@ -365,7 +365,7 @@ Deno.test("token_usage - estimateCost calculates correct costs for sonnet", () =
     cacheReadTokens: 1_000_000,
   };
 
-  const cost = estimateCost(usage, "claude-sonnet-4-6");
+  const cost = estimateCost(usage, "claude-sonnet-4-6", undefined);
   assertEquals(cost?.inputCost, 3);
   assertEquals(cost?.outputCost, 15);
   assertEquals(cost?.cacheWriteCost, 3.75);
@@ -381,7 +381,7 @@ Deno.test("token_usage - estimateCost calculates correct costs for fable (Issue 
     cacheReadTokens: 1_000_000,
   };
 
-  const cost = estimateCost(usage, "claude-fable-5");
+  const cost = estimateCost(usage, "claude-fable-5", undefined);
   assertEquals(cost?.inputCost, 10);
   assertEquals(cost?.outputCost, 50);
   assertEquals(cost?.cacheWriteCost, 12.50);
@@ -397,7 +397,7 @@ Deno.test("token_usage - estimateCost prices Fable 5.1 cache reads at $0.25/MTok
     cacheReadTokens: 1_000_000,
   };
 
-  const cost = estimateCost(usage, "claude-fable-5-1");
+  const cost = estimateCost(usage, "claude-fable-5-1", undefined);
   assertEquals(cost?.inputCost, 10);
   assertEquals(cost?.outputCost, 50);
   assertEquals(cost?.cacheWriteCost, 12.50);
@@ -413,7 +413,7 @@ Deno.test("token_usage - estimateCost returns null for unknown model", () => {
     cacheReadTokens: 0,
   };
 
-  assertEquals(estimateCost(usage, "unknown-model"), null);
+  assertEquals(estimateCost(usage, "unknown-model", undefined), null);
 });
 
 Deno.test("token_usage - estimateCost handles zero tokens", () => {
@@ -424,7 +424,7 @@ Deno.test("token_usage - estimateCost handles zero tokens", () => {
     cacheReadTokens: 0,
   };
 
-  const cost = estimateCost(usage, "claude-sonnet-4-6");
+  const cost = estimateCost(usage, "claude-sonnet-4-6", undefined);
   assertEquals(cost?.totalCost, 0);
 });
 
@@ -437,7 +437,7 @@ Deno.test("token_usage - estimateCost calculates realistic small invocation", ()
     cacheReadTokens: 3000,
   };
 
-  const cost = estimateCost(usage, "claude-sonnet-4-6");
+  const cost = estimateCost(usage, "claude-sonnet-4-6", undefined);
   // input: 5000/1M * 3 = 0.015
   // output: 500/1M * 15 = 0.0075
   // cache read: 3000/1M * 0.30 = 0.0009
@@ -455,7 +455,7 @@ Deno.test("token_usage - estimateCost prices Opus 4.8 at modern rate, not legacy
     cacheReadTokens: 0,
   };
 
-  const cost = estimateCost(usage, "claude-opus-4-8");
+  const cost = estimateCost(usage, "claude-opus-4-8", undefined);
   // Modern Opus: input 5 + output 25 = 30. Legacy would be 15 + 75 = 90.
   assertEquals(cost?.inputCost, 5);
   assertEquals(cost?.outputCost, 25);
@@ -475,13 +475,13 @@ Deno.test("token_usage - budget fallback does not trip prematurely for Opus 4.8 
   };
   const representativeBudget = 25; // USD per run
 
-  const modernCost = estimateCost(usage, "claude-opus-4-8");
+  const modernCost = estimateCost(usage, "claude-opus-4-8", undefined);
   // input 2M*5 = 10, output 0.4M*25 = 10 => 20 < 25 (within budget).
   assertEquals(modernCost?.totalCost, 20);
   assertEquals(modernCost!.totalCost < representativeBudget, true);
 
   // The legacy rate would have been 2M*15 + 0.4M*75 = 30 + 30 = 60 > 25.
-  const legacyCost = estimateCost(usage, "claude-opus-4-20250514");
+  const legacyCost = estimateCost(usage, "claude-opus-4-20250514", undefined);
   assertEquals(legacyCost!.totalCost > representativeBudget, true);
 });
 
@@ -535,7 +535,7 @@ Deno.test("token_usage - estimateCost uses the >100k band for a 150k-prompt Haik
   assertEquals(cost?.cacheReadCost, 0.05);
 });
 
-Deno.test("token_usage - estimateCost without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399)", () => {
+Deno.test("token_usage - estimateCost with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399)", () => {
   const usage: TokenUsage = {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000,
@@ -543,14 +543,14 @@ Deno.test("token_usage - estimateCost without a prompt-size argument uses the co
     cacheReadTokens: 1_000_000,
   };
 
-  const cost = estimateCost(usage, "claude-haiku-5-5");
+  const cost = estimateCost(usage, "claude-haiku-5-5", undefined);
   assertEquals(cost?.inputCost, 0.50);
   assertEquals(cost?.outputCost, 2.50);
   assertEquals(cost?.cacheWriteCost, 0.625);
   assertEquals(cost?.cacheReadCost, 0.05);
 });
 
-Deno.test("token_usage - estimateCostWithUpperBound without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399)", () => {
+Deno.test("token_usage - estimateCostWithUpperBound with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399)", () => {
   const usage: TokenUsage = {
     inputTokens: 1_000_000,
     outputTokens: 1_000_000,
@@ -558,7 +558,11 @@ Deno.test("token_usage - estimateCostWithUpperBound without a prompt-size argume
     cacheReadTokens: 1_000_000,
   };
 
-  const estimate = estimateCostWithUpperBound(usage, "claude-haiku-5-5");
+  const estimate = estimateCostWithUpperBound(
+    usage,
+    "claude-haiku-5-5",
+    undefined,
+  );
   assertEquals(estimate.priced, true);
   assertEquals(estimate.cost.inputCost, 0.50);
   assertEquals(estimate.cost.outputCost, 2.50);
@@ -585,6 +589,28 @@ Deno.test("token_usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promp
   }
 });
 
+Deno.test("token_usage - lookupModelPricing keeps Haiku 5.0-5.4 on the flat Haiku 4.5 rate (Issue #3399)", () => {
+  for (const model of ["claude-haiku-5-0", "claude-haiku-5-4"]) {
+    const pricing = lookupModelPricing(model);
+    assertEquals(pricing?.inputPerMillion, 1, model);
+    assertEquals(pricing?.outputPerMillion, 5, model);
+    assertEquals(pricing?.cacheWritePerMillion, 1.25, model);
+    assertEquals(pricing?.cacheReadPerMillion, 0.10, model);
+    assertEquals(pricing?.lowerBand, undefined, model);
+  }
+
+  // No band applies: 1M of each token type on claude-haiku-5-4 still costs
+  // the flat rate regardless of promptTokensPerRequest.
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+  const cost = estimateCost(usage, "claude-haiku-5-4", 50_000);
+  assertEquals(cost?.inputCost, 1);
+});
+
 Deno.test("token_usage - estimateCost for Sonnet ignores a promptTokensPerRequest argument (no lowerBand) (Issue #3399)", () => {
   const usage: TokenUsage = {
     inputTokens: 1_000_000,
@@ -593,7 +619,7 @@ Deno.test("token_usage - estimateCost for Sonnet ignores a promptTokensPerReques
     cacheReadTokens: 1_000_000,
   };
 
-  const withoutArg = estimateCost(usage, "claude-sonnet-4-6");
+  const withoutArg = estimateCost(usage, "claude-sonnet-4-6", undefined);
   const withArg = estimateCost(usage, "claude-sonnet-4-6", 50);
   assertEquals(withoutArg, withArg);
 });
@@ -778,7 +804,7 @@ Deno.test("token_usage - a priced non-Claude id costs its row rate, not the boun
   };
 
   for (const [id, expected] of API_EQUIVALENT_ROWS) {
-    const estimate = estimateCostWithUpperBound(usage, id);
+    const estimate = estimateCostWithUpperBound(usage, id, undefined);
     assertEquals(estimate.priced, true, `${id} must read as priced`);
     const rowTotal = expected.inputPerMillion + expected.outputPerMillion +
       0.5 * expected.cacheWritePerMillion + expected.cacheReadPerMillion;
@@ -798,7 +824,7 @@ Deno.test("token_usage - a non-Claude id outside the table is still unpriced and
 
   for (const model of ["gpt-4.1", "gemini-3-pro", "deepseek-v5"]) {
     assertEquals(lookupModelPricing(model), null, `${model} must be unpriced`);
-    const estimate = estimateCostWithUpperBound(usage, model);
+    const estimate = estimateCostWithUpperBound(usage, model, undefined);
     assertEquals(estimate.priced, false, `${model} must read as unpriced`);
     // The tokens carry a visible upper-bound cost rather than a silent $0.
     assertAlmostEquals(
@@ -812,12 +838,16 @@ Deno.test("token_usage - a non-Claude id outside the table is still unpriced and
 
 Deno.test("token_usage - estimateCost prices a Codex run from its row (Issue #1937)", () => {
   // 200k input + 50k output on gpt-5-codex: 0.2 * 1.25 + 0.05 * 10.
-  const cost = estimateCost({
-    inputTokens: 200_000,
-    outputTokens: 50_000,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 400_000,
-  }, "gpt-5-codex");
+  const cost = estimateCost(
+    {
+      inputTokens: 200_000,
+      outputTokens: 50_000,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 400_000,
+    },
+    "gpt-5-codex",
+    undefined,
+  );
   assert(cost);
   assertAlmostEquals(cost.inputCost, 0.25, 1e-9);
   assertAlmostEquals(cost.outputCost, 0.5, 1e-9);

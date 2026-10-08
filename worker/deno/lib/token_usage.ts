@@ -591,7 +591,11 @@ const FABLE_CHEAP_CACHE_MIN_MINOR = 1;
 /** Major version at/above which Sonnet uses the cheaper Sonnet 5 rate. */
 const SONNET_MODERN_MIN_MAJOR = 5;
 
-/** Major version at/above which Haiku uses the banded 5.5 rate. */
+/**
+ * Major version of the Haiku release that introduced the banded 5.5 rate.
+ * Any later major (e.g. 6.0) is banded outright; this major only needs the
+ * minor check below.
+ */
 const HAIKU_5_5_MIN_MAJOR = 5;
 
 /** Minor version at/above which Haiku 5 uses the banded 5.5 rate. */
@@ -686,8 +690,9 @@ export function lookupModelPricing(model: string): ModelPricing | null {
         : SONNET_4_PRICING;
     }
     if (parsed.tier === "haiku") {
-      const banded = parsed.major >= HAIKU_5_5_MIN_MAJOR &&
-        parsed.minor >= HAIKU_5_5_MIN_MINOR;
+      const banded = parsed.major > HAIKU_5_5_MIN_MAJOR ||
+        (parsed.major === HAIKU_5_5_MIN_MAJOR &&
+          parsed.minor >= HAIKU_5_5_MIN_MINOR);
       return banded ? HAIKU_5_5_PRICING : HAIKU_PRICING;
     }
     return TIER_CURRENT_PRICING.get(parsed.tier) ?? null;
@@ -707,17 +712,16 @@ export function lookupModelPricing(model: string): ModelPricing | null {
  *
  * @param usage - Token usage counts
  * @param model - Model identifier for pricing lookup
- * @param promptTokensPerRequest - Per-request prompt token count, when known
- *   (Issue #3399). Pass it to get the correct band for a banded row (e.g.
- *   Haiku 5.5); when only an aggregated run total is available, omit it and
- *   the conservative >100k-equivalent (top-level) rate is used automatically
- *   via `costFor`'s fallback.
+ * @param promptTokensPerRequest - Pass the per-request prompt token count
+ *   when known (Issue #3399) so a banded row (e.g. Haiku 5.5) picks its
+ *   band; pass `undefined` when only aggregated run totals are known, and
+ *   the conservative >100k (top-level) rate applies.
  * @returns Cost breakdown or null if model pricing is unknown
  */
 export function estimateCost(
   usage: TokenUsage,
   model: string,
-  promptTokensPerRequest?: number,
+  promptTokensPerRequest: number | undefined,
 ): CostBreakdown | null {
   const pricing = lookupModelPricing(model);
   if (!pricing) return null;
@@ -742,17 +746,16 @@ export interface BoundedCostEstimate {
  *
  * @param usage - Token usage counts
  * @param model - Model identifier for pricing lookup
- * @param promptTokensPerRequest - Per-request prompt token count, when known
- *   (Issue #3399). Pass it to get the correct band for a banded row (e.g.
- *   Haiku 5.5); when only an aggregated run total is available, omit it and
- *   the conservative >100k-equivalent (top-level) rate is used automatically
- *   via `costFor`'s fallback.
+ * @param promptTokensPerRequest - Pass the per-request prompt token count
+ *   when known (Issue #3399) so a banded row (e.g. Haiku 5.5) picks its
+ *   band; pass `undefined` when only aggregated run totals are known, and
+ *   the conservative >100k (top-level) rate applies.
  * @returns The cost and whether real pricing was found
  */
 export function estimateCostWithUpperBound(
   usage: TokenUsage,
   model: string,
-  promptTokensPerRequest?: number,
+  promptTokensPerRequest: number | undefined,
 ): BoundedCostEstimate {
   const pricing = lookupModelPricing(model);
   return {
@@ -770,14 +773,14 @@ export function estimateCostWithUpperBound(
  *
  * When `pricing` carries a `lowerBand` and `promptTokensPerRequest` is given
  * and at or below `lowerBand.maxPromptTokens`, the cheaper banded rate is
- * used; otherwise (including when `promptTokensPerRequest` is omitted — e.g.
- * an aggregated run-total figure with no per-request prompt size) the
+ * used; otherwise (including when `promptTokensPerRequest` is `undefined` —
+ * e.g. an aggregated run-total figure with no per-request prompt size) the
  * top-level (conservative, >threshold) rate is used (Issue #3399).
  */
 function costFor(
   usage: TokenUsage,
   pricing: ModelPricing,
-  promptTokensPerRequest?: number,
+  promptTokensPerRequest: number | undefined,
 ): CostBreakdown {
   const rate = pricing.lowerBand &&
       promptTokensPerRequest !== undefined &&

@@ -511,12 +511,17 @@ export async function getDailySummary(
       // even when a phase spans multiple models.
       // An unpriced model id is charged at the conservative upper bound
       // (Issue #3870) so a phase never reads as free.
-      const entryCost = estimateCostWithUpperBound({
-        inputTokens: entry.inputTokens ?? 0,
-        outputTokens: entry.outputTokens ?? 0,
-        cacheCreationTokens: entry.cacheCreationTokens ?? 0,
-        cacheReadTokens: entry.cacheReadTokens ?? 0,
-      }, entry.model).cost;
+      // Per-invocation log entries carry no per-request prompt size, so banded rows use their >100k rate (Issue #3399).
+      const entryCost = estimateCostWithUpperBound(
+        {
+          inputTokens: entry.inputTokens ?? 0,
+          outputTokens: entry.outputTokens ?? 0,
+          cacheCreationTokens: entry.cacheCreationTokens ?? 0,
+          cacheReadTokens: entry.cacheReadTokens ?? 0,
+        },
+        entry.model,
+        undefined,
+      ).cost;
       if (!summary.estimatedCostByPhase![entry.phase]) {
         summary.estimatedCostByPhase![entry.phase] = {
           inputCost: 0,
@@ -540,7 +545,12 @@ export async function getDailySummary(
   // is charged at the upper bound and recorded separately (Issue #3870): the
   // ceiling must never measure less than the run actually cost.
   for (const [model, tokens] of Object.entries(summary.tokensByModel)) {
-    const { cost, priced } = estimateCostWithUpperBound(tokens, model);
+    // Per-model totals carry no per-request prompt size, so banded rows use their >100k rate (Issue #3399).
+    const { cost, priced } = estimateCostWithUpperBound(
+      tokens,
+      model,
+      undefined,
+    );
     summary.estimatedCostByModel[model] = cost;
     summary.totalEstimatedCost += cost.totalCost;
     if (!priced) {

@@ -262,7 +262,8 @@ export function estimateRunCost(entries: ModelUsageEntry[]): RunCostEstimate {
 
   for (const { model, usage } of merged) {
     const pricing = lookupModelPricing(model);
-    const breakdown = estimateCost(usage, model);
+    // Merged run totals carry no per-request prompt size, so banded rows use their >100k rate (Issue #3399).
+    const breakdown = estimateCost(usage, model, undefined);
     if (breakdown) {
       totalCost += breakdown.totalCost;
     } else if (!usageIsZero(usage)) {

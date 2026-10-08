@@ -104,9 +104,13 @@ Deno.test("token_usage - estimateCostWithUpperBound prices a known model exactly
     cacheCreationTokens: 0,
     cacheReadTokens: 0,
   };
-  const exact = estimateCost(usage, "claude-sonnet-4-6");
+  const exact = estimateCost(usage, "claude-sonnet-4-6", undefined);
   assert(exact);
-  const bounded = estimateCostWithUpperBound(usage, "claude-sonnet-4-6");
+  const bounded = estimateCostWithUpperBound(
+    usage,
+    "claude-sonnet-4-6",
+    undefined,
+  );
   assertEquals(bounded.priced, true);
   assertAlmostEquals(bounded.cost.totalCost, exact.totalCost, 1e-9);
 });
@@ -119,7 +123,7 @@ Deno.test("token_usage - estimateCostWithUpperBound charges an unknown id at the
     cacheReadTokens: 3_000_000,
   };
   assertEquals(lookupModelPricing("default"), null);
-  const bounded = estimateCostWithUpperBound(usage, "default");
+  const bounded = estimateCostWithUpperBound(usage, "default", undefined);
   assertEquals(bounded.priced, false);
 
   const expected = 2 * UNPRICED_UPPER_BOUND_PRICING.inputPerMillion +
@@ -137,12 +141,16 @@ Deno.test("token_usage - Codex GPT-5 ids are priced at the API-equivalent row, n
     const row = lookupModelPricing(id);
     assert(row, `${id} must carry a pricing row`);
     assertEquals(row.apiEquivalent, true);
-    const bounded = estimateCostWithUpperBound({
-      inputTokens: 1_000_000,
-      outputTokens: 0,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-    }, id);
+    const bounded = estimateCostWithUpperBound(
+      {
+        inputTokens: 1_000_000,
+        outputTokens: 0,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      id,
+      undefined,
+    );
     assertEquals(bounded.priced, true);
     assertAlmostEquals(bounded.cost.totalCost, row.inputPerMillion, 1e-9);
     assert(
@@ -154,12 +162,16 @@ Deno.test("token_usage - Codex GPT-5 ids are priced at the API-equivalent row, n
 });
 
 Deno.test("token_usage - a future model id still costs more than zero", () => {
-  const bounded = estimateCostWithUpperBound({
-    inputTokens: 1_000,
-    outputTokens: 1_000,
-    cacheCreationTokens: 0,
-    cacheReadTokens: 0,
-  }, "claude-brand-new-9-20991231");
+  const bounded = estimateCostWithUpperBound(
+    {
+      inputTokens: 1_000,
+      outputTokens: 1_000,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    },
+    "claude-brand-new-9-20991231",
+    undefined,
+  );
   assertEquals(bounded.priced, false);
   assert(bounded.cost.totalCost > 0);
 });
@@ -196,12 +208,16 @@ Deno.test("credit_tracker - an unknown model id does not produce a $0 daily tota
       1e-9,
     );
     // The whole total must be the upper bound applied to those tokens.
-    const bound = estimateCostWithUpperBound({
-      inputTokens: 5_000_000,
-      outputTokens: 1_000_000,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-    }, "default");
+    const bound = estimateCostWithUpperBound(
+      {
+        inputTokens: 5_000_000,
+        outputTokens: 1_000_000,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      "default",
+      undefined,
+    );
     assertAlmostEquals(summary.totalEstimatedCost, bound.cost.totalCost, 1e-9);
     // The unpriced model still gets a cost row so the breakdown reconciles.
     assert(summary.estimatedCostByModel["default"]);

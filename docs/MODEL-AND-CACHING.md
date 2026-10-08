@@ -2557,11 +2557,12 @@ each request — $0.10 / $0.50 per MTok (cache $0.125 / $0.01) at or below
 (Issue #3399). The row's top-level rates are the dearer >100k band and the
 cheaper band rides in its `lowerBand` field, so `UNPRICED_UPPER_BOUND_PRICING`
 and any reader that ignores the band still over-estimate. `estimateCost()` /
-`estimateCostWithUpperBound()` take an optional per-request prompt size and pick
-the band from it; the run-stats cost block and the credit tracker only hold run
-totals and pass none, so they cost Haiku 5.5 at the conservative >100k rate.
-`lookupModelPricing()` resolves `claude-haiku-5-5` and its dated variants
-(`claude-haiku-5-5-…`) to the banded row, and Haiku 4.5 keeps its flat row.
+`estimateCostWithUpperBound()` take a required per-request
+prompt size (`number | undefined`) and pick the band from it; the run-stats cost
+block and the credit tracker only hold run totals and pass `undefined`, so they
+cost Haiku 5.5 at the conservative >100k rate. `lookupModelPricing()` resolves
+`claude-haiku-5-5`, its dated variants (`claude-haiku-5-5-…`) and any later
+Haiku version to the banded row, and Haiku 4.5 through 5.4 keep the flat row.
 
 Sonnet is the default for the reactive phases (`ci_fix`, `pr_feedback`,
 `quality_fix`) since Issue #2812, for the `issue`-phase executors and reviewer
