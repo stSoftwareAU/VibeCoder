@@ -114,3 +114,25 @@ Deno.test("parseMarkerCommentPages - keeps page order and defaults a missing aut
   assertEquals(rows.map((r) => r.id), [1, 2]);
   assertEquals(rows.map((r) => r.author), [null, null]);
 });
+
+Deno.test("parseMarkerCommentPages - keeps updated_at only when GitHub supplied it (Issue #3383)", () => {
+  const rows = parseMarkerCommentPages(
+    JSON.stringify([
+      {
+        id: 1,
+        body: "m one",
+        created_at: "2026-09-22T12:00:00Z",
+        updated_at: "2026-09-22T12:05:00Z",
+      },
+      { id: 2, body: "m two", created_at: "2026-09-22T12:00:00Z" },
+      { id: 3, body: "m three", created_at: "", updated_at: "" },
+    ]),
+    "m ",
+  );
+
+  assertEquals(rows.map((r) => r.updatedAt), [
+    "2026-09-22T12:05:00Z",
+    undefined,
+    undefined,
+  ]);
+});

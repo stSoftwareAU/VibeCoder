@@ -29,12 +29,14 @@ export interface MarkerComment extends AlertDedupCommentRow {
   body: string;
   /** `created_at`, as GitHub stamped it. */
   createdAt: string;
+  /** `updated_at`, as GitHub stamped it — set only when GitHub supplied it. */
+  updatedAt?: string;
 }
 
 /** The `--jq` projection every marker read requests. */
 function markerJq(markerPrefix: string): string {
   return `[.[] | select(.body | test("${markerPrefix}")) | ` +
-    `{id: .id, body: .body, created_at: .created_at, author: .user.login}]`;
+    `{id: .id, body: .body, created_at: .created_at, updated_at: .updated_at, author: .user.login}]`;
 }
 
 /**
@@ -70,12 +72,16 @@ export function parseMarkerCommentPages(
       ) {
         continue;
       }
-      rows.push({
+      const row: MarkerComment = {
         id: Number(entry.id),
         body: entry.body,
         createdAt: String(entry.created_at ?? ""),
         author: typeof entry.author === "string" ? entry.author : null,
-      });
+      };
+      if (typeof entry.updated_at === "string" && entry.updated_at !== "") {
+        row.updatedAt = entry.updated_at;
+      }
+      rows.push(row);
     }
   }
 
