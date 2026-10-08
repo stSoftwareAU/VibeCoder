@@ -13,7 +13,8 @@
  *   3. Brief pause for GitHub's eventual consistency
  *   4. Re-read the PR's comments to check for competing claims
  *   5. Earliest claim comment wins; losers clean up and back off
- *   6. Winner also adds eyes reaction to prevent rediscovery
+ *   6. Winner also adds eyes reaction to prevent rediscovery (non-`pr_review`
+ *      comments only — a `pr_review` claim is a lease, not a dismissal)
  *
  * **A competing claim only counts when the fleet posted it (Issue #1124).**
  * A PR comment thread on a public repository is open to anyone, so a
@@ -51,7 +52,18 @@
  * could not see this host's own claim. Left behind, the marker stops
  * `findActionableComment` ever surfacing the comment again while no host has
  * claimed it, so the feedback is answered by nobody. On the **lost** path the
- * marker stands: the winner answers the comment.
+ * marker stands: the winner answers the comment. None of this applies to a
+ * `pr_review` claim — see below.
+ *
+ * **A `pr_review` claim is a lease, not a dismissal (Issue #3383).** Claiming
+ * a change-requested review used to dismiss it immediately (Issue #2697),
+ * which made the claim irreversible before any work happened — a run that
+ * died mid-flight left the review dismissed with nobody having answered it.
+ * The claim comment is now a lease: it carries a heartbeat timestamp
+ * (`pr_review_claim_lease.ts`) that the processor renews from its own
+ * heartbeat while it runs, and the review is dismissed only once the run
+ * actually retires it. A silent run stops renewing, the lease lapses after
+ * `PR_REVIEW_CLAIM_LEASE_MS`, and the review becomes reclaimable.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -76,6 +88,11 @@ import {
   type MarkerComment,
   parseMarkerCommentPages,
 } from "./marker_comment_pages.ts";
+import {
+  claimLeaseLine,
+  isLeaseClaimBody,
+  isLeaseLive,
+} from "./pr_review_claim_lease.ts";
 
 /** The claim marker prefix used in PR comments for tie-breaking. */
 export const PR_COMMENT_CLAIM_PREFIX = "<!-- PR_COMMENT_CLAIM:";
@@ -132,6 +149,10 @@ export const MAX_STALE_CLAIM_DELETIONS = 100;
 export interface ClaimPrCommentResult {
   claimed: boolean;
   winnerId?: string;
+  /** The winning claim comment's id — the processor renews its lease through it. */
+  claimCommentId?: number;
+  /** The exact posted claim body — the processor renews its lease through it. */
+  claimBody?: string;
 }
 
 /** Claim comment parsed from the GitHub API. */
@@ -159,6 +180,50 @@ export function extractClaimInfo(
   const match = body.match(/<!-- PR_COMMENT_CLAIM:(.+):(\d+) -->/);
   if (!match) return null;
   return { workerId: match[1]!, commentId: match[2]! };
+}
+
+/**
+ * True when a claim comment is still live.
+ *
+ * A lease claim (`pr_review`) is live per {@link isLeaseLive} — the later of
+ * its `createdAt`/`updatedAt` must be inside the lease window. Every other
+ * claim keeps the original rule: `createdAt` must parse and be younger than
+ * {@link STALE_CLAIM_MIN_AGE_MS}; unparseable is not live.
+ */
+export function isClaimLive(
+  claim: ClaimComment,
+  referenceMs: number,
+): boolean {
+  if (isLeaseClaimBody(claim.body)) {
+    return isLeaseLive(claim, referenceMs);
+  }
+  const createdMs = Date.parse(claim.createdAt);
+  if (Number.isNaN(createdMs)) return false;
+  return referenceMs - createdMs < STALE_CLAIM_MIN_AGE_MS;
+}
+
+/**
+ * True when a claim comment has aged enough for the stale sweep to delete it.
+ *
+ * A lease claim is stale once at least one of its timestamps parses and
+ * {@link isLeaseLive} says it is no longer live — a lapsed lease, not merely
+ * an old one, since a lease can renew for as long as the run stays alive.
+ * Every other claim keeps the original rule: `createdAt` must parse and be
+ * at least {@link STALE_CLAIM_MIN_AGE_MS} old.
+ */
+function isClaimStale(claim: ClaimComment, nowMs: number): boolean {
+  if (isLeaseClaimBody(claim.body)) {
+    const createdMs = Date.parse(claim.createdAt);
+    const updatedMs = claim.updatedAt !== undefined
+      ? Date.parse(claim.updatedAt)
+      : NaN;
+    const anyParses = !Number.isNaN(createdMs) || !Number.isNaN(updatedMs);
+    return anyParses && !isLeaseLive(claim, nowMs);
+  }
+  const createdMs = Date.parse(claim.createdAt);
+  // An unparseable timestamp cannot be shown to be stale, so it is left.
+  if (Number.isNaN(createdMs)) return false;
+  return nowMs - createdMs >= STALE_CLAIM_MIN_AGE_MS;
 }
 
 /**
@@ -208,8 +273,11 @@ function fetchClaimComments(
  *
  *   1. the comment must be **fleet-authored** — the author is the only
  *      authenticated part of it; and
- *   2. it must be at least {@link STALE_CLAIM_MIN_AGE_MS} old — anything
- *      younger is a live claim, not the leftover of a crashed run.
+ *   2. it must be stale ({@link isClaimStale}) — at least
+ *      {@link STALE_CLAIM_MIN_AGE_MS} old for an ordinary claim, or a lapsed
+ *      lease for a `pr_review` claim (Issue #3383); anything still live is
+ *      possibly a fleet sibling's in-flight claim, not the leftover of a
+ *      crashed run.
  *
  * Fail direction: nothing attributable, or an unresolvable fleet identity,
  * deletes nothing. A leftover claim comment is cleared by the next run once
@@ -238,12 +306,7 @@ async function cleanupStaleClaimComments(
     return; // Best-effort
   }
 
-  const aged = claims.filter((c) => {
-    const createdMs = Date.parse(c.createdAt);
-    // An unparseable timestamp cannot be shown to be stale, so it is left.
-    if (Number.isNaN(createdMs)) return false;
-    return nowMs - createdMs >= STALE_CLAIM_MIN_AGE_MS;
-  });
+  const aged = claims.filter((c) => isClaimStale(c, nowMs));
 
   const deletable = await selectFleetAuthoredComments(
     aged,
@@ -364,8 +427,11 @@ async function removeOwnClaimComment(
  * then verifies no competing claims exist for the same target comment.
  * If multiple workers claimed simultaneously, the earliest claim wins.
  *
- * On success, also marks the comment as processed (eyes reaction) to
- * prevent rediscovery by find_pr_comments_to_fix.
+ * On success, for a non-`pr_review` comment this also marks it as processed
+ * (eyes reaction) to prevent rediscovery by find_pr_comments_to_fix. A
+ * `pr_review` claim is a lease instead (Issue #3383): it is not dismissed
+ * here, and the result carries the claim comment id/body so the processor
+ * can renew the lease.
  *
  * @returns Result with claim outcome
  */
@@ -404,8 +470,14 @@ export async function claimPrComment(
   // on GitHub, so when cleanup fails the issue thread shows "multiple blank
   // comments" with no explanation. The visible line mirrors the
   // `Claimed by \`${workerId}\`` convention used by claim_issue.ts.
+  //
+  // A `pr_review` claim also carries a third line — the lease timestamp
+  // (Issue #3383) — so the claim renews instead of dismissing the review at
+  // claim time. It is appended rather than inserted, so `extractClaimInfo`'s
+  // regex still matches line one.
   const claimBody = `${PR_COMMENT_CLAIM_PREFIX}${workerId}:${commentId} -->\n` +
-    `Claiming PR feedback comment ${commentId} for worker \`${workerId}\`.`;
+    `Claiming PR feedback comment ${commentId} for worker \`${workerId}\`.` +
+    (commentType === "pr_review" ? `\n${claimLeaseLine(nowMs)}` : "");
 
   // `gh pr comment` prints the new comment's URL, whose `#issuecomment-<id>`
   // fragment identifies the comment this host just posted. That id — not the
@@ -446,8 +518,10 @@ export async function claimPrComment(
    * `findActionableComment` rediscovering it, so the feedback would be
    * answered by nobody and nothing would say so. Not called on the **lost**
    * path: there the winner answers the comment and its marker is correct.
+   * Never called for a `pr_review`: nothing was marked for one (Issue #3383).
    */
   const dropOwnProcessedMark = async () => {
+    if (commentType === "pr_review") return;
     const error = await removeProcessedMark(
       repo,
       commentType,
@@ -482,24 +556,27 @@ export async function claimPrComment(
       log,
     );
 
-  // Step 3: Immediately add eyes reaction to reduce the race window.
-  // This prevents other workers from rediscovering the comment via
-  // find_pr_comments_to_fix() while we verify our claim. For a `pr_review`
-  // this is the dismissal — the only thing that retires a claimed change
-  // request now a moved head no longer does (Issue #2697), so a failure is
-  // logged rather than dropped.
-  const marked = await markCommentProcessed(
-    repo,
-    commentType,
-    commentId,
-    prNumber,
-    ghCommandFn,
-  );
-  if (!marked.ok) {
-    log(
-      `${where} could not mark feedback comment ${commentId} processed, so ` +
-        `the scan may rediscover it — ${marked.error.message}`,
+  // Step 3: Immediately add eyes reaction to reduce the race window, for
+  // every comment type *except* `pr_review`. This prevents other workers
+  // from rediscovering the comment via find_pr_comments_to_fix() while we
+  // verify our claim. A `pr_review` claim no longer dismisses the review
+  // here (Issue #3383) — the claim comment's lease line is what keeps other
+  // hosts off it in the meantime, and the dismissal becomes the processor's,
+  // made once the run actually retires the review.
+  if (commentType !== "pr_review") {
+    const marked = await markCommentProcessed(
+      repo,
+      commentType,
+      commentId,
+      prNumber,
+      ghCommandFn,
     );
+    if (!marked.ok) {
+      log(
+        `${where} could not mark feedback comment ${commentId} processed, so ` +
+          `the scan may rediscover it — ${marked.error.message}`,
+      );
+    }
   }
 
   // Step 4: Brief pause for GitHub's eventual consistency to settle
