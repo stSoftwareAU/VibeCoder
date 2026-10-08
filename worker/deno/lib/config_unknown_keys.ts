@@ -76,6 +76,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // Issue-executor split (Issue #2341). Host-wide, with a same-named
   // per-repository override under `repo_config`.
   "issue_executor_split",
+  // Issue-executor sub-agent tier (Issue #3401). Host-wide, with a same-named
+  // per-repository override under `repo_config`.
+  "issue_sub_agent_tier",
   // Reviewer sub-agents (Issue #2575). Host-wide only.
   "issue_reviewer_agents",
   // Fleet-wide run archive repo slug for measurement issues (Issue #2930).
