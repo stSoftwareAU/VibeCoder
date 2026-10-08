@@ -57,7 +57,7 @@ Backend only, no UI file touched.
 - From `worker/deno`: `deno task test:unit tests/config_docs_consistency_test.ts tests/issue_sub_agent_tier_test.ts` → 18 passed, 0 failed.
 - `deno task test:unit tests/lib_sweep_coverage_test.ts` → 39 passed; `deno task check:manifests` → PASSED.
 - `deno task check` clean; `deno.lock` unchanged.
-- `./quality.sh < /dev/null` → GATE_RESULT_PLACEHOLDER
+- `./quality.sh < /dev/null` on head `83416770` → passed, exit 0: "Result: PASSED (with skipped checks)". The only skipped check is config integration, because no `.config.json` exists in the worktree.
 - Callers and entry points: no consumer yet (S4). Entry points checked: the `loadConfig` host load (`worker/deno/lib/config.ts:921-922`) and the `REPO_CONFIG_KEY_MAP` entry (`worker/deno/lib/config.ts:215`); reverting either turns a test red (below).
 - Related rules checked: the `issue_executor_split` config pattern (#2341), "A Code Change Owes a Docs Change" and "Adding a member owes a docs change". Applied to this PR's own diff: both config tables name the new key, and `KNOWN_CONFIG_KEYS` lists it; nothing found.
 - No existing test edited, so no assertion is removed.
