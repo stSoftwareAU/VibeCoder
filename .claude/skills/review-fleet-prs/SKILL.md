@@ -22,16 +22,21 @@ Optional argument: `owner/name` to review one repo only.
 
 ## Running unattended
 
-On an always-on host, `run.sh` in this directory does the same without an
-open session. Every 5 minutes it runs one gate pass on the host, and it
-starts a headless `claude -p` round, in the Vibe Coder's worker container,
-only when a PR is ready. It loops for ever, retries after a failed pass,
-kills a round that runs over 50 minutes, and keeps one runner per machine.
+On an always-on host, `scripts/run.sh` under this directory does the same
+without an open session. Every 5 minutes it runs one gate pass on the host,
+and it starts a headless `claude -p` round, in the Vibe Coder's worker
+container, only when a PR is ready. It loops for ever, retries after a
+failed pass, kills a round that runs over 50 minutes, and keeps one runner
+per machine.
 
 ```bash
-.claude/skills/review-fleet-prs/run.sh --install   # start at login, restart on exit
-.claude/skills/review-fleet-prs/run.sh --once      # one pass, in the foreground
+.claude/skills/review-fleet-prs/scripts/run.sh --install   # start at login, restart on exit
+.claude/skills/review-fleet-prs/scripts/run.sh --once      # one pass, in the foreground
 ```
+
+A host installed before Issue #3299 moved `run.sh` into `scripts/` still
+starts the old path; its service now only forwards to `scripts/run.sh`, so
+re-run `--install` to point the service at `scripts/run.sh` directly.
 
 `--install` registers a launchd agent on macOS or a systemd user service on
 Linux. The host needs what the Vibe Coder worker on it already has: `deno`,
@@ -256,8 +261,8 @@ the rest are counted as `over-limit` and come back next pass. The search is
 oldest-updated first, so a PR whose head keeps moving cannot starve the quiet
 ones behind it.
 
-1. Start the gate in the background, from this skill's base directory, with
-   the Bash tool's `run_in_background: true`:
+1. Start the gate in the background, from this skill's `scripts/` directory,
+   with the Bash tool's `run_in_background: true`:
 
    ```bash
    deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --watch=300 [--repo=owner/name] [--limit=5]
@@ -379,8 +384,8 @@ that PR; the next gate run reports it again.
 ### 2. Post
 
 For each reply, write `{"pr": <the gate's ready entry>, "review": <the
-reviewer's reply>}` to a file in the scratchpad and run, from this skill's base
-directory:
+reviewer's reply>}` to a file in the scratchpad and run, from this skill's
+`scripts/` directory:
 
 ```bash
 deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>

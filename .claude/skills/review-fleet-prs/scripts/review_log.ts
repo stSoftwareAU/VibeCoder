@@ -10,7 +10,7 @@ import {
   hostLogDirPlatform,
   readConfiguredLogDirSync,
   resolveLogDir,
-} from "../../../worker/deno/lib/log_dir.ts";
+} from "../../../../worker/deno/lib/log_dir.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
@@ -79,7 +79,7 @@ export const LOG_FILE = "log.jsonl";
 export const SUMMARY_FILE = "summary.md";
 export const OPEN_FILE = "open.json"; // PR keys the latest gate pass saw open
 
-const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
+const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
 const STATE_NAME = "review-fleet-prs";
 
 // Beside the Vibe Coder's own logs: `<log_dir>/review-fleet-prs`, where

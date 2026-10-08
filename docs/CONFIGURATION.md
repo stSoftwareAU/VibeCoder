@@ -379,7 +379,7 @@ singular key with an array value:
 ## 🔍 Reviewer App for fleet PR reviews
 
 `pr_reviewer_app` makes the unattended `review-fleet-prs` runner
-(`.claude/skills/review-fleet-prs/run.sh`) review as a GitHub App instead of
+(`.claude/skills/review-fleet-prs/scripts/run.sh`) review as a GitHub App instead of
 the host's signed-in `gh` user. It is read by that skill only, never by the
 worker.
 

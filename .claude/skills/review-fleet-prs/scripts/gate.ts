@@ -32,9 +32,9 @@
 // without doing it. A failed upkeep action is reported in `upkeep` too, and
 // is not retried at the same head commit.
 
-// The skill lives at <checkout>/.claude/skills/review-fleet-prs/, next to the
-// checkout's own .config.json.
-const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
+// The helpers live at <checkout>/.claude/skills/review-fleet-prs/scripts/,
+// and the checkout's own .config.json is four levels up from there.
+const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
 
 import {
   type FableReview,
@@ -55,11 +55,11 @@ import {
   needsBranchUpdate,
   updateBranch,
 } from "./branch_update.ts";
-import { isDependencyAuditCheck } from "../../../worker/deno/lib/dependency_audit_check.ts";
+import { isDependencyAuditCheck } from "../../../../worker/deno/lib/dependency_audit_check.ts";
 import {
   type CiFixMarkerComment,
   collectFleetCiFixMarkers,
-} from "../../../worker/deno/lib/ci_fix_attempt_markers.ts";
+} from "../../../../worker/deno/lib/ci_fix_attempt_markers.ts";
 
 // Every review body the skill posts ends with this marker, so a comment-only
 // "held for the owner" review still counts as this commit's review.

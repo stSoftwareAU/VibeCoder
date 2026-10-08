@@ -8,8 +8,8 @@
  * issue on the first successful pass after that.
  */
 
-import { neutraliseAgentMarkers } from "../../../worker/deno/lib/agent_marker_neutralisation.ts";
-import { redactSecrets } from "../../../worker/deno/lib/secret_redaction.ts";
+import { neutraliseAgentMarkers } from "../../../../worker/deno/lib/agent_marker_neutralisation.ts";
+import { redactSecrets } from "../../../../worker/deno/lib/secret_redaction.ts";
 
 export const ESCALATE_AFTER = 12;
 export const ESCALATION_REPO = "stSoftwareAU/VibeCoder";
