@@ -291,9 +291,15 @@ The review is dismissed only when the run **retires** it: a fix verified on
 the remote, a fix pushed to a gated head's fix branch whose PR could not be
 raised (a human is asked), the agent's rebuttal posted, the escape-hatch
 hand-off, the no-fix-no-rebuttal `needs-human` escalation above, or the
-second failure below. Any other outcome — an agent error, a timeout, a push
-that never lands on the remote, or any outcome that settles nothing, such as
-a prompt-build failure — is charged as a failed attempt instead:
+second failure below. Each of those first five outcomes also requires its
+own announcement to have actually reached the PR — the push-success reply,
+the fix-PR-raise-failed hand-off, the rebuttal, the escape-hatch reply, or
+(for the escalation) the label add or the comment post. A `gh` call that
+fails to post that announcement charges a failed attempt instead of
+dismissing a review nothing was said about (Issue #3408 review). Any other
+outcome — an agent error, a timeout, a push that never lands on the remote,
+or any outcome that settles nothing, such as a prompt-build failure — is
+charged as a failed attempt instead:
 
 - The **first** failure posts a "First Attempt" reply carrying a hidden
   `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review
