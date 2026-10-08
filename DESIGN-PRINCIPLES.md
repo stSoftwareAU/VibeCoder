@@ -1309,10 +1309,11 @@ operator-side equivalent already exists is the right default.
 Hidden files (paths matching `.*`) routinely carry secrets — `.env`, API keys,
 OAuth tokens, SSH keys. A single leaked secret triggers full credential
 rotation, so the worker must never stage a hidden path outside a small
-allowlist.
+fleet-wide allowlist, unless the target repository's own tracked `.gitignore`
+already re-allows it (Issue #3296; secret patterns stay forbidden regardless).
 
-**Canonical allowlist** (the only hidden paths that may ever be tracked):
-`.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
+**Canonical allowlist** (the fleet-wide hidden paths that may always be
+tracked): `.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
 
 **Canonical `.gitattributes` block.** Alongside the `.gitignore` block, the same
 enforcer writes a canonical `.gitattributes` block that pins line
@@ -1342,7 +1343,10 @@ preserved (merge, never clobber). The full pattern set lives in
    line each iteration. File changes ride along in the next normal worker PR for
    the repo — no dedicated commit machinery, no findings issue.
 3. **Pre-commit gate** — blocks any commit that stages a forbidden
-   hidden path.
+   hidden path. It also accepts a hidden path outside the allowlist when the
+   target repository's own tracked, unmodified `.gitignore` re-allows it
+   (Issue #3296); the forbidden secret patterns stay refused regardless. See
+   [SECURITY.md](SECURITY.md) for the full rule.
 
 Bypassing any safeguard (`git commit --no-verify`, `git add -f`) is forbidden.
 If a hidden file legitimately needs to be tracked, raise an issue and update the
