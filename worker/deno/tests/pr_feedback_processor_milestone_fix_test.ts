@@ -51,7 +51,12 @@ interface CapturedGh {
 
 function makeMockGithub(
   captured: CapturedGh,
-  options: { gated: boolean; failFixPrCreate?: boolean },
+  options: {
+    gated: boolean;
+    failFixPrCreate?: boolean;
+    /** Issue #3408 review: the `gh pr comment` reply call itself fails. */
+    failPrComment?: boolean;
+  },
 ): Partial<GitHubDeps> {
   return {
     runGhCommand: (args: string[]) => {
@@ -96,6 +101,9 @@ function makeMockGithub(
         return Promise.resolve("");
       }
       if (args[0] === "pr" && args[1] === "comment") {
+        if (options.failPrComment) {
+          return Promise.reject(new Error("gh API error: connection reset"));
+        }
         const idx = args.indexOf("--body");
         if (idx >= 0 && args[idx + 1] !== undefined) {
           captured.comments.push(args[idx + 1] as string);
@@ -307,6 +315,57 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
   assertStringIncludes(captured.comments.at(-1) ?? "", "could not raise");
   assertEquals(markCommentProcessedSpy, ["pr_review"]);
   assertEquals(handlePrCommentFailureSpy.length, 0);
+});
+
+Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure, and the hand-off reply itself fails to post => charges, never dismisses (Issue #3408 review)", async () => {
+  // Nothing landed on the PR at all here: no fix PR, no hand-off comment.
+  // Dismissing the review in this case is exactly the silent loss #3383
+  // exists to stop, so this must charge a failed attempt instead.
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+  const markCommentProcessedSpy: string[] = [];
+  const handlePrCommentFailureSpy: string[] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, {
+      gated: true,
+      failFixPrCreate: true,
+      failPrComment: true,
+    }),
+    git: makeSuccessfulPushGit(gitCalls),
+    pr: {
+      markCommentProcessed: ((_repo: string, commentType: string) => {
+        markCommentProcessedSpy.push(commentType);
+        return Promise.resolve({ ok: true, value: undefined });
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+      handlePrCommentFailure: ((repo: string) => {
+        handlePrCommentFailureSpy.push(repo);
+        return Promise.resolve();
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-pr-fail-review-reply-fail",
+    workRoot: "/tmp/test-milestone-fix-pr-fail-review-reply-fail",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(
+    makeInput({ commentType: "pr_review" }),
+    processorDeps,
+  );
+  assertEquals(result.ok, true);
+
+  assertEquals(captured.comments.length, 0);
+  assertEquals(markCommentProcessedSpy.length, 0);
+  assertEquals(handlePrCommentFailureSpy.length, 1);
 });
 
 Deno.test("processPrFeedback - gated head: fix-branch checkout failure => honest gated-checkout-failed reply", async () => {

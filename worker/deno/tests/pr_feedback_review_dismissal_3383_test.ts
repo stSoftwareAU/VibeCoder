@@ -115,6 +115,62 @@ function makeMockGithub(captured: CapturedGh): Partial<GitHubDeps> {
   };
 }
 
+/**
+ * A `gh` stub whose `pr comment` call always fails — the transport is down,
+ * so every reply the processor tries to post to the PR never lands. Used to
+ * prove a settling branch must charge a failed attempt rather than retire a
+ * review on the strength of a reply that was never posted (Issue #3408
+ * review).
+ */
+function makeFailingPrCommentGithub(captured: CapturedGh): Partial<GitHubDeps> {
+  return {
+    runGhCommand: (args: string[]) => {
+      captured.calls.push(args);
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      if (args[0] === "pr" && args[1] === "comment") {
+        return Promise.reject(new Error("gh API error: connection reset"));
+      }
+      if (args[0] === "label" && args[1] === "list") {
+        return Promise.resolve("[]");
+      }
+      return Promise.resolve("");
+    },
+  };
+}
+
+/**
+ * A `gh` stub where the needs-human label add and the escalation comment —
+ * both the REST call and its `gh` CLI fallback — all fail. Models a brief
+ * GitHub API outage during the no-fix/no-rebuttal escalation (Issue #3408
+ * review).
+ */
+function makeEscalationBothFailGithub(
+  captured: CapturedGh,
+): Partial<GitHubDeps> {
+  return {
+    runGhCommand: (args: string[]) => {
+      captured.calls.push(args);
+      if (isPrLiveStateRead(args)) return Promise.resolve("OPEN");
+      const isLabelPost = args[0] === "api" && args[2] === "POST" &&
+        String(args[3] ?? "").includes("/labels");
+      const isLabelCli = args[0] === "issue" && args[1] === "edit" &&
+        args.includes("--add-label");
+      const isCommentPost = args[0] === "api" && args[2] === "POST" &&
+        String(args[3] ?? "").includes("/comments");
+      const isCommentCli = args[0] === "issue" && args[1] === "comment";
+      if (isLabelPost || isLabelCli || isCommentPost || isCommentCli) {
+        return Promise.reject(
+          new Error("gh API error: 503 Service Unavailable"),
+        );
+      }
+      if (args[0] === "label" && args[1] === "list") {
+        return Promise.resolve("[]");
+      }
+      return Promise.resolve("");
+    },
+  };
+}
+
 function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
   return {
     repo: "org/repo",
@@ -384,6 +440,32 @@ Deno.test("pr_review dismissal: verified push dismisses once, after commitAndPus
   assertEquals(pushIdx < dismissIdx, true, "dismissal must follow the push");
 });
 
+Deno.test("pr_review dismissal: a verified push whose reply fails to post charges a failed attempt, never dismisses (Issue #3408 review)", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["ok"],
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 1,
+      finalUnpushedCount: 0,
+    },
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    githubOverride: makeFailingPrCommentGithub(captured),
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    0,
+  );
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "could not be posted");
+});
+
 Deno.test("pr_review dismissal: push not landed charges, does not dismiss", async () => {
   const events: string[] = [];
   const { result } = await runScenario({
@@ -437,6 +519,29 @@ Deno.test("pr_review dismissal: rebuttal with no changes dismisses exactly once"
   );
 });
 
+Deno.test("pr_review dismissal: a rebuttal that fails to post charges a failed attempt, never dismisses (Issue #3408 review)", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["rebuttal"],
+    githubOverride: makeFailingPrCommentGithub(captured),
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    0,
+  );
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "rebuttal");
+  if (result.ok) {
+    assertStringIncludes(result.value.summary, "charged as a failed attempt");
+  }
+});
+
 Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escalates and dismisses once", async () => {
   const events: string[] = [];
   const { captured, result } = await runScenario({
@@ -455,6 +560,34 @@ Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escal
     0,
   );
   assertEquals(captured.labelsAdded.includes("needs-human"), true);
+});
+
+Deno.test("pr_review dismissal: no fix, no rebuttal, and the escalation itself fails (label + comment) — charges, never dismisses (Issue #3408 review)", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["nothing", "nothing"],
+    githubOverride: makeEscalationBothFailGithub(captured),
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    0,
+  );
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "escalation");
+  assertEquals(captured.labelsAdded.includes("needs-human"), false);
+  if (result.ok) {
+    // The escalation never landed, so the summary must not claim it did.
+    assertEquals(
+      result.value.summary.includes("escalated to needs-human"),
+      false,
+    );
+  }
 });
 
 Deno.test("pr_review dismissal: unsettled outcome (prompt build failure) is charged, never dismissed", async () => {
@@ -536,6 +669,39 @@ Deno.test("pr_review dismissal: an escape-hatch hand-off dismisses the review ex
     events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
     0,
   );
+});
+
+Deno.test("pr_review dismissal: an escape-hatch hand-off whose reply fails to post charges a failed attempt, never dismisses (Issue #3408 review)", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["handoff"],
+    captured,
+    githubOverride: {
+      ...makeFailingPrCommentGithub(captured),
+      createClient: (_logger: Logger) => makeHandoffClient(),
+    },
+    configOverride: {
+      loadConfig: (() =>
+        Promise.resolve(
+          {
+            repos: [] as string[],
+            allowedAuthors: [WORKER_LOGIN],
+          } as WorkerConfig,
+        )) as ConfigDeps["loadConfig"],
+    },
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    0,
+  );
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "hand-off");
 });
 
 Deno.test("pr_review dismissal: a failed dismissal after a verified push is logged as an error", async () => {

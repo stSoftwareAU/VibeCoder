@@ -1632,9 +1632,23 @@ async function _processFeedbackWithHeartbeat(
         },
       );
     }
-    await replyWithResult(repo, prNumber, deps, customMessage);
-    // Issue #3383: the hand-off answers the review, so dismiss it here.
-    if (commentType === "pr_review") await retireReview();
+    const handOffPosted = await replyWithResult(
+      repo,
+      prNumber,
+      deps,
+      customMessage,
+    );
+    // Issue #3383/#3408: the hand-off answers the review, so dismiss it
+    // here — but only once that hand-off actually landed on the PR.
+    if (commentType === "pr_review") {
+      if (handOffPosted) {
+        await retireReview();
+      } else {
+        await chargeReviewFailure(
+          "The escape-hatch hand-off reply could not be posted to the PR.",
+        );
+      }
+    }
     return {
       ok: true,
       value: {
@@ -1684,10 +1698,14 @@ async function _processFeedbackWithHeartbeat(
   // Issue #3246: set when this run escalates an unanswered request-changes
   // review to `needs-human`, so the summary below can say so.
   let reviewerEscalated = false;
+  // Issue #3408 review: set only once the rebuttal reply actually landed on
+  // the PR, so the summary never claims "rebuttal posted" when the comment
+  // post failed and the attempt was charged instead.
+  let rebuttalPosted = false;
 
   // Reply to comment — only claim "pushed" if push actually succeeded
   if (hasChanges && pushSucceeded && fixBranch && fixPrError) {
-    await replyFixPrRaiseFailed(
+    const posted = await replyFixPrRaiseFailed(
       repo,
       prNumber,
       deps,
@@ -1695,11 +1713,23 @@ async function _processFeedbackWithHeartbeat(
       input.branchName,
       fixPrError,
     );
-    // Issue #3383: a human is asked to land the fix, which answers the
-    // review — dismiss it rather than leaving it outstanding.
-    if (commentType === "pr_review") await retireReview();
+    // Issue #3383/#3408: a human is asked to land the fix, which answers
+    // the review — dismiss it rather than leaving it outstanding. But only
+    // once that hand-off is actually visible on the PR; a swallowed post
+    // failure must charge a failed attempt instead of silently retiring a
+    // review nothing was ever said about.
+    if (commentType === "pr_review") {
+      if (posted) {
+        await retireReview();
+      } else {
+        await chargeReviewFailure(
+          "The fix was pushed, but the PR comment asking someone to open " +
+            "the fix PR could not be posted.",
+        );
+      }
+    }
   } else if (hasChanges && pushSucceeded) {
-    await replyWithResult(
+    const posted = await replyWithResult(
       repo,
       prNumber,
       deps,
@@ -1710,8 +1740,18 @@ async function _processFeedbackWithHeartbeat(
           `into the gated branch '${input.branchName}'.`
         : undefined,
     );
-    // Issue #3383: the fix is verified on the remote — dismiss the review.
-    if (commentType === "pr_review") await retireReview();
+    // Issue #3383/#3408: the fix is verified on the remote — dismiss the
+    // review once the reply announcing it actually landed on the PR.
+    if (commentType === "pr_review") {
+      if (posted) {
+        await retireReview();
+      } else {
+        await chargeReviewFailure(
+          "The fix was pushed, but the PR comment reporting it could not " +
+            "be posted.",
+        );
+      }
+    }
   } else if (hasChanges && !pushSucceeded) {
     // Issue #3383: for a `pr_review`, charge this as a failed attempt
     // instead of posting the ordinary push-failed reply — a reply on a
@@ -1733,9 +1773,18 @@ async function _processFeedbackWithHeartbeat(
   ) {
     // Issue #3246: the agent's rebuttal answers the review — post it, never
     // the neutral reply.
-    await replyWithResult(repo, prNumber, deps, customMessage);
-    // Issue #3383: the rebuttal answers the review — dismiss it.
-    await retireReview();
+    const posted = await replyWithResult(repo, prNumber, deps, customMessage);
+    // Issue #3383/#3408: the rebuttal answers the review — but only once it
+    // actually landed on the PR. A rebuttal that never posted must charge a
+    // failed attempt instead of dismissing a review nothing was said about.
+    rebuttalPosted = posted;
+    if (posted) {
+      await retireReview();
+    } else {
+      await chargeReviewFailure(
+        "A rebuttal was prepared, but the PR comment posting it failed.",
+      );
+    }
   } else if (isReviewerChangeRequest(commentType)) {
     // Issue #3246: no fix and no rebuttal after every in-run attempt —
     // escalate now rather than post the neutral "could not identify a code
@@ -1774,17 +1823,25 @@ async function _processFeedbackWithHeartbeat(
       deps: { github: { ensureLabelExists: deps.github.ensureLabelExists } },
       logger,
     });
-    if (!escalated.ok) {
+    // Issue #3383/#3408: the escalation is this run's conclusion on the
+    // review, but only dismiss it once the label or the comment actually
+    // landed — `escalated.ok` is false only when both failed, in which
+    // case nothing exists on the PR (no fix, no rebuttal, no label, no
+    // comment) and the review must be charged, not silently retired.
+    reviewerEscalated = escalated.ok;
+    if (escalated.ok) {
+      await retireReview();
+    } else {
       logger.error(
         "PR feedback: escalating the unanswered request-changes review " +
           "failed (Issue #3246)",
         { repo, prNumber, reviewId: commentId, error: escalated.error.message },
       );
+      await chargeReviewFailure(
+        "No fix or rebuttal was produced, and the needs-human escalation " +
+          `(label and comment) both failed: ${escalated.error.message}`,
+      );
     }
-    reviewerEscalated = true;
-    // Issue #3383: the escalation itself — whatever its own result — is
-    // this run's conclusion on the review; dismiss it so it does not loop.
-    await retireReview();
   } else {
     await replyNoChanges(
       repo,
@@ -1820,8 +1877,12 @@ async function _processFeedbackWithHeartbeat(
         ? `PR #${prNumber} review ${commentId}: no fix or rebuttal after ${reviewerAttempts} run(s) — escalated to needs-human`
         : hasChanges
         ? `Fixed PR #${prNumber} feedback locally but failed to push`
-        : isReviewerChangeRequest(commentType) && customMessage !== undefined
+        : isReviewerChangeRequest(commentType) && customMessage !== undefined &&
+            rebuttalPosted
         ? `Reviewed PR #${prNumber} feedback — rebuttal posted, no changes`
+        : isReviewerChangeRequest(commentType) && customMessage !== undefined
+        ? `Reviewed PR #${prNumber} feedback — rebuttal prepared but the PR ` +
+          `comment posting it failed; charged as a failed attempt`
         : `Reviewed PR #${prNumber} feedback — no changes needed`,
     },
   };
@@ -1843,7 +1904,7 @@ async function replyWithResult(
    * way to know the change is not yet on this PR's branch.
    */
   extraNote?: string,
-): Promise<void> {
+): Promise<boolean> {
   // Issue #579: the claim carries the SHA it was verified against, so a
   // stale claim is falsifiable at a glance instead of requiring a human to
   // compare the comment against `git log`.
@@ -1861,8 +1922,13 @@ async function replyWithResult(
       "--body",
       body,
     ]);
+    return true;
   } catch {
-    // Comment failure is non-critical
+    // Issue #3408 review: a caller that settles a claimed `pr_review` on
+    // this call (retiring it as answered) must know the post actually
+    // landed — a swallowed failure here used to retire a review with
+    // nothing on the PR.
+    return false;
   }
 }
 
@@ -1970,7 +2036,7 @@ async function replyFixPrRaiseFailed(
   fixBranch: string,
   headBranch: string,
   error: string,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await deps.github.runGhCommand([
       "pr",
@@ -1983,8 +2049,11 @@ async function replyFixPrRaiseFailed(
       `the PR to land it into the gated head '${headBranch}': ${error}` +
       "\n\nCould someone open that PR manually?",
     ]);
+    return true;
   } catch {
-    // Comment failure is non-critical
+    // Issue #3408 review: see replyWithResult — the caller must know
+    // whether this landed before it retires a claimed `pr_review` on it.
+    return false;
   }
 }
 
