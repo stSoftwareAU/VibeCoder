@@ -80,7 +80,8 @@ This change touches only docs and a test; no UI is affected.
 
 **Docs sweep** — grep: `#running-unattended`, `#as-a-github-app`,
 `#dependabot-prs`, `#approved-fleet-prs-that-are-behind`, `#notes` and
-`review-fleet-prs/SKILL.md#` over the repo outside `docs/archive/`. Updated:
+`review-fleet-prs/SKILL.md#` over the repo outside `docs/archive/`; section:
+`docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews`. Updated:
 `docs/CONFIGURATION.md:406` and `.claude/skills/review-fleet-prs/SKILL.md:98`.
 Remaining hits: `.claude/skills/review-fleet-prs/SKILL.md:144` and `:149`
 point into `references/edge-cases.md`, and the link test checks both. No other
