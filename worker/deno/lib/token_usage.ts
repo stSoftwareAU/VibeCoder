@@ -591,11 +591,7 @@ const FABLE_CHEAP_CACHE_MIN_MINOR = 1;
 /** Major version at/above which Sonnet uses the cheaper Sonnet 5 rate. */
 const SONNET_MODERN_MIN_MAJOR = 5;
 
-/**
- * Major version of the Haiku release that introduced the banded 5.5 rate.
- * Any later major (e.g. 6.0) is banded outright; this major only needs the
- * minor check below.
- */
+/** Major version at/above which Haiku uses the banded 5.5 rate. */
 const HAIKU_5_5_MIN_MAJOR = 5;
 
 /** Minor version at/above which Haiku 5 uses the banded 5.5 rate. */
@@ -690,9 +686,10 @@ export function lookupModelPricing(model: string): ModelPricing | null {
         : SONNET_4_PRICING;
     }
     if (parsed.tier === "haiku") {
-      const banded = parsed.major > HAIKU_5_5_MIN_MAJOR ||
-        (parsed.major === HAIKU_5_5_MIN_MAJOR &&
-          parsed.minor >= HAIKU_5_5_MIN_MINOR);
+      // parseClaudeModernVersion only yields majors 4 and 5, so major 5 +
+      // minor >= 5 is exactly Haiku 5.5+.
+      const banded = parsed.major >= HAIKU_5_5_MIN_MAJOR &&
+        parsed.minor >= HAIKU_5_5_MIN_MINOR;
       return banded ? HAIKU_5_5_PRICING : HAIKU_PRICING;
     }
     return TIER_CURRENT_PRICING.get(parsed.tier) ?? null;
