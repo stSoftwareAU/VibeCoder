@@ -16,6 +16,91 @@ export const ESCALATION_REPO = "stSoftwareAU/VibeCoder";
 
 export type RunGh = (args: string[]) => Promise<string>;
 
+/** What a redacted repo reference becomes in the public escalation issue. */
+export const REPO_PLACEHOLDER = "<repo>";
+
+const ESCALATION_OWNER = ESCALATION_REPO.split("/")[0] ?? "";
+
+// GitHub's own limits: an owner is at most 39 characters, a repo name at
+// most 100. Every quantifier is bounded so the scan stays linear over
+// untrusted error text.
+const OWNER = "[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})";
+const NAME = "[A-Za-z0-9._-]{1,100}";
+
+// A github.com URL to a repo. Everything after the slug is part of the
+// match, since a path can name private files or runs.
+const REPO_URL = new RegExp(
+  `https?://(?:www\\.|api\\.)?github\\.com/(?:repos/)?(${OWNER})/(${NAME})` +
+    `[^\\s)\\]>"'\`]{0,500}`,
+  "g",
+);
+
+// A slug where only a repo can appear (a `repos/` API path, a `-R` or
+// `--repo` argument) or with a `#123` reference; or any other slug, kept
+// unless its owner is the escalation repo's owner.
+const REPO_SLUG = new RegExp(
+  `(\\brepos/|(?:^|\\s)(?:-R|--repo)[= ]|)(${OWNER})/(${NAME})(#\\d{1,10})?`,
+  "g",
+);
+
+// A bare `name#123` reference with no owner, e.g. a `<repo>#<n>` upkeep line.
+const BARE_REF = new RegExp(`(^|[\\s(\\[])(${NAME})#(\\d{1,10})\\b`, "g");
+
+const ESCALATION_NAME = ESCALATION_REPO.split("/")[1] ?? "";
+
+function sameText(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+// A repo name never ends in a dot, but a sentence can: "... in owner/name."
+function splitTrailingDots(name: string): [string, string] {
+  const bare = name.replace(/\.+$/, "");
+  return [bare, name.slice(bare.length)];
+}
+
+function isEscalationRepo(owner: string, name: string): boolean {
+  return sameText(owner, ESCALATION_OWNER) && sameText(name, ESCALATION_NAME);
+}
+
+/**
+ * Replaces every repo reference other than the public escalation repo with
+ * REPO_PLACEHOLDER. The escalation issue is public and many fleet repos are
+ * not, so a `gh` error naming one of them must not carry the name into it.
+ * Over-redacting a public repo costs nothing; leaking a private one cannot be
+ * undone.
+ */
+export function redactRepoRefs(text: string): string {
+  return text
+    .replace(REPO_URL, (match, owner: string, name: string) => {
+      const [bare] = splitTrailingDots(name);
+      return isEscalationRepo(owner, bare) ? match : REPO_PLACEHOLDER;
+    })
+    .replace(
+      REPO_SLUG,
+      (match, prefix: string, owner: string, name: string, ref?: string) => {
+        const [bare, dots] = splitTrailingDots(name);
+        if (isEscalationRepo(owner, bare)) return match;
+        const certain = prefix !== "" || ref !== undefined;
+        if (!certain && !sameText(owner, ESCALATION_OWNER)) return match;
+        return `${prefix}${REPO_PLACEHOLDER}${ref ?? dots}`;
+      },
+    )
+    .replace(BARE_REF, (match, lead: string, name: string, n: string) => {
+      if (sameText(name, ESCALATION_NAME)) return match;
+      return `${lead}${REPO_PLACEHOLDER}#${n}`;
+    });
+}
+
+/** Shows a path under the home directory as `~/...`, hiding the account. */
+export function homeRelative(path: string, home: string | undefined): string {
+  if (!home) return path;
+  const trimmed = home.replace(/\/+$/, "");
+  if (trimmed === "") return path;
+  if (path === trimmed) return "~";
+  if (path.startsWith(`${trimmed}/`)) return `~${path.slice(trimmed.length)}`;
+  return path;
+}
+
 export interface PassResult {
   ok: boolean;
   error?: string;
@@ -26,6 +111,8 @@ export interface EscalateDeps {
   host: string;
   runGh: RunGh;
   now?: () => Date;
+  /** Home directory hidden from the public log path; defaults to `$HOME`. */
+  home?: string;
 }
 
 interface FailureState {
@@ -105,7 +192,7 @@ function issueBody(
     "",
     `Latest error: ${singleLine(error)}`,
     "",
-    `Log: ${logFile(deps.stateDir)}`,
+    `Log: ${homeRelative(logFile(deps.stateDir), homeDir(deps))}`,
     "",
     "What to check:",
     "- The GitHub App's permissions (token mint failures usually mean the " +
@@ -117,6 +204,15 @@ function issueBody(
     `\`${prefix}\`. The runner closes it itself once a pass succeeds — no ` +
     "need to close it by hand.",
   ].join("\n");
+}
+
+function homeDir(deps: EscalateDeps): string | undefined {
+  if (deps.home !== undefined) return deps.home;
+  try {
+    return Deno.env.get("HOME");
+  } catch {
+    return undefined;
+  }
 }
 
 async function findExistingIssue(
@@ -220,9 +316,10 @@ export async function recordPass(
   const state = await readState(deps.stateDir);
 
   if (!result.ok) {
-    // The error lands in a public issue: redact secrets and defuse agent markers once, here.
+    // The error lands in a public issue: redact secrets and private repo
+    // references, and defuse agent markers, once, here.
     const error = neutraliseAgentMarkers(
-      redactSecrets(result.error || "unknown error"),
+      redactRepoRefs(redactSecrets(result.error || "unknown error")),
     ).text;
     const consecutive = state.consecutive + 1;
     const nextState: FailureState = { ...state, consecutive, error };
