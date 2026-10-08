@@ -90,34 +90,6 @@ and `worker/deno/lib/*.ts`, then read the Model Pricing section through.
 - `worker/deno/lib/token_usage.ts:184`, `:427` and `:430`: updated in this diff
   to name Haiku 5.5 as the current Haiku.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — A 50k-prompt-token Haiku 5.5 request is costed at the ≤100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
-- **met** — A 150k-prompt-token Haiku 5.5 request is costed at the >100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
-- **met** — A run-total-only Haiku 5.5 estimate uses the >100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399)` — reviewer: met
-- **partial** — `claude-haiku-4-5` costs are unchanged (existing tests in `token_usage_test.ts` still pass unmodified) — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)` — reviewer: partial — reason: the Haiku 4.5 costs are unchanged, but existing tests were edited: the required parameter added `, undefined` to existing calls, and the alias test now expects Haiku 5.5 rates because the issue moves `haiku` to the current Haiku
-- **met** — Opus / Sonnet / Fable pricing is unchanged — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost for Sonnet ignores a promptTokensPerRequest argument (no lowerBand) (Issue #3399)` — reviewer: met
-- **unrequested** — `promptTokensPerRequest` is a required `number | undefined`, not optional — reviewer: unrequested — reason: CODING-STANDARDS forbids a default that turns off a behaviour, so every caller must choose; this is what caused the test edits behind the partial verdict
-- **unrequested** — `cost_estimate.ts` and `credit_tracker.ts` pass an explicit `undefined` with comments — reviewer: unrequested — reason: the required parameter forces it; they hold only run totals, so they get the >100k rate the issue asks for
-- **unrequested** — Haiku 5.5 rows and a banded-row paragraph in `docs/MODEL-AND-CACHING.md` — reviewer: unrequested — reason: owed under "A Code Change Owes a Docs Change"; benign
-- **unrequested** — Haiku 5.6+ go to the banded row and Haiku 5.0–5.4 stay flat (`token_usage.ts:688-694`) — reviewer: unrequested — reason: a version-range rule for future ids; the rates for those ids are assumptions; benign
-- **unrequested** — Exact-100k boundary test and the Sonnet-ignores-argument test — reviewer: unrequested — reason: they pin the inclusive `≤` boundary and the no-band path; benign
-- **unrequested** — The Codex test and the `unpriced_spend_3870_test.ts` calls were reformatted onto several lines — reviewer: unrequested — reason: `deno fmt` after adding the third argument; benign
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — Verify a claim about another component / A Code Change Owes a Docs Change: the new paragraph said Haiku 5.5 is "what the alias `haiku` now resolves to", which clashes with `docs/MODEL-AND-CACHING.md:2124` (the `haiku` phases run on Haiku 4.5) — evidence: `docs/MODEL-AND-CACHING.md:2553` — reason: fixed in this diff (the clause now covers only the pricing lookup)
-- **violation** — The credit log records the requested model name (`haiku`), so the `summarise` / `spelling_fix` / `health` phases are now costed at Haiku 5.5's >100k rate. If the CLI's `haiku` alias still serves Haiku 4.5, the spend ceiling under-counts those phases by half — evidence: `worker/deno/lib/claude_runner.ts:2377-2380` — reason: outstanding — the issue requires the alias to resolve to the current Haiku; whether the CLI serves 4.5 or 5.5 for `haiku` was not verified in this run
-- **violation** — A doc comment outside the diff went stale: it says "Claude Haiku 4.x pricing", but the row now also covers Haiku 5.0–5.4 — evidence: `worker/deno/lib/token_usage.ts:176` — reason: outstanding — a comment-only fix, left for follow-up because this retry is limited to the summary
-- **violation** — Comment accuracy: the step-2 comment says the bare alias is resolved there, but step 1 resolves it — evidence: `worker/deno/lib/token_usage.ts:658-661` — reason: outstanding — a comment-only fix, left for follow-up
-- **violation** — KISS / dead code: `return TIER_CURRENT_PRICING.get(parsed.tier) ?? null;` can no longer be reached, because every parsed tier now has its own branch — evidence: `worker/deno/lib/token_usage.ts:695` — reason: outstanding, minor — left for follow-up
-- **violation** — Reuse the in-repo helper (an existing problem, not introduced here): `batch_api.ts`'s own `lookupPricing` still prices `haiku` at Haiku 4.5, while `lookupModelPricing("haiku")` now returns Haiku 5.5 — evidence: `worker/deno/lib/batch_api.ts:495-512` — reason: outstanding — an older duplicate outside this issue's scope; needs a follow-up
-- **clean** — spelling (Australian English), no default that turns off a behaviour (all three production callers pass `undefined` with a reason), every `costFor` and Haiku-lookup outcome is tested against real code, removed assertions are quoted, the price table matches the code, the unpriced upper bound is unchanged, `deno fmt --check` and `deno lint` pass
-
 ## Test Plan
 
 Ran `deno task test:unit` on `tests/token_usage_test.ts`,
@@ -184,3 +156,24 @@ totals. These are the only production callers.
 - [x] No secrets or hidden files staged.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A 50k-prompt-token Haiku 5.5 request is costed at the ≤100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
+- **met** — A 150k-prompt-token Haiku 5.5 request is costed at the >100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
+- **met** — A run-total-only Haiku 5.5 estimate uses the >100k rates. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399); worker/deno/tests/token usage test.ts::token usage - estimateCostWithUpperBound with an undefined prompt size (run totals only)` — reviewer: met
+- **partial** — claude-haiku-4-5 costs are unchanged (existing tests in token usage test.ts still pass unmodified). — evidence: `worker/deno/tests/token usage test.ts::token usage - lookupModelPricing returns pricing for Haiku 4.5; worker/deno/tests/token usage test.ts::token usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)` — reviewer: partial — reason: Haiku 4.5 rates are unchanged, but existing tests were edited, not left as they were: every estimateCost/estimateCostWithUpperBound call now passes a third undefined argument, and the bare- haiku alias test now asserts 0.50/2.50 where it used to assert 1/5
+- **met** — Opus / Sonnet / Fable pricing is unchanged. — evidence: `worker/deno/tests/token usage test.ts::token usage - estimateCost calculates correct costs for sonnet; token usage - estimateCost calculates correct costs for fable (Issue #747); token usage - estimateCost prices Opus 4.8 at modern rate, not legacy; token usage - estimateCost for Sonnet ignores a pr` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Fail-loud / conservative spend ceiling: the diff points the bare haiku alias at HAIKU 5 5 PRICING. The credit log records the requested alias ( haiku ) for the summarise / spelling fix / health phases, and nothing in this run checked whether the CLI serves Haiku 4.5 or 5.5 for haiku (the repo's own — evidence: `worker/deno/lib/token usage.ts:378` — reason: not fixed: this is a line the diff added, and this turn was limited to the verdict with no code changes, so it must be fixed in the diff by a code-changing run before the PR is raised
+- **violation** — Comment accuracy: the added step-2 comment says the bare alias is resolved there, but step 1 (TIER CURRENT PRICING) resolves it — evidence: `worker/deno/lib/token usage.ts:659` — reason: not fixed: this is a line the diff added, and this turn was limited to the verdict with no code changes, so it must be fixed in the diff by a code-changing run before the PR is raised
+- **violation** — Doc comments outside the diff go stale (CODING-STANDARDS 'Doc comments outside the diff go stale too'): the HAIKU PRICING doc says 'Claude Haiku 4.x pricing', but this diff now also sends Haiku 5.0–5.4 to that row — evidence: `worker/deno/lib/token usage.ts:175` — reason: not fixed: the line itself was not edited, but this diff made it stale, so it is not pre-existing and must be fixed in the diff by a code-changing run; this turn was limited to the verdict with no code changes
+- **violation** — KISS / dead code: every ModelTier now has its own branch, so return TIER CURRENT PRICING.get(parsed.tier) ?? null; can no longer be reached — evidence: `worker/deno/lib/token usage.ts:695` — reason: not fixed: the line itself was not edited, but this diff's new Haiku branch made it unreachable, so it is not pre-existing and must be fixed in the diff by a code-changing run; this turn was limited to the verdict with no code changes
+- **violation** — Reuse the in-repo helper: batch api.ts keeps its own lookupPricing, a duplicate of lookupModelPricing that still prices haiku at Haiku 4.5 while lookupModelPricing("haiku") now returns Haiku 5.5 — evidence: `worker/deno/lib/batch api.ts:495` — reason: pre-existing, filed #3436
+- **clean** — Australian English in new identifiers and comments (normalised, dearer); TDD: band edges (50k, exactly 100k, 150k, totals only) are covered by tests that would fail if the rates drift; deno fmt layout; the conservative >100k default keeps UNPRICED UPPER BOUND PRICING's Math.max derivation an over-es
