@@ -395,6 +395,53 @@ Deno.test("fleet_telemetry_sidecar - a legacy sidecar (pre-split) loads its runs
   });
 });
 
+Deno.test("fleet_telemetry_sidecar - a sidecar carrying the tier split keeps its stored sonnet figures", async () => {
+  await withTempDir(async (dir) => {
+    // The stored sonnet pair deliberately differs from `runs - haiku`, so a
+    // loader that backfilled instead of reading the stored value goes red.
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        cumulative: {
+          wallSeconds: 100,
+          idleSeconds: 90,
+          idleByReason: { served: 90 },
+          occupiedSeconds: 10,
+          busySeconds: 10,
+          busyByStream: { serial: 10 },
+          tokenBlockedSeconds: 0,
+          rateLimitedSeconds: 0,
+          rateLimitWaits: 0,
+          tokenBlockedWaits: 0,
+          claims: 2,
+          successes: 2,
+          failures: 0,
+          skips: 0,
+          failuresByClass: {},
+          issuePhaseRuns: 5,
+          issuePhaseUsd: 9,
+          issuePhaseFirstAttemptGatePasses: 2,
+          issuePhaseDurationSeconds: 900,
+          issuePhaseSplitRuns: 0,
+          issuePhaseSonnetRuns: 2,
+          issuePhaseSonnetUsd: 4,
+          issuePhaseHaikuRuns: 1,
+          issuePhaseHaikuUsd: 1,
+        },
+      }),
+    );
+
+    const prior = await readUsable(dir, "host-1");
+    assertEquals(prior?.cumulative.issuePhaseSonnetRuns, 2);
+    assertAlmostEquals(prior?.cumulative.issuePhaseSonnetUsd ?? -1, 4, 1e-9);
+    assertEquals(prior?.cumulative.issuePhaseHaikuRuns, 1);
+    assertAlmostEquals(prior?.cumulative.issuePhaseHaikuUsd ?? -1, 1, 1e-9);
+  });
+});
+
 Deno.test("fleet_telemetry_sidecar - a legacy sidecar plus a haiku run accumulates per tier", async () => {
   await withTempDir(async (dir) => {
     // A legacy sidecar with three pre-split runs, all implicitly sonnet.
