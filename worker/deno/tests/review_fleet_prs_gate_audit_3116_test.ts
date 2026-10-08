@@ -11,11 +11,11 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   pass,
   type RollupContextNode,
-} from "../../../.claude/skills/review-fleet-prs/gate.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 import {
   decideOutcome,
   reviewBody,
-} from "../../../.claude/skills/review-fleet-prs/review_log.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import { buildCiFixAttemptMarker } from "../lib/ci_fix_attempt_markers.ts";
 
 const REVIEWER = "stsoftware-pr-reviewer[bot]";

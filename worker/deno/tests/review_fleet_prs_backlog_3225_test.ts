@@ -418,7 +418,7 @@ Deno.test("pass: a refused branch update is reported in upkeep and not retried a
 
 Deno.test("shouldUpdateBranch: only an approval of a fleet PR that is behind its base (Issue #3225)", async () => {
   const { shouldUpdateBranch, postedResult } = await import(
-    "../../../.claude/skills/review-fleet-prs/post.ts"
+    "../../../.claude/skills/review-fleet-prs/scripts/post.ts"
   );
   assertEquals(shouldUpdateBranch("approved", "fleet", "BEHIND"), true);
   assertEquals(shouldUpdateBranch("approved", undefined, "BEHIND"), true);
