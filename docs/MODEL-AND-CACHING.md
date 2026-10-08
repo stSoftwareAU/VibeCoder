@@ -537,7 +537,10 @@ is the condition the split removes — executors here are a cheaper tier with a
 narrower tool set and no ability to fan out.
 
 The reversal is scoped to exactly that: the `issue` phase, with
-`issue_executor_split` on, with Sonnet executors. **Everywhere else the
+`issue_executor_split` on, with Sonnet executors — the measurement did not
+cover a Haiku-tier run (`issue_sub_agent_tier: "haiku"`, see
+[Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) in this
+file), so it is not evidence for that configuration. **Everywhere else the
 negative result stands unchanged** — on every non-split run, and on every other
 phase whether or not the key is on, delegation stays capped and the 4.8-era
 delegation encouragement must not be re-added.

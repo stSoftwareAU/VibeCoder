@@ -481,11 +481,11 @@ export const OPERATIONAL_DEFAULTS = {
    */
   issueExecutorSplit: true,
   /**
-   * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
-   * Accepted and validated, but not read yet: #3402 will use it to pick
-   * the executors' model. Today executors stay on Sonnet
-   * (`ISSUE_EXECUTOR_MODEL` in `issue_executor_agents.ts`) whatever this
-   * is set to.
+   * Model tier of the `issue`-phase executor and Standards reviewer
+   * sub-agents, and whether the read-only `explorer` rides the run
+   * (Issues #3401, #3402). Resolved per repo by
+   * `resolveIssueSubAgentTier` and consumed by `buildIssueRunAgents`
+   * in `issue_executor_agents.ts`.
    */
   issueSubAgentTier: "sonnet" as IssueSubAgentTier,
   /**

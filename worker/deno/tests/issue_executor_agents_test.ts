@@ -1,7 +1,8 @@
 /**
- * Tests for issue_executor_agents.ts — the Sonnet executor sub-agent
- * definitions a split `issue`-phase run hands the Claude CLI (Issue #2342,
- * part of #2320).
+ * Tests for issue_executor_agents.ts — the tier-aware executor sub-agent
+ * definitions (Sonnet by default, Haiku under `issue_sub_agent_tier:
+ * "haiku"`) and the Haiku-tier read-only `explorer` a split `issue`-phase
+ * run hands the Claude CLI (Issues #2342, #3402, part of #2320).
  *
  * The definition is what makes the split cheaper than today's single-model
  * routing, so every field it turns on is pinned here: lose the model and the

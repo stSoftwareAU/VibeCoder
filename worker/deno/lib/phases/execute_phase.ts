@@ -567,8 +567,10 @@ async function executeClaudeBody(
 
   // The issue-executor split (Issue #2342): on, the invocation carries
   // `--agents` definitions so the advisor delegates mechanical edit work to
-  // Sonnet executors, and the prompt carries the advisor/executor block that
-  // tells it to (Issue #2343). Off — the default — `agents` stays absent, no
+  // executors on the run's sub-agent tier — Sonnet by default, Haiku under
+  // `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt carries
+  // the advisor/executor block that tells it to (Issue #2343). Off — the
+  // default — `agents` stays absent, no
   // argument is emitted, the block renders as nothing, and every sub-agent
   // inherits the phase's model as before. Resolved once, before the prompt is
   // built, so the prompt and the argv cannot disagree. Wired here as well as
