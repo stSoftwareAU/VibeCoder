@@ -13,6 +13,7 @@
 
 import type {
   CopilotCodeReviewMode,
+  IssueSubAgentTier,
   UpdateMode,
   WorkerConfig,
 } from "../types.ts";
@@ -479,6 +480,12 @@ export const OPERATIONAL_DEFAULTS = {
    * costs half of Opus 5.5 (Issue #2812); `issue_executor_split: false` opts out.
    */
   issueExecutorSplit: true,
+  /**
+   * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
+   * `sonnet` by default; `issue_sub_agent_tier: "haiku"` opts into the
+   * cheaper tier.
+   */
+  issueSubAgentTier: "sonnet" as IssueSubAgentTier,
   /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
    * defined cheaper sub-agents (Issue #2575). On by default (Issue #2812);
@@ -1597,6 +1604,7 @@ export function buildDefaultWorkerConfig(
     geminiPhaseModelOverrides: {},
     deepseekPhaseModelOverrides: {},
     issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
+    issueSubAgentTier: OPERATIONAL_DEFAULTS.issueSubAgentTier,
     issueReviewerAgents: OPERATIONAL_DEFAULTS.issueReviewerAgents,
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
