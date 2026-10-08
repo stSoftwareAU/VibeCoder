@@ -511,7 +511,8 @@ export async function getDailySummary(
       // even when a phase spans multiple models.
       // An unpriced model id is charged at the conservative upper bound
       // (Issue #3870) so a phase never reads as free.
-      // Per-invocation log entries carry no per-request prompt size, so banded rows use their >100k rate (Issue #3399).
+      // An invocation's usage sums every API request in the session, so it is no single request's prompt size;
+      // banded rows therefore use their >100k rate (Issue #3399).
       const entryCost = estimateCostWithUpperBound(
         {
           inputTokens: entry.inputTokens ?? 0,
