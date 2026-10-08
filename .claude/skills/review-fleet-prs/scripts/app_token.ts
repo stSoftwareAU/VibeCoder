@@ -235,7 +235,10 @@ async function main() {
   console.log(JSON.stringify(await mintReviewerToken(app, owners)));
 }
 
-if (import.meta.main) {
+// Exported, not just `import.meta.main`-gated, so the root-level forwarding
+// shim (Issue #3299 continuity gap — PR #3417 review) can call this same
+// body for a runner still started from the pre-move layout.
+export async function runCli() {
   try {
     await main();
   } catch (e) {
@@ -243,3 +246,5 @@ if (import.meta.main) {
     Deno.exit(1);
   }
 }
+
+if (import.meta.main) await runCli();

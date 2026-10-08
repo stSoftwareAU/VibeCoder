@@ -170,7 +170,10 @@ export function shouldUpdateBranch(
     mergeStateStatus === "BEHIND";
 }
 
-async function main() {
+// Exported, not just `import.meta.main`-gated, so the root-level forwarding
+// shim (Issue #3299 continuity gap — PR #3417 review) can call this same
+// body for a runner still started from the pre-move layout.
+export async function main() {
   const inputPath = Deno.args.find((a) => a.startsWith("--input="))?.slice(8);
   if (!inputPath) throw new Error("--input=<file> is required");
   const { pr, review: raw }: Input = JSON.parse(

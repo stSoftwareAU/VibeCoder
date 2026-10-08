@@ -14,7 +14,12 @@ runs over 50 minutes, and keeps one runner per machine.
 
 A host installed before Issue #3299 moved `run.sh` into `scripts/` still
 starts the old path; its service now only forwards to `scripts/run.sh`, so
-re-run `--install` to point the service at `scripts/run.sh` directly.
+re-run `--install` to point the service at `scripts/run.sh` directly. A
+runner already looping when the move lands keeps calling `app_token.ts`,
+`gate.ts`, `post.ts`, `escalate.ts` and `review_log.ts` at the old root path
+(it never exits to pick up the shim); thin forwarders of the same names stay
+at the skill root, each calling the moved helper's own code, until that
+runner is restarted onto `scripts/run.sh` too.
 
 `--install` registers a launchd agent on macOS or a systemd user service on
 Linux. The host needs what the Vibe Coder worker on it already has: `deno`,
