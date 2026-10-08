@@ -247,6 +247,19 @@ Deno.test("token_usage - lookupModelPricing returns pricing for Haiku 4.5", () =
   assertEquals(pricing?.cacheReadPerMillion, 0.10);
 });
 
+Deno.test("token_usage - lookupModelPricing returns pricing for Haiku 5.5 (Issue #3399)", () => {
+  // The top-level fields are the conservative (>100k) band; the lowerBand
+  // carries the cheaper (<=100k) band.
+  for (const model of ["claude-haiku-5-5", "claude-haiku-5-5-20261001"]) {
+    const pricing = lookupModelPricing(model);
+    assertEquals(pricing?.inputPerMillion, 0.50, model);
+    assertEquals(pricing?.outputPerMillion, 2.50, model);
+    assertEquals(pricing?.cacheWritePerMillion, 0.625, model);
+    assertEquals(pricing?.cacheReadPerMillion, 0.05, model);
+    assertEquals(pricing?.lowerBand?.inputPerMillion, 0.10, model);
+  }
+});
+
 Deno.test("token_usage - lookupModelPricing returns pricing for Opus 4.8 (Issue #2389)", () => {
   const pricing = lookupModelPricing("claude-opus-4-8");
   assertEquals(pricing?.inputPerMillion, 5);
@@ -300,9 +313,11 @@ Deno.test("token_usage - lookupModelPricing resolves bare 'sonnet'/'haiku' alias
   assertEquals(sonnet?.inputPerMillion, 2);
   assertEquals(sonnet?.outputPerMillion, 10);
 
+  // The `haiku` alias now resolves to the latest Haiku — Haiku 5.5, at
+  // $0.50/$2.50 (top-level, >100k band) (Issue #3399).
   const haiku = lookupModelPricing("haiku");
-  assertEquals(haiku?.inputPerMillion, 1);
-  assertEquals(haiku?.outputPerMillion, 5);
+  assertEquals(haiku?.inputPerMillion, 0.50);
+  assertEquals(haiku?.outputPerMillion, 2.50);
 });
 
 Deno.test("token_usage - lookupModelPricing tier fallback gives current Opus pricing for unknown minor (Issue #2389)", () => {
@@ -468,6 +483,119 @@ Deno.test("token_usage - budget fallback does not trip prematurely for Opus 4.8 
   // The legacy rate would have been 2M*15 + 0.4M*75 = 30 + 30 = 60 > 25.
   const legacyCost = estimateCost(usage, "claude-opus-4-20250514");
   assertEquals(legacyCost!.totalCost > representativeBudget, true);
+});
+
+// =============================================================================
+// Haiku 5.5 banded pricing (Issue #3399)
+// =============================================================================
+
+Deno.test("token_usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const cost = estimateCost(usage, "claude-haiku-5-5", 50_000);
+  assertEquals(cost?.inputCost, 0.10);
+  assertEquals(cost?.outputCost, 0.50);
+  assertEquals(cost?.cacheWriteCost, 0.125);
+  assertEquals(cost?.cacheReadCost, 0.01);
+});
+
+Deno.test("token_usage - estimateCost treats exactly 100k prompt tokens as inside the <=100k band (Issue #3399)", () => {
+  // maxPromptTokens is an inclusive boundary.
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const cost = estimateCost(usage, "claude-haiku-5-5", 100_000);
+  assertEquals(cost?.inputCost, 0.10);
+  assertEquals(cost?.outputCost, 0.50);
+  assertEquals(cost?.cacheWriteCost, 0.125);
+  assertEquals(cost?.cacheReadCost, 0.01);
+});
+
+Deno.test("token_usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const cost = estimateCost(usage, "claude-haiku-5-5", 150_000);
+  assertEquals(cost?.inputCost, 0.50);
+  assertEquals(cost?.outputCost, 2.50);
+  assertEquals(cost?.cacheWriteCost, 0.625);
+  assertEquals(cost?.cacheReadCost, 0.05);
+});
+
+Deno.test("token_usage - estimateCost without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const cost = estimateCost(usage, "claude-haiku-5-5");
+  assertEquals(cost?.inputCost, 0.50);
+  assertEquals(cost?.outputCost, 2.50);
+  assertEquals(cost?.cacheWriteCost, 0.625);
+  assertEquals(cost?.cacheReadCost, 0.05);
+});
+
+Deno.test("token_usage - estimateCostWithUpperBound without a prompt-size argument uses the conservative >100k Haiku 5.5 band (Issue #3399)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const estimate = estimateCostWithUpperBound(usage, "claude-haiku-5-5");
+  assertEquals(estimate.priced, true);
+  assertEquals(estimate.cost.inputCost, 0.50);
+  assertEquals(estimate.cost.outputCost, 2.50);
+  assertEquals(estimate.cost.cacheWriteCost, 0.625);
+  assertEquals(estimate.cost.cacheReadCost, 0.05);
+});
+
+Deno.test("token_usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)", () => {
+  // Neither row carries a lowerBand, so the third argument has no effect and
+  // the flat $1/$5/$1.25/$0.10 rate still applies.
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  for (const model of ["claude-haiku-4-5", "claude-haiku-4-9"]) {
+    const cost = estimateCost(usage, model, 50);
+    assertEquals(cost?.inputCost, 1, model);
+    assertEquals(cost?.outputCost, 5, model);
+    assertEquals(cost?.cacheWriteCost, 1.25, model);
+    assertEquals(cost?.cacheReadCost, 0.10, model);
+  }
+});
+
+Deno.test("token_usage - estimateCost for Sonnet ignores a promptTokensPerRequest argument (no lowerBand) (Issue #3399)", () => {
+  const usage: TokenUsage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 1_000_000,
+    cacheReadTokens: 1_000_000,
+  };
+
+  const withoutArg = estimateCost(usage, "claude-sonnet-4-6");
+  const withArg = estimateCost(usage, "claude-sonnet-4-6", 50);
+  assertEquals(withoutArg, withArg);
 });
 
 // =============================================================================
