@@ -634,7 +634,10 @@ export async function claimPrComment(
   // An expired claim is not a competing claim, however long it lingers
   // (Issue #2266). The sweep is best-effort, so a delete that never
   // succeeded would otherwise win every race for ever — it always sorts
-  // earliest — and no host could ever answer this feedback comment.
+  // earliest — and no host could ever answer this feedback comment. A
+  // `pr_review` lease claim instead stays live for as long as its heartbeat
+  // keeps renewing it (Issue #3383) — {@link isClaimLive} applies whichever
+  // rule the claim's body carries.
   //
   // Age is measured against this host's own claim comment when the thread
   // shows it: GitHub stamped both, so the comparison is free of clock skew.
@@ -642,11 +645,7 @@ export async function claimPrComment(
   // the module's fail direction leaves the work claimable.
   const ownCreatedMs = Date.parse(ourClaims[0]?.createdAt ?? "");
   const anchorMs = Number.isNaN(ownCreatedMs) ? nowMs : ownCreatedMs;
-  const competingClaims = fleetClaims.filter((c) => {
-    const createdMs = Date.parse(c.createdAt);
-    if (Number.isNaN(createdMs)) return false;
-    return anchorMs - createdMs < STALE_CLAIM_MIN_AGE_MS;
-  });
+  const competingClaims = fleetClaims.filter((c) => isClaimLive(c, anchorMs));
 
   // Step 7: Earliest live claim wins
   const contenders = [...ourClaims, ...competingClaims];
@@ -669,7 +668,15 @@ export async function claimPrComment(
   )[0]!;
 
   if (isOurs(earliest)) {
-    return { ok: true, value: { claimed: true, winnerId: workerId } };
+    return {
+      ok: true,
+      value: {
+        claimed: true,
+        winnerId: workerId,
+        claimCommentId: ownClaim!.id,
+        claimBody,
+      },
+    };
   }
 
   // Lost — clean up own claim comment
@@ -677,4 +684,62 @@ export async function claimPrComment(
   await dropOwnClaimComment();
 
   return { ok: true, value: { claimed: false, winnerId } };
+}
+
+/** Options for {@link hasLivePrReviewClaim}. */
+export interface HasLivePrReviewClaimOptions {
+  repo: string;
+  prNumber: number;
+  reviewId: string;
+  ghCommandFn: (args: string[]) => Promise<string>;
+  trustedAuthors: readonly string[];
+  nowMs: number;
+  log: (message: string) => void;
+}
+
+/**
+ * True when a review already has a live, fleet-authored lease claim on it
+ * (Issue #3383) — what the scan checks before surfacing a change-requested
+ * review as actionable, so a live lease (not just the dismissal) keeps other
+ * hosts off it.
+ *
+ * Fail direction: a read failure, an empty trusted-author set, or no
+ * matching live lease all return false — the review stays actionable rather
+ * than being hidden on evidence that could not be confirmed.
+ */
+export async function hasLivePrReviewClaim(
+  options: HasLivePrReviewClaimOptions,
+): Promise<boolean> {
+  const { repo, prNumber, reviewId, ghCommandFn, trustedAuthors, nowMs, log } =
+    options;
+
+  const trusted = new Set(
+    trustedAuthors
+      .map((a) => a.trim().toLowerCase())
+      .filter((a) => a.length > 0),
+  );
+  if (trusted.size === 0) return false;
+
+  let claims: ClaimComment[];
+  try {
+    claims = await fetchClaimComments(repo, prNumber, ghCommandFn);
+  } catch (err) {
+    log(
+      `[claim-pr-comment] ${repo}#${prNumber}: could not read the claim ` +
+        `comments for review ${reviewId}, so it is treated as unclaimed, ` +
+        `so the review stays actionable — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+    );
+    return false;
+  }
+
+  return claims.some((c) => {
+    const info = extractClaimInfo(c.body);
+    if (info === null || info.commentId !== reviewId) return false;
+    if (!isLeaseClaimBody(c.body)) return false;
+    const author = (c.author ?? "").trim().toLowerCase();
+    if (!trusted.has(author)) return false;
+    return isLeaseLive(c, nowMs);
+  });
 }

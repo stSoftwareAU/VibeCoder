@@ -41,6 +41,10 @@ import { prepareCodegraphRun } from "./codegraph_run.ts";
 import { type RtkOutputResult, settingsJsonOption } from "./rtk_output.ts";
 import { bindGraftRun } from "./graft_run.ts";
 import { claimPrComment } from "./claim_pr_comment.ts";
+import {
+  createClaimLeaseRenewer,
+  PR_REVIEW_CLAIM_RENEW_MS,
+} from "./pr_review_claim_lease.ts";
 import { guardPrStillOpen, prLiveSkipReason } from "./pr_live_state.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
 import {
@@ -304,6 +308,12 @@ export interface PrFeedbackProcessorDeps {
    * production leaves it undefined and gets {@link runPrFeedbackDriftCheck}.
    */
   driftCheckFn?: typeof runPrFeedbackDriftCheck;
+  /**
+   * Lease renewal interval for a claimed `pr_review` (Issue #3383). Defaults
+   * to {@link PR_REVIEW_CLAIM_RENEW_MS}. A test seam — production never
+   * sets this.
+   */
+  claimLeaseRenewMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +488,10 @@ export async function processPrFeedback(
     };
   }
 
+  // Issue #3383: set when a won `pr_review` claim's lease needs renewing
+  // from the heartbeat below.
+  let claimLeaseRenewer: ReturnType<typeof createClaimLeaseRenewer> | undefined;
+
   // Claim the PR comment atomically before processing (Issue #1072).
   // Prevents multiple workers from responding to the same comment.
   if (workerId) {
@@ -528,11 +542,37 @@ export async function processPrFeedback(
       commentId,
       workerId,
     });
+
+    // Issue #3383: a won `pr_review` claim is a lease, not a dismissal — it
+    // has to be renewed while this run is alive, or another host may reclaim
+    // the review once it lapses. The lease is renewed through the claim
+    // comment the win carries.
+    if (
+      commentType === "pr_review" &&
+      claimResult.value.claimCommentId !== undefined &&
+      claimResult.value.claimBody !== undefined
+    ) {
+      claimLeaseRenewer = createClaimLeaseRenewer({
+        repo,
+        claimCommentId: claimResult.value.claimCommentId,
+        body: claimResult.value.claimBody,
+        claimedAtMs: Date.now(),
+        ghCommandFn: (args: string[]) => deps.github.runGhCommand(args),
+        log: (message: string) => logger.warn(message, { repo, prNumber }),
+        renewMs: processorDeps.claimLeaseRenewMs ?? PR_REVIEW_CLAIM_RENEW_MS,
+      });
+    }
   }
 
   // Start periodic heartbeat to prevent false crash detection (Issue #1204).
   // The initial record is awaited (Issue #1888); on failure return early so
   // the next worker iteration can re-process the PR comment.
+  //
+  // Issue #3383: the heartbeat that keeps the local crash detector quiet is
+  // also what keeps the review's lease live for other hosts — renewing the
+  // lease through the same beat means a run that stops beating also stops
+  // renewing, and the lease lapses exactly when the crash detector would
+  // notice.
   const heartbeatStart = await startHeartbeat({
     repo,
     issueNumber: prNumber,
@@ -544,7 +584,17 @@ export async function processPrFeedback(
     // read the root. `stopHeartbeat` reuses these options, so the final
     // `clearHeartbeat` follows.
     workDir: processorDeps.workRoot,
-    recordFn: deps.crashHandling.recordHeartbeat,
+    recordFn: claimLeaseRenewer
+      ? async (workDir: string, repoArg: string, issueNumber: number) => {
+        const result = await deps.crashHandling.recordHeartbeat(
+          workDir,
+          repoArg,
+          issueNumber,
+        );
+        await claimLeaseRenewer!.renewIfDue();
+        return result;
+      }
+      : deps.crashHandling.recordHeartbeat,
     clearFn: deps.crashHandling.clearHeartbeat,
   });
   if (!heartbeatStart.ok) {
@@ -571,6 +621,31 @@ export async function processPrFeedback(
       graftSlot,
       carrier,
     );
+    // Issue #3383: fail closed. Every branch inside the inner call that
+    // reaches a conclusion for a claimed `pr_review` settles the carrier
+    // (retired or charged); a branch that returns without doing so —
+    // a gated fix-branch checkout failure, a prompt build failure, and any
+    // future one nobody updated — must still be charged as a failed attempt,
+    // or the review is never dismissed AND never retried: the claim's lease
+    // simply re-expires and the same unsettled outcome repeats for ever.
+    // Charging it here instead bounds the review to at most two failed
+    // attempts before `handlePrCommentFailure` dismisses it permanently.
+    if (commentType === "pr_review" && carrier.reviewSettlement === undefined) {
+      const message = result.ok ? result.value.summary : result.error.message;
+      logger.warn(
+        "PR feedback: pr_review run ended without settling the review — " +
+          "charging it as a failed attempt so it is retried, not stuck " +
+          "(Issue #3383)",
+        { repo, prNumber, commentId },
+      );
+      await deps.pr.handlePrCommentFailure(
+        repo,
+        prNumber,
+        commentType,
+        commentId,
+        message,
+      );
+    }
     const withGraft = withGraftContext(result, graftSlot);
     return withGraft.ok && (carrier.codegraphContext || carrier.rtkOutput)
       ? {
@@ -584,6 +659,26 @@ export async function processPrFeedback(
         },
       }
       : withGraft;
+  } catch (error) {
+    // Same fail-closed rule for a thrown error (Issue #3383) — a prompt
+    // build failure or any other throw inside the inner call never reaches
+    // the settlement checked above.
+    if (commentType === "pr_review" && carrier.reviewSettlement === undefined) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn(
+        "PR feedback: pr_review run threw without settling the review — " +
+          "charging it as a failed attempt (Issue #3383)",
+        { repo, prNumber, commentId },
+      );
+      await deps.pr.handlePrCommentFailure(
+        repo,
+        prNumber,
+        commentType,
+        commentId,
+        message,
+      );
+    }
+    throw error;
   } finally {
     await stopHeartbeat(heartbeatHandle);
   }
@@ -594,6 +689,17 @@ interface FeedbackRunCarrier {
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
+  /**
+   * How a claimed `pr_review` was settled this run (Issue #3383): `retired`
+   * once `markCommentProcessed` dismisses it on a conclusive outcome,
+   * `charged` once `handlePrCommentFailure` records a failed attempt, or
+   * `released` when the branch could not even be prepared through no fault
+   * of the review's — the lease simply lapses and the review is retried.
+   * Left `undefined` for every other `commentType`, and for a `pr_review`
+   * whose run ended without reaching a settling branch — the catch-all in
+   * `processPrFeedback` charges that case so it is never silently stuck.
+   */
+  reviewSettlement?: "retired" | "charged" | "released";
 }
 
 /**
@@ -620,6 +726,49 @@ async function _processFeedbackWithHeartbeat(
     codegraphContextEnabled = OPERATIONAL_DEFAULTS.codegraphContext.enabled,
     rtkOutputEnabled = OPERATIONAL_DEFAULTS.rtkOutput.enabled,
   } = processorDeps;
+
+  // Issue #3383: a claimed `pr_review` is dismissed only once the run's
+  // outcome is known — these two helpers are the only places that may
+  // dismiss it or charge a failed attempt, and every settling branch below
+  // routes through one of them (or `reviewSettlement = "released"` directly,
+  // for the branch-prepare failure path, which charges nothing).
+
+  /**
+   * Dismiss the review now that this run has reached a conclusive outcome.
+   * The dismissal itself is `markCommentProcessed`'s `pr_review` branch — a
+   * PUT to the dismissals endpoint — which offers no un-dismissal, so a
+   * failure here is fail-loud: the review stays outstanding and may be
+   * processed again.
+   */
+  const retireReview = async (): Promise<void> => {
+    carrier.reviewSettlement = "retired";
+    const result = await deps.pr.markCommentProcessed(
+      repo,
+      commentType,
+      commentId,
+      prNumber,
+    );
+    if (!result.ok) {
+      logger.error(
+        "PR feedback: could not dismiss the pr_review after a conclusive " +
+          "outcome — the review stays outstanding and may be processed " +
+          "again (Issue #3383)",
+        { repo, prNumber, commentId, error: result.error.message },
+      );
+    }
+  };
+
+  /** Charge this run's outcome as a failed attempt on the claimed review. */
+  const chargeReviewFailure = async (message: string): Promise<void> => {
+    carrier.reviewSettlement = "charged";
+    await deps.pr.handlePrCommentFailure(
+      repo,
+      prNumber,
+      commentType,
+      commentId,
+      message,
+    );
+  };
 
   // Summarise large comments
   let processedBody = commentBody;
@@ -670,6 +819,18 @@ async function _processFeedbackWithHeartbeat(
     // the next scan rediscovers and retries the comment once the
     // contention clears — mirroring how the CI path (pr_ci_processor.ts)
     // relies on the failing check run being rediscovered next cycle.
+    //
+    // Issue #3383: for a `pr_review`, there is no mark to take back —
+    // `removeProcessedMark` is a no-op for that type, since a `pr_review`
+    // claim no longer dismisses the review at claim time. `branch_held` and
+    // `checkout_failed` are host-local contention, not the review's fault,
+    // so nothing is charged here either: the lease simply lapses once this
+    // run stops renewing it, and the review becomes reclaimable and is
+    // retried once the contention clears. `branch_missing` means the PR is
+    // gone, so the review (if any) is moot either way.
+    if (commentType === "pr_review" && prepared.reason !== "branch_missing") {
+      carrier.reviewSettlement = "released";
+    }
     if (prepared.reason !== "branch_missing") {
       const markError = await removeProcessedMark(
         repo,
@@ -679,11 +840,11 @@ async function _processFeedbackWithHeartbeat(
         (message: string) => logger.warn(message, { repo, prNumber }),
       );
       if (markError) {
-        // Issue #2909 review (round 2): a `pr_review` mark is a dismissed
-        // review — GitHub offers no un-dismissal, so `removeProcessedMark`
-        // always errors here — and a failed reaction DELETE errors too. In
-        // both cases the next scan will never rediscover this comment, so
-        // the only way to answer it is a direct reply now.
+        // Issue #2909 review (round 2): a failed reaction DELETE leaves the
+        // eyes reaction on the comment, so the next scan will never
+        // rediscover it — the only way to answer it is a direct reply now.
+        // (A `pr_review` never reaches this branch: `removeProcessedMark`
+        // always returns null for it, Issue #3383.)
         logger.warn(
           "Could not release the eyes reaction after a branch-prepare " +
             "failure — replying directly since the comment will not be " +
@@ -954,16 +1115,13 @@ async function _processFeedbackWithHeartbeat(
   await rtk.record();
 
   if (!claudeResult.ok) {
-    // Handle failure — report via comment failure handler
+    // Handle failure — report via comment failure handler. Issue #3383:
+    // routed through chargeReviewFailure so a `pr_review` claim's failed
+    // attempt is counted towards its two-strike limit (harmless for every
+    // other comment type, which never checks `reviewSettlement`).
     const failureMessage =
       `Claude execution failed: ${claudeResult.error.message}`;
-    await deps.pr.handlePrCommentFailure(
-      repo,
-      prNumber,
-      commentType,
-      commentId,
-      failureMessage,
-    );
+    await chargeReviewFailure(failureMessage);
     return {
       ok: false,
       error: new Error(failureMessage),
@@ -975,13 +1133,7 @@ async function _processFeedbackWithHeartbeat(
     const failureMessage = claudeResult.value.timeoutReason === "no-output"
       ? `Claude produced no output for ${claudeNoOutputTimeout} seconds (silence watchdog fired)`
       : `Claude timed out after ${claudeTimeout} seconds`;
-    await deps.pr.handlePrCommentFailure(
-      repo,
-      prNumber,
-      commentType,
-      commentId,
-      failureMessage,
-    );
+    await chargeReviewFailure(failureMessage);
     return {
       ok: false,
       error: new Error(failureMessage),
@@ -1190,8 +1342,13 @@ async function _processFeedbackWithHeartbeat(
     );
   }
 
-  // Mark comment as processed
-  await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);
+  // Mark comment as processed — for every type except `pr_review`. A
+  // `pr_review` is dismissed only once the run's outcome is known, further
+  // down this function (Issue #3383): dismissing it here, before the push
+  // even lands, would answer the review before the work is verified.
+  if (commentType !== "pr_review") {
+    await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);
+  }
 
   // Always commit and push any pending work (Issue #1643).
   // Previously gated on `claudeOutput.length > 0`, but Claude stdout is
@@ -1475,6 +1632,8 @@ async function _processFeedbackWithHeartbeat(
       );
     }
     await replyWithResult(repo, prNumber, deps, customMessage);
+    // Issue #3383: the hand-off answers the review, so dismiss it here.
+    if (commentType === "pr_review") await retireReview();
     return {
       ok: true,
       value: {
@@ -1535,6 +1694,9 @@ async function _processFeedbackWithHeartbeat(
       input.branchName,
       fixPrError,
     );
+    // Issue #3383: a human is asked to land the fix, which answers the
+    // review — dismiss it rather than leaving it outstanding.
+    if (commentType === "pr_review") await retireReview();
   } else if (hasChanges && pushSucceeded) {
     await replyWithResult(
       repo,
@@ -1547,14 +1709,32 @@ async function _processFeedbackWithHeartbeat(
           `into the gated branch '${input.branchName}'.`
         : undefined,
     );
+    // Issue #3383: the fix is verified on the remote — dismiss the review.
+    if (commentType === "pr_review") await retireReview();
   } else if (hasChanges && !pushSucceeded) {
-    await replyPushFailed(repo, prNumber, deps, pushVerification);
+    // Issue #3383: for a `pr_review`, charge this as a failed attempt
+    // instead of posting the ordinary push-failed reply — a reply on a
+    // review the worker is about to retry would read as a conclusion that
+    // was never reached.
+    if (commentType === "pr_review") {
+      const detail = pushVerification
+        ? ` Detail: ${pushVerification.reason}`
+        : "";
+      await chargeReviewFailure(
+        `The fix was committed locally but the push did not land on the ` +
+          `remote.${detail}`,
+      );
+    } else {
+      await replyPushFailed(repo, prNumber, deps, pushVerification);
+    }
   } else if (
     isReviewerChangeRequest(commentType) && customMessage !== undefined
   ) {
     // Issue #3246: the agent's rebuttal answers the review — post it, never
     // the neutral reply.
     await replyWithResult(repo, prNumber, deps, customMessage);
+    // Issue #3383: the rebuttal answers the review — dismiss it.
+    await retireReview();
   } else if (isReviewerChangeRequest(commentType)) {
     // Issue #3246: no fix and no rebuttal after every in-run attempt — a
     // dismissed review cannot be rediscovered next cycle, so escalate now
@@ -1600,6 +1780,9 @@ async function _processFeedbackWithHeartbeat(
       );
     }
     reviewerEscalated = true;
+    // Issue #3383: the escalation itself — whatever its own result — is
+    // this run's conclusion on the review; dismiss it so it does not loop.
+    await retireReview();
   } else {
     await replyNoChanges(
       repo,
@@ -1741,10 +1924,12 @@ async function replyGatedCheckoutFailed(
 
 /**
  * Posts a direct reply when a branch-prepare failure's processed mark could
- * not be taken back (Issue #2909 review, round 2). Without this, a
- * `pr_review` claim — always unable to un-dismiss — or a failed reaction
- * DELETE leaves the comment eyes-reacted forever with nothing posted, so the
- * next scan never rediscovers it either.
+ * not be taken back (Issue #2909 review, round 2). Without this, a failed
+ * reaction DELETE leaves the comment eyes-reacted forever with nothing
+ * posted, so the next scan never rediscovers it either. Never reached for a
+ * `pr_review`: `removeProcessedMark` returns null for that type, since a
+ * `pr_review` claim no longer dismisses the review at claim time
+ * (Issue #3383) — there is no mark to take back and nothing to fail.
  */
 async function replyBranchPrepareFailed(
   repo: string,

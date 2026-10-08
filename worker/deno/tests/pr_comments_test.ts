@@ -4,7 +4,7 @@
  * Uses Australian English throughout.
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertFalse } from "@std/assert";
 import {
   checkPrCommentHasFailedOnce,
   formatPrCommentToFix,
@@ -12,6 +12,7 @@ import {
   markCommentProcessed,
   markPrCommentAsFailed,
   markPrCommentAsFailedOnce,
+  prReviewFailedOnceMarker,
   replyToComment,
 } from "../lib/pr_comments.ts";
 
@@ -194,6 +195,21 @@ Deno.test("pr_comments - checkPrCommentHasFailedOnce returns false on API error"
   assertEquals(result, false);
 });
 
+Deno.test("pr_comments - checkPrCommentHasFailedOnce for pr_review without prNumber returns false and makes no gh call", async () => {
+  const { calls, fn } = createMockGh();
+  const result = await checkPrCommentHasFailedOnce(
+    "owner/repo",
+    "pr_review",
+    "789",
+    fn,
+    ["vibe-bot"],
+    // prNumber omitted deliberately — the marker lives on the PR thread, and
+    // without a PR number there is nowhere to read it from.
+  );
+  assertEquals(result, false);
+  assertEquals(calls.length, 0, "should make no gh call at all");
+});
+
 // --- markPrCommentAsFailedOnce ---
 
 Deno.test("pr_comments - markPrCommentAsFailedOnce adds confused reaction and replies", async () => {
@@ -222,6 +238,58 @@ Deno.test("pr_comments - markPrCommentAsFailedOnce adds confused reaction and re
   );
   const reply = findPrReplyCall(calls, 42);
   assert(reply, "should post a reply on PR #42");
+});
+
+Deno.test("pr_comments - markPrCommentAsFailedOnce for issue still adds confused reaction and replies", async () => {
+  const { calls, fn } = createMockGh();
+  await markPrCommentAsFailedOnce(
+    "owner/repo",
+    42,
+    "issue",
+    "123",
+    "Something broke",
+    fn,
+  );
+  const reaction = findApiCall(
+    calls,
+    (c) =>
+      c.includes("POST") &&
+      c.includes("repos/owner/repo/issues/comments/123/reactions") &&
+      c.includes("content=confused"),
+  );
+  assert(
+    reaction,
+    "should POST a `content=confused` reaction to the issue comment",
+  );
+  const reply = findPrReplyCall(calls, 42);
+  assert(reply, "should post a reply on PR #42");
+});
+
+Deno.test("pr_comments - markPrCommentAsFailedOnce for pr_review never touches reactions, and the reply carries the marker", async () => {
+  const { calls, fn } = createMockGh();
+  await markPrCommentAsFailedOnce(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Something broke",
+    fn,
+  );
+  // A review has no `reactions` endpoint of its own (Issue #3383): a
+  // `confused` reaction would land on the wrong resource, so none is made.
+  const anyReactionCall = calls.some((c) =>
+    c.some((a) => a.includes("/reactions"))
+  );
+  assertFalse(
+    anyReactionCall,
+    "should make no reaction call at all for a pr_review",
+  );
+  const reply = findPrReplyCall(calls, 42);
+  assert(reply, "should post a reply on PR #42");
+  assert(
+    reply!.some((a) => a.includes(prReviewFailedOnceMarker("789"))),
+    "reply body should carry the pr_review failed-once marker",
+  );
 });
 
 // --- markPrCommentAsFailed ---
@@ -312,6 +380,157 @@ Deno.test("pr_comments - handlePrCommentFailure calls failed for second failure"
   // then replyToComment. Check that eyes content was sent.
   const eyesCalls = calls.filter((c) => c.some((a) => a === "content=eyes"));
   assertEquals(eyesCalls.length > 0, true);
+});
+
+/** Build a `gh` stub that answers the paginated marker-comment read. */
+function createMarkerMockGh(
+  markerPayload: () => string,
+): { calls: string[][]; fn: (args: string[]) => Promise<string> } {
+  const calls: string[][] = [];
+  const fn = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args.some((a) => a.includes("/issues/42/comments"))) {
+      return markerPayload();
+    }
+    return "";
+  };
+  return { calls, fn };
+}
+
+Deno.test("pr_comments - handlePrCommentFailure pr_review first failure: reply carries the marker, no dismissal, no reaction", async () => {
+  const { calls, fn } = createMarkerMockGh(() => "[]");
+  await handlePrCommentFailure(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Error occurred",
+    fn,
+    ["vibe-bot"],
+  );
+  const reply = findPrReplyCall(calls, 42);
+  assert(reply, "should post a reply on PR #42");
+  assert(
+    reply!.some((a) => a.includes(prReviewFailedOnceMarker("789"))),
+    "reply should carry the pr_review failed-once marker",
+  );
+  assertFalse(
+    calls.some((c) => c.some((a) => a.includes("/dismissals"))),
+    "first failure must not dismiss the review",
+  );
+  assertFalse(
+    calls.some((c) => c.some((a) => a.includes("/reactions"))),
+    "first failure must make no reaction call for a pr_review",
+  );
+});
+
+Deno.test("pr_comments - handlePrCommentFailure pr_review second failure: dismisses the review and replies Permanently Failed", async () => {
+  const markerRow = JSON.stringify([{
+    id: 1,
+    body: `${prReviewFailedOnceMarker("789")}\nsome text`,
+    created_at: "2026-01-01T00:00:00Z",
+    author: "vibe-bot",
+  }]);
+  const { calls, fn } = createMarkerMockGh(() => markerRow);
+  await handlePrCommentFailure(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Error again",
+    fn,
+    ["vibe-bot"],
+  );
+  const dismissal = findApiCall(
+    calls,
+    (c) =>
+      c.includes("PUT") &&
+      c.includes("repos/owner/repo/pulls/42/reviews/789/dismissals"),
+  );
+  assert(dismissal, "second failure should dismiss the review");
+  const reply = findPrReplyCall(calls, 42);
+  assert(reply, "should post a reply on PR #42");
+  assert(
+    reply!.some((a) => a.includes("Permanently Failed")),
+    "reply should say Permanently Failed",
+  );
+  assertFalse(
+    calls.some((c) => c.some((a) => a.includes("/reactions"))),
+    "second failure for a pr_review must make no reaction call",
+  );
+});
+
+Deno.test("pr_comments - handlePrCommentFailure pr_review: marker authored by a stranger is treated as first failure", async () => {
+  const markerRow = JSON.stringify([{
+    id: 1,
+    body: prReviewFailedOnceMarker("789"),
+    created_at: "2026-01-01T00:00:00Z",
+    author: "a-stranger",
+  }]);
+  const { calls, fn } = createMarkerMockGh(() => markerRow);
+  await handlePrCommentFailure(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Error occurred",
+    fn,
+    ["vibe-bot"],
+  );
+  assertFalse(
+    calls.some((c) => c.some((a) => a.includes("/dismissals"))),
+    "a stranger's marker must not count as the fleet's own",
+  );
+});
+
+Deno.test("pr_comments - handlePrCommentFailure pr_review: marker for a different review id is treated as first failure", async () => {
+  const markerRow = JSON.stringify([{
+    id: 1,
+    body: prReviewFailedOnceMarker("999"),
+    created_at: "2026-01-01T00:00:00Z",
+    author: "vibe-bot",
+  }]);
+  const { calls, fn } = createMarkerMockGh(() => markerRow);
+  await handlePrCommentFailure(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Error occurred",
+    fn,
+    ["vibe-bot"],
+  );
+  assertFalse(
+    calls.some((c) => c.some((a) => a.includes("/dismissals"))),
+    "a different review's marker must not count towards this review",
+  );
+});
+
+Deno.test("pr_comments - handlePrCommentFailure pr_review: a marker read that throws is treated as first failure, without throwing", async () => {
+  const fn = async (args: string[]): Promise<string> => {
+    if (args.some((a) => a.includes("/issues/42/comments"))) {
+      throw new Error("API unreachable");
+    }
+    return "";
+  };
+  const calls: string[][] = [];
+  const wrappedFn = async (args: string[]): Promise<string> => {
+    calls.push(args);
+    return await fn(args);
+  };
+  await handlePrCommentFailure(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Error occurred",
+    wrappedFn,
+    ["vibe-bot"],
+  );
+  assertFalse(
+    calls.some((c) => c.some((a) => a.includes("/dismissals"))),
+    "an unreadable marker thread must not be treated as a second failure",
+  );
 });
 
 // --- formatPrCommentToFix ---

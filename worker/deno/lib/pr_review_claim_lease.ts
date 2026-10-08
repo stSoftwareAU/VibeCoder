@@ -75,9 +75,7 @@ export function isLeaseLive(
   const updatedMs = claim.updatedAt !== undefined
     ? Date.parse(claim.updatedAt)
     : NaN;
-  const candidates = [createdMs, updatedMs].filter((ms) =>
-    !Number.isNaN(ms)
-  );
+  const candidates = [createdMs, updatedMs].filter((ms) => !Number.isNaN(ms));
   if (candidates.length === 0) return false;
   const lastBeat = Math.max(...candidates);
   return referenceMs - lastBeat < PR_REVIEW_CLAIM_LEASE_MS;
