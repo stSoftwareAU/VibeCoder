@@ -114,7 +114,11 @@ container, by name). `runner.log` then says `round failed (exit N)` or
 After 12 consecutive failed passes (about an hour at the 5-minute interval),
 `escalate.ts` opens one deduplicated issue in `stSoftwareAU/VibeCoder`,
 titled `review-fleet-prs runner failing on <host>: <error>`, using the host's
-own `gh` login rather than the App token. If the error changes, it retitles
+own `gh` login rather than the App token. The issue is public, so the error
+has secrets redacted and every repo reference other than
+`stSoftwareAU/VibeCoder` replaced with `<repo>`, and the log path is shown
+relative to the home directory; the host name is in the title, so give the
+host a name that discloses nothing private. If the error changes, it retitles
 the issue and comments on it. It appends a
 `[review-fleet-prs-health] host=… status=unhealthy …` line to `health.log`
 in the log directory, which is also echoed to `runner.log`. The first
@@ -184,8 +188,8 @@ print the minted token, since tracing is suspended around the mint.
    commits since are merges from the base branch that leave its own diff
    unchanged, the gate skips it as `awaiting-fix` until the fleet pushes its
    fix, so the review is not repeated. The skill runs on more than one host
-   (a laptop as the `gh` user, GRQ-25 as the reviewer App), so a review
-   carrying the skill's marker counts as this skill's review whichever login
+   (a laptop as the `gh` user, an always-on host as the reviewer App), so a
+   review carrying the skill's marker counts as this skill's review whichever login
    posted it, and a PR anyone has approved at its head commit is skipped as
    `approved`: there is nothing left to review, and it merges once it is up
    to date.
@@ -206,7 +210,35 @@ print the minted token, since tracing is suspended around the mint.
     coding-standard or other guidance could reasonably prevent it, file a
     deduplicated improvement issue in `stSoftwareAU/VibeCoder`. Do not turn a
     one-off bug into guidance, and do not weaken the review rule just because
-    a finding is common.
+    a finding is common. Many fleet repos are private and VibeCoder is
+    public, so the issue never references a private repo directly (see
+    [Keeping private repos private](#keeping-private-repos-private)).
+
+## Keeping private repos private
+
+Reviews, held-PR comments and unrelated issues land in the PR's own repo, so
+they may name its files, code and PRs freely. An improvement issue (or a
+runner escalation) lands in the public `stSoftwareAU/VibeCoder`: it may
+reference a public repo's issues, PRs and Actions runs directly, but never a
+private repo's. For a private repo, every part of the issue (title, body,
+evidence table and the closing "found by" line) leaves out:
+
+- the repo's name or slug, and its issue, PR, review, commit or Actions run
+  numbers and links;
+- its branch names, file paths, code, test names, error text and log
+  excerpts;
+- what the product does: its domain, features, customers or data.
+
+Describe the example at concept level instead, keeping what shows the
+pattern: dates, times, the sequence of events and the VibeCoder code at
+fault. A title cites only public examples, so `... (VibeCoder#3308, #3355,
+private-app#2699)` becomes `... (VibeCoder#3308, #3355 and a private fleet
+PR)`; in the evidence table that row reads "a PR in a private fleet repo",
+its default branch is "the default branch", and the round is "found by the
+review-fleet-prs round of 2026-10-08 06:16". Check a repo's visibility with
+`gh api repos/{repo} --jq .visibility` before linking it, and treat any answer
+other than `public` (including an error) as private. The private evidence
+stays on the host, in `log.jsonl` and `summary.md`, where the owner can see it.
 
 ## Which repos
 
@@ -444,7 +476,10 @@ VibeCoder's own guidance:
    do not create another one.
 4. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
    - the recurring failure pattern and why it is preventable;
-   - links to at least two independent PR/review examples;
+   - at least two independent PR/review examples: a link for each one in a
+     public repo, and a concept-level description, with no name, number or
+     link, for each one in a private repo (see
+     [Keeping private repos private](#keeping-private-repos-private));
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
    - the proposed guidance or guardrail and how future reviews can verify it
      worked.
@@ -469,9 +504,9 @@ the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also
 send one PushNotification (status `proactive`) naming those PRs and why,
-under 200 characters, e.g. `GRQ-AutoTrader#1521 held for you: 2 page tests
-moved to the server; GRQ#5032 sent back: fresh-path test never inits the
-market`. It reaches the owner's phone when this session has Remote Control
+under 200 characters, e.g. `example-app#152 held for you: 2 page tests
+moved to the server; example-api#503 sent back: fresh-path test never seeds
+the fixture`. It reaches the owner's phone when this session has Remote Control
 connected (`/remote-control` and the Claude app). Send nothing for rounds
 that only approved or had nothing ready.
 
