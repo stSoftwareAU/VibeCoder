@@ -211,3 +211,56 @@ Deno.test(
     );
   },
 );
+
+Deno.test(
+  "claim pr comment - a sibling's lease claim with no parseable timestamp is neither swept nor a contender",
+  async () => {
+    const siblingRow = claimRow(300, "worker-alpha", "not-a-date", {
+      lease: true,
+      updatedAt: "also-not-a-date",
+    });
+    const mock = createMockGh([
+      JSON.stringify([siblingRow]),
+      JSON.stringify([
+        siblingRow,
+        claimRow(301, "worker-beta", "2026-04-01T00:09:59Z"),
+      ]),
+    ]);
+
+    const result = await claim(mock.ghCommandFn, () => {});
+
+    // Unprovable is not live, so this host wins — but unprovable is not
+    // stale either, so the sweep leaves the comment alone.
+    assertEquals(result.ok, true);
+    if (result.ok) assertEquals(result.value.claimed, true);
+    assertEquals(
+      mock.calls.some((c) =>
+        c.includes("DELETE") && c.includes("issues/comments/300")
+      ),
+      false,
+    );
+  },
+);
+
+Deno.test(
+  "claim pr comment - a sibling's ordinary claim with an unparseable createdAt is not a contender",
+  async () => {
+    // Sorts before any ISO timestamp, so it would win the race if it counted.
+    const siblingRow = claimRow(300, "worker-alpha", "!not-a-date");
+    const mock = createMockGh([
+      "[]",
+      JSON.stringify([
+        siblingRow,
+        claimRow(301, "worker-beta", "2026-04-01T00:09:59Z"),
+      ]),
+    ]);
+
+    const result = await claim(mock.ghCommandFn, () => {});
+
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.claimed, true);
+      assertEquals(result.value.winnerId, "worker-beta");
+    }
+  },
+);

@@ -14,16 +14,22 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   type PrFeedbackInput,
   type PrFeedbackProcessorDeps,
   processPrFeedback,
 } from "../lib/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import type { Logger } from "../types.ts";
+import type {
+  GitHubClient,
+  GitHubIssue,
+  Logger,
+  WorkerConfig,
+} from "../types.ts";
 import type {
   ClaudeDeps,
+  ConfigDeps,
   GitDeps,
   GitHubDeps,
   PrDeps,
@@ -121,8 +127,14 @@ function makeInput(overrides?: Partial<PrFeedbackInput>): PrFeedbackInput {
   };
 }
 
+/** How the `markCommentProcessed` spy answers once it has recorded the call. */
+type MarkBehaviour = "ok" | "error" | "throw";
+
 /** Records every settling call, in order, alongside `commitAndPushPending`. */
-function makePrSpies(events: string[]): Partial<PrDeps> {
+function makePrSpies(
+  events: string[],
+  markBehaviour: MarkBehaviour = "ok",
+): Partial<PrDeps> {
   return {
     markCommentProcessed: ((
       _repo: string,
@@ -130,6 +142,15 @@ function makePrSpies(events: string[]): Partial<PrDeps> {
       commentId: string,
     ) => {
       events.push(`markCommentProcessed:${commentType}:${commentId}`);
+      if (markBehaviour === "throw") {
+        return Promise.reject(new Error("dismissal transport blew up"));
+      }
+      if (markBehaviour === "error") {
+        return Promise.resolve({
+          ok: false,
+          error: new Error("422 Unprocessable Entity"),
+        });
+      }
       return Promise.resolve({ ok: true, value: undefined });
       // deno-lint-ignore no-explicit-any
     }) as any,
@@ -153,7 +174,9 @@ interface RunOptions {
   input: PrFeedbackInput;
   events: string[];
   /** Per-call claude behaviour; index 0 is the first run, index 1 a retry. */
-  runBehaviours?: Array<"ok" | "nothing" | "rebuttal" | "fail" | "timeout">;
+  runBehaviours?: Array<
+    "ok" | "nothing" | "rebuttal" | "handoff" | "fail" | "timeout" | "throw"
+  >;
   commitAndPushResult?: {
     committedNewChanges: boolean;
     commitsPushed: number;
@@ -162,6 +185,9 @@ interface RunOptions {
   verifyPushFn?: PrFeedbackProcessorDeps["verifyPushFn"];
   promptsDir?: string;
   githubOverride?: Partial<GitHubDeps>;
+  configOverride?: Partial<ConfigDeps>;
+  markBehaviour?: MarkBehaviour;
+  logger?: Logger;
   captured?: CapturedGh;
 }
 
@@ -185,6 +211,16 @@ async function runScenario(options: RunOptions) {
             `Rebuttal for ${options.input.commentId}: the finding does not ` +
               "apply — ran `deno test` and it passes.",
           );
+        }
+        if (behaviour === "handoff") {
+          await Deno.writeTextFile(
+            prResponseMessagePath(workDir),
+            "This is out of scope for this PR. I've opened follow-up issue " +
+              `${HANDOFF_ISSUE_REF} capturing the analysis.`,
+          );
+        }
+        if (behaviour === "throw") {
+          throw new Error("agent transport blew up");
         }
         if (behaviour === "fail") {
           return { ok: false, error: new Error("boom") };
@@ -218,12 +254,13 @@ async function runScenario(options: RunOptions) {
       claude: mockClaude,
       github: options.githubOverride ?? makeMockGithub(captured),
       git: gitOverrides,
-      pr: makePrSpies(options.events),
+      pr: makePrSpies(options.events, options.markBehaviour),
+      ...(options.configOverride ? { config: options.configOverride } : {}),
     });
 
     const processorDeps: PrFeedbackProcessorDeps = {
       promptsDir: options.promptsDir ?? PROMPTS_DIR,
-      logger: makeSilentLogger(),
+      logger: options.logger ?? makeSilentLogger(),
       deps,
       workDir,
       workRoot: workDir,
@@ -235,6 +272,39 @@ async function runScenario(options: RunOptions) {
   } finally {
     await Deno.remove(workDir, { recursive: true });
   }
+}
+
+/** The follow-up issue a `handoff` run names (escape hatch, Issue #1826). */
+const HANDOFF_ISSUE_REF = "org/repo#101";
+
+/** The worker's own login — a trusted follow-up issue author (Issue #185). */
+const WORKER_LOGIN = "worker";
+
+/** A `createClient` stub whose `getIssue` reports a worker-filed follow-up. */
+function makeHandoffClient(): GitHubClient {
+  const notUsed = (m: string) =>
+    Promise.reject<never>(new Error(`mock client: ${m} not used`));
+  return {
+    getIssue: (_repo: string, issueNumber: number): Promise<GitHubIssue> =>
+      Promise.resolve({
+        number: issueNumber,
+        title: "follow-up",
+        body: "",
+        labels: [],
+        author: WORKER_LOGIN,
+        assignees: [],
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }),
+    removeLabel: () => Promise.resolve(),
+    getIssueComments: () => Promise.resolve([]),
+    addLabel: () => notUsed("addLabel"),
+    postComment: () => notUsed("postComment"),
+    editIssue: () => notUsed("editIssue"),
+    assignIssue: () => notUsed("assignIssue"),
+    unassignIssue: () => notUsed("unassignIssue"),
+    closeIssue: () => notUsed("closeIssue"),
+  };
 }
 
 const REMOTE_CONFIRMS_PUSH = () =>
@@ -431,6 +501,129 @@ Deno.test("pr_review dismissal: an 'issue' comment is unaffected — markComment
   const pushIdx = events.indexOf("commitAndPushPending");
   assertEquals(markIdx >= 0, true);
   assertEquals(markIdx < pushIdx, true, "issue comments mark before the push");
+});
+
+Deno.test("pr_review dismissal: an escape-hatch hand-off dismisses the review exactly once", async () => {
+  const events: string[] = [];
+  const captured: CapturedGh = { comments: [], labelsAdded: [], calls: [] };
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["handoff"],
+    captured,
+    githubOverride: {
+      ...makeMockGithub(captured),
+      createClient: (_logger: Logger) => makeHandoffClient(),
+    },
+    configOverride: {
+      loadConfig: (() =>
+        Promise.resolve(
+          {
+            repos: [] as string[],
+            allowedAuthors: [WORKER_LOGIN],
+          } as WorkerConfig,
+        )) as ConfigDeps["loadConfig"],
+    },
+  });
+
+  assertEquals(result.ok, true);
+  if (result.ok) assertStringIncludes(result.value.summary, "escape hatch");
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    1,
+  );
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+  );
+});
+
+Deno.test("pr_review dismissal: a failed dismissal after a verified push is logged as an error", async () => {
+  const events: string[] = [];
+  const errors: string[] = [];
+  const logger = {
+    ...makeSilentLogger(),
+    error: (m: string) => errors.push(m),
+  };
+  const { result } = await runScenario({
+    input: makeInput(),
+    events,
+    runBehaviours: ["ok"],
+    commitAndPushResult: {
+      committedNewChanges: true,
+      commitsPushed: 1,
+      finalUnpushedCount: 0,
+    },
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    markBehaviour: "error",
+    logger,
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(
+    errors.some((m) => m.includes("could not dismiss the pr_review")),
+    true,
+    `expected the failed dismissal in the error log, got: ${
+      errors.join(" | ")
+    }`,
+  );
+  // A retired-but-undismissed review is not also charged as a failure.
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+  );
+});
+
+Deno.test("pr_review dismissal: a throw before the review is settled charges it once and rethrows", async () => {
+  const events: string[] = [];
+  await assertRejects(
+    () =>
+      runScenario({
+        input: makeInput(),
+        events,
+        runBehaviours: ["throw"],
+      }),
+    Error,
+    "agent transport blew up",
+  );
+
+  const failures = events.filter((e) => e.startsWith("handlePrCommentFailure"));
+  assertEquals(failures.length, 1);
+  assertStringIncludes(failures[0] ?? "", "agent transport blew up");
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    0,
+  );
+});
+
+Deno.test("pr_review dismissal: a throw after the review is retired is not charged as well", async () => {
+  const events: string[] = [];
+  await assertRejects(
+    () =>
+      runScenario({
+        input: makeInput(),
+        events,
+        runBehaviours: ["ok"],
+        commitAndPushResult: {
+          committedNewChanges: true,
+          commitsPushed: 1,
+          finalUnpushedCount: 0,
+        },
+        verifyPushFn: REMOTE_CONFIRMS_PUSH,
+        markBehaviour: "throw",
+      }),
+    Error,
+    "dismissal transport blew up",
+  );
+
+  assertEquals(
+    events.filter((e) => e.startsWith("markCommentProcessed")).length,
+    1,
+  );
+  assertEquals(
+    events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
+    0,
+  );
 });
 
 // ---------------------------------------------------------------------------

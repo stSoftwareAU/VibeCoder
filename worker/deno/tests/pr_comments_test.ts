@@ -292,6 +292,42 @@ Deno.test("pr_comments - markPrCommentAsFailedOnce for pr_review never touches r
   );
 });
 
+Deno.test("pr_comments - markPrCommentAsFailedOnce tells a pr_review reader the review stays undismissed (Issue #3383)", async () => {
+  const review = createMockGh();
+  await markPrCommentAsFailedOnce(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Something broke",
+    review.fn,
+  );
+  const reviewReply = findPrReplyCall(review.calls, 42)?.join(" ") ?? "";
+  assert(
+    reviewReply.includes("the review is left undismissed"),
+    "a pr_review reply should say the review still requests changes",
+  );
+  assertFalse(
+    reviewReply.includes("confused reaction added"),
+    "a pr_review reply must not claim a reaction it never made",
+  );
+
+  const comment = createMockGh();
+  await markPrCommentAsFailedOnce(
+    "owner/repo",
+    42,
+    "issue",
+    "123",
+    "Something broke",
+    comment.fn,
+  );
+  const commentReply = findPrReplyCall(comment.calls, 42)?.join(" ") ?? "";
+  assert(
+    commentReply.includes("confused reaction added"),
+    "an issue-comment reply should still name the confused reaction",
+  );
+});
+
 // --- markPrCommentAsFailed ---
 
 Deno.test("pr_comments - markPrCommentAsFailed marks as processed and replies", async () => {

@@ -260,6 +260,55 @@ Deno.test("processPrFeedback - gated head: fix PR creation failure => honest fix
   assertStringIncludes(body, MILESTONE_HEAD);
 });
 
+Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => dismisses the review once (Issue #3383)", async () => {
+  // Asking a human to land the pushed fix answers the review, so the run
+  // retires it rather than leaving it to be charged or retried.
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const gitCalls: string[][] = [];
+  const markCommentProcessedSpy: string[] = [];
+  const handlePrCommentFailureSpy: string[] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, {
+      gated: true,
+      failFixPrCreate: true,
+    }),
+    git: makeSuccessfulPushGit(gitCalls),
+    pr: {
+      markCommentProcessed: ((_repo: string, commentType: string) => {
+        markCommentProcessedSpy.push(commentType);
+        return Promise.resolve({ ok: true, value: undefined });
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+      handlePrCommentFailure: ((repo: string) => {
+        handlePrCommentFailureSpy.push(repo);
+        return Promise.resolve();
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-pr-fail-review",
+    workRoot: "/tmp/test-milestone-fix-pr-fail-review",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(
+    makeInput({ commentType: "pr_review" }),
+    processorDeps,
+  );
+  assertEquals(result.ok, true);
+
+  assertStringIncludes(captured.comments.at(-1) ?? "", "could not raise");
+  assertEquals(markCommentProcessedSpy, ["pr_review"]);
+  assertEquals(handlePrCommentFailureSpy.length, 0);
+});
+
 Deno.test("processPrFeedback - gated head: fix-branch checkout failure => honest gated-checkout-failed reply", async () => {
   const captured: CapturedGh = { comments: [], calls: [] };
   const gitCalls: string[][] = [];
@@ -501,6 +550,70 @@ Deno.test("processPrFeedback - gated head: pr_review branch_held => releases wit
   assertEquals(reply, undefined, "no direct reply expected (Issue #3383)");
   assertEquals(markCommentProcessedSpy.length, 0);
   assertEquals(handlePrCommentFailureSpy.length, 0);
+});
+
+Deno.test("processPrFeedback - pr_review branch_missing => not released, so it is charged once and never dismissed (Issue #3383)", async () => {
+  // `branch_missing` means the PR merged or closed after it was listed — no
+  // host contention to wait out — so the run is not released uncharged: the
+  // unsettled-outcome catch-all charges it as a failed attempt instead.
+  const captured: CapturedGh = { comments: [], calls: [] };
+  const markCommentProcessedSpy: string[] = [];
+  const handlePrCommentFailureSpy: string[] = [];
+
+  const deps = createMockDeps({
+    claude: makeClaudeOk(),
+    github: makeMockGithub(captured, { gated: false }),
+    git: {
+      runGitCommand: ((args: string[], _opts?: unknown) => {
+        if (args[0] === "fetch") {
+          return Promise.resolve({
+            ok: true,
+            value: {
+              code: 128,
+              stdout: "",
+              stderr: `fatal: couldn't find remote ref ${MILESTONE_HEAD}`,
+            },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }) as unknown as GitDeps["runGitCommand"],
+    },
+    pr: {
+      markCommentProcessed: ((repo: string) => {
+        markCommentProcessedSpy.push(repo);
+        return Promise.resolve({ ok: true, value: undefined });
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+      handlePrCommentFailure: ((repo: string) => {
+        handlePrCommentFailureSpy.push(repo);
+        return Promise.resolve();
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    },
+  });
+
+  const processorDeps: PrFeedbackProcessorDeps = {
+    promptsDir: PROMPTS_DIR,
+    logger: makeSilentLogger(),
+    deps,
+    workDir: "/tmp/test-milestone-fix-branch-missing",
+    workRoot: "/tmp/test-milestone-fix-branch-missing",
+    verifyPushFn: REMOTE_CONFIRMS_PUSH,
+  };
+
+  const result = await processPrFeedback(
+    makeInput({ commentType: "pr_review" }),
+    processorDeps,
+  );
+  assertEquals(result.ok, true);
+  if (!result.ok) return;
+  assertEquals(result.value.processed, false);
+
+  assertEquals(markCommentProcessedSpy.length, 0);
+  assertEquals(handlePrCommentFailureSpy.length, 1);
 });
 
 Deno.test("processPrFeedback - gated head: branch_held with a failed reaction DELETE => replies directly", async () => {
