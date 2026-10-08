@@ -482,8 +482,10 @@ export const OPERATIONAL_DEFAULTS = {
   issueExecutorSplit: true,
   /**
    * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
-   * `sonnet` by default; `issue_sub_agent_tier: "haiku"` opts into the
-   * cheaper tier.
+   * Accepted and validated, but not read yet: #3402 will use it to pick
+   * the executors' model. Today executors stay on Sonnet
+   * (`ISSUE_EXECUTOR_MODEL` in `issue_executor_agents.ts`) whatever this
+   * is set to.
    */
   issueSubAgentTier: "sonnet" as IssueSubAgentTier,
   /**
