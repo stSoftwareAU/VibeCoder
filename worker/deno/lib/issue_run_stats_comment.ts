@@ -63,6 +63,7 @@ import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
 import { getRunId } from "./run_id.ts";
+import type { IssueSubAgentTier } from "../types.ts";
 
 /**
  * What the implementation run's quality gate did (Issue #2345, part of #2320).
@@ -498,6 +499,9 @@ export function buildExecutorSplitStatsLines(
  *   part of the expected-model routing chain, so it is passed exactly as the
  *   comment passes it
  * @param args.qualityGate - What the run's quality gate did, when it ran
+ * @param args.subAgentTier - The sub-agent tier this run resolved (Issue
+ *   #3403); carried straight into the returned figures so the per-tier fleet
+ *   counters can never diverge from what the run actually used
  * @returns The run's figures, or `undefined` for a non-implementation phase or
  *   a run no invocation produced stats for — neither is a measurable run
  */
@@ -506,6 +510,7 @@ export function measureIssuePhaseRun(args: {
   claudeResults: readonly PhaseClaudeResult[];
   configuredBestModel?: string;
   qualityGate?: QualityGateAttemptOutcome;
+  subAgentTier: IssueSubAgentTier;
 }): IssuePhaseRun | undefined {
   if (args.phase !== IMPLEMENTATION_RUN_STATS_PHASE) return undefined;
 
@@ -548,6 +553,7 @@ export function measureIssuePhaseRun(args: {
     durationSeconds: Math.round(durationMs / 1000),
     split: executorSplitStats(measured).length > 0,
     ...(gate?.status === "passed" ? { gatePassedOnAttempt: gate.attempt } : {}),
+    subAgentTier: args.subAgentTier,
   };
 }
 

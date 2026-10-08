@@ -125,8 +125,8 @@ function counterFrom(value: unknown): number {
  * still loads, and bumping it would make an older worker treat the new file
  * as `future-schema` and drop the very history this preserves.
  *
- * The per-tier split carries one extra rule (issue requirement: "older JSON
- * without tier fields loads as all-sonnet, no crash"): `haiku` reads
+ * The per-tier split carries one extra rule: older JSON without tier fields
+ * loads as all-sonnet. `haiku` reads
  * straight off the stored value (0 when absent), but `sonnet` is read from
  * the stored value only when it is itself a finite number — otherwise it is
  * backfilled as `max(0, issuePhaseRuns − haikuRuns)` (and the USD equivalent)
@@ -270,7 +270,7 @@ export async function readFleetTelemetryFile(
   // the cumulative totals are what a later run merges onto, and rejecting a
   // file for a missing `run` would throw away the very history this preserves.
   // Issue #3403: a file written before the per-tier split existed loads its
-  // runs and spend as `sonnet`, so the upgrade is silent rather than a crash.
+  // runs and spend as `sonnet`, so it loads rather than failing.
   return {
     ...parsed,
     ...(parsed.run ? { run: withIssuePhaseCounters(parsed.run) } : {}),

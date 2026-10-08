@@ -997,10 +997,11 @@ flowchart LR
 - **`issue_tier_runs` / `issue_tier_usd`** split the same runs and spend by the
   resolved `issue_sub_agent_tier` — `sonnet` or `haiku` (Issue #3403) — so a
   tier migration's cost and volume are visible without reading every run-stats
-  comment. They are shown only once a `haiku` run has actually been recorded:
-  a sonnet-only host's summary line stays byte-identical to the one above,
-  with no tier tokens at all. A sidecar written before the split existed
-  loads its accumulated runs and spend as `sonnet`.
+  comment. They are shown only once a `haiku` run has actually been recorded —
+  the example line above is from a host that has recorded haiku runs; a
+  sonnet-only host's line is exactly as it was before the split, with no tier
+  tokens at all. A sidecar written before the split existed loads its
+  accumulated runs and spend as `sonnet`.
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
   counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and

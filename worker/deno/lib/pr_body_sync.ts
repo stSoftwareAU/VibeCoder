@@ -27,14 +27,22 @@
  * deleted — a missing file is treated as "nothing to refresh", not as
  * "blank the body".
  *
+ * The rebuilt body also carries over the hidden sub-agent tier marker (Issue
+ * #3403) the live body carries, so a review-fix refresh keeps attributing
+ * the PR to the tier of the issue run that opened it rather than silently
+ * dropping the marker.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Logger, Result } from "../types.ts";
+import type { IssueSubAgentTier, Logger, Result } from "../types.ts";
 import type { runGitCommand as runGitCommandType } from "./git_timeout.ts";
 import {
   buildIdempotencyMarker,
+  buildSubAgentTierMarker,
   ensurePrReferencesIssue,
+  neutraliseSubAgentTierMarkers,
+  subAgentTierFromBody,
   WORKER_PR_MARKER_PREFIX,
 } from "./pr_body.ts";
 import { buildWorkerFooter } from "./worker_identity.ts";
@@ -108,13 +116,15 @@ export function summaryDigestFromBody(body: string): string | undefined {
  * Build the PR body text the same way PR creation does.
  *
  * Mirrors the assembly order in `completion_phase.ts`: summary (or the
- * fallback when it is empty), the already-formatted extra sections
+ * fallback when it is empty — run through {@link neutraliseSubAgentTierMarkers}
+ * either way, Issue #3403), the already-formatted extra sections
  * (evidence, milestone, bump note — concatenated by the caller in creation
- * order), the worker footer, the idempotency marker, then the summary-digest
+ * order), the worker footer, the idempotency marker, the summary-digest
  * marker (Issue #3315) recording `input.summaryDigest` so a later sync can
- * tell whether the summary has moved on without needing a pre-push SHA. The
- * result is run through `ensureReferences` last, exactly as PR creation runs
- * it through `ensurePrReferencesIssue`.
+ * tell whether the summary has moved on without needing a pre-push SHA, then
+ * — when `input.subAgentTier` is defined — the sub-agent tier marker (Issue
+ * #3403). The result is run through `ensureReferences` last, exactly as PR
+ * creation runs it through `ensurePrReferencesIssue`.
  *
  * Issue #3177: a summary whose `## Acceptance Criteria` block marks any
  * criterion `missing` does not close the issue. Its closing keywords for the
@@ -128,11 +138,21 @@ export function assemblePrBody(input: {
   footer: string;
   /** SHA-256 digest (hex) of `summaryContent`, recorded in the body (Issue #3315). */
   summaryDigest: string;
+  /**
+   * The sub-agent tier the issue run that is assembling this body resolved
+   * (Issue #3403). `undefined` only for a legacy PR body that never carried
+   * one — every other caller must state the tier it ran with.
+   */
+  subAgentTier: IssueSubAgentTier | undefined;
   ensureReferences?: (body: string, issueNumber: number) => string;
 }): string {
   const ensureReferences = input.ensureReferences ?? ensurePrReferencesIssue;
-  let body = input.summaryContent
-    ? input.summaryContent + "\n\n"
+  // Issue #3403: neutralise any marker the summary quotes verbatim before it
+  // is embedded, so a summary documenting the feature can never be read back
+  // as a second, real tier marker.
+  const summaryContent = neutraliseSubAgentTierMarkers(input.summaryContent);
+  let body = summaryContent
+    ? summaryContent + "\n\n"
     : `## Summary\n\nCloses #${input.issueNumber}.\n\n`;
   const missing = findMissingCriteria(input.summaryContent);
   if (missing.length > 0) {
@@ -529,12 +549,16 @@ export async function syncPrBodyFromSummary(
     runId: input.runId,
   });
 
+  // Issue #3403: carry over the tier marker the PR was created with, so a
+  // review-fix refresh never drops the attribution a later outcome needs.
+  // A legacy body with no marker (never carried a tier) gets none added.
   let body = assemblePrBody({
     summaryContent,
     issueNumber,
     extraSections,
     footer,
     summaryDigest: currentDigest,
+    subAgentTier: subAgentTierFromBody(view.body ?? ""),
   });
 
   body = await finalisePrBodyImages(

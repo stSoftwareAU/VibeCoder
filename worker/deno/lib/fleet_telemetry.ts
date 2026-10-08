@@ -678,11 +678,8 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
     `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
     `issue_duration=${s.issuePhaseDurationSeconds}s`,
-    // Issue #3403: the tier split is only ever shown once a haiku run has
-    // actually been recorded. A sonnet-only fleet — still every host today —
-    // never resolves a haiku run, so its summary line stays byte-identical
-    // to the one every existing scraper/dashboard already parses; the tier
-    // tokens appear only on a host where the split is actually in play.
+    // Issue #3403: shown only once a haiku run is recorded, so a
+    // sonnet-only fleet's summary line is unchanged.
     ...(s.issuePhaseHaikuRuns > 0
       ? [
         `issue_tier_runs=sonnet=${s.issuePhaseSonnetRuns},haiku=${s.issuePhaseHaikuRuns}`,

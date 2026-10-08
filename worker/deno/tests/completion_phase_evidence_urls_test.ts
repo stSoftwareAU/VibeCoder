@@ -18,6 +18,7 @@ import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import { buildSubAgentTierMarker } from "../lib/pr_body.ts";
 
 const SHA = "9ad209d9b3f438e12562c046c06dfc6f9ad2d4d0";
 
@@ -135,5 +136,121 @@ Deno.test(
     assertEquals(body.includes("(docs/evidence/"), false);
     // External images are untouched.
     assertStringIncludes(body, "https://example.com/x.png");
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Sub-agent tier marker (Issue #3403)
+// ---------------------------------------------------------------------------
+
+/** Create a PR for `makeRepo()`'s issue #2985, with `configOverrides` applied. */
+async function createPrWithConfig(
+  configOverrides: Partial<ReturnType<typeof buildDefaultWorkerConfig>>,
+): Promise<string> {
+  const repoPath = await makeRepo();
+  const capturedBodies: string[] = [];
+
+  const ctx: IssueContext = {
+    repo: "stSoftwareAU/private-repo-10",
+    issueNumber: 2985,
+    issueTitle: "Evidence image links in PR are broken",
+    issueBody: "",
+    issueLabels: [],
+    issueComments: "",
+    githubUser: "testbot",
+    config: { ...buildDefaultWorkerConfig(), ...configOverrides },
+  };
+  const state: PhaseState = {
+    branchName: "issue-2985-fix",
+    baseBranch: "main",
+    defaultBranch: "main",
+    repoPath,
+    clarityStatus: "not_assessed",
+    claudeOutput: "",
+    executeStartTime: 0,
+    baselineQualityPassed: true,
+    baselineQualityOutput: "",
+  };
+
+  const deps = createMockDeps({
+    github: {
+      createClient: () => stubClient(),
+      runGhCommand: (args: string[]) => {
+        if (args[0] === "pr" && args[1] === "create") {
+          const bodyIdx = args.indexOf("--body");
+          if (bodyIdx >= 0) capturedBodies.push(args[bodyIdx + 1]!);
+        }
+        return Promise.resolve(
+          "https://github.com/stSoftwareAU/private-repo-10/pull/99",
+        );
+      },
+    },
+    git: {
+      runGitCommand: (cmdArgs: string[]) => {
+        if (cmdArgs[0] === "rev-parse") {
+          return Promise.resolve({
+            ok: true,
+            value: { code: 0, stdout: `${SHA}\n`, stderr: "" },
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      },
+    },
+    pr: {
+      findExistingPrForIssue: () =>
+        Promise.resolve({ ok: false, error: new Error("none") }),
+      findExistingPrForBranch: () =>
+        Promise.resolve({ ok: false, error: new Error("none") }),
+    },
+  });
+
+  const result = await workOnIssueCompletion(ctx, state, deps);
+  await Deno.remove(repoPath, { recursive: true });
+
+  assertEquals(result.status, "continue");
+  assertEquals(capturedBodies.length, 1, "PR must be created once");
+  return capturedBodies[0]!;
+}
+
+/** Every occurrence of the sub-agent tier marker in `body`. */
+function tierMarkerOccurrences(body: string): string[] {
+  return body.match(/<!-- vibe-sub-agent-tier: [a-z]+ -->/g) ?? [];
+}
+
+Deno.test(
+  "completion - a host configured for haiku stamps exactly one haiku tier marker on the PR (Issue #3403)",
+  async () => {
+    const body = await createPrWithConfig({ issueSubAgentTier: "haiku" });
+    assertEquals(tierMarkerOccurrences(body), [
+      buildSubAgentTierMarker("haiku"),
+    ]);
+  },
+);
+
+Deno.test(
+  "completion - the default (sonnet) host config stamps exactly one sonnet tier marker on the PR (Issue #3403)",
+  async () => {
+    const body = await createPrWithConfig({});
+    assertEquals(tierMarkerOccurrences(body), [
+      buildSubAgentTierMarker("sonnet"),
+    ]);
+  },
+);
+
+Deno.test(
+  "completion - a repo_config override wins over the host-wide tier (Issue #3403)",
+  async () => {
+    const body = await createPrWithConfig({
+      issueSubAgentTier: "sonnet",
+      repoConfig: {
+        "stSoftwareAU/private-repo-10": { issueSubAgentTier: "haiku" },
+      },
+    });
+    assertEquals(tierMarkerOccurrences(body), [
+      buildSubAgentTierMarker("haiku"),
+    ]);
   },
 );

@@ -49,6 +49,7 @@ import {
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
 import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
+import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -309,9 +310,17 @@ export async function workOnIssueHandleNoChanges(
       // hole in the CodeGraph data above. The run passed no quality gate — it
       // raised no PR — so it counts towards the runs and not the passes.
       if (posted.reason !== "already_posted") {
+        // Issue #3403: the tier this run resolved rides the same figures the
+        // comment above renders.
+        const subAgentTier = resolveIssueSubAgentTier(
+          ctx.config,
+          ctx.config.repoConfig?.[repo],
+          (message) => logger.warn(message),
+        );
         const figures = measureIssuePhaseRun({
           phase: WORK_ON_STATS_PHASE,
           claudeResults: state.claudeRunStats ?? [],
+          subAgentTier,
         });
         if (figures) recordIssuePhaseRun(figures);
       }

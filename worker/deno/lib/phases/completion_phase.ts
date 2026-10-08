@@ -41,6 +41,7 @@ import {
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
 import {
@@ -1128,12 +1129,21 @@ async function postWorkOnRunStats(
   // guard here: a run no invocation produced stats for renders no comment, and
   // `measureIssuePhaseRun` measures nothing for it either.
   if (posted.reason !== "already_posted") {
+    // Issue #3403: the tier this run resolved rides the same figures the
+    // comment above renders, so the fleet's per-tier counters agree with
+    // what the run actually used.
+    const subAgentTier = resolveIssueSubAgentTier(
+      ctx.config,
+      ctx.config.repoConfig?.[ctx.repo],
+      (message) => deps.logger.warn(message),
+    );
     const figures = measureIssuePhaseRun({
       phase: WORK_ON_STATS_PHASE,
       claudeResults,
       ...(state.qualityGateOutcome
         ? { qualityGate: state.qualityGateOutcome }
         : {}),
+      subAgentTier,
     });
     if (figures) recordIssuePhaseRun(figures);
   }
@@ -1929,12 +1939,22 @@ async function completionBody(
     runId: getRunId(),
   });
 
+  // Issue #3403: the tier marker rides the PR body so a later outcome —
+  // merged, closed unmerged, reverted — can be attributed back to the tier
+  // the issue run that raised it resolved.
+  const prSubAgentTier = resolveIssueSubAgentTier(
+    config,
+    config.repoConfig?.[repo],
+    (message) => logger.warn(message),
+  );
+
   prBody = assemblePrBody({
     summaryContent,
     issueNumber,
     extraSections,
     footer,
     summaryDigest: await prSummaryDigest(summaryContent),
+    subAgentTier: prSubAgentTier,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
   // Issue #3177: `assemblePrBody` withholds the closing keyword when the
