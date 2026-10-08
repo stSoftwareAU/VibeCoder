@@ -701,7 +701,7 @@ before the pre-commit gate** (Issue #1661), with a warning naming each path, so
 they never reach the gate and never widen its allowlist.
 
 The worker's own staged-path gate (`assertSafeToCommit()`, Issue #1758)
-exempts two other cases. The first is **a path a merge in progress brings in
+exempts three other cases. The first is **a path a merge in progress brings in
 unchanged** (Issue #2737). During a merge the index holds every path the
 merged-in branch changed, so a hidden file that branch already tracks (for
 example `.claude/skills/…/SKILL.md`) used to refuse the whole
@@ -725,6 +725,40 @@ and a deletion are all still refused. If `origin/HEAD` is unset, names a ref
 outside `refs/remotes/origin/`, or names a ref that cannot be read, nothing is
 exempt on its account (fail closed).
 
+It also exempts **a hidden path the target repository's own tracked
+`.gitignore` re-allows** (Issue #3296). A staged hidden path outside the
+five-entry `ALLOWED_HIDDEN_PATHS` allowlist is accepted only when
+`git check-ignore -v -n --no-index` finds, for that path or one of its
+ancestor directories (the nearest decision wins), an explicit `!`-negation
+rule whose *source* is the repository's own root `.gitignore` itself — not a
+nested or untracked `.gitignore`. Exit 1 from a plain `check-ignore -q` alone
+is not enough: it means only "no rule matches", which is equally true of a
+repository whose `.gitignore` never governs the path at all (PR #3308 review),
+so the gate judges the deciding rule, not just the exit code. This is
+conditional on the root `.gitignore` itself: it must be tracked at `HEAD`,
+unmodified in both the index (`git diff --cached`) and the working tree
+(`git diff`, which `check-ignore --no-index` reads directly), so a commit
+can never opt itself in by editing `.gitignore` in the same change, whether
+staged or only on disk — **and** byte-identical to `.gitignore` on the local
+`origin/<default>` ref, never fetched. `.gitignore` is itself on
+`ALLOWED_HIDDEN_PATHS`, so without this last check a re-allow committed
+earlier on the same feature branch — never published on the repository's
+own default branch — could still exempt a later commit on that branch
+(PR #3308 review). `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
+`*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, `*.pem`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials.json`,
+`service-account*.json`, and the rest) are checked first and are **never**
+exempt under this route, even when the repository's own `.gitignore`
+re-allows them. If `git check-ignore` cannot be run, no rule anywhere in the
+path's ancestor chain decides it at all, `origin/HEAD` cannot be resolved, or
+`.gitignore` differs between `HEAD` and that ref, nothing is exempt on this
+account (fail closed), and each exemption is logged at INFO naming the path.
+This closes the gap where this repository's own `.gitignore` re-allows
+`.claude/skills/` and `.claude/agents/` (Issues #2675, #2976) yet the gate
+refused edits to those tracked files (Issue #3293, failed twice) because they
+sat outside the fleet-wide `ALLOWED_HIDDEN_PATHS` allowlist, which is not
+widened by this exemption.
+
 The same rule covers a milestone merge commit the worker adopts rather than
 writes (`assertAdoptedMergeIsSafe()`, Issues #1964 and #2739). Each refused
 path the commit changes against the pre-merge commit is exempt only when its
@@ -741,7 +775,7 @@ default branch's tip cannot be read nothing is exempt (fail closed).
 
 2. **`.git/info/exclude`**: A local-only exclusion file that provides the same protection as `.gitignore` but cannot be modified by repository updates. This protects against scenarios where `.gitignore` is accidentally modified.
 
-3. **Pre-commit hook**: The final safety net. Even if someone force-adds a config file with `git add -f`, the pre-commit hook will reject the commit with a clear error message. This can only be bypassed with `git commit --no-verify`, which requires explicit intent.
+3. **Pre-commit hook**: The final safety net. Even if someone force-adds a config file with `git add -f`, the pre-commit hook will reject the commit with a clear error message. This can only be bypassed with `git commit --no-verify`, which requires explicit intent. It reads staged paths NUL-separated (`git diff --cached --name-only -z`), so a path git would quote — a non-ASCII byte, a quote or a backslash — is checked as written, and it rejects the commit if it cannot list the staged files (Issue #3370).
 
 **Installation:**
 

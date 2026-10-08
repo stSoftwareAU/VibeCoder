@@ -527,3 +527,56 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 0);
   },
 );
+
+// (k) Issue #3288: an entry can satisfy every structural rule above while
+// admitting, in its own words, that no test reaches its outcome.
+const SUMMARY_WITH_UNREACHED_ADMISSION = summaryWith(
+  `
+**Branch outcomes:**
+- \`crates/report/src/decisions.rs:42\` — error — no test reaches it: ` +
+    "flipping it left the suite green",
+);
+
+Deno.test(
+  "completion - a Branch outcomes entry admitting no test reaches it blocks PR creation (Issue #3288)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_UNREACHED_ADMISSION,
+      changedFiles: "crates/report/src/decisions.rs",
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "crates/report/src/decisions.rs:42",
+    );
+    assertEquals(outcome.comments.length, 1);
+    assertStringIncludes(
+      outcome.comments[0]!,
+      "crates/report/src/decisions.rs:42",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a recovery rewriting the admission to cite a covered test raises the PR (Issue #3288)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_UNREACHED_ADMISSION,
+      retryWrites: summaryWith(
+        `
+**Branch outcomes:**
+- \`crates/report/src/decisions.rs:42\` — error — ` +
+          `\`${EXISTING_TEST}::rejects bad input\` — flipped, went red`,
+      ),
+      changedFiles: "crates/report/src/decisions.rs",
+      existingTestsAtHead: [EXISTING_TEST],
+      existingTestsAtHeadAfterRetry: [EXISTING_TEST],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+    assertEquals(outcome.prCreateCalls, 1, "the recovered run raises its PR");
+  },
+);
