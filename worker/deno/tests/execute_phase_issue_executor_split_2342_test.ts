@@ -346,3 +346,26 @@ Deno.test("execute_phase - the resolved tier is logged exactly once (Issue #3402
     sonnetTierLogs[0]!.includes("Issue sub-agent tier resolved to 'sonnet'"),
   );
 });
+
+Deno.test("execute_phase - the split-on log names the resolved tier's executor model (Issue #3402)", async () => {
+  const haikuLogs: string[] = [];
+  await runPhase(true, undefined, false, {
+    hostTier: "haiku",
+    logs: haikuLogs,
+  });
+  assert(
+    haikuLogs.some((m) =>
+      m.includes("carries haiku executor sub-agent definitions")
+    ),
+    "a haiku-tier split run names the haiku executor in its log",
+  );
+
+  const sonnetLogs: string[] = [];
+  await runPhase(true, undefined, false, { logs: sonnetLogs });
+  assert(
+    sonnetLogs.some((m) =>
+      m.includes("carries sonnet executor sub-agent definitions")
+    ),
+    "a default-tier split run names the sonnet executor in its log",
+  );
+});

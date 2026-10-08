@@ -335,3 +335,24 @@ Deno.test("execute_claude_phase - an invalid repo tier value is warned about and
   );
   assertEquals(Object.keys(agents), [EXPLORER_AGENT_NAME]);
 });
+
+Deno.test("execute_claude_phase - the split-on log names the resolved tier's executor model (Issue #3402)", async () => {
+  const haiku = await observeRun({
+    issueExecutorSplit: true,
+    issueSubAgentTier: "haiku",
+  });
+  assert(
+    haiku.logs.some((m) =>
+      m.includes("carries haiku executor sub-agent definitions")
+    ),
+    "a haiku-tier split run names the haiku executor in its log",
+  );
+
+  const sonnet = await observeRun({ issueExecutorSplit: true });
+  assert(
+    sonnet.logs.some((m) =>
+      m.includes("carries sonnet executor sub-agent definitions")
+    ),
+    "a default-tier split run names the sonnet executor in its log",
+  );
+});
