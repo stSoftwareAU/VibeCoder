@@ -451,11 +451,39 @@ Deno.test(
 );
 
 Deno.test(
+  "an unclosed frontmatter fence is refused (Issue #3298)",
+  () => {
+    const source =
+      "---\nname: demo-skill\ndescription: Use when x.\n\n# Body\n";
+    assertEquals(
+      rules(frontmatterProblems(source, {
+        kind: "skill",
+        folder: "demo-skill",
+      })),
+      ["no-frontmatter"],
+    );
+  },
+);
+
+Deno.test(
   "invalid YAML in the frontmatter is refused (Issue #3298)",
   () => {
     const fields = "name: [unclosed";
     assertEquals(
       rules(frontmatterProblems(doc(fields), {
+        kind: "skill",
+        folder: "demo-skill",
+      })),
+      ["yaml-invalid"],
+    );
+  },
+);
+
+Deno.test(
+  "frontmatter that is not a mapping is refused (Issue #3298)",
+  () => {
+    assertEquals(
+      rules(frontmatterProblems(doc("just a plain sentence"), {
         kind: "skill",
         folder: "demo-skill",
       })),
@@ -520,6 +548,19 @@ Deno.test(
         Error,
         "no agent file matched",
       );
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "agentFiles rejects a missing agents directory loudly (Issue #3298)",
+  async () => {
+    const dir = await Deno.makeTempDir();
+    const missing = `${dir}/does-not-exist`;
+    try {
+      await assertRejects(() => agentFiles(missing), Error, "not found");
     } finally {
       await Deno.remove(dir, { recursive: true });
     }
