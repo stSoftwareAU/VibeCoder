@@ -1,0 +1,12 @@
+{
+  "issue": 3383,
+  "chunk": "top-up-3383",
+  "title": "top-up: PR review claim lease renewal",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3383",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_review_claim_lease.ts (#3383)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_review_claim_lease.ts"
+  ],
+  "sweptAt": "43fe26e928f841a5b89f668693df22b0831480c4"
+}
