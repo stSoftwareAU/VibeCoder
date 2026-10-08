@@ -69,12 +69,20 @@ which needs `.config.json`.
 
 - #3399: Banded Claude Haiku 5.5 pricing in token_usage (≤100k / >100k prompt tokens)
 
-Docs sweep: grepped `estimateCost`, `lowerBand`, `HAIKU_PRICING`,
-`haiku-4-5`, "current Haiku", "latest Haiku" and the `haiku` alias across `*.md`
-and `worker/deno/lib/*.ts`.
+**Docs sweep** — grep: `estimateCost`, `estimateCostWithUpperBound`, `lowerBand`, `HAIKU_PRICING`, `haiku-4-5`, "Haiku 4.5", "current Haiku", "latest Haiku", "single rate", the `haiku` alias; section: `docs/MODEL-AND-CACHING.md#model-pricing`; updated: `docs/MODEL-AND-CACHING.md`
+
+Grepped across `README.md`, `docs/` (excluding `docs/archive/`), `*/README.md`
+and `worker/deno/lib/*.ts`, then read the Model Pricing section through.
 - `docs/MODEL-AND-CACHING.md:2470`: Haiku 5.5 rows added to the price table.
 - `docs/MODEL-AND-CACHING.md:2553`: new paragraph on the bands, the required
-  parameter, and the `undefined` callers.
+  parameter, and the `undefined` callers. Its alias clause now says plainly
+  that it describes the pricing lookup, not which model the CLI's `haiku`
+  alias serves.
+- `docs/MODEL-AND-CACHING.md:2124` and `worker/deno/lib/claude_runner.ts:3825`:
+  these say the `haiku` phases run on Haiku 4.5. That is a routing and
+  cache-floor claim, and this diff changes no routing, so the sentences are
+  still accurate as far as this change goes. They are left as they are; see
+  the Standards Review entry on the alias.
 - `docs/MODEL-AND-CACHING.md:173` and `:869`: these describe alias passing
   only, so they are still true.
 - `docs/IDLE-TASK-FRAMEWORK.md:2026`, `:2118` and `:2132`: these list the alias
@@ -86,34 +94,29 @@ and `worker/deno/lib/*.ts`.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- A 50k-prompt request uses the ≤100k rates. reviewer: met
-- A 150k-prompt request uses the >100k rates. reviewer: met
-- A run-total-only estimate uses the >100k rates. reviewer: met
-- `claude-haiku-4-5` costs are unchanged. reviewer: partial. The numeric costs
-  are unchanged, but the existing tests were edited:
-  - every call gained `, undefined` because the parameter is required;
-  - the alias test now expects Haiku 5.5 rates, because the issue requires the
-    `haiku` alias to resolve to the current Haiku.
-- Opus, Sonnet and Fable pricing are unchanged. reviewer: met
-- The required (not optional) parameter. reviewer: unrequested. It is required
-  by the CODING-STANDARDS rule cited above.
-- Docs prose in `docs/MODEL-AND-CACHING.md`. reviewer: unrequested. The
-  reviewer judged it benign, and it is owed under "A Code Change Owes a Docs
-  Change".
+- **met** — A 50k-prompt-token Haiku 5.5 request is costed at the ≤100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost uses the <=100k band for a 50k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
+- **met** — A 150k-prompt-token Haiku 5.5 request is costed at the >100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost uses the >100k band for a 150k-prompt Haiku 5.5 request (Issue #3399)` — reviewer: met
+- **met** — A run-total-only Haiku 5.5 estimate uses the >100k rates — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost with an undefined prompt size (run totals only) uses the conservative >100k Haiku 5.5 band (Issue #3399)` — reviewer: met
+- **partial** — `claude-haiku-4-5` costs are unchanged (existing tests in `token_usage_test.ts` still pass unmodified) — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost for Haiku 4.5/4.9 is unaffected by a promptTokensPerRequest argument (Issue #3399)` — reviewer: partial — reason: the Haiku 4.5 costs are unchanged, but existing tests were edited: the required parameter added `, undefined` to existing calls, and the alias test now expects Haiku 5.5 rates because the issue moves `haiku` to the current Haiku
+- **met** — Opus / Sonnet / Fable pricing is unchanged — evidence: `worker/deno/tests/token_usage_test.ts::token_usage - estimateCost for Sonnet ignores a promptTokensPerRequest argument (no lowerBand) (Issue #3399)` — reviewer: met
+- **unrequested** — `promptTokensPerRequest` is a required `number | undefined`, not optional — reviewer: unrequested — reason: CODING-STANDARDS forbids a default that turns off a behaviour, so every caller must choose; this is what caused the test edits behind the partial verdict
+- **unrequested** — `cost_estimate.ts` and `credit_tracker.ts` pass an explicit `undefined` with comments — reviewer: unrequested — reason: the required parameter forces it; they hold only run totals, so they get the >100k rate the issue asks for
+- **unrequested** — Haiku 5.5 rows and a banded-row paragraph in `docs/MODEL-AND-CACHING.md` — reviewer: unrequested — reason: owed under "A Code Change Owes a Docs Change"; benign
+- **unrequested** — Haiku 5.6+ go to the banded row and Haiku 5.0–5.4 stay flat (`token_usage.ts:688-694`) — reviewer: unrequested — reason: a version-range rule for future ids; the rates for those ids are assumptions; benign
+- **unrequested** — Exact-100k boundary test and the Sonnet-ignores-argument test — reviewer: unrequested — reason: they pin the inclusive `≤` boundary and the no-band path; benign
+- **unrequested** — The Codex test and the `unpriced_spend_3870_test.ts` calls were reformatted onto several lines — reviewer: unrequested — reason: `deno fmt` after adding the third argument; benign
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- `worker/deno/lib/credit_tracker.ts:516`: the reviewer said the
-  per-invocation cost hard-codes `undefined` where `entry.inputTokens` is
-  available. Investigation showed that value is invocation-wide usage summed
-  over many API requests, and it leaves out cache reads (see Undiscoverable
-  Facts). Passing `undefined` (the conservative >100k rate) is therefore
-  correct. The comment now states this. reason: fixed in this diff
-- The reviewer's optional note on a hypothetical Haiku 6.x was already
-  addressed by the comment at `worker/deno/lib/token_usage.ts:689-690`: the parser
-  never yields major 6. reason: fixed in this diff
+- **violation** — Verify a claim about another component / A Code Change Owes a Docs Change: the new paragraph said Haiku 5.5 is "what the alias `haiku` now resolves to", which clashes with `docs/MODEL-AND-CACHING.md:2124` (the `haiku` phases run on Haiku 4.5) — evidence: `docs/MODEL-AND-CACHING.md:2553` — reason: fixed in this diff (the clause now covers only the pricing lookup)
+- **violation** — The credit log records the requested model name (`haiku`), so the `summarise` / `spelling_fix` / `health` phases are now costed at Haiku 5.5's >100k rate. If the CLI's `haiku` alias still serves Haiku 4.5, the spend ceiling under-counts those phases by half — evidence: `worker/deno/lib/claude_runner.ts:2377-2380` — reason: outstanding — the issue requires the alias to resolve to the current Haiku; whether the CLI serves 4.5 or 5.5 for `haiku` was not verified in this run
+- **violation** — A doc comment outside the diff went stale: it says "Claude Haiku 4.x pricing", but the row now also covers Haiku 5.0–5.4 — evidence: `worker/deno/lib/token_usage.ts:176` — reason: outstanding — a comment-only fix, left for follow-up because this retry is limited to the summary
+- **violation** — Comment accuracy: the step-2 comment says the bare alias is resolved there, but step 1 resolves it — evidence: `worker/deno/lib/token_usage.ts:658-661` — reason: outstanding — a comment-only fix, left for follow-up
+- **violation** — KISS / dead code: `return TIER_CURRENT_PRICING.get(parsed.tier) ?? null;` can no longer be reached, because every parsed tier now has its own branch — evidence: `worker/deno/lib/token_usage.ts:695` — reason: outstanding, minor — left for follow-up
+- **violation** — Reuse the in-repo helper (an existing problem, not introduced here): `batch_api.ts`'s own `lookupPricing` still prices `haiku` at Haiku 4.5, while `lookupModelPricing("haiku")` now returns Haiku 5.5 — evidence: `worker/deno/lib/batch_api.ts:495-512` — reason: outstanding — an older duplicate outside this issue's scope; needs a follow-up
+- **clean** — spelling (Australian English), no default that turns off a behaviour (all three production callers pass `undefined` with a reason), every `costFor` and Haiku-lookup outcome is tested against real code, removed assertions are quoted, the price table matches the code, the unpriced upper bound is unchanged, `deno fmt --check` and `deno lint` pass
 
 ## Test Plan
 
@@ -141,6 +144,8 @@ test, because the `haiku` alias now resolves to Haiku 5.5:
 -  assertEquals(haiku?.inputPerMillion, 1);
 -  assertEquals(haiku?.outputPerMillion, 5);
 ```
+
+- Removed from `worker/deno/tests/token_usage_test.ts`: `assertEquals(estimateCost(usage, "unknown-model"), null);` — #3399 makes `promptTokensPerRequest` a required argument, so the old two-argument call no longer compiles. The same assertion was re-added in place, unchanged except for the third argument: `assertEquals(estimateCost(usage, "unknown-model", undefined), null);` in `token_usage - estimateCost returns null for unknown model`
 
 In `token_usage_test.ts` and `unpriced_spend_3870_test.ts`, every other
 removed line is an `estimateCost(...)` or `estimateCostWithUpperBound(...)`

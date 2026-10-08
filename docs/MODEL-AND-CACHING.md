@@ -2550,8 +2550,10 @@ resolves to) keeps the same $2 / $10 rate, cache $2.50 / $0.20 — exactly half
 of Opus 5.5 on every rate (Issue #2812). Its row precedes the broader
 `claude-sonnet-5` key so first-match lookup names it explicitly.
 
-**Haiku 5.5** (model id `claude-haiku-5-5`, and what the alias `haiku` now
-resolves to) is the one **banded** row: its rate depends on the prompt size of
+**Haiku 5.5** (model id `claude-haiku-5-5`, and the row `lookupModelPricing()`
+now prices the bare alias `haiku` at — a pricing-table lookup only; which model
+the CLI's `haiku` alias serves is a routing question, covered by the cache
+table above) is the one **banded** row: its rate depends on the prompt size of
 each request — $0.10 / $0.50 per MTok (cache $0.125 / $0.01) at or below
 100,000 prompt tokens, $0.50 / $2.50 (cache $0.625 / $0.05) above it
 (Issue #3399). The row's top-level rates are the dearer >100k band and the
