@@ -1,0 +1,12 @@
+{
+  "issue": 3401,
+  "chunk": "top-up-3401",
+  "title": "top-up: issue sub-agent tier config key",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3401",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_sub_agent_tier.ts (#3401)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_sub_agent_tier.ts"
+  ],
+  "sweptAt": "83a58d82e3abafe3786773d8a0c8d839e75e0e3a"
+}
