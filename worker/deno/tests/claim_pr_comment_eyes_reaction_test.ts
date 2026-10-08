@@ -506,7 +506,7 @@ Deno.test("remove processed mark - an unresolvable acting login reports the fail
   assertStringIncludes(error?.message ?? "", "bad credentials");
 });
 
-Deno.test("remove processed mark - a dismissed review cannot be undismissed", async () => {
+Deno.test("remove processed mark - a pr_review has no mark to take back", async () => {
   const calls: string[][] = [];
   const error = await removeProcessedMark(
     "org/repo",
@@ -519,7 +519,7 @@ Deno.test("remove processed mark - a dismissed review cannot be undismissed", as
     () => {},
   );
 
-  assertStringIncludes(error?.message ?? "", "dismiss");
+  assertEquals(error, null);
   assertEquals(calls.length, 0);
 });
 

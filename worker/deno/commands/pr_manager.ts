@@ -467,6 +467,7 @@ export const prManagerCommand: Command = {
           commentId,
           runGhCommand,
           await resolveAlertDedupAuthors({}, (m) => console.warn(m)),
+          args["pr-number"] ? Number(args["pr-number"]) : undefined,
         );
         return { success: true, message: hasFailedOnce ? "true" : "false" };
       }

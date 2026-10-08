@@ -732,7 +732,10 @@ For other reviewers:
 2. Click "Review changes"
 3. Write your feedback and select "Request changes"
 
-The worker will process the feedback, push fixes, and dismiss the review.
+The worker will process the feedback, push fixes, and dismiss the review once
+it has addressed it — not at the moment it claims the review. A run that dies
+mid-flight leaves the review undismissed rather than silently answered, so it
+is picked up again (by this host or another) once its claim lapses.
 
 **How the worker handles feedback:**
 
@@ -741,7 +744,9 @@ The worker will process the feedback, push fixes, and dismiss the review.
 - Analyse the feedback
 - Either fix the code or respond with an explanation
 - Always push unpushed commits
-- Mark feedback as processed (👀 reaction for comments, dismissal for reviews)
+- Mark feedback as processed (👀 reaction for comments; a review is dismissed
+  only once it has been fixed, rebutted, handed off or escalated — not at
+  claim time)
 
 ## 👍 Reaction System
 
