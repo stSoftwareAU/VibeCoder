@@ -1230,9 +1230,13 @@ explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
 - If a hidden file legitimately needs tracking in every monitored repository,
   raise an issue and update the fleet-wide allowlist in
   `worker/deno/lib/gitignore_enforcer.ts` via PR. If it only needs tracking in
-  one repository, re-allow it in that repository's own `.gitignore` instead
-  (Issue #3296) — the pre-commit safety gate recognises the re-allow without a
-  fleet-wide change.
+  one repository, a human adds the re-allow to that repository's own
+  `.gitignore` as its own change on the default branch first (Issue #3296) —
+  the pre-commit safety gate only recognises a re-allow once
+  `origin/<default>`'s `.gitignore` already carries it. An agent never adds
+  the re-allow itself: the gate checks `HEAD:.gitignore` against
+  `origin/<default>:.gitignore`, so a re-allow added and staged in the same
+  worker PR can never pass.
 
 ## Secret Redaction — Every Outbound Sink
 
