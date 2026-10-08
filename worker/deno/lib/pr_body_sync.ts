@@ -163,6 +163,9 @@ export function assemblePrBody(input: {
   body += input.footer;
   body += buildIdempotencyMarker(input.issueNumber);
   body += "\n" + buildSummaryDigestMarker(input.summaryDigest);
+  if (input.subAgentTier !== undefined) {
+    body += "\n" + buildSubAgentTierMarker(input.subAgentTier);
+  }
   if (missing.length > 0) return body;
   return ensureReferences(body, input.issueNumber);
 }
