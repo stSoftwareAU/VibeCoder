@@ -18,11 +18,11 @@ import {
   REVIEW_MARKER,
   type SearchPr,
   skipReason,
-} from "../../../.claude/skills/review-fleet-prs/gate.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 import {
   needsBranchUpdate,
   updateBranch,
-} from "../../../.claude/skills/review-fleet-prs/branch_update.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/branch_update.ts";
 
 const REVIEWER = "nleck";
 const APP = "stsoftware-pr-reviewer";

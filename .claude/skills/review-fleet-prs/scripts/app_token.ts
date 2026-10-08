@@ -18,9 +18,9 @@ import {
   type FetchFn,
   generateAppJWT,
   getInstallationToken,
-} from "../../../worker/deno/lib/github_app_auth.ts";
+} from "../../../../worker/deno/lib/github_app_auth.ts";
 
-const DEFAULT_CONFIG = new URL("../../../.config.json", import.meta.url);
+const DEFAULT_CONFIG = new URL("../../../../.config.json", import.meta.url);
 const API = "https://api.github.com";
 const TIMEOUT_MS = 30_000;
 

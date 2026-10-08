@@ -12,7 +12,7 @@ import {
   type PassResult,
   recordPass,
   type RunGh,
-} from "../../../.claude/skills/review-fleet-prs/escalate.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/escalate.ts";
 
 const HOST = "worker-1";
 

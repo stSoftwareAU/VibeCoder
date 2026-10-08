@@ -17,7 +17,7 @@ import {
   type SearchPr,
   sentBackAt,
   skipReason,
-} from "../../../.claude/skills/review-fleet-prs/gate.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 
 const file = (
   filename: string,

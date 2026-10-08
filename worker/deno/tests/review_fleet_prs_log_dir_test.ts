@@ -9,7 +9,7 @@ import {
   LOG_FILE,
   migrateLegacyStateDir,
   stateDir,
-} from "../../../.claude/skills/review-fleet-prs/review_log.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 // The home directory is passed in, never set on the process: tests run in
 // parallel and share one environment (Issue #880).
