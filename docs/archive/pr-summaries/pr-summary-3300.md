@@ -42,9 +42,22 @@ flowchart LR
 
 ### Essential Design Decisions
 
-- The moved text is unchanged, except that helper names now carry their
-  `scripts/` prefix and relative links gained the extra `../` that the deeper
-  directory needs.
+- The moved text is reworded only where it no longer sits inside `SKILL.md`.
+  Lines are rewrapped, and the `###` subheadings of "Running unattended"
+  become `##` in `references/running-unattended.md`. The changes are:
+  - Helper names carry their `scripts/` prefix (`scripts/post.ts`,
+    `scripts/app_token.ts`, `scripts/escalate.ts`, `scripts/dependabot.ts`,
+    `scripts/branch_update.ts`, `scripts/run.sh --once`).
+  - The `SETUP.md` and `CONFIGURATION.md` links gain the extra `../` that the
+    deeper directory needs.
+  - In `references/running-unattended.md`, "`scripts/run.sh` under this
+    directory" becomes "under the skill directory
+    (`.claude/skills/review-fleet-prs/`)". "`runner.log` in the log directory
+    below" becomes "in the log directory (`<logs>/review-fleet-prs/`, see
+    [notes.md](notes.md))", a new link. "step 4" becomes
+    "[SKILL.md](../SKILL.md)'s step 4", also a new link.
+  - In `references/edge-cases.md`, "(rule 9)" becomes
+    "([SKILL.md](../SKILL.md) rule 9)", a new link.
 - The link test reuses `anchorSet` from `worker/deno/lib/markdown_anchors.ts`,
   so anchors are slugged the same way as the repo's other anchor checks.
 - `skillLinkProblems(root)` takes the root as a parameter, so the same function
