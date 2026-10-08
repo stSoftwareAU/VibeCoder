@@ -28,8 +28,23 @@ window, the cheap budget-probe model, and the current Haiku id.
       `context_budget.ts` and `current_models.ts` now describe the new windows.
 - [x] Docs: `docs/MODEL-AND-CACHING.md`, `docs/CONFIGURATION.md`,
       `docs/INTERNALS.md`.
+- [x] **PR #3432 review fix:** `MODEL_CONTEXT_WINDOWS.haiku` assumed `haiku`
+      is served by Haiku 5.5, but the container's pinned Claude Code
+      2.1.281 still resolved `haiku` to `claude-haiku-4-5` (200k) — confirmed
+      by downloading that release and running `strings` on it: no
+      `claude-haiku-5-5` string anywhere in the binary. Raised
+      `container/tools.json`'s `claude` pin and `softwareMinVersions.claude`
+      in `worker/deno/lib/config_defaults.ts` to **2.1.293**, the first
+      release (past the 24h quarantine) whose bundled table resolves
+      `haiku:"claude-haiku-5-5"`. Updated every doc, comment and test that
+      named the old 2.1.280/2.1.281 pin, added a "1.10.0 — Haiku 5.5 becomes
+      the `haiku` alias's served model" entry to `docs/RELEASE-NOTES.md` and
+      raised `.release-floor` to 1.10.0 (the same two-lever pattern as the
+      Opus 5.5 move, Issue #2560).
 
 **Docs sweep** — grep: `MODEL_CONTEXT_WINDOWS`, `CLAUDE_BUDGET_PROBE_MODEL`, `CURRENT_TIER_MODELS`, `previousGenerationOf`, `selectModelForLargeInput`, `phase_model_escalation`, `claude-haiku-4-5`, `haiku=`, "200k", "200,000", "budget probe", "probe model", and Haiku within 60 characters of "window", "escalat" or "truncat", across `README.md`, `docs/` (excluding `docs/archive/`) and every `*/README.md`; section: `docs/MODEL-AND-CACHING.md#context-window-sizes`, the trivial-phases paragraph and the phase-defaults table in `docs/MODEL-AND-CACHING.md`, and the `CURRENT_TIER_MODELS` / previous-generation section of `docs/MODEL-AND-CACHING.md`, plus the context-budget steps in `docs/CONFIGURATION.md` and `docs/INTERNALS.md`; updated: `docs/MODEL-AND-CACHING.md`, `docs/CONFIGURATION.md`, `docs/INTERNALS.md` (in the branch's own commit), plus a reflow in `docs/MODEL-AND-CACHING.md` committed with this summary so `#3400),` no longer starts a line (markdownlint MD018); still true after reading: `docs/MODEL-AND-CACHING.md:137` and `:2840` (a non-Claude id still has no `MODEL_CONTEXT_WINDOWS` row and falls back to the 200,000-token default), `docs/CONFIGURATION.md:602` (model aliases list, unaffected), `docs/CODEX-BUDGET-SOURCES.md:8` and `docs/workflows/issue-processing.md:141` (they name the probe but not its model); the `docs/audits/` hits are dated audit records, left as history. Left stale, out of this diff's scope: the Haiku 4.5 row of the pricing table (`docs/MODEL-AND-CACHING.md` "Model Pricing") has no Haiku 5.5 row yet. That row is owned by #3407, and the code rates by #3399. The minimum-cacheable-prefix row (`docs/MODEL-AND-CACHING.md` "Minimum cacheable prefix") still names Haiku 4.5 for `haiku`. Haiku 5.5's minimum is not established in #3400 or its parent #3385, so no figure was invented; both are listed under Standards Review below.
+
+**Docs sweep — PR #3432 review fix** — grep: `2.1.280`, `2.1.281` (the old pin/floor) across `README.md`, `docs/` (excluding `docs/archive/`), `DESIGN-PRINCIPLES.md`, `worker/deno/types.ts` and `worker/deno/lib/`; every hit outside `docs/archive/` and `docs/RELEASE-NOTES.md`'s own historical 1.9.0 entry was updated to 2.1.293: `container/tools.json` (pin + checksums + notes), `worker/deno/lib/config_defaults.ts`, `worker/deno/lib/claude_env.ts`, `worker/deno/types.ts`, `worker/deno/tests/config_test.ts`, `docs/CONFIGURATION.md`, `docs/INTERNALS.md`, `docs/USAGE.md`, `docs/MODEL-AND-CACHING.md` (plus a new "Moved a third time for Haiku 5.5" paragraph), `DESIGN-PRINCIPLES.md`. `docs/audits/dependency-inventory.md` is generated — regenerated via `deno run --allow-read --allow-write --allow-env mod.ts supply-chain-gate --write-inventory` rather than hand-edited. Added `docs/RELEASE-NOTES.md#1.10.0` and raised `.release-floor` to 1.10.0, mirroring the 1.9.0 Opus 5.5 entry (Issue #2560) since this is the same kind of operator-visible CLI-pin/floor contract change.
 
 ## Test Plan
 
@@ -53,8 +68,9 @@ regresses:
 - `worker/deno/tests/claude_token_budget_test.ts::the probe request names claude-haiku-5-5 (Issue #3400)`
 - `worker/deno/tests/current_models_test.ts::CURRENT_TIER_MODELS - Haiku's current model is Haiku 5.5 (Issue #3400)` and `::previousGenerationOf - Haiku 4.5 is a previous generation of Haiku 5.5 (Issue #3400)`
 
-`deno test --allow-all` over the four touched test files passes: 105 passed,
-0 failed.
+`deno test --allow-all` over the five touched test files (the original four
+plus `config_test.ts`, whose default-floor assertion the pin-bump fix updates)
+passes: 224 passed, 0 failed.
 
 **Branch outcomes:**
 
@@ -70,7 +86,7 @@ lookups branch on, so each row's outcome is listed and was flipped on purpose:
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — A 300k-token prompt routed to `haiku` stays on Haiku (no context-window fallback) — evidence: `worker/deno/tests/phase_model_escalation_test.ts::phase_model_escalation - a 300k-token summarise stays on haiku (Issue #3400)`, `worker/deno/tests/context_budget_test.ts::context_budget - checkContextBudget uses 1M window for haiku (Issue #3400)` — reviewer: met
+- **met** — A 300k-token prompt routed to `haiku` stays on Haiku (no context-window fallback) — evidence: `worker/deno/tests/phase_model_escalation_test.ts::phase_model_escalation - a 300k-token summarise stays on haiku (Issue #3400)`, `worker/deno/tests/context_budget_test.ts::context_budget - checkContextBudget uses 1M window for haiku (Issue #3400)` — reviewer: met. The worker's own routing logic was always correct; the PR #3432 review found the premise it depends on — that `--model haiku` is actually served by Haiku 5.5 — did not hold against the then-pinned CLI (2.1.281 resolved `haiku` to `claude-haiku-4-5`, 200k). Fixed by raising `container/tools.json`'s `claude` pin and the `softwareMinVersions` floor to 2.1.293, verified by `strings` on the downloaded release binary.
 - **met** — The budget probe sends `claude-haiku-5-5` — evidence: `worker/deno/tests/claude_token_budget_test.ts::the probe request names claude-haiku-5-5 (Issue #3400)` — reviewer: met
 - **met** — `CURRENT_TIER_MODELS.haiku === "claude-haiku-5-5"`; the existing fable/opus entries are unchanged — evidence: `worker/deno/tests/current_models_test.ts::CURRENT_TIER_MODELS - Haiku's current model is Haiku 5.5 (Issue #3400)` — reviewer: met
 - **unrequested** — new `"claude-haiku-4": 200_000` row in `MODEL_CONTEXT_WINDOWS` — reviewer: unrequested — reason: necessary, because without it `claude-haiku-4-5` would prefix-match `haiku` and get 1M, breaking the escalation guard for Haiku 4.x pins. Reviewer caveat: ids that only match `haiku` loosely (a Bedrock-style `us.anthropic.claude-haiku-4-5-…` id, or the retired `claude-3-5-haiku-…`) now resolve to 1M. Low impact, since the worker has no Bedrock path.

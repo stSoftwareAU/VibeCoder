@@ -705,7 +705,7 @@ Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
 (`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.281 in [`container/tools.json`](../container/tools.json).
+the image pins 2.1.293 in [`container/tools.json`](../container/tools.json).
 
 | Variable | Value | CLI default | Effect |
 | --- | --- | --- | --- |
@@ -2619,8 +2619,8 @@ design) until `stable` reaches 2.1.260 or the host pins a version through
 `update_mode: frozen`.
 
 **Moved again for Opus 5.5 (Issue #2560).** When the planning-shaped phases
-moved to the `opus` alias, the same two levers moved together: the image pins
-**2.1.281** and the floor is **2.1.280**, the first release whose bundled table
+moved to the `opus` alias, the same two levers moved together: the image pinned
+**2.1.281** and the floor was **2.1.280**, the first release whose bundled table
 resolves `opus` to `claude-opus-5-5` (2.1.261 resolved it to `claude-opus-5`).
 2.1.280 is above 2.1.260, so a phase pinned back to Fable still gets Fable 5.1
 with its cache fixes. `CURRENT_TIER_MODELS` gained an `opus` row at the same
@@ -2628,6 +2628,22 @@ time, so a container still serving `claude-opus-5` is reported as a previous
 generation — but only for the label and the stats comment: the
 degraded-delivery guard (Issue #2562) ignores a stale generation, since the run
 was not handed to a fallback model.
+
+**Moved a third time for Haiku 5.5 (PR #3432 review, Issue #3400).** #3400 set
+`MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is
+served by Haiku 5.5, but the premise did not hold at the time: 2.1.281 (the
+pin #2560 left in place) still carried `haiku:"claude-haiku-4-5"` in its
+bundled alias table, with no `claude-haiku-5-5` string anywhere in the binary
+— confirmed by downloading the pinned release and running `strings` on it.
+Served Haiku 4.5 at its real 200k window against an alias budgeted at 1M is
+exactly the silent-truncation failure Issue #2393 guards against. Reading the
+same alias table across the subsequent releases: 2.1.292 still resolves
+`haiku:"claude-haiku-4-5"`; **2.1.293** is the first release whose table
+carries `haiku:"claude-haiku-5-5"`, and it had cleared the 24h quarantine
+(2.1.294 was 19.6h old at the time, inside quarantine). The image now pins
+**2.1.293** and the floor is **2.1.293** too — both levers move together, as
+for the two moves above — and checksums were verified against the release's
+own `manifest.json`.
 
 **A previous-generation Fable is now degraded.** `modelsMatch()` matches at
 tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is
