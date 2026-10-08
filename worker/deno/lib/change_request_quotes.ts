@@ -14,7 +14,7 @@
  * in the named PR summary.
  *
  * The producer contract this module's parser matches is `reviewBody` in
- * `.claude/skills/review-fleet-prs/review_log.ts`: a `changes_requested`
+ * `.claude/skills/review-fleet-prs/scripts/review_log.ts`: a `changes_requested`
  * review body is a run of findings, each shaped
  * ```
  * **`<file>[:<line>]`**: <problem>
@@ -55,7 +55,7 @@ const FINDING_HEADER_PATTERN = /^\*\*`([^`\n]+)`\*\*:/;
  * Parse a change request body into its findings (Issue #3244).
  *
  * See the module doc comment for the producer contract this matches
- * (`reviewBody` in `.claude/skills/review-fleet-prs/review_log.ts`). Each
+ * (`reviewBody` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`). Each
  * finding's `problem` runs from the header line's remainder through
  * following lines until the first blank line, a line starting
  * `**Fix:**`, or the next finding header — so the `**Fix:**` text and the

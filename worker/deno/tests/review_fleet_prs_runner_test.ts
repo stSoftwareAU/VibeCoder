@@ -9,6 +9,15 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 const fromFileUrl = (u: URL) => decodeURIComponent(u.pathname);
 
 const RUNNER = fromFileUrl(
+  new URL(
+    "../../../.claude/skills/review-fleet-prs/scripts/run.sh",
+    import.meta.url,
+  ),
+);
+
+// The old root-level path (Issue #3299): a forwarding shim now sits here,
+// `exec`ing scripts/run.sh with the shim's own arguments.
+const SHIM = fromFileUrl(
   new URL("../../../.claude/skills/review-fleet-prs/run.sh", import.meta.url),
 );
 
@@ -156,7 +165,10 @@ Deno.test("run.sh --once reviews the gate's ready PRs in one headless round in t
   assertStringIncludes(prompt, '"repo":"owner/repo","number":7');
   assertStringIncludes(prompt, "do NOT start gate.ts");
   // Every path the round is given is the container's.
-  assertStringIncludes(prompt, "/workspace/.claude/skills/review-fleet-prs");
+  assertStringIncludes(
+    prompt,
+    "/workspace/.claude/skills/review-fleet-prs/scripts",
+  );
   assertStringIncludes(prompt, "--state-dir=/home/vibe/logs/review-fleet-prs");
   // The headless session may write its round files: only an Edit rule on
   // an absolute (//-anchored) path allows that.
@@ -544,4 +556,105 @@ Deno.test("run.sh kills a timed-out round's container by name (Issue #3293)", as
     (await recorded(home, "container-kills"))!,
     "kill review-fleet-prs-",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3299: the root-level run.sh is now a forwarding shim that execs
+// scripts/run.sh; hosts installed before the move still start the old path.
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh's root-level shim reaches scripts/run.sh and runs a headless round (Issue #3299)", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await runBash(home, [SHIM, "--once"]);
+  assertEquals(code, 0, output);
+  // A positive signal the call actually reached scripts/run.sh: only
+  // scripts/run.sh's own `pass` starts a Claude round in the container.
+  const args = await claudeArgs(home);
+  assert(args, "the shim did not reach scripts/run.sh (no round was started)");
+  assertStringIncludes(
+    await runnerLog(home),
+    "gate: owner/repo#7",
+  );
+});
+
+Deno.test("run.sh's root-level shim forwards scripts/run.sh's non-zero exit status (Issue #3299)", async () => {
+  // A gate failure is a reliable non-zero case for scripts/run.sh --once.
+  const direct = await fixture("", 1);
+  const { code: directCode } = await run(direct, "--once");
+  assert(directCode !== 0, "scripts/run.sh did not fail as expected");
+
+  const home = await fixture("", 1);
+  const { code, output } = await runBash(home, [SHIM, "--once"]);
+  assertEquals(code, directCode, output);
+  assertEquals(code === 0, false, output);
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3299: --install must point the service manager at scripts/run.sh,
+// not the root-level shim, whichever path is used to invoke it.
+// ---------------------------------------------------------------------------
+
+// Stubs the service-manager commands --install shells out to, recording
+// their arguments so the generated unit/plist can be inspected.
+async function installStubs(home: string, platform: "Darwin" | "Linux") {
+  const bin = `${home}/bin`;
+  const stub = async (name: string, body: string) => {
+    await Deno.writeTextFile(`${bin}/${name}`, `#!/bin/sh\n${body}\n`);
+    await Deno.chmod(`${bin}/${name}`, 0o755);
+  };
+  await stub("uname", `[ "$1" = "-s" ] && echo ${platform}; exit 0`);
+  await stub(
+    "launchctl",
+    `echo "$*" >> "$HOME/launchctl-args"; exit 0`,
+  );
+  await stub(
+    "systemctl",
+    `echo "$*" >> "$HOME/systemctl-args"; exit 0`,
+  );
+  await stub("loginctl", `echo "$*" >> "$HOME/loginctl-args"; exit 0`);
+}
+
+Deno.test("run.sh --install writes the scripts/run.sh path into the launchd plist on macOS (Issue #3299)", async () => {
+  const home = await fixture(READY);
+  await installStubs(home, "Darwin");
+  const { code, output } = await run(home, "--install");
+  assertEquals(code, 0, output);
+  const plist = await Deno.readTextFile(
+    `${home}/Library/LaunchAgents/au.com.stsoftware.review-fleet-prs.plist`,
+  );
+  assertStringIncludes(plist, "<string>" + RUNNER + "</string>");
+  assertEquals(plist.includes(`<string>${SHIM}</string>`), false, plist);
+});
+
+Deno.test("run.sh --install writes the scripts/run.sh path into the systemd unit on Linux (Issue #3299)", async () => {
+  const home = await fixture(READY);
+  await installStubs(home, "Linux");
+  const { code, output } = await runBash(home, [RUNNER, "--install"], {
+    USER: "tester",
+  });
+  assertEquals(code, 0, output);
+  const unit = await Deno.readTextFile(
+    `${home}/.config/systemd/user/review-fleet-prs.service`,
+  );
+  const execStart = unit.split("\n").find((l) => l.startsWith("ExecStart="));
+  assert(execStart, unit);
+  assertStringIncludes(execStart!, `/bin/bash ${RUNNER}`);
+  assert(execStart!.endsWith("/scripts/run.sh"), execStart);
+  assertEquals(execStart!.includes(SHIM), false, execStart);
+});
+
+Deno.test("run.sh's root-level shim still installs the scripts/run.sh path (Issue #3299)", async () => {
+  const home = await fixture(READY);
+  await installStubs(home, "Linux");
+  const { code, output } = await runBash(home, [SHIM, "--install"], {
+    USER: "tester",
+  });
+  assertEquals(code, 0, output);
+  const unit = await Deno.readTextFile(
+    `${home}/.config/systemd/user/review-fleet-prs.service`,
+  );
+  const execStart = unit.split("\n").find((l) => l.startsWith("ExecStart="));
+  assert(execStart, unit);
+  assert(execStart!.endsWith("/scripts/run.sh"), execStart);
+  assertEquals(execStart!.includes(SHIM), false, execStart);
 });
