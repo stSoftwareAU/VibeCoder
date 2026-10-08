@@ -535,9 +535,14 @@ enumeration as a `Branch outcomes:` list in its Test Plan — one line per
 outcome naming `path:line`, the outcome, the test that reaches it, and that
 flipping it went red — or `Branch outcomes: none added` when the diff adds
 no branch; every test it names must exist at the head (see **A named test
-must exist**). A fix to an existing PR re-enumerates every branch its own
-commits add, not only those a review finding named, and refreshes the list
-to the head.
+must exist**). An entry that admits no test reaches its outcome is work
+still to do, not a record: add the test that goes red, or remove the
+branch. Only an outcome the issue puts out of scope, or one no test can
+reach, may stand, written `exempt (out of scope): <reason>` or `exempt
+(untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
+creation on any other admission (Issue #3288). A fix to an existing PR
+re-enumerates every branch its own commits add, not only those a review
+finding named, and refreshes the list to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1163,21 +1168,48 @@ instructions for adding a command, see [docs/EXTENDING.md](docs/EXTENDING.md).
 ## Commit Safety — never commit hidden files
 
 Hidden files (any path matching `.*`) routinely carry secrets — `.env`, API
-keys, OAuth tokens, SSH keys. Never stage or commit a hidden path outside the
-small allowlist.
+keys, OAuth tokens, SSH keys. Never stage or commit a hidden path unless it is
+on the fleet-wide allowlist below, or the target repository's own tracked
+`.gitignore` explicitly re-allows it (Issue #3296, see below) — secret
+patterns are forbidden regardless of either route.
 
-**Allowlist — the only hidden paths that may ever be tracked:** `.gitignore`,
-`.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared editor
-settings), `.markdownlint-cli2.jsonc`. These are the five entries
+**Allowlist — the fleet-wide hidden paths that may always be tracked:**
+`.gitignore`, `.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared
+editor settings), `.markdownlint-cli2.jsonc`. These are the five entries
 `REQUIRED_GITIGNORE_PATTERNS` re-allows in
 `worker/deno/lib/gitignore_enforcer.ts`, which is what writes each repository's
 `.gitignore`; this list and `prompts/coding_guidelines/` restate it, and
 neither may drift from it.
 
+**Per-repo opt-in — a path the repository's own `.gitignore` re-allows**
+(Issue #3296). The pre-commit safety gate (`assertSafeToCommit()`) also
+accepts a staged hidden path outside the five-entry allowlist when
+`git check-ignore -v -n --no-index`, walked over that path and its ancestor
+directories, finds an explicit `!`-negation rule decided by the target
+repository's tracked, unmodified root `.gitignore` itself — for example
+this repository's `.gitignore` re-allows `.claude/skills/` and
+`.claude/agents/` (Issues #2675, #2976). Exit 1 from a plain
+`check-ignore -q` alone is not enough, since that only means "no rule
+matches" — equally true of a repository whose `.gitignore` never governs
+the path at all (PR #3308 review) — and a decision from a nested or untracked
+`.gitignore` does not count either. `HEAD:.gitignore` must also match
+`.gitignore` on the local `origin/<default>` ref byte for byte: `.gitignore`
+is itself on the fleet-wide allowlist, so a re-allow committed only on the
+branch under review — never published on the repository's own default
+branch — must not be able to exempt a later commit on that same branch
+(PR #3308 review). This never widens the fleet-wide allowlist above:
+it only recognises what a specific repository has already chosen to track.
+The forbidden patterns below are never exempt under this route, and if
+`.gitignore` cannot be read, has been modified (in the index or the working
+tree), differs from `origin/<default>`'s copy, `origin/HEAD` cannot be
+resolved, or no rule in the path's ancestor chain decides it at all, nothing
+is exempt (fail closed). Each exemption is logged at INFO.
+
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,
 `.netrc` (credential stores, refused at any depth — e.g. `deploy/.ssh/`,
-Issue #3336), and any other hidden file not on the allowlist.
+Issue #3336), and any other hidden file not on the allowlist or re-allowed by
+the repository's own tracked `.gitignore`.
 
 **Also forbidden — private key material and credential files:** `*.pem`,
 `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`, `id_dsa.*`,
@@ -1195,8 +1227,16 @@ explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
   `git reset HEAD <file>`.
 - **Never use `git add -f`** to bypass `.gitignore`, and never bypass the
   pre-commit safety gate with `git commit --no-verify`.
-- If a hidden file legitimately needs tracking, raise an issue and update the
-  allowlist in `worker/deno/lib/gitignore_enforcer.ts` via PR.
+- If a hidden file legitimately needs tracking in every monitored repository,
+  raise an issue and update the fleet-wide allowlist in
+  `worker/deno/lib/gitignore_enforcer.ts` via PR. If it only needs tracking in
+  one repository, a human adds the re-allow to that repository's own
+  `.gitignore` as its own change on the default branch first (Issue #3296) —
+  the pre-commit safety gate only recognises a re-allow once
+  `origin/<default>`'s `.gitignore` already carries it. An agent never adds
+  the re-allow itself: the gate checks `HEAD:.gitignore` against
+  `origin/<default>:.gitignore`, so a re-allow added and staged in the same
+  worker PR can never pass.
 
 ## Secret Redaction — Every Outbound Sink
 
