@@ -216,3 +216,118 @@ Deno.test("execute_claude_phase - reviewers and the split together carry all thr
   );
   assertEquals(runOptions?.issueExecutorSplit, true);
 });
+
+// ---------------------------------------------------------------------------
+// The sub-agent tier (Issue #3402)
+// ---------------------------------------------------------------------------
+
+Deno.test("execute_claude_phase - no tier option with split and reviewers on is the sonnet output (Issue #3402)", async () => {
+  const runOptions = await runWith({
+    issueExecutorSplit: true,
+    issueReviewerAgents: true,
+  });
+
+  const agents = runOptions?.agents;
+  assert(agents, "the split+reviewer run must carry sub-agent definitions");
+  assertEquals(
+    Object.keys(agents).sort(),
+    [
+      ISSUE_EXECUTOR_AGENT_NAME,
+      SPEC_REVIEWER_AGENT_NAME,
+      STANDARDS_REVIEWER_AGENT_NAME,
+    ].sort(),
+    "an unconfigured tier carries no explorer",
+  );
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "sonnet");
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "medium");
+});
+
+Deno.test("execute_claude_phase - issueSubAgentTier haiku with split and reviewers on carries haiku executor, haiku standards reviewer, sonnet spec reviewer, and an explorer (Issue #3402)", async () => {
+  const runOptions = await runWith({
+    issueExecutorSplit: true,
+    issueReviewerAgents: true,
+    issueSubAgentTier: "haiku",
+  });
+
+  const agents = runOptions?.agents;
+  assert(agents, "a haiku-tier run must carry sub-agent definitions");
+  assertEquals(
+    Object.keys(agents).sort(),
+    [
+      ISSUE_EXECUTOR_AGENT_NAME,
+      SPEC_REVIEWER_AGENT_NAME,
+      STANDARDS_REVIEWER_AGENT_NAME,
+      EXPLORER_AGENT_NAME,
+    ].sort(),
+  );
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "haiku");
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.effort, "high");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.model, "haiku");
+  assertEquals(agents[STANDARDS_REVIEWER_AGENT_NAME]!.effort, "medium");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.model, "sonnet");
+  assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
+  assertEquals(agents[EXPLORER_AGENT_NAME]!.tools, ["Read", "Grep", "Glob"]);
+});
+
+Deno.test("execute_claude_phase - a repo override of sonnet beats a host-wide haiku (Issue #3402)", async () => {
+  const runOptions = await runWith({
+    issueExecutorSplit: true,
+    issueSubAgentTier: "haiku",
+    repoConfigs: { "owner/repo": { issueSubAgentTier: "sonnet" } },
+  });
+
+  const agents = runOptions?.agents;
+  assert(agents, "the split run still carries the executor");
+  assertEquals(
+    Object.keys(agents).sort(),
+    [ISSUE_EXECUTOR_AGENT_NAME].sort(),
+    "the repo's sonnet override drops the explorer",
+  );
+  assertEquals(agents[ISSUE_EXECUTOR_AGENT_NAME]!.model, "sonnet");
+});
+
+Deno.test("execute_claude_phase - a repo override of haiku applies when the host is unset (Issue #3402)", async () => {
+  const runOptions = await runWith({
+    repoConfigs: { "owner/repo": { issueSubAgentTier: "haiku" } },
+  });
+
+  const agents = runOptions?.agents;
+  assert(agents, "the repo's haiku override alone carries the explorer");
+  assertEquals(Object.keys(agents), [EXPLORER_AGENT_NAME]);
+});
+
+Deno.test("execute_claude_phase - the resolved tier is logged exactly once per run (Issue #3402)", async () => {
+  const haiku = await observeRun({ issueSubAgentTier: "haiku" });
+  const haikuTierLogs = haiku.logs.filter((m) =>
+    m.includes("Issue sub-agent tier resolved to")
+  );
+  assertEquals(haikuTierLogs.length, 1, "logged exactly once per run");
+  assert(
+    haikuTierLogs[0]!.includes("Issue sub-agent tier resolved to 'haiku'"),
+  );
+
+  const sonnet = await observeRun({});
+  const sonnetTierLogs = sonnet.logs.filter((m) =>
+    m.includes("Issue sub-agent tier resolved to")
+  );
+  assertEquals(sonnetTierLogs.length, 1, "logged exactly once per run");
+  assert(
+    sonnetTierLogs[0]!.includes("Issue sub-agent tier resolved to 'sonnet'"),
+  );
+});
+
+Deno.test("execute_claude_phase - an invalid repo tier value is warned about and falls back to the host tier (Issue #3402)", async () => {
+  const observed = await observeRun({
+    issueSubAgentTier: "haiku",
+    repoConfigs: { "owner/repo": { issueSubAgentTier: "opus" } },
+  });
+
+  const warning = observed.logs.find((m) =>
+    m.includes("issue_sub_agent_tier")
+  );
+  assert(warning, "an invalid repo value is warned about by name");
+
+  const agents = observed.runOptions?.agents;
+  assert(agents, "falls back to the host's haiku tier, which still carries the explorer");
+  assertEquals(Object.keys(agents), [EXPLORER_AGENT_NAME]);
+});
