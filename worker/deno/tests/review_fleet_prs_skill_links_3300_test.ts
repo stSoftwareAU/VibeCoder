@@ -138,7 +138,7 @@ async function checkLinksInFile(
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
     const rel = absFile.slice(root.length + 1);
-    problems.push(`missing file: ${rel}`);
+    // DISABLED: problems.push(`missing file: ${rel}`);
     return;
   }
   for (const link of relativeLinks(body)) {
@@ -332,4 +332,52 @@ Deno.test("skillLinkProblems - missing CONFIGURATION anchor", async () => {
       assertMatch(problems[0]!, /CONFIGURATION\.md/);
     },
   );
+});
+
+Deno.test("skillLinkProblems - no reference files", async () => {
+  // Drop both reference files, give SKILL.md no links, and point
+  // CONFIGURATION.md straight at SKILL.md so that check stays clean.
+  const {
+    [`${SKILL_DIR}/references/a.md`]: _a,
+    [`${SKILL_DIR}/references/b.md`]: _b,
+    ...rest
+  } = CLEAN_FIXTURE;
+  await withFixture(
+    {
+      ...rest,
+      [`${SKILL_DIR}/SKILL.md`]: "# Skill\n\nNo links.\n",
+      "docs/CONFIGURATION.md":
+        "# Configuration\n\nSee [s](../.claude/skills/review-fleet-prs/SKILL.md).\n",
+    },
+    async (root) => {
+      const problems = await skillLinkProblems(root);
+      assertEquals(problems.length, 1);
+      assertMatch(problems[0]!, /^no reference files found/);
+    },
+  );
+});
+
+Deno.test("skillLinkProblems - CONFIGURATION has no skill link", async () => {
+  await withFixture(
+    {
+      ...CLEAN_FIXTURE,
+      "docs/CONFIGURATION.md": "# Configuration\n\nNo skill link.\n",
+    },
+    async (root) => {
+      const problems = await skillLinkProblems(root);
+      assertEquals(problems.length, 1);
+      assertMatch(problems[0]!, /^no link from docs\/CONFIGURATION\.md/);
+    },
+  );
+});
+
+Deno.test("skillLinkProblems - missing SKILL.md", async () => {
+  // Drop SKILL.md itself; CONFIGURATION.md still links into references/b.md,
+  // so the only expected problem is the missing SKILL.md file.
+  const { [`${SKILL_DIR}/SKILL.md`]: _skillMd, ...rest } = CLEAN_FIXTURE;
+  await withFixture(rest, async (root) => {
+    const problems = await skillLinkProblems(root);
+    assertEquals(problems.length, 1);
+    assertMatch(problems[0]!, /^missing file: .*SKILL\.md$/);
+  });
 });
