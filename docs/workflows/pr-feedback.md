@@ -116,10 +116,14 @@ monitor the PR — author is sufficient.
   PR title) in the same pass. The merged-PR close-out sweep remains the
   backstop for merges the worker did not perform.
 - Feedback is processed once: after handling, comments are marked (e.g. eyes
-  reaction) and reviews are dismissed so they are not picked up again. For a
-  review the dismissal is the **only** retirement marker — a moved PR head no
-  longer is (Issue #2697) — so a dismissal that fails at claim time is logged
-  rather than swallowed.
+  reaction), and a review is dismissed once the run retires it so it is not
+  picked up again. A review is never dismissed at claim time (Issue #3383) —
+  claiming it instead posts a lease-carrying claim comment that keeps other
+  hosts off it while the run is alive; see **A review is dismissed only once
+  the run retires it** below. For a review the dismissal is the **only**
+  retirement marker — a moved PR head no longer is (Issue #2697) — so a
+  dismissal that fails when the run retires the review is logged rather than
+  swallowed.
 
 ## ✅ Happy path
 
@@ -153,28 +157,37 @@ match wins and the loop restarts.
    Of those still outstanding, a review is skipped only when a **fleet fix
    commit** landed after it — never because a base merge or a bot's formatting or
    version bump moved the head (Issue #2702). That skip is logged at info.
+   A review already covered by a **live, fleet-authored claim lease**
+   (Issue #3383) is skipped too — not yet dismissed, just claimed by a run
+   still in flight; a lapsed lease (the run timed out, crashed or went
+   silent) makes the review actionable again.
 
    ```mermaid
    flowchart TD
        R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer (COMMENTED ignored)"]
        L --> Q{"Latest is<br/>CHANGES_REQUESTED?"}
        Q -- "no: DISMISSED,<br/>later APPROVED" --> S["Skip — INFO log<br/>with the reason"]
-       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?"}
+       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?<br/>Live claim lease?"}
        O -- yes --> S
-       O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>then dismiss the review"]
+       O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>with a lease line"]
        C --> F["Feedback run"]
+       F --> Ret["Run retires the review:<br/>dismiss"]
    ```
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; run the **drift check** (see [The worker's drift check (Issue
    #3143)](#the-workers-drift-check-issue-3143) below); commit and push.
-4. **Mark processed** — Add eyes reaction to comment and/or dismiss review so it
-   is not picked again. The claim adds that reaction *before* it verifies the
+4. **Mark processed** — For a comment, add the eyes reaction so it is not
+   picked again. The claim adds that reaction *before* it verifies the
    claim, to narrow the race window, so it **takes the reaction back** whenever
    the claim ends with no winner — a failed verification read, or a re-read
    that cannot see this host's own claim (Issue #2269). A marker left on a
    comment nobody claimed is feedback no host would ever rediscover; when the
    claim is genuinely lost, the marker stands because the winner answers it.
+   For a review, nothing is marked at claim time — no reaction is ever made
+   for a review, since a review has no reactions endpoint of its own. The
+   review is dismissed only once the run retires it (see **A review is
+   dismissed only once the run retires it** below).
 
 #### Every finding ends fixed or rebutted (Issue #2917)
 
@@ -215,12 +228,14 @@ the agent runs.
 
 #### A request-changes review is never answered with "no change" (Issue #3246)
 
-A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) dismisses
-the review, and a dismissal cannot be undone — so if the agent's run ends
-with nothing to show for it, no later cycle can rediscover the finding. The
+A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) is dismissed
+only once the run retires it (Issue #3383; see **A review is dismissed only
+once the run retires it** below) — but a run that ends with nothing to show
+for it, and no rebuttal either, still has to end somewhere, or the review
+would be retried for ever with no record that anything was ever tried. The
 worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
-helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) now guards
-against that case:
+helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) guards
+against that case by escalating to a human rather than looping silently:
 
 - If the run leaves no commit, no working-tree change and no
   `.pr_response_message`, the worker re-runs the agent once, in the same
@@ -254,6 +269,63 @@ flowchart TD
     F -- "no, and no .pr_response_message" --> NH["Label needs-human;<br/>comment names review id,<br/>run count, exit code, duration"]
     U --> F
     P["Inline comment or<br/>top-level PR comment,<br/>no change found"] --> NEU["Neutral 'could not identify<br/>a code change' reply"]
+```
+
+#### A review is dismissed only once the run retires it (Issue #3383)
+
+Claiming a `CHANGES_REQUESTED` review used to dismiss it immediately
+(Issue #2697), which made the claim irreversible before any work happened —
+a run that died mid-flight left the review dismissed with nobody having
+answered it. The claim comment (`PR_COMMENT_CLAIM`) on a review now carries a
+lease line (`PR_COMMENT_CLAIM_LEASE:<time>`) instead: the processor renews it
+from its own heartbeat every 5 minutes (renewing edits the comment, which
+bumps GitHub's `updated_at`), and the lease is live while its last renewal is
+within 15 minutes — the fleet's heartbeat live window. The scan skips a
+review a live, fleet-authored lease covers; a lapsed lease (the run timed
+out, crashed or went silent) makes the review actionable again, and the
+stale sweep deletes only lapsed leases. Other comment types are unaffected:
+they still get the eyes reaction at claim time and keep the 60-second claim
+rule.
+
+The review is dismissed only when the run **retires** it: a fix verified on
+the remote, a fix pushed to a gated head's fix branch whose PR could not be
+raised (a human is asked), the agent's rebuttal posted, the escape-hatch
+hand-off, the no-fix-no-rebuttal `needs-human` escalation above, or the
+second failure below. Each of those first five outcomes also requires its
+own announcement to have actually reached the PR — the push-success reply,
+the fix-PR-raise-failed hand-off, the rebuttal, the escape-hatch reply, or
+(for the escalation) the label add or the comment post. A `gh` call that
+fails to post that announcement charges a failed attempt instead of
+dismissing a review nothing was said about (Issue #3408 review). Any other
+outcome — an agent error, a timeout, a push that never lands on the remote,
+or any outcome that settles nothing, such as a prompt-build failure — is
+charged as a failed attempt instead:
+
+- The **first** failure posts a "First Attempt" reply carrying a hidden
+  `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review
+  undismissed, so it still requests changes and is retried once its lease
+  lapses.
+- The **second** failure (the marker found, fleet-authored) dismisses the
+  review with a "Permanently Failed" reply.
+
+No reaction is ever made for a review — a review has no reactions endpoint
+of its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
+resource. A branch the host could not check out (held by another worktree,
+or a checkout failure) releases the review **uncharged**, with no reply, so
+it is not counted as an attempt. Because the review stays
+`CHANGES_REQUESTED` until it is retired, the #2702 no-update-branch-while-
+changes-requested guard keeps applying while a fix is pending.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Outstanding
+    Outstanding --> Leased : Claim posts a<br/>lease line
+    Leased --> Outstanding : Lease lapses<br/>(no renewal in 15 min)
+    Leased --> Retired : Run retires it<br/>(fix, rebuttal,<br/>escape hatch, needs-human)
+    Leased --> FailedOnce : First failure<br/>(PR_REVIEW_FAILED_ONCE marker)
+    FailedOnce --> Outstanding : Lease lapses
+    FailedOnce --> Retired : Second failure<br/>(Permanently Failed)
+    Retired --> [*] : Dismissed
 ```
 
 #### Fix the defect everywhere it lives (Issues #3086, #3114)
@@ -788,10 +860,12 @@ flowchart TD
   `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
   change and no `.pr_response_message` is re-run once (in the same worker
   run, with a note appended) rather than answered with the neutral reply,
-  because dismissing the review cannot be undone; if the final run still has
-  neither a pushed fix nor a `.pr_response_message`, the worker labels the PR
-  `needs-human` instead of posting a reply (see **A request-changes review is
-  never answered with "no change"** above).
+  because the review would otherwise sit retried for ever with no record
+  that anything was tried; if the final run still has neither a pushed fix
+  nor a `.pr_response_message`, the worker labels the PR `needs-human`
+  instead of posting a reply — one of the outcomes that retires the review
+  (see **A request-changes review is never answered with "no change"** and
+  **A review is dismissed only once the run retires it** above).
 
 ## 📚 Further reading
 
