@@ -331,3 +331,16 @@ are fixed above: Case 9 is rebuilt, the prompt bullet now matches
 CODING-STANDARDS.md, every #3309 citation now reads "PR #3308 review" (and
 main's #3336 attribution is restored), and Branch outcomes and the Test
 Plan are regenerated against this head.
+
+**Fourth PR #3308 review round (hand-added):** the previous round made the
+prompt bullet match `CODING-STANDARDS.md`, but `CODING-STANDARDS.md`
+itself still told an agent to add the re-allow to a repo's own
+`.gitignore` directly — contradicting the prompt bullet it was supposed to
+match and the gate's own `HEAD`-vs-`origin/<default>` check, which makes
+that one-PR route impossible. The same push had also carried an unrelated
+Docs-sweep rewrite of `docs/archive/pr-summaries/pr-summary-3302.md` (PR
+#3310/#3302) into this PR's diff. Both fixed: the `CODING-STANDARDS.md`
+bullet now says a human lands the re-allow on the default branch first and
+an agent never adds it itself, and `pr-summary-3302.md` is restored to
+main's version so it drops out of this PR's diff. No branch outcomes
+added — both changes are documentation only.
