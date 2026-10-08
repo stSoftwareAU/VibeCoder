@@ -2645,8 +2645,8 @@ Same leniency as the tier-level rule: one invocation served by the current model
 keeps the run healthy. An operator who pins `best_planning_model` to an older
 generation is never flagged — they were served the model they asked for.
 
-`CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue
-#3400), so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
+`CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue #3400),
+so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
 `claude-haiku-4-5`) as a previous generation too. The `degraded-model` label
 is not yet wired up for haiku-tier issue runs — that is open Issue #3405.
 
