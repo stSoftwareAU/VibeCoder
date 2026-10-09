@@ -484,7 +484,8 @@ export const OPERATIONAL_DEFAULTS = {
    * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
    * Each `issue` run records the resolved tier in fleet telemetry (per-tier
    * runs and USD) and stamps it on the PR body as a `vibe-sub-agent-tier`
-   * marker (Issue #3403). Executors still run on Sonnet
+   * marker (Issue #3403). It does not pick the executors' model yet (#3402
+   * will); executors still run on Sonnet
    * (`ISSUE_EXECUTOR_MODEL` in `issue_executor_agents.ts`) whatever this
    * is set to.
    */
