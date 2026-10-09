@@ -287,7 +287,10 @@ Deno.test("execute - the infrastructure retry after a sonnet retry stays on the 
   assertEquals(h.invocations.length, 3);
   assert(onHaikuTier(h.invocations[0]));
   assert(!onHaikuTier(h.invocations[1]));
-  assert(!onHaikuTier(h.invocations[2]), "the #1550 retry keeps sonnet");
+  assert(
+    !onHaikuTier(h.invocations[2]),
+    "the infrastructure retry keeps sonnet",
+  );
   assertEquals(h.result.status, "continue");
   assertEquals(h.state.agentRefusal?.retry, "succeeded");
 });

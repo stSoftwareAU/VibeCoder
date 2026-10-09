@@ -1565,7 +1565,8 @@ flowchart TD
   [`phases/handle_no_changes_phase.ts`](../worker/deno/lib/phases/handle_no_changes_phase.ts)
   (already-complete close), and
   [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts)
-  (a run failed on a safety refusal, Issue #3406). The `work-on` run's invocations are captured by
+  (a run failed on a safety refusal, Issue #3406). The `work-on` run's
+  invocations are captured by
   `recordClaudeRunStats` in
   [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts).
 
