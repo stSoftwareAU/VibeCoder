@@ -57,7 +57,10 @@ export const REMOVED_ASSERTION_CONTEXT_LINES = 4_000_000;
 /** Cap on a single diff line scanned for an assertion match. */
 const MAX_LINE_CHARS = 4_000;
 
-/** Cap on a removed assertion's canonical form. */
+/**
+ * Cap on a removed assertion's canonical form. Not applied to the Test Plan
+ * body, which is matched uncapped (Issue #3438).
+ */
 const MAX_CANONICAL_CHARS = 2_000;
 
 /**
@@ -323,7 +326,7 @@ function canonicaliseUncapped(statement: string): string {
 }
 
 /**
- * Canonical form of a statement for Test Plan matching:
+ * Canonical form of a removed assertion for Test Plan matching:
  * {@link canonicaliseUncapped}, capped at {@link MAX_CANONICAL_CHARS}.
  */
 function canonicalise(statement: string): string {
@@ -1923,10 +1926,15 @@ export function findTestPlanSection(prSummaryContent: string): TestPlanSection {
 /** A backslash-escaped markdown character, e.g. `\|` or `\*`. */
 const MARKDOWN_ESCAPE_RE = /\\([\\`*_{}[\]()#+\-.!|>~])/g;
 
-/** Canonical form of a Test Plan body, with markdown escapes undone first. */
+/**
+ * Canonical form of a Test Plan body, with markdown escapes undone first.
+ * Uncapped, so an assertion named anywhere in the body counts. The summary
+ * scan is already bounded by `MAX_SUMMARY_SCAN_CHARS`; a Test Plan cut at
+ * that bound leaves an assertion named past it unaccounted (fails closed).
+ */
 function canonicaliseTestPlanBody(body: string): string {
   const unescaped = body.replace(MARKDOWN_ESCAPE_RE, "$1");
-  return canonicalise(unescaped);
+  return canonicaliseUncapped(unescaped);
 }
 
 /** Verdict of the removed-assertion gate. */
@@ -2004,9 +2012,10 @@ function evaluateApplicable(
     // markdown), so `\.` inside a copied-verbatim regex or escaped string
     // must still match once the markdown-escape pass turns the Test Plan's
     // own `\.` into `.` — checking the raw body too is what lets the
-    // verbatim copy the prompt asks for actually match.
+    // verbatim copy the prompt asks for actually match. Both forms are
+    // uncapped, so a name anywhere in the Test Plan counts (Issue #3438).
     const planCanonical = canonicaliseTestPlanBody(testPlan.body);
-    const planCanonicalRaw = canonicalise(testPlan.body);
+    const planCanonicalRaw = canonicaliseUncapped(testPlan.body);
     unaccounted = removed.filter(
       (assertion) =>
         !planCanonical.includes(assertion.canonical) &&
