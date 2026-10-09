@@ -192,7 +192,7 @@ export function withholdNonSubscriptionCredentials(
  * are the two caps Claude Code enforces however the model decides to
  * delegate (documented at code.claude.com/docs/en/agent-sdk/subagents,
  * "Cap subagent depth, concurrency, and spend"; honoured from Claude Code
- * 2.1.217 — the image pins 2.1.281 in `container/tools.json`):
+ * 2.1.217 — the image pins 2.1.293 in `container/tools.json`):
  *
  * - `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` — the main session may spawn
  *   sub-agents, but a sub-agent may not spawn its own. The CLI default is 3.
