@@ -213,7 +213,8 @@ const OUT_OF_CREDIT: RunFailureClassification = {
  *    trace in the message with any other non-agent category.
  * 6. `missing_tools` — the image/PATH is the worker's to fix.
  * 7. `timeout` / `zero_output` — cause unproven → unknown.
- * 8. `quality_check` / `no_changes` / `evidence_missing` — the AGENT not
+ * 8. `quality_check` / `summary_incomplete` / `no_changes` /
+ *    `evidence_missing` — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
  * 9. `workflow_gate` — a pre-PR gate the worker applied refused the change
  *    (Issue #2044): not a worker defect either, and it keeps its own class so
@@ -369,6 +370,7 @@ export function classifyRunFailure(
           "The run produced no output; the cause is not proven to be the worker.",
       }, message);
     case "quality_check":
+    case "summary_incomplete":
     case "no_changes":
     case "evidence_missing":
       // 8. The agent did not deliver — a property of the attempt, not a
@@ -378,7 +380,7 @@ export function classifyRunFailure(
         fixability: "not_code_fixable",
         failureClass: "agent-outcome",
         rationale:
-          "The agent did not deliver (quality gate, no changes, missing evidence) — not a worker defect.",
+          "The agent did not deliver (quality gate, PR-summary gates, no changes, missing evidence) — not a worker defect.",
       };
     case "workflow_gate":
       // Issue #2044: the changed-workflow gate refused the run over a finding

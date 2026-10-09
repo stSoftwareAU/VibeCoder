@@ -97,6 +97,11 @@ export type FailureCategory =
    * issue's retry budget.
    */
   | "clone_corrupt"
+  /**
+   * The PR-summary gates refused the run (Issue #3431). The agent's deliverable
+   * fell short; the worker did not malfunction.
+   */
+  | "summary_incomplete"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -123,6 +128,8 @@ export type CategoryDisplay =
   | "prompt-too-long"
   /** Issue #2884: the host's shared clone is damaged (broken refs / corrupt object store). */
   | "clone-corrupt"
+  /** Issue #3431: the PR-summary gates refused the run. */
+  | "summary-incomplete"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -196,6 +203,25 @@ export const PROMPT_TOO_LONG_MARKER =
  */
 export const CLONE_CORRUPT_MARKER =
   "the host's shared clone of this repository is damaged";
+
+/**
+ * Phrase the completion phase opens a PR-summary gate refusal with (Issue
+ * #3431). Worker-authored, like {@link WORKFLOW_GATE_MARKER}: the gates' own
+ * text quotes the agent's summary (a Rust `AppError::X` path once tripped the
+ * catch-all `Error:` rule), so the detector keys off this worker phrase. The
+ * agent's quoted text cannot forge a worse category because the marker is
+ * checked after the killed, timeout, rate_limit and interrupted rules, as the
+ * workflow gate is.
+ */
+export const SUMMARY_RULE_GATE_MARKER =
+  "the PR summary did not pass the worker's completion gates";
+
+/**
+ * The catch-all `Error:` rule of {@link detectFailureCategory}. A Rust/C++
+ * path such as `AppError::X` is not an `Error:` line, so `Error::` is excluded
+ * (Issue #3431). The lookahead is a single-character check, so it stays linear.
+ */
+const ERROR_COLON_RE = /Error:(?!:)/;
 
 /**
  * The operator-facing reason line for a scheduled release (Issue #424).
@@ -309,6 +335,11 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
     return "workflow_gate";
   }
 
+  // The completion phase's own PR-summary gate refusal (Issue #3431).
+  if (failureMessage.includes(SUMMARY_RULE_GATE_MARKER)) {
+    return "summary_incomplete";
+  }
+
   // The worker's own `Prompt is too long` reason (Issue #2682) — checked
   // after the same rules as the gate above, for the same reason.
   if (failureMessage.includes(PROMPT_TOO_LONG_MARKER)) {
@@ -391,7 +422,7 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
 
   // Internal/CLI errors: check for error patterns, stack traces
   if (
-    failureMessage.includes("Error:") ||
+    ERROR_COLON_RE.test(failureMessage) ||
     failureMessage.includes("at Object.") ||
     failureMessage.includes("at Module.") ||
     failureMessage.includes("ENOENT") ||
@@ -465,6 +496,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "repo_config",
   "prompt_too_long",
   "clone_corrupt",
+  "summary_incomplete",
   "unknown",
 ]);
 
@@ -536,6 +568,10 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // only burn claims on a fault no in-process attempt can clear.
     case "clone_corrupt":
       return false;
+    // Not infrastructure (Issue #3431): the agent's summary fell short of the
+    // completion gates; retrying is governed by the normal retry rules.
+    case "summary_incomplete":
+      return false;
     default:
       return false;
   }
@@ -582,6 +618,8 @@ export function getFailureCategoryDisplay(
       return "prompt-too-long";
     case "clone_corrupt":
       return "clone-corrupt";
+    case "summary_incomplete":
+      return "summary-incomplete";
     case "unknown":
       return "unknown";
     default:
@@ -902,6 +940,12 @@ export function getFailureDiagnosis(
 - No \`failed-once\` or \`failed\` label was applied, but the setup-phase repair ladder's escalation already put \`needs-human\` on this issue — either its repair attempt did not clear the fault, or this run's one repair attempt was already spent by an earlier issue — and it stays parked until a human removes that label
 - An operator should check the host's shared clone (e.g. \`git fsck\`) and re-clone or repair it if refs or objects are missing or corrupt, then remove the \`needs-human\` label so the issue is claimable again`;
 
+    case "summary_incomplete":
+      return `- The PR summary did not pass the worker's completion gates (Issue #3431)
+- The gate's comment on the issue names each gap in the summary
+- This is the agent's deliverable falling short, not a worker defect
+- The normal retry and \`failed-once\` rules apply`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -1001,6 +1045,10 @@ export function getFailureDiagnosisOneliner(
     // detected the host's shared clone was damaged and said so (Issue #2884).
     case "clone_corrupt":
       return "Host's shared clone of this repository is damaged (broken refs or corrupt object store) — the same fault meets every issue on this host; no failed-once/failed was applied, but this issue was escalated to needs-human (its repair attempt failed, or this run's one repair attempt was already spent) and stays parked until a human removes that label.";
+    // Deliberately not "Likely cause": nothing was guessed. The worker's own
+    // completion gates refused the summary and named each gap (Issue #3431).
+    case "summary_incomplete":
+      return "The PR summary did not pass the worker's completion gates — see the gate comment for each gap.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":

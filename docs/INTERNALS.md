@@ -4871,6 +4871,23 @@ repairing the host's clone for the issue to become claimable again. See
 [docs/workflows/README.md](workflows/README.md#one-shared-store-means-one-repository-wide-fault-issue-1093)
 for the sweep-then-re-clone repair ladder that produces this category.
 
+#### `summary_incomplete` is its own failure category (Issue #3431)
+
+When the completion phase's PR-summary gates refuse a run, the refusal text
+quotes the agent's own summary. That quotation once held a Rust path,
+`AppError::EvaluationSummaryUnavailable`, which the catch-all `Error:` rule of
+`detectFailureCategory` read as an error line: the run came out
+`internal_error`, was classified a `worker-crash`, and a false diagnostic issue
+was auto-filed. Two changes close this. `reportSummaryRuleBlock` now opens the
+failure reason with the worker-authored `SUMMARY_RULE_GATE_MARKER` ("the PR
+summary did not pass the worker's completion gates"), which the detector maps to
+`summary_incomplete` (display `summary-incomplete`) after the killed, timeout,
+rate-limit and interrupted rules, so quoted agent text cannot forge a worse
+category. The catch-all is also now `/Error:(?!:)/`, so a `::` path such as
+`AppError::X` is not an `Error:` line. `summary_incomplete` is `not_code_fixable`
+(class `agent-outcome`), is not infrastructure, and follows the normal retry and
+`failed-once` rules.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a

@@ -18,7 +18,10 @@ import {
   isInfrastructureFailure,
   normaliseFailureCategory,
   parseDiagnosticContext,
+  SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
+import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // ============================================================================
 // detectFailureCategory
@@ -742,4 +745,96 @@ Deno.test("clone_corrupt category - diagnosis, oneliner, display and validation 
   // A host fault, not the issue's: an in-process retry hits the same damaged
   // clone, so it is never treated as infrastructure to retry in-process.
   assertEquals(isInfrastructureFailure("clone_corrupt"), false);
+});
+
+// ---------------------------------------------------------------------------
+// summary_incomplete (Issue #3431)
+// ---------------------------------------------------------------------------
+
+/** The gates' refusal text from Issue #3431: four clauses, quoting a Rust path. */
+const ISSUE_3431_MESSAGE =
+  "Independent Spec/Standards review not reported in the PR summary: `violation` finding is neither fixed nor filed — a breach in a line this diff adds or changes is fixed in this diff, never left standing; write `reason: fixed in this diff` — for a breach in a line this diff adds or changes, or `reason: pre-existing, filed #<n>` — only for a breach in unchanged context, linking the follow-up issue the run filed: \"**violation** — Tests: 'Every branch has a test, including the degenerate one'. No test reads EvaluationReport::evaluation / RunSummary, and none triggers AppError::EvaluationSummaryUnavailable or the new AccountEquityUnavailable path in evaluate . — evidence: `crates/app/src/handler.rs:602-626` — reason: not fixed. The breach is on lines this diff adds, so it must be fixed in this diff before the PR is raised.\"; " +
+  'Removed test assertions not accounted for in the PR summary\'s Test Plan: 98 assertion(s) removed from existing tests are not named in the Test Plan: crates/api/tests/control.rs: assert_eq!(response.status(), 409, "{path} halted nothing to lift");; ' +
+  "Branch outcomes not recorded in the PR summary: the `Branch outcomes:` entry for `crates/app/src/handler.rs:608` admits no test reaches its outcome — add a test that goes red when the outcome is flipped, or remove the branch; " +
+  "PR summary describes named code wrongly: The issue's own change is `git diff origin/Develop...HEAD`: 8 files.";
+
+Deno.test("detectFailureCategory - the marked #3431 refusal is summary_incomplete and an agent outcome, not a worker crash", () => {
+  const message = `${SUMMARY_RULE_GATE_MARKER}: ${ISSUE_3431_MESSAGE}`;
+  assertEquals(detectFailureCategory(message), "summary_incomplete");
+  const got = classifyRunFailure("summary_incomplete", message);
+  assertEquals(got.fixability, "not_code_fixable");
+  assertEquals(got.failureClass, "agent-outcome");
+});
+
+Deno.test("detectFailureCategory - a Rust AppError:: path is not an Error: line, but real Error: lines still are (Issue #3431)", () => {
+  assertEquals(
+    detectFailureCategory(ISSUE_3431_MESSAGE) === "internal_error",
+    false,
+  );
+  assertEquals(
+    detectFailureCategory("TypeError: boom\n    at foo"),
+    "internal_error",
+  );
+  assertEquals(detectFailureCategory("Error: something"), "internal_error");
+});
+
+Deno.test("detectFailureCategory - the summary marker cannot mask a timeout or a kill (Issue #3431, #249 lesson)", () => {
+  assertEquals(
+    detectFailureCategory(
+      `Claude timed out after 3600s: ${SUMMARY_RULE_GATE_MARKER}`,
+    ),
+    "timeout",
+  );
+  assertEquals(
+    detectFailureCategory(
+      `Claude was killed (exit 137, SIGKILL — possible out-of-memory in the VM) without creating changes: ${SUMMARY_RULE_GATE_MARKER}`,
+    ),
+    "killed",
+  );
+});
+
+Deno.test("detectFailureCategory - hostile colon runs classify in linear time (Issue #3431)", () => {
+  for (
+    const build of [
+      (chars: number) => "AppError" + ":".repeat(chars) + "x",
+      (chars: number) => "Error:".repeat(Math.ceil(chars / 6)),
+    ]
+  ) {
+    assertLinearGrowth(
+      "detectFailureCategory, hostile Error: runs",
+      build,
+      detectFailureCategory,
+      { baseChars: 10_000 },
+    );
+  }
+  assertEquals(
+    detectFailureCategory("AppError" + ":".repeat(50_000) + "x") ===
+      "internal_error",
+    false,
+  );
+  assertEquals(
+    detectFailureCategory("Error:".repeat(20_000)),
+    "internal_error",
+  );
+});
+
+Deno.test("summary_incomplete category - display, diagnosis, oneliner and validation handle it (Issue #3431)", () => {
+  assertEquals(
+    getFailureCategoryDisplay("summary_incomplete"),
+    "summary-incomplete",
+  );
+  for (
+    const text of [
+      getFailureDiagnosis("summary_incomplete"),
+      getFailureDiagnosisOneliner("summary_incomplete"),
+    ]
+  ) {
+    assertStringIncludes(text, "PR summary");
+    assertEquals(text.toLowerCase().includes("screenshot"), false);
+  }
+  assertEquals(
+    normaliseFailureCategory("summary_incomplete"),
+    "summary_incomplete",
+  );
+  assertEquals(isInfrastructureFailure("summary_incomplete"), false);
 });

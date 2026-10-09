@@ -13,6 +13,10 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  detectFailureCategory,
+  SUMMARY_RULE_GATE_MARKER,
+} from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -550,5 +554,30 @@ Deno.test(
     assertEquals(outcome.claudeCalls, 1, "launched once, no second attempt");
     assertEquals(outcome.qualityGateRuns, 0, "nothing changed to re-gate");
     assertEquals(outcome.comments.length, 1);
+  },
+);
+
+/**
+ * Issue #3431: the summary's Standards Review quotes a Rust `AppError::X`
+ * path in a `violation` finding. The gate's refusal quotes it back.
+ */
+const SUMMARY_WITH_QUOTED_RUST_PATH = SUMMARY_WITH_BLOCK.replace(
+  "- **clean** — Australian English, TDD, fail-loud error handling",
+  "- **violation** — Tests: no test triggers AppError::EvaluationSummaryUnavailable in evaluate — evidence: `crates/app/src/handler.rs:602-626` — reason: not fixed.",
+);
+
+Deno.test(
+  "completion - a no-PR summary-rule block carries the gate marker, so it is summary_incomplete not a crash (Issue #3431)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_QUOTED_RUST_PATH,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0, "no PR was raised");
+    const reason = outcome.reason ?? "";
+    assertStringIncludes(reason, SUMMARY_RULE_GATE_MARKER);
+    assertStringIncludes(reason, "AppError::EvaluationSummaryUnavailable");
+    assertEquals(detectFailureCategory(reason), "summary_incomplete");
   },
 );

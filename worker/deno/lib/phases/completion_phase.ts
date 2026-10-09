@@ -12,6 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { SUMMARY_RULE_GATE_MARKER } from "../failure_diagnosis.ts";
 import { HeadDivergedError } from "../git_branch.ts";
 import {
   type IssueContext,
@@ -524,6 +525,11 @@ async function lookupBlockedGatePr(
  * closes a security-labelled finding without its vulnerability-fix evidence
  * must stop, PR or no PR.
  *
+ * The failure `reason` the `failure` results carry is prefixed with
+ * {@link SUMMARY_RULE_GATE_MARKER} (Issue #3431), so the failure category is
+ * `summary_incomplete` rather than a crash misread off the gates' quoted agent
+ * text. The recorded `summaryRuleBlocks[].reason` stays the raw gate reason.
+ *
  * @param reason - The phase-failure reason the gate would have reported.
  * @param comment - The gate's remediation comment for the issue thread.
  * @returns `failure` on the run's first block (PR or no PR, both recovered
@@ -546,6 +552,9 @@ async function reportSummaryRuleBlock(
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
+  // Issue #3431: the failure reason leads with the worker's own marker so the
+  // category detector never reads the gates' quoted agent text as a crash.
+  const failureReason = `${SUMMARY_RULE_GATE_MARKER}: ${reason}`;
 
   const existingPr = await deps.pr.findExistingPrForBranch(
     repo,
@@ -593,7 +602,7 @@ async function reportSummaryRuleBlock(
         lookup: existingPr.error.message,
       },
     );
-    return { status: "failure", reason };
+    return { status: "failure", reason: failureReason };
   }
 
   const prUrl = existingPr.value;
@@ -625,7 +634,7 @@ async function reportSummaryRuleBlock(
         { repo, issueNumber, prUrl },
       );
     }
-    return { status: "failure", reason };
+    return { status: "failure", reason: failureReason };
   }
 
   logger.warn(
@@ -663,7 +672,7 @@ async function reportSummaryRuleBlock(
         "summary rule as a failure rather than naming an unnumbered PR",
       { repo, issueNumber, prUrl },
     );
-    return { status: "failure", reason };
+    return { status: "failure", reason: failureReason };
   }
 
   const recovered = await recoverAndFinaliseExistingPr(

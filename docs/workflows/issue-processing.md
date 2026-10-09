@@ -2656,6 +2656,13 @@ discard),
 (`executeWithFreshSessionFallback`), and the `prompt_too_long` category in
 [failure_diagnosis.ts](../../worker/deno/lib/failure_diagnosis.ts).
 
+A run refused by the PR-summary gates is categorised `summary_incomplete`
+(display `summary-incomplete`, Issue #3431): the worker prefixes the failure
+reason with its own marker so the gates' quotation of the agent's summary (for
+example a Rust `AppError::X` path) is never read as a crash. It is an
+`agent-outcome`, not a worker defect, and the normal retry and `failed-once`
+rules apply. The catch-all `Error:` rule excludes `::` paths.
+
 ## 🔁 One run, one attempt per issue
 
 The scan ranks a **cached** issue list (`issues_all`, TTL 600 s), and until
