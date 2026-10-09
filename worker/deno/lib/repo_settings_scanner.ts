@@ -9,23 +9,11 @@
  * CODEOWNERS the Develop ruleset never consults, secret scanning and push
  * protection disabled. Only an admin can flip those; the worker cannot. So
  * the weekly audit reads them (read-only `gh api` calls) and files one
- * stable finding per open setting; each finding about a setting says plainly
- * a human must act — drift becomes visible on the board instead of living in
- * a report. Private vulnerability reporting (Issue #3268) is also read:
- * GitHub offers it on public repositories only, so a public repository with
- * it off is filed as `BP-REPO-PVR-OFF`.
- *
- * A security policy (Issue #3269) is read on a public repository only too,
- * through the contents API at the three locations GitHub recognises
- * (`SECURITY.md`, `.github/SECURITY.md`, `docs/SECURITY.md`) on the default
- * branch. A missing file is filed as `BP-REPO-SECURITY-POLICY-MISSING` — but
- * unlike every other finding here, its fix is an ordinary commit (adding the
- * file) that a worker PR can make, so its `suggestedFix` carries none of the
- * admin-action prose the others do; `isAdminOnlyRepoSettingsIssue` in
- * `admin_only_finding.ts` keys off that prose (and the finding id) to decide
- * whether a worker may take the issue (Issue #3266). A non-404 read error is
- * a lookup failure, never a finding; a private or internal repository is not
- * read at all, and the skip travels through `onCheckSkipped`.
+ * stable finding per open setting that says plainly a human must act —
+ * drift becomes visible on the board instead of living in a report.
+ * Private vulnerability reporting (Issue #3268) is also read: GitHub offers
+ * it on public repositories only, so a public repository with it off is
+ * filed as `BP-REPO-PVR-OFF`.
  *
  * Failure policy: an unreadable endpoint is reported through
  * `onLookupFailure` and yields no finding for that endpoint — never a
@@ -55,9 +43,7 @@
 
 import {
   allowListCovers,
-  findFileOnDefaultBranch,
   needsPaidSecretProtection,
-  SECURITY_POLICY_PATHS,
 } from "./repo_settings_harden.ts";
 import type {
   GhCommandFn,
@@ -121,11 +107,6 @@ export const PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK =
 /** Why it was skipped — GitHub offers it on public repositories only. */
 export const PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON =
   "private repository — GitHub offers it on public repositories only";
-/** The security-policy lookup's `what` label, for both failure and skip (Issue #3269). */
-export const SECURITY_POLICY_CHECK = "security policy (SECURITY.md)";
-/** Why the security-policy check is skipped — it covers public repositories only. */
-export const SECURITY_POLICY_SKIP_REASON =
-  "private repository — the security-policy check covers public repositories only";
 const ADMIN =
   "Repository admin action — the worker cannot change repository settings.";
 
@@ -435,55 +416,6 @@ export async function scanRepoSettings(
             `${ADMIN} Settings → Code security → enable "Private vulnerability reporting", or run ` +
             "`mod.ts repo-settings-harden --repo <owner/name> --apply` from the checkout.",
           evidence: `private-vulnerability-reporting enabled=${pvr.enabled}`,
-        });
-      }
-    }
-  }
-
-  // 6. A security policy (Issue #3269). GitHub recognises a `SECURITY.md` at
-  // the repository root, `.github/` or `docs/`, and links whichever it
-  // finds from the repository's Security tab. Read on a public repository
-  // only, behind the same visibility gate as PVR above: a private or
-  // internal repository is not read at all, and the skip travels through
-  // `onCheckSkipped` with `actionable: false` — nobody can act on a check
-  // that does not apply there. When `repoInfo` itself was unreadable the
-  // visibility is unknown, its own failure is already reported, and the
-  // security policy is not read either.
-  if (repoInfo) {
-    if (needsPaidSecretProtection(repoInfo.visibility, repoInfo.private)) {
-      options.onCheckSkipped?.(
-        SECURITY_POLICY_CHECK,
-        SECURITY_POLICY_SKIP_REASON,
-        false,
-      );
-    } else {
-      const policy = await findFileOnDefaultBranch(
-        repo,
-        ghCommandFn,
-        SECURITY_POLICY_PATHS,
-      );
-      if (policy.state === "error") {
-        options.onLookupFailure?.(SECURITY_POLICY_CHECK, policy.message);
-      } else if (policy.state === "absent") {
-        add({
-          findingId: "BP-REPO-SECURITY-POLICY-MISSING",
-          severity: "low",
-          title:
-            "🟡 No security policy — the public repository has no SECURITY.md telling a reporter how to disclose a vulnerability",
-          file: FILE,
-          lines: 0,
-          whyItMatters:
-            "A SECURITY.md (at the root, .github/ or docs/) is the repository's security policy: GitHub links it from the " +
-            "repository's Security tab. Without one, someone who finds a vulnerability has no stated route to report it " +
-            "privately and may open a public issue, disclosing the flaw before a fix exists (Issue #3269).",
-          suggestedFix:
-            "Add a SECURITY.md at the repository root (or .github/ or docs/) through a normal pull request. Say how to " +
-            "report a vulnerability privately — for example GitHub private vulnerability reporting, under the Security " +
-            "tab → Report a vulnerability — and which versions receive security fixes. Merging that pull request " +
-            "resolves this finding; no repository setting changes.",
-          evidence: `no security policy on the default branch at ${
-            SECURITY_POLICY_PATHS.join(", ")
-          }`,
         });
       }
     }

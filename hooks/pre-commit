@@ -7,10 +7,17 @@
 # This hook blocks commits containing:
 # - .config*.json files (configuration files with secrets)
 # - *.secret.json files (explicitly marked secret files)
-# - private key material and credential files (Issue #3660):
-#   *.pem, *.key, *.p12, *.pfx, id_rsa[.*], credentials.json,
-#   service-account*.json
+# - private key material and credential files (Issue #3660, #3336):
+#   *.pem, *.key, *.p12, *.pfx,
+#   id_rsa, id_dsa, id_ecdsa, id_ed25519, id_ecdsa_sk, id_ed25519_sk [.*],
+#   credentials.json, service-account*.json
 # - anything under a .secrets/ directory, at any depth (Issue #3957)
+# - nested credential-store paths, at any depth (Issue #3336):
+#   .aws/, .ssh/, .gnupg/, .netrc
+#
+# Staged paths are read NUL-separated (`git diff --cached --name-only -z`)
+# so a path git would otherwise C-quote (a non-ASCII byte, a quote or a
+# backslash) is checked as written, not as its quoted form (Issue #3370).
 #
 # To bypass this hook in exceptional circumstances, use:
 #   git commit --no-verify
@@ -20,11 +27,17 @@
 
 set -euo pipefail
 
-# Get list of staged files
-staged_files=$(git diff --cached --name-only 2>/dev/null || echo "")
+# List staged paths NUL-separated (-z) so git never C-quotes them: a quoted
+# path ("caf\303\251/id_rsa") would slip past every check below (Issue #3370).
+staged_list=$(mktemp)
+trap 'rm -f "$staged_list"' EXIT
+if ! git diff --cached --name-only -z > "$staged_list"; then
+    echo "ERROR: pre-commit hook could not list staged files; refusing to commit." >&2
+    exit 1
+fi
 
 # Exit early if no files are staged
-if [[ -z "$staged_files" ]]; then
+if [[ ! -s "$staged_list" ]]; then
     exit 0
 fi
 
@@ -33,7 +46,7 @@ fi
 # Pattern 2: *.secret.json (any file explicitly marked as secret)
 blocked_files=""
 
-while IFS= read -r file; do
+while IFS= read -r -d '' file; do
     # Check for .config*.json pattern (file basename starts with .config and ends with .json)
     basename_file=$(basename "$file")
     if [[ "$basename_file" =~ ^\.config.*\.json$ ]]; then
@@ -44,9 +57,11 @@ while IFS= read -r file; do
         blocked_files="${blocked_files}${file}"$'\n'
     fi
     # Private key material and credential files (Issue #3660) — these are
-    # not hidden files, so .gitignore's `.*` rule never covered them.
+    # not hidden files, so .gitignore's `.*` rule never covered them. This
+    # also covers the other OpenSSH default key names, not just id_rsa
+    # (Issue #3336).
     if [[ "$basename_file" =~ ^.+\.(pem|key|p12|pfx)$ ]] \
-        || [[ "$basename_file" =~ ^id_rsa(\..*)?$ ]] \
+        || [[ "$basename_file" =~ ^id_(rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)(\..*)?$ ]] \
         || [[ "$basename_file" == "credentials.json" ]] \
         || [[ "$basename_file" =~ ^service-account.*\.json$ ]]; then
         blocked_files="${blocked_files}${file}"$'\n'
@@ -58,7 +73,13 @@ while IFS= read -r file; do
     if [[ "$file" == .secrets/* ]] || [[ "$file" == */.secrets/* ]]; then
         blocked_files="${blocked_files}${file}"$'\n'
     fi
-done <<< "$staged_files"
+    # Nested credential-store directories/files (Issue #3336), matched as a
+    # whole path segment so a look-alike (e.g. src/aws/client.ts, deploy/.sshrc)
+    # is not caught — mirrors FORBIDDEN_STAGED_PATTERNS in pre_commit_safety.ts.
+    if [[ "$file" =~ (^|/)\.(aws|ssh|gnupg|netrc)(/|$) ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+done < "$staged_list"
 
 # If any blocked files were found, reject the commit
 if [[ -n "$blocked_files" ]]; then

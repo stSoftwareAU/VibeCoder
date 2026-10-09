@@ -3,8 +3,8 @@
  * behind or conflicting (once per head), arm auto-merge once approved.
  */
 import { assertEquals } from "@std/assert";
-import { dependabotAction } from "../../../.claude/skills/review-fleet-prs/dependabot.ts";
-import type { SearchPr } from "../../../.claude/skills/review-fleet-prs/gate.ts";
+import { dependabotAction } from "../../../.claude/skills/review-fleet-prs/scripts/dependabot.ts";
+import type { SearchPr } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 
 const pr = (over: Partial<SearchPr> = {}): SearchPr => ({
   number: 30,

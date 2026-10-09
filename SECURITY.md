@@ -4,26 +4,26 @@ This document describes the security model, threat landscape, and best practices
 
 ## 📋 Table of Contents
 
-- [Threat Model](#-threat-model)
-- [Security Architecture](#security-architecture)
-  - [Bounded outbound fetches — every fetch has a timeout and a size cap](#-bounded-outbound-fetches--every-fetch-has-a-timeout-and-a-size-cap)
+- [Threat Model](#%EF%B8%8F-threat-model)
+- [Security Architecture](#%EF%B8%8F-security-architecture)
+  - [Bounded outbound fetches — every fetch has a timeout and a size cap](#%EF%B8%8F-bounded-outbound-fetches--every-fetch-has-a-timeout-and-a-size-cap)
   - [Guarded outbound fetches — where the call is allowed to go](#-guarded-outbound-fetches--where-the-call-is-allowed-to-go)
   - [Release-age quarantine — dependencies and host toolchains](#-release-age-quarantine--dependencies-and-host-toolchains)
   - [Dependency audit — fail-closed on an unreachable advisory service](#-dependency-audit--fail-closed-on-an-unreachable-advisory-service)
 - [Secret Redaction — Every Outbound Sink](#-secret-redaction--every-outbound-sink)
-- [Configuration Security](#configuration-security)
-- [Token Security](#token-security)
-- [Deployment Security](#deployment-security)
-- [Security Checklist](#security-checklist)
+- [Configuration Security](#%EF%B8%8F-configuration-security)
+- [Token Security](#-token-security)
+- [Deployment Security](#-deployment-security)
+- [Security Checklist](#-security-checklist)
 - [Public Repository Controls](#-public-repository-controls)
-- [Public Repository Hardening](#public-repository-hardening)
-- [Known Limitations](#known-limitations)
-  - [For managers: public code vs your deployment](#for-managers-public-code-vs-your-deployment)
-  - [Accepted residual risks](#accepted-residual-risks)
-- [Responsible Disclosure Policy](#responsible-disclosure-policy)
-- [Upstream Advisory Triage](#upstream-advisory-triage)
+- [Public Repository Hardening](#-public-repository-hardening)
+- [Known Limitations](#%EF%B8%8F-known-limitations)
+  - [For managers: public code vs your deployment](#-for-managers-public-code-vs-your-deployment)
+  - [Accepted residual risks](#-accepted-residual-risks)
+- [Responsible Disclosure Policy](#-responsible-disclosure-policy)
+- [Upstream Advisory Triage](#-upstream-advisory-triage)
   - [Emergency dependency override](#emergency-dependency-override)
-- [Known upstream advisories](#known-upstream-advisories)
+- [Known upstream advisories](#-known-upstream-advisories)
 
 ## ⚠️ Threat Model
 
@@ -678,10 +678,17 @@ VibeCoder implements defence-in-depth to prevent accidental commits of configura
 - `.config*.json` - Any config variant (e.g., `.config-backup.json`, `.config.local.json`)
 - `*.secret.json` - Files explicitly marked as containing secrets
 - `.secrets/` - Directory for sensitive files
-- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*` - Private key material
+- `.aws/`, `.ssh/`, `.gnupg/`, `.netrc` - Credential store directories/files,
+  refused at any depth (e.g. `deploy/.ssh/`), not only at the repo root
+  (Issue #3336)
+- `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`,
+  `id_dsa.*`, `id_ecdsa`, `id_ecdsa.*`, `id_ed25519`, `id_ed25519.*`,
+  `id_ecdsa_sk`, `id_ecdsa_sk.*`, `id_ed25519_sk`, `id_ed25519_sk.*` - Private
+  key material, refused at any depth (Issue #3336)
 - `credentials.json`, `service-account*.json` - Credential files
 
-The key and credential patterns are not hidden files, so the blanket `.*`
+The `*.pem`/`*.key`/`*.p12`/`*.pfx`/`id_rsa`/`credentials.json`/
+`service-account*.json` patterns are not hidden files, so the blanket `.*`
 rule never covered them. They matter here because the worker reads a GitHub
 App private key from disk (`GITHUB_APP_PRIVATE_KEY_PATH`), and a `.pem` parked
 beside the config would otherwise be staged by `git add -A`. A repo that
@@ -694,7 +701,7 @@ before the pre-commit gate** (Issue #1661), with a warning naming each path, so
 they never reach the gate and never widen its allowlist.
 
 The worker's own staged-path gate (`assertSafeToCommit()`, Issue #1758)
-exempts two other cases. The first is **a path a merge in progress brings in
+exempts three other cases. The first is **a path a merge in progress brings in
 unchanged** (Issue #2737). During a merge the index holds every path the
 merged-in branch changed, so a hidden file that branch already tracks (for
 example `.claude/skills/…/SKILL.md`) used to refuse the whole
@@ -718,6 +725,40 @@ and a deletion are all still refused. If `origin/HEAD` is unset, names a ref
 outside `refs/remotes/origin/`, or names a ref that cannot be read, nothing is
 exempt on its account (fail closed).
 
+It also exempts **a hidden path the target repository's own tracked
+`.gitignore` re-allows** (Issue #3296). A staged hidden path outside the
+five-entry `ALLOWED_HIDDEN_PATHS` allowlist is accepted only when
+`git check-ignore -v -n --no-index` finds, for that path or one of its
+ancestor directories (the nearest decision wins), an explicit `!`-negation
+rule whose *source* is the repository's own root `.gitignore` itself — not a
+nested or untracked `.gitignore`. Exit 1 from a plain `check-ignore -q` alone
+is not enough: it means only "no rule matches", which is equally true of a
+repository whose `.gitignore` never governs the path at all (PR #3308 review),
+so the gate judges the deciding rule, not just the exit code. This is
+conditional on the root `.gitignore` itself: it must be tracked at `HEAD`,
+unmodified in both the index (`git diff --cached`) and the working tree
+(`git diff`, which `check-ignore --no-index` reads directly), so a commit
+can never opt itself in by editing `.gitignore` in the same change, whether
+staged or only on disk — **and** byte-identical to `.gitignore` on the local
+`origin/<default>` ref, never fetched. `.gitignore` is itself on
+`ALLOWED_HIDDEN_PATHS`, so without this last check a re-allow committed
+earlier on the same feature branch — never published on the repository's
+own default branch — could still exempt a later commit on that branch
+(PR #3308 review). `FORBIDDEN_STAGED_PATTERNS` (`.env*`, `.config*.json`,
+`*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`, `.netrc`, `*.pem`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa*`, `credentials.json`,
+`service-account*.json`, and the rest) are checked first and are **never**
+exempt under this route, even when the repository's own `.gitignore`
+re-allows them. If `git check-ignore` cannot be run, no rule anywhere in the
+path's ancestor chain decides it at all, `origin/HEAD` cannot be resolved, or
+`.gitignore` differs between `HEAD` and that ref, nothing is exempt on this
+account (fail closed), and each exemption is logged at INFO naming the path.
+This closes the gap where this repository's own `.gitignore` re-allows
+`.claude/skills/` and `.claude/agents/` (Issues #2675, #2976) yet the gate
+refused edits to those tracked files (Issue #3293, failed twice) because they
+sat outside the fleet-wide `ALLOWED_HIDDEN_PATHS` allowlist, which is not
+widened by this exemption.
+
 The same rule covers a milestone merge commit the worker adopts rather than
 writes (`assertAdoptedMergeIsSafe()`, Issues #1964 and #2739). Each refused
 path the commit changes against the pre-merge commit is exempt only when its
@@ -734,7 +775,7 @@ default branch's tip cannot be read nothing is exempt (fail closed).
 
 2. **`.git/info/exclude`**: A local-only exclusion file that provides the same protection as `.gitignore` but cannot be modified by repository updates. This protects against scenarios where `.gitignore` is accidentally modified.
 
-3. **Pre-commit hook**: The final safety net. Even if someone force-adds a config file with `git add -f`, the pre-commit hook will reject the commit with a clear error message. This can only be bypassed with `git commit --no-verify`, which requires explicit intent.
+3. **Pre-commit hook**: The final safety net. Even if someone force-adds a config file with `git add -f`, the pre-commit hook will reject the commit with a clear error message. This can only be bypassed with `git commit --no-verify`, which requires explicit intent. It reads staged paths NUL-separated (`git diff --cached --name-only -z`), so a path git would quote — a non-ASCII byte, a quote or a backslash — is checked as written, and it rejects the commit if it cannot list the staged files (Issue #3370).
 
 **Installation:**
 
@@ -754,7 +795,7 @@ exit code (126). The only escape hatch is deliberate: set
 **Configuration structure:** See the [Configuration Reference](docs/CONFIGURATION.md) for the full `.config.json` file format and field descriptions.
 
 **Security-relevant fields:**
-- `authorized_commenters`: The **known** bot logins whose input (test results, code reviews, PR comments) the worker acts on without a thumbs-up reaction. Never a grant of the right to direct work. Keep this list minimal (see [Bot Account Security](#bot-account-security-issue-36))
+- `authorized_commenters`: The **known** bot logins whose input (test results, code reviews, PR comments) the worker acts on without a thumbs-up reaction. Never a grant of the right to direct work. Keep this list minimal (see [Bot Account Security](#-bot-account-security-issue-36))
 - `work_on_label`: Controls the label that allows work on issues not created by allowed authors. Verified via GitHub timeline API
 
 ### 🔐 Environment Variables
@@ -1211,7 +1252,7 @@ Use this checklist when deploying the worker:
 The design-level model for this surface — who can write to a public issue,
 comment, PR review or label, what each capability buys an attacker, and which
 attack path it opens — lives in
-[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md#-attacker-capabilities-per-surface).
+[docs/THREAT-MODEL.md](docs/THREAT-MODEL.md#%EF%B8%8F-attacker-capabilities-per-surface).
 
 This section is the **implementation reference** for the controls that answer
 those paths: what each one does today, which module owns it, and the failure
@@ -1870,7 +1911,7 @@ Use this checklist when deploying the Vibe Coder against **public repositories**
   - `[UNTRUSTED_LABEL_CHANGE]` — indicates attempted label manipulation
   - `[WRITE_REPO_BLOCKED]` — a GitHub write to a repo not on the run's allowlist was refused (possible data-exfiltration attempt via a cross-repo write)
   - `[AUTH_FAILURE]` — indicates unauthorised access attempts
-- [ ] **Configure a separate security log file**: Set `SECURITY_LOG_FILE` to route security events to a dedicated log for easier monitoring (see [Security Audit Logging](#security-audit-logging-issue-32))
+- [ ] **Configure a separate security log file**: Set `SECURITY_LOG_FILE` to route security events to a dedicated log for easier monitoring (see [Security Audit Logging](#-security-audit-logging-issue-32))
 - [ ] **Review approved issues for unexpected modifications**: Periodically check that `work-on`-labelled issues have not been modified since approval, especially for long-lived issues
 - [ ] **Audit comment volume**: Watch for issues accumulating an unusual number of comments from unknown users
 
@@ -2000,7 +2041,7 @@ The GitHub token needs write access to:
 
 The residual risks themselves — what remains open, and why each is accepted
 rather than closed — are enumerated in
-[docs/THREAT-MODEL.md → Residual risks](docs/THREAT-MODEL.md#-residual-risks).
+[docs/THREAT-MODEL.md → Residual risks](docs/THREAT-MODEL.md#%EF%B8%8F-residual-risks).
 What follows is what an **operator** does about them:
 
 | Residual risk | What you do about it |
@@ -2126,25 +2167,25 @@ The following security issues have been addressed. See the linked issues and SEC
 
 | Issue | Description | Resolution |
 |-------|-------------|------------|
-| [#27](https://github.com/stSoftwareAU/VibeCoder/issues/27) | Fix jq filter injection vulnerability (CRITICAL) | Safe `--arg` parameter passing in all jq filters. See [Safe Parameter Handling](#defence-in-depth) |
+| [#27](https://github.com/stSoftwareAU/VibeCoder/issues/27) | Fix jq filter injection vulnerability (CRITICAL) | Safe `--arg` parameter passing in all jq filters. See [Safe Parameter Handling](#%EF%B8%8F-defence-in-depth) |
 | [#29](https://github.com/stSoftwareAU/VibeCoder/issues/29) | Add security documentation and threat model | This document (SECURITY.md) plus the design-level [Threat Model](docs/THREAT-MODEL.md) |
-| [#30](https://github.com/stSoftwareAU/VibeCoder/issues/30) | Add input validation for prompt injection mitigation | Suspicious pattern detection, section delimiters, length limits. See [Input Validation](#input-validation-issue-30) |
-| [#31](https://github.com/stSoftwareAU/VibeCoder/issues/31) | Document minimum GitHub token scopes | Optional scope validation on startup. See [Token Security](#token-security) |
-| [#32](https://github.com/stSoftwareAU/VibeCoder/issues/32) | Add audit logging for security events | Structured `[SECURITY]` prefix logging. See [Security Audit Logging](#security-audit-logging-issue-32) |
-| [#33](https://github.com/stSoftwareAU/VibeCoder/issues/33) | Add configuration validation on startup | Required field, format, and safety checks. See [Configuration Validation](#configuration-validation-issue-33) |
-| [#34](https://github.com/stSoftwareAU/VibeCoder/issues/34) | Prevent accidental commit of .config.json | Multi-layered protection (gitignore, exclude, pre-commit hook). See [Configuration Security](#configuration-security) |
-| [#35](https://github.com/stSoftwareAU/VibeCoder/issues/35) | Add repository allowlist validation | `is_repo_allowed()` and `validate_git_url()` functions. See [Repository Allowlist Validation](#repository-allowlist-validation-issue-35) |
-| [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) | Review and harden authorised commenters default list | Bot accounts are opt-in; documented security considerations. See [Bot Account Security](#bot-account-security-issue-36) |
+| [#30](https://github.com/stSoftwareAU/VibeCoder/issues/30) | Add input validation for prompt injection mitigation | Suspicious pattern detection, section delimiters, length limits. See [Input Validation](#-input-validation-issue-30) |
+| [#31](https://github.com/stSoftwareAU/VibeCoder/issues/31) | Document minimum GitHub token scopes | Optional scope validation on startup. See [Token Security](#-token-security) |
+| [#32](https://github.com/stSoftwareAU/VibeCoder/issues/32) | Add audit logging for security events | Structured `[SECURITY]` prefix logging. See [Security Audit Logging](#-security-audit-logging-issue-32) |
+| [#33](https://github.com/stSoftwareAU/VibeCoder/issues/33) | Add configuration validation on startup | Required field, format, and safety checks. See [Configuration Validation](#-configuration-validation-issue-33) |
+| [#34](https://github.com/stSoftwareAU/VibeCoder/issues/34) | Prevent accidental commit of .config.json | Multi-layered protection (gitignore, exclude, pre-commit hook). See [Configuration Security](#%EF%B8%8F-configuration-security) |
+| [#35](https://github.com/stSoftwareAU/VibeCoder/issues/35) | Add repository allowlist validation | `is_repo_allowed()` and `validate_git_url()` functions. See [Repository Allowlist Validation](#%EF%B8%8F-repository-allowlist-validation-issue-35) |
+| [#36](https://github.com/stSoftwareAU/VibeCoder/issues/36) | Review and harden authorised commenters default list | Bot accounts are opt-in; documented security considerations. See [Bot Account Security](#-bot-account-security-issue-36) |
 | | Include secure coding principles in default prompts | Secure coding guidelines embedded in coding prompts |
 | | Replace `eval` with safe variable assignment in config_loader.sh | Eliminated `eval` usage to prevent code injection |
 | | Replace raw `mktemp` with `safe_mktemp` in scripts | Consistent use of secure temporary file creation |
 | | Add unit tests for security.sh prompt injection defence | Dedicated tests for suspicious pattern detection |
 | | Defence in depth for public repository comments | Parent issue for public comment threat mitigations. See [Public Repository Controls](#-public-repository-controls) |
-| | Filter issue comments by author trust level | Trust-level annotation of comments in Claude prompts. See [Trust-Level Comment Filtering](#1-trust-level-comment-filtering-1340) |
-| | Detect issue body/title modification after approval | Content-hash TOCTOU protection for `work-on` labelled issues. See [TOCTOU Protection](#2-toctou-protection-for-issue-content-1341) |
-| | Rate limiting and size caps for untrusted comments | Comment budgets, per-comment limits, and flood detection. See [Comment Rate Limiting](#3-comment-rate-limiting-and-size-caps-1342) |
-| | Strengthen prompt delimiters against injection | Randomised boundaries, per-comment delimiters, sanitisation. See [Delimiter Hardening](#4-delimiter-hardening-1343) |
-| | Label manipulation detection for approved issues | Timeline API verification for operational labels. See [Label Manipulation Detection](#5-label-manipulation-detection-1344) |
+| | Filter issue comments by author trust level | Trust-level annotation of comments in Claude prompts. See [Trust-Level Comment Filtering](#1-trust-level-comment-filtering) |
+| | Detect issue body/title modification after approval | Content-hash TOCTOU protection for `work-on` labelled issues. See [TOCTOU Protection](#2-toctou-protection-for-issue-content) |
+| | Rate limiting and size caps for untrusted comments | Comment budgets, per-comment limits, and flood detection. See [Comment Rate Limiting](#3-comment-rate-limiting-and-size-caps) |
+| | Strengthen prompt delimiters against injection | Randomised boundaries, per-comment delimiters, sanitisation. See [Delimiter Hardening](#4-delimiter-hardening) |
+| | Label manipulation detection for approved issues | Timeline API verification for operational labels. See [Label Manipulation Detection](#5-label-manipulation-detection) |
 
 ## 🔗 Related Security Issues
 

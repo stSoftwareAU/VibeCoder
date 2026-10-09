@@ -20,7 +20,6 @@ import {
   CODE_SECURITY_SKIP_NOTE,
   COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
-  findFileOnDefaultBranch,
   hardenRepo,
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
@@ -31,7 +30,6 @@ import {
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
   SECRET_PROTECTION_SKIP_NOTE,
-  SECURITY_POLICY_PATHS,
 } from "../lib/repo_settings_harden.ts";
 
 const OPEN = {
@@ -1212,86 +1210,6 @@ Deno.test("findCodeownersOnDefaultBranch - a non-404 error is an error, never ab
 Deno.test("findCodeownersOnDefaultBranch - an invalid repo is an error without a call (Issue #2626)", async () => {
   const { gh, reads } = makeGh({});
   const result = await findCodeownersOnDefaultBranch("not a repo", gh);
-  assertEquals(result.state, "error");
-  assertEquals(reads, []);
-});
-
-for (const path of SECURITY_POLICY_PATHS) {
-  Deno.test(`findFileOnDefaultBranch - present at ${path} (Issue #3269)`, async () => {
-    const repo = "harden-test/security-policy";
-    const { gh } = makeGh({
-      [`repos/${repo}/contents/${path}`]: { path, type: "file" },
-    });
-    assertEquals(
-      await findFileOnDefaultBranch(repo, gh, SECURITY_POLICY_PATHS),
-      { state: "present", path },
-    );
-  });
-}
-
-Deno.test("findFileOnDefaultBranch - absent when every SECURITY_POLICY_PATHS location is a 404 (Issue #3269)", async () => {
-  const repo = "harden-test/security-policy";
-  const { gh, reads } = makeGh({});
-  assertEquals(
-    await findFileOnDefaultBranch(repo, gh, SECURITY_POLICY_PATHS),
-    { state: "absent" },
-  );
-  assertEquals(reads, [
-    `repos/${repo}/contents/SECURITY.md`,
-    `repos/${repo}/contents/.github/SECURITY.md`,
-    `repos/${repo}/contents/docs/SECURITY.md`,
-  ]);
-});
-
-Deno.test("findFileOnDefaultBranch - a non-404 error on the first path is an error naming it, and later paths are not read (Issue #3269)", async () => {
-  const repo = "harden-test/security-policy";
-  const { gh, reads } = makeGh({
-    [`repos/${repo}/contents/SECURITY.md`]: SERVER_ERROR(),
-  });
-  const result = await findFileOnDefaultBranch(repo, gh, SECURITY_POLICY_PATHS);
-  assertEquals(result.state, "error");
-  assert(
-    result.state === "error" && result.message.includes("SECURITY.md") &&
-      result.message.includes("HTTP 500"),
-    JSON.stringify(result),
-  );
-  assertEquals(reads, [`repos/${repo}/contents/SECURITY.md`]);
-});
-
-Deno.test("findFileOnDefaultBranch - a 404 then a non-404 error names the second path, not absent (Issue #3269)", async () => {
-  const repo = "harden-test/security-policy";
-  const { gh, reads } = makeGh({
-    [`repos/${repo}/contents/.github/SECURITY.md`]: SERVER_ERROR(),
-  });
-  const result = await findFileOnDefaultBranch(repo, gh, SECURITY_POLICY_PATHS);
-  assertEquals(result.state, "error");
-  assert(
-    result.state === "error" &&
-      result.message.includes(".github/SECURITY.md") &&
-      result.message.includes("HTTP 500"),
-    JSON.stringify(result),
-  );
-  assertEquals(reads, [
-    `repos/${repo}/contents/SECURITY.md`,
-    `repos/${repo}/contents/.github/SECURITY.md`,
-  ]);
-});
-
-Deno.test("findFileOnDefaultBranch - an empty paths list is an error without a call (Issue #3269)", async () => {
-  const repo = "harden-test/security-policy";
-  const { gh, reads } = makeGh({});
-  const result = await findFileOnDefaultBranch(repo, gh, []);
-  assertEquals(result.state, "error");
-  assertEquals(reads, []);
-});
-
-Deno.test("findFileOnDefaultBranch - an invalid repo is an error without a call (Issue #3269)", async () => {
-  const { gh, reads } = makeGh({});
-  const result = await findFileOnDefaultBranch(
-    "not a repo",
-    gh,
-    SECURITY_POLICY_PATHS,
-  );
   assertEquals(result.state, "error");
   assertEquals(reads, []);
 });

@@ -14,6 +14,40 @@ the major and are minted from
 automatic increment; one landed on the automatic patch because the floor was
 not moved ahead of it, and it is recorded under the version it actually took.
 
+## 1.10.0 — Haiku 5.5 becomes the `haiku` alias's served model
+
+**A default changed again. From this release `--model haiku` actually serves
+Haiku 5.5, not Haiku 4.5 — any `summarise`-shaped input between about 160k and
+950k tokens that used to escalate to `sonnet` now stays on `haiku`.**
+
+### What changed
+
+| Change | Issue |
+| ------ | ----- |
+| The container pins Claude Code **2.1.293** (was 2.1.281) and `software_min_versions.claude` defaults to **2.1.293** (was 2.1.280): 2.1.293 is the first release whose `haiku` alias serves `claude-haiku-5-5`. 2.1.281 still resolved `haiku` to `claude-haiku-4-5` (200k window), so a `summarise` input the 1M-windowed `MODEL_CONTEXT_WINDOWS.haiku` entry (#3400) let through was actually overflowing the 200k window the CLI really served | PR #3432 review, #3400 |
+
+### Why a minor
+
+A host whose `.config.json` did not change is served a different model
+generation on every `haiku`-routed phase after the upgrade, and the
+large-input escalation guard (Issue #2393) behaves differently for the same
+input size — both operator-visible.
+
+### Migration
+
+**None to keep the new default.** Each host builds the new image (Claude Code
+2.1.293) on its next launch, because the image tag is the hash of the
+container definition. A host that runs the CLI outside the container is
+checked against the new 2.1.293 floor on its next update pass — see
+[Minimum-Version Floor](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor).
+
+### Rollback
+
+There is no per-phase alias to pin `haiku` back to Haiku 4.5 — set
+`CLAUDE_MODEL_SUMMARISE=claude-haiku-4-5` (and the matching variable for any
+other `haiku`-routed phase) to keep the 200k window and its escalation
+coverage on a specific phase.
+
 ## 1.9.0 — Opus 5.5 replaces Fable as the top model tier
 
 **A default changed. Read it if you rely on Fable for planning: from this
@@ -54,7 +88,7 @@ point at.
 2.1.281) on its next launch, because the image tag is the hash of the container
 definition. A host that runs the CLI outside the container is checked against
 the new 2.1.280 floor on its next update pass — see
-[Minimum-Version Floor](CONFIGURATION.md#-minimum-version-floor).
+[Minimum-Version Floor](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor).
 
 ### Rollback
 

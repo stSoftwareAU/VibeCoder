@@ -205,10 +205,14 @@ progress and stopped on conflicts. Its contract is absolute:
   `docs/archive/pr-summaries/pr-summary-*.md` so it claims only what the merged
   diff still carries, stages it with the resolutions, and names the refresh in
   `.pr_response_message` (Issue #3015). After a verified push to the PR's own
-  head, when that push changed `pr-summary-<N>.md`, the worker rebuilds the
-  PR description from the summary. Fix branches are skipped, and only a
-  worker-authored PR is edited. A failed sync is logged once at warning and
-  does not fail the run (Issue #3089).
+  head, the worker rebuilds the PR description from `pr-summary-<N>.md` when
+  the summary at the head differs from the SHA-256 digest recorded in the
+  body's hidden marker — whichever push changed it, this run's or an earlier
+  one. A body raised before the digest marker existed keeps the older rule:
+  rebuilt only when this run's own push changed the summary file. Fix
+  branches for a gated milestone head are skipped, and only a worker-authored
+  PR is edited. A failed sync is logged once at warning and does not fail the
+  run (Issues #3089, #3315).
 - **The agent runs no quality gate.** CI on the pushed merge is the gate on a
   PR — a conflicting PR has had none at all, so that run is usually the first
   time its tests meet current base code — and the worker's type-check gate,
@@ -627,7 +631,7 @@ scan reads that marker back and climbs rather than repeating it.
 - **Rung 2 — abandon and restart** (Issue #2280). Reached when GitHub still
   says `CONFLICTING` at the nudged head, or at a head a legacy merge/rebase
   marker names. It is the same rung a spent attempt budget uses
-  ([below](#-abandon-and-restart-before-a-human-is-asked)), called with this PR
+  ([below](#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked)), called with this PR
   and no thread — it fetches its own. Reached with fewer than
   `CONFLICT_RESOLUTION_BUDGET` (3) failed attempts recorded on the PR since its
   last resolved marker, the rung **declines** as `attempts-not-spent` rather
@@ -1015,7 +1019,7 @@ Six details carry the weight:
   lease. There is no cap on how many times the issue has already been redone
   (Issue #3033) — the second trip abandons and redoes it exactly as any other
   exhaustion does,
-  [above](#-abandon-and-restart-before-a-human-is-asked).
+  [above](#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked).
 
 ### 🤫 Why #116 went silent
 
@@ -1256,7 +1260,7 @@ Three bounds keep the drain from becoming a monopoly:
 
 | Bound | Value | Why |
 | --- | --- | --- |
-| Cycle deadline | 20 minutes of agent budget must remain (after a four-minute allowance for the rest of the attempt), and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
+| Cycle deadline | 20 minutes of agent budget must remain (after a four-minute allowance for the rest of the attempt), and the agent is granted no more time than is left | Each attempt runs an agent. One started without room is abandoned at the deadline, and an abandoned attempt is a *disrupted* attempt on the PR's record — three of those escalate it to a human. See [A resolution is never started on time the cycle does not have](#%EF%B8%8F-a-resolution-is-never-started-on-time-the-cycle-does-not-have). |
 | Per-cycle cap | 5 PRs | One repository's backlog cannot take the whole run. |
 | Exclusion set | this cycle's PRs | A PR already taken — or deferred because an issue slot holds its repository — is not re-selected, so the drain cannot spin on it. |
 

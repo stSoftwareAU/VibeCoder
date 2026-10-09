@@ -61,6 +61,7 @@ import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
 // claimable" verdict from the audit's classifier rather than keeping a
 // second, laxer definition of the same thing.
 import { classifyIssues } from "./idle_detect_diagnostics.ts";
+import { parseSubIssuesSummary } from "./issue_query.ts";
 import type { ClosedPR, OpenPR } from "./issue_query.ts";
 
 /**
@@ -155,6 +156,8 @@ interface ClaimableIssueRow {
   milestone?: { title?: string } | null;
   /** Carries the dependency references the scan's own gate reads. */
   body?: string;
+  /** Issue #3314: native sub-issue counts, validated by {@link parseSubIssuesSummary}. */
+  subIssuesSummary?: unknown;
 }
 
 /** True if `row` carries at least one blocked label (Issue #2440). */
@@ -484,9 +487,10 @@ async function repoHasStartableWork(
     "--state",
     "open",
     "--json",
-    // `body` carries the dependency references the scan's gate reads — one
-    // extra field on a call already being made, no extra request.
-    "number,title,labels,assignees,milestone,body",
+    // `body` carries the dependency references the scan's gate reads, and
+    // `subIssuesSummary` the native sub-issue counts (Issue #3314) —
+    // both extra fields on a call already being made, no extra request.
+    "number,title,labels,assignees,milestone,body,subIssuesSummary",
     "--limit",
     String(LABEL_FETCH_CAP),
   ]);
@@ -512,6 +516,7 @@ async function repoHasStartableWork(
     assignees: (row.assignees ?? []).map((a) => a?.login ?? ""),
     milestone: row.milestone?.title ?? "",
     body: typeof row.body === "string" ? row.body : "",
+    subIssuesSummary: parseSubIssuesSummary(row.subIssuesSummary),
   }));
 
   if (issues.length >= LABEL_FETCH_CAP) {

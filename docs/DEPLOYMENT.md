@@ -9,24 +9,24 @@ runs itself and is steered entirely through GitHub. See
 
 ## 📋 Table of Contents
 
-- [Requirements](#requirements)
+- [Requirements](#-requirements)
 - [Run mode: container only](#-run-mode-container-only)
 - [Verifying the Linux/podman path](#-verifying-the-linuxpodman-path)
-- [Upgrading an existing host — the hard cutover](#upgrading-an-existing-host--the-hard-cutover)
+- [Upgrading an existing host — the hard cutover](#-upgrading-an-existing-host--the-hard-cutover)
 - [Keeping a host up to date: dynamic or frozen](#-keeping-a-host-up-to-date-dynamic-or-frozen)
-- [Installation](#installation)
-- [Initial Setup](#initial-setup)
+- [Installation](#-installation)
+- [Initial Setup](#-initial-setup)
   - [Interactive install offer](#interactive-install-offer)
-- [LaunchAgent Setup (macOS)](#launchagent-setup-macos)
-- [Running as a Background Service](#running-as-a-background-service)
-  - [Using cron](#recommended-using-cron-5-minute-intervals)
-  - [Using systemd (Linux)](#using-systemd-linux)
-  - [Using launchd (macOS)](#using-launchd-macos)
-  - [Using Task Scheduler (Windows)](#using-task-scheduler-windows)
+- [LaunchAgent Setup (macOS)](#-launchagent-setup-macos)
+- [Running as a Background Service](#-running-as-a-background-service)
+  - [Using cron](#-recommended-using-cron-5-minute-intervals)
+  - [Using systemd (Linux)](#-using-systemd-linux)
+  - [Using launchd (macOS)](#-using-launchd-macos)
+  - [Using Task Scheduler (Windows)](#-using-task-scheduler-windows)
 - [Changing `container_tools` forces an image rebuild](#-changing-container_tools-forces-an-image-rebuild)
-- [Logs](#logs)
-- [Screenshot Support Setup](#screenshot-support-setup)
-  - [Screenshot Upload Configuration](#screenshot-upload-configuration)
+- [Logs](#-logs)
+- [Screenshot Support Setup](#-screenshot-support-setup)
+  - [Screenshot Upload Configuration](#%EF%B8%8F-screenshot-upload-configuration)
 
 ## 📋 Requirements
 
@@ -652,7 +652,7 @@ sudo systemctl start auto-issue-worker
 
 ### 🍎 Using launchd (macOS)
 
-**Recommended:** Use `./setup.sh` to automatically configure the LaunchAgent. See [LaunchAgent Setup](#launchagent-setup-macos) above.
+**Recommended:** Use `./setup.sh` to automatically configure the LaunchAgent. See [LaunchAgent Setup](#-launchagent-setup-macos) above.
 
 **Manual setup:** Create `~/Library/LaunchAgents/com.vibe.auto-issue-worker.plist`:
 
@@ -885,7 +885,7 @@ Recoveries, backoffs, escalations, quota pauses, already-running stops and force
 | `VIBE_QUOTA_PAUSE_SLEEP_SECONDS` | Fixed re-probe interval while this host is out of quota (default: 3600) |
 | `CRASH_WEBHOOK_URL` | Optional webhook the escalation also posts to |
 | `VIBE_CONTAINER_WATCHDOG_SECONDS` | Launcher deadline before a container is reaped as wedged (default: the worker's max run duration + 600 — 10800 + 600 = **11400 s**, which is `loop.sh`'s `VIBE_RUN_MAX_SECONDS` cap plus the same 10-minute margin, so the launcher never reaps a container the supervisor would still allow to run) |
-| `VIBE_RUN_MAX_SECONDS` | The supervisor's wall-clock cap on one run (default 10800 s, `0` disables it). `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. It is the only place a still-progressing agent is killed — see [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) |
+| `VIBE_RUN_MAX_SECONDS` | The supervisor's wall-clock cap on one run (default 10800 s, `0` disables it). `loop.sh` owns the default and exports it with `VIBE_RUN_STARTED_EPOCH` so the worker stops itself first. It is the only place a still-progressing agent is killed — see [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model) |
 | `VIBE_CONTAINER_REAP_GRACE_SECONDS` | Grace after `<runtime> kill` before the reaper escalates to SIGKILL (default: 30) |
 
 ## 📝 Logs

@@ -8,11 +8,14 @@ import { assert, assertEquals, assertRejects } from "@std/assert";
 import {
   ESCALATE_AFTER,
   type EscalateDeps,
+  homeRelative,
   issueTitlePrefix,
   type PassResult,
   recordPass,
+  redactRepoRefs,
+  REPO_PLACEHOLDER,
   type RunGh,
-} from "../../../.claude/skills/review-fleet-prs/escalate.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/escalate.ts";
 
 const HOST = "worker-1";
 
@@ -256,5 +259,100 @@ Deno.test("recordPass: a corrupt state file throws with context instead of silen
       Error,
       "corrupt state file",
     );
+  });
+});
+
+// The escalation issue lands in the public VibeCoder repo, while many fleet
+// repos are private. These names are invented stand-ins for private repos.
+const PRIVATE_SLUG = "stSoftwareAU/Example-Private";
+const OTHER_OWNER_SLUG = "acme-corp/secret.app";
+
+Deno.test("redactRepoRefs: a private repo named by URL, API path, -R, --repo, slug#n or bare name#n becomes <repo>", () => {
+  const cases: [string, string][] = [
+    [
+      `fetch https://github.com/${PRIVATE_SLUG}/pull/12/files failed`,
+      `fetch ${REPO_PLACEHOLDER} failed`,
+    ],
+    [
+      `gh: Not Found (https://api.github.com/repos/${OTHER_OWNER_SLUG}/pulls)`,
+      `gh: Not Found (${REPO_PLACEHOLDER})`,
+    ],
+    [
+      `gh api repos/${OTHER_OWNER_SLUG}/pulls/3 failed`,
+      `gh api repos/${REPO_PLACEHOLDER}/pulls/3 failed`,
+    ],
+    [
+      `gh pr view 4 -R ${OTHER_OWNER_SLUG} failed`,
+      `gh pr view 4 -R ${REPO_PLACEHOLDER} failed`,
+    ],
+    [
+      `gh pr list --repo=${OTHER_OWNER_SLUG}`,
+      `gh pr list --repo=${REPO_PLACEHOLDER}`,
+    ],
+    [
+      `${OTHER_OWNER_SLUG}#77 rebase failed`,
+      `${REPO_PLACEHOLDER}#77 rebase failed`,
+    ],
+    [`reviewing ${PRIVATE_SLUG}.`, `reviewing ${REPO_PLACEHOLDER}.`],
+    [
+      `Example-Private#5 auto-merge failed`,
+      `${REPO_PLACEHOLDER}#5 auto-merge failed`,
+    ],
+  ];
+  for (const [input, expected] of cases) {
+    assertEquals(redactRepoRefs(input), expected, input);
+  }
+});
+
+Deno.test("redactRepoRefs: the public escalation repo, plain paths and prose stay as they are", () => {
+  const kept = [
+    "see stSoftwareAU/VibeCoder#3225 and https://github.com/stSoftwareAU/VibeCoder/issues/1",
+    "gh pr view 9 -R stSoftwareAU/VibeCoder failed.",
+    "VibeCoder#12 is related",
+    "could not read /var/log/review-fleet-prs/runner.log",
+    "token mint failed: 401 and/or a timeout",
+    "Issue #2892 and PR #7",
+  ];
+  for (const text of kept) assertEquals(redactRepoRefs(text), text);
+});
+
+Deno.test("homeRelative: a path under the home directory hides the account name", () => {
+  assertEquals(
+    homeRelative(
+      "/home/someone/logs/review-fleet-prs/runner.log",
+      "/home/someone/",
+    ),
+    "~/logs/review-fleet-prs/runner.log",
+  );
+  assertEquals(
+    homeRelative("/var/log/x.log", "/home/someone"),
+    "/var/log/x.log",
+  );
+  assertEquals(
+    homeRelative("/home/someone2/x", "/home/someone"),
+    "/home/someone2/x",
+  );
+  assertEquals(homeRelative("/x", undefined), "/x");
+});
+
+Deno.test("recordPass: a private repo in the error and the home directory never reach the public issue", async () => {
+  await withTempDir(async (stateDir) => {
+    const { calls, run } = fakeGh();
+    const home = stateDir.replace(/\/[^/]+$/, "");
+    const deps: EscalateDeps = { stateDir, host: HOST, runGh: run, home };
+    const bad: PassResult = {
+      ok: false,
+      error: `gate failed: gh api repos/${PRIVATE_SLUG}/pulls: HTTP 502`,
+    };
+
+    for (let i = 0; i < ESCALATE_AFTER; i++) await recordPass(bad, deps);
+
+    const create = calls.find((a) => a[0] === "issue" && a[1] === "create");
+    assert(create, "expected an issue create on the 12th failure");
+    const text = create.join(" ");
+    assert(!text.includes("Example-Private"), `private repo leaked: ${text}`);
+    assert(text.includes(`repos/${REPO_PLACEHOLDER}/pulls`), text);
+    assert(!text.includes(`Log: ${home}/`), `home directory leaked: ${text}`);
+    assert(text.includes("Log: ~/"), text);
   });
 });

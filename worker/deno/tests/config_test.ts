@@ -237,10 +237,9 @@ Deno.test("config - loadConfig defaults software_min_versions to claude floor (I
 
   await withTempConfig(testConfig, async (configPath) => {
     const config = await loadConfig(configPath);
-    // Raised from 2.1.170 by Issue #1362: the floor now pins the oldest CLI
-    // that resolves the `fable` alias to Fable 5.1 and carries its
-    // prompt-cache fixes.
-    assertEquals(config.softwareMinVersions, { claude: "2.1.280" });
+    // Raised from 2.1.280 by PR #3432 review (Issue #3400): the floor now
+    // pins the oldest CLI that resolves the `haiku` alias to Haiku 5.5.
+    assertEquals(config.softwareMinVersions, { claude: "2.1.293" });
   });
 });
 

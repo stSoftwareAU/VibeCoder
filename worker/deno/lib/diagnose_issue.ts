@@ -32,6 +32,7 @@ import {
   isDependencyBlocked,
 } from "./issue_finder_common.ts";
 import { isTimeDeferred } from "./time_deferral.ts";
+import { fetchNativeSubIssueRefs } from "./native_sub_issues.ts";
 import { runGhCommand } from "./github.ts";
 import {
   resolveFleetAuthors,
@@ -133,7 +134,10 @@ async function fetchIssueData(
  * Create an IssueFetcher from a gh command function.
  *
  * Exported so `commands/diagnose_repo.ts` reports the dependency hold from the
- * same validated reads as `diagnose_issue` (Issue #2533).
+ * same validated reads as `diagnose_issue` (Issue #2533). The sub-issue read
+ * uses the native `sub_issues` endpoint shared with the claim scan and
+ * throws on failure, rather than silently reporting no sub-issues
+ * (Issue #3329).
  */
 export function createDiagnosticIssueFetcher(
   ghCommandFn: (args: string[]) => Promise<string>,
@@ -168,22 +172,10 @@ export function createDiagnosticIssueFetcher(
         milestone: v.milestone ?? null,
       };
     },
+    // Issue #3329: the scan's native read (Issues #2470, #3321); an error
+    // propagates so the parent fails closed.
     async getSubIssues(repo: string, issueNumber: number) {
-      try {
-        const output = await ghCommandFn([
-          "api",
-          `repos/${repo}/issues/${issueNumber}`,
-        ]);
-        const parsed: unknown = JSON.parse(output);
-        const validated = validateIssueBodyJson(parsed);
-        if (!validated.ok || !validated.value.body) return [];
-        const { extractSubIssueReferences } = await import(
-          "./issue_dependencies.ts"
-        );
-        return extractSubIssueReferences(validated.value.body, repo);
-      } catch {
-        return [];
-      }
+      return await fetchNativeSubIssueRefs(repo, issueNumber, ghCommandFn);
     },
     async getIssueBody(repo: string, issueNumber: number) {
       const output = await ghCommandFn([
@@ -476,7 +468,9 @@ export async function diagnoseIssue(
         ? `Issue is ${depBlockDetail}`
         : "Issue has no unresolved dependencies",
       suggestion: depBlocked
-        ? depBlockDetail.includes("sub-issue")
+        ? blockers.some((b) => b.kind === "unreadable-children")
+          ? "Check the worker's gh access to the issue's sub-issues and re-run; the scan holds the issue until the read succeeds"
+          : depBlockDetail.includes("sub-issue")
           ? "Close the open sub-issues first, or remove the parent/child relationship"
           : "Close the blocking dependency first, or remove the dependency reference"
         : undefined,

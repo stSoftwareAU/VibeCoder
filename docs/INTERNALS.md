@@ -26,13 +26,13 @@ For the **user manual** (how to use the worker as a repo owner), see
 
 ## 📋 Table of Contents
 
-- [0. Deno module architecture](#0-deno-module-architecture)
-- [1. Worker run loop and process lifecycle](#1-worker-run-loop-and-process-lifecycle)
-- [2. Issue selection and claiming](#2-issue-selection-and-claiming)
-- [3. PR monitoring](#3-pr-monitoring)
-- [4. Milestone and dependency handling](#4-milestone-and-dependency-handling)
-- [5. Question answering](#5-question-answering)
-- [6. Recent features](#6-recent-features)
+- [0. Deno module architecture](#-0-deno-module-architecture)
+- [1. Worker run loop and process lifecycle](#-1-worker-run-loop-and-process-lifecycle)
+- [2. Issue selection and claiming](#-2-issue-selection-and-claiming)
+- [3. PR monitoring](#-3-pr-monitoring)
+- [4. Milestone and dependency handling](#-4-milestone-and-dependency-handling)
+- [5. Question answering](#-5-question-answering)
+- [6. Recent features](#-6-recent-features)
 
 ---
 
@@ -265,7 +265,7 @@ Deno. Both launchers follow the same steps:
    container that outlives the deadline is reaped by `container-reap` and the
    launcher exits `87`, so a wedged container VM cannot block the supervisor
    indefinitely. The cap itself is the last stage of
-   [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model) — the
+   [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model) — the
    only place a still-progressing agent is killed, and the worker stops itself
    before it so work in progress is committed and pushed.
 
@@ -497,7 +497,7 @@ exponential backoff on transient failures.
 
 adds a **minimum-version floor**: a tool also updates when its installed version
 is below a configured floor (`software_min_versions`, default
-`{ claude: "2.1.280" }`), bypassing the timestamp gate. The rule is **run when
+`{ claude: "2.1.293" }`), bypassing the timestamp gate. The rule is **run when
 interval elapsed OR installed version < floor**:
 
 1. `readVersion(tool)` reads the installed version (`claude --version` →
@@ -602,7 +602,7 @@ configured at least one `custom_label_prompts` mapping of that target phase
 (`issue` for 1.86, `pr` for 1.87). A fleet that configured neither gets a
 byte-identical ladder, and a fleet that configured only `pr` mappings gets 1.87
 without 1.86 — an issue-scanning row that could never match is not added. See
-[Configuration Reference — Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts).
+[Configuration Reference — Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts).
 
 After Priority 2 — once every issue slot has drained — the cycle runs the
 auto-merge sweep **a second time** (`runPostScanAutoMerge` in
@@ -904,7 +904,7 @@ them:
 Healthy hosts stay silent — no log line, no reason string. The operator
 runbook for this condition — what it means, what the worker keeps doing, and the
 identity checks to run first — is
-[Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#-host-reports-unhealthy--repos-inaccessible).
+[Host reports unhealthy — `repos inaccessible`](TROUBLESHOOTING.md#%EF%B8%8F-host-reports-unhealthy--repos-inaccessible).
 The whole chain is covered end to end by
 `worker/deno/tests/worker_health_fleet3_e2e_test.ts`, including the inverse
 guard that a rate-limit storm must stay healthy.
@@ -1607,7 +1607,7 @@ trusted label adder). The set is resolved from config by
 [operational_dispatch_labels.ts](../worker/deno/lib/operational_dispatch_labels.ts).
 
 Every label declared in `custom_label_prompts`
-([Custom Label Prompts](CONFIGURATION.md#-custom-label-prompts)) joins that set
+([Custom Label Prompts](CONFIGURATION.md#%EF%B8%8F-custom-label-prompts)) joins that set
 (Issue #847). A custom label dispatches a privileged automation phase with an
 operator-supplied prompt, so it is gated exactly like `planning`: the adder must
 be on the allowlist, the comparison is case-insensitive, and an add that cannot
@@ -1672,7 +1672,7 @@ Each candidate issue is checked by functions in
 | **One issue per repo/milestone** | `is_milestone_occupied`                         | issue_filter       | Only one issue per repo/milestone can be in-progress at a time                                          |
 | **Milestone behind default**     | `milestonePacedUntil()`                         | milestone_presync  | Skips every issue of a milestone whose branch ledger is pacing the next merge attempt — an open attempt, a wedged resolution gate (Issue #2388) or a spent conflict budget (Issue #1780) |
 | **Forward dependencies**         | `has_unmet_dependencies()`                      | dependency_checker | Blocked if any `Depends on` / `Blocked by` issue is open, or is closed in another still-open milestone (Issue #2173) |
-| **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items)                                               |
+| **Parent blocking**              | `has_open_sub_issues()`                         | dependency_checker | Blocked if parent has open child issues (task list items); a failed native sub-issues lookup also counts as blocked rather than as "no children" (Issue #3321) |
 | **Stale label cleanup**          | `clean_stale_labels_for_reopened_issues`        | issue_filter       | Removes `failed`, `failed-once` from reopened issues (retired the `needs-clarification` cleanup)        |
 
 #### 🔗 Dependency-chain promotion
@@ -1955,7 +1955,12 @@ feedback:
 count, and the scan resolves the *reactor* before skipping one: only a 👀 from
 the fleet means "already processed" (Issue #1249, finding 5). A count alone
 would let any account, with no repository permission, retire a comment from the
-scan for good. PR reviews use dismissal instead of reactions.
+scan for good. PR reviews use dismissal instead of reactions, but only once
+the run retires the review (Issue #3383) — never at claim time. A review in
+flight is instead guarded by a claim comment's lease line
+(`PR_COMMENT_CLAIM_LEASE`, see
+[pr_review_claim_lease.ts](../worker/deno/lib/pr_review_claim_lease.ts)), not
+a reaction: a review has no reactions endpoint of its own.
 
 **Latest review wins** (Issue #2697) — the scan reads every page of reviews
 (`gh api --paginate`) and keeps each reviewer's latest submitted review, so a
@@ -1979,7 +1984,10 @@ actionable. The skip is logged at info. The rule is the one fleet-push
 supersession uses (`isFleetAnswerAfter` in
 [pr_feedback_supersede.ts](../worker/deno/lib/pr_feedback_supersede.ts)),
 without the cool-off window; a handled review is dismissed, which is what stops
-it being processed twice.
+it being processed twice. A review still in flight is guarded instead by its
+claim comment's live lease (Issue #3383): the scan skips a review a live,
+fleet-authored lease covers, and only a lapsed lease — the run timed out,
+crashed or went silent — makes it actionable again.
 
 **Superseded by a fleet push** — a trusted comment is also deferred when the PR
 head was pushed by a **fleet login** _after_ the comment was written and within
@@ -2023,8 +2031,10 @@ When a comment is found:
 5. **Quality check** — if changes were made, run `./quality.sh`; retry via
    Claude if it fails.
 6. **Push** — `push_unpushed_commits()` with self-healing for push rejections.
-7. **Mark processed** — add eyes reaction (or dismiss review) and post a reply
-   comment.
+7. **Mark processed** — add eyes reaction for a comment; for a review, post a
+   reply and dismiss it only once the run retires it (Issue #3383) — a review
+   claimed but not yet retired stays undismissed, guarded by its claim
+   comment's lease instead.
 
 ### 📏 How "did we push?" is answered (Issue #211)
 
@@ -2640,6 +2650,23 @@ reactions endpoint and honour the marker only from the fleet — the same
 treatment the `+1` trust signal has had since Issue #2484. An unattributable
 reaction fails towards *processing the comment again*.
 
+A `pr_review` (`commentType: "pr_review"`) has no reactions endpoint of its
+own, so it uses a marker reply instead of a reaction, and retires only once
+the run retires the review (Issue #3383):
+
+1. **First failure** — posts a "First Attempt" reply carrying a hidden
+   `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker; the review is left
+   undismissed, so it is retried once its claim lease lapses.
+2. **Second failure** (the marker found, fleet-authored) — dismisses the
+   review; posts "Permanently Failed". No further retries.
+
+No reaction is ever posted for a review — the old code reacted on
+`issues/comments/<reviewId>`, the wrong resource for a review id. Any other
+unretired outcome (an agent error, a timeout, a push that never lands on the
+remote, a prompt-build failure) is charged the same way as a failed attempt.
+A branch the host could not check out releases the review **uncharged**, with
+no reply and no attempt counted.
+
 ---
 
 ## 🎯 4. Milestone and dependency handling
@@ -3123,9 +3150,10 @@ collectors recorded on the refusal (Issue #2534):
 
 | Gate             | When                                                                   | Sentence                                                          |
 | ---------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `pr-open`        | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
-| `milestone-wait` | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
-| `dependency`     | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
+| `pr-open`             | `pr-blocked`, with the PR recorded                                     | PR #N is open on this stream; worked once it lands                |
+| `milestone-wait`      | `dependency-blocked` on a closed dependency in another open milestone  | waits on milestone M — its code lands when M merges               |
+| `unreadable-children` | `dependency-blocked` because the issue's own sub-issues could not be read | this issue's sub-issues could not be read, so it is held until they can be |
+| `dependency`          | `dependency-blocked` on an open dependency                             | waits on dependency #N (+ the unworkable root, when there is one) |
 
 When the chain behind the dependency ends at a root the fleet cannot move
 (`assigned`, `no-discovery-label`, `needs-human`, `cross-repo-unmonitored`), its
@@ -3604,7 +3632,13 @@ claim the same issue:
   [claim_pr_comment.ts](../worker/deno/lib/claim_pr_comment.ts). The eyes
   reaction that stops rediscovery is added before the claim is verified and
   **removed again on every no-winner path**, so a claim nobody won cannot
-  strand the feedback comment (Issue #2269).
+  strand the feedback comment (Issue #2269). A `pr_review` claim carries a
+  lease instead of a reaction (Issue #3383,
+  [pr_review_claim_lease.ts](../worker/deno/lib/pr_review_claim_lease.ts)):
+  the processor renews it from its own heartbeat every 5 minutes, and the
+  review stays claimed only while that renewal is within the 15-minute
+  heartbeat live window — a silent run's lease lapses and the review becomes
+  reclaimable, rather than staying dismissed with nobody having answered it.
 
 #### 🛡️ Trusted claim markers
 
@@ -4998,7 +5032,8 @@ Additional behaviours:
 [context_budget.ts](../worker/deno/lib/context_budget.ts) estimates prompt token
 usage across components (system prompt, dynamic context, issue content) and
 compares the total against the model's context window (1M tokens for
-Opus/Sonnet, 200k for Haiku —):
+Opus/Sonnet/Haiku — Haiku 5.5, Issue #3400 — or 200k for a Haiku 4.x id such
+as `claude-haiku-4-5`):
 
 - **Heuristic estimation** — `estimateComponentTokens()` approximates token
   count as `Math.floor(text.length / 4)`.
@@ -5182,7 +5217,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [issue_dependencies.ts](../worker/deno/lib/issue_dependencies.ts)                                                 | Dependency resolution and cycle detection                                                                                                                                                                                       |
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
-|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from a rewritten pr-summary file after a fix-run push (Issue #3089)                                                                                                                                          |
+|                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315)                                                                                 |
 |                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143); given the change request, flags quoted summary sentences still present (Issue #3244)         |
 |                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257)                                                                                                                            |
 |                             | [change_request_quotes.ts](../worker/deno/lib/change_request_quotes.ts)                                           | Parses a change request's findings and quoted spans; flags quoted PR-summary sentences still present in a summary; called by the drift check (Issue #3244)                                                                      |
@@ -5199,6 +5234,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [pr_maintenance.ts](../worker/deno/lib/pr_maintenance.ts)                                                         | PR maintenance operations (branch updates, auto-merge, cleanup)                                                                                                                                                                 |
 |                             | [pr_spelling_processor.ts](../worker/deno/lib/pr_spelling_processor.ts)                                           | Spelling failure processing workflow                                                                                                                                                                                            |
 |                             | [claim_pr_comment.ts](../worker/deno/lib/claim_pr_comment.ts)                                                     | Atomic PR comment claiming to prevent duplicates                                                                                                                                                                                |
+|                             | [pr_review_claim_lease.ts](../worker/deno/lib/pr_review_claim_lease.ts)                                           | Heartbeat-renewed lease that keeps a `pr_review` claim alive without dismissing the review at claim time                                                                                                                       |
 |                             | [pr_ci_checks.ts](../worker/deno/lib/pr_ci_checks.ts)                                                             | CI check monitoring                                                                                                                                                                                                             |
 |                             | [pr_retarget.ts](../worker/deno/lib/pr_retarget.ts)                                                               | PR retargeting                                                                                                                                                                                                                  |
 |                             | [branch_cleanup.ts](../worker/deno/lib/branch_cleanup.ts)                                                         | Stale branch cleanup after PR merge                                                                                                                                                                                             |

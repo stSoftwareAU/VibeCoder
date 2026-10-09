@@ -6,13 +6,13 @@ import {
   NEEDS_HUMAN,
   needsHumanAction,
   syncNeedsHumanLabel,
-} from "../../../.claude/skills/review-fleet-prs/needs_human.ts";
-import { postedResult } from "../../../.claude/skills/review-fleet-prs/post.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/needs_human.ts";
+import { postedResult } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 import {
   type FableReview,
   type LogRecord,
   reviewBody,
-} from "../../../.claude/skills/review-fleet-prs/review_log.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const pr = { repo: "acme/widgets", number: 42 };
 

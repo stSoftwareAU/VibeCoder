@@ -5,9 +5,7 @@
  * are wide open: a read-write default token that may approve PRs, no
  * allow-list, SHA-pinning not enforced, a CODEOWNERS file the ruleset never
  * consults, secret scanning off. Only an admin can flip those, so the audit
- * detects and reports drift; the findings say plainly that a human must act —
- * except the missing-SECURITY.md finding (Issue #3269), whose fix is an
- * ordinary commit a worker PR can make.
+ * detects and reports drift; the findings say plainly that a human must act.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -17,11 +15,7 @@ import {
   PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON,
   scanRepoSettings,
   SECRET_PROTECTION_SKIP_CHECK,
-  SECURITY_POLICY_CHECK,
-  SECURITY_POLICY_SKIP_REASON,
 } from "../lib/repo_settings_scanner.ts";
-import { fileWorkflowFinding } from "../lib/workflow_scan_common.ts";
-import { isAdminOnlyRepoSettingsIssue } from "../lib/admin_only_finding.ts";
 
 /** A gh stub answering the four settings endpoints from a table. */
 function ghFor(
@@ -67,11 +61,6 @@ const HARDENED = {
     },
   },
   "/private-vulnerability-reporting": { enabled: true },
-  "/contents/SECURITY.md": {
-    name: "SECURITY.md",
-    path: "SECURITY.md",
-    type: "file",
-  },
 };
 
 const OPEN = {
@@ -100,11 +89,6 @@ const OPEN = {
     },
   },
   "/private-vulnerability-reporting": { enabled: false },
-  "/contents/SECURITY.md": {
-    name: "SECURITY.md",
-    path: "SECURITY.md",
-    type: "file",
-  },
 };
 
 Deno.test("scanRepoSettings - a hardened repository yields no findings (Issues #4397 #4398 #4401)", async () => {
@@ -525,9 +509,7 @@ Deno.test("scanRepoSettings - a private or internal repository is not read for P
         defaultBranch: "Develop",
         onCheckSkipped: (what, reason, actionable) => {
           skips.push([what, reason]);
-          if (what === "private vulnerability reporting") {
-            actionableFlags.push(actionable);
-          }
+          actionableFlags.push(actionable);
         },
         onLookupFailure: () => {
           throw new Error("PVR must not be read on a private repository");
@@ -678,279 +660,4 @@ Deno.test("scanRepoSettings - an unreadable repos/{owner}/{repo} is not followed
   );
   assertEquals(failures.length, 1, JSON.stringify(failures));
   assertEquals(failures[0]![0], "repos (security_and_analysis)");
-});
-
-// =============================================================================
-// Issue #3269 — a public repository without a SECURITY.md
-// =============================================================================
-
-const SECURITY_POLICY_ENDPOINTS = [
-  "/contents/SECURITY.md",
-  "/contents/.github/SECURITY.md",
-  "/contents/docs/SECURITY.md",
-];
-
-/** `HARDENED` with the given visibility fields and content endpoints. */
-function hardenedWithVisibilityAndSecurityPolicy(
-  repoFields: Record<string, unknown>,
-  contentsAnswers: Record<string, unknown>,
-): Record<string, unknown> {
-  const base: Record<string, unknown> = { ...HARDENED };
-  delete base["/contents/SECURITY.md"];
-  return {
-    ...base,
-    "repos/org/repo": {
-      ...HARDENED["repos/org/repo"],
-      ...repoFields,
-    },
-    ...contentsAnswers,
-  };
-}
-
-Deno.test("scanRepoSettings - a public repository with SECURITY.md at any recognised location files nothing (Issue #3269)", async () => {
-  for (const presentAt of SECURITY_POLICY_ENDPOINTS) {
-    const contentsAnswers: Record<string, unknown> = {};
-    for (const endpoint of SECURITY_POLICY_ENDPOINTS) {
-      contentsAnswers[endpoint] = endpoint === presentAt
-        ? { name: "SECURITY.md", path: presentAt, type: "file" }
-        : new Error("HTTP 404: Not Found");
-    }
-    const failures: Array<[string, string]> = [];
-    const skips: string[] = [];
-    const findings = await scanRepoSettings(
-      "org/repo",
-      ghFor(
-        hardenedWithVisibilityAndSecurityPolicy(
-          { visibility: "public", private: false },
-          contentsAnswers,
-        ),
-      ),
-      {
-        defaultBranch: "Develop",
-        onLookupFailure: (what, reason) => failures.push([what, reason]),
-        onCheckSkipped: (what) => skips.push(what),
-      },
-    );
-    assertEquals(
-      findings,
-      [],
-      `${presentAt}: ${findings.map((f) => f.findingId).join(", ")}`,
-    );
-    assertEquals(failures, [], presentAt);
-    assertEquals(skips, [], presentAt);
-  }
-});
-
-Deno.test("scanRepoSettings - a public repository with no SECURITY.md anywhere files BP-REPO-SECURITY-POLICY-MISSING, and the issue it becomes is not admin-only (Issue #3269)", async () => {
-  const seen: string[] = [];
-  const contentsAnswers: Record<string, unknown> = {};
-  for (const endpoint of SECURITY_POLICY_ENDPOINTS) {
-    contentsAnswers[endpoint] = new Error("HTTP 404: Not Found");
-  }
-  const findings = await scanRepoSettings(
-    "org/repo",
-    ghFor(
-      hardenedWithVisibilityAndSecurityPolicy(
-        { visibility: "public", private: false },
-        contentsAnswers,
-      ),
-      (args) => seen.push(args[1] ?? ""),
-    ),
-    { defaultBranch: "Develop" },
-  );
-  assertEquals(findings.length, 1);
-  const f = findings[0]!;
-  assertEquals(f.findingId, "BP-REPO-SECURITY-POLICY-MISSING");
-  assertEquals(f.severity, "low");
-  for (const endpoint of SECURITY_POLICY_ENDPOINTS) {
-    assert(
-      seen.some((e) => e.endsWith(endpoint)),
-      `${endpoint} not read: ${seen.join(", ")}`,
-    );
-  }
-
-  const captured: string[][] = [];
-  const gh = (args: string[]) => {
-    captured.push(args);
-    return Promise.resolve("https://github.com/org/repo/issues/7\n");
-  };
-  await fileWorkflowFinding({
-    repo: "org/repo",
-    findingId: f.findingId,
-    severity: f.severity,
-    title: f.title,
-    file: f.file,
-    lines: f.lines,
-    whyItMatters: f.whyItMatters,
-    suggestedFix: f.suggestedFix,
-    evidence: f.evidence,
-    template: "github-actions-audit",
-    runId: "vibe-test",
-    ghCommandFn: gh,
-  });
-  const args = captured[0] as string[];
-  const bodyIdx = args.indexOf("--body");
-  const body = args[bodyIdx + 1] as string;
-  assertEquals(isAdminOnlyRepoSettingsIssue(body), false, body);
-  assert(
-    !/the worker cannot change repository settings/i.test(body),
-    body,
-  );
-  assert(body.includes("<!-- finding-id: BP-REPO-SECURITY-POLICY-MISSING -->"));
-  assert(f.suggestedFix.includes("SECURITY.md"), f.suggestedFix);
-  assert(f.suggestedFix.includes("pull request"), f.suggestedFix);
-});
-
-Deno.test("scanRepoSettings - an already-open BP-REPO-SECURITY-POLICY-MISSING is not re-filed (Issue #3269)", async () => {
-  const contentsAnswers: Record<string, unknown> = {};
-  for (const endpoint of SECURITY_POLICY_ENDPOINTS) {
-    contentsAnswers[endpoint] = new Error("HTTP 404: Not Found");
-  }
-  const findings = await scanRepoSettings(
-    "org/repo",
-    ghFor(
-      hardenedWithVisibilityAndSecurityPolicy(
-        { visibility: "public", private: false },
-        contentsAnswers,
-      ),
-    ),
-    {
-      defaultBranch: "Develop",
-      knownOpenFindingIds: ["BP-REPO-SECURITY-POLICY-MISSING"],
-    },
-  );
-  assert(
-    !findings.some((f) => f.findingId === "BP-REPO-SECURITY-POLICY-MISSING"),
-    findings.map((f) => f.findingId).join(", "),
-  );
-});
-
-Deno.test("scanRepoSettings - a non-404 security-policy read error is a lookup failure, never a finding (Issue #3269)", async () => {
-  for (
-    const err of [
-      new Error("HTTP 500: Server Error"),
-      new Error("HTTP 403: Resource not accessible by integration"),
-    ]
-  ) {
-    const failures: Array<[string, string]> = [];
-    const skips: string[] = [];
-    const findings = await scanRepoSettings(
-      "org/repo",
-      ghFor(
-        hardenedWithVisibilityAndSecurityPolicy(
-          { visibility: "public", private: false },
-          { "/contents/SECURITY.md": err },
-        ),
-      ),
-      {
-        defaultBranch: "Develop",
-        onLookupFailure: (what, reason) => failures.push([what, reason]),
-        onCheckSkipped: (what) => skips.push(what),
-      },
-    );
-    assert(
-      !findings.some((f) => f.findingId === "BP-REPO-SECURITY-POLICY-MISSING"),
-      findings.map((f) => f.findingId).join(", "),
-    );
-    assertEquals(failures.length, 1, JSON.stringify(failures));
-    assertEquals(failures[0]![0], SECURITY_POLICY_CHECK);
-    assert(failures[0]![1].includes(err.message), failures[0]![1]);
-    assertEquals(skips, []);
-  }
-});
-
-Deno.test("scanRepoSettings - a 404 at the root then a non-404 at .github/SECURITY.md is a lookup failure, no finding (Issue #3269)", async () => {
-  const failures: Array<[string, string]> = [];
-  const findings = await scanRepoSettings(
-    "org/repo",
-    ghFor(
-      hardenedWithVisibilityAndSecurityPolicy(
-        { visibility: "public", private: false },
-        {
-          "/contents/SECURITY.md": new Error("HTTP 404: Not Found"),
-          "/contents/.github/SECURITY.md": new Error(
-            "HTTP 500: Server Error",
-          ),
-        },
-      ),
-    ),
-    {
-      defaultBranch: "Develop",
-      onLookupFailure: (what, reason) => failures.push([what, reason]),
-    },
-  );
-  assert(
-    !findings.some((f) => f.findingId === "BP-REPO-SECURITY-POLICY-MISSING"),
-    findings.map((f) => f.findingId).join(", "),
-  );
-  assertEquals(failures.length, 1, JSON.stringify(failures));
-  assertEquals(failures[0]![0], SECURITY_POLICY_CHECK);
-});
-
-Deno.test("scanRepoSettings - a private or internal repository is not read for a security policy and the skip is recorded (Issue #3269)", async () => {
-  for (
-    const repoFields of [
-      { visibility: "private", private: true },
-      { visibility: "internal", private: true },
-    ]
-  ) {
-    const seen: string[] = [];
-    const skips: Array<[string, string, boolean]> = [];
-    const findings = await scanRepoSettings(
-      "org/repo",
-      ghFor(
-        hardenedWithVisibilityAndSecurityPolicy(repoFields, {}),
-        (args) => seen.push(args[1] ?? ""),
-      ),
-      {
-        defaultBranch: "Develop",
-        onCheckSkipped: (what, reason, actionable) => {
-          if (what === SECURITY_POLICY_CHECK) {
-            skips.push([what, reason, actionable]);
-          }
-        },
-        onLookupFailure: (what) => {
-          if (what === SECURITY_POLICY_CHECK) {
-            throw new Error(
-              "security policy must not be read on a private repository",
-            );
-          }
-        },
-      },
-    );
-    assert(
-      !seen.some((e) => e.includes("/contents/")),
-      JSON.stringify(seen),
-    );
-    assert(
-      !findings.some((f) => f.findingId === "BP-REPO-SECURITY-POLICY-MISSING"),
-      findings.map((f) => f.findingId).join(", "),
-    );
-    assertEquals(skips.length, 1, JSON.stringify(skips));
-    assertEquals(skips[0]![1], SECURITY_POLICY_SKIP_REASON);
-    assertEquals(skips[0]![2], false);
-  }
-});
-
-Deno.test("scanRepoSettings - an unreadable repos/{owner}/{repo} is not followed by a security-policy read (Issue #3269)", async () => {
-  const seen: string[] = [];
-  const findings = await scanRepoSettings(
-    "org/repo",
-    ghFor(
-      {
-        ...HARDENED,
-        "repos/org/repo": new Error("HTTP 500: Server Error"),
-      },
-      (args) => seen.push(args[1] ?? ""),
-    ),
-    { defaultBranch: "Develop" },
-  );
-  assert(
-    !seen.some((e) => e.includes("/contents/")),
-    JSON.stringify(seen),
-  );
-  assert(
-    !findings.some((f) => f.findingId === "BP-REPO-SECURITY-POLICY-MISSING"),
-    findings.map((f) => f.findingId).join(", "),
-  );
 });

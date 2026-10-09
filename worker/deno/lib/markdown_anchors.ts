@@ -9,8 +9,10 @@
  *
  * Algorithm (matching GitHub):
  *   1. Lower-case the heading text.
- *   2. Remove every character that is not a Unicode letter, number, space, or
- *      ASCII hyphen — this strips emoji, em-dashes, `#`, `/`, brackets, etc.
+ *   2. Remove every character that is not a Unicode letter, mark, number,
+ *      space, or ASCII hyphen — this strips most emoji, em-dashes, `#`, `/`,
+ *      brackets, etc., but keeps combining marks such as the U+FE0F variation
+ *      selector.
  *   3. Replace spaces with hyphens (no trimming, no hyphen collapsing).
  *
  * Consequences worth noting, because they are the exact bugs this guards:
@@ -18,12 +20,18 @@
  *     leading hyphen: `#-title`.
  *   - A space-padded em-dash or `+` (`a — b`, `a + b`) leaves two spaces that
  *     become a double hyphen: `a--b`.
+ *   - An emoji with a U+FE0F variation selector (`## ⚠️ Title`) keeps the
+ *     selector, so the id is `️-title`; a link writes it percent-encoded as
+ *     `#%EF%B8%8F-title` (Issue #3292).
  *
  * Australian English spelling used throughout (behaviour, normalise, etc.).
  */
 
-/** Characters GitHub keeps: Unicode letters, numbers, spaces, ASCII hyphen. */
-const STRIP = /[^\p{L}\p{N} -]/gu;
+/**
+ * Characters GitHub keeps: Unicode letters, marks (e.g. U+FE0F variation
+ * selector), numbers, spaces, ASCII hyphen.
+ */
+const STRIP = /[^\p{L}\p{M}\p{N} -]/gu;
 
 /**
  * Slugify a single heading's text the way GitHub does. Does not apply the

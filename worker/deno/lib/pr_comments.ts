@@ -12,6 +12,7 @@ import type { Result } from "../types.ts";
 import { resolveAlertDedupAuthors } from "./alert_dedup_authors.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { redactSecrets } from "./secret_redaction.ts";
+import { fetchMarkerComments } from "./marker_comment_pages.ts";
 
 /** Comment type for API routing. */
 export type CommentType = "review" | "issue" | "pr_review";
@@ -48,6 +49,24 @@ export interface PrCommentToFix {
 /** Default gh command function — routed through the shared chokepoint. */
 async function defaultGhCommand(args: string[]): Promise<string> {
   return await runGhOrThrow(args);
+}
+
+/**
+ * Marker prefix recording a `pr_review` comment's first failure on the PR
+ * thread (Issue #3383). A review is not an issue comment, so it has no
+ * `reactions` endpoint of its own to carry a `confused` marker — the record
+ * lives instead in a reply on the PR thread, keyed by review id.
+ */
+export const PR_REVIEW_FAILED_ONCE_PREFIX = "<!-- PR_REVIEW_FAILED_ONCE:";
+
+/**
+ * Build the hidden marker that records a `pr_review`'s first failure.
+ *
+ * @param reviewId - The review's id
+ * @returns The exact marker text, as embedded in a reply body
+ */
+export function prReviewFailedOnceMarker(reviewId: string): string {
+  return `${PR_REVIEW_FAILED_ONCE_PREFIX}${reviewId} -->`;
 }
 
 /**
@@ -224,13 +243,11 @@ export async function removeProcessedMark(
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
   log: (message: string) => void = (message) => console.warn(message),
 ): Promise<Error | null> {
-  // A dismissed review is the `pr_review` marker, and GitHub offers no
-  // un-dismissal — so this is reported, not papered over.
+  // A `pr_review` claim no longer dismisses the review to mark it processed
+  // (Issue #3383), so there is no mark on the review itself to take back —
+  // nothing to undo, and no gh call to make.
   if (commentType === "pr_review") {
-    return new Error(
-      `review ${commentId} on ${repo} was dismissed to mark it processed, ` +
-        `and a dismissal cannot be undone`,
-    );
+    return null;
   }
 
   let reactions: OwnReaction[];
@@ -390,11 +407,20 @@ export async function fetchCommentReactors(
  * retired. A retry is cheap; a wrongly-retired comment is feedback nobody
  * answers.
  *
+ * A `pr_review` has no `reactions` endpoint of its own (Issue #3383), so its
+ * marker is a {@link prReviewFailedOnceMarker} comment on the PR thread
+ * instead, and reading it needs the PR number. The same fail direction
+ * applies: no `prNumber`, or a thread read that fails, reports not
+ * failed-once rather than throwing or guessing.
+ *
  * @param repo - Repository in "owner/repo" format
- * @param commentType - Type of comment ("review" or "issue")
- * @param commentId - The comment ID
+ * @param commentType - Type of comment ("review", "issue", or "pr_review")
+ * @param commentId - The comment ID (the review id, for `pr_review`)
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
- * @param trustedReactors - Logins whose `confused` reaction counts
+ * @param trustedReactors - Logins whose `confused` reaction, or PR-thread
+ *   marker comment, counts as fleet-authored
+ * @param prNumber - PR number whose thread carries the `pr_review` marker.
+ *   Required to resolve the marker for `pr_review`; ignored otherwise.
  * @returns true if the fleet has marked the comment as failed once
  */
 export async function checkPrCommentHasFailedOnce(
@@ -403,11 +429,48 @@ export async function checkPrCommentHasFailedOnce(
   commentId: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
   trustedReactors: readonly string[] = [],
+  prNumber?: number,
 ): Promise<boolean> {
   const trusted = trustedReactors
     .filter((r) => typeof r === "string" && r.trim().length > 0)
     .map((r) => r.trim().toLowerCase());
   if (trusted.length === 0) return false;
+
+  if (commentType === "pr_review") {
+    if (prNumber === undefined) {
+      console.warn(
+        `[pr-comments] the failed-once marker for review ${commentId} on ` +
+          `${repo} lives on the PR thread, and no PR number was given — ` +
+          `treated as not failed once`,
+      );
+      return false;
+    }
+    let markerComments;
+    try {
+      markerComments = await fetchMarkerComments(
+        repo,
+        prNumber,
+        PR_REVIEW_FAILED_ONCE_PREFIX,
+        ghCommandFn,
+      );
+    } catch (err) {
+      console.warn(
+        `[pr-comments] could not read the failed-once marker for review ` +
+          `${commentId} on ${repo} PR #${prNumber}: ` +
+          `${err instanceof Error ? err.message : String(err)} — treated ` +
+          `as not failed once`,
+      );
+      return false;
+    }
+    const marker = prReviewFailedOnceMarker(commentId);
+    return markerComments.some(
+      (comment) =>
+        comment.body.includes(marker) &&
+        trusted.includes(
+          (comment.author ?? "").trim().toLowerCase(),
+        ),
+    );
+  }
 
   const reactors = await fetchCommentReactors(
     repo,
@@ -420,12 +483,18 @@ export async function checkPrCommentHasFailedOnce(
 }
 
 /**
- * Mark a PR comment as having failed once (confused reaction + reply).
+ * Mark a PR comment as having failed once.
+ *
+ * For `review`/`issue` comments this adds a `confused` reaction and replies.
+ * A `pr_review` has no `reactions` endpoint of its own, so no reaction call
+ * is made for it (Issue #3383) — the marker is a
+ * {@link prReviewFailedOnceMarker} embedded in the reply instead, and the
+ * review itself is left undismissed so it still requests changes.
  *
  * @param repo - Repository in "owner/repo" format
  * @param prNumber - PR number
  * @param commentType - Type of comment
- * @param commentId - The comment ID
+ * @param commentId - The comment ID (the review id, for `pr_review`)
  * @param failureMessage - Description of the failure
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  */
@@ -437,25 +506,38 @@ export async function markPrCommentAsFailedOnce(
   failureMessage: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
 ): Promise<void> {
-  // Add confused reaction
-  const reactionPath = reactionsPath(repo, commentType, commentId);
-
-  try {
-    await ghCommandFn([
-      "api",
-      "-X",
-      "POST",
-      reactionPath,
-      "-f",
-      "content=confused",
-    ]);
-  } catch {
-    // Reaction failure is not fatal
+  // A review has no `reactions` endpoint of its own — a `confused` reaction
+  // would land on the wrong resource (Issue #3383) — so the marker for
+  // `pr_review` lives only in the reply body below, never as a reaction.
+  if (commentType !== "pr_review") {
+    try {
+      await ghCommandFn([
+        "api",
+        "-X",
+        "POST",
+        reactionsPath(repo, commentType, commentId),
+        "-f",
+        "content=confused",
+      ]);
+    } catch {
+      // Reaction failure is not fatal
+    }
   }
 
   // Public sink: the failure text is arbitrary worker/Claude output, so mask
   // known secret shapes before it is published (Issue #3707).
-  const body = `## Automated Processing Failed (First Attempt)
+  const markerLine = commentType === "pr_review"
+    ? `${prReviewFailedOnceMarker(commentId)}\n`
+    : "";
+  const whatHappensNext = commentType === "pr_review"
+    ? `- This attempt has been recorded on this PR, and the review is left ` +
+      `undismissed — it still requests changes\n` +
+      `- The worker will attempt to process it again on the next scan\n` +
+      `- If it fails again, manual intervention will be required`
+    : `- This comment has been marked for retry (confused reaction added)\n` +
+      `- The worker will attempt to process it again on the next scan\n` +
+      `- If it fails again, manual intervention will be required`;
+  const body = `${markerLine}## Automated Processing Failed (First Attempt)
 
 The automated worker encountered an issue while processing this comment and will retry.
 
@@ -463,9 +545,7 @@ The automated worker encountered an issue while processing this comment and will
 ${redactSecrets(failureMessage)}
 
 ### What happens next?
-- This comment has been marked for retry (confused reaction added)
-- The worker will attempt to process it again on the next scan
-- If it fails again, manual intervention will be required`;
+${whatHappensNext}`;
 
   await replyToComment(repo, prNumber, body, ghCommandFn);
 }
@@ -531,10 +611,11 @@ ${redactSecrets(failureMessage)}
  * @param commentId - The comment ID
  * @param failureMessage - Description of the failure
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
- * @param trustedReactors - Logins whose `confused` reaction counts as the
- *   failed-once marker (Issue #1249). Omitted resolves the configured fleet
- *   identity; an unresolvable fleet means no reaction is trusted, so the
- *   comment is retried rather than permanently retired.
+ * @param trustedReactors - Logins whose `confused` reaction, or `pr_review`
+ *   marker comment, counts as the failed-once marker (Issue #1249). Omitted
+ *   resolves the configured fleet identity; an unresolvable fleet means
+ *   nothing is trusted, so the comment is retried rather than permanently
+ *   retired.
  */
 export async function handlePrCommentFailure(
   repo: string,
@@ -553,6 +634,7 @@ export async function handlePrCommentFailure(
     commentId,
     ghCommandFn,
     trusted,
+    prNumber,
   );
 
   if (hasFailedOnce) {

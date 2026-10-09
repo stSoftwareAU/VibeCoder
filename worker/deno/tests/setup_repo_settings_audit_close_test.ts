@@ -19,7 +19,6 @@ import {
   eligibleFindingIds,
   FINDING_STEP_KIND,
 } from "../setup/repo_settings_audit_close.ts";
-import { WORKER_FIXABLE_REPO_FINDINGS } from "../lib/admin_only_finding.ts";
 import type {
   HardenRepoOutcome,
   HardenResult,
@@ -694,19 +693,12 @@ Deno.test("eligibleFindingIds - applied or absent kinds are eligible; failed, pl
   );
 });
 
-Deno.test("FINDING_STEP_KIND covers every BP-REPO id the scanner files except the worker-fixable ones (Issue #3269)", async () => {
+Deno.test("FINDING_STEP_KIND covers every BP-REPO id the scanner files", async () => {
   const source = await Deno.readTextFile(
     new URL("../lib/repo_settings_scanner.ts", import.meta.url),
   );
   const filed = [...source.matchAll(/findingId: "(BP-REPO-[A-Z0-9-]+)"/g)]
     .map((m) => m[1]!).sort();
   assert(filed.length > 0);
-  assertEquals(
-    Object.keys(FINDING_STEP_KIND).sort(),
-    filed.filter((id) => !WORKER_FIXABLE_REPO_FINDINGS.has(id)),
-  );
-  for (const id of WORKER_FIXABLE_REPO_FINDINGS) {
-    assert(filed.includes(id));
-    assert(!Object.keys(FINDING_STEP_KIND).includes(id));
-  }
+  assertEquals(Object.keys(FINDING_STEP_KIND).sort(), filed);
 });

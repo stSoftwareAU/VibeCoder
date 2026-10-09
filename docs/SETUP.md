@@ -980,7 +980,7 @@ inherited. It is an **environment** guarantee. The whole `claude/`
 sub-directory is mounted read-only into the container, so a process with
 filesystem read access inside the container can read every token file there,
 selected or not — recorded as residual risk R9 in
-[the threat model](THREAT-MODEL.md#-residual-risks). That is the same exposure
+[the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks). That is the same exposure
 a single-token host has always carried; more tokens raise its count, not its
 kind. Add a second subscription knowing that its blast radius is the container,
 not the environment policy.
@@ -1301,7 +1301,7 @@ nothing about the credential *mount*, which still exposes every token file in
 `claude/` to the container. That boundary, and the residual risk R9 that
 records the part of it which is not closed, are stated under
 [Several Claude tokens](#several-claude-tokens) above and in
-[the threat model](THREAT-MODEL.md#-residual-risks).
+[the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks).
 
 One last precedence note: a `CLAUDE_CODE_OAUTH_TOKEN` already present in the
 worker's own environment is never overwritten by a file, so an

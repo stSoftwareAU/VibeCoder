@@ -11,7 +11,7 @@ the worker.
   under `claude`, `codex`, `gemini` and `deepseek`
 - [Model Selection](#model-selection)
   - [Phase-Specific Defaults](#phase-specific-defaults)
-  - [Model/effort precedence chain](#-modeleffort-precedence-chain)
+  - [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain)
   - [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)
   - [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase)
   - [Codex per-phase routing](#-codex-per-phase-routing)
@@ -99,7 +99,7 @@ a section without a marker, fails `deno test`.
 | [Phase-Specific Defaults](#phase-specific-defaults) | ✅ | ❌ | ❌ | ❌ | `CODEX_` / `GEMINI_` / `DEEPSEEK_PHASE_MODEL_DEFAULTS` cover the same phase keys with their own model ids |
 | [Design note — effort-first vs tier-first](#design-note--effort-first-vs-tier-first) | ✅ | ⚠️ | ❌ | ❌ | Codex has four effort levels (no `xhigh`/`max`); neither the Gemini CLI nor DeepSeek's endpoint has an effort control, so both vary tier alone |
 | [Per-phase decision log](#per-phase-decision-log) | ✅ | ❌ | ❌ | ❌ | The decisions are Claude tier/price ones; the other tables copy the shape (top/base/cheap), not the rows — DeepSeek copies it without a cheap rung |
-| [Model/effort precedence chain](#-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
+| [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
 | [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
 | [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
@@ -209,7 +209,7 @@ availability.
 | pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | spelling_fix | Haiku | low | unchanged |
-| summarise | Haiku | low | unchanged (large-input escalation still applies) |
+| summarise | Haiku | low | unchanged (large-input escalation still applies if pinned to a Haiku 4.x id) |
 | health | Haiku | low | unchanged — runs the Fable probe only while a phase routes to Fable |
 
 These defaults are defined in `PHASE_MODEL_DEFAULTS` and `PHASE_EFFORT_DEFAULTS`
@@ -271,10 +271,12 @@ extremes.**
 - The three trivial phases (**spelling_fix**, **summarise**, **health**) stay
   on **Haiku**. The Opus↔Haiku gap is still ~5×; these tasks are mechanical;
   `summarise` in particular is fed the largest inputs, so the cheaper tier
-  matters most there. The large-input escalation
+  matters most there. Since Haiku 5.5 (Issue #3400) the `haiku` alias itself
+  has a 1M-token window — the same as Sonnet — so the large-input escalation
   ([`phase_model_escalation.ts`](../worker/deno/lib/phase_model_escalation.ts),
-  ) still lifts a Haiku phase to a 1M-window tier whenever an input
-  would otherwise truncate.
+  ) no longer lifts it; it still escalates a phase pinned to a Haiku 4.x id
+  (e.g. `claude-haiku-4-5`) or an unrecognised model whenever an input would
+  otherwise truncate against the 200k window.
 
 Tier remains fully tunable through the override chain below, so an operator can
 pin any phase to a different tier without code changes.
@@ -703,7 +705,7 @@ Every `claude` child, on every phase, runs with Claude Code's deterministic
 sub-agent caps set in its spawn environment by
 [`worker/deno/lib/claude_env.ts`](../worker/deno/lib/claude_env.ts)
 (`CLAUDE_SUBAGENT_CAP_ENV`). The caps are honoured from Claude Code 2.1.217;
-the image pins 2.1.281 in [`container/tools.json`](../container/tools.json).
+the image pins 2.1.293 in [`container/tools.json`](../container/tools.json).
 
 | Variable | Value | CLI default | Effect |
 | --- | --- | --- | --- |
@@ -2581,7 +2583,7 @@ costed at the Fable 5 row. Both rows are carried for exactly that reason: no
 configuration changes on either side of the flip. **Which CLI a run gets has two
 answers**: in the container the image is the update mechanism, so
 `container/tools.json` is the lever; on a host it is the
-[minimum-version floor](CONFIGURATION.md#-minimum-version-floor).
+[minimum-version floor](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor).
 
 ##### Which CLI version actually serves 5.1 (Issue #1362)
 
@@ -2617,8 +2619,8 @@ design) until `stable` reaches 2.1.260 or the host pins a version through
 `update_mode: frozen`.
 
 **Moved again for Opus 5.5 (Issue #2560).** When the planning-shaped phases
-moved to the `opus` alias, the same two levers moved together: the image pins
-**2.1.281** and the floor is **2.1.280**, the first release whose bundled table
+moved to the `opus` alias, the same two levers moved together: the image pinned
+**2.1.281** and the floor was **2.1.280**, the first release whose bundled table
 resolves `opus` to `claude-opus-5-5` (2.1.261 resolved it to `claude-opus-5`).
 2.1.280 is above 2.1.260, so a phase pinned back to Fable still gets Fable 5.1
 with its cache fixes. `CURRENT_TIER_MODELS` gained an `opus` row at the same
@@ -2626,6 +2628,22 @@ time, so a container still serving `claude-opus-5` is reported as a previous
 generation — but only for the label and the stats comment: the
 degraded-delivery guard (Issue #2562) ignores a stale generation, since the run
 was not handed to a fallback model.
+
+**Moved a third time for Haiku 5.5 (PR #3432 review, Issue #3400).** #3400 set
+`MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is
+served by Haiku 5.5, but the premise did not hold at the time: 2.1.281 (the
+pin #2560 left in place) still carried `haiku:"claude-haiku-4-5"` in its
+bundled alias table, with no `claude-haiku-5-5` string anywhere in the binary
+— confirmed by downloading the pinned release and running `strings` on it.
+Served Haiku 4.5 at its real 200k window against an alias budgeted at 1M is
+exactly the silent-truncation failure Issue #2393 guards against. Reading the
+same alias table across the subsequent releases: 2.1.292 still resolves
+`haiku:"claude-haiku-4-5"`; **2.1.293** is the first release whose table
+carries `haiku:"claude-haiku-5-5"`, and it had cleared the 24h quarantine
+(2.1.294 was 19.6h old at the time, inside quarantine). The image now pins
+**2.1.293** and the floor is **2.1.293** too — both levers move together, as
+for the two moves above — and checksums were verified against the release's
+own `manifest.json`.
 
 **A previous-generation Fable is now degraded.** `modelsMatch()` matches at
 tier-family level, so a run served `claude-fable-5` while `claude-fable-5-1` is
@@ -2642,6 +2660,11 @@ belong to an older generation of the expected tier as degraded, naming both:
 Same leniency as the tier-level rule: one invocation served by the current model
 keeps the run healthy. An operator who pins `best_planning_model` to an older
 generation is never flagged — they were served the model they asked for.
+
+`CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue #3400),
+so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
+`claude-haiku-4-5`) as a previous generation too. The `degraded-model` label
+is not yet wired up for haiku-tier issue runs — that is open Issue #3405.
 
 Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
 thinking blocks bound to the model and to an unedited conversation prefix — do
@@ -2814,7 +2837,7 @@ the table, or a non-Claude id the worker does not route to such as `gpt-4.1` or
 bound and it is named in `unpricedModels`: an over-estimate an operator can
 see, never a `$0`. A run whose usage could not be parsed at all has no tokens
 to charge, so it is counted in `unknownUsageInvocations` instead
-([above](#non-claude-providers-unknown-never-zero)).
+([above](#non-claude-providers-measured-or-unknown--never-zero)).
 
 `formatSummary` prints both an `Unpriced models` line and a `WARNING:` line for
 malformed log lines, and the spend-ceiling hook logs a `[SPEND_CEILING]` line
@@ -2847,13 +2870,16 @@ for consistency.
 #### Context Window Sizes
 
 As of the Claude 5 generation, Fable, Opus and Sonnet have 1M-token context
-windows, while Haiku retains the original 200k window:
+windows. Haiku joined them at 1M with Haiku 5.5 (Issue #3400); the `haiku`
+alias resolves to Haiku 5.5, while a phase pinned to a Haiku 4.x id such as
+`claude-haiku-4-5` keeps the older 200k window:
 
 | Model | Context Window |
 |-------|---------------|
 | Claude Fable 5 | 1,000,000 tokens |
 | Claude Opus 5 | 1,000,000 tokens |
 | Claude Sonnet 4.6 | 1,000,000 tokens |
+| Claude Haiku 5.5 | 1,000,000 tokens |
 | Claude Haiku 4.5 | 200,000 tokens |
 
 #### Component Breakdown

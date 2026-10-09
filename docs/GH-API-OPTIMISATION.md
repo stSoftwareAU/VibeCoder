@@ -215,8 +215,10 @@ Measured on the three-repo, two-author fixture in
 
 Two per-issue reads on the scan path are cached too (Issue #1818): the
 dependency fetcher's `issue_state_v2_<n>`, `issue_body_v1_<n>` and
-`issue_sub_issues_v1_<n>` (a referenced issue is viewed once per iteration,
-not once per idle re-scan), and the scan-time content-integrity check reads
+`issue_sub_issues_v2_<n>` (a referenced issue is viewed once per iteration,
+not once per idle re-scan; a failed sub-issues lookup rejects and is not
+cached under this key, so the next read retries rather than inheriting a
+stale failure — Issue #3321), and the scan-time content-integrity check reads
 the candidate's title and body from the listing instead of a live
 `gh issue view` — the claimed issue is still re-verified live at pickup
 (Issue #3647). Before this one cycle spent ~735 `issue view` calls on 94
@@ -284,12 +286,17 @@ reviews, …) must page explicitly.
   gh api "repos/OWNER/REPO/issues/N/comments?per_page=100" --paginate
   ```
 
-- **Never combine `--paginate` with `--jq`.** `gh` applies `--jq` *per page*,
-  so `--paginate --jq 'map(...)'` emits **one JSON array per page** — the
-  concatenated output is invalid JSON. Fetch the raw pages with `--paginate`
-  alone, then post-process the merged result in code (this is why
+- **`--paginate` with `--jq` prints one JSON array per page.** `gh` applies
+  `--jq` *per page*, so the concatenated output is not one JSON document, and
+  `gh` refuses `--slurp` alongside `--jq`. Either fetch the raw pages with
+  `--paginate` alone and post-process the merged result in code (this is why
   `getIssueComments` moved its field remapping into the pure
-  `parseGhRawCommentsJson` helper rather than an inline `--jq` filter).
+  `parseGhRawCommentsJson` helper), or keep the `--jq` projection and parse
+  the output **one array per line**, throwing on a malformed line so an
+  unreadable page never passes as an empty result —
+  `parseMarkerCommentPages` (`worker/deno/lib/marker_comment_pages.ts`) and
+  `parseNativeSubIssueRefPages` (`worker/deno/lib/native_sub_issues.ts`,
+  Issue #3319) do this. Never `JSON.parse` the whole payload as one array.
 
 **GraphQL — paginate with `first:`/`last:` + cursors:**
 

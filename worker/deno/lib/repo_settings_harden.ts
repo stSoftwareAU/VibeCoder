@@ -2050,14 +2050,11 @@ async function hardenRepoInto(
   }
 }
 
-/** Where a file is on the default branch, as read through the contents API. */
-export type DefaultBranchFileLocation =
+/** Where a repo's CODEOWNERS file is, as read from its default branch. */
+export type CodeownersLocation =
   | { state: "present"; path: string }
   | { state: "absent" }
   | { state: "error"; message: string };
-
-/** Where a repo's CODEOWNERS file is, as read from its default branch. */
-export type CodeownersLocation = DefaultBranchFileLocation;
 
 /** The locations GitHub reads CODEOWNERS from, in its precedence order. */
 const CODEOWNERS_PATHS = [
@@ -2067,31 +2064,18 @@ const CODEOWNERS_PATHS = [
 ] as const;
 
 /**
- * The locations GitHub recognises a security policy at (Issue #3269).
+ * Find the CODEOWNERS file on the default branch (Issue #2626). Only a 404
+ * at every location is `absent`; any other error is `error`, so a flaky read
+ * is never mistaken for a missing file.
  */
-export const SECURITY_POLICY_PATHS = [
-  "SECURITY.md",
-  ".github/SECURITY.md",
-  "docs/SECURITY.md",
-] as const;
-
-/**
- * Find a file on the default branch (Issue #2626 semantics, generalised in
- * Issue #3269). Only a 404 at every location is `absent`; any other error is
- * `error`, so a flaky read is never mistaken for a missing file.
- */
-export async function findFileOnDefaultBranch(
+export async function findCodeownersOnDefaultBranch(
   repo: string,
   ghCommandFn: GhCommandFn,
-  paths: readonly string[],
-): Promise<DefaultBranchFileLocation> {
+): Promise<CodeownersLocation> {
   if (!isValidRepoSlug(repo)) {
     return { state: "error", message: `invalid repo name: ${repo}` };
   }
-  if (paths.length === 0) {
-    return { state: "error", message: "no paths to look up" };
-  }
-  for (const path of paths) {
+  for (const path of CODEOWNERS_PATHS) {
     try {
       await ghCommandFn(["api", `repos/${repo}/contents/${path}`]);
       return { state: "present", path };
@@ -2104,15 +2088,4 @@ export async function findFileOnDefaultBranch(
     }
   }
   return { state: "absent" };
-}
-
-/**
- * Find the CODEOWNERS file on the default branch (Issue #2626). Delegates to
- * `findFileOnDefaultBranch` with the CODEOWNERS precedence order.
- */
-export async function findCodeownersOnDefaultBranch(
-  repo: string,
-  ghCommandFn: GhCommandFn,
-): Promise<CodeownersLocation> {
-  return findFileOnDefaultBranch(repo, ghCommandFn, CODEOWNERS_PATHS);
 }

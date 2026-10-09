@@ -17,6 +17,7 @@ import {
   FORBIDDEN_STAGED_PATTERNS,
   inspectStagedFiles,
 } from "../lib/pre_commit_safety.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 interface GitRunResult {
   code: number;
@@ -103,6 +104,220 @@ Deno.test("classifyStagedPath - api-key.secret.json is a violation", () => {
 Deno.test("classifyStagedPath - .secrets/anything is a violation", () => {
   assertEquals(classifyStagedPath(".secrets/api.key"), "violation");
 });
+
+Deno.test(
+  "classifyStagedPath - nested dotenv, config and secrets paths are violations (Issue #3311)",
+  () => {
+    for (
+      const path of [
+        "services/api/.env",
+        "a/b/.env.local",
+        "apps/web/.env.production",
+        "services/api/.config.json",
+        "pkg/.config.local.json",
+        "services/.secrets/api.key",
+        "a/b/.secrets/token",
+        "a/.env.d/x",
+        "a/.config.local.json/x",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "violation",
+        `expected '${path}' to be a violation`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - nested look-alikes stay safe (Issue #3311)",
+  () => {
+    for (
+      const path of [
+        "src/foo.env",
+        "docs/env.md",
+        "src/config.json",
+        "src/app.config.json",
+        "pkg/.config/dotnet-tools.json",
+        "a/secrets/x",
+        "a/.secretsx/y",
+        "a/my.secrets/z",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "safe",
+        `expected '${path}' to be safe`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - nested credential stores are violations (Issue #3336)",
+  () => {
+    for (
+      const path of [
+        "deploy/.ssh/id_ed25519",
+        "deploy/.ssh/config",
+        "a/b/.ssh/known_hosts",
+        "services/api/.aws/credentials",
+        "x/.aws/config",
+        "home/.gnupg/pubring.kbx",
+        "pkg/.netrc",
+        "a/b/.netrc",
+        "pkg/.ssh",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "violation",
+        `expected '${path}' to be a violation`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - OpenSSH private-key names are violations at any depth (Issue #3336)",
+  () => {
+    for (
+      const path of [
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "id_ecdsa_sk",
+        "id_ed25519_sk",
+        "keys/id_ed25519",
+        "deploy/keys/id_ecdsa",
+        "id_ed25519.pub",
+        "keys/id_ecdsa_sk.bak",
+        "a/b/id_dsa.old",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "violation",
+        `expected '${path}' to be a violation`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - credential-store and key-name look-alikes stay safe (Issue #3336)",
+  () => {
+    for (
+      const path of [
+        "docs/ssh/setup.md",
+        "aws/config",
+        "src/aws/client.ts",
+        "my.ssh/x",
+        "x.aws/config",
+        "deploy/.sshrc",
+        "pkg/netrc.md",
+        "pkg/foo.netrc.md",
+        "pkg/.netrc.md",
+        "src/id_ed25519_helper.ts",
+        "src/id_ecdsa_parser.ts",
+        "docs/id_dsa/readme.md",
+        "my_id_ed25519",
+      ]
+    ) {
+      assertEquals(
+        classifyStagedPath(path),
+        "safe",
+        `expected '${path}' to be safe`,
+      );
+    }
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - dotenv pattern stays linear on hostile input (Issue #3311)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.env. prefixes",
+      (chars) => "/.env.".repeat(chars) + "\nx",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - config pattern stays linear on hostile input (Issue #3311)",
+  () => {
+    // The ".json" suffix makes the config pattern match.
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.config prefixes",
+      (chars) => "/.config".repeat(chars) + ".json",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - secrets pattern stays linear on hostile input (Issue #3311)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.secrets prefixes",
+      (chars) => "/.secrets".repeat(chars) + "x",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - secret.json pattern stays linear on hostile input (Issue #3316)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, long path with no .secret.json suffix",
+      (chars) => "x".repeat(chars),
+      classifyStagedPath,
+      { baseChars: 5_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - id_rsa pattern stays linear on hostile input (Issue #3323)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /id_rsa. prefixes before a line break",
+      (chars) => "/id_rsa.".repeat(chars) + "\nx",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - credential-store pattern stays linear on hostile input (Issue #3336)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /.ssh prefixes",
+      (chars) => "/.ssh".repeat(chars) + "x",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
+
+Deno.test(
+  "classifyStagedPath - OpenSSH key-name pattern stays linear on hostile input (Issue #3336)",
+  () => {
+    assertLinearGrowth(
+      "classifyStagedPath, repeated /id_ed25519. prefixes before a line break",
+      (chars) => "/id_ed25519.".repeat(chars) + "\nx",
+      classifyStagedPath,
+      { baseChars: 10_000 },
+    );
+  },
+);
 
 Deno.test("classifyStagedPath - hidden top-level file is a violation", () => {
   assertEquals(classifyStagedPath(".aws"), "violation");

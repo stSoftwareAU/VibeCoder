@@ -283,6 +283,11 @@ function createIdleTaskRepoMockGh(
         );
       }
     }
+    if (command.includes("/sub_issues")) {
+      // Genuine empty array means no children (Issue #3321: a non-array
+      // sub_issues response now fails closed).
+      return Promise.resolve("[]");
+    }
     if (command.includes("api repos/")) {
       return Promise.resolve(JSON.stringify({ body: bodyFor(args) }));
     }

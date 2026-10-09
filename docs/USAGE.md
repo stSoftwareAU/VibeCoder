@@ -14,32 +14,32 @@ detailed usage patterns below.
 
 ## 📋 Table of Contents
 
-- [Start here: label flows](#-start-here-label-flows)
-- [Creating an Issue](#creating-an-issue)
-- [PR (Pull Request) Requirements by Issue Type](#pr-requirements-by-issue-type)
+- [Start here: label flows](#%EF%B8%8F-start-here-label-flows)
+- [Creating an Issue](#-creating-an-issue)
+- [PR (Pull Request) Requirements by Issue Type](#-pr-requirements-by-issue-type)
 - [PR Summary File](#-pr-summary-file-docsarchivepr-summariespr-summary-issuemd)
-- [Auto Squash Merge](#auto-squash-merge)
-- [Skipping PR Reviewer Requests](#skipping-pr-reviewer-requests)
-- [Work-On Label (External Issues)](#signaling-work-on-external-issues-work-on-label)
-- [Ignoring Open PRs](#ignoring-open-prs-working-despite-pending-prs)
-- [Clarification Phase](#clarification-phase-handling-unclear-or-complex-issues)
-- [Issue Refinement Phase](#issue-refinement-phase-collaborative-issue-improvement)
-- [Failed Issue Handling](#failed-issue-handling)
+- [Auto Squash Merge](#-auto-squash-merge)
+- [Skipping PR Reviewer Requests](#%EF%B8%8F-skipping-pr-reviewer-requests)
+- [Work-On Label (External Issues)](#%EF%B8%8F-signaling-work-on-external-issues-work-on-label)
+- [Ignoring Open PRs](#-ignoring-open-prs-working-despite-pending-prs)
+- [Clarification Phase](#-clarification-phase-handling-unclear-or-complex-issues)
+- [Issue Refinement Phase](#%EF%B8%8F-issue-refinement-phase-collaborative-issue-improvement)
+- [Failed Issue Handling](#%EF%B8%8F-failed-issue-handling)
 - [Worker Escalation via `needs-human`](#-worker-escalation-via-needs-human)
-- [Question Clarification](#question-clarification)
-- [Partial Answers on Timeout](#partial-answers-on-timeout)
-- [Rate-Limit Circuit Breaker](#rate-limit-circuit-breaker)
-- [One Issue per Repository/Milestone](#one-issue-per-repositorymilestone)
-- [Self-Healing Disk Space](#self-healing-disk-space)
-- [Claude CLI (Command-Line Interface) Auto-Update](#claude-cli-auto-update)
-- [Health Reporting](#health-reporting)
-- [Feature Availability](#feature-availability)
-- [Reviewing and Requesting Fixes](#reviewing-and-requesting-fixes)
-- [Reaction System](#reaction-system)
-- [Security Scans (Idle)](#-security-scans-idle)
-- [Automatic Spelling Check Fixes](#automatic-spelling-check-fixes)
+- [Question Clarification](#-question-clarification)
+- [Partial Answers on Timeout](#-partial-answers-on-timeout)
+- [Rate-Limit Circuit Breaker](#-rate-limit-circuit-breaker)
+- [One Issue per Repository/Milestone](#-one-issue-per-repositorymilestone)
+- [Self-Healing Disk Space](#-self-healing-disk-space)
+- [Claude CLI (Command-Line Interface) Auto-Update](#-claude-cli-auto-update)
+- [Health Reporting](#-health-reporting)
+- [Feature Availability](#-feature-availability)
+- [Reviewing and Requesting Fixes](#-reviewing-and-requesting-fixes)
+- [Reaction System](#-reaction-system)
+- [Security Scans (Idle)](#%EF%B8%8F-security-scans-idle)
+- [Automatic Spelling Check Fixes](#-automatic-spelling-check-fixes)
 - [Work Prioritisation Order](#-work-prioritisation-order)
-- [Milestone Workflow](#milestone-workflow-grouped-issues)
+- [Milestone Workflow](#-milestone-workflow-grouped-issues)
 
 ## 📝 Creating an Issue
 
@@ -87,11 +87,19 @@ committed to the repository as permanent documentation and contains:
 - A test plan listing tests added or modified
 
 The worker reads this file and includes its contents in the PR body. If no PR
-summary file is created, a warning note is included in the PR body. A later
-PR-feedback, CI-fix or merge-conflict run that pushes a change to this file
-has the PR description re-synced from it by `syncPrBodyFromSummary`
-(`worker/deno/lib/pr_body_sync.ts`), so the description never drifts from a
-summary rewritten after creation.
+summary file is created, a warning note is included in the PR body. PR
+creation records a SHA-256 digest of the summary's content in the PR body as
+a hidden marker. A later CI-fix or merge-conflict run re-syncs the PR
+description from the summary, via `syncPrBodyFromSummary`
+(`worker/deno/lib/pr_body_sync.ts`), after a verified push to the PR's own
+head when the summary at the head differs from that recorded digest —
+whichever push changed it, this run's or an earlier one. A PR-feedback run
+re-syncs under the same condition, and also when it pushed nothing and has no
+commits left unpushed, so a feedback run that only answers a finding still
+refreshes a stale body. A body raised before this digest marker existed keeps
+the older rule: rebuilt only when this run's own push changed the summary
+file. So the description never drifts from a summary rewritten after
+creation, for as long as that run's conditions are met.
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -198,7 +206,7 @@ getting good results. It does three things:
    the worker posts an escalation comment asking a trusted human to add the
    `planning` label so the issue can be broken into smaller sub-issues. The
    worker does not add `planning` itself — see
-   [Worker Label Policy](../README.md#-supported-labels).
+   [Worker Label Policy](../README.md#%EF%B8%8F-supported-labels).
 3. **Is it too large for a single PR?** If the issue is clear but too complex
    for one implementation, the worker posts an escalation comment asking a
    trusted human to add the `planning` label — once added, the planning workflow
@@ -610,10 +618,10 @@ runs when _either_ the interval has elapsed _or_ the installed version is below
 a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
-(see [Configuration](CONFIGURATION.md#-minimum-version-floor)). The
-default floor pins `claude` to `2.1.280` — the oldest release that resolves the
-`opus` alias to Opus 5.5, the tier every substantive phase requests
-(Issue #2560).
+(see [Configuration](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor)). The
+default floor pins `claude` to `2.1.293` — the oldest release that resolves the
+`haiku` alias to Haiku 5.5, the model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window
+assumes (PR #3432 review, Issue #3400).
 
 - Below floor → the update runs immediately, bypassing the timestamp gate.
 - At/above floor → existing interval behaviour is preserved exactly.
@@ -724,7 +732,10 @@ For other reviewers:
 2. Click "Review changes"
 3. Write your feedback and select "Request changes"
 
-The worker will process the feedback, push fixes, and dismiss the review.
+The worker will process the feedback, push fixes, and dismiss the review once
+it has addressed it — not at the moment it claims the review. A run that dies
+mid-flight leaves the review undismissed rather than silently answered, so it
+is picked up again (by this host or another) once its claim lapses.
 
 **How the worker handles feedback:**
 
@@ -733,7 +744,9 @@ The worker will process the feedback, push fixes, and dismiss the review.
 - Analyse the feedback
 - Either fix the code or respond with an explanation
 - Always push unpushed commits
-- Mark feedback as processed (👀 reaction for comments, dismissal for reviews)
+- Mark feedback as processed (👀 reaction for comments; a review is dismissed
+  only once it has been fixed, rebutted, handed off or escalated — not at
+  claim time)
 
 ## 👍 Reaction System
 
@@ -852,7 +865,7 @@ run in a **maintenance lane** beside the Priority-2 pool instead of ahead of it,
 each leasing its repository from the pool's in-flight registry so no slot and no
 pass ever write the same clone. A 30-minute CI fix therefore runs concurrently
 with issue work rather than idling every slot until it finishes. See
-[Maintenance lane](workflows/README.md#-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
+[Maintenance lane](workflows/README.md#%EF%B8%8F-maintenance-lane-agent-backed-pr-passes-beside-the-pool).
 
 The Priority-1.6 branch-update pass takes no lease; it works in its own linked
 worktree under `${WORK_DIR}/worktrees/pr-branch-update/<repo>` instead, so it

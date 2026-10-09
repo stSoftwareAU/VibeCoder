@@ -152,6 +152,22 @@ guessing — the analysis-only hand-off then routes it to a human.
      sorts `use` statements but does not merge them), so a duplicate import
      can pass CI and still breach a standard only review enforces
      (Issue #3230).
+   - **A new state on an existing screen re-reads that screen's existing
+     text.** When the change adds a state or mode to a screen that
+     already exists (an earlier date, a paged or partial load, a
+     fallback, an empty or error case), list every message the screen
+     already renders — notes, empty-state text, warnings, badges,
+     labels — and say for each whether it is still true in the new
+     state. Reword, hide or mark each one that is not, so the new state
+     never shows a message written for another state, and add a test
+     that renders the new state and asserts each message that differs
+     in that state, or is absent from it. A test that renders only the
+     new rows stays green while an old message is wrong: an empty state
+     reading "Nothing happened in this period." above a new load-older
+     control, or today's live badge beside an earlier date's figures. A
+     pre-existing message left unchanged that is false or misleading in
+     the new state is a blocking self-review finding; list the messages
+     checked in the PR summary's Test Plan (Issue #3259).
 2. Do not skip or weaken existing tests merely to make the gate pass. A
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
@@ -169,6 +185,22 @@ guessing — the analysis-only hand-off then routes it to a human.
    net** under Error Recovery.
    Where the repository has no browser harness, the PR names that gap in
    its Test Plan rather than substituting a stylesheet regex.
+   **Measure overlays and pinned bars open.** When a change touches a
+   popover, menu, dropdown, in-place confirm panel, or a sticky or fixed
+   bar (or a container that holds one), that browser check measures it
+   **open**, at the narrowest supported portrait size (e.g. 390x844) and
+   at a short landscape height (e.g. 844x390). Every control in the open
+   content must sit fully inside the viewport on all four edges — left and
+   right as well as top and bottom — and clear of every fixed bar (tab
+   bar, footer, header), both at scroll 0 and when scrolled. A pinned
+   container that can grow taller than the space it has needs its own
+   `max-height` and overflow, or must unpin while open. WCAG 2.2 Reflow
+   (1.4.10) and Focus Not Obscured (Minimum) (2.4.11) set the bar. A
+   closed-state or single-size check stays green while open content runs
+   off-screen: a `text-nowrap` popover about 545px wide reached x=674 at a
+   390px viewport, and a sticky header holding a confirm panel grew to
+   486px at 844x390, pushing Confirm out of reach. Name both sizes and the
+   open state in the PR summary's Test Plan (Issue #3335).
    **Change only what the issue changes.** Edit only the expectation the
    issue changes and keep every other assertion the test made; renaming or
    rewriting the whole test is how still-true assertions get lost. Before
@@ -257,7 +289,18 @@ guessing — the analysis-only hand-off then routes it to a human.
    X, grep the docs the diff touches for that sibling's `#N`: each
    present-tense hit is backed by head code or reworded as planned (see
    **Behaviour another issue delivers is not described as present** in
-   `CODING-STANDARDS.md`). Before adding or changing a rule in
+   `CODING-STANDARDS.md`). An issue number the diff adds as provenance —
+   `Issue #N` or `#N follow-up` in a code comment, `_<N>_test.ts` in a test
+   file name, `(Issue #N)` in a doc — names an issue you ran
+   `gh issue view N` on in this run, whose title matches the reason you
+   cite it. Never cite a follow-up by number before it is filed, and never
+   guess the next free number: file it with `gh issue create` and cite the
+   number it returns, or cite what actually asked for the change — the
+   issue this PR closes, or the review that requested it
+   (`PR #N review`). List each such number the diff adds as
+   `#N: <title>` in the PR summary's Evidence (see **An issue number cited
+   as provenance is one you looked up** in `CODING-STANDARDS.md`). Before
+   adding or changing a rule in
    `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt constant
    under `worker/deno/lib/`, grep those files for existing rules on the same
    subject — the nouns the rule governs, not only the issue's wording — and
@@ -1144,7 +1187,14 @@ The file MUST contain:
    drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
    `worker/deno` does this), and record here that each pinned phrase is
    absent from the base section; a phrase the base section already held is a
-   blocking self-review finding. A test that only pins current behaviour, because the
+   blocking self-review finding. A pin the diff only moves, while converting
+   an existing whole-file drift test to `section()`, is meant to be on base,
+   so that check does not apply to it; follow **Re-scoping an existing drift
+   test** in `CODING-STANDARDS.md` instead: scope each pin to the section
+   holding the sentence it was written for, leave no pin a substring of
+   another in the same list, keep each whole-file absence check on
+   `flatWholeFile`, and record here one line per moved check — the pin, its
+   section and the red-check result. A test that only pins current behaviour, because the
    fault was unreproduced or already fixed and no production change was made,
    is expected green on base, and the Test Plan says so. A negative test — one asserting something does
    *not* happen — counts only once you have seen it go red with its guard
@@ -1172,13 +1222,25 @@ The file MUST contain:
    value or with the reason it does not need it; a behaviour-carrying
    parameter is required rather than defaulted to a value that turns the
    behaviour off, and a caller left on the old hard-coded value is a
-   blocking self-review finding. Likewise, every outcome of a branch the
-   diff adds — each new condition, match arm, exit code and interface
-   default —
+   blocking self-review finding. Likewise, a state or mode the diff adds
+   to a screen that already exists re-reads that screen's existing text
+   (see **A new state on an existing screen re-reads that screen's
+   existing text** under Instructions): the Test Plan lists every note,
+   empty-state text, warning, badge and label the screen already
+   renders, each marked still true or changed for the new state, with a
+   test asserting each one that differs; a pre-existing message left
+   false or misleading in the new state is a blocking self-review
+   finding. Likewise, every outcome of a branch the diff adds — each new
+   condition, match arm, exit code and interface default —
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. The Test Plan carries this enumeration as a
+   blocking self-review finding. A `Branch outcomes:` entry that admits it —
+   `no test reaches it`, or a flip that left the suite green — is work still
+   to do before the summary, not reporting: add the test, or remove the
+   branch; the worker blocks PR creation on it, and only an entry written
+   `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` may
+   stand. The Test Plan carries this enumeration as a
    `Branch outcomes:` list — one line per outcome naming `path:line`, the
    outcome, the test that reaches it, and that flipping it went red — or
    `Branch outcomes: none added` when the diff adds no branch. When the diff

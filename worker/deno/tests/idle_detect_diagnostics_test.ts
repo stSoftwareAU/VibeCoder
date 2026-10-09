@@ -25,10 +25,13 @@ import {
   auditClaimableState,
   classifyIssues,
   classifyProbeFailure,
+  normaliseIssue,
   pickDominantReason,
   type ProbeFailureKind,
 } from "../lib/idle_detect_diagnostics.ts";
 import type { ClosedPR, OpenPR } from "../lib/issue_query.ts";
+import { buildTimeDeferralLine } from "../lib/time_deferral.ts";
+import { upsertWorkerRecordLine } from "../lib/worker_record_block.ts";
 
 // ---------------------------------------------------------------------------
 // Pure classifier — exclusion branches
@@ -1112,6 +1115,94 @@ Deno.test("pickDominantReason - run_local_hold ranks under the PR gates (Issue #
   );
 });
 
+Deno.test("pickDominantReason - dependency_blocked only ⇒ dependency_blocked (Issue #3334)", () => {
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "dependency_blocked",
+        milestone: "",
+      },
+    ]),
+    "dependency_blocked",
+  );
+});
+
+Deno.test("pickDominantReason - time_deferred only ⇒ time_deferred (Issue #3334)", () => {
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "time_deferred",
+        milestone: "",
+      },
+    ]),
+    "time_deferred",
+  );
+});
+
+Deno.test("pickDominantReason - dependency_blocked wins over time_deferred (Issue #3334)", () => {
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "dependency_blocked",
+        milestone: "",
+      },
+      {
+        number: 2,
+        claimable: false,
+        excludedBy: "time_deferred",
+        milestone: "",
+      },
+    ]),
+    "dependency_blocked",
+  );
+});
+
+Deno.test("pickDominantReason - run_local_hold wins over dependency_blocked (Issue #3334)", () => {
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "dependency_blocked",
+        milestone: "",
+      },
+      {
+        number: 2,
+        claimable: false,
+        excludedBy: "run_local_hold",
+        milestone: "",
+      },
+    ]),
+    "run_local_hold",
+  );
+});
+
+Deno.test("pickDominantReason - time_deferred wins over stream_occupied (Issue #3334)", () => {
+  assertEquals(
+    pickDominantReason([
+      {
+        number: 1,
+        claimable: false,
+        excludedBy: "time_deferred",
+        milestone: "",
+      },
+      {
+        number: 2,
+        claimable: false,
+        excludedBy: "stream_occupied",
+        milestone: "",
+      },
+    ]),
+    "time_deferred",
+  );
+});
+
 Deno.test("auditClaimableState - a run-held backlog raises no ALERT (Issue #655)", async () => {
   // The 2026-08-30 VibeCoder state: two `work-on` issues with no
   // GitHub-visible blocker that this run had already handed back, so the
@@ -1401,6 +1492,77 @@ Deno.test("classifyIssues - the hold lifts once the dependency's milestone close
   assertEquals(verdicts[0]!.excludedBy, undefined);
 });
 
+// ---------------------------------------------------------------------------
+// Native sub-issue blocking (Issue #3314)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "classifyIssues - an issue with open native sub-issues is dependency_blocked, independent of openIssueNumbers/openMilestones (Issue #3314)",
+  () => {
+    const verdicts = classifyIssues(
+      [
+        {
+          number: 2503,
+          labels: ["work-on"],
+          assignees: [],
+          milestone: "",
+          subIssuesSummary: { total: 4, completed: 0 },
+        },
+      ],
+      { workerUser: "vibebot" },
+    );
+    assertEquals(verdicts[0]!.claimable, false);
+    assertEquals(verdicts[0]!.excludedBy, "dependency_blocked");
+  },
+);
+
+Deno.test(
+  "classifyIssues - an issue whose sub-issues are all completed is not excluded (Issue #3314)",
+  () => {
+    const verdicts = classifyIssues(
+      [
+        {
+          number: 2503,
+          labels: ["work-on"],
+          assignees: [],
+          milestone: "",
+          subIssuesSummary: { total: 2, completed: 2 },
+        },
+      ],
+      { workerUser: "vibebot" },
+    );
+    assertEquals(verdicts[0]!.claimable, true);
+    assertEquals(verdicts[0]!.excludedBy, undefined);
+  },
+);
+
+Deno.test("normaliseIssue - keeps a valid subIssuesSummary (Issue #3314)", () => {
+  const issue = normaliseIssue({
+    number: 2503,
+    title: "Parent issue",
+    labels: [],
+    assignees: [],
+    milestone: null,
+    subIssuesSummary: { total: 4, completed: 1, percentCompleted: 25 },
+  });
+  assertEquals(issue?.subIssuesSummary, { total: 4, completed: 1 });
+});
+
+Deno.test(
+  "normaliseIssue - drops a malformed subIssuesSummary (Issue #3314)",
+  () => {
+    const issue = normaliseIssue({
+      number: 2503,
+      title: "Parent issue",
+      labels: [],
+      assignees: [],
+      milestone: null,
+      subIssuesSummary: { total: "4", completed: 1 },
+    });
+    assertEquals(issue?.subIssuesSummary, undefined);
+  },
+);
+
 Deno.test(
   "auditClaimableState - applies the cross-milestone hold from openMilestonesFn (Issue #2533)",
   async () => {
@@ -1464,5 +1626,71 @@ Deno.test(
     // probe is not recorded as an error.
     assertEquals(result.perRepo[0]!.reason !== "probe_error", true);
     assertEquals(result.perRepo[0]!.claimable, 1);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// dependency_blocked / time_deferred reach the audit (Issue #3334)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "auditClaimableState - a repo whose only open issue is time-deferred reports reason=time_deferred (Issue #3334)",
+  async () => {
+    // A fixed far-future `Deferred until` date, so the test never depends on
+    // wall-clock time (the audit reads its own clock internally).
+    const body = upsertWorkerRecordLine(
+      "Waiting on upstream data.",
+      buildTimeDeferralLine("2099-01-01T00:00:00Z"),
+    );
+    const result = await auditClaimableState({
+      repos: ["org/deferred"],
+      workerUser: "vibebot",
+      tick: 1,
+      scanFoundClaimable: false,
+      ghCommandFn: () =>
+        Promise.resolve(JSON.stringify([
+          {
+            number: 1,
+            labels: [{ name: "top-priority" }],
+            assignees: [],
+            milestone: null,
+            body,
+          },
+        ])),
+      log: () => {},
+      hostnameFn: () => "host",
+      pidFn: () => 1,
+    });
+
+    assertEquals(result.perRepo[0]!.claimable, 0);
+    assertEquals(result.perRepo[0]!.reason, "time_deferred");
+  },
+);
+
+Deno.test(
+  "auditClaimableState - a repo whose only open issue has open native sub-issues reports reason=dependency_blocked (Issue #3334)",
+  async () => {
+    const result = await auditClaimableState({
+      repos: ["org/subissues"],
+      workerUser: "vibebot",
+      tick: 1,
+      scanFoundClaimable: false,
+      ghCommandFn: () =>
+        Promise.resolve(JSON.stringify([
+          {
+            number: 1,
+            labels: [{ name: "work-on" }],
+            assignees: [],
+            milestone: null,
+            subIssuesSummary: { total: 3, completed: 1 },
+          },
+        ])),
+      log: () => {},
+      hostnameFn: () => "host",
+      pidFn: () => 1,
+    });
+
+    assertEquals(result.perRepo[0]!.claimable, 0);
+    assertEquals(result.perRepo[0]!.reason, "dependency_blocked");
   },
 );

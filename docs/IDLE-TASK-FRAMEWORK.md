@@ -895,7 +895,7 @@ flowchart LR
     P -- yes --> PB["pr_blocked+1"]
     P -- no --> M{Named by a<br/>merged fleet PR?}
     M -- yes --> MB["merged_pr_blocked+1"]
-    M -- no --> D{"Names an open dependency,<br/>or a closed one another<br/>open milestone may hold?"}
+    M -- no --> D{"Names an open dependency,<br/>or a closed one another<br/>open milestone may hold,<br/>or has open native sub-issues?"}
     D -- yes --> DB["dependency_blocked+1"]
     D -- no --> R{This run already<br/>holding it back?}
     R -- yes --> RD{Held because the claim<br/>path deferred it?}
@@ -976,8 +976,14 @@ defers to the scan rather than escalating against it. Both call sites of the
 gate — the claimable count and the tier-3 `censusVisibleRefusal` — are given the
 milestone context, because a `work-on` issue that reads as refused by *nothing*
 would wrongly suppress the lower tiers (`dependency-blocked` is `human`-clearing
-and never suppresses, Issue #2610). The parent/child gate remains the one
-unmodelled rule here.
+and never suppresses, Issue #2610). Native sub-issues are now modelled too
+(Issue #3314): GitHub's `subIssuesSummary` field rides free on the same
+`gh issue list` call, and `hasOpenSubIssues` treats `total > completed` as
+dependency-blocked in both the census and the audit. On 2026-10-04
+`stSoftwareAU/GRQ-AutoTrader#2503` had 4 open native sub-issues and logged an
+inversion alert for three cycles before this gate existed. Only the body
+task-list half of the parent/child gate — `checkParentBlocked`'s
+back-referenced refs — remains unmodelled.
 
 The **run-local hold** gate (Issue #655) closes the fourth instance, one step
 later in the pipeline. Every gate above lives in a `collect_*_candidates.ts`;
@@ -1054,7 +1060,15 @@ idle-task filer with it. It now applies the hold as its last gate, reporting
 `reason=run_local_hold` on the per-repo line, exactly as it took the open-PR
 gate in Issue #4223 and the merged-PR gate in GRQ#4419. A hold source that
 throws falls back to no hold, so a failure restores the old over-count rather
-than reporting a repo as having nothing to do.
+than reporting a repo as having nothing to do. The audit also reports
+`reason=dependency_blocked` and `reason=time_deferred` on the per-repo line
+(Issue #3334), in place of the defensive `reason=label_filter` it used to fall
+back to when every refused issue was blocked on an open `Depends on` issue or
+open sub-issues, or deferred to a future `Deferred until` date — a label
+filter was never the reason. Both rank below the PR gates and
+`pace_suppressed`/`run_local_hold`, and above `stream_occupied`;
+`dependency_blocked` outranks `time_deferred` because `classifyIssues` applies
+it later, and the later gate is the more specific one.
 
 That incident also exposed the other half of the fault, in the scan's own
 reporting: the cooldown filters logged their skip and recorded nothing in
@@ -2536,7 +2550,7 @@ template bypasses the wrapper.
 
 > The cycle deadline does **not** bound an issue claim's budget — it stops new
 > claims and lets in-flight work finish. That model is stated once, in
-> [The cycle-deadline model](CONFIGURATION.md#-the-cycle-deadline-model).
+> [The cycle-deadline model](CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model).
 > This section covers the one route it deliberately still bounds: a scan.
 
 The hour-long budget above is a **ceiling**, not an entitlement. A wrapper

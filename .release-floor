@@ -21,4 +21,9 @@
 # 1.9.0 moves the top model tier from Fable to Opus 5.5 (Issue #2560): the
 # eight planning-shaped phases default to `opus`, the container pins Claude
 # Code 2.1.281, and `CLAUDE_MODEL_PLANNING=fable` is the rollback.
-1.9.0
+#
+# 1.10.0 moves the `haiku` alias's served model to Haiku 5.5 (PR #3432
+# review, Issue #3400): the container pins Claude Code 2.1.293 and
+# `software_min_versions.claude` defaults to 2.1.293, so `--model haiku`
+# actually serves a 1M-window model instead of Haiku 4.5 at 200k.
+1.10.0

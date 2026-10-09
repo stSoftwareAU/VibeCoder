@@ -348,13 +348,13 @@ Inside a single tier, candidates are sorted by `createdAt` (oldest first) by [`s
 
 ### Per-repo `nice` tiering and fair within-tier rotation
 
-Within a label tier, the final cross-repo selection is **`nice`-aware**. Each repo carries an optional operator-side `nice` integer (`repo_config.nice`, default `0`; see [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier)). Borrowing Unix-`nice` semantics, **lower `nice` is worked sooner**:
+Within a label tier, the final cross-repo selection is **`nice`-aware**. Each repo carries an optional operator-side `nice` integer (`repo_config.nice`, default `0`; see [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#%EF%B8%8F-per-repo-nice-rotation-tier)). Borrowing Unix-`nice` semantics, **lower `nice` is worked sooner**:
 
 1. **Label tier decides first, fleet-wide.** [`selectHighestPriority`](../../worker/deno/lib/issue_priority.ts) walks the label ladder (`top-priority` → `work-on` → self-scheduled diagnostic → `low-priority` → `idle-task`) as the **outermost** grouping and drains each tier across *every* repo before considering the next. `nice` is a tie-breaker inside a band, never a band of its own (Issue #1063).
 2. **Partition by `nice` within the tier.** The candidates of the winning tier are partitioned by their repo's resolved `nice` value, resolved through [`getRepoNice`](../../worker/deno/lib/repo_config.ts), and the lowest-`nice` group wins. A `nice: -1` repo therefore jumps ahead of every default-`nice: 0` repo **of the same tier**; a `nice: 99` filler repo is reached only when every lower-`nice` repo in that tier is idle.
 3. **Fair within a `nice` group.** Among repos sharing one `nice` value, [`selectFairWithinTier`](../../worker/deno/lib/issue_priority.ts) rotates fairly across equal repos (oldest-first within a repo, fair rotation across repos when a `randomFn` is injected), so a busy repo in a tier never starves its peers. With the default `nice: 0` everywhere, every repo shares one group and the behaviour reduces to the existing oldest-first selection.
 
-**Why the label wins.** Until Issue #1063, `nice` was the outermost partition: a `nice: -20` repo's ordinary `work-on` backlog was drained before a `nice: -15` repo's `top-priority` issues were even looked at, so `top-priority` meant "top priority *within a repo's `nice` tier*". An urgency signal another repo's routine backlog can outrank is not an urgency signal, so the ordering was inverted to the one the module header always documented. The worked winner-per-combination table lives with the setting itself, in [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#-per-repo-nice-rotation-tier).
+**Why the label wins.** Until Issue #1063, `nice` was the outermost partition: a `nice: -20` repo's ordinary `work-on` backlog was drained before a `nice: -15` repo's `top-priority` issues were even looked at, so `top-priority` meant "top priority *within a repo's `nice` tier*". An urgency signal another repo's routine backlog can outrank is not an urgency signal, so the ordering was inverted to the one the module header always documented. The worked winner-per-combination table lives with the setting itself, in [CONFIGURATION.md → Per-repo `nice` rotation tier](../CONFIGURATION.md#%EF%B8%8F-per-repo-nice-rotation-tier).
 
 **`idle-task` is still the fleet-global floor.** `idle-task` sits below every real-work tier in *every* repo, not just within its own `nice` tier — a low-`nice` repo's tier-4 idle-task scan is never selected ahead of a higher-`nice` repo's tier-2 `work-on` issue (the inversion fixed by Issue #2812). With the label tier now outermost this falls out of the ladder directly: `idle-task` is the last tier walked, so it is reached only when no repo has selectable real work. The per-repo idle suppression is unchanged.
 
@@ -372,7 +372,7 @@ A `top-priority` issue is **not** automatically picked just because the label is
    - The held issue's gate comment states the count against the cap — e.g. "6 fleet PRs are open on this repo's default branch (cap 6)" — rather than naming one PR as the blocker. The idle census, the idle-detect audit and the idle-task filer's own gate apply the same call with the same cap, so none can call work claimable that the scan holds (the #460 / #2563 invariant).
    - Until Issue #2663 any single fleet PR held every non-milestone issue: one fleet PR at a time on the default branch, per repository, fleet-wide. On stSoftwareAU/GRQ-AutoTrader all 13 `work-on` issues waited three hours behind one PR.
 3. **Recently-closed PR cooldown** — [`fetchRecentlyClosedPRsByUser`](../../worker/deno/lib/issue_query.ts) plus [`isBlockedByRecentlyClosedPR`](../../worker/deno/lib/issue_query.ts) suppress candidates whose target branch was the subject of a worker-closed (un-merged) PR inside the cooldown window.: prevents the worker from immediately re-opening a PR that was just closed (e.g. a reviewer rejected the approach) before a human has had time to react.
-4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails open on API errors so a transient outage cannot stall the worker.
+4. **Dependency blocking** — [`extractDependencyReferences`](../../worker/deno/lib/issue_dependencies.ts) and [`checkParentBlocked`](../../worker/deno/lib/issue_dependencies.ts) read `Depends on #N` / `Blocked by #N` markers (and GitHub task-list sub-issues) from the issue body and skip the candidate if any referenced issue is still open. Cross-repo dependencies (`Depends on org/repo#42`) are supported. Fails closed on a lookup it cannot complete: a dependency whose state cannot be read, and a native sub-issues lookup that fails or returns empty, unparseable or non-array output, both hold the candidate rather than release it (Issue #3321). Only an unreadable issue body, with no other blocker already found, lets the candidate through.
 5. **Content modified after approval** — [`verifyWorkOnContentIntegrity`](../../worker/deno/lib/work_on_content_integrity.ts), backed by [`content_approval_tracker.ts`](../../worker/deno/lib/content_approval_tracker.ts), compares a SHA-256 hash of the issue title + body against the snapshot captured when an allowed author added `work-on`: if the issue content has been edited by an untrusted author after approval, the candidate is suppressed and `needs-human` is added. The approval label itself is left in place (Issue #3964) — stripping it destroyed the record of who had approved what. TOCTOU protection, so a mutated issue body cannot ride a stale approval.
 
    **Two signals count as re-approval** (Issues #1561, #1617). A trusted author re-adding the approval label is one; a **trusted human removing `needs-human`** is the other — the escalation comment asks for exactly that, so honouring it makes the instruction do what it says. Either signal must post-date **both** the snapshot and the newest recorded edit; an older signal is genuine but stale (`[REAPPROVAL_PREDATES_EDIT]`) and the block stands. A `needs-human` removal by a fleet login (`service_accounts` / `fleet_pr_authors`) is label maintenance rather than review, and never reads as a human's re-approval. A counted re-approval logs `[SECURITY] [ISSUE_REAPPROVED_AFTER_MODIFICATION]`, re-baselines the snapshot onto the current content, and proceeds; a later untrusted edit blocks again with its own fresh comment.
@@ -609,7 +609,7 @@ permissive. See
 2. **Claim issue** — Assign self to the issue; brief pause; re-read assignees; if contested, use alphabetical tie-break; losers unassign themselves.
 3. **Setup repo** — Clone or update target repo; reset worker repo to `origin/Develop`; create or sync feature branch from default or `milestone/<name>`.
 4. **Quality baseline** — Run `./quality.sh` on the clean repo (if it exists) to establish a baseline of any pre-existing quality failures. This baseline is threaded through to failure comments so reviewers can distinguish pre-existing issues from worker-introduced regressions. Non-blocking: work continues regardless of baseline result.
-5. **Clarification (important)** — Unless max rounds reached: the worker runs the clarification phase. **(1)** If the issue is **unclear**, it posts questions, adds `needs-human` (the standalone `needs-clarification` label was retired and the handoff consolidated onto `needs-human`), unassigns, and exits (no implementation this run). **(2)** It checks whether the issue is small enough to complete without timing out. **(3)** If **clear but too complex** for a single PR, it posts an escalation comment asking a trusted human to add the `planning` label and unassigns — once the label is added, the issue is processed via the planning workflow to create sub-issues. The worker does not add operational labels itself (see [Worker Label Policy](../../README.md#-supported-labels)). See [Clarification](planning-and-questions.md#clarification) and [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour).
+5. **Clarification (important)** — Unless max rounds reached: the worker runs the clarification phase. **(1)** If the issue is **unclear**, it posts questions, adds `needs-human` (the standalone `needs-clarification` label was retired and the handoff consolidated onto `needs-human`), unassigns, and exits (no implementation this run). **(2)** It checks whether the issue is small enough to complete without timing out. **(3)** If **clear but too complex** for a single PR, it posts an escalation comment asking a trusted human to add the `planning` label and unassigns — once the label is added, the issue is processed via the planning workflow to create sub-issues. The worker does not add operational labels itself (see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels)). See [Clarification](planning-and-questions.md#clarification) and [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour).
 6. **Implement** — Run Claude with issue prompt; run `./quality.sh`; commit changes; push branch.
 7. **PR** — Build PR body from `docs/pr-summary-<issue>.md` (or `docs/archive/pr-summaries/pr-summary-<issue>.md`, or legacy `.pr_summary`); create or recover PR; enable auto-merge; resolve mergeability as needed.
 
@@ -713,7 +713,7 @@ gitGraph
 - **No eligible issue:** Skip implementation this iteration; continue to sleep and next loop.
 - **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).
 - **Clarification requested:** Post questions, add `needs-human`, unassign; user removes label and responds; next run re-evaluates.
-- **Complexity escalation (target behaviour):** If the issue is clear but too complex for a single PR, the worker posts an explanatory comment asking a trusted human to add the `planning` label, and unassigns. The planning workflow then breaks it into sub-issues once the label is added. The worker does not add `planning` itself — see [Worker Label Policy](../../README.md#-supported-labels). See also [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour). *Note: This is the target workflow — implementation may not yet fully match this documented behaviour.*
+- **Complexity escalation (target behaviour):** If the issue is clear but too complex for a single PR, the worker posts an explanatory comment asking a trusted human to add the `planning` label, and unassigns. The planning workflow then breaks it into sub-issues once the label is added. The worker does not add `planning` itself — see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels). See also [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour). *Note: This is the target workflow — implementation may not yet fully match this documented behaviour.*
 - **Implementation failure (first):** Comment, add `failed-once`, clean stale branch, unassign; next run may retry. **Second failure:** Replace with `failed`, skip thereafter until user removes label.
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
@@ -1318,6 +1318,23 @@ not need it, making a behaviour-carrying parameter required rather than
 defaulting it to a value that turns the behaviour off, and treating a caller
 left on the old hard-coded value as a blocking self-review finding.
 
+**A new state on an existing screen re-reads that screen's existing text
+(Issue #3259).** Fleet UI PRs added a state or mode to an existing screen
+and left the screen's existing messages describing the old state; tests
+rendered only the new rows, so the suite stayed green. GRQ-AutoTrader#2560
+added "Load older decisions" paging to Activity, and its empty state still
+read "Nothing happened in this period." above the load-older control.
+GRQ-AutoTrader#2615 added an earlier-date mode to Scores: every row still
+drew today's live `CurrentStars` badge beside that date's stars, and the
+unreadable-decisions note still said rows "may read as not evaluated"
+where every row read "Not considered". Unlike the caller-reach rule
+above, no caller is missed: the existing on-screen text is what goes
+unchecked. `CODING-STANDARDS.md` and the issue prompt now require listing
+every message the screen already renders, saying whether each is still
+true in the new state, rewording, hiding or marking each one that is
+not, a test asserting each message that differs, and the list of
+messages checked in the PR summary's Test Plan.
+
 **A new path to an existing outcome keeps that outcome's guards (Issue #3087).**
 Fleet PRs added a second route to an outcome the code already reached, and the
 new route skipped a guard the old one applied: VibeCoder#3085 ran
@@ -1371,6 +1388,21 @@ operation, calling an existing sibling guard rather than writing a new
 one, a refusal test whose fixture holds that state, and the inventory
 in the PR summary.
 
+**Changing the shape of persisted data bumps its key or reads the old shape
+(Issue #3328).** Fleet PRs changed the type of a value that outlives a
+deployment or relaunch and kept its versioned key, so the previous release's
+entries were read back as the new type: VibeCoder#3325 moved `getSubIssues`
+from `number[]` to `SubIssueRef[]` under the unchanged
+`issue_sub_issues_v1_` prefix of the file-backed `.gh-scan-cache`, and a
+`[7, 8]` entry made `checkParentBlocked` throw and skip the parent/child
+gate; GRQ-AutoTrader#2481 made `cashChange` read only `row.interest_charged`
+while the service worker's `grq-api-v1:` cache still held rows with the old
+`interest` key. Each PR's tests saw only new-shape data, so CI stayed green.
+`CODING-STANDARDS.md` and the guidelines now require bumping the key's
+version or reading and converting the old shape, a test that seeds an
+old-shape entry, updating every doc that names the key, and saying in the PR
+summary which of the two was chosen.
+
 **A new test must go red without its change (Issue #3093).** Fleet PRs
 added the regression test a fix or a review asked for, and the test passed
 whether or not the change was there: VibeCoder#3091, #3085 and #3079, and
@@ -1385,6 +1417,20 @@ Documentation-drift tests gained a fourth condition: the pinned phrase
 occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
+
+**Re-scoping an existing drift test keeps every check's reach
+(Issue #3307).** Fleet PRs converting whole-file drift tests to `section()`
+kept every pinned string and still lost a check, and were sent back for it:
+a review round of VibeCoder#3240 had narrowed two absence checks to one
+section, and one of VibeCoder#3297 had moved a pin into a list where a
+longer pin already contained it. Condition 4's base check cannot see this,
+because a moved pin is meant to be on base. `CODING-STANDARDS.md` §
+Documentation-drift tests now asks for each moved pin to be scoped to the
+section holding its rule and red-checked there, for no pin to be a substring
+of another in the same list (`assertPins` throws on one), and for
+whole-file absence checks to stay on `flatWholeFile`. The issue and
+pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
+check.
 
 **Check where you insert (Issue #3194).** Fleet PRs added a new item or
 paragraph at a point that cut existing text off from what it describes.
@@ -1820,6 +1866,27 @@ the test command runs from `worker/deno` (Issue #3160); a failed lookup also
 blocks, fail closed. A test identifier with no test-file path (for example a
 Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
 none added` is accepted when the diff adds no branch.
+
+It also blocks an entry that admits its own outcome is unreached. A strong
+admission — "no test reaches", "covers" or "exercises" it, "not reached by
+any test", or a negation directly governing a go/turn verb ("never went
+red", "did not go red", "no test went red", "does not turn red") — blocks
+whatever the entry names. A weaker admission — "unreached", "untested",
+"unreachable", or a flip that "stayed green" or "left … the suite green" —
+blocks only when the entry names no test-file path and records no red
+flip. The admission must be in the entry's own prose, not inside
+backticks: a closed code span containing `::` is read only up to that
+`::`, any other code span containing whitespace (a quoted test name, a
+command such as `cargo test --workspace`) is not read at all, and a span
+with no whitespace (a path, `path:line`, an identifier) is read as is — so
+bold prose carries the admission, but backticks around it do not. Lines
+the list parser otherwise skips — table rows, prose after the list,
+entries past the 100-entry cap — are still checked for this admission. The
+one exception is an entry written `exempt (out of scope): <reason>` or
+`exempt (untestable): <reason>` with a reason of at least three words; an
+exemption with no reason blocks too (Issue #3288, after
+GRQ-AutoTrader#2682 and VibeCoder#3282 raised with admitted-untested
+entries).
 
 It is a summary-rule gate like docs sweep and the placeholder-token gate: its
 verdict is folded into an earlier summary gate's own notice when that one

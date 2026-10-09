@@ -201,7 +201,6 @@ import {
   PRIVATE_VULNERABILITY_REPORTING_CHECK,
   type RepoSettingsFinding,
   scanRepoSettings,
-  SECURITY_POLICY_CHECK,
 } from "../repo_settings_scanner.ts";
 import {
   scanWorkerTokenPrivileges,
@@ -624,27 +623,14 @@ export const ADMINISTRATION_READ_PERMISSION =
   'the repository "Administration" fine-grained read permission';
 
 /**
- * The fine-grained permission the security-policy read needs (Issue #3269).
- *
- * GitHub's "Permissions required for fine-grained personal access tokens"
- * page lists `GET /repos/{owner}/{repo}/contents/{path}` under Contents
- * (read).
- */
-export const CONTENTS_READ_PERMISSION =
-  'the repository "Contents" fine-grained read permission';
-
-/**
  * Which fine-grained permission a 403 on a given check's endpoint names
- * (Issues #3268, #3269) — Administration for private-vulnerability-reporting,
- * Contents for the security-policy read, Actions policies for everything
- * else this template reads.
+ * (Issue #3268) — Administration for private-vulnerability-reporting,
+ * Actions policies for everything else this template reads.
  */
 export function permissionNeededFor(check: string): string {
-  if (check === PRIVATE_VULNERABILITY_REPORTING_CHECK) {
-    return ADMINISTRATION_READ_PERMISSION;
-  }
-  if (check === SECURITY_POLICY_CHECK) return CONTENTS_READ_PERMISSION;
-  return ACTIONS_POLICY_PERMISSION;
+  return check === PRIVATE_VULNERABILITY_REPORTING_CHECK
+    ? ADMINISTRATION_READ_PERMISSION
+    : ACTIONS_POLICY_PERMISSION;
 }
 
 /**

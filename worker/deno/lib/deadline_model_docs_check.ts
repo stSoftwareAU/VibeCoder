@@ -72,8 +72,10 @@ export const CANONICAL_MODEL_FILE = "docs/CONFIGURATION.md";
 export const CANONICAL_MODEL_HEADING = "### 🕰️ The cycle-deadline model";
 
 /** The link target every other page must point at. */
+// The heading's 🕰️ emoji keeps its U+FE0F variation selector, so the link
+// is percent-encoded (Issue #3292).
 export const CANONICAL_MODEL_ANCHOR =
-  "CONFIGURATION.md#-the-cycle-deadline-model";
+  "CONFIGURATION.md#%EF%B8%8F-the-cycle-deadline-model";
 
 /**
  * Pages that previously paraphrased the model and must now link to it.

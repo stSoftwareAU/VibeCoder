@@ -816,7 +816,7 @@ run overnight" workflow (see [milestones.md](milestones.md)).
 - **One milestone per file-area group.** When the publish turn posts a
   `## Milestones` table grouping its sub-issues by file area and that table
   passes the
-  [structural gate](#-milestones-table-and-structural-gate-issue-2172), the
+  [structural gate](#%EF%B8%8F-milestones-table-and-structural-gate-issue-2172), the
   worker creates **one milestone per group** that carries two or more
   sub-issues, and assigns each sub-issue to its own group's milestone only.
   Each is titled `#<N> <area>: <short description>` — for example
@@ -901,7 +901,7 @@ therefore group the plan by **file area** — the top-level directory or
 subsystem each sub-issue touches — so groups that cannot collide are delivered
 as parallel milestones. The grouping is **planner judgement**; the structural
 gate above ([Milestones table and structural
-gate](#-milestones-table-and-structural-gate-issue-2172)) only checks the shape
+gate](#%EF%B8%8F-milestones-table-and-structural-gate-issue-2172)) only checks the shape
 of what was published.
 
 The draft prompt (`prompts/planning/prompt.md`) carries the rule:
@@ -936,7 +936,7 @@ for the inheritance path where the parent already owns one.
 **What the worker does with the table today.** It reads and gates it, and
 nothing more: `closePlanningIssue()` logs a sound grouping and still creates
 the **legacy single milestone** for the whole plan, exactly as the [#2172
-section](#-milestones-table-and-structural-gate-issue-2172) describes. Creating
+section](#%EF%B8%8F-milestones-table-and-structural-gate-issue-2172) describes. Creating
 one milestone per group — and assigning each group's sub-issues to it — is
 **Issue #2175**. Until that lands, a published grouping is recorded rather than
 acted on, so the prompts teach the grouping ahead of the machinery that
@@ -1075,7 +1075,7 @@ getting good results. It does three things:
    the worker posts an escalation comment asking a trusted human to add the
    `planning` label so the issue can be broken into smaller sub-issues. The
    worker does not add `planning` itself — see
-   [Worker Label Policy](../../README.md#-supported-labels).
+   [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels).
 3. **Is it too large for a single PR?** If **clear but too complex** for one
    implementation, the worker posts an escalation comment and unassigns — a
    trusted human then adds the `planning` label and the issue is broken into
@@ -1118,7 +1118,7 @@ implementation attempts on issues that are inherently multi-PR tasks.
      subsequent run via the normal **planning** workflow (create sub-issues,
      comment, close parent). The worker does **not** add the `planning` label
      itself — it is operational and reserved for trusted humans (see
-     [Worker Label Policy](../../README.md#-supported-labels);,).
+     [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels);,).
 
 #### Criteria for automatic escalation
 

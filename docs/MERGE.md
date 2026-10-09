@@ -729,6 +729,19 @@ This is enforced at the single git-push choke-point by
   exemption is logged at INFO naming the ref. An added, edited or deleted
   hidden or secret file is still refused, and an unresolvable `origin/HEAD`
   exempts nothing.
+- **Nor is a hidden path the repository's own `.gitignore` re-allows**
+  (Issue #3296). A staged hidden path outside the fleet-wide allowlist is
+  exempt when `git check-ignore` finds an explicit `!`-negation rule, decided
+  by that repository's own tracked, unmodified root `.gitignore` itself, for
+  the path or an ancestor directory — for example this repository's
+  `.gitignore` re-allows `.claude/skills/` and `.claude/agents/` (Issues
+  #2675, #2976). `HEAD:.gitignore` must also match `.gitignore` on the local
+  `origin/<default>` ref, so a re-allow committed only on the branch under
+  review cannot exempt a later commit on that branch (PR #3308
+  review). Every forbidden secret pattern stays refused regardless, and
+  if `.gitignore` cannot be read, has been modified, differs from
+  `origin/<default>`'s copy, or no rule decides the path at all, nothing is
+  exempt. See [SECURITY.md](../SECURITY.md) for the full rule.
 
 Existing maintenance that touches files (bump-deps, gitignore/gitattributes
 sync) **stages locally and rides the next feature-branch PR** — it never pushes
@@ -1006,7 +1019,7 @@ whose originating issue cannot be found is closed too, and its flag carries
 (Issue #2310). There is no cap on restarts per issue (Issue #3033): every
 redo starts on a fresh branch cut from the base branch's current tip, never
 the abandoned one. Its preconditions and its exits are in
-[the merge-conflict workflow](workflows/merge-conflicts.md#-abandon-and-restart-before-a-human-is-asked).
+[the merge-conflict workflow](workflows/merge-conflicts.md#%EF%B8%8F-abandon-and-restart-before-a-human-is-asked).
 
 **Milestone branches spend the same budget.** `milestone_sync_streak.ts`
 exports `MILESTONE_CONFLICT_ATTEMPT_BUDGET` as that same constant — one
@@ -1048,7 +1061,7 @@ reads and writes the same shared marker comments, so a milestone branch and
 its rollup PR cannot each believe they hold separate budgets (Issue #2998).
 Only a **milestone branch with no open PR** falls back to the persisted
 per-branch ledger in `milestone_sync_failures.json`, described in
-[INTERNALS.md → the milestone conflict ledger](INTERNALS.md#-the-conflict-attempt-ledger-a-milestone-branch-spends).
+[INTERNALS.md → the milestone conflict ledger](INTERNALS.md#%EF%B8%8F-the-conflict-attempt-ledger-a-milestone-branch-spends).
 Either way a **success** is the only thing that refills the budget: a moved
 default tip never refills the attempt count.
 

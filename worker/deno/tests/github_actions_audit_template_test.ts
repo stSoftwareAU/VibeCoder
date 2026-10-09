@@ -33,7 +33,6 @@ import {
   ACTIONS_POLICY_PERMISSION,
   ADMINISTRATION_READ_PERMISSION,
   assembleGitHubActionsAuditPrompt,
-  CONTENTS_READ_PERMISSION,
   createGitHubActionsAuditTemplate,
   GITHUB_ACTIONS_AUDIT_BODY_FINGERPRINT,
   GITHUB_ACTIONS_AUDIT_ISSUE_TITLE,
@@ -45,7 +44,6 @@ import {
   renderGitHubActionsAuditSummary,
   runGitHubActionsAuditScan,
 } from "../lib/idle_task_templates/github_actions_audit_template.ts";
-import { SECURITY_POLICY_CHECK } from "../lib/repo_settings_scanner.ts";
 import type { RunClaudeOptions } from "../lib/claude_runner.ts";
 import {
   getTemplate,
@@ -3697,16 +3695,6 @@ Deno.test(
     assertEquals(
       permissionNeededFor("actions/permissions/workflow"),
       ACTIONS_POLICY_PERMISSION,
-    );
-  },
-);
-
-Deno.test(
-  "permissionNeededFor - names Contents for the security-policy read (Issue #3269)",
-  () => {
-    assertEquals(
-      permissionNeededFor(SECURITY_POLICY_CHECK),
-      CONTENTS_READ_PERMISSION,
     );
   },
 );

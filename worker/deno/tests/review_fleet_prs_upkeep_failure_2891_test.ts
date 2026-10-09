@@ -5,7 +5,7 @@
  * reported in `upkeep` and not retried at the same head commit.
  */
 import { assertEquals } from "@std/assert";
-import { pass } from "../../../.claude/skills/review-fleet-prs/gate.ts";
+import { pass } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 
 const REVIEWER = "nleck";
 

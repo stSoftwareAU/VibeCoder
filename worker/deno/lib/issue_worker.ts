@@ -458,9 +458,8 @@ async function workOnIssueCore(
     // `work-on`, running the agent changes nothing and completion fails "no
     // commits ahead", releasing the claim so the still-`work-on` issue loops
     // back into the pool forever. Recognise it from its body and hand it to a
-    // human before cloning the repo or running Claude. Allowlisted ids whose
-    // fix is an ordinary commit (Issue #3266) are not handed off. A clean
-    // hand-off is not a failure.
+    // human before cloning the repo or running Claude. A clean hand-off is not
+    // a failure.
     if (isAdminOnlyRepoSettingsIssue(ctx.issueBody)) {
       logger.info(
         "Repository-admin finding — handing off to needs-human before running Claude (Issue #53)",

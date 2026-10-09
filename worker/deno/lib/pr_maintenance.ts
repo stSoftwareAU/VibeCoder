@@ -61,6 +61,7 @@ export {
   FLEET_PUSH_COOL_OFF_MS,
   isSupersededByFleetPush,
 } from "./pr_feedback_supersede.ts";
+import { hasLivePrReviewClaim } from "./claim_pr_comment.ts";
 import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
@@ -1058,6 +1059,32 @@ export async function findPrCommentsToFix(
               submittedAt: review.submitted_at,
               headSha: headRefOid,
             },
+          );
+          continue;
+        }
+
+        // A pr_review claim is a lease, not a dismissal (Issue #3383): the
+        // review stays CHANGES_REQUESTED while a run works on it, so a live
+        // lease — not a dismissal — is what keeps other hosts off it. A
+        // lapsed lease (a run that died or went silent) makes the review
+        // actionable again.
+        if (
+          await hasLivePrReviewClaim({
+            repo,
+            prNumber,
+            reviewId: String(review.id),
+            ghCommandFn,
+            trustedAuthors: scanAuthors,
+            nowMs: Date.now(),
+            log: (m) => logger.warn(m),
+          })
+        ) {
+          logReviewSkip(
+            logger,
+            repo,
+            prNumber,
+            review.id,
+            "a fleet host holds a live claim on it (Issue #3383)",
           );
           continue;
         }

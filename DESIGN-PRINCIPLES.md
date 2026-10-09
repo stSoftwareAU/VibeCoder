@@ -1309,10 +1309,11 @@ operator-side equivalent already exists is the right default.
 Hidden files (paths matching `.*`) routinely carry secrets — `.env`, API keys,
 OAuth tokens, SSH keys. A single leaked secret triggers full credential
 rotation, so the worker must never stage a hidden path outside a small
-allowlist.
+fleet-wide allowlist, unless the target repository's own tracked `.gitignore`
+already re-allows it (Issue #3296; secret patterns stay forbidden regardless).
 
-**Canonical allowlist** (the only hidden paths that may ever be tracked):
-`.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
+**Canonical allowlist** (the fleet-wide hidden paths that may always be
+tracked): `.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
 
 **Canonical `.gitattributes` block.** Alongside the `.gitignore` block, the same
 enforcer writes a canonical `.gitattributes` block that pins line
@@ -1342,7 +1343,10 @@ preserved (merge, never clobber). The full pattern set lives in
    line each iteration. File changes ride along in the next normal worker PR for
    the repo — no dedicated commit machinery, no findings issue.
 3. **Pre-commit gate** — blocks any commit that stages a forbidden
-   hidden path.
+   hidden path. It also accepts a hidden path outside the allowlist when the
+   target repository's own tracked, unmodified `.gitignore` re-allows it
+   (Issue #3296); the forbidden secret patterns stay refused regardless. See
+   [SECURITY.md](SECURITY.md) for the full rule.
 
 Bypassing any safeguard (`git commit --no-verify`, `git add -f`) is forbidden.
 If a hidden file legitimately needs to be tracked, raise an issue and update the
@@ -1546,7 +1550,7 @@ such label added by the worker on the next scan, so the developer toggles the
 next-phase label manually after triage. The one exception is the audited
 `work-on` → `planning` hand-off of an oversized issue, which does not apply to
 filed findings ([SECURITY.md §5g](SECURITY.md), Issue #2688). See
-[Supported Labels in README.md](README.md#-supported-labels) for the full
+[Supported Labels in README.md](README.md#%EF%B8%8F-supported-labels) for the full
 list.
 
 **No milestone, no PR.** The `security-scan` template sets `skipMilestone: true`
@@ -2394,9 +2398,9 @@ for another day and every `--model fable` invocation would fail meanwhile.
 version is below a configured floor.** Floors live in the
 `software_min_versions` config key (defaults in
 `worker/deno/lib/config_defaults.ts`, the single source of truth; default
-`{ claude: "2.1.280" }` — the oldest release that resolves the `opus` alias
-to Opus 5.5, Issue #2560; it was 2.1.260, the Fable 5.1 floor from
-Issue #1362). The map is
+`{ claude: "2.1.293" }` — the oldest release that resolves the `haiku` alias
+to Haiku 5.5 (PR #3432 review, Issue #3400); it was 2.1.280, the Opus 5.5
+floor from Issue #2560). The map is
 generic per tool so `gh`/`deno` floors can be added later.
 
 - **Below floor → immediate update**, bypassing the timestamp gate. At/above
@@ -2416,7 +2420,7 @@ generic per tool so `gh`/`deno` floors can be added later.
   style) keep the floor logic unit-tested with no real spawn or sleep.
 
 See
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#-minimum-version-floor),
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md#%EF%B8%8F-minimum-version-floor),
 [`docs/USAGE.md`](docs/USAGE.md#-claude-cli-auto-update), and
 [`docs/INTERNALS.md`](docs/INTERNALS.md) for the operator-facing detail.
 

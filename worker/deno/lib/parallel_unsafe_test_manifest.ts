@@ -164,6 +164,11 @@ export const PROCESS_STATE_MUTATOR_TEST_FILES: readonly string[] = [];
  * left out goes red one run in five, on somebody else's change.
  */
 export const WALL_CLOCK_TEST_FILES: readonly string[] = [
+  // The admin-only hand-off strips code fences and inline code spans from an
+  // untrusted issue body before matching; only a growth measurement separates
+  // that linear strip from a backtracking one on hostile backtick runs
+  // (Issue #3295).
+  "tests/admin_only_finding_test.ts",
   // The closure-block render scans an agent-authored summary line by line for
   // the two review headings; only a growth measurement separates that scan
   // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
@@ -191,6 +196,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/grill_me_stall_guard_bounds_2183_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
+  // The pre-commit safety gate's dotenv/config/secrets patterns scan a staged
+  // path an untrusted commit can shape; only a growth measurement separates
+  // the fixed, linear patterns from the quadratic ones they replaced
+  // (Issue #3311).
+  "tests/pre_commit_safety_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   "tests/prompt_leak_redaction_test.ts",
@@ -212,6 +222,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // line by line; only a growth measurement separates its capped, anchored
   // scans from a backtracking pattern (Issue #3255).
   "tests/milestone_merge_gate_test.ts",
+  // The per-repo sub-issue ref parser merges pages built from a hostile
+  // `repository_url`; only a growth measurement separates its linear scan
+  // from a backtracking one (Issue #3319).
+  "tests/native_sub_issue_refs_test.ts",
   // The first-run summary claim check's Test Plan backstop scans an
   // agent-written summary and a test file with bounded span and declaration
   // regexes; only a growth measurement pins them (#3257).
