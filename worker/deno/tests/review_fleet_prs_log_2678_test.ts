@@ -15,7 +15,7 @@ import {
   sameIssueTitle,
   unrelatedIssueBody,
   wasChangeRequestAt,
-} from "../../../.claude/skills/review-fleet-prs/review_log.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const review = (over: Partial<FableReview> = {}): FableReview => ({
   summary: "Looks right.",

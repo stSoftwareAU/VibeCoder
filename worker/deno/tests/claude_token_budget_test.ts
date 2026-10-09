@@ -508,3 +508,20 @@ Deno.test("the token value reaches no returned value on the 429 paths (Issue #20
     );
   }
 });
+
+Deno.test("the probe request names claude-haiku-5-5 (Issue #3400)", async () => {
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse(LIVE_HEADERS))
+  );
+
+  await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  const init = fetcher.lastInit();
+  const body = JSON.parse(String(init?.body));
+  // A string literal, not the exported constant: this must fail if the
+  // constant ever regresses to an older Haiku rather than tracking it.
+  assertEquals(body.model, "claude-haiku-5-5");
+});

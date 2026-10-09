@@ -623,9 +623,9 @@ a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
 (see [Configuration](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor)). The
-default floor pins `claude` to `2.1.280` — the oldest release that resolves the
-`opus` alias to Opus 5.5, the tier every substantive phase requests
-(Issue #2560).
+default floor pins `claude` to `2.1.293` — the oldest release that resolves the
+`haiku` alias to Haiku 5.5, the model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window
+assumes (PR #3432 review, Issue #3400).
 
 - Below floor → the update runs immediately, bypassing the timestamp gate.
 - At/above floor → existing interval behaviour is preserved exactly.
