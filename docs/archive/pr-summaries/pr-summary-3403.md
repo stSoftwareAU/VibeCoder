@@ -68,6 +68,10 @@ Backend only, no UI file touched.
 
 - `worker/deno/tests/pr_body_test.ts::pr_body - subAgentTierFromBody stays linear on an unterminated hostile marker prefix` replaces the earlier wall-clock (`elapsedMs < 5_000`) version with the `assertLinearGrowth` ratio helper; it pins current behaviour (the regex is already linear), so it is expected green on base of the change.
 
+- `./quality.sh` was started on head `575c79a2` and killed by its 900s timeout (exit 143) during the parallel `deno test` stage, while another worker's full suite shared the host's CPU, so it gave no verdict. Instead, `deno fmt --check`, `deno lint` and `deno check` over the 24 changed `.ts` files and `markdownlint-cli2` all passed.
+
+<!-- vibe-quality-gate-skipped reason="full gate timed out at 900s under host contention; fast checks passed; CI and the worker's pre-PR gate run the full suite" -->
+
 **Branch outcomes:**
 - `worker/deno/lib/fleet_telemetry.ts:544` — `sonnet` run moves only the sonnet pair — `worker/deno/tests/fleet_telemetry_test.ts::fleet_telemetry - a sonnet run moves only the sonnet counters` — flipped runs and USD to the haiku pair, test went red
 - `worker/deno/lib/fleet_telemetry.ts:548` — `haiku` run moves only the haiku pair — `worker/deno/tests/fleet_telemetry_test.ts::fleet_telemetry - a haiku run moves only the haiku counters` — flipped runs and USD to the sonnet pair, test went red
