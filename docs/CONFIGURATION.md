@@ -379,7 +379,7 @@ singular key with an array value:
 ## 🔍 Reviewer App for fleet PR reviews
 
 `pr_reviewer_app` makes the unattended `review-fleet-prs` runner
-(`.claude/skills/review-fleet-prs/run.sh`) review as a GitHub App instead of
+(`.claude/skills/review-fleet-prs/scripts/run.sh`) review as a GitHub App instead of
 the host's signed-in `gh` user. It is read by that skill only, never by the
 worker.
 
@@ -403,7 +403,7 @@ lets the gate's Dependabot upkeep merge an already-clean PR with
 `gh pr merge --auto` and arm auto-merge, and lets the skill bring an approved
 fleet PR's branch up to date (`update-branch`); Workflows write lets it merge
 Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
-[the skill doc](../.claude/skills/review-fleet-prs/SKILL.md#as-a-github-app)
+[the skill doc](../.claude/skills/review-fleet-prs/references/running-unattended.md#as-a-github-app)
 for details.
 
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
@@ -454,7 +454,7 @@ explicitly overridden.
 | `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.280" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
+| `software_min_versions`      | `{ "claude": "2.1.293" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
@@ -628,7 +628,7 @@ floors for `gh`/`deno` can be added later:
 ```json
 {
   "software_min_versions": {
-    "claude": "2.1.280"
+    "claude": "2.1.293"
   }
 }
 ```
@@ -651,21 +651,21 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.280" }` — the oldest Claude CLI release
-  that resolves the `opus` alias to **Opus 5.5** (`claude-opus-5-5`, added as
-  the default Opus model in 2.1.280), the tier every substantive phase requests
-  since Issue #2560. It was 2.1.260 before — the oldest release serving
-  **Fable 5.1** with its prompt-cache fixes (Issue #1362) — and 2.1.280 is above
-  that, so a phase pinned back to Fable keeps both. Setting the key replaces the
-  default map; provide an empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.293" }` — the oldest Claude CLI release
+  that resolves the `haiku` alias to **Haiku 5.5** (`claude-haiku-5-5`), the
+  model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window assumes (PR #3432 review,
+  Issue #3400). It was 2.1.280 before — the oldest release resolving `opus` to
+  **Opus 5.5** (Issue #2560) — and 2.1.293 is above that, so a phase pinned
+  back to Opus or Fable keeps its own generation too. Setting the key replaces
+  the default map; provide an empty map to remove the floor.
 - **Hosts only, and the update channel bounds it.** Inside the worker container
   the software-update step is suppressed altogether — the image is the update
   mechanism, so `container/tools.json` is what decides the CLI version there
-  (pinned to 2.1.281 since Issue #2560). On a host in the default `dynamic`
+  (pinned to 2.1.293 since PR #3432 review, Issue #3400). On a host in the default `dynamic`
   mode the updater runs bare `claude update`, which follows the CLI's `stable`
-  channel; `stable` was 2.1.236 when this floor was raised, so such a host logs
-  "below required floor" once per interval until `stable` catches up or the host
-  moves to `update_mode: frozen` with a pinned version.
+  channel; `stable` was 2.1.286 when this floor was raised to 2.1.293, so such a
+  host logs "below required floor" once per interval until `stable` catches up
+  or the host moves to `update_mode: frozen` with a pinned version.
 
 **Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
 `fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the
@@ -3870,7 +3870,8 @@ performance, or failures.
    prompt component (issue body, comments, custom instructions, recent activity,
    etc.) using a characters-per-token heuristic (~4 characters per token).
 2. The total is compared against the model's context window (1,000,000 tokens
-   for Opus/Sonnet, 200,000 for Haiku —).
+   for Opus/Sonnet/Haiku — Haiku 5.5, Issue #3400 — or 200,000 for a Haiku 4.x
+   id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
 4. If usage reaches `context_budget_block_percent`, the check fails closed

@@ -1,9 +1,13 @@
 /**
  * Tests for phase model escalation on large inputs (Issue #2393).
  *
- * Verifies that when a Haiku-pinned phase (e.g. `summarise`) receives an
- * input approaching the Haiku 200k context window, the model is escalated
- * to a larger-window tier so the input is not silently truncated.
+ * Verifies that when a phase pinned to a 200k-window model (a Haiku 4.x id,
+ * or an unrecognised/unresolved model) receives an input approaching that
+ * window, the model is escalated to a larger-window tier so the input is
+ * not silently truncated. Since Haiku 5.5 (Issue #3400) the `haiku` alias
+ * itself has a 1M-token context window — the same as Sonnet/Opus — so it no
+ * longer escalates; tests that exercise the 200k ceiling pin a Haiku 4.x id
+ * (e.g. `claude-haiku-4-5`) instead.
  */
 
 import { assert, assertEquals } from "@std/assert";
@@ -12,7 +16,7 @@ import {
   HAIKU_ESCALATION_THRESHOLD_PERCENT,
   selectModelForLargeInput,
 } from "../lib/phase_model_escalation.ts";
-import { MODEL_CONTEXT_WINDOWS } from "../lib/context_budget.ts";
+import { getContextWindowSize } from "../lib/context_budget.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
 // ---------------------------------------------------------------------------
@@ -51,16 +55,16 @@ Deno.test("phase_model_escalation - summarise small input stays on haiku", () =>
   assertEquals(result.reason, undefined);
 });
 
-Deno.test("phase_model_escalation - summarise input just below threshold stays on haiku", () => {
-  const haikuWindow = MODEL_CONTEXT_WINDOWS.haiku!;
+Deno.test("phase_model_escalation - summarise input just below threshold stays on claude-haiku-4-5", () => {
+  const haikuWindow = getContextWindowSize("claude-haiku-4-5");
   const justBelow = Math.floor(
     (haikuWindow * HAIKU_ESCALATION_THRESHOLD_PERCENT) / 100,
   ) - 1;
   const result = selectModelForLargeInput("summarise", justBelow, {
-    env: emptyEnv,
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, false);
-  assertEquals(result.model, "haiku");
+  assertEquals(result.model, "claude-haiku-4-5");
 });
 
 // ---------------------------------------------------------------------------
@@ -68,12 +72,12 @@ Deno.test("phase_model_escalation - summarise input just below threshold stays o
 // ---------------------------------------------------------------------------
 
 Deno.test("phase_model_escalation - summarise input at threshold escalates to sonnet", () => {
-  const haikuWindow = MODEL_CONTEXT_WINDOWS.haiku!;
+  const haikuWindow = getContextWindowSize("claude-haiku-4-5");
   const atThreshold = Math.floor(
     (haikuWindow * HAIKU_ESCALATION_THRESHOLD_PERCENT) / 100,
   );
   const result = selectModelForLargeInput("summarise", atThreshold, {
-    env: emptyEnv,
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
@@ -82,7 +86,7 @@ Deno.test("phase_model_escalation - summarise input at threshold escalates to so
 
 Deno.test("phase_model_escalation - summarise input over 200k escalates to sonnet", () => {
   const result = selectModelForLargeInput("summarise", 250_000, {
-    env: emptyEnv,
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, "sonnet");
@@ -133,11 +137,14 @@ Deno.test("phase_model_escalation - health phase small input stays on haiku", ()
   assertEquals(result.model, "haiku");
 });
 
-Deno.test("phase_model_escalation - any haiku-pinned phase escalates if input is huge", () => {
+Deno.test("phase_model_escalation - any phase pinned to a 200k model escalates if input is huge", () => {
   // The function is generic — it triggers on the resolved model's window,
-  // not on the phase name. If health were ever called with a giant input
-  // we still want the same protection.
-  const result = selectModelForLargeInput("health", 300_000, { env: emptyEnv });
+  // not on the phase name. If health were ever pinned to a Haiku 4.x id
+  // (200k window) and called with a giant input we still want the same
+  // protection (Issue #3400 — the `haiku` alias itself is now 1M).
+  const result = selectModelForLargeInput("health", 300_000, {
+    env: envFrom({ CLAUDE_MODEL_HEALTH: "claude-haiku-4-5" }),
+  });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
 });
@@ -149,7 +156,7 @@ Deno.test("phase_model_escalation - any haiku-pinned phase escalates if input is
 Deno.test("phase_model_escalation - custom escalation target honoured", () => {
   const result = selectModelForLargeInput("summarise", 250_000, {
     escalationTarget: "opus",
-    env: emptyEnv,
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, "opus");
@@ -159,20 +166,20 @@ Deno.test("phase_model_escalation - custom threshold percent honoured", () => {
   // Threshold of 50% → 100k tokens.
   const result = selectModelForLargeInput("summarise", 120_000, {
     thresholdPercent: 50,
-    env: emptyEnv,
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, "sonnet");
 });
 
 Deno.test("phase_model_escalation - custom threshold percent suppresses escalation under threshold", () => {
-  // Threshold of 95% → 190k tokens. 180k stays on haiku.
+  // Threshold of 95% → 190k tokens. 180k stays on claude-haiku-4-5.
   const result = selectModelForLargeInput("summarise", 180_000, {
     thresholdPercent: 95,
-    env: emptyEnv,
+    env: envFrom({ CLAUDE_MODEL_SUMMARISE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, false);
-  assertEquals(result.model, "haiku");
+  assertEquals(result.model, "claude-haiku-4-5");
 });
 
 // ---------------------------------------------------------------------------
@@ -208,11 +215,13 @@ Deno.test("phase_model_escalation - unknown phase falls back to default window (
 // ---------------------------------------------------------------------------
 
 Deno.test("phase_model_escalation - the phase's model is resolved through the injected lookup (Issue #957)", () => {
-  // `haiku` has the small window this module escalates away from, so pinning
-  // the phase to it through the lookup — under a name no process environment
-  // carries a value for — proves the escalation decision reads the seam.
+  // `claude-haiku-4-5` has the small (200k) window this module escalates
+  // away from — the `haiku` alias itself is 1M since Haiku 5.5 (Issue
+  // #3400) — so pinning the phase to it through the lookup — under a name
+  // no process environment carries a value for — proves the escalation
+  // decision reads the seam.
   const result = selectModelForLargeInput("made_up_phase", 500_000, {
-    env: envFrom({ CLAUDE_MODEL_MADE_UP_PHASE: "haiku" }),
+    env: envFrom({ CLAUDE_MODEL_MADE_UP_PHASE: "claude-haiku-4-5" }),
   });
   assertEquals(result.escalated, true);
   assertEquals(result.model, DEFAULT_ESCALATION_TARGET);
@@ -243,4 +252,17 @@ Deno.test("phase_model_escalation - Codex summarise never receives sonnet or hai
   assertEquals(large.model.includes("sonnet"), false);
   assertEquals(large.model.includes("haiku"), false);
   assertEquals(large.model, "gpt-5-mini");
+});
+
+// ---------------------------------------------------------------------------
+// Haiku 5.5's 1M window (Issue #3400)
+// ---------------------------------------------------------------------------
+
+Deno.test("phase_model_escalation - a 300k-token summarise stays on haiku (Issue #3400)", () => {
+  const result = selectModelForLargeInput("summarise", 300_000, {
+    env: emptyEnv,
+  });
+  assertEquals(result.escalated, false);
+  assertEquals(result.model, "haiku");
+  assertEquals(result.reason, undefined);
 });
