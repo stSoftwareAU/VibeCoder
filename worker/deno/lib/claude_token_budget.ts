@@ -97,12 +97,12 @@ export const CLAUDE_BUDGET_PROBE_URL = "https://api.anthropic.com/v1/messages";
 /**
  * Model named on the probe request.
  *
- * The cheapest model in the family: with `max_tokens: 0` nothing is generated,
- * so the whole cost is the few input tokens of {@link PROBE_PROMPT}. The model
- * choice does not affect the headers — they describe the token's subscription
- * window, not the model.
+ * The cheapest model in the family (Haiku 5.5, Issue #3400): with
+ * `max_tokens: 0` nothing is generated, so the whole cost is the few input
+ * tokens of {@link PROBE_PROMPT}. The model choice does not affect the
+ * headers — they describe the token's subscription window, not the model.
  */
-export const CLAUDE_BUDGET_PROBE_MODEL = "claude-haiku-4-5";
+export const CLAUDE_BUDGET_PROBE_MODEL = "claude-haiku-5-5";
 
 /** Shortest prompt that is still a valid request. */
 const PROBE_PROMPT = ".";
