@@ -81,38 +81,6 @@ describes completed implementation runs, and a refused run is not recorded;
 `docs/CONFIGURATION.md:453` and `docs/CONFIGURATION.md:4488` — still true
 because they describe what the tier selects, not the refusal policy.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — A refusal on a haiku-tier run triggers exactly one sonnet-tier retry. — evidence: `worker/deno/tests/haiku_refusal_retry_test.ts::execute - a haiku-tier Haiku refusal retries once on sonnet and a clean retry continues (Issue #3406)`, `worker/deno/tests/haiku_refusal_retry_test.ts::decideRefusalAction - none, retry-on-sonnet and fail` — reviewer: met
-- **met** — A refusal on the retry fails the run (non-success outcome) — no third attempt. — evidence: `worker/deno/tests/haiku_refusal_retry_test.ts::execute - a second refusal on the sonnet retry fails the run with no third attempt (Issue #3406)` — reviewer: met
-- **met** — A refusal on a sonnet-tier run is not retried and fails loud. — evidence: `worker/deno/tests/haiku_refusal_retry_test.ts::execute - a sonnet-tier refusal fails at once without a retry (Issue #3406)` — reviewer: met
-- **partial** — The run-stats comment names the refusal category and the retry outcome. — evidence: `worker/deno/tests/haiku_refusal_retry_test.ts::buildAgentRefusalLine - renders all four retry outcomes and nothing for none`, `worker/deno/tests/completion_phase_run_stats_test.ts::completion - the PR-raise stats comment carries the safety-refusal line when the state has one (Issue #3406)`, `worker/deno/tests/issue_run_stats_comment_test.ts::buildIssueRunStatsComment - renders the safety-refusal line after the stats and leaves other comments byte-identical (Issue #3406)` — reviewer: partial — reason: `worker/deno/tests/handle_no_changes_phase_test.ts::handle_no_changes_phase - an already-complete close carries the safety-refusal line when the state has one (Issue #3406)` fails, because `worker/deno/lib/phases/handle_no_changes_phase.ts` never passes `agentRefusal` to `postIssueRunStatsComment`
-- **met** — Runs with no refusal behave exactly as before. — evidence: `worker/deno/tests/haiku_refusal_retry_test.ts::execute - no refusal on the haiku tier runs once, unchanged, with no extra comment (Issue #3406)`, `worker/deno/tests/haiku_refusal_retry_test.ts::execute - no refusal on the sonnet tier runs once, unchanged, with no extra comment (Issue #3406)`, `worker/deno/tests/haiku_refusal_retry_test.ts::execute - a no_changes attempt with no refusal still exits early (Issue #3406)`, `worker/deno/tests/completion_phase_run_stats_test.ts::completion - a run with no refusal renders no safety-refusal line (Issue #3406)`, `worker/deno/tests/agent_refusal_test.ts::buildRunStats carries refusals only when present` — reviewer: met
-- **unrequested** — `docs/MODEL-AND-CACHING.md` "Safety refusals" paragraph — reviewer: unrequested — reason: operator documentation for the new policy, which the project standards expect but the issue does not ask for
-- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3406.json` — reviewer: unrequested — reason: records the two new lib modules in the lib-sweep coverage ledger
-- **unrequested** — Exporting `sanitiseModelId` from `worker/deno/lib/issue_sub_agent_degradation.ts` — reviewer: unrequested — reason: reused to clean the category and model text in the refusal line and failure reason
-- **unrequested** — Cleaning and length-capping of category and model strings (`cleanModel` / `cleanCategory`) — reviewer: unrequested — reason: these strings come from the API and are put into Markdown, so this guards against Markdown injection
-- **unrequested** — Not counting `model_refusal_fallback` turns — reviewer: unrequested — reason: avoids failing a run the CLI already recovered
-- **unrequested** — A non-Haiku refusal on the haiku tier fails without a retry — reviewer: unrequested — reason: a policy choice that goes beyond the issue: only a Haiku refusal earns the Sonnet retry, so a lead-model (Opus) refusal fails at once
-- **unrequested** — Refusals that hide behind a `no_changes` outcome are also checked — reviewer: unrequested — reason: covers the issue's "never a clean no-change outcome" in a code path the bullets don't spell out
-- **unrequested** — The infrastructure retry stays on the Sonnet tier once a refusal has been seen — reviewer: unrequested — reason: keeps the existing #1550 retry from dropping back to Haiku after a timeout; it means three attempts in total are possible in that path
-- **unrequested** — `postWorkOnRunStats` exported, with a new `recordFigures` option — reviewer: unrequested — reason: lets the execute phase post the stats comment on a refusal failure without counting that run in the pilot's fleet-telemetry pass rate
-- **unrequested** — The execute phase posts the run-stats comment itself on a refusal failure — reviewer: unrequested — reason: the generic failure path does not post the comment, so this is how the refusal gets onto the issue when no PR is raised
-- **unrequested** — The failure reason is worded so it cannot be read as an infrastructure failure — reviewer: unrequested — reason: stops `detectFailureCategory` from treating a refusal as a retryable infrastructure fault
-- **unrequested** — New test in `worker/deno/tests/handle_no_changes_phase_test.ts` (currently failing, see criterion 4) — reviewer: unrequested — reason: extends the comment check to the already-complete close path, but the library change it tests was never made
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — TDD: every changed call site needs a test, and a test may not be weakened to pass a gate — evidence: `worker/deno/tests/handle_no_changes_phase_test.ts:728` — reason: outstanding — the test fails (170 passed, 1 failed in the five touched test files), because `worker/deno/lib/phases/handle_no_changes_phase.ts:296-322` never passes `agentRefusal` to `postIssueRunStatsComment`; not fixed in this summary-only commit
-- **violation** — Every outcome of a new branch needs a test that reaches it — evidence: `worker/deno/lib/phases/completion_phase.ts:1157` (caller `worker/deno/lib/phases/execute_phase.ts:435`) — reason: outstanding — no test checks that a refused, failed run (`recordFigures: false`) is kept out of fleet telemetry; flipping it leaves the suite green
-- **violation** — DRY: an in-repo helper written again by hand — evidence: `worker/deno/lib/agent_refusal.ts:37` — reason: outstanding — `cleanModel` repeats the `/[^A-Za-z0-9._:@/-]/g` allow-list of `sanitiseModelId`, which this same diff exports
-- **violation** — A code change owes a docs change — evidence: `docs/MODEL-AND-CACHING.md:785-787`, `docs/MODEL-AND-CACHING.md:809`, `docs/MODEL-AND-CACHING.md:1559-1561` — reason: fixed in this diff — the three passages now name the refusal-failure path and say the already-resolved close's comment does not carry the refusal line
-- **clean** — Checked: the diff only adds test assertions and removes or weakens none; the tests call real code (`workOnIssueExecuteClaude`, `buildRunStats`, `extractAgentRefusals`) and none grep source; `deno fmt --check`, `deno lint` and `deno check` pass on the 13 changed files; there is no import cycle (`completion_phase.ts` does not reach `execute_phase.ts`, directly or transitively); Australian English throughout; API-sourced strings are cleaned to an allow-list, capped and backticked; the `logger.error` before the retry matches the issue's "log an error"; the lib-sweep top-up record is present; the commit messages cite the issue. Optional notes from the reviewer: the head commits are WIP checkpoints (#4170), and after the forced-sonnet retry `postWorkOnRunStats` still runs the degradation check against the configured tier, which does no harm today.
-
 ## Test Plan
 
 - No assertion is removed from an existing test: every test file in the diff
@@ -176,3 +144,22 @@ Each flip was made in a scratch worktree at this head, one at a time, then
 restored; `deno test -A --no-check` ran on the named test file.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A refusal on a haiku-tier run triggers exactly one sonnet-tier retry. — evidence: `worker/deno/tests/haiku refusal retry test.ts::execute - a haiku-tier Haiku refusal retries once on sonnet and a clean retry continues (Issue #3406)` — reviewer: met
+- **met** — A refusal on the retry fails the run (non-success outcome) — no third attempt. — evidence: `worker/deno/tests/haiku refusal retry test.ts::execute - a second refusal on the sonnet retry fails the run with no third attempt (Issue #3406)` — reviewer: met
+- **met** — A refusal on a sonnet-tier run is not retried and fails loud. — evidence: `worker/deno/tests/haiku refusal retry test.ts::execute - a sonnet-tier refusal fails at once without a retry (Issue #3406)` — reviewer: met
+- **partial** — The run-stats comment names the refusal category and the retry outcome. — evidence: `worker/deno/tests/completion phase run stats test.ts::completion - the PR-raise stats comment carries the safety-refusal line when the state has one (Issue #3406)` — reviewer: partial — reason: the already-complete close path (handle no changes phase.ts:296-322) never passes agentRefusal, so its comment omits the line and handle no changes phase test.ts:728 fails
+- **met** — Runs with no refusal behave exactly as before. — evidence: `worker/deno/tests/haiku refusal retry test.ts::execute - no refusal on the haiku tier runs once, unchanged, with no extra comment (Issue #3406)` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — TDD / quality gate: a test this diff adds fails, because the call site it covers was never wired up — evidence: `worker/deno/lib/phases/handle no changes phase.ts:296` — reason: outstanding: this diff adds the line and it is not fixed; handle no changes phase test.ts:728 fails (27 passed, 1 failed), and a code change is needed before the PR can be raised
+- **violation** — Every outcome of a new branch needs a test that reaches it: no test checks that a refused, failed run (recordFigures: false) is kept out of fleet telemetry — evidence: `worker/deno/lib/phases/completion phase.ts:1157` — reason: outstanding: this diff adds the line and it is not fixed; a test for the recordFigures: false path from execute phase.ts:435 is needed before the PR can be raised
+- **violation** — DRY: an in-repo helper written again by hand — cleanModel repeats the /[^A-Za-z0-9. :@/-]/g allow-list of sanitiseModelId, which this same diff exports — evidence: `worker/deno/lib/agent refusal.ts:37` — reason: outstanding: this diff adds the line and it is not fixed; cleanModel must reuse sanitiseModelId before the PR can be raised
+- **clean** — Australian English, fail-loud refusal handling (no infrastructure retry wording), inert rendering of API-sourced category strings, and test coverage of the retry, fail and no-refusal paths in execute phase
