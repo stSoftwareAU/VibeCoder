@@ -220,6 +220,31 @@ export const SUMMARY_RULE_GATE_MARKER =
   "the PR summary did not pass the worker's completion gates";
 
 /**
+ * The worker-written head of a posted summary-gate failure record: the
+ * `## Automated Processing Failed …` heading line followed by the
+ * `**Category:** \`summary-incomplete\`` line `markIssueAsFailedOnce` and
+ * `markIssueAsFailed` write straight after it. Anchored to the start of the
+ * comment, ahead of the quoted agent text, so a quoted category line further
+ * down cannot forge it. `[^\n]*` and `\s*` are separated by a literal `\n`,
+ * so the pattern stays linear.
+ */
+const SUMMARY_GATE_RECORD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\* `summary-incomplete`/;
+
+/**
+ * Whether a posted failure-record comment body records a PR-summary gate
+ * refusal (Issue #3431; PR #3440 review). The record embeds the reason under
+ * a heading, so {@link SUMMARY_RULE_GATE_MARKER} is no longer at the start of
+ * the body; the sweeps that re-classify posted bodies
+ * (`host_fault_release.ts`, `milestone_branch_refusal_release.ts`) use this
+ * to leave such a record alone, because the text it quotes is the agent's
+ * own, not host or repository output.
+ */
+export function isSummaryGateFailureRecord(body: string): boolean {
+  return SUMMARY_GATE_RECORD_RE.test(body.trimStart());
+}
+
+/**
  * The catch-all `Error:` rule of {@link detectFailureCategory}. A Rust/C++
  * path such as `AppError::X` is not an `Error:` line, so `Error::` is excluded
  * (Issue #3431). The lookahead is a single-character check, so it stays linear.

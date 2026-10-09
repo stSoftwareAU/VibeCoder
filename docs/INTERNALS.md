@@ -4895,7 +4895,13 @@ it and keeps its own category. The catch-all is also now `/Error:(?!:)/`, so a `
 cooldown kind `non_transient` for it before any free-text check, and
 `detectHostFault` returns `null` for a marked reason, so a quoted "at the cycle
 deadline", "timeout", `ENOSPC` or `Failed to clone` neither releases the issue
-unlabelled nor counts the run as a timeout.
+unlabelled nor counts the run as a timeout. The posted failure comment embeds
+the reason under a heading, so the marker no longer opens the body; the
+host-fault and milestone-refusal label-release sweeps, which re-classify posted
+bodies, therefore skip a record whose worker-written `**Category:**` line at the
+head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
+`failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
+rejection in a refused summary cannot strip `failed-once` or `failed`.
 
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
