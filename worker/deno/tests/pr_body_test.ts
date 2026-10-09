@@ -16,6 +16,7 @@ import {
   neutraliseSubAgentTierMarkers,
   subAgentTierFromBody,
 } from "../lib/pr_body.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // --- extractClosingIssueNumbers (Issue #1113) ---
 
@@ -280,13 +281,13 @@ Deno.test("pr_body - neutraliseSubAgentTierMarkers strips the comment delimiters
   assertEquals(subAgentTierFromBody(neutralised), undefined);
 });
 
-Deno.test("pr_body - subAgentTierFromBody completes quickly on an unterminated hostile marker prefix", () => {
-  const hostile = "<!-- vibe-sub-agent-tier: " + "a".repeat(50_000);
-  const start = performance.now();
-  const result = subAgentTierFromBody(hostile);
-  const elapsedMs = performance.now() - start;
+Deno.test("pr_body - subAgentTierFromBody stays linear on an unterminated hostile marker prefix", () => {
+  // A ratio of two readings, never a constant.
+  const result = assertLinearGrowth(
+    "subAgentTierFromBody unterminated marker",
+    (chars) => "<!-- vibe-sub-agent-tier: " + "a".repeat(chars),
+    (input) => subAgentTierFromBody(input),
+    { baseChars: 10_000 },
+  );
   assertEquals(result, undefined);
-  // No wall-clock assertion threshold — the point is that this returns at
-  // all, rather than hanging on catastrophic regex backtracking.
-  assertEquals(elapsedMs < 5_000, true);
 });

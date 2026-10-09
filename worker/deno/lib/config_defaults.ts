@@ -482,8 +482,9 @@ export const OPERATIONAL_DEFAULTS = {
   issueExecutorSplit: true,
   /**
    * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
-   * Accepted and validated, but not read yet: #3402 will use it to pick
-   * the executors' model. Today executors stay on Sonnet
+   * Each `issue` run records the resolved tier in fleet telemetry (per-tier
+   * runs and USD) and stamps it on the PR body as a `vibe-sub-agent-tier`
+   * marker (Issue #3403). Executors still run on Sonnet
    * (`ISSUE_EXECUTOR_MODEL` in `issue_executor_agents.ts`) whatever this
    * is set to.
    */
