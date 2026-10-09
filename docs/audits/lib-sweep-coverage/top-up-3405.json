@@ -1,0 +1,12 @@
+{
+  "issue": 3405,
+  "chunk": "top-up-3405",
+  "title": "top-up: haiku sub-agent degradation check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3405",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: issue_sub_agent_degradation.ts (#3405)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_sub_agent_degradation.ts"
+  ],
+  "sweptAt": "c46ad65356ea313ade389899d2c1b9c114f9cb6a"
+}
