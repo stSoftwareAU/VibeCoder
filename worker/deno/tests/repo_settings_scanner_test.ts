@@ -61,6 +61,7 @@ const HARDENED = {
     },
   },
   "/private-vulnerability-reporting": { enabled: true },
+  "/contents/SECURITY.md": { type: "file" },
 };
 
 const OPEN = {
@@ -89,6 +90,7 @@ const OPEN = {
     },
   },
   "/private-vulnerability-reporting": { enabled: false },
+  "/contents/SECURITY.md": { type: "file" },
 };
 
 Deno.test("scanRepoSettings - a hardened repository yields no findings (Issues #4397 #4398 #4401)", async () => {
@@ -509,7 +511,9 @@ Deno.test("scanRepoSettings - a private or internal repository is not read for P
         defaultBranch: "Develop",
         onCheckSkipped: (what, reason, actionable) => {
           skips.push([what, reason]);
-          actionableFlags.push(actionable);
+          if (what === "private vulnerability reporting") {
+            actionableFlags.push(actionable);
+          }
         },
         onLookupFailure: () => {
           throw new Error("PVR must not be read on a private repository");
@@ -660,4 +664,131 @@ Deno.test("scanRepoSettings - an unreadable repos/{owner}/{repo} is not followed
   );
   assertEquals(failures.length, 1, JSON.stringify(failures));
   assertEquals(failures[0]![0], "repos (security_and_analysis)");
+});
+
+// =============================================================================
+// Issue #3269 — BP-REPO-SECURITY-POLICY-MISSING
+// =============================================================================
+
+/** `HARDENED` answering the three SECURITY.md paths from `byPath`. */
+function hardenedWithPolicy(
+  byPath: Record<string, unknown>,
+  repoFields: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const { "/contents/SECURITY.md": _drop, ...rest } = HARDENED;
+  return {
+    ...byPath,
+    ...rest,
+    "repos/org/repo": { ...HARDENED["repos/org/repo"], ...repoFields },
+  };
+}
+
+const NOT_FOUND = new Error("HTTP 404: Not Found");
+
+Deno.test("scanRepoSettings - SECURITY.md at any of the three paths files no finding (Issue #3269)", async () => {
+  for (
+    const path of [
+      "/contents/SECURITY.md",
+      "/contents/.github/SECURITY.md",
+      "/contents/docs/SECURITY.md",
+    ]
+  ) {
+    // Every path before the present one answers 404, so the finder walks on.
+    const answers: Record<string, unknown> = {
+      "/contents/SECURITY.md": NOT_FOUND,
+      "/contents/.github/SECURITY.md": NOT_FOUND,
+      "/contents/docs/SECURITY.md": NOT_FOUND,
+      [path]: { type: "file" },
+    };
+    const findings = await scanRepoSettings(
+      "org/repo",
+      ghFor(hardenedWithPolicy(answers, { visibility: "public" })),
+      { defaultBranch: "Develop" },
+    );
+    assertEquals(findings.map((f) => f.findingId), [], path);
+  }
+});
+
+Deno.test("scanRepoSettings - a public repository with no SECURITY.md files one worker-fixable finding (Issues #3269 #3266)", async () => {
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(hardenedWithPolicy({
+      "/contents/SECURITY.md": NOT_FOUND,
+      "/contents/.github/SECURITY.md": NOT_FOUND,
+      "/contents/docs/SECURITY.md": NOT_FOUND,
+    }, { visibility: "public", private: false })),
+    { defaultBranch: "Develop" },
+  );
+  assertEquals(findings.map((f) => f.findingId), [
+    "BP-REPO-SECURITY-POLICY-MISSING",
+  ]);
+  const f = findings[0]!;
+  // No admin-action prose anywhere in the body: the worker fixes this one.
+  assert(
+    !/the worker cannot change repository settings/i.test(
+      f.title + f.whyItMatters + f.suggestedFix + f.evidence,
+    ),
+  );
+  assert(f.suggestedFix.includes("SECURITY.md"), f.suggestedFix);
+});
+
+Deno.test("scanRepoSettings - a known-open BP-REPO-SECURITY-POLICY-MISSING is not re-filed (Issue #3269)", async () => {
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(hardenedWithPolicy({
+      "/contents/SECURITY.md": NOT_FOUND,
+      "/contents/.github/SECURITY.md": NOT_FOUND,
+      "/contents/docs/SECURITY.md": NOT_FOUND,
+    }, { visibility: "public" })),
+    {
+      defaultBranch: "Develop",
+      knownOpenFindingIds: ["BP-REPO-SECURITY-POLICY-MISSING"],
+    },
+  );
+  assertEquals(findings, []);
+});
+
+Deno.test("scanRepoSettings - a non-404 SECURITY.md read error is a lookup failure, not a finding (Issue #3269)", async () => {
+  const failures: Array<[string, string]> = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(hardenedWithPolicy({
+      "/contents/SECURITY.md": new Error("HTTP 500: Server Error"),
+    }, { visibility: "public" })),
+    {
+      defaultBranch: "Develop",
+      onLookupFailure: (what, reason) => failures.push([what, reason]),
+    },
+  );
+  assertEquals(findings, []);
+  assertEquals(failures.length, 1, JSON.stringify(failures));
+  assertEquals(failures[0]![0], "SECURITY.md");
+  assert(failures[0]![1].includes("HTTP 500"), failures[0]![1]);
+});
+
+Deno.test("scanRepoSettings - a private repository reads no SECURITY.md and records a non-actionable skip (Issue #3269)", async () => {
+  const seen: string[] = [];
+  const skips: Array<[string, boolean]> = [];
+  const findings = await scanRepoSettings(
+    "org/repo",
+    ghFor(
+      hardenedWithPolicy({
+        "/contents/SECURITY.md": NOT_FOUND,
+        "/contents/.github/SECURITY.md": NOT_FOUND,
+        "/contents/docs/SECURITY.md": NOT_FOUND,
+      }, { visibility: "private", private: true }),
+      (args) => seen.push(args[1] ?? ""),
+    ),
+    {
+      defaultBranch: "Develop",
+      onCheckSkipped: (what, _reason, actionable) =>
+        skips.push([what, actionable]),
+    },
+  );
+  assertEquals(findings, []);
+  assert(!seen.some((e) => e.includes("/contents/")), JSON.stringify(seen));
+  assertEquals(skips.filter(([w]) => w === "security policy"), [[
+    "security policy",
+    false,
+  ]]);
 });

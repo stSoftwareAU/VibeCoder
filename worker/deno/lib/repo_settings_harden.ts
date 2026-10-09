@@ -2056,6 +2056,9 @@ export type CodeownersLocation =
   | { state: "absent" }
   | { state: "error"; message: string };
 
+/** Where a file was found on a repo's default branch (Issue #3269). */
+export type FileLocation = CodeownersLocation;
+
 /** The locations GitHub reads CODEOWNERS from, in its precedence order. */
 const CODEOWNERS_PATHS = [
   ".github/CODEOWNERS",
@@ -2063,19 +2066,27 @@ const CODEOWNERS_PATHS = [
   "docs/CODEOWNERS",
 ] as const;
 
+/** The locations GitHub recognises a security policy at (Issue #3269). */
+export const SECURITY_POLICY_PATHS = [
+  "SECURITY.md",
+  ".github/SECURITY.md",
+  "docs/SECURITY.md",
+] as const;
+
 /**
- * Find the CODEOWNERS file on the default branch (Issue #2626). Only a 404
- * at every location is `absent`; any other error is `error`, so a flaky read
- * is never mistaken for a missing file.
+ * Find the first of `paths` that exists on the default branch (Issue #3269).
+ * Only a 404 at every location is `absent`; any other error is `error`, so a
+ * flaky read is never mistaken for a missing file.
  */
-export async function findCodeownersOnDefaultBranch(
+export async function findFileOnDefaultBranch(
   repo: string,
   ghCommandFn: GhCommandFn,
-): Promise<CodeownersLocation> {
+  paths: readonly string[],
+): Promise<FileLocation> {
   if (!isValidRepoSlug(repo)) {
     return { state: "error", message: `invalid repo name: ${repo}` };
   }
-  for (const path of CODEOWNERS_PATHS) {
+  for (const path of paths) {
     try {
       await ghCommandFn(["api", `repos/${repo}/contents/${path}`]);
       return { state: "present", path };
@@ -2088,4 +2099,12 @@ export async function findCodeownersOnDefaultBranch(
     }
   }
   return { state: "absent" };
+}
+
+/** Find the CODEOWNERS file on the default branch (Issue #2626). */
+export function findCodeownersOnDefaultBranch(
+  repo: string,
+  ghCommandFn: GhCommandFn,
+): Promise<CodeownersLocation> {
+  return findFileOnDefaultBranch(repo, ghCommandFn, CODEOWNERS_PATHS);
 }
