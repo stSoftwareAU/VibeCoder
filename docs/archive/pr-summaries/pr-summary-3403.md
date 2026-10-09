@@ -28,23 +28,45 @@ so the Haiku trial (#3385) can be judged from fleet telemetry. Closes #3403.
   resolver (`b022d265`). It is on `main` but not yet on the milestone branch,
   and this work consumes it.
 
+## Spec
+
+### Intent and Rationale
+
+- The Haiku trial (#3385) is judged by outcome per dollar, so each issue run's tier must be counted beside its spend and stamped on the PR for later outcome attribution
+- The counters are additive pairs beside the existing totals, so no reader of the totals changes
+
+### Essential Design Decisions
+
+- `subAgentTier` is required on `IssuePhaseRun`, `measureIssuePhaseRun` and `assemblePrBody`, so a new caller cannot silently drop the tier
+- The tier tokens print only after a `haiku` run, which keeps a sonnet-only summary line byte-identical
+- The sidecar reads the old shape (sonnet = runs − haiku) rather than bumping the schema key, so a legacy file keeps its history
+
+### Undiscoverable Facts
+
+- #3401's resolver is on `main` but not on this milestone branch, so the branch carries a cherry-pick of `b022d265`
+- #3402 (tier-aware executors) merged into a different milestone branch, so on this branch the executors still run on Sonnet whatever the tier is set to
+
 ## Evidence
 
 Backend only, no UI file touched.
 
-**Docs sweep** — grep: `issue_sub_agent_tier`, `vibe-sub-agent-tier`, `issue_tier_runs`, `issue_tier_usd`, `issue_usd`, `IssuePhaseCounters`, `recordIssuePhaseRun`, `measureIssuePhaseRun`, `assemblePrBody`, "hidden marker", "not read yet" over `README.md`, `*/README.md` and `docs/` (excluding `docs/archive/`, `docs/audits/`); section: `docs/INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855` (already documents the tier tokens), `docs/USAGE.md` PR-summary paragraph (the PR body's hidden markers), and the host and `repo_config` tables in `docs/CONFIGURATION.md`; updated: `docs/CONFIGURATION.md:453` and `:4488` ("Accepted and validated, but not read yet" was made false by this change; they now say the tier is read for telemetry and the PR-body marker, while executors still stay on Sonnet until #3402), `docs/USAGE.md` (names the tier marker beside the digest marker and says a re-sync carries it over). Hits read and still true: `docs/INTERNALS.md:369`, `docs/workflows/issue-processing.md:1048` (`assemblePrBody`'s `missing`-criterion behaviour, unchanged), and the digest-marker sentences in `docs/workflows/pr-feedback.md:205` and `docs/workflows/merge-conflicts.md:210`.
+**Docs sweep** — grep: `issue_sub_agent_tier`, `vibe-sub-agent-tier`, `issue_tier_runs`, `issue_tier_usd`, `issue_usd`, `IssuePhaseCounters`, `recordIssuePhaseRun`, `measureIssuePhaseRun`, `assemblePrBody`, "hidden marker", "not read yet" over `README.md`, `*/README.md` and `docs/` (excluding `docs/archive/`, `docs/audits/`); section: `docs/INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855` (already documents the tier tokens), `docs/USAGE.md` PR-summary paragraph (the PR body's hidden markers), and the host and `repo_config` tables in `docs/CONFIGURATION.md`; updated: `docs/CONFIGURATION.md:453` and `:4488` ("Accepted and validated, but not read yet" was made false by this change; they now say the tier is read for telemetry and the PR-body marker, while executors still stay on Sonnet whatever it is set to); `worker/deno/lib/config_defaults.ts` `issueSubAgentTier` JSDoc rewritten the same way, `docs/USAGE.md` (names the tier marker beside the digest marker and says a re-sync carries it over). Hits read and still true: `docs/INTERNALS.md:369`, `docs/workflows/issue-processing.md:1048` (`assemblePrBody`'s `missing`-criterion behaviour, unchanged), and the digest-marker sentences in `docs/workflows/pr-feedback.md:205` and `docs/workflows/merge-conflicts.md:210`.
 
 ## Test Plan
 
-- From `worker/deno`: `deno task test:unit` over the 12 touched test files (`fleet_telemetry_test.ts`, `fleet_telemetry_sidecar_test.ts`, `fleet_telemetry_redaction_test.ts`, `pr_body_test.ts`, `pr_body_sync_test.ts`, `issue_run_stats_comment_test.ts`, `completion_phase_run_stats_test.ts`, `completion_phase_evidence_urls_test.ts`, `handle_no_changes_phase_test.ts`, `issue_sub_agent_tier_test.ts`, `missing_criterion_close_guard_3177_test.ts`, `config_docs_consistency_test.ts`) → 301 passed, 0 failed at head `1716e3e8`. After the added sidecar test, the three telemetry files → 63 passed, 0 failed.
+- `measureIssuePhaseRun` now requires `subAgentTier` (#3403), so each assertion below was rewritten in place with `subAgentTier: "sonnet"` added and the same expected value; none was dropped:
+  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "grill_me", claudeResults: [claudeResult(["claude-opus-5"])], }), undefined, );` — re-added in the same test with `subAgentTier: "sonnet"`
+  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults: [{}] }), undefined, );` — re-added in the same test with `subAgentTier: "sonnet"`
+  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults: [] }), undefined, );` — re-added in the same test with `subAgentTier: "sonnet"`
+  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults, qualityGate: { status: "passed", attempt: 2 }, })?.gatePassedOnAttempt, 2, );` — re-added in the same test with `subAgentTier: "sonnet"`
+  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults, qualityGate: { status: "failed" }, })?.gatePassedOnAttempt, undefined, );` — re-added in the same test with `subAgentTier: "sonnet"`
+  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults }) ?.gatePassedOnAttempt, undefined, );` — re-added in the same test with `subAgentTier: "sonnet"`
+- (The removed-assertion lines sit first because the gate reads only the first 2,000 canonical characters of the Test Plan — #3438.)
+
+- From `worker/deno`: `deno task test:unit` over the 12 touched test files (`fleet_telemetry_test.ts`, `fleet_telemetry_sidecar_test.ts`, `fleet_telemetry_redaction_test.ts`, `pr_body_test.ts`, `pr_body_sync_test.ts`, `issue_run_stats_comment_test.ts`, `completion_phase_run_stats_test.ts`, `completion_phase_evidence_urls_test.ts`, `handle_no_changes_phase_test.ts`, `issue_sub_agent_tier_test.ts`, `missing_criterion_close_guard_3177_test.ts`, `config_docs_consistency_test.ts`) → 302 passed, 0 failed at head `575c79a2`. After the added sidecar test, the three telemetry files → 63 passed, 0 failed.
 - Added `worker/deno/tests/fleet_telemetry_sidecar_test.ts::fleet_telemetry_sidecar - a sidecar carrying the tier split keeps its stored sonnet figures` so the stored-value arm of the sidecar backfill is reached (below).
-- `measureIssuePhaseRun` now requires `subAgentTier` (#3403: every recorded run carries its resolved tier), so the old call shape no longer type-checks. Each assertion below was rewritten in place with `subAgentTier: "sonnet"` added and the same expected value; none was dropped:
-  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "grill_me", claudeResults: [claudeResult(["claude-opus-5"])], }), undefined, );` — #3403 makes `subAgentTier` required; re-added in the same test with `subAgentTier: "sonnet"`
-  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults: [{}] }), undefined, );` — #3403 makes `subAgentTier` required; re-added in the same test with `subAgentTier: "sonnet"`
-  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults: [] }), undefined, );` — #3403 makes `subAgentTier` required; re-added in the same test with `subAgentTier: "sonnet"`
-  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults, qualityGate: { status: "passed", attempt: 2 }, })?.gatePassedOnAttempt, 2, );` — #3403 makes `subAgentTier` required; re-added in the same test with `subAgentTier: "sonnet"`
-  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults, qualityGate: { status: "failed" }, })?.gatePassedOnAttempt, undefined, );` — #3403 makes `subAgentTier` required; re-added in the same test with `subAgentTier: "sonnet"`
-  - Removed from `worker/deno/tests/issue_run_stats_comment_test.ts`: `assertEquals( measureIssuePhaseRun({ phase: "issue", claudeResults }) ?.gatePassedOnAttempt, undefined, );` — #3403 makes `subAgentTier` required; re-added in the same test with `subAgentTier: "sonnet"`
+
+- `worker/deno/tests/pr_body_test.ts::pr_body - subAgentTierFromBody stays linear on an unterminated hostile marker prefix` replaces the earlier wall-clock (`elapsedMs < 5_000`) version with the `assertLinearGrowth` ratio helper; it pins current behaviour (the regex is already linear), so it is expected green on base of the change.
 
 **Branch outcomes:**
 - `worker/deno/lib/fleet_telemetry.ts:544` — `sonnet` run moves only the sonnet pair — `worker/deno/tests/fleet_telemetry_test.ts::fleet_telemetry - a sonnet run moves only the sonnet counters` — flipped runs and USD to the haiku pair, test went red
@@ -77,15 +99,22 @@ Backend only, no UI file touched.
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — A haiku issue run increments only the haiku counters; a sonnet run only the sonnet counters. — evidence: `worker/deno/tests/fleet telemetry test.ts::fleet telemetry - a haiku run moves only the haiku counters; worker/deno/tests/fleet telemetry test.ts::fleet telemetry - a sonnet run moves only the sonnet counters` — reviewer: met
-- **met** — A sidecar file written before this change loads without error and counts as sonnet. — evidence: `worker/deno/tests/fleet telemetry sidecar test.ts::fleet telemetry sidecar - a legacy sidecar (pre-split) loads its runs and spend as sonnet` — reviewer: met
-- **met** — A sonnet-only fleet summary is byte-identical to today's. — evidence: `worker/deno/tests/fleet telemetry test.ts::fleet telemetry - a sonnet-only fleet's summary is byte-identical to today's` — reviewer: met
-- **met** — A PR opened by an issue run carries exactly one vibe-sub-agent-tier marker matching the run's tier. — evidence: `worker/deno/tests/completion phase evidence urls test.ts::completion - a host configured for haiku stamps exactly one haiku tier marker on the PR (Issue #3403); worker/deno/tests/pr body sync test.ts::assemblePrBody - carries exactly one tier marker, even when the summary quotes a different one` — reviewer: met
+- **met** — A `haiku` issue run increments only the haiku counters; a `sonnet` run only the sonnet counters. — evidence: `worker/deno/tests/fleet_telemetry_test.ts::fleet_telemetry - a haiku run moves only the haiku counters`, `worker/deno/tests/fleet_telemetry_test.ts::fleet_telemetry - a sonnet run moves only the sonnet counters` — reviewer: met
+- **met** — A sidecar file written before this change loads without error and counts as sonnet. — evidence: `worker/deno/tests/fleet_telemetry_sidecar_test.ts::fleet_telemetry_sidecar - a legacy sidecar (pre-split) loads its runs and spend as sonnet` — reviewer: met
+- **met** — A sonnet-only fleet summary is byte-identical to today's. — evidence: `worker/deno/tests/fleet_telemetry_test.ts::fleet_telemetry - a sonnet-only fleet's summary is byte-identical to today's` — reviewer: met
+- **met** — A PR opened by an issue run carries exactly one `vibe-sub-agent-tier` marker matching the run's tier. — evidence: `worker/deno/tests/completion_phase_evidence_urls_test.ts::completion - a host configured for haiku stamps exactly one haiku tier marker on the PR (Issue #3403)`, `worker/deno/tests/pr_body_sync_test.ts::assemblePrBody - carries exactly one tier marker, even when the summary quotes a different one` — reviewer: met
+- **unrequested** — the `issue_sub_agent_tier` config key and resolver (`issue_sub_agent_tier.ts`, `types.ts`, `config.ts`, `config_defaults.ts`, `config_unknown_keys.ts`, `validation.ts`, `issue_sub_agent_tier_test.ts`) — reviewer: unrequested — reason: cherry-pick of #3401 (merged to `main`, not yet on this milestone branch); this issue consumes it
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3401.json` — reviewer: unrequested — reason: the coverage-ledger entry that came with the #3401 cherry-pick
+- **unrequested** — the `issue_sub_agent_tier` rows in `docs/CONFIGURATION.md` — reviewer: unrequested — reason: they arrived with #3401; this diff only rewrites them so they no longer say the key is unread
+- **unrequested** — `subAgentTierFromBody` and the marker carry-over in `syncPrBodyFromSummary` — reviewer: unrequested — reason: a later summary re-sync rebuilds the body, and without the carry-over it would drop the marker, breaking "exactly one … matching the run's tier"
+- **unrequested** — `neutraliseSubAgentTierMarkers` applied to summary text in `assemblePrBody` — reviewer: unrequested — reason: a summary quoting the marker would otherwise give the PR body two markers, breaking "exactly one"
+- **unrequested** — the `assertLinearGrowth` hostile-input test in `pr_body_test.ts` — reviewer: unrequested — reason: the standards require a hostile case for each new regex on agent-written text, here the marker regex in `subAgentTierFromBody`
+- **unrequested** — `assemblePrBody`'s required (possibly `undefined`) `subAgentTier` parameter and the test edits it forces — reviewer: unrequested — reason: required on purpose so no caller silently drops the tier (standards: no behaviour-off default)
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Unit tests, Fast: a test asserts an absolute wall-clock threshold (Issue #786), and its own comment says there is no wall-clock threshold — evidence: `worker/deno/tests/pr body test.ts:290` — reason: not fixed: this line is added by this diff and still asserts elapsedMs < 5 000 ; this no-code turn cannot remove it, so a code-change pass must drop the assertion and keep assertEquals(result, undefined)
-- **violation** — A Code Change Owes a Docs Change: the OPERATIONAL DEFAULTS.issueSubAgentTier JSDoc still says the key is "not read yet", but this diff now reads it for telemetry and the PR tier marker — evidence: `worker/deno/lib/config defaults.ts:484` — reason: not fixed: this JSDoc is added by this diff and still says "not read yet"; this no-code turn cannot edit it, so a code-change pass must update it to say the tier now drives the per-tier telemetry and the PR tier marker
-- **clean** — Australian English (neutralise), TDD coverage for each criterion, legacy-sidecar backward compatibility, ReDoS-safe marker parsing, fail-loud tier validation, docs/CONFIGURATION.md rows updated
+- **violation** — Unit tests, Fast: a test asserted an absolute wall-clock threshold (`elapsedMs < 5_000`) — evidence: `worker/deno/tests/pr_body_test.ts:284` — reason: fixed in this diff (replaced by `assertLinearGrowth`; found by the previous run's reviewer)
+- **violation** — A Code Change Owes a Docs Change: the `issueSubAgentTier` JSDoc said the key was "not read yet" — evidence: `worker/deno/lib/config_defaults.ts:484` — reason: fixed in this diff (now names the telemetry and PR-marker uses; found by the previous run's reviewer)
+- **clean** — this run's reviewer reported no violations. Checked: the one review-enforced rule ("Check where you insert"), a new argument reaching every caller (`subAgentTier` required on `measureIssuePhaseRun`, `IssuePhaseRun`, `assemblePrBody`), persisted data (legacy sidecar read as sonnet, no schema bump), tests going red without their change, named tests existing, fail-loud tier validation, docs matching code, Australian English. It found no assertion dropped from an existing test: each was rewritten in place with `subAgentTier` added. Optional, not chased: the tier is resolved twice per completion run, so an invalid value warns twice
