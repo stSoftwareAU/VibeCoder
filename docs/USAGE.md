@@ -619,9 +619,9 @@ a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
 (see [Configuration](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor)). The
-default floor pins `claude` to `2.1.280` — the oldest release that resolves the
-`opus` alias to Opus 5.5, the tier every substantive phase requests
-(Issue #2560).
+default floor pins `claude` to `2.1.293` — the oldest release that resolves the
+`haiku` alias to Haiku 5.5, the model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window
+assumes (PR #3432 review, Issue #3400).
 
 - Below floor → the update runs immediately, bypassing the timestamp gate.
 - At/above floor → existing interval behaviour is preserved exactly.
@@ -732,7 +732,10 @@ For other reviewers:
 2. Click "Review changes"
 3. Write your feedback and select "Request changes"
 
-The worker will process the feedback, push fixes, and dismiss the review.
+The worker will process the feedback, push fixes, and dismiss the review once
+it has addressed it — not at the moment it claims the review. A run that dies
+mid-flight leaves the review undismissed rather than silently answered, so it
+is picked up again (by this host or another) once its claim lapses.
 
 **How the worker handles feedback:**
 
@@ -741,7 +744,9 @@ The worker will process the feedback, push fixes, and dismiss the review.
 - Analyse the feedback
 - Either fix the code or respond with an explanation
 - Always push unpushed commits
-- Mark feedback as processed (👀 reaction for comments, dismissal for reviews)
+- Mark feedback as processed (👀 reaction for comments; a review is dismissed
+  only once it has been fixed, rebutted, handed off or escalated — not at
+  claim time)
 
 ## 👍 Reaction System
 

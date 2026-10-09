@@ -13,6 +13,7 @@
 
 import type {
   CopilotCodeReviewMode,
+  IssueSubAgentTier,
   UpdateMode,
   WorkerConfig,
 } from "../types.ts";
@@ -480,6 +481,14 @@ export const OPERATIONAL_DEFAULTS = {
    */
   issueExecutorSplit: true,
   /**
+   * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
+   * Accepted and validated, but not read yet: #3402 will use it to pick
+   * the executors' model. Today executors stay on Sonnet
+   * (`ISSUE_EXECUTOR_MODEL` in `issue_executor_agents.ts`) whatever this
+   * is set to.
+   */
+  issueSubAgentTier: "sonnet" as IssueSubAgentTier,
+  /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
    * defined cheaper sub-agents (Issue #2575). On by default (Issue #2812);
    * `issue_reviewer_agents: false` opts out, and they inherit the phase model.
@@ -548,16 +557,17 @@ export const OPERATIONAL_DEFAULTS = {
    * immediately, bypassing the 7-day interval gate. Generic per-tool map so
    * gh/deno floors can be added later; empty for tools without a floor.
    *
-   * `claude` is pinned to 2.1.280 (Issue #2560) — the oldest release whose
-   * bundled alias table resolves `opus` to Opus 5.5 (`claude-opus-5-5`), the
-   * tier every substantive phase requests. It was 2.1.260 (Issue #1362), the
-   * oldest release serving Fable 5.1 with its prompt-cache fixes; 2.1.280 is
-   * above that, so a Fable-pinned phase keeps both. The CLI resolves each alias
-   * from its own bundled table, so this floor decides which generation the
-   * phases are served; the per-version evidence is in
+   * `claude` is pinned to 2.1.293 (PR #3432 review, Issue #3400) — the oldest
+   * release whose bundled alias table resolves `haiku` to Haiku 5.5
+   * (`claude-haiku-5-5`), the model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window
+   * assumes. It was 2.1.280 (Issue #2560), the oldest release resolving `opus`
+   * to Opus 5.5; 2.1.293 is above that, so an Opus- or Fable-pinned phase keeps
+   * its own generation too. The CLI resolves each alias from its own bundled
+   * table, so this floor decides which generation the phases are served; the
+   * per-version evidence is in
    * `docs/MODEL-AND-CACHING.md#which-cli-version-actually-serves-51-issue-1362`.
    */
-  softwareMinVersions: { claude: "2.1.280" } as Readonly<
+  softwareMinVersions: { claude: "2.1.293" } as Readonly<
     Record<string, string>
   >,
   /**
@@ -1597,6 +1607,7 @@ export function buildDefaultWorkerConfig(
     geminiPhaseModelOverrides: {},
     deepseekPhaseModelOverrides: {},
     issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
+    issueSubAgentTier: OPERATIONAL_DEFAULTS.issueSubAgentTier,
     issueReviewerAgents: OPERATIONAL_DEFAULTS.issueReviewerAgents,
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:

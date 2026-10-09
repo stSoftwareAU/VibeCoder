@@ -2,7 +2,7 @@
  * One headless review-fleet-prs round, inside the worker container
  * (Issue #3293).
  *
- * The skill's runner (`.claude/skills/review-fleet-prs/run.sh`) used to start
+ * The skill's runner (`.claude/skills/review-fleet-prs/scripts/run.sh`) used to start
  * each round as `claude -p` on the host, so the round ran on the host's own
  * `claude` login, and #3289 then copied the worker's credential plumbing into
  * a host script to choose a subscription. The runner now starts the round as

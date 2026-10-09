@@ -18,13 +18,13 @@ import {
   pickInstallation,
   REQUIRED_PERMISSIONS,
   reviewerApp,
-} from "../../../.claude/skills/review-fleet-prs/app_token.ts";
-import { dependabotAction } from "../../../.claude/skills/review-fleet-prs/dependabot.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/app_token.ts";
+import { dependabotAction } from "../../../.claude/skills/review-fleet-prs/scripts/dependabot.ts";
 import {
   reviewedAtHead,
   type SearchPr,
-} from "../../../.claude/skills/review-fleet-prs/gate.ts";
-import { sameLogin } from "../../../.claude/skills/review-fleet-prs/review_log.ts";
+} from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import { sameLogin } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 
 const BOT = "stsoftware-pr-reviewer[bot]";
 

@@ -52,7 +52,6 @@ Deno.test("previousGenerationOf - a newer generation than the reference is not s
 
 Deno.test("previousGenerationOf - untracked tiers are never flagged (Issue #1362)", () => {
   assertEquals(previousGenerationOf("claude-sonnet-4-6"), undefined);
-  assertEquals(previousGenerationOf("claude-haiku-4-5"), undefined);
 });
 
 Deno.test("previousGenerationOf - an earlier Opus is a previous generation of Opus 5.5 (Issue #2560)", () => {
@@ -73,6 +72,15 @@ Deno.test("previousGenerationOf - Opus 5.5 itself and a newer Opus are not stale
   assertEquals(previousGenerationOf("claude-opus-5-5"), undefined);
   assertEquals(previousGenerationOf("claude-opus-5-6"), undefined);
   assertEquals(previousGenerationOf("opus"), undefined);
+});
+
+Deno.test("previousGenerationOf - Haiku 4.5 is a previous generation of Haiku 5.5 (Issue #3400)", () => {
+  assertEquals(previousGenerationOf("claude-haiku-4-5"), {
+    tier: "haiku",
+    current: "claude-haiku-5-5",
+  });
+  assertEquals(previousGenerationOf("claude-haiku-5-5"), undefined);
+  assertEquals(previousGenerationOf("haiku"), undefined);
 });
 
 Deno.test("previousGenerationOf - a bare tier alias carries no generation (Issue #1362)", () => {
@@ -97,6 +105,10 @@ Deno.test("CURRENT_TIER_MODELS - Fable's current model is Fable 5.1 (Issue #1362
 
 Deno.test("CURRENT_TIER_MODELS - Opus's current model is Opus 5.5 (Issues #1362, #2560)", () => {
   assertEquals(CURRENT_TIER_MODELS.get("opus"), "claude-opus-5-5");
+});
+
+Deno.test("CURRENT_TIER_MODELS - Haiku's current model is Haiku 5.5 (Issue #3400)", () => {
+  assertEquals(CURRENT_TIER_MODELS.get("haiku"), "claude-haiku-5-5");
 });
 
 Deno.test("CURRENT_TIER_MODELS - every row names a priced model of its own tier (Issue #1362)", () => {
