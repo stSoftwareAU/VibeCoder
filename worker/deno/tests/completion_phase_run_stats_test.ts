@@ -601,3 +601,37 @@ Deno.test("completion - the default sonnet tier never labels or renders the Haik
   assert(!stats.body.includes("Haiku sub-agents degraded"));
   assert(!ghCalls.some((a) => a.some((x) => x.includes("degraded-model"))));
 });
+
+Deno.test("completion - the PR-raise stats comment carries the safety-refusal line when the state has one (Issue #3406)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-5-5"])],
+    agentRefusal: {
+      tier: "haiku",
+      refusals: [{ model: "claude-haiku-5-5", category: "cyber" }],
+      retry: "succeeded",
+    },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(
+    stats.body,
+    "- **Safety refusal:** `cyber` from `claude-haiku-5-5` on the `haiku` sub-agent tier — a retry ran on the `sonnet` tier and finished without a refusal",
+  );
+});
+
+Deno.test("completion - a run with no refusal renders no safety-refusal line (Issue #3406)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-5-5"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assert(!stats.body.includes("Safety refusal"));
+});

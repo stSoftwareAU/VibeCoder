@@ -726,6 +726,52 @@ Deno.test(
 );
 
 Deno.test(
+  "handle_no_changes_phase - an already-complete close carries the safety-refusal line when the state has one (Issue #3406)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      agentRefusal: {
+        tier: "haiku",
+        refusals: [{ model: "claude-haiku-5-5", category: "cyber" }],
+        retry: "succeeded",
+      },
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-5-5"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals((result as { reason: string }).reason, "already_complete");
+    const stats = calls.postComment.find((c) =>
+      c.body.includes(ISSUE_RUN_STATS_MARKER)
+    );
+    assert(stats, "expected a run-stats comment on the closed issue");
+    assertStringIncludes(
+      stats.body,
+      "- **Safety refusal:** `cyber` from `claude-haiku-5-5` on the `haiku` sub-agent tier — a retry ran on the `sonnet` tier and finished without a refusal",
+    );
+  },
+);
+
+Deno.test(
   "handle_no_changes_phase - the already-complete close records the run in fleet telemetry (Issue #2347)",
   async () => {
     resetFleetTelemetry();

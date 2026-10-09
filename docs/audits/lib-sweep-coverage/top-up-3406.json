@@ -1,0 +1,13 @@
+{
+  "issue": 3406,
+  "chunk": "top-up-3406",
+  "title": "top-up: haiku safety-refusal detection and retry",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3406",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: agent_refusal.ts, haiku_refusal_retry.ts (#3406)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/agent_refusal.ts",
+    "worker/deno/lib/haiku_refusal_retry.ts"
+  ],
+  "sweptAt": "428fb5c3d5f0c2310253fcd0a682e6589df2d471"
+}

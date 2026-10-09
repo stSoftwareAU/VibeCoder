@@ -783,13 +783,40 @@ Haiku (the `haiku` row of `CURRENT_TIER_MODELS` in
 `applyDegradedModelLabel`) and adds a
 `- **Haiku sub-agents degraded:** requested … served …` line to the run's
 stats comment naming both models. The check runs where the worker posts an
-`issue`-phase run-stats comment — at PR raise and on the already-resolved
-close — and is implemented in
+`issue`-phase run-stats comment — at PR raise, on the already-resolved
+close, and when the execute phase fails a run on a safety refusal (below) —
+and is implemented in
 [`worker/deno/lib/issue_sub_agent_degradation.ts`](../worker/deno/lib/issue_sub_agent_degradation.ts).
 A `"sonnet"`-tier run never triggers it, even when a Haiku phase served
 `claude-haiku-4-5`. As with every `degraded-model` application, a label
 failure is logged as a warning naming the issue and never fails the run, and
 the worker never removes the label.
+
+**Safety refusals (Issue #3406).** Claude Haiku 5.5 can decline on a safety
+classifier (categories such as `cyber` or `frontier_llm`) where Sonnet would
+proceed, and Haiku has no server-side refusal fallback. The worker reads each
+refusal from the run's stream-json (`extractAgentRefusals` in
+[`worker/deno/lib/agent_refusal.ts`](../worker/deno/lib/agent_refusal.ts)):
+the CLI's `model_refusal_no_fallback` system event, or on an older CLI an
+assistant message with `stop_reason: "refusal"`; a turn the CLI itself
+recovered on a fallback model (`model_refusal_fallback`) is not counted. When
+an `issue`-phase execute attempt that would otherwise continue or end with no
+changes recorded a refusal, the policy in
+[`worker/deno/lib/haiku_refusal_retry.ts`](../worker/deno/lib/haiku_refusal_retry.ts)
+decides: on the `"haiku"` tier, a refusal by a Haiku model is logged as an
+error naming its category and the execute phase is re-run once with the tier
+forced to `"sonnet"`; a refusal on that retry, a refusal on a `"sonnet"`-tier
+run, or a refusal by a non-Haiku model fails the run with a reason naming the
+categories — never success, never "no changes". The run's stats comment
+gains a `- **Safety refusal:** …` line naming the category and whether the
+Sonnet retry ran, finished cleanly, or also refused. The line appears on the
+stats comment posted at PR raise and on the already-resolved close's comment
+(when the run recorded a refusal and the Sonnet retry finished cleanly); the
+failure path posts the comment itself, without recording the run in the
+`issue_*` fleet counters. An attempt that already failed for another reason (a
+timeout or a kill) keeps its own failure path. A run with no refusal is
+unchanged. The standalone `execute-claude-phase` command does not apply this
+policy.
 
 **Opt-in trial, not a default change.** Unlike the executor split and
 reviewer sub-agents above, `issue_sub_agent_tier` is not on a before/after
@@ -1534,9 +1561,12 @@ flowchart TD
   [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts) (all six
   planning-shaped phases),
   [`phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)
-  (PR-raise time), and
+  (PR-raise time),
   [`phases/handle_no_changes_phase.ts`](../worker/deno/lib/phases/handle_no_changes_phase.ts)
-  (already-complete close). The `work-on` run's invocations are captured by
+  (already-complete close), and
+  [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts)
+  (a run failed on a safety refusal, Issue #3406). The `work-on` run's
+  invocations are captured by
   `recordClaudeRunStats` in
   [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts).
 
