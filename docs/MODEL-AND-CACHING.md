@@ -783,8 +783,9 @@ Haiku (the `haiku` row of `CURRENT_TIER_MODELS` in
 `applyDegradedModelLabel`) and adds a
 `- **Haiku sub-agents degraded:** requested … served …` line to the run's
 stats comment naming both models. The check runs where the worker posts an
-`issue`-phase run-stats comment — at PR raise and on the already-resolved
-close — and is implemented in
+`issue`-phase run-stats comment — at PR raise, on the already-resolved
+close, and when the execute phase fails a run on a safety refusal (below) —
+and is implemented in
 [`worker/deno/lib/issue_sub_agent_degradation.ts`](../worker/deno/lib/issue_sub_agent_degradation.ts).
 A `"sonnet"`-tier run never triggers it, even when a Haiku phase served
 `claude-haiku-4-5`. As with every `degraded-model` application, a label
@@ -806,10 +807,12 @@ decides: on the `"haiku"` tier, a refusal by a Haiku model is logged as an
 error naming its category and the execute phase is re-run once with the tier
 forced to `"sonnet"`; a refusal on that retry, a refusal on a `"sonnet"`-tier
 run, or a refusal by a non-Haiku model fails the run with a reason naming the
-categories — never success, never "no changes". The run's stats comment gains
-a `- **Safety refusal:** …` line naming the category and whether the Sonnet
-retry ran, finished cleanly, or also refused; the failure path posts that
-comment itself. An attempt that already failed for another reason (a timeout
+categories — never success, never "no changes". The run's stats comment
+posted at PR raise gains a `- **Safety refusal:** …` line naming the category
+and whether the Sonnet retry ran, finished cleanly, or also refused; the
+failure path posts that comment itself, without recording the run in the
+`issue_*` fleet counters. The already-resolved close's stats comment does not
+carry the line. An attempt that already failed for another reason (a timeout
 or a kill) keeps its own failure path. A run with no refusal is unchanged. The
 standalone `execute-claude-phase` command does not apply this policy.
 
@@ -1556,9 +1559,11 @@ flowchart TD
   [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts) (all six
   planning-shaped phases),
   [`phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)
-  (PR-raise time), and
+  (PR-raise time),
   [`phases/handle_no_changes_phase.ts`](../worker/deno/lib/phases/handle_no_changes_phase.ts)
-  (already-complete close). The `work-on` run's invocations are captured by
+  (already-complete close), and
+  [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts)
+  (a run failed on a safety refusal, Issue #3406). The `work-on` run's invocations are captured by
   `recordClaudeRunStats` in
   [`phases/execute_phase.ts`](../worker/deno/lib/phases/execute_phase.ts).
 
