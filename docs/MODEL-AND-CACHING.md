@@ -808,13 +808,15 @@ error naming its category and the execute phase is re-run once with the tier
 forced to `"sonnet"`; a refusal on that retry, a refusal on a `"sonnet"`-tier
 run, or a refusal by a non-Haiku model fails the run with a reason naming the
 categories — never success, never "no changes". The run's stats comment
-posted at PR raise gains a `- **Safety refusal:** …` line naming the category
-and whether the Sonnet retry ran, finished cleanly, or also refused; the
-failure path posts that comment itself, without recording the run in the
-`issue_*` fleet counters. The already-resolved close's stats comment does not
-carry the line. An attempt that already failed for another reason (a timeout
-or a kill) keeps its own failure path. A run with no refusal is unchanged. The
-standalone `execute-claude-phase` command does not apply this policy.
+gains a `- **Safety refusal:** …` line naming the category and whether the
+Sonnet retry ran, finished cleanly, or also refused. The line appears on the
+stats comment posted at PR raise and on the already-resolved close's comment
+(when the run recorded a refusal and the Sonnet retry finished cleanly); the
+failure path posts the comment itself, without recording the run in the
+`issue_*` fleet counters. An attempt that already failed for another reason (a
+timeout or a kill) keeps its own failure path. A run with no refusal is
+unchanged. The standalone `execute-claude-phase` command does not apply this
+policy.
 
 **Opt-in trial, not a default change.** Unlike the executor split and
 reviewer sub-agents above, `issue_sub_agent_tier` is not on a before/after

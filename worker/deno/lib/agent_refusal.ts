@@ -19,6 +19,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { sanitiseModelId } from "./issue_sub_agent_degradation.ts";
 import { parseClaudeModernVersion } from "./token_usage.ts";
 
 /** One safety refusal an agent run ended a turn with (Issue #3406). */
@@ -31,11 +32,13 @@ export interface AgentRefusal {
 
 const MAX_CATEGORY_LENGTH = 64;
 
-/** Model ids are API-sourced and later rendered into Markdown: keep them inert. */
+/**
+ * Model ids are API-sourced and later rendered into Markdown: keep them inert
+ * by reusing the shared allow-list sanitiser.
+ */
 function cleanModel(value: unknown): string {
   if (typeof value !== "string") return "unknown";
-  const cleaned = value.trim().replace(/[^A-Za-z0-9._:@/-]/g, "");
-  return cleaned || "unknown";
+  return sanitiseModelId(value) || "unknown";
 }
 
 /** Lower-case, restrict to a safe alphabet and cap the length. */

@@ -320,6 +320,8 @@ export async function workOnIssueHandleNoChanges(
         // …and its RTK status, `off` included (Issue #2385).
         ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
         ...(subAgentDegradation ? { subAgentDegradation } : {}),
+        // A safety refusal this run recorded and recovered from (Issue #3406).
+        ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),
       });
       // Issue #2347: this is the second path that wraps up an `issue`-phase
       // run, so it records the same figures its comment renders. Leaving it

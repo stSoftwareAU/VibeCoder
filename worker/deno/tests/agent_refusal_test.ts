@@ -118,6 +118,20 @@ Deno.test("missing model becomes unknown", () => {
   );
 });
 
+Deno.test("a model id empty after cleaning becomes unknown", () => {
+  assertEquals(
+    extractAgentRefusals(join(assistant("cyber", "**`|`**")))[0]!.model,
+    "unknown",
+  );
+});
+
+Deno.test("a category empty after cleaning becomes unspecified", () => {
+  assertEquals(
+    extractAgentRefusals(join(assistant("!!! ***")))[0]!.category,
+    "unspecified",
+  );
+});
+
 Deno.test("malformed JSON line is skipped", () => {
   const out = extractAgentRefusals(
     join("{not json refusal", assistant("cyber")),

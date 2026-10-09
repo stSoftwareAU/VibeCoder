@@ -27,6 +27,10 @@ import {
   refusalsRecordedSince,
 } from "../lib/haiku_refusal_retry.ts";
 import type { IssueSubAgentTier } from "../types.ts";
+import {
+  getFleetTelemetry,
+  resetFleetTelemetry,
+} from "../lib/fleet_telemetry.ts";
 
 const assistant = (model: string) =>
   JSON.stringify({
@@ -286,6 +290,40 @@ Deno.test("execute - the infrastructure retry after a sonnet retry stays on the 
   assert(!onHaikuTier(h.invocations[2]), "the #1550 retry keeps sonnet");
   assertEquals(h.result.status, "continue");
   assertEquals(h.state.agentRefusal?.retry, "succeeded");
+});
+
+Deno.test("execute - a refused, failed run is kept out of the issue_* fleet telemetry (Issue #3406)", async () => {
+  resetFleetTelemetry();
+  try {
+    const h = await run("sonnet", [{ stream: SONNET_REFUSAL }]);
+
+    assertEquals(h.result.status, "failure");
+    assert(
+      h.comments.some((c) => c.includes("Safety refusal")),
+      "expected the run-stats comment to post",
+    );
+    const telemetry = getFleetTelemetry(1_000);
+    assertEquals(telemetry.issuePhaseRuns, 0);
+  } finally {
+    resetFleetTelemetry();
+  }
+});
+
+Deno.test("execute - a refusal on an attempt that already failed keeps the failure path and is not retried on sonnet (Issue #3406)", async () => {
+  const h = await run("haiku", [
+    { stream: HAIKU_REFUSAL, timedOut: true },
+    { stream: CLEAN },
+  ]);
+
+  // A timeout is not an infrastructure category, so shouldRetryInfrastructureFailure declines and the failure stands after one attempt.
+  assertEquals(h.invocations.length, 1);
+  assert(onHaikuTier(h.invocations[0]), "no sonnet re-run was triggered");
+  assertEquals(h.result.status, "failure");
+  assert(
+    !reasonOf(h.result).includes("Issue #3406"),
+    `failure must not be the refusal failure: ${reasonOf(h.result)}`,
+  );
+  assertEquals(h.state.agentRefusal, undefined);
 });
 
 // ---------------------------------------------------------------------------
