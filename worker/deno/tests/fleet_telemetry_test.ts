@@ -11,20 +11,36 @@ import {
 } from "@std/assert";
 import {
   beginBusy,
+  costPerMergedPr,
   deriveIdleReason,
   endBusy,
   formatFleetSummary,
   getFleetTelemetry,
   recordBlockedSeconds,
+  recordCiFixRun,
   recordClaim,
   recordCycleIdle,
   recordInRunBlockedSeconds,
   recordIssuePhaseRun,
+  recordMergedPr,
   recordOutcome,
+  recordPrFeedbackRun,
+  recordPrRejection,
   resetFleetTelemetry,
   startFleetCycle,
   startFleetTelemetry,
 } from "../lib/fleet_telemetry.ts";
+
+const WINDOW_START_MS = Date.parse("2026-06-01T00:00:00Z");
+const BEFORE_WINDOW = "2026-05-31T23:59:59Z";
+const AT_WINDOW_START = "2026-06-01T00:00:00Z";
+const AFTER_WINDOW_START = "2026-06-01T00:00:05Z";
+
+function resolvesTo(
+  tier: "sonnet" | "haiku" | null,
+): () => Promise<"sonnet" | "haiku" | null> {
+  return () => Promise.resolve(tier);
+}
 
 function fresh(startMs = 0): void {
   resetFleetTelemetry();
@@ -575,7 +591,7 @@ Deno.test("fleet_telemetry - a haiku run adds the tier tokens right after issue_
   assertStringIncludes(
     line,
     "issue_duration=0s issue_tier_runs=sonnet=1,haiku=1 " +
-      "issue_tier_usd=sonnet=1.0000,haiku=0.2500 idle_by_reason=",
+      "issue_tier_usd=sonnet=1.0000,haiku=0.2500 pr_tier_rejections=",
   );
 });
 
@@ -665,4 +681,355 @@ Deno.test("deriveIdleReason - ties break on first-seen order for determinism", (
 
 Deno.test("deriveIdleReason - no census entries reports unknown", () => {
   assertEquals(deriveIdleReason([]), "unknown");
+});
+
+Deno.test("fleet_telemetry - a haiku PR rejection increments the haiku counter only", async () => {
+  fresh(WINDOW_START_MS);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 10,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  const snapshot = getFleetTelemetry(WINDOW_START_MS + 1_000);
+  assertEquals(snapshot.prRejectionsHaiku, 1);
+  assertEquals(snapshot.prRejectionsSonnet, 0);
+});
+
+Deno.test("fleet_telemetry - a sonnet PR rejection increments the sonnet counter only", async () => {
+  fresh(WINDOW_START_MS);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 10,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("sonnet"),
+  });
+  const snapshot = getFleetTelemetry(WINDOW_START_MS + 1_000);
+  assertEquals(snapshot.prRejectionsSonnet, 1);
+  assertEquals(snapshot.prRejectionsHaiku, 0);
+});
+
+Deno.test("fleet_telemetry - the same review id is counted once", async () => {
+  fresh(WINDOW_START_MS);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 10,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 10,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 11,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 2);
+});
+
+Deno.test("fleet_telemetry - reset clears the rejection and merge dedupe", async () => {
+  fresh(WINDOW_START_MS);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 10,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  fresh(WINDOW_START_MS);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 10,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  const snapshot = getFleetTelemetry(WINDOW_START_MS + 1_000);
+  assertEquals(snapshot.prRejectionsHaiku, 1);
+  assertEquals(snapshot.mergedPrsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry - a haiku CI-fix run adds runs and usd", () => {
+  fresh(0);
+  recordCiFixRun({ usd: 0.25, tier: "haiku" });
+  recordCiFixRun({ tier: "haiku" });
+  recordCiFixRun({ usd: 1, tier: "sonnet" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.ciFixRunsHaiku, 2);
+  assertAlmostEquals(snapshot.ciFixUsdHaiku, 0.25);
+  assertEquals(snapshot.ciFixRunsSonnet, 1);
+  assertAlmostEquals(snapshot.ciFixUsdSonnet, 1);
+});
+
+Deno.test("fleet_telemetry - PR-feedback runs add runs and usd per tier", () => {
+  fresh(0);
+  recordPrFeedbackRun({ usd: 0.5, tier: "haiku" });
+  recordPrFeedbackRun({ usd: 2, tier: "sonnet" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.prFeedbackRunsHaiku, 1);
+  assertAlmostEquals(snapshot.prFeedbackUsdHaiku, 0.5);
+  assertEquals(snapshot.prFeedbackRunsSonnet, 1);
+  assertAlmostEquals(snapshot.prFeedbackUsdSonnet, 2);
+});
+
+Deno.test("fleet_telemetry - a merged PR is counted once per repo and number", () => {
+  fresh(WINDOW_START_MS);
+  recordMergedPr({
+    repo: "o/a",
+    number: 5,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  recordMergedPr({
+    repo: "o/a",
+    number: 5,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).mergedPrsHaiku, 1);
+  recordMergedPr({
+    repo: "o/b",
+    number: 5,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).mergedPrsHaiku, 2);
+});
+
+Deno.test("fleet_telemetry - costPerMergedPr guards against nothing merged", () => {
+  assertEquals(costPerMergedPr(1.5, 0), "n/a");
+  assertEquals(costPerMergedPr(0, 0), "n/a");
+  assertEquals(costPerMergedPr(3, 2), "1.5000");
+  assertEquals(costPerMergedPr(NaN, 2), "n/a");
+  // -2 / -1 = 2 is finite, so only the `merged <= 0` guard returns n/a here.
+  assertEquals(costPerMergedPr(-2, -1), "n/a");
+});
+
+Deno.test("fleet_telemetry - the summary renders cost per merged PR per tier", async () => {
+  fresh(WINDOW_START_MS);
+  recordIssuePhaseRun({ usd: 1, subAgentTier: "sonnet" });
+  recordIssuePhaseRun({ usd: 0.5, subAgentTier: "haiku" });
+  recordPrFeedbackRun({ usd: 0.25, tier: "haiku" });
+  recordCiFixRun({ usd: 0.25, tier: "haiku" });
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  recordMergedPr({
+    repo: "o/r",
+    number: 2,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 1,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+
+  const line = formatFleetSummary(WINDOW_START_MS + 1_000);
+  // haiku: (0.5 + 0.25 + 0.25) / 2 merged; sonnet: nothing merged.
+  assertStringIncludes(line, "cost_per_merged_pr=sonnet=n/a,haiku=0.5000");
+  assertStringIncludes(line, "pr_tier_rejections=sonnet=0,haiku=1");
+  assertStringIncludes(line, "ci_fix_tier_runs=sonnet=0,haiku=1");
+  assertStringIncludes(line, "ci_fix_tier_usd=sonnet=0.0000,haiku=0.2500");
+  assertStringIncludes(line, "pr_feedback_tier_usd=sonnet=0.0000,haiku=0.2500");
+  assertStringIncludes(line, "merged_tier_prs=sonnet=0,haiku=2");
+  assertEquals(line.includes("Infinity"), false);
+  assertEquals(line.includes("NaN"), false);
+  assertEquals(line.includes("TOKEN"), false);
+});
+
+Deno.test("fleet_telemetry - a sonnet-only summary omits the PR outcome keys", () => {
+  fresh(WINDOW_START_MS);
+  recordIssuePhaseRun({ usd: 1, subAgentTier: "sonnet" });
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "sonnet",
+  });
+  const line = formatFleetSummary(WINDOW_START_MS + 1_000);
+  assertEquals(line.includes("pr_tier_rejections"), false);
+  assertEquals(line.includes("cost_per_merged_pr"), false);
+});
+
+Deno.test("fleet_telemetry - a merged PR before the window start is not counted", () => {
+  fresh(WINDOW_START_MS);
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: BEFORE_WINDOW,
+    tier: "haiku",
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).mergedPrsHaiku, 0);
+  // Not recorded as seen either: nothing to dedupe against later.
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: AFTER_WINDOW_START,
+    tier: "haiku",
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).mergedPrsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry - a merged PR at the window start is counted", () => {
+  fresh(WINDOW_START_MS);
+  recordMergedPr({
+    repo: "o/r",
+    number: 2,
+    mergedAt: AT_WINDOW_START,
+    tier: "sonnet",
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).mergedPrsSonnet, 1);
+});
+
+Deno.test("fleet_telemetry - a merged PR with an empty or unparseable mergedAt is not counted", () => {
+  fresh(WINDOW_START_MS);
+  recordMergedPr({ repo: "o/r", number: 3, mergedAt: "", tier: "haiku" });
+  recordMergedPr({
+    repo: "o/r",
+    number: 4,
+    mergedAt: "not a date",
+    tier: "haiku",
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).mergedPrsHaiku, 0);
+});
+
+Deno.test("fleet_telemetry - a review submitted before the window start is not counted and never resolves a tier", async () => {
+  fresh(WINDOW_START_MS);
+  let calls = 0;
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 1,
+    submittedAt: BEFORE_WINDOW,
+    resolveTier: () => {
+      calls += 1;
+      return Promise.resolve("haiku");
+    },
+  });
+  assertEquals(calls, 0);
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 0);
+});
+
+Deno.test("fleet_telemetry - a review with a missing or unparseable submittedAt is not counted", async () => {
+  fresh(WINDOW_START_MS);
+  for (const submittedAt of [null, undefined, "", "garbage"]) {
+    await recordPrRejection({
+      repo: "o/r",
+      prNumber: 1,
+      reviewId: 1,
+      submittedAt,
+      resolveTier: resolvesTo("haiku"),
+    });
+  }
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 0);
+});
+
+Deno.test("fleet_telemetry - an unresolved tier is not counted and the review is retried later", async () => {
+  fresh(WINDOW_START_MS);
+  const base = {
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 7,
+    submittedAt: AFTER_WINDOW_START,
+  };
+  await recordPrRejection({ ...base, resolveTier: resolvesTo(null) });
+  const first = getFleetTelemetry(WINDOW_START_MS + 1_000);
+  assertEquals(first.prRejectionsHaiku + first.prRejectionsSonnet, 0);
+  await recordPrRejection({ ...base, resolveTier: resolvesTo("haiku") });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry - a repeated review does not resolve the tier again", async () => {
+  fresh(WINDOW_START_MS);
+  let calls = 0;
+  const args = {
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 9,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: () => {
+      calls += 1;
+      return Promise.resolve("haiku" as const);
+    },
+  };
+  await recordPrRejection(args);
+  await recordPrRejection(args);
+  assertEquals(calls, 1);
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry - a reset during the tier lookup does not credit the new window", async () => {
+  fresh(WINDOW_START_MS);
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 5,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: () => {
+      fresh(WINDOW_START_MS);
+      return Promise.resolve("haiku");
+    },
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 0);
+  // The stale result did not poison the new window's dedupe.
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 5,
+    submittedAt: AFTER_WINDOW_START,
+    resolveTier: resolvesTo("haiku"),
+  });
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry - concurrent calls for the same review count it once", async () => {
+  fresh(WINDOW_START_MS);
+  const resolvers: Array<() => void> = [];
+  const deferredTier = () =>
+    new Promise<"haiku">((resolve) => {
+      resolvers.push(() => resolve("haiku"));
+    });
+  const base = {
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 77,
+    submittedAt: AFTER_WINDOW_START,
+  };
+  // Both calls pass the first dedupe check before either resolves.
+  const first = recordPrRejection({ ...base, resolveTier: deferredTier });
+  const second = recordPrRejection({ ...base, resolveTier: deferredTier });
+  assertEquals(resolvers.length, 2);
+  for (const resolve of resolvers) resolve();
+  await Promise.all([first, second]);
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
 });

@@ -44,7 +44,14 @@ import {
   type CheckAnnotation,
   decodeAnnotations,
 } from "./pr_spelling_processor.ts";
-import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import {
+  DEFAULT_CLAUDE_MODEL,
+  OPERATIONAL_DEFAULTS,
+} from "./config_defaults.ts";
+import { recordCiFixRun } from "./fleet_telemetry.ts";
+import { estimatePhaseRunUsd } from "./phase_run_usd.ts";
+import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
+import type { RunStats } from "./run_stats.ts";
 import {
   type HeartbeatHandle,
   startHeartbeat,
@@ -994,7 +1001,39 @@ async function _processCiFailureLocked(
       : result;
   } finally {
     await stopHeartbeat(heartbeatHandle);
+    await recordCiFixTierRun(input, processorDeps, carrier);
   }
+}
+
+/**
+ * Record this run in the fleet's per-tier CI-fix counters (Issue #3404).
+ *
+ * One run per `processCiFailure` in which the agent ran, priced from every
+ * invocation (the main call and the post-quality retry). The tier is the one
+ * the PR's body marker names; an unreadable body records nothing (the lookup
+ * has already warned).
+ */
+async function recordCiFixTierRun(
+  input: CiFixInput,
+  processorDeps: CiProcessorDeps,
+  carrier: CiRunCarrier,
+): Promise<void> {
+  if (!carrier.agentRan) return;
+  const { deps, logger } = processorDeps;
+  const tier = await fetchPrSubAgentTier(
+    input.repo,
+    input.prNumber,
+    processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+    logger,
+  );
+  if (tier === null) return;
+  recordCiFixRun({
+    tier,
+    usd: estimatePhaseRunUsd(
+      carrier.runStats ?? [],
+      processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+    ),
+  });
 }
 
 /**
@@ -1073,6 +1112,14 @@ interface CiRunCarrier {
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
+  /**
+   * Issue #3404: set once the coding agent is about to be invoked; a run that
+   * exits earlier (PR closed, deferral, cap reached…) never sets it and so
+   * records no fleet-telemetry run.
+   */
+  agentRan?: boolean;
+  /** Issue #3404: the stats of every agent invocation this run made. */
+  runStats?: (RunStats | undefined)[];
 }
 
 /**
@@ -1725,6 +1772,10 @@ async function _processCiWithHeartbeat(
   });
   carrier.rtkOutput = rtk.result;
 
+  // Issue #3404: from here the agent runs, so this run is telemetry-worthy.
+  carrier.agentRan = true;
+  const runStatsSink: (RunStats | undefined)[] = carrier.runStats ??= [];
+
   // Execute Claude in the target repo directory (Issue #1297)
   const claudeResult = await deps.claude.runClaudeWithRetry(
     {
@@ -1753,6 +1804,7 @@ async function _processCiWithHeartbeat(
       maxRetries: maxRateLimitRetries,
     },
   );
+  if (claudeResult.ok) runStatsSink.push(claudeResult.value.runStats);
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
   if (claudeResult.ok) graft.record(claudeResult.value.runStats);
   // Issue #2384: the saved-token figure, read whether or not the invocation
@@ -1791,6 +1843,7 @@ async function _processCiWithHeartbeat(
     codegraph,
     graft,
     rtk,
+    runStatsSink,
   );
 
   // Always commit and push any pending work (Issue #1643).
@@ -2645,6 +2698,8 @@ async function _runPostClaudeQualityCheck(
   graft: GraftRun,
   /** The run's RTK hook (Issue #2384), handed to the retry as well. */
   rtk: RtkRun,
+  /** Issue #3404: collects the retry's stats for the run's USD figure. */
+  runStatsSink: (RunStats | undefined)[],
 ): Promise<PostClaudeQualityResult> {
   const {
     logger,
@@ -2736,6 +2791,7 @@ async function _runPostClaudeQualityCheck(
       },
       { maxRetries: maxRateLimitRetries },
     );
+    if (retryResult.ok) runStatsSink.push(retryResult.value.runStats);
     if (retryResult.ok) codegraph.record(retryResult.value.runStats);
     if (retryResult.ok) graft.record(retryResult.value.runStats);
     // Re-read against the first baseline, so the figure covers both spawns.

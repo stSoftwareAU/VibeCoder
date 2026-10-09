@@ -10,6 +10,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  emptyTotals,
   FLEET_TELEMETRY_SCHEMA,
   fleetTelemetryPath,
   isFleetTelemetryFile,
@@ -22,10 +23,13 @@ import {
   endBusy,
   getFleetTelemetry,
   recordBlockedSeconds,
+  recordCiFixRun,
   recordClaim,
   recordCycleIdle,
   recordIssuePhaseRun,
+  recordMergedPr,
   recordOutcome,
+  recordPrRejection,
   resetFleetTelemetry,
   startFleetCycle,
   startFleetTelemetry,
@@ -583,4 +587,119 @@ Deno.test("mergeCumulative - adds every additive total", () => {
   assertEquals(merged.claims, 3);
   assertEquals(merged.failures, 2);
   assertEquals(merged.failuresByClass["setup"], 2);
+});
+
+const NEW_PR_FIELDS = [
+  "prRejectionsSonnet",
+  "prRejectionsHaiku",
+  "ciFixRunsSonnet",
+  "ciFixRunsHaiku",
+  "ciFixUsdSonnet",
+  "ciFixUsdHaiku",
+  "prFeedbackRunsSonnet",
+  "prFeedbackRunsHaiku",
+  "prFeedbackUsdSonnet",
+  "prFeedbackUsdHaiku",
+  "mergedPrsSonnet",
+  "mergedPrsHaiku",
+] as const;
+
+Deno.test("fleet_telemetry_sidecar - a legacy sidecar without PR outcome fields loads as zeros", async () => {
+  await withTempDir(async (dir) => {
+    const legacy = {
+      wallSeconds: 10,
+      idleSeconds: 4,
+      idleByReason: {},
+      occupiedSeconds: 6,
+      busySeconds: 6,
+      busyByStream: {},
+      tokenBlockedSeconds: 0,
+      rateLimitedSeconds: 0,
+      rateLimitWaits: 0,
+      tokenBlockedWaits: 0,
+      claims: 1,
+      successes: 1,
+      failures: 0,
+      skips: 0,
+      failuresByClass: {},
+    };
+    await Deno.writeTextFile(
+      fleetTelemetryPath(dir, "host-1"),
+      JSON.stringify({
+        schema: FLEET_TELEMETRY_SCHEMA,
+        host: "host-1",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        run: legacy,
+        cumulative: legacy,
+      }),
+    );
+    const read = await readUsable(dir, "host-1");
+    assertEquals(read?.cumulative.idleSeconds, 4);
+    for (const field of NEW_PR_FIELDS) {
+      assertEquals(read?.run[field], 0, `run.${field}`);
+      assertEquals(read?.cumulative[field], 0, `cumulative.${field}`);
+    }
+  });
+});
+
+// Inside the telemetry window that starts at epoch 0 (Issue #3404).
+const INSIDE_WINDOW = new Date(500).toISOString();
+
+Deno.test("fleet_telemetry_sidecar - mergeCumulative sums the PR outcome fields", async () => {
+  resetFleetTelemetry();
+  startFleetTelemetry(0);
+  recordCiFixRun({ usd: 0.5, tier: "haiku" });
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: INSIDE_WINDOW,
+    tier: "haiku",
+  });
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 1,
+    submittedAt: INSIDE_WINDOW,
+    resolveTier: () => Promise.resolve("sonnet"),
+  });
+  const run = getFleetTelemetry(1_000);
+
+  const merged = mergeCumulative(mergeCumulative(emptyTotals(), run), run);
+  assertEquals(merged.ciFixRunsHaiku, 2);
+  assertAlmostEquals(merged.ciFixUsdHaiku, 1);
+  assertEquals(merged.mergedPrsHaiku, 2);
+  assertEquals(merged.prRejectionsSonnet, 2);
+  assertEquals(merged.mergedPrsSonnet, 0);
+
+  // A prior that lacks the fields entirely still merges without NaN.
+  const { ciFixRunsHaiku: _a, mergedPrsHaiku: _b, ...partial } = emptyTotals();
+  const fromLegacy = mergeCumulative(partial, run);
+  assertEquals(fromLegacy.ciFixRunsHaiku, 1);
+  assertEquals(fromLegacy.mergedPrsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry_sidecar - PR outcome fields round-trip through the file", async () => {
+  await withTempDir(async (dir) => {
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    recordMergedPr({
+      repo: "o/r",
+      number: 1,
+      mergedAt: INSIDE_WINDOW,
+      tier: "haiku",
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 1_000 });
+    resetFleetTelemetry();
+    startFleetTelemetry(0);
+    recordMergedPr({
+      repo: "o/r",
+      number: 2,
+      mergedAt: INSIDE_WINDOW,
+      tier: "haiku",
+    });
+    await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 1_000 });
+    const read = await readUsable(dir, "host-1");
+    assertEquals(read?.run.mergedPrsHaiku, 1);
+    assertEquals(read?.cumulative.mergedPrsHaiku, 2);
+  });
 });

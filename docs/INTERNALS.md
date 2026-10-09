@@ -936,6 +936,9 @@ fleet-summary: wall=92520s idle=39600s idle_pct=42.8 occupied=52920s
   issue_runs=12 issue_split_runs=12 issue_usd=3.9120
   issue_gate_first_attempt_passes=9 issue_duration=18400s
   issue_tier_runs=sonnet=10,haiku=2 issue_tier_usd=sonnet=3.4120,haiku=0.5000
+  pr_tier_rejections=sonnet=3,haiku=1 ci_fix_tier_runs=sonnet=4,haiku=1
+  ci_fix_tier_usd=sonnet=0.9000,haiku=0.1500 pr_feedback_tier_usd=sonnet=0.6000,haiku=0.2000
+  merged_tier_prs=sonnet=8,haiku=2 cost_per_merged_pr=sonnet=0.6170,haiku=0.4250
   idle_by_reason=nothing_claimable_backlog=32000s,host_disk_low=7600s
   failures_by_class=execute=9,timeout=3,setup=1 utilisation=serial=0.57
 ```
@@ -1002,6 +1005,27 @@ flowchart LR
   sonnet-only host's line is exactly as it was before the split, with no tier
   tokens at all. A sidecar written before the split existed loads its
   accumulated runs and spend as `sonnet`.
+- **`pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`,
+  `merged_tier_prs` and `cost_per_merged_pr`** (Issue #3404) follow the same
+  tier split through the PR lifecycle, in the same haiku-gated block and after
+  the `issue_tier_*` keys. The tier of a PR is read from the
+  `vibe-sub-agent-tier` marker in its body; no marker means `sonnet`.
+  `pr_tier_rejections` counts authorised `CHANGES_REQUESTED` reviews per tier
+  of the reviewed PR. `ci_fix_tier_runs` /
+  `ci_fix_tier_usd` are `ci_fix` runs and their estimated USD per tier of the
+  PR; `pr_feedback_tier_usd` is `pr_feedback` runs' estimated USD per tier.
+  `merged_tier_prs` counts merged PRs per tier from the merged-PR listing
+  branch cleanup already fetches. `cost_per_merged_pr` is (issue + `pr_feedback` +
+  `ci_fix` USD) ÷ merged PRs for that tier, to 4 decimal places, or `n/a` when
+  the tier has no merged PRs. The sidecar gains these counters; one written
+  before them loads with them at zero (schema stays 1). Reviews and merges are
+  each counted once per telemetry window (by review id, or repo and number),
+  and only when submitted or merged inside the current window, so a restart
+  does not re-count the persistent reviews and recent merges; one that
+  happened while the worker was down is not counted. A merged PR with no
+  readable merge time is not counted. A review whose PR body cannot be read is
+  retried on the next scan; a CI-fix or PR-feedback run whose PR body cannot
+  be read is not counted (logged as a warning).
 - **A block inside a run** — the agent's own retry ladder sleeps in-process —
   counts towards `usage_blocked_seconds` but not towards `idle_by_reason`: the
   fleet was holding a claim, not idle. This is the one deliberate overlap, and
