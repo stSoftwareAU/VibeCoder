@@ -171,20 +171,21 @@ export function buildIdempotencyMarker(issueNumber: number): string {
  * needing to correlate the PR against a fleet-telemetry record from the
  * original run.
  */
-export const SUB_AGENT_TIER_MARKER_PREFIX = "<!-- vibe-sub-agent-tier: ";
+export const SUB_AGENT_TIER_MARKER_PREFIX = '<!-- vibe-sub-agent-tier tier="';
 
 /** Pattern matching every occurrence of the canonical tier marker. */
-const SUB_AGENT_TIER_MARKER_PATTERN = /<!-- vibe-sub-agent-tier: ([a-z]+) -->/g;
+const SUB_AGENT_TIER_MARKER_PATTERN =
+  /<!-- vibe-sub-agent-tier tier="([a-z]+)" -->/g;
 
 /**
  * Build the hidden HTML-comment marker recording `tier` on a PR body (Issue
- * #3403), e.g. `<!-- vibe-sub-agent-tier: haiku -->`.
+ * #3403), e.g. `<!-- vibe-sub-agent-tier tier="haiku" -->`.
  *
  * @param tier - The sub-agent tier the issue run resolved
  * @returns The marker, ready to append to the body
  */
 export function buildSubAgentTierMarker(tier: IssueSubAgentTier): string {
-  return `${SUB_AGENT_TIER_MARKER_PREFIX}${tier} -->`;
+  return `${SUB_AGENT_TIER_MARKER_PREFIX}${tier}" -->`;
 }
 
 /**
@@ -214,7 +215,7 @@ export function subAgentTierFromBody(
 
 /**
  * Strip the comment delimiters off every occurrence of the canonical tier
- * marker, leaving the bare text `vibe-sub-agent-tier: <tier>` behind (Issue
+ * marker, leaving the bare text `vibe-sub-agent-tier tier="<tier>"` behind (Issue
  * #3403).
  *
  * Run over summary content before it is assembled into a PR body: a summary
@@ -228,7 +229,7 @@ export function subAgentTierFromBody(
 export function neutraliseSubAgentTierMarkers(text: string): string {
   return text.replace(
     SUB_AGENT_TIER_MARKER_PATTERN,
-    (_match, tier) => `vibe-sub-agent-tier: ${tier}`,
+    (_match, tier) => `vibe-sub-agent-tier tier="${tier}"`,
   );
 }
 

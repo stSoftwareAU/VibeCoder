@@ -203,6 +203,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/pre_commit_safety_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
+  // The PR-body tier-marker finder scans an untrusted PR body for an
+  // unterminated marker prefix; only a growth measurement separates its linear
+  // scan from a backtracking one (Issue #3403).
+  "tests/pr_body_test.ts",
   "tests/prompt_leak_redaction_test.ts",
   // The removed-assertion gate lexes an agent-written test file whole; only a
   // growth measurement separates its capped, linear scans from a quadratic

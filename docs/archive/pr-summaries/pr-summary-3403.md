@@ -19,7 +19,7 @@ so the Haiku trial (#3385) can be judged from fleet telemetry. Closes #3403.
 - `measureIssuePhaseRun` passes the tier through. Both callers
   (`completion_phase.ts`, `handle_no_changes_phase.ts`) resolve it with
   `resolveIssueSubAgentTier`, so the `repo_config` override wins.
-- PR body: `assemblePrBody` appends `<!-- vibe-sub-agent-tier: <tier> -->`
+- PR body: `assemblePrBody` appends `<!-- vibe-sub-agent-tier tier="<tier>" -->`
   after the summary-digest marker. Any copy of the marker quoted in the summary
   has its comment delimiters stripped first, so the body has exactly one real
   marker. `syncPrBodyFromSummary` carries over the marker the live body has. A

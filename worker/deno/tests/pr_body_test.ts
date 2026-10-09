@@ -234,11 +234,11 @@ Deno.test("pr_body - extractIssueNumberFromPrTitle requires trailing pattern", (
 Deno.test("pr_body - buildSubAgentTierMarker renders the exact marker for each tier", () => {
   assertEquals(
     buildSubAgentTierMarker("haiku"),
-    "<!-- vibe-sub-agent-tier: haiku -->",
+    '<!-- vibe-sub-agent-tier tier="haiku" -->',
   );
   assertEquals(
     buildSubAgentTierMarker("sonnet"),
-    "<!-- vibe-sub-agent-tier: sonnet -->",
+    '<!-- vibe-sub-agent-tier tier="sonnet" -->',
   );
 });
 
@@ -257,13 +257,13 @@ Deno.test("pr_body - subAgentTierFromBody returns undefined when no marker is pr
 });
 
 Deno.test("pr_body - subAgentTierFromBody skips an occurrence naming an unknown tier", () => {
-  const body = "<!-- vibe-sub-agent-tier: opus -->\n" +
+  const body = '<!-- vibe-sub-agent-tier tier="opus" -->\n' +
     buildSubAgentTierMarker("sonnet");
   assertEquals(subAgentTierFromBody(body), "sonnet");
   // And when the unknown-tier marker is the only occurrence, there is
   // nothing recognised to return.
   assertEquals(
-    subAgentTierFromBody("<!-- vibe-sub-agent-tier: opus -->"),
+    subAgentTierFromBody('<!-- vibe-sub-agent-tier tier="opus" -->'),
     undefined,
   );
 });
@@ -275,7 +275,7 @@ Deno.test("pr_body - neutraliseSubAgentTierMarkers strips the comment delimiters
   const neutralised = neutraliseSubAgentTierMarkers(body);
   assertEquals(
     neutralised,
-    "Before vibe-sub-agent-tier: haiku middle vibe-sub-agent-tier: sonnet after",
+    'Before vibe-sub-agent-tier tier="haiku" middle vibe-sub-agent-tier tier="sonnet" after',
   );
   // The neutralised text no longer reads as a marker to the finder.
   assertEquals(subAgentTierFromBody(neutralised), undefined);
@@ -285,7 +285,7 @@ Deno.test("pr_body - subAgentTierFromBody stays linear on an unterminated hostil
   // A ratio of two readings, never a constant.
   const result = assertLinearGrowth(
     "subAgentTierFromBody unterminated marker",
-    (chars) => "<!-- vibe-sub-agent-tier: " + "a".repeat(chars),
+    (chars) => '<!-- vibe-sub-agent-tier tier="' + "a".repeat(chars),
     (input) => subAgentTierFromBody(input),
     { baseChars: 10_000 },
   );

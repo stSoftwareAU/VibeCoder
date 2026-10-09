@@ -217,7 +217,7 @@ async function createPrWithConfig(
 
 /** Every occurrence of the sub-agent tier marker in `body`. */
 function tierMarkerOccurrences(body: string): string[] {
-  return body.match(/<!-- vibe-sub-agent-tier: [a-z]+ -->/g) ?? [];
+  return body.match(/<!-- vibe-sub-agent-tier tier="[a-z]+" -->/g) ?? [];
 }
 
 Deno.test(
