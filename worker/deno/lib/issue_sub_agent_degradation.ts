@@ -52,7 +52,6 @@ export function assessIssueSubAgentDegradation(args: {
   const stale = served.filter((model) =>
     previousGenerationOf(model)?.tier === "haiku"
   );
-  if (stale.length === 0) return undefined;
 
   const currentHaikuServed = served.some((model) =>
     !stale.includes(model) &&

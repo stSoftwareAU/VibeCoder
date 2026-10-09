@@ -163,6 +163,27 @@ Deno.test("haiku tier served current haiku - healthy, no gh call", async () => {
   });
 });
 
+Deno.test("haiku tier served no haiku at all - healthy, no gh call", async () => {
+  await withHarness(async (h) => {
+    const claudeResults = [claudeRun(["claude-opus-5-5"])];
+    assertEquals(
+      assessIssueSubAgentDegradation({ tier: "haiku", claudeResults }),
+      undefined,
+    );
+    const result = await reportIssueSubAgentDegradation({
+      repo: REPO,
+      issueNumber: ISSUE,
+      tier: "haiku",
+      claudeResults,
+      ghCommandFn: h.ghCommandFn,
+      logger: h.logger,
+      cacheDir: h.cacheDir,
+    });
+    assertEquals(result, undefined);
+    assertEquals(h.calls.length, 0);
+  });
+});
+
 Deno.test("haiku tier served both stale and current haiku - one current keeps it healthy", () => {
   assertEquals(
     assessIssueSubAgentDegradation({
@@ -211,8 +232,11 @@ Deno.test("label-apply failure - does not throw, still returns the assessment, w
     });
     assertEquals(result?.served, ["claude-haiku-4-5"]);
     assert(
-      h.warnings.some((w) => w.context?.issueNumber === ISSUE),
-      "expected a warning carrying the issue number",
+      h.warnings.some((w) =>
+        w.message === "Failed to apply degraded-model label (non-fatal)" &&
+        w.context?.issueNumber === ISSUE
+      ),
+      "expected the add-label failure warning carrying the issue number",
     );
   }, { failAddLabel: true });
 });
