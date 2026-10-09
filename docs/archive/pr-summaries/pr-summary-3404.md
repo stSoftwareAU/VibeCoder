@@ -272,6 +272,26 @@ and goes red when only that caller's hook is removed:
 **Guards kept.** The rejection hook sits below the host's own-review skip and
 the authorisation check, so an unauthorised review is never counted.
 
-**Gate.** Targeted runs passed: fmt, lint, `deno task check` across the whole
-tree, and the touched test files. The full gate result is in the final line
-below.
+**Gate.** The full `./quality.sh` was run on commit `9b977ac0`. Every stage
+passed, including `deno tests` (578s), except `deno type check`. The failure
+was one error: `tests/phase_run_usd_test.ts:49`, `string | undefined` passed
+as `string`. It was fixed in `b60ec3a2`, which changed only three test files.
+
+After the fix, a fresh full gate was stopped twice before finishing:
+
+- once at the tool's 600s limit, during `deno tests`;
+- once by an external signal (exit 144). The host was loaded: the
+  completeness stage took 67s instead of the usual 10s.
+
+Every stage it reached passed.
+
+For the final head, the affected stages were run directly from `worker/deno`.
+All passed:
+
+- `deno task check` on the whole tree: exit 0, no errors;
+- `deno fmt --check` and `deno lint`: clean;
+- `deno task test:unit` over all touched test files plus
+  `lib_sweep_coverage_test.ts`, `pr_ci_processor_test.ts` and
+  `pr_maintenance_test.ts`: 442 passed, 0 failed.
+
+<!-- vibe-quality-gate-skipped reason="full ./quality.sh on the final head was stopped twice before finishing (600s tool limit, then external signal exit 144 on a loaded host); the previous full run passed every stage but the type check, which was then fixed and re-run clean with deno task check; CI runs the full gate" -->
