@@ -1085,11 +1085,11 @@ setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-SECURITY-POLICY-MISSING`, and — when the repository
 runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
-workflows need that the list omits, composite steps included,)
-whose fix text says plainly that a
+workflows need that the list omits, composite steps included,).
+Except for `BP-REPO-SECURITY-POLICY-MISSING`, whose fix is committing a
+file (see below), each fix text says plainly that a
 repository admin must act — the worker cannot change settings; it makes
-the drift visible on the board instead of in a report. The one exception is
-`BP-REPO-SECURITY-POLICY-MISSING`, whose fix is committing a file (see below).
+the drift visible on the board instead of in a report.
 An unreadable
 endpoint is logged and yields nothing. Wording avoids the literal
 `secret_scanning*: value` and `id-token: write` pairs the outbound secret
