@@ -31,6 +31,7 @@ import {
   saveProcessedSweepState,
 } from "./merged_sweep_watermark.ts";
 import { classifyGitHubError, GitHubErrorCategory } from "./github_errors.ts";
+import { recordMergedPr } from "./fleet_telemetry.ts";
 import { defaultLogger } from "./logger.ts";
 import { emitSelfHealEventAuto } from "./self_heal_events.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
@@ -209,6 +210,15 @@ export async function cleanupMergedPrBranches(
         ghFn,
       );
       for (const pr of merged) {
+        // Issue #3404: count the merge by tier before any skip below.
+        if (pr.subAgentTier !== undefined) {
+          recordMergedPr({
+            repo,
+            number: pr.number,
+            mergedAt: pr.mergedAt,
+            tier: pr.subAgentTier,
+          });
+        }
         windowNumbers.push(pr.number);
         if (!pr.headRefName) continue;
         if (state && isProcessed(state, repo, pr.number)) continue;

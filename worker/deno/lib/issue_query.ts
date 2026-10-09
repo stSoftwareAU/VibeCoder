@@ -23,7 +23,8 @@ import { createMilestoneBranchName } from "./git_branch.ts";
 import { isHumanAuthoredPr } from "./fleet_authors.ts";
 export { createMilestoneBranchName };
 import { IssueCache } from "./issue_cache.ts";
-import type { WorkerConfig } from "../types.ts";
+import type { IssueSubAgentTier, WorkerConfig } from "../types.ts";
+import { subAgentTierFromBody } from "./pr_body.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
 import { TimelineCache } from "./timeline_cache.ts";
 import { isWorkerPlanningHandoff } from "./planning_handoff_trust.ts";
@@ -148,6 +149,13 @@ export interface MergedPR {
    * field was collected — treat as none.
    */
   missingCriteria?: string[];
+  /**
+   * The sub-agent tier from the PR body's `vibe-sub-agent-tier` marker,
+   * `sonnet` when the body has none (Issue #3404). Absent on a cache entry
+   * written before this field was collected — consumers treat absent as
+   * unknown, not as sonnet.
+   */
+  subAgentTier?: IssueSubAgentTier;
 }
 
 /**
@@ -1892,7 +1900,8 @@ export async function fetchMergedPRsByUser(
 /**
  * Parse a `gh pr list --state merged --json
  * number,title,headRefName,mergedAt,body` listing. The body itself is not
- * kept — only the closing references the closers need from it.
+ * kept — only the closing references the closers need from it and the
+ * sub-agent tier its marker names (`sonnet` when it has none, Issue #3404).
  */
 function parseMergedPrListing(output: string): MergedPR[] {
   let parsed: unknown;
@@ -1915,6 +1924,7 @@ function parseMergedPrListing(output: string): MergedPR[] {
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : "",
       closingRefs: extractClosingIssueNumbers(body),
+      subAgentTier: subAgentTierFromBody(body) ?? "sonnet",
       ...(missingCriteria.length > 0 ? { missingCriteria } : {}),
     });
   }

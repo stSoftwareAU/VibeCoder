@@ -1407,6 +1407,72 @@ Deno.test("issue_query - fetchMergedPRsByUser - reads the body's closing referen
   }
 });
 
+Deno.test("issue_query - fetchMergedPRsByUser - reads the sub-agent tier from the body marker, defaulting to sonnet (Issue #3404)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const mockGh = async (_args: string[]): Promise<string> =>
+      JSON.stringify([
+        {
+          number: 1,
+          title: "marked",
+          headRefName: "issue-1",
+          mergedAt: "2026-09-07T11:00:00Z",
+          body: 'Summary\n\n<!-- vibe-sub-agent-tier tier="haiku" -->',
+        },
+        {
+          number: 2,
+          title: "unmarked",
+          headRefName: "issue-2",
+          mergedAt: "2026-09-07T11:00:00Z",
+          body: "Summary only",
+        },
+        { number: 3, title: "no body", headRefName: "issue-3" },
+      ]);
+    const prs = await fetchMergedPRsByUser("o/r", "bot", cache, 30, mockGh);
+    assertEquals(prs[0]?.subAgentTier, "haiku");
+    assertEquals(prs[1]?.subAgentTier, "sonnet");
+    assertEquals(prs[2]?.subAgentTier, "sonnet");
+    // The cached entry keeps the tier but none of the body text.
+    const cached = await cache.read<
+      { prs: Array<Record<string, unknown>> }
+    >("o/r", "prs_merged_bot");
+    assertEquals(cached?.prs[0]?.subAgentTier, "haiku");
+    assertEquals(cached?.prs[1]?.subAgentTier, "sonnet");
+    assertEquals(cached?.prs[0]?.body, undefined);
+    assertEquals(JSON.stringify(cached).includes("Summary"), false);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchMergedPRsByUser - serves an old-shape cache entry without a tier (Issue #3404)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    // Written before the tier was collected: a bare array, no subAgentTier.
+    await cache.write("o/r", "prs_merged_bot", [
+      {
+        number: 7,
+        title: "old",
+        headRefName: "issue-7",
+        mergedAt: "2026-09-07T11:00:00Z",
+        closingRefs: [7],
+      },
+    ]);
+    let fetches = 0;
+    const mockGh = async (_args: string[]): Promise<string> => {
+      fetches++;
+      return "[]";
+    };
+    const prs = await fetchMergedPRsByUser("o/r", "bot", cache, 30, mockGh);
+    assertEquals(prs.length, 1);
+    assertEquals(prs[0]?.number, 7);
+    assertEquals(prs[0]?.subAgentTier, undefined);
+    assertEquals(fetches, 0, "an old-shape entry needs no refetch");
+  } finally {
+    await cleanup();
+  }
+});
+
 Deno.test("issue_query - fetchMergedPRsByUser - cache hit avoids gh call", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {

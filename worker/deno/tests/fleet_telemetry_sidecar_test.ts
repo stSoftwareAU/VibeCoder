@@ -642,12 +642,26 @@ Deno.test("fleet_telemetry_sidecar - a legacy sidecar without PR outcome fields 
   });
 });
 
-Deno.test("fleet_telemetry_sidecar - mergeCumulative sums the PR outcome fields", () => {
+// Inside the telemetry window that starts at epoch 0 (Issue #3404).
+const INSIDE_WINDOW = new Date(500).toISOString();
+
+Deno.test("fleet_telemetry_sidecar - mergeCumulative sums the PR outcome fields", async () => {
   resetFleetTelemetry();
   startFleetTelemetry(0);
   recordCiFixRun({ usd: 0.5, tier: "haiku" });
-  recordMergedPr({ repo: "o/r", number: 1, tier: "haiku" });
-  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 1, tier: "sonnet" });
+  recordMergedPr({
+    repo: "o/r",
+    number: 1,
+    mergedAt: INSIDE_WINDOW,
+    tier: "haiku",
+  });
+  await recordPrRejection({
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 1,
+    submittedAt: INSIDE_WINDOW,
+    resolveTier: () => Promise.resolve("sonnet"),
+  });
   const run = getFleetTelemetry(1_000);
 
   const merged = mergeCumulative(mergeCumulative(emptyTotals(), run), run);
@@ -668,11 +682,21 @@ Deno.test("fleet_telemetry_sidecar - PR outcome fields round-trip through the fi
   await withTempDir(async (dir) => {
     resetFleetTelemetry();
     startFleetTelemetry(0);
-    recordMergedPr({ repo: "o/r", number: 1, tier: "haiku" });
+    recordMergedPr({
+      repo: "o/r",
+      number: 1,
+      mergedAt: INSIDE_WINDOW,
+      tier: "haiku",
+    });
     await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 1_000 });
     resetFleetTelemetry();
     startFleetTelemetry(0);
-    recordMergedPr({ repo: "o/r", number: 2, tier: "haiku" });
+    recordMergedPr({
+      repo: "o/r",
+      number: 2,
+      mergedAt: INSIDE_WINDOW,
+      tier: "haiku",
+    });
     await writeFleetTelemetryFile(dir, { hostname: "host-1", nowMs: 1_000 });
     const read = await readUsable(dir, "host-1");
     assertEquals(read?.run.mergedPrsHaiku, 1);

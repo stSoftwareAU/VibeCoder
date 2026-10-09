@@ -355,7 +355,11 @@ function zeroPrOutcomeCounters(): PrOutcomeCounters {
   };
 }
 
-// SIMPLE-ON-PURPOSE: per-process dedupe, a restart re-counts — upgrade when cumulative inflation across restarts matters
+// SIMPLE-ON-PURPOSE: per-window dedupe, and events older than the window start
+// (`runStartMs`) are ignored, so a restart does not re-count the PRs and reviews
+// the listings keep returning; an event that happened while the worker was down
+// is therefore not counted — upgrade when that undercount matters (persist a
+// seen-set or a high-water mark in the sidecar)
 const seenRejections = new Set<string>();
 const seenMergedPrs = new Set<string>();
 
@@ -618,27 +622,48 @@ export function recordIssuePhaseRun(run: IssuePhaseRun): void {
 
 /**
  * Record an authorised CHANGES_REQUESTED review on a PR (Issue #3404).
- * Counted once per `repo#prNumber#reviewId` within this process.
  *
- * @param args - The PR, the review and the sub-agent tier that authored the PR
+ * Counted once per `repo#prNumber#reviewId` within the telemetry window, and
+ * only when the review was submitted at or after the window start, so a
+ * restart does not re-count reviews that persist on the PR. A missing or
+ * unparseable `submittedAt` is not counted. The tier is resolved lazily so the
+ * PR-body fetch is only paid for a review that would count; when it resolves
+ * to `null` nothing is recorded and the review is retried on the next scan. A
+ * reset during the await discards the result rather than crediting the new
+ * window.
+ *
+ * @param args - The PR, the review, its submission time and a tier resolver
  */
-export function recordPrRejection(
+export async function recordPrRejection(
   args: {
     repo: string;
     prNumber: number;
     reviewId: number | string;
-    tier: IssueSubAgentTier;
+    submittedAt: string | null | undefined;
+    resolveTier: () => Promise<IssueSubAgentTier | null>;
   },
-): void {
+): Promise<void> {
+  const submittedMs = Date.parse(args.submittedAt ?? "");
+  if (!Number.isFinite(submittedMs)) return;
+  const window = state;
+  if (window.runStartMs !== undefined && submittedMs < window.runStartMs) {
+    return;
+  }
   const key = `${args.repo}#${args.prNumber}#${args.reviewId}`;
   if (seenRejections.has(key)) return;
+  const tier = await args.resolveTier();
+  if (tier === null) return;
+  // A reset during the await opened a new window: this result is stale.
+  if (state.runToken !== window.runToken) return;
+  // A concurrent call for the same review may have counted it meanwhile.
+  if (seenRejections.has(key)) return;
   seenRejections.add(key);
-  switch (args.tier) {
+  switch (tier) {
     case "sonnet":
-      state.prOutcomes.prRejectionsSonnet += 1;
+      window.prOutcomes.prRejectionsSonnet += 1;
       break;
     case "haiku":
-      state.prOutcomes.prRejectionsHaiku += 1;
+      window.prOutcomes.prRejectionsHaiku += 1;
       break;
   }
 }
@@ -686,14 +711,25 @@ export function recordPrFeedbackRun(
 }
 
 /**
- * Record a merged PR (Issue #3404). Counted once per `repo#number` within
- * this process.
+ * Record a merged PR (Issue #3404). Counted once per `repo#number` within the
+ * telemetry window, and only when `mergedAt` parses and is at or after the
+ * window start, so a restart does not re-count the recent merges the listing
+ * keeps returning. An empty or unparseable `mergedAt` is not counted (its
+ * order against the window is unknown).
  *
- * @param args - The repo, PR number and the sub-agent tier that authored it
+ * @param args - The repo, PR number, merge time and the authoring sub-agent tier
  */
 export function recordMergedPr(
-  args: { repo: string; number: number; tier: IssueSubAgentTier },
+  args: {
+    repo: string;
+    number: number;
+    mergedAt: string;
+    tier: IssueSubAgentTier;
+  },
 ): void {
+  const mergedMs = Date.parse(args.mergedAt);
+  if (!Number.isFinite(mergedMs)) return;
+  if (state.runStartMs !== undefined && mergedMs < state.runStartMs) return;
   const key = `${args.repo}#${args.number}`;
   if (seenMergedPrs.has(key)) return;
   seenMergedPrs.add(key);

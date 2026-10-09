@@ -73,7 +73,14 @@ import {
   type PushVerification,
   verifyPushLanded,
 } from "./push_claim_verification.ts";
-import { OPERATIONAL_DEFAULTS } from "./config_defaults.ts";
+import {
+  DEFAULT_CLAUDE_MODEL,
+  OPERATIONAL_DEFAULTS,
+} from "./config_defaults.ts";
+import { recordPrFeedbackRun } from "./fleet_telemetry.ts";
+import { estimatePhaseRunUsd } from "./phase_run_usd.ts";
+import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
+import type { RunStats } from "./run_stats.ts";
 import {
   buildFeedbackNoChangesResponse,
   PR_ESCALATION_NEXT_STEP,
@@ -681,11 +688,57 @@ export async function processPrFeedback(
     throw error;
   } finally {
     await stopHeartbeat(heartbeatHandle);
+    await recordFeedbackTierRun(input, processorDeps, carrier);
+  }
+}
+
+/**
+ * Record this run in the fleet's per-tier PR-feedback counters (Issue #3404).
+ *
+ * One run per `processPrFeedback` in which the agent ran, priced from every
+ * invocation (the main call plus each re-run, recovery and drift-check turn).
+ * The tier is the one the PR's body marker names; an unreadable body records
+ * nothing, as `fetchPrSubAgentTier` has already warned. Never throws:
+ * telemetry must not change the outcome of the run it describes.
+ */
+async function recordFeedbackTierRun(
+  input: PrFeedbackInput,
+  processorDeps: PrFeedbackProcessorDeps,
+  carrier: FeedbackRunCarrier,
+): Promise<void> {
+  if (!carrier.agentRan) return;
+  try {
+    const { deps, logger } = processorDeps;
+    const tier = await fetchPrSubAgentTier(
+      input.repo,
+      input.prNumber,
+      (args: string[]) => deps.github.runGhCommand(args),
+      logger,
+    );
+    if (tier === null) return;
+    recordPrFeedbackRun({
+      tier,
+      usd: estimatePhaseRunUsd(
+        carrier.runStats ?? [],
+        processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+      ),
+    });
+  } catch (err) {
+    processorDeps.logger.warn("Could not record PR-feedback fleet telemetry", {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
 /** What the body hands back to every one of its successful return paths. */
 interface FeedbackRunCarrier {
+  /**
+   * Issue #3404: set once the coding agent is about to be invoked; a run that
+   * exits earlier never sets it and so records no fleet-telemetry run.
+   */
+  agentRan?: boolean;
+  /** Issue #3404: the stats of every agent invocation this run made. */
+  runStats?: (RunStats | undefined)[];
   codegraphContext?: CodegraphContextResult;
   /** Issue #2384: `record()` writes `savedTokens` into this same object. */
   rtkOutput?: RtkOutputResult;
@@ -1082,6 +1135,19 @@ async function _processFeedbackWithHeartbeat(
 
   // Execute Claude in the target repo directory (Issue #1297)
   const agentStartMs = Date.now();
+  // Issue #3404: every agent invocation of this run goes through here, so the
+  // run's stats are collected in one place whichever helper retries it.
+  const runAgentTracked: typeof deps.claude.runClaudeWithRetry = async (
+    request,
+    options,
+  ) => {
+    carrier.agentRan = true;
+    const invocation = await deps.claude.runClaudeWithRetry(request, options);
+    if (invocation.ok) {
+      (carrier.runStats ??= []).push(invocation.value.runStats);
+    }
+    return invocation;
+  };
   const agentRequest = {
     // Appended in code, not in `prompts/pr_feedback/prompt.md`: the line is
     // run-conditional, so the template stays the same on every host.
@@ -1105,7 +1171,7 @@ async function _processFeedbackWithHeartbeat(
     // run spawns the argv it always did.
     ...settingsJsonOption(undefined, rtk.hookSettings()),
   };
-  const claudeResult = await deps.claude.runClaudeWithRetry(agentRequest, {
+  const claudeResult = await runAgentTracked(agentRequest, {
     maxRetries: maxRateLimitRetries,
   });
   if (claudeResult.ok) codegraph.record(claudeResult.value.runStats);
@@ -1206,7 +1272,7 @@ async function _processFeedbackWithHeartbeat(
     );
     reviewerAttempts++;
     const retryStartMs = Date.now();
-    const retry = await deps.claude.runClaudeWithRetry(
+    const retry = await runAgentTracked(
       {
         ...agentRequest,
         prompt: `${agentRequest.prompt}\n\n${REVIEWER_NO_CHANGE_RETRY_NOTE}`,
@@ -1252,7 +1318,7 @@ async function _processFeedbackWithHeartbeat(
         }
       },
       runAgent: async (prompt) => {
-        const retryResult = await deps.claude.runClaudeWithRetry(
+        const retryResult = await runAgentTracked(
           {
             prompt,
             systemPrompt,
@@ -1303,7 +1369,7 @@ async function _processFeedbackWithHeartbeat(
         },
         runGh: (args: string[]) => deps.github.runGhCommand(args),
         runAgent: async (req: { prompt: string; readOnly: boolean }) => {
-          const r = await deps.claude.runClaudeWithRetry(
+          const r = await runAgentTracked(
             {
               prompt: req.prompt,
               timeoutSeconds: claudeTimeout,
