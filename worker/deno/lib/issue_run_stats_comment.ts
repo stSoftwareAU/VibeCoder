@@ -31,6 +31,10 @@
  *    worker log is private, so the status and figures of the run's Graft
  *    collection ride one bullet of the same comment — readable on the issue by
  *    whoever is judging the trial.
+ * 5. **A Haiku sub-agent degradation line** (Issue #3405). When a haiku-tier
+ *    run was served a previous-generation Haiku, the comment names the
+ *    requested and served models, so a trial is never silently measured on the
+ *    wrong model.
  *
  * Every GitHub operation here is **non-fatal** — a listing or comment failure
  * is logged and never aborts the phase that was wrapping the issue up
@@ -63,6 +67,10 @@ import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
 import { getRunId } from "./run_id.ts";
+import {
+  buildIssueSubAgentDegradationLine,
+  type IssueSubAgentDegradation,
+} from "./issue_sub_agent_degradation.ts";
 
 /**
  * What the implementation run's quality gate did (Issue #2345, part of #2320).
@@ -580,6 +588,8 @@ export function measureIssuePhaseRun(args: {
  * @param args.rtk - What this run's RTK preparation produced (Issue #2385);
  *   omitted renders exactly the comment this function rendered before the
  *   line existed
+ * @param args.subAgentDegradation - A haiku-tier run served a
+ *   previous-generation Haiku (Issue #3405); omitted renders no line
  *
  * An implementation run also carries the split figures (Issue #2346): one
  * `split: on`/`split: off` line always, and the executor counts on a split run
@@ -598,6 +608,7 @@ export function buildIssueRunStatsComment(args: {
   codegraph?: CodegraphContextResult;
   qualityGate?: QualityGateAttemptOutcome;
   rtk?: RtkOutputResult;
+  subAgentDegradation?: IssueSubAgentDegradation;
 }): string {
   const invocations = args.claudeResults.flatMap((result) =>
     buildPhaseInvocations(args.phase, result)
@@ -629,9 +640,14 @@ export function buildIssueRunStatsComment(args: {
   );
   const splitBlock = splitLines.map((line) => `\n${line}`).join("");
   const rtkLine = args.rtk ? `\n${buildRtkStatsLine(args.rtk)}` : "";
+  // Issue #3405: the Haiku sub-agent degradation line, directly after the
+  // stats section so the requested and served models read beside the figures.
+  const subAgentLine = buildIssueSubAgentDegradationLine(
+    args.subAgentDegradation,
+  );
   const body = `${marker}\n${section}${
-    graftLine ? `\n${graftLine}` : ""
-  }${codegraphLine}${
+    subAgentLine ? `\n${subAgentLine}` : ""
+  }${graftLine ? `\n${graftLine}` : ""}${codegraphLine}${
     qualityGateLine ? `\n${qualityGateLine}` : ""
   }${splitBlock}${rtkLine}`;
   const totalLine = buildIssueCostTotalLine(
@@ -775,6 +791,8 @@ export async function postIssueRunStatsComment(args: {
   qualityGate?: QualityGateAttemptOutcome;
   /** What this run's RTK preparation produced (Issue #2385). */
   rtk?: RtkOutputResult;
+  /** A haiku-tier run served a previous-generation Haiku (Issue #3405); omitted renders no line. */
+  subAgentDegradation?: IssueSubAgentDegradation;
   getIssueComments: (
     repo: string,
     issueNumber: number,
@@ -863,6 +881,9 @@ export async function postIssueRunStatsComment(args: {
         ...codegraph,
         ...qualityGate,
         ...rtk,
+        ...(args.subAgentDegradation
+          ? { subAgentDegradation: args.subAgentDegradation }
+          : {}),
       }),
     );
     return { posted: true };
