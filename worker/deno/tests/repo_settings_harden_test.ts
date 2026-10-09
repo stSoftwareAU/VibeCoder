@@ -20,6 +20,7 @@ import {
   CODE_SECURITY_SKIP_NOTE,
   COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
+  findFileOnDefaultBranch,
   hardenRepo,
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
@@ -30,6 +31,7 @@ import {
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
   SECRET_PROTECTION_SKIP_NOTE,
+  SECURITY_POLICY_PATHS,
 } from "../lib/repo_settings_harden.ts";
 
 const OPEN = {
@@ -1212,6 +1214,56 @@ Deno.test("findCodeownersOnDefaultBranch - an invalid repo is an error without a
   const result = await findCodeownersOnDefaultBranch("not a repo", gh);
   assertEquals(result.state, "error");
   assertEquals(reads, []);
+});
+
+// findFileOnDefaultBranch + SECURITY_POLICY_PATHS (Issue #3269)
+Deno.test("SECURITY_POLICY_PATHS - lists GitHub's three recognised locations (Issue #3269)", () => {
+  assertEquals([...SECURITY_POLICY_PATHS], [
+    "SECURITY.md",
+    ".github/SECURITY.md",
+    "docs/SECURITY.md",
+  ]);
+});
+
+for (const path of SECURITY_POLICY_PATHS) {
+  Deno.test(`findFileOnDefaultBranch - SECURITY.md present at ${path} (Issue #3269)`, async () => {
+    const repo = "harden-test/policy";
+    const { gh } = makeGh({
+      [`repos/${repo}/contents/${path}`]: { path, type: "file" },
+    });
+    assertEquals(
+      await findFileOnDefaultBranch(repo, gh, SECURITY_POLICY_PATHS),
+      { state: "present", path },
+    );
+  });
+}
+
+Deno.test("findFileOnDefaultBranch - absent only when every path is a 404; a non-404 is an error (Issue #3269)", async () => {
+  const repo = "harden-test/policy";
+  const missing = makeGh({});
+  assertEquals(
+    await findFileOnDefaultBranch(repo, missing.gh, SECURITY_POLICY_PATHS),
+    { state: "absent" },
+  );
+  assertEquals(missing.reads.length, 3);
+  const flaky = makeGh({
+    [`repos/${repo}/contents/.github/SECURITY.md`]: SERVER_ERROR(),
+  });
+  const result = await findFileOnDefaultBranch(
+    repo,
+    flaky.gh,
+    SECURITY_POLICY_PATHS,
+  );
+  assert(
+    result.state === "error" && result.message.includes("HTTP 500"),
+    JSON.stringify(result),
+  );
+  const invalid = makeGh({});
+  assertEquals(
+    (await findFileOnDefaultBranch("not a repo", invalid.gh, ["X"])).state,
+    "error",
+  );
+  assertEquals(invalid.reads, []);
 });
 
 Deno.test("hardenRepo - an invalid repo is one failed result and no gh call (Issue #2626)", async () => {

@@ -1075,18 +1075,22 @@ count; code-owner review is deliberately off fleet-wide and never a
 finding, see THREAT-MODEL R14),
 secret scanning / push protection (`security_and_analysis`), and private
 vulnerability reporting (`private-vulnerability-reporting`, public
+repositories only), and the presence of a `SECURITY.md` (public
 repositories only). Each open
 setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
 `BP-REPO-SECRET-SCANNING-OFF`,
-`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`, and — when the repository
+`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`,
+`BP-REPO-SECURITY-POLICY-MISSING`, and — when the repository
 runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
 workflows need that the list omits, composite steps included,)
 whose fix text says plainly that a
 repository admin must act — the worker cannot change settings; it makes
-the drift visible on the board instead of in a report. An unreadable
+the drift visible on the board instead of in a report. The one exception is
+`BP-REPO-SECURITY-POLICY-MISSING`, whose fix is committing a file (see below).
+An unreadable
 endpoint is logged and yields nothing. Wording avoids the literal
 `secret_scanning*: value` and `id-token: write` pairs the outbound secret
 masker rewrites.
@@ -1108,6 +1112,25 @@ scanning / push protection (private repository — needs paid GitHub Secret
 Protection)` and logged once at `WARNING`, never `ERROR`, because nothing
 failed. Findings already open on private repositories stay open for a
 human to close; the audit never closes them.
+
+**A missing `SECURITY.md` is a worker-fixable finding on a public repository
+(Issues #3269, #3266).** The scanner looks for `SECURITY.md` at the three
+places GitHub recognises a security policy — the repository root,
+`.github/` and `docs/` — on the default branch, through
+`findFileOnDefaultBranch` (the finder `findCodeownersOnDefaultBranch`
+wraps). Presence alone passes; the wording is not inspected. A 404 at all
+three files `BP-REPO-SECURITY-POLICY-MISSING`; any other read error is a
+lookup failure and yields no finding, never a pass. A private or internal
+repository is not read: the skip is named in the audit summary as `security
+policy` and logged at `INFO`, since nobody can act on it. Unlike every
+other `BP-REPO-*` finding, the fix text carries no admin-action prose and
+`isAdminOnlyRepoSettingsIssue` (`admin_only_finding.ts`) lets this id
+through its `WORKER_FIXABLE_REPO_FINDINGS` allowlist, so the worker raises a
+normal pull request adding the file instead of handing the issue to a human;
+a body that did carry the admin-action prose would be admin-only again. Setup
+has no harden step and no write path for `SECURITY.md`, and the audit closer
+has no mapping for this id: the pull request that adds the file resolves the
+finding.
 
 **Private vulnerability reporting is checked on a public repository only
 (Issue #3268).** GitHub offers it on public repositories only, so the

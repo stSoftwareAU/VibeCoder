@@ -14,6 +14,7 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { WORKER_FIXABLE_REPO_FINDINGS } from "../lib/admin_only_finding.ts";
 import {
   closeFixedRepoSettingsFindings,
   eligibleFindingIds,
@@ -693,12 +694,21 @@ Deno.test("eligibleFindingIds - applied or absent kinds are eligible; failed, pl
   );
 });
 
-Deno.test("FINDING_STEP_KIND covers every BP-REPO id the scanner files", async () => {
+Deno.test("FINDING_STEP_KIND covers every BP-REPO id the scanner files, bar the worker-fixable ones", async () => {
   const source = await Deno.readTextFile(
     new URL("../lib/repo_settings_scanner.ts", import.meta.url),
   );
   const filed = [...source.matchAll(/findingId: "(BP-REPO-[A-Z0-9-]+)"/g)]
     .map((m) => m[1]!).sort();
   assert(filed.length > 0);
-  assertEquals(Object.keys(FINDING_STEP_KIND).sort(), filed);
+  // A worker-fixable id has no harden step: the PR that fixes it resolves it
+  // (Issues #3266, #3269), so the closer must not map it.
+  assertEquals(
+    Object.keys(FINDING_STEP_KIND).sort(),
+    filed.filter((id) => !WORKER_FIXABLE_REPO_FINDINGS.has(id)),
+  );
+  for (const id of WORKER_FIXABLE_REPO_FINDINGS) {
+    assert(filed.includes(id), `${id} is not filed by the scanner`);
+    assertEquals(id in FINDING_STEP_KIND, false, id);
+  }
 });

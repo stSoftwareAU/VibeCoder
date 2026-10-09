@@ -107,13 +107,27 @@ export function parseRepoSettingsFindingId(issueBody: string): string | null {
 const REPO_ADMIN_ACTION_PROSE = /the worker cannot change repository settings/i;
 
 /**
+ * `BP-REPO-*` ids whose fix is ordinary repo work (committing a file), so the
+ * worker can resolve them with a normal PR (Issue #3266). A finding in this
+ * set is admin-only only when its body also carries the admin-action prose.
+ */
+export const WORKER_FIXABLE_REPO_FINDINGS: ReadonlySet<string> = new Set([
+  "BP-REPO-SECURITY-POLICY-MISSING",
+]);
+
+/**
  * True when the issue body identifies a repository-admin finding the worker
  * cannot action (a `BP-REPO-*` finding, or the scanner's admin-action prose).
  * Either signal only counts when it appears as real body text: quoted inside
- * a code span, code fence or blockquote, it is ignored (Issue #3295).
+ * a code span, code fence or blockquote, it is ignored (Issue #3295). A
+ * worker-fixable finding id (`WORKER_FIXABLE_REPO_FINDINGS`) is not admin-only
+ * on its marker alone; the admin-action prose still makes it so.
  */
 export function isAdminOnlyRepoSettingsIssue(issueBody: string): boolean {
   if (!issueBody) return false;
-  return parseRepoSettingsFindingId(issueBody) !== null ||
+  const findingId = parseRepoSettingsFindingId(issueBody);
+  const markerIsAdminOnly = findingId !== null &&
+    !WORKER_FIXABLE_REPO_FINDINGS.has(findingId);
+  return markerIsAdminOnly ||
     REPO_ADMIN_ACTION_PROSE.test(stripQuotedMarkdown(issueBody));
 }
