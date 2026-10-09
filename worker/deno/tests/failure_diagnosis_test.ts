@@ -771,6 +771,10 @@ const QUOTED_TRAPS: Array<[string, string]> = [
     "timeout + TypeError",
     "the request timeout path raises TypeError: fetch failed",
   ],
+  [
+    "a scheduled-release phrase",
+    'assertStringIncludes(reason, "Released on schedule:");',
+  ],
   ["rate limit", "a broker rate limit back-off is not tested"],
   ["usage limit", "the usage limit banner is not tested"],
   ["SIGTERM", "no test covers the SIGTERM handler"],

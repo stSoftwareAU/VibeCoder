@@ -210,9 +210,11 @@ export const CLONE_CORRUPT_MARKER =
  * text quotes the agent's summary (a Rust `AppError::X` path once tripped the
  * catch-all `Error:` rule), so the detector keys off this worker phrase. The
  * agent's quoted text cannot forge a worse category because the marker is a
- * prefix the detector matches with `startsWith`, ahead of the killed, timeout,
- * rate_limit and interrupted rules (unlike the workflow gate, which is
- * matched after them).
+ * prefix the detector matches with `startsWith`, ahead of every other rule —
+ * scheduled_release, killed, timeout, rate_limit and interrupted included
+ * (unlike the workflow gate, which is matched after them). The failure
+ * ladder and the host-fault detector honour the same prefix, so the quoted
+ * text decides neither the disposition nor a host-fault note.
  */
 export const SUMMARY_RULE_GATE_MARKER =
   "the PR summary did not pass the worker's completion gates";
@@ -256,6 +258,18 @@ export function buildScheduledReleaseReason(
 export function detectFailureCategory(failureMessage: string): FailureCategory {
   if (!failureMessage) return "unknown";
 
+  // The completion phase's own PR-summary gate refusal (Issue #3431; PR #3440
+  // review). Anchored to the START of the message and checked before every
+  // other rule, the scheduled-release one included: the refusal quotes the
+  // agent's own summary, so a quoted "Released on schedule:", "timeout",
+  // "SIGTERM", "rate limit" or `TypeError:` must not outrank it. Safe ahead of
+  // the scheduled-release rule because every reason
+  // {@link buildScheduledReleaseReason} writes opens with
+  // {@link SCHEDULED_RELEASE_MARKER}, so none can open with this marker.
+  if (failureMessage.startsWith(SUMMARY_RULE_GATE_MARKER)) {
+    return "summary_incomplete";
+  }
+
   // A scheduled release outranks every other pattern (Issue #424, parent
   // #397). Such a message legitimately carries the watchdog line, a
   // `Timeout: Ns` figure and a SIGTERM exit — the run WAS stopped by the
@@ -265,17 +279,6 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // the discriminator.
   if (failureMessage.includes(SCHEDULED_RELEASE_MARKER)) {
     return "scheduled_release";
-  }
-
-  // The completion phase's own PR-summary gate refusal (Issue #3431; PR #3440
-  // review). Anchored to the START of the message and checked before every
-  // free-text rule below: the refusal quotes the agent's own summary, so a
-  // quoted "timeout", "SIGTERM", "rate limit" or `TypeError:` must not outrank
-  // it. The marker is a prefix the worker writes, so a message that merely
-  // quotes the marker later (a timeout or kill that began with the worker's
-  // own text) is not a gate refusal.
-  if (failureMessage.startsWith(SUMMARY_RULE_GATE_MARKER)) {
-    return "summary_incomplete";
   }
 
   // The worker's OWN watchdog ends a timed-out agent with SIGTERM (then
