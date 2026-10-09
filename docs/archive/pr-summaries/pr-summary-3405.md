@@ -120,8 +120,8 @@ six planning-shaped phases, which this change does not route through.
 - `worker/deno/lib/issue_sub_agent_degradation.ts:60` — a current Haiku was served → undefined — `worker/deno/tests/issue_sub_agent_degradation_test.ts::haiku tier served both stale and current haiku - one current keeps it healthy` — dropping the check turned it red
 - `worker/deno/lib/issue_sub_agent_degradation.ts:63` — no stale Haiku → undefined — `worker/deno/tests/issue_sub_agent_degradation_test.ts::haiku tier served no haiku at all - healthy, no gh call` — returning an assessment instead turned it red
 - `worker/deno/lib/issue_sub_agent_degradation.ts:63` — stale Haiku → assessment — `worker/deno/tests/completion_phase_run_stats_test.ts::completion - a haiku-tier run served haiku-4-5 labels degraded-model and names both models (Issue #3405)` — removing the call site (no assessment) turned it red
-- `worker/deno/lib/issue_sub_agent_degradation.ts:80` — no degradation → empty line — `worker/deno/tests/issue_sub_agent_degradation_test.ts::no degradation - no line and no comment text` — returning a line turned it red
-- `worker/deno/lib/issue_sub_agent_degradation.ts:109` — healthy run → no gh call — `worker/deno/tests/issue_sub_agent_degradation_test.ts::haiku tier served current haiku - healthy, no gh call` — labelling anyway turned it red
+- `worker/deno/lib/issue_sub_agent_degradation.ts:79` — no degradation → empty line — `worker/deno/tests/issue_sub_agent_degradation_test.ts::no degradation - no line and no comment text` — returning a line turned it red
+- `worker/deno/lib/issue_sub_agent_degradation.ts:108` — healthy run → no gh call — `worker/deno/tests/issue_sub_agent_degradation_test.ts::haiku tier served current haiku - healthy, no gh call` — labelling anyway turned it red
 - `worker/deno/lib/issue_run_stats_comment.ts:649` — degradation present → Haiku line rendered — `worker/deno/tests/handle_no_changes_phase_test.ts::handle_no_changes_phase - a haiku-tier already-complete close labels degraded-model and names both Haiku models (Issue #3405)` — rendering nothing turned it red
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
