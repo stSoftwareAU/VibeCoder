@@ -244,6 +244,81 @@ Deno.test("validateRemovedAssertions matches a regex-escaped assertion named ver
   assertEquals(result.unaccounted, []);
 });
 
+// --- Assertion named past 2,000 canonical chars of the Test Plan (Issue #3438) ---
+
+/** Realistic Test Plan filler, well past the 2,000 canonical char cap. */
+function longTestPlanFiller(): string[] {
+  const lines: string[] = [];
+  for (let i = 0; i < 60; i++) {
+    lines.push(
+      `- Added \`worker/deno/tests/x${i}_test.ts\`: covers case ${i} of the ` +
+        "new scoring path and checks the rating is returned",
+    );
+  }
+  const canonicalLength = lines.join("\n").replace(/\s+/g, "").length;
+  assert(
+    canonicalLength > 2_000,
+    `filler must exceed the 2,000 char cap, got ${canonicalLength}`,
+  );
+  return lines;
+}
+
+Deno.test("validateRemovedAssertions accounts for an assertion named after 2,000 canonical chars of the Test Plan", () => {
+  const summary = [
+    "## Test Plan",
+    "",
+    ...longTestPlanFiller(),
+    "- Removed from `crates/api/tests/decisions.rs`: " +
+    '`assert_eq!(record.score.to_string(), "-0.5")` — #2253 changes the ' +
+    "score to a rating, so the old value is untrue",
+    "",
+  ].join("\n");
+  const result = validateRemovedAssertions({
+    changedFiles: ["crates/api/tests/decisions.rs"],
+    testDiff: SCORE_DIFF,
+    prSummaryContent: summary,
+  });
+  assert(result.valid);
+  assertEquals(result.unaccounted, []);
+  assertEquals(result.problems, []);
+});
+
+Deno.test("validateRemovedAssertions matches a regex-escaped assertion named verbatim after 2,000 canonical chars", () => {
+  const summary = [
+    "## Test Plan",
+    "",
+    ...longTestPlanFiller(),
+    "- Removed `assertMatch(version, /^v\\d+\\.\\d+$/);` — version format " +
+    "check no longer applies",
+    "",
+  ].join("\n");
+  const result = validateRemovedAssertions({
+    changedFiles: ["worker/deno/tests/version_test.ts"],
+    testDiff: REGEX_ESCAPE_DIFF,
+    prSummaryContent: summary,
+  });
+  assert(result.valid);
+  assertEquals(result.unaccounted, []);
+});
+
+Deno.test("validateRemovedAssertions still blocks a long Test Plan that does not name the removed assertion", () => {
+  const summary = [
+    "## Test Plan",
+    "",
+    ...longTestPlanFiller(),
+    "- Removed from `crates/api/tests/decisions.rs`: " +
+    '`assert_eq!(record.score.to_string(), "-0.25")` — a look-alike value',
+    "",
+  ].join("\n");
+  const result = validateRemovedAssertions({
+    changedFiles: ["crates/api/tests/decisions.rs"],
+    testDiff: SCORE_DIFF,
+    prSummaryContent: summary,
+  });
+  assert(!result.valid);
+  assertEquals(result.unaccounted.length, 1);
+});
+
 // --- Moved / reformatted assertion ----------------------------------------
 
 const MOVED_REWRAPPED_DIFF = [
