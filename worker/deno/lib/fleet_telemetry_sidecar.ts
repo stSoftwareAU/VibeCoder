@@ -28,6 +28,7 @@ import {
   getFleetTelemetry,
   type IssuePhaseCounters,
   type PriorFleetTelemetryTotals,
+  type PrOutcomeCounters,
 } from "./fleet_telemetry.ts";
 import { getHostname } from "./worker_identity.ts";
 
@@ -105,6 +106,19 @@ export function emptyTotals(): FleetTelemetryTotals {
     issuePhaseSonnetUsd: 0,
     issuePhaseHaikuRuns: 0,
     issuePhaseHaikuUsd: 0,
+    // Issue #3404 — per-tier PR outcome counters.
+    prRejectionsSonnet: 0,
+    prRejectionsHaiku: 0,
+    ciFixRunsSonnet: 0,
+    ciFixRunsHaiku: 0,
+    ciFixUsdSonnet: 0,
+    ciFixUsdHaiku: 0,
+    prFeedbackRunsSonnet: 0,
+    prFeedbackRunsHaiku: 0,
+    prFeedbackUsdSonnet: 0,
+    prFeedbackUsdHaiku: 0,
+    mergedPrsSonnet: 0,
+    mergedPrsHaiku: 0,
   };
 }
 
@@ -164,6 +178,31 @@ function withIssuePhaseCounters<T extends PriorFleetTelemetryTotals>(
   };
 }
 
+/**
+ * Fill the PR outcome counters (Issue #3404) a sidecar written before they
+ * existed does not carry. Absent or unusable reads as zero; the schema version
+ * does not move, for the same reasons as the issue-phase counters.
+ */
+function withPrOutcomeCounters<T extends PriorFleetTelemetryTotals>(
+  totals: T,
+): T & PrOutcomeCounters {
+  return {
+    ...totals,
+    prRejectionsSonnet: counterFrom(totals.prRejectionsSonnet),
+    prRejectionsHaiku: counterFrom(totals.prRejectionsHaiku),
+    ciFixRunsSonnet: counterFrom(totals.ciFixRunsSonnet),
+    ciFixRunsHaiku: counterFrom(totals.ciFixRunsHaiku),
+    ciFixUsdSonnet: counterFrom(totals.ciFixUsdSonnet),
+    ciFixUsdHaiku: counterFrom(totals.ciFixUsdHaiku),
+    prFeedbackRunsSonnet: counterFrom(totals.prFeedbackRunsSonnet),
+    prFeedbackRunsHaiku: counterFrom(totals.prFeedbackRunsHaiku),
+    prFeedbackUsdSonnet: counterFrom(totals.prFeedbackUsdSonnet),
+    prFeedbackUsdHaiku: counterFrom(totals.prFeedbackUsdHaiku),
+    mergedPrsSonnet: counterFrom(totals.mergedPrsSonnet),
+    mergedPrsHaiku: counterFrom(totals.mergedPrsHaiku),
+  };
+}
+
 function addMaps(
   a: Record<string, number>,
   b: Record<string, number>,
@@ -187,6 +226,7 @@ export function mergeCumulative(
   run: FleetTelemetryTotals,
 ): FleetTelemetryTotals {
   const priorIssuePhase = withIssuePhaseCounters(prior);
+  const priorPrOutcomes = withPrOutcomeCounters(prior);
   return {
     wallSeconds: prior.wallSeconds + run.wallSeconds,
     idleSeconds: prior.idleSeconds + run.idleSeconds,
@@ -222,6 +262,25 @@ export function mergeCumulative(
       run.issuePhaseHaikuRuns,
     issuePhaseHaikuUsd: priorIssuePhase.issuePhaseHaikuUsd +
       run.issuePhaseHaikuUsd,
+    // Issue #3404 — per-tier PR outcome counters.
+    prRejectionsSonnet: priorPrOutcomes.prRejectionsSonnet +
+      run.prRejectionsSonnet,
+    prRejectionsHaiku: priorPrOutcomes.prRejectionsHaiku +
+      run.prRejectionsHaiku,
+    ciFixRunsSonnet: priorPrOutcomes.ciFixRunsSonnet + run.ciFixRunsSonnet,
+    ciFixRunsHaiku: priorPrOutcomes.ciFixRunsHaiku + run.ciFixRunsHaiku,
+    ciFixUsdSonnet: priorPrOutcomes.ciFixUsdSonnet + run.ciFixUsdSonnet,
+    ciFixUsdHaiku: priorPrOutcomes.ciFixUsdHaiku + run.ciFixUsdHaiku,
+    prFeedbackRunsSonnet: priorPrOutcomes.prFeedbackRunsSonnet +
+      run.prFeedbackRunsSonnet,
+    prFeedbackRunsHaiku: priorPrOutcomes.prFeedbackRunsHaiku +
+      run.prFeedbackRunsHaiku,
+    prFeedbackUsdSonnet: priorPrOutcomes.prFeedbackUsdSonnet +
+      run.prFeedbackUsdSonnet,
+    prFeedbackUsdHaiku: priorPrOutcomes.prFeedbackUsdHaiku +
+      run.prFeedbackUsdHaiku,
+    mergedPrsSonnet: priorPrOutcomes.mergedPrsSonnet + run.mergedPrsSonnet,
+    mergedPrsHaiku: priorPrOutcomes.mergedPrsHaiku + run.mergedPrsHaiku,
   };
 }
 
@@ -273,8 +332,12 @@ export async function readFleetTelemetryFile(
   // runs and spend as `sonnet`, so it loads rather than failing.
   return {
     ...parsed,
-    ...(parsed.run ? { run: withIssuePhaseCounters(parsed.run) } : {}),
-    cumulative: withIssuePhaseCounters(parsed.cumulative),
+    ...(parsed.run
+      ? { run: withPrOutcomeCounters(withIssuePhaseCounters(parsed.run)) }
+      : {}),
+    cumulative: withPrOutcomeCounters(
+      withIssuePhaseCounters(parsed.cumulative),
+    ),
   };
 }
 

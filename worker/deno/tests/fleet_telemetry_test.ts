@@ -11,16 +11,21 @@ import {
 } from "@std/assert";
 import {
   beginBusy,
+  costPerMergedPr,
   deriveIdleReason,
   endBusy,
   formatFleetSummary,
   getFleetTelemetry,
   recordBlockedSeconds,
+  recordCiFixRun,
   recordClaim,
   recordCycleIdle,
   recordInRunBlockedSeconds,
   recordIssuePhaseRun,
+  recordMergedPr,
   recordOutcome,
+  recordPrFeedbackRun,
+  recordPrRejection,
   resetFleetTelemetry,
   startFleetCycle,
   startFleetTelemetry,
@@ -665,4 +670,112 @@ Deno.test("deriveIdleReason - ties break on first-seen order for determinism", (
 
 Deno.test("deriveIdleReason - no census entries reports unknown", () => {
   assertEquals(deriveIdleReason([]), "unknown");
+});
+
+Deno.test("fleet_telemetry - a haiku PR rejection increments the haiku counter only", () => {
+  fresh(0);
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 10, tier: "haiku" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.prRejectionsHaiku, 1);
+  assertEquals(snapshot.prRejectionsSonnet, 0);
+});
+
+Deno.test("fleet_telemetry - a sonnet PR rejection increments the sonnet counter only", () => {
+  fresh(0);
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 10, tier: "sonnet" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.prRejectionsSonnet, 1);
+  assertEquals(snapshot.prRejectionsHaiku, 0);
+});
+
+Deno.test("fleet_telemetry - the same review id is counted once", () => {
+  fresh(0);
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 10, tier: "haiku" });
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 10, tier: "haiku" });
+  assertEquals(getFleetTelemetry(1_000).prRejectionsHaiku, 1);
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 11, tier: "haiku" });
+  assertEquals(getFleetTelemetry(1_000).prRejectionsHaiku, 2);
+});
+
+Deno.test("fleet_telemetry - reset clears the rejection and merge dedupe", () => {
+  fresh(0);
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 10, tier: "haiku" });
+  recordMergedPr({ repo: "o/r", number: 1, tier: "haiku" });
+  fresh(0);
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 10, tier: "haiku" });
+  recordMergedPr({ repo: "o/r", number: 1, tier: "haiku" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.prRejectionsHaiku, 1);
+  assertEquals(snapshot.mergedPrsHaiku, 1);
+});
+
+Deno.test("fleet_telemetry - a haiku CI-fix run adds runs and usd", () => {
+  fresh(0);
+  recordCiFixRun({ usd: 0.25, tier: "haiku" });
+  recordCiFixRun({ tier: "haiku" });
+  recordCiFixRun({ usd: 1, tier: "sonnet" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.ciFixRunsHaiku, 2);
+  assertAlmostEquals(snapshot.ciFixUsdHaiku, 0.25);
+  assertEquals(snapshot.ciFixRunsSonnet, 1);
+  assertAlmostEquals(snapshot.ciFixUsdSonnet, 1);
+});
+
+Deno.test("fleet_telemetry - PR-feedback runs add runs and usd per tier", () => {
+  fresh(0);
+  recordPrFeedbackRun({ usd: 0.5, tier: "haiku" });
+  recordPrFeedbackRun({ usd: 2, tier: "sonnet" });
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.prFeedbackRunsHaiku, 1);
+  assertAlmostEquals(snapshot.prFeedbackUsdHaiku, 0.5);
+  assertEquals(snapshot.prFeedbackRunsSonnet, 1);
+  assertAlmostEquals(snapshot.prFeedbackUsdSonnet, 2);
+});
+
+Deno.test("fleet_telemetry - a merged PR is counted once per repo and number", () => {
+  fresh(0);
+  recordMergedPr({ repo: "o/a", number: 5, tier: "haiku" });
+  recordMergedPr({ repo: "o/a", number: 5, tier: "haiku" });
+  assertEquals(getFleetTelemetry(1_000).mergedPrsHaiku, 1);
+  recordMergedPr({ repo: "o/b", number: 5, tier: "haiku" });
+  assertEquals(getFleetTelemetry(1_000).mergedPrsHaiku, 2);
+});
+
+Deno.test("fleet_telemetry - costPerMergedPr guards against nothing merged", () => {
+  assertEquals(costPerMergedPr(1.5, 0), "n/a");
+  assertEquals(costPerMergedPr(0, 0), "n/a");
+  assertEquals(costPerMergedPr(3, 2), "1.5000");
+  assertEquals(costPerMergedPr(NaN, 2), "n/a");
+});
+
+Deno.test("fleet_telemetry - the summary renders cost per merged PR per tier", () => {
+  fresh(0);
+  recordIssuePhaseRun({ usd: 1, subAgentTier: "sonnet" });
+  recordIssuePhaseRun({ usd: 0.5, subAgentTier: "haiku" });
+  recordPrFeedbackRun({ usd: 0.25, tier: "haiku" });
+  recordCiFixRun({ usd: 0.25, tier: "haiku" });
+  recordMergedPr({ repo: "o/r", number: 1, tier: "haiku" });
+  recordMergedPr({ repo: "o/r", number: 2, tier: "haiku" });
+  recordPrRejection({ repo: "o/r", prNumber: 1, reviewId: 1, tier: "haiku" });
+
+  const line = formatFleetSummary(1_000);
+  // haiku: (0.5 + 0.25 + 0.25) / 2 merged; sonnet: nothing merged.
+  assertStringIncludes(line, "cost_per_merged_pr=sonnet=n/a,haiku=0.5000");
+  assertStringIncludes(line, "pr_tier_rejections=sonnet=0,haiku=1");
+  assertStringIncludes(line, "ci_fix_tier_runs=sonnet=0,haiku=1");
+  assertStringIncludes(line, "ci_fix_tier_usd=sonnet=0.0000,haiku=0.2500");
+  assertStringIncludes(line, "pr_feedback_tier_usd=sonnet=0.0000,haiku=0.2500");
+  assertStringIncludes(line, "merged_tier_prs=sonnet=0,haiku=2");
+  assertEquals(line.includes("Infinity"), false);
+  assertEquals(line.includes("NaN"), false);
+  assertEquals(line.includes("TOKEN"), false);
+});
+
+Deno.test("fleet_telemetry - a sonnet-only summary omits the PR outcome keys", () => {
+  fresh(0);
+  recordIssuePhaseRun({ usd: 1, subAgentTier: "sonnet" });
+  recordMergedPr({ repo: "o/r", number: 1, tier: "sonnet" });
+  const line = formatFleetSummary(1_000);
+  assertEquals(line.includes("pr_tier_rejections"), false);
+  assertEquals(line.includes("cost_per_merged_pr"), false);
 });
