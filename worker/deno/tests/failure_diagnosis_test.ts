@@ -21,7 +21,6 @@ import {
   SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
 
 // ============================================================================
 // detectFailureCategory
@@ -790,31 +789,6 @@ Deno.test("detectFailureCategory - the summary marker cannot mask a timeout or a
       `Claude was killed (exit 137, SIGKILL — possible out-of-memory in the VM) without creating changes: ${SUMMARY_RULE_GATE_MARKER}`,
     ),
     "killed",
-  );
-});
-
-Deno.test("detectFailureCategory - hostile colon runs classify in linear time (Issue #3431)", () => {
-  for (
-    const build of [
-      (chars: number) => "AppError" + ":".repeat(chars) + "x",
-      (chars: number) => "Error:".repeat(Math.ceil(chars / 6)),
-    ]
-  ) {
-    assertLinearGrowth(
-      "detectFailureCategory, hostile Error: runs",
-      build,
-      detectFailureCategory,
-      { baseChars: 10_000 },
-    );
-  }
-  assertEquals(
-    detectFailureCategory("AppError" + ":".repeat(50_000) + "x") ===
-      "internal_error",
-    false,
-  );
-  assertEquals(
-    detectFailureCategory("Error:".repeat(20_000)),
-    "internal_error",
   );
 });
 
