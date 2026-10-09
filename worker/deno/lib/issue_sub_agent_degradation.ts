@@ -64,7 +64,7 @@ export function assessIssueSubAgentDegradation(args: {
 }
 
 /** Allow-list sanitiser: model ids are API-sourced, so no markdown can ride in. */
-function sanitiseModelId(model: string): string {
+export function sanitiseModelId(model: string): string {
   return model.replace(/[^A-Za-z0-9._:@/-]/g, "");
 }
 
