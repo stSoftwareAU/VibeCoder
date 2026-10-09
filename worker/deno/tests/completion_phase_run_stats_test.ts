@@ -471,6 +471,31 @@ Deno.test("completion - a run already counted is not counted twice (Issue #2347)
   assertEquals(getFleetTelemetry().issuePhaseRuns, 0);
 });
 
+Deno.test("completion - records the resolved sub-agent tier (Issue #3403)", async () => {
+  const ctx = makeContext();
+  ctx.config = { ...ctx.config, issueSubAgentTier: "haiku" };
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps([]));
+
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseHaikuRuns, 1);
+  assertEquals(snapshot.issuePhaseSonnetRuns, 0);
+});
+
+Deno.test("completion - the default config records a sonnet-tier run (Issue #3403)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps([]));
+
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseSonnetRuns, 1);
+  assertEquals(snapshot.issuePhaseHaikuRuns, 0);
+});
+
 Deno.test("completion - a run where Claude never ran records no issue-phase run (Issue #2347)", async () => {
   const ctx = makeContext();
 

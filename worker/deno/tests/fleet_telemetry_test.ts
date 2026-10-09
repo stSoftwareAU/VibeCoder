@@ -339,18 +339,21 @@ function threeIssueRuns(): void {
     gatePassedOnAttempt: 1,
     durationSeconds: 900,
     split: true,
+    subAgentTier: "sonnet",
   });
   recordIssuePhaseRun({
     usd: 0.5,
     gatePassedOnAttempt: 2,
     durationSeconds: 1_200,
     split: true,
+    subAgentTier: "sonnet",
   });
   recordIssuePhaseRun({
     usd: 2.25,
     gatePassedOnAttempt: 1,
     durationSeconds: 600,
     split: false,
+    subAgentTier: "sonnet",
   });
 }
 
@@ -383,7 +386,12 @@ Deno.test("fleet_telemetry - only a gate that passed on attempt 1 counts as a fi
 
 Deno.test("fleet_telemetry - a run that never passed the gate counts no first-attempt pass", () => {
   fresh(0);
-  recordIssuePhaseRun({ usd: 0.75, durationSeconds: 300, split: true });
+  recordIssuePhaseRun({
+    usd: 0.75,
+    durationSeconds: 300,
+    split: true,
+    subAgentTier: "sonnet",
+  });
 
   const snapshot = getFleetTelemetry(1_000);
   assertEquals(snapshot.issuePhaseRuns, 1);
@@ -408,7 +416,7 @@ Deno.test("fleet_telemetry - issue-phase duration sums the recorded durations an
 
 Deno.test("fleet_telemetry - a run with no figures still counts as a run", () => {
   fresh(0);
-  recordIssuePhaseRun({});
+  recordIssuePhaseRun({ subAgentTier: "sonnet" });
 
   const snapshot = getFleetTelemetry(1_000);
   assertEquals(snapshot.issuePhaseRuns, 1);
@@ -419,8 +427,18 @@ Deno.test("fleet_telemetry - a run with no figures still counts as a run", () =>
 
 Deno.test("fleet_telemetry - an unusable figure contributes nothing rather than NaN", () => {
   fresh(0);
-  recordIssuePhaseRun({ usd: Number.NaN, durationSeconds: -30, split: true });
-  recordIssuePhaseRun({ usd: 1.5, durationSeconds: 60, split: true });
+  recordIssuePhaseRun({
+    usd: Number.NaN,
+    durationSeconds: -30,
+    split: true,
+    subAgentTier: "sonnet",
+  });
+  recordIssuePhaseRun({
+    usd: 1.5,
+    durationSeconds: 60,
+    split: true,
+    subAgentTier: "sonnet",
+  });
 
   const snapshot = getFleetTelemetry(1_000);
   assertEquals(snapshot.issuePhaseRuns, 2);
@@ -430,9 +448,19 @@ Deno.test("fleet_telemetry - an unusable figure contributes nothing rather than 
 
 Deno.test("fleet_telemetry - a snapshot is a copy, so a later run cannot mutate it", () => {
   fresh(0);
-  recordIssuePhaseRun({ usd: 1, durationSeconds: 60, split: true });
+  recordIssuePhaseRun({
+    usd: 1,
+    durationSeconds: 60,
+    split: true,
+    subAgentTier: "sonnet",
+  });
   const snapshot = getFleetTelemetry(1_000);
-  recordIssuePhaseRun({ usd: 1, durationSeconds: 60, split: true });
+  recordIssuePhaseRun({
+    usd: 1,
+    durationSeconds: 60,
+    split: true,
+    subAgentTier: "sonnet",
+  });
 
   assertEquals(snapshot.issuePhaseRuns, 1);
   assertEquals(getFleetTelemetry(1_000).issuePhaseRuns, 2);
@@ -463,6 +491,92 @@ Deno.test("fleet_telemetry - reset clears the issue-phase counters too", () => {
   assertEquals(snapshot.issuePhaseFirstAttemptGatePasses, 0);
   assertEquals(snapshot.issuePhaseDurationSeconds, 0);
   assertEquals(snapshot.issuePhaseSplitRuns, 0);
+});
+
+// --- per-tier issue-phase counters (Issue #3403) ----------------------
+
+Deno.test("fleet_telemetry - a haiku run moves only the haiku counters", () => {
+  fresh(0);
+  recordIssuePhaseRun({
+    usd: 0.4,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 120,
+    subAgentTier: "haiku",
+  });
+
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseHaikuRuns, 1);
+  assertAlmostEquals(snapshot.issuePhaseHaikuUsd, 0.4, 1e-9);
+  assertEquals(snapshot.issuePhaseSonnetRuns, 0);
+  assertEquals(snapshot.issuePhaseSonnetUsd, 0);
+  // The combined totals still move.
+  assertEquals(snapshot.issuePhaseRuns, 1);
+  assertAlmostEquals(snapshot.issuePhaseUsd, 0.4, 1e-9);
+});
+
+Deno.test("fleet_telemetry - a sonnet run moves only the sonnet counters", () => {
+  fresh(0);
+  recordIssuePhaseRun({
+    usd: 1.1,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 300,
+    subAgentTier: "sonnet",
+  });
+
+  const snapshot = getFleetTelemetry(1_000);
+  assertEquals(snapshot.issuePhaseSonnetRuns, 1);
+  assertAlmostEquals(snapshot.issuePhaseSonnetUsd, 1.1, 1e-9);
+  assertEquals(snapshot.issuePhaseHaikuRuns, 0);
+  assertEquals(snapshot.issuePhaseHaikuUsd, 0);
+});
+
+Deno.test("fleet_telemetry - a sonnet-only fleet's summary is byte-identical to today's", () => {
+  fresh(0);
+  startFleetCycle(0);
+  recordClaim();
+  recordOutcome("success");
+  recordIssuePhaseRun({
+    usd: 1.25,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 900,
+    split: true,
+    subAgentTier: "sonnet",
+  });
+  recordCycleIdle("served", 100_000);
+
+  const line = formatFleetSummary(100_000);
+  assertEquals(
+    line,
+    "fleet-summary: wall=100s idle=100s idle_pct=100.0 occupied=0s busy=0s " +
+      "usage_blocked=0s usage_blocked_waits=0 rate_limited=0s " +
+      "rate_limit_waits=0 claims=1 successes=1 failures=0 skips=0 " +
+      "hook_failures=0 success_rate=1.00 issue_runs=1 issue_split_runs=1 " +
+      "issue_usd=1.2500 issue_gate_first_attempt_passes=1 " +
+      "issue_duration=900s idle_by_reason=served=100s " +
+      "failures_by_class=none utilisation=none",
+  );
+  assertEquals(line.includes("issue_tier_"), false, line);
+});
+
+Deno.test("fleet_telemetry - a haiku run adds the tier tokens right after issue_duration", () => {
+  fresh(0);
+  startFleetCycle(0);
+  recordIssuePhaseRun({
+    usd: 1.0,
+    subAgentTier: "sonnet",
+  });
+  recordIssuePhaseRun({
+    usd: 0.25,
+    subAgentTier: "haiku",
+  });
+  recordCycleIdle("served", 100_000);
+
+  const line = formatFleetSummary(100_000);
+  assertStringIncludes(
+    line,
+    "issue_duration=0s issue_tier_runs=sonnet=1,haiku=1 " +
+      "issue_tier_usd=sonnet=1.0000,haiku=0.2500 idle_by_reason=",
+  );
 });
 
 // --- deriveIdleReason -------------------------------------------------

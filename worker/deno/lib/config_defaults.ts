@@ -13,6 +13,7 @@
 
 import type {
   CopilotCodeReviewMode,
+  IssueSubAgentTier,
   UpdateMode,
   WorkerConfig,
 } from "../types.ts";
@@ -479,6 +480,15 @@ export const OPERATIONAL_DEFAULTS = {
    * costs half of Opus 5.5 (Issue #2812); `issue_executor_split: false` opts out.
    */
   issueExecutorSplit: true,
+  /**
+   * Model tier of the `issue`-phase executor sub-agents (Issue #3401).
+   * Each `issue` run records the resolved tier in fleet telemetry (per-tier
+   * runs and USD) and stamps it on the PR body as a `vibe-sub-agent-tier`
+   * marker (Issue #3403). Executors still run on Sonnet
+   * (`ISSUE_EXECUTOR_MODEL` in `issue_executor_agents.ts`) whatever this
+   * is set to.
+   */
+  issueSubAgentTier: "sonnet" as IssueSubAgentTier,
   /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
    * defined cheaper sub-agents (Issue #2575). On by default (Issue #2812);
@@ -1597,6 +1607,7 @@ export function buildDefaultWorkerConfig(
     geminiPhaseModelOverrides: {},
     deepseekPhaseModelOverrides: {},
     issueExecutorSplit: OPERATIONAL_DEFAULTS.issueExecutorSplit,
+    issueSubAgentTier: OPERATIONAL_DEFAULTS.issueSubAgentTier,
     issueReviewerAgents: OPERATIONAL_DEFAULTS.issueReviewerAgents,
     includeRecentActivity: OPERATIONAL_DEFAULTS.includeRecentActivity,
     recentActivityMergedPrLimit:
