@@ -3,11 +3,14 @@
  *
  * The `summarise` (plus `health`, `spelling_fix`) phases are pinned to
  * Haiku for cost — see `DEFAULT_CLAUDE_MODEL_SUMMARISE` in
- * `config_defaults.ts`. Haiku has a 200k context window (vs 1M for
- * Sonnet/Opus), and `summarise` is exactly the phase fed large inputs
- * (whole sessions, transcripts, oversized issue bodies). When the input
- * exceeds 200k it silently truncates on Haiku — degrading the summary
- * without any signal.
+ * `config_defaults.ts`. Since Haiku 5.5 (Issue #3400) the `haiku` alias
+ * has a 1M context window — the same as Sonnet/Opus — so it no longer
+ * escalates. Escalation still matters for a phase pinned to a Haiku 4.x
+ * id (e.g. `claude-haiku-4-5`, 200k) or an unrecognised/unresolved model
+ * (200k default): `summarise` is exactly the phase fed large inputs
+ * (whole sessions, transcripts, oversized issue bodies), and when the
+ * input exceeds a 200k window it silently truncates — degrading the
+ * summary without any signal.
  *
  * This module decides whether a phase's input is large enough that the
  * default Haiku-tier model should be escalated for that single run. The
@@ -27,7 +30,6 @@
 import {
   CONTEXT_BUDGET_DEFAULTS,
   getContextWindowSize,
-  MODEL_CONTEXT_WINDOWS,
 } from "./context_budget.ts";
 import { resolveCurrentModel } from "./model_fallback.ts";
 import {
@@ -41,7 +43,9 @@ import type { EnvLookup } from "./env_lookup.ts";
  * Default escalation target when the configured model's window is too
  * small for the estimated input. Sonnet has a 1M context window — same
  * as Opus — and is markedly cheaper, so it is the natural escalation
- * destination from Haiku.
+ * destination from a 200k-window model (a Haiku 4.x id, or an
+ * unrecognised/unresolved model). Since Haiku 5.5 (Issue #3400) the
+ * `haiku` alias itself also has a 1M window and no longer escalates.
  */
 export const DEFAULT_ESCALATION_TARGET = "sonnet" as const;
 
@@ -160,8 +164,7 @@ export function selectModelForLargeInput(
   const resolvedLabel = resolved || "default";
   const reason = `Input (~${tokens.toLocaleString()} tokens) is at or above ` +
     `${thresholdPercent}% of the ${resolvedLabel} ` +
-    `${resolvedWindow.toLocaleString()}-token context window ` +
-    `(haiku=${MODEL_CONTEXT_WINDOWS.haiku!.toLocaleString()}); ` +
+    `${resolvedWindow.toLocaleString()}-token context window; ` +
     `escalating to ${target} for this run`;
 
   return { escalated: true, model: target, reason };
