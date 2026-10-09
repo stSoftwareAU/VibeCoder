@@ -4893,9 +4893,11 @@ it and keeps its own category. The catch-all is also now `/Error:(?!:)/`, so a `
 (class `agent-outcome`), is not infrastructure, and follows the normal retry and
 `failed-once` rules: `classifyCodingFailure` returns a `ladder` decision with
 cooldown kind `non_transient` for it before any free-text check, and
-`detectHostFault` returns `null` for a marked reason, so a quoted "at the cycle
-deadline", "timeout", `ENOSPC` or `Failed to clone` neither releases the issue
-unlabelled nor counts the run as a timeout. The posted failure comment embeds
+`detectHostFault` returns `null` for a marked reason, so in the run itself a
+quoted "at the cycle deadline", "timeout", `ENOSPC` or `Failed to clone` does
+not count the run as a timeout or a host fault. The label-release sweeps read
+the posted comment instead, which buries the marker, so they need the check
+below. The posted failure comment embeds
 the reason under a heading, so the marker no longer opens the body; the
 host-fault and milestone-refusal label-release sweeps, which re-classify posted
 bodies, therefore skip a record whose worker-written `**Category:**` line at the

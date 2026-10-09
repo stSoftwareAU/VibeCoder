@@ -2663,9 +2663,10 @@ before the free-text scheduled-release, timeout, kill, rate-limit and disk-full 
 gates' quotation of the agent's summary (for example a Rust `AppError::X` path,
 or the words "timeout" or `TypeError:`) is not read as a crash. It is an
 `agent-outcome`, not a worker defect, and the normal retry and `failed-once`
-rules apply: the failure ladder and the host-fault check do not read the
-quoted text either, so the failure is classified as a non-transient ladder
-failure, not a timeout, a deadline handover or a host fault. The posted
+rules apply: when the run fails, the failure ladder and the in-run host-fault
+check do not read the quoted text, so the failure is classified as a
+non-transient ladder failure, not a timeout, a deadline handover or a host
+fault. The posted
 `## Automated Processing Failed` comment embeds the reason under a heading, so
 the two label-release sweeps that re-classify a posted body
 (`host_fault_release.ts` and `milestone_branch_refusal_release.ts`) recognise
