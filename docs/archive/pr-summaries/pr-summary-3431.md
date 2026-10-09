@@ -44,18 +44,18 @@ A summary-gate refusal means the agent's work is done but its summary is incompl
   - All three `reportSummaryRuleBlock` failure returns (`completion_phase.ts:605`, `:637`, `:675`) carry the marker.
 - Existing rules checked: the `WORKFLOW_GATE_MARKER` precedent, plus the classifier's ordering doc (item 8 now lists `summary_incomplete`). No prompt or standards rule changed.
 - I applied the rules to the PR's own diff and found one problem: the new growth test was missing from `WALL_CLOCK_TEST_FILES`. It now lives in `worker/deno/tests/failure_diagnosis_bounds_3431_test.ts` and is registered there.
-- Docs sweep:
-  - `docs/INTERNALS.md` has a new subsection on `summary_incomplete` (Issue #3431).
-  - `docs/workflows/issue-processing.md` has a new paragraph on how a gate refusal is classed.
-  - `grep -rn "internal_error\|Error:" docs/` hits still describe the catch-all correctly. Real `Error:` lines are still matched.
+
+**Docs sweep** — grep: `summary_incomplete`, `summary-incomplete`, `SUMMARY_RULE_GATE_MARKER`, `reportSummaryRuleBlock`, `internal_error`, `Error:`, `agent-outcome`, `clone-corrupt` (failure-category lists) across `README.md`, `docs/` (excluding `docs/archive/`) and `*/README.md`; section: `docs/INTERNALS.md#summary_incomplete-is-its-own-failure-category-issue-3431`, `docs/workflows/issue-processing.md#️-prompt-is-too-long--one-uncounted-fresh-session-retry`; updated: `docs/INTERNALS.md`, `docs/workflows/issue-processing.md` — the other hits were read and are still true (the `summary_incomplete` outcome kind in `docs/CALLBACKS.md` and the outcome table in `docs/workflows/issue-processing.md`, the host-fault kind lists in `docs/TROUBLESHOOTING.md` and `docs/INTERNALS.md`, and the `API Error: 402` → `rate_limit` note in `docs/CONFIGURATION.md`, where `Error: ` is still an `Error:` line)
 
 ## Reproduction
 
-- **Symptom:** a summary-gate refusal quoting `AppError::EvaluationSummaryUnavailable` was classed `internal_error` → `worker-crash`, and auto-filed #3431.
-- **Status:** verified. On the base branch, `detectFailureCategory` returns `internal_error` for the #3431 refusal text.
-- **Regression tests:**
-  - `worker/deno/tests/failure_diagnosis_test.ts`: "the marked #3431 refusal is summary_incomplete and an agent outcome, not a worker crash", and "a Rust AppError:: path is not an Error: line, but real Error: lines still are (Issue #3431)".
-  - `worker/deno/tests/completion_phase_summary_rule_retry_test.ts`: "a no-PR summary-rule block carries the gate marker, so it is summary_incomplete not a crash (Issue #3431)".
+- **symptom** — a summary-gate refusal quoting `AppError::EvaluationSummaryUnavailable` was classed `internal_error` → `worker-crash`, and auto-filed #3431.
+- **status** — `verified` — the regression test was observed failing against the unfixed code and passing after the fix. With the fix's behaviour reverted (the `SUMMARY_RULE_GATE_MARKER` check removed and the catch-all put back to `/Error:/`), all four #3431 tests below failed on their assertions. With the fix restored, the same files gave `133 passed | 0 failed`. Against the full base-branch `lib/`, `run_outcome_classifier_test.ts` "summary_incomplete is an agent outcome…" also failed.
+- **regression test** — `worker/deno/tests/failure_diagnosis_test.ts::the marked #3431 refusal is summary_incomplete and an agent outcome, not a worker crash`
+- Also covering:
+  - `worker/deno/tests/failure_diagnosis_test.ts::a Rust AppError:: path is not an Error: line, but real Error: lines still are (Issue #3431)`
+  - `worker/deno/tests/completion_phase_summary_rule_retry_test.ts::a no-PR summary-rule block carries the gate marker, so it is summary_incomplete not a crash (Issue #3431)`
+  - `worker/deno/tests/failure_diagnosis_bounds_3431_test.ts::hostile colon runs classify in linear time (Issue #3431)`
 
 ## Test Plan
 
