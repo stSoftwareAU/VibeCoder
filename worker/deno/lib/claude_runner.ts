@@ -3978,11 +3978,14 @@ export async function summariseLargeContent(
     `Summarising large ${context} (estimated ${tokenEstimate} tokens)...`,
   );
 
-  // Guard the Haiku 200k context window (Issue #2393). `summarise` is pinned
-  // to Haiku for cost, but is the phase most likely to be fed an input that
-  // exceeds the Haiku window — silently truncating the input degrades the
-  // summary without any signal. When the estimate approaches/exceeds the
-  // Haiku window we escalate to a larger-window tier for this run only.
+  // Guard against truncation on a small-window model (Issue #2393). The
+  // `haiku` alias has a 1M-token context window since Haiku 5.5 (Issue
+  // #3400), but `summarise` is pinned to Haiku for cost and is the phase
+  // most likely to be fed an input that exceeds a 200k window — whether
+  // that is a phase pinned to a Haiku 4.x id or an unrecognised model.
+  // Silently truncating the input degrades the summary without any
+  // signal, so when the estimate approaches/exceeds the resolved model's
+  // window we escalate to a larger-window tier for this run only.
   const escalation = selectModelForLargeInput("summarise", tokenEstimate, {
     ...(options.agentProvider ? { provider: options.agentProvider } : {}),
     ...(options.env ? { env: options.env } : {}),
