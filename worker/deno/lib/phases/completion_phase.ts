@@ -634,6 +634,8 @@ async function reportSummaryRuleBlock(
         { repo, issueNumber, prUrl },
       );
     }
+    // Always replaced by `recoverFromSummaryRuleBlock`'s outcome, so this
+    // reason never leaves the phase; marked anyway to match the other returns.
     return { status: "failure", reason: failureReason };
   }
 
