@@ -33,8 +33,10 @@ import { isGraftContextEnabled } from "../graft_context_config.ts";
 import { isIssueExecutorSplitEnabled } from "../issue_executor_split.ts";
 import {
   buildIssueRunAgents,
+  HAIKU_ISSUE_EXECUTOR_MODEL,
   ISSUE_EXECUTOR_MODEL,
 } from "../issue_executor_agents.ts";
+import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -565,8 +567,10 @@ async function executeClaudeBody(
 
   // The issue-executor split (Issue #2342): on, the invocation carries
   // `--agents` definitions so the advisor delegates mechanical edit work to
-  // Sonnet executors, and the prompt carries the advisor/executor block that
-  // tells it to (Issue #2343). Off — the default — `agents` stays absent, no
+  // executors on the run's sub-agent tier — Sonnet by default, Haiku under
+  // `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt carries
+  // the advisor/executor block that tells it to (Issue #2343). Off — the
+  // default — `agents` stays absent, no
   // argument is emitted, the block renders as nothing, and every sub-agent
   // inherits the phase's model as before. Resolved once, before the prompt is
   // built, so the prompt and the argv cannot disagree. Wired here as well as
@@ -577,18 +581,34 @@ async function executeClaudeBody(
     config.repoConfig?.[repo],
     config,
   );
-  if (issueExecutorSplit) {
-    logger.info(
-      `Issue-executor split is on for ${repo}: the invocation carries ` +
-        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
-    );
-  }
+  // The sub-agent tier (Issue #3402): host-wide `config.issueSubAgentTier`,
+  // with the repository's own `repo_config` override layered over it.
+  // Resolved and logged unconditionally, every issue run.
+  const issueSubAgentTier = resolveIssueSubAgentTier(
+    config,
+    config.repoConfig?.[repo],
+    (m) => logger.warn(m),
+  );
+  logger.info(
+    `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
+      `(Issue #3402)`,
+  );
   // The reviewer sub-agents (Issue #2575): host-wide, off by default until
   // the pilot in docs/MODEL-AND-CACHING.md clears it.
   const issueRunAgents = buildIssueRunAgents({
     executorSplit: issueExecutorSplit,
     reviewerAgents: config.issueReviewerAgents === true,
+    subAgentTier: issueSubAgentTier,
   });
+  if (issueExecutorSplit) {
+    const executorModel = issueSubAgentTier === "haiku"
+      ? HAIKU_ISSUE_EXECUTOR_MODEL
+      : ISSUE_EXECUTOR_MODEL;
+    logger.info(
+      `Issue-executor split is on for ${repo}: the invocation carries ` +
+        `${executorModel} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
 
   const promptResult = await deps.infrastructure.buildPrompt({
     repo,

@@ -219,3 +219,20 @@ Deno.test("pr_feedback_processor - the browser is granted unless skip_screenshot
     "a skip_screenshot_check repo with CodeGraph off writes no MCP config",
   );
 });
+
+// Issue #3402
+Deno.test("pr_feedback_processor - a haiku sub-agent tier never puts an explorer (or any --agents) on a non-issue run (Issue #3402)", async () => {
+  // `buildIssueRunAgents` — the sole source of the read-only `explorer` and
+  // of `--agents` under the haiku tier — is wired only into the `issue`
+  // phase's executors; a `pr_feedback` run must stay byte-identical to the
+  // tier-unaware invocation regardless of `issue_sub_agent_tier`.
+  const observed = await runFeedback(
+    false,
+    { status: "off", enabled: false },
+    undefined,
+    {
+      "org/repo": { issueSubAgentTier: "haiku" } as RepoConfig,
+    },
+  );
+  assertEquals(observed.runOptions[0]?.agents, undefined);
+});
