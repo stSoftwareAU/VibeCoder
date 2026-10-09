@@ -209,9 +209,10 @@ export const CLONE_CORRUPT_MARKER =
  * #3431). Worker-authored, like {@link WORKFLOW_GATE_MARKER}: the gates' own
  * text quotes the agent's summary (a Rust `AppError::X` path once tripped the
  * catch-all `Error:` rule), so the detector keys off this worker phrase. The
- * agent's quoted text cannot forge a worse category because the marker is
- * checked after the killed, timeout, rate_limit and interrupted rules, as the
- * workflow gate is.
+ * agent's quoted text cannot forge a worse category because the marker is a
+ * prefix the detector matches with `startsWith`, ahead of the killed, timeout,
+ * rate_limit and interrupted rules (unlike the workflow gate, which is
+ * matched after them).
  */
 export const SUMMARY_RULE_GATE_MARKER =
   "the PR summary did not pass the worker's completion gates";
@@ -264,6 +265,17 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // the discriminator.
   if (failureMessage.includes(SCHEDULED_RELEASE_MARKER)) {
     return "scheduled_release";
+  }
+
+  // The completion phase's own PR-summary gate refusal (Issue #3431; PR #3440
+  // review). Anchored to the START of the message and checked before every
+  // free-text rule below: the refusal quotes the agent's own summary, so a
+  // quoted "timeout", "SIGTERM", "rate limit" or `TypeError:` must not outrank
+  // it. The marker is a prefix the worker writes, so a message that merely
+  // quotes the marker later (a timeout or kill that began with the worker's
+  // own text) is not a gate refusal.
+  if (failureMessage.startsWith(SUMMARY_RULE_GATE_MARKER)) {
+    return "summary_incomplete";
   }
 
   // The worker's OWN watchdog ends a timed-out agent with SIGTERM (then
@@ -333,11 +345,6 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // here the message is the worker's own refusal.
   if (failureMessage.includes(WORKFLOW_GATE_MARKER)) {
     return "workflow_gate";
-  }
-
-  // The completion phase's own PR-summary gate refusal (Issue #3431).
-  if (failureMessage.includes(SUMMARY_RULE_GATE_MARKER)) {
-    return "summary_incomplete";
   }
 
   // The worker's own `Prompt is too long` reason (Issue #2682) — checked

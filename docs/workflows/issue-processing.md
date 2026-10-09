@@ -2658,8 +2658,10 @@ discard),
 
 A run refused by the PR-summary gates is categorised `summary_incomplete`
 (display `summary-incomplete`, Issue #3431): the worker prefixes the failure
-reason with its own marker so the gates' quotation of the agent's summary (for
-example a Rust `AppError::X` path) is never read as a crash. It is an
+reason with its own marker, and a message that starts with it is classified
+before the free-text timeout, kill, rate-limit and disk-full rules, so the
+gates' quotation of the agent's summary (for example a Rust `AppError::X` path,
+or the words "timeout" or `TypeError:`) is not read as a crash. It is an
 `agent-outcome`, not a worker defect, and the normal retry and `failed-once`
 rules apply. The catch-all `Error:` rule excludes `::` paths.
 

@@ -4880,10 +4880,15 @@ quotes the agent's own summary. That quotation once held a Rust path,
 `internal_error`, was classified a `worker-crash`, and a false diagnostic issue
 was auto-filed. Two changes close this. `reportSummaryRuleBlock` now opens the
 failure reason with the worker-authored `SUMMARY_RULE_GATE_MARKER` ("the PR
-summary did not pass the worker's completion gates"), which the detector maps to
-`summary_incomplete` (display `summary-incomplete`) after the killed, timeout,
-rate-limit and interrupted rules, so quoted agent text cannot forge a worse
-category. The catch-all is also now `/Error:(?!:)/`, so a `::` path such as
+summary did not pass the worker's completion gates"), which the detector
+maps to `summary_incomplete` (display `summary-incomplete`) with
+`startsWith`, right after the scheduled-release rule and ahead of the killed,
+timeout, rate-limit and interrupted substring rules, so a quoted "timeout",
+"SIGTERM", "rate limit" or `TypeError:` in the agent's summary cannot give the
+refusal a worse category; `classifyRunFailure` likewise answers
+`summary_incomplete` first, so a quoted `ENOSPC` is not read as `disk-full`. A
+timeout or kill message that merely quotes the marker later does not start with
+it and keeps its own category. The catch-all is also now `/Error:(?!:)/`, so a `::` path such as
 `AppError::X` is not an `Error:` line. `summary_incomplete` is `not_code_fixable`
 (class `agent-outcome`), is not infrastructure, and follows the normal retry and
 `failed-once` rules.

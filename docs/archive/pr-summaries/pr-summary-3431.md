@@ -15,7 +15,7 @@ The fix has three parts:
 ```mermaid
 flowchart LR
   G[summary gates refuse] -->|"marker + reason"| D{detectFailureCategory}
-  D -->|"marker (before Error: catch-all)"| S[summary_incomplete → agent outcome]
+  D -->|"marker prefix (before the free-text rules)"| S[summary_incomplete → agent outcome]
   D -.->|"before: AppError:: hit Error:"| C[internal_error → worker-crash ✗]
 ```
 
@@ -28,7 +28,7 @@ A summary-gate refusal means the agent's work is done but its summary is incompl
 ### Essential Design Decisions
 
 - **Marker, not text matching.** A worker-owned marker identifies a gate refusal. Guessing from the quoted agent text would break, because that text is free-form and can quote anything.
-- **Placement of the marker check.** It runs after the timeout and kill checks and after `WORKFLOW_GATE_MARKER`, so it cannot mask a timeout or a kill (the #249 lesson). It runs before the `Error:` catch-all.
+- **Placement of the marker check.** It is matched with `startsWith` and runs right after the scheduled-release rule, ahead of the kill, timeout, rate-limit and interrupted substring rules (PR #3440 review). The gate refusal quotes the agent's summary, so a quoted "timeout", "SIGTERM", "rate limit" or `TypeError:` must not outrank it. A timeout or kill message begins with the worker's own text, so one that merely quotes the marker later still classifies as a timeout or a kill. `classifyRunFailure` likewise answers `summary_incomplete` before its message-pattern rules, so a quoted `ENOSPC` is not `disk-full`.
 - **Narrowing the catch-all.** `/Error:(?!:)/` keeps real `Error: x` and `TypeError: x` lines and drops `Foo::Bar` paths. The lookahead is a single token, so the pattern stays linear. A hostile-input growth test guards this.
 
 ### Undiscoverable Facts
@@ -42,7 +42,8 @@ A summary-gate refusal means the agent's work is done but its summary is incompl
 - Callers checked:
   - The consumers of `getFailureCategoryDisplay` / `detectFailureCategory`: `label_failure.ts`, `label_question_failure.ts`, `execute_phase.ts` and `run_outcome_classifier.ts`. They already handle every category through the new switch arms.
   - All three `reportSummaryRuleBlock` failure returns (`completion_phase.ts:605`, `:637`, `:675`) carry the marker.
-- Existing rules checked: the `WORKFLOW_GATE_MARKER` precedent, plus the classifier's ordering doc (item 8 now lists `summary_incomplete`). No prompt or standards rule changed.
+- Existing rules checked: the `WORKFLOW_GATE_MARKER` precedent (matched after the free-text rules, because its text can be quoted by an agent; this marker is a prefix, so it can lead), plus the classifier's ordering doc (item 0 now lists `summary_incomplete`).
+- PR #3440 review: a marked refusal quoting "timeout" + `TypeError:`, "rate limit", "usage limit", "SIGTERM", "SIGKILL", "interrupted before completing", `ENOSPC`, out-of-credit text or a secondary rate limit now stays `summary_incomplete` / `not_code_fixable` / `agent-outcome`. The other callers of the detector take the category from the same function, so they follow it. No prompt or standards rule changed.
 - I applied the rules to the PR's own diff and found one problem: the new growth test was missing from `WALL_CLOCK_TEST_FILES`. It now lives in `worker/deno/tests/failure_diagnosis_bounds_3431_test.ts` and is registered there.
 
 **Docs sweep** — grep: `summary_incomplete`, `summary-incomplete`, `SUMMARY_RULE_GATE_MARKER`, `reportSummaryRuleBlock`, `internal_error`, `Error:`, `agent-outcome`, `clone-corrupt` (failure-category lists) across `README.md`, `docs/` (excluding `docs/archive/`) and `*/README.md`; section: `docs/INTERNALS.md#summary_incomplete-is-its-own-failure-category-issue-3431`, `docs/workflows/issue-processing.md#️-prompt-is-too-long--one-uncounted-fresh-session-retry`; updated: `docs/INTERNALS.md`, `docs/workflows/issue-processing.md` — the other hits were read and are still true (the `summary_incomplete` outcome kind in `docs/CALLBACKS.md` and the outcome table in `docs/workflows/issue-processing.md`, the host-fault kind lists in `docs/TROUBLESHOOTING.md` and `docs/INTERNALS.md`, and the `API Error: 402` → `rate_limit` note in `docs/CONFIGURATION.md`, where `Error: ` is still an `Error:` line)
@@ -64,9 +65,11 @@ A summary-gate refusal means the agent's work is done but its summary is incompl
 
 Branch outcomes:
 
-- `worker/deno/lib/failure_diagnosis.ts:339`: the marker gives `summary_incomplete`. Reached by "the marked #3431 refusal is summary_incomplete…" and by the completion-phase #3431 test. Flipping it (removing the check) went red.
-- `worker/deno/lib/failure_diagnosis.ts:425`: `Error:` followed by `::` is no longer `internal_error`, while `Error: x` still is. Reached by "a Rust AppError:: path is not an Error: line…" and `worker/deno/tests/failure_diagnosis_bounds_3431_test.ts`. Flipping it (reverting to `/Error:/`) went red.
-- `worker/deno/lib/failure_diagnosis.ts:339` ordering: a timeout or kill still wins over the marker. Reached by "the summary marker cannot mask a timeout or a kill". Flipping it (moving the check above the timeout and kill checks) went red.
+- `worker/deno/lib/failure_diagnosis.ts:277`: the marker prefix gives `summary_incomplete`. Reached by "the marked #3431 refusal is summary_incomplete…" and by the completion-phase #3431 test. Flipping it (removing the check) went red.
+- `worker/deno/lib/failure_diagnosis.ts:432`: `Error:` followed by `::` is no longer `internal_error`, while `Error: x` still is. Reached by "a Rust AppError:: path is not an Error: line…" and `worker/deno/tests/failure_diagnosis_bounds_3431_test.ts`. Flipping it (reverting to `/Error:/`) went red.
+- `worker/deno/lib/failure_diagnosis.ts:277` ordering and anchor: a marked refusal quoting timeout, `TypeError:`, rate limit, usage limit, SIGTERM, SIGKILL or "interrupted" wins over those rules. Reached by the six "a marked refusal quoting … is still summary_incomplete" tests in `worker/deno/tests/failure_diagnosis_test.ts`. Moving the check back below those rules, as `includes`, went red on all six.
+- `worker/deno/lib/failure_diagnosis.ts:277` anchor, the other outcome: a timeout or kill message that quotes the marker later is not a gate refusal. Reached by "the summary marker cannot mask a timeout or a kill" in the same file. Changing `startsWith` to `includes` while keeping the early position went red.
+- `worker/deno/lib/run_outcome_classifier.ts:246`: `summary_incomplete` answers before the stale-lineage, disk-full and out-of-credit rules. Reached by "a marked refusal quoting ENOSPC / out-of-credit / a secondary limit stays agent-outcome" in `worker/deno/tests/failure_diagnosis_test.ts`. Removing the early return went red.
 - `worker/deno/lib/failure_diagnosis.ts:573` (isInfrastructure false), `:621` (display), `:943` (diagnosis), `:1050` (oneliner), `:499` (validation): reached by "summary_incomplete category - display, diagnosis, oneliner and validation handle it". Flipping each arm's value went red.
-- `worker/deno/lib/run_outcome_classifier.ts:373`: `summary_incomplete` gives not_code_fixable / agent-outcome. Reached by `worker/deno/tests/run_outcome_classifier_test.ts` "summary_incomplete is an agent outcome even over a stack-trace-looking line". Flipping it to code-fixable went red.
+- `worker/deno/lib/run_outcome_classifier.ts:193` (the shared `AGENT_OUTCOME` result): `summary_incomplete` gives not_code_fixable / agent-outcome. Reached by `worker/deno/tests/run_outcome_classifier_test.ts` "summary_incomplete is an agent outcome even over a stack-trace-looking line". Flipping it to code-fixable went red.
 - `worker/deno/lib/phases/completion_phase.ts:557` (the prefix, returned at `:605`, `:637` and `:675`): reached by the completion-phase #3431 test on the no-PR return at `:605`. Removing the prefix went red. The returns at `:637` and `:675` share the same `failureReason` constant, and their existing summary-rule retry tests still pass.

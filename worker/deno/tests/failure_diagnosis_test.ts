@@ -765,6 +765,52 @@ Deno.test("detectFailureCategory - the marked #3431 refusal is summary_incomplet
   assertEquals(got.failureClass, "agent-outcome");
 });
 
+/** Quoted agent text a marked refusal can carry, each tripping an earlier free-text rule. */
+const QUOTED_TRAPS: Array<[string, string]> = [
+  [
+    "timeout + TypeError",
+    "the request timeout path raises TypeError: fetch failed",
+  ],
+  ["rate limit", "a broker rate limit back-off is not tested"],
+  ["usage limit", "the usage limit banner is not tested"],
+  ["SIGTERM", "no test covers the SIGTERM handler"],
+  ["SIGKILL", "no test covers the SIGKILL fallback"],
+  ["interrupted", "the run was interrupted before completing the loop"],
+];
+
+for (const [name, quoted] of QUOTED_TRAPS) {
+  Deno.test(`detectFailureCategory - a marked refusal quoting ${name} is still summary_incomplete (PR #3440 review)`, () => {
+    const message = `${SUMMARY_RULE_GATE_MARKER}: violation — ${quoted}`;
+    // The same quotation without the marker keeps its free-text category, so
+    // the marker (not the wording) is what decides.
+    assertEquals(
+      detectFailureCategory(message.replace(SUMMARY_RULE_GATE_MARKER, "x")) ===
+        "summary_incomplete",
+      false,
+    );
+    assertEquals(detectFailureCategory(message), "summary_incomplete");
+    const got = classifyRunFailure(detectFailureCategory(message), message);
+    assertEquals(got.fixability, "not_code_fixable");
+    assertEquals(got.failureClass, "agent-outcome");
+  });
+}
+
+Deno.test("classifyRunFailure - a marked refusal quoting ENOSPC / out-of-credit / a secondary limit stays agent-outcome (PR #3440 review)", () => {
+  for (
+    const quoted of [
+      "removed assertion: assertEquals(err, 'ENOSPC: no space left on device')",
+      "Credit balance is too low to run",
+      "secondary rate limit exceeded for content creation",
+    ]
+  ) {
+    const message = `${SUMMARY_RULE_GATE_MARKER}: ${quoted}`;
+    assertEquals(detectFailureCategory(message), "summary_incomplete");
+    const got = classifyRunFailure("summary_incomplete", message);
+    assertEquals(got.fixability, "not_code_fixable");
+    assertEquals(got.failureClass, "agent-outcome");
+  }
+});
+
 Deno.test("detectFailureCategory - a Rust AppError:: path is not an Error: line, but real Error: lines still are (Issue #3431)", () => {
   assertEquals(
     detectFailureCategory(ISSUE_3431_MESSAGE) === "internal_error",

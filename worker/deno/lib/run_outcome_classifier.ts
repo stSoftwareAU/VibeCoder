@@ -189,12 +189,23 @@ const OUT_OF_CREDIT: RunFailureClassification = {
   rationale: "The message reports an out-of-credit / billing condition.",
 };
 
+/** The agent did not deliver — a property of the attempt, not a worker defect. */
+const AGENT_OUTCOME: RunFailureClassification = {
+  fixability: "not_code_fixable",
+  failureClass: "agent-outcome",
+  rationale:
+    "The agent did not deliver (quality gate, PR-summary gates, no changes, missing evidence) — not a worker defect.",
+};
+
 /**
  * Classify a no-PR run failure.
  *
  * ORDER MATTERS and is fixed here, most specific first — exactly as
  * `detectFailureCategory` documents its own ordering:
  *
+ * 0. `summary_incomplete` — answered before everything else, because the
+ *    gate refusal quotes the agent's summary and a quoted "ENOSPC", usage
+ *    limit or stack trace must not turn it into another class.
  * 1. Account limits (`rate_limit` category, out-of-credit message) — the
  *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
  *    so these win over everything, including a stack trace in the same
@@ -213,7 +224,7 @@ const OUT_OF_CREDIT: RunFailureClassification = {
  *    trace in the message with any other non-agent category.
  * 6. `missing_tools` — the image/PATH is the worker's to fix.
  * 7. `timeout` / `zero_output` — cause unproven → unknown.
- * 8. `quality_check` / `summary_incomplete` / `no_changes` /
+ * 8. `quality_check` / `no_changes` /
  *    `evidence_missing` — the AGENT not
  *    delivering, not a worker defect: `not_code_fixable`, never auto-filed.
  * 9. `workflow_gate` — a pre-PR gate the worker applied refused the change
@@ -226,6 +237,13 @@ export function classifyRunFailure(
   failureMessage: string,
 ): RunFailureClassification {
   const message = failureMessage ?? "";
+
+  // The PR-summary gate refusal quotes the agent's own summary, so any
+  //    message-pattern rule below (secondary limit, out-of-credit, stale
+  //    lineage, disk-full) can trip on that quotation. The category is
+  //    `summary_incomplete` only for a worker-authored marker prefix (or an
+  //    existing-PR finalise), so it answers first (Issue #3431; PR #3440).
+  if (category === "summary_incomplete") return AGENT_OUTCOME;
 
   // 1. Account limits: usage / rate limit and out-of-credit are never a
   //    worker fault. Checked before anything else so a stack trace or a
@@ -370,18 +388,12 @@ export function classifyRunFailure(
           "The run produced no output; the cause is not proven to be the worker.",
       }, message);
     case "quality_check":
-    case "summary_incomplete":
     case "no_changes":
     case "evidence_missing":
       // 8. The agent did not deliver — a property of the attempt, not a
       //    worker defect. Stated plainly, never auto-filed: filing an issue
       //    every time the model fails a quality gate would be pure noise.
-      return {
-        fixability: "not_code_fixable",
-        failureClass: "agent-outcome",
-        rationale:
-          "The agent did not deliver (quality gate, PR-summary gates, no changes, missing evidence) — not a worker defect.",
-      };
+      return AGENT_OUTCOME;
     case "workflow_gate":
       // Issue #2044: the changed-workflow gate refused the run over a finding
       // in a workflow file the change introduced. A property of the change,
