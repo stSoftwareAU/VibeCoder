@@ -1010,9 +1010,8 @@ async function _processCiFailureLocked(
  *
  * One run per `processCiFailure` in which the agent ran, priced from every
  * invocation (the main call and the post-quality retry). The tier is the one
- * the PR's body marker names; an unreadable body records nothing, as
- * `fetchPrSubAgentTier` has already warned. Never throws: telemetry must not
- * change the outcome of the fix it describes.
+ * the PR's body marker names; an unreadable body records nothing (the lookup
+ * has already warned).
  */
 async function recordCiFixTierRun(
   input: CiFixInput,
@@ -1020,27 +1019,21 @@ async function recordCiFixTierRun(
   carrier: CiRunCarrier,
 ): Promise<void> {
   if (!carrier.agentRan) return;
-  try {
-    const { deps, logger } = processorDeps;
-    const tier = await fetchPrSubAgentTier(
-      input.repo,
-      input.prNumber,
-      processorDeps.ghCommandFn ?? deps.github.runGhCommand,
-      logger,
-    );
-    if (tier === null) return;
-    recordCiFixRun({
-      tier,
-      usd: estimatePhaseRunUsd(
-        carrier.runStats ?? [],
-        processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL,
-      ),
-    });
-  } catch (err) {
-    processorDeps.logger.warn("Could not record CI-fix fleet telemetry", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const { deps, logger } = processorDeps;
+  const tier = await fetchPrSubAgentTier(
+    input.repo,
+    input.prNumber,
+    processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+    logger,
+  );
+  if (tier === null) return;
+  recordCiFixRun({
+    tier,
+    usd: estimatePhaseRunUsd(
+      carrier.runStats ?? [],
+      processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+    ),
+  });
 }
 
 /**

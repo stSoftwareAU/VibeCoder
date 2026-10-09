@@ -1,8 +1,10 @@
 /**
  * Estimated USD for a phase run's Claude invocations (Issue #3404).
  *
- * Mirrors the cost maths of `measureIssuePhaseRun` so PR-feedback and CI-fix
- * runs are priced exactly as the `issue` phase is.
+ * Single source of the USD maths for a phase run's Claude invocations.
+ * `measureIssuePhaseRun` and the PR-feedback and CI-fix paths all call it, so
+ * every phase is priced identically.
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 

@@ -1011,3 +1011,25 @@ Deno.test("fleet_telemetry - a reset during the tier lookup does not credit the 
   });
   assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
 });
+
+Deno.test("fleet_telemetry - concurrent calls for the same review count it once", async () => {
+  fresh(WINDOW_START_MS);
+  const resolvers: Array<() => void> = [];
+  const deferredTier = () =>
+    new Promise<"haiku">((resolve) => {
+      resolvers.push(() => resolve("haiku"));
+    });
+  const base = {
+    repo: "o/r",
+    prNumber: 1,
+    reviewId: 77,
+    submittedAt: AFTER_WINDOW_START,
+  };
+  // Both calls pass the first dedupe check before either resolves.
+  const first = recordPrRejection({ ...base, resolveTier: deferredTier });
+  const second = recordPrRejection({ ...base, resolveTier: deferredTier });
+  assertEquals(resolvers.length, 2);
+  for (const resolve of resolvers) resolve();
+  await Promise.all([first, second]);
+  assertEquals(getFleetTelemetry(WINDOW_START_MS + 1_000).prRejectionsHaiku, 1);
+});

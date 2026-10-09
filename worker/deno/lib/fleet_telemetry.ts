@@ -355,11 +355,7 @@ function zeroPrOutcomeCounters(): PrOutcomeCounters {
   };
 }
 
-// SIMPLE-ON-PURPOSE: per-window dedupe, and events older than the window start
-// (`runStartMs`) are ignored, so a restart does not re-count the PRs and reviews
-// the listings keep returning; an event that happened while the worker was down
-// is therefore not counted — upgrade when that undercount matters (persist a
-// seen-set or a high-water mark in the sidecar)
+// SIMPLE-ON-PURPOSE: dedupe is per telemetry window and events before the window start are ignored, so a restart does not re-count, but an event that happened while the worker was down is not counted — upgrade when that undercount matters (persist a seen-set or a high-water mark in the sidecar)
 const seenRejections = new Set<string>();
 const seenMergedPrs = new Set<string>();
 

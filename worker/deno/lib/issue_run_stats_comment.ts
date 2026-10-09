@@ -52,12 +52,8 @@ import {
   buildPhaseInvocations,
   type PhaseClaudeResult,
 } from "./phase_run_stats.ts";
-import {
-  attributeUsageByModel,
-  estimateRunCost,
-  formatUsd,
-  type ModelUsageEntry,
-} from "./cost_estimate.ts";
+import { formatUsd } from "./cost_estimate.ts";
+import { estimatePhaseRunUsd } from "./phase_run_usd.ts";
 import type { IssuePhaseRun } from "./fleet_telemetry.ts";
 import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import type { GraftContextResult } from "./graft_context.ts";
@@ -531,25 +527,18 @@ export function measureIssuePhaseRun(args: {
       : {}),
   });
 
-  const costEntries: ModelUsageEntry[] = [];
   let durationMs = 0;
   for (const result of measured) {
     const stats = result.runStats!;
-    if (stats.tokenUsage) {
-      costEntries.push(
-        ...attributeUsageByModel(
-          stats.tokenUsage,
-          stats.modelUsage,
-          stats.servedModels[0] ?? expectedModel,
-        ),
-      );
-    }
     if (typeof stats.durationMs === "number") durationMs += stats.durationMs;
   }
 
   const gate = args.qualityGate;
   return {
-    usd: estimateRunCost(costEntries).totalCost,
+    usd: estimatePhaseRunUsd(
+      measured.map((result) => result.runStats),
+      expectedModel,
+    ),
     durationSeconds: Math.round(durationMs / 1000),
     split: executorSplitStats(measured).length > 0,
     ...(gate?.status === "passed" ? { gatePassedOnAttempt: gate.attempt } : {}),

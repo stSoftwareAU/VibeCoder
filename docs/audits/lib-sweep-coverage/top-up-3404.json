@@ -1,0 +1,13 @@
+{
+  "issue": 3404,
+  "chunk": "top-up-3404",
+  "title": "top-up: per-tier PR outcome telemetry helpers",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3404",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: phase_run_usd.ts, pr_sub_agent_tier.ts (#3404)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/phase_run_usd.ts",
+    "worker/deno/lib/pr_sub_agent_tier.ts"
+  ],
+  "sweptAt": "428fb5c3d5f0c2310253fcd0a682e6589df2d471"
+}

@@ -698,8 +698,7 @@ export async function processPrFeedback(
  * One run per `processPrFeedback` in which the agent ran, priced from every
  * invocation (the main call plus each re-run, recovery and drift-check turn).
  * The tier is the one the PR's body marker names; an unreadable body records
- * nothing, as `fetchPrSubAgentTier` has already warned. Never throws:
- * telemetry must not change the outcome of the run it describes.
+ * nothing (the lookup has already warned).
  */
 async function recordFeedbackTierRun(
   input: PrFeedbackInput,
@@ -707,27 +706,21 @@ async function recordFeedbackTierRun(
   carrier: FeedbackRunCarrier,
 ): Promise<void> {
   if (!carrier.agentRan) return;
-  try {
-    const { deps, logger } = processorDeps;
-    const tier = await fetchPrSubAgentTier(
-      input.repo,
-      input.prNumber,
-      (args: string[]) => deps.github.runGhCommand(args),
-      logger,
-    );
-    if (tier === null) return;
-    recordPrFeedbackRun({
-      tier,
-      usd: estimatePhaseRunUsd(
-        carrier.runStats ?? [],
-        processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL,
-      ),
-    });
-  } catch (err) {
-    processorDeps.logger.warn("Could not record PR-feedback fleet telemetry", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+  const { deps, logger } = processorDeps;
+  const tier = await fetchPrSubAgentTier(
+    input.repo,
+    input.prNumber,
+    (args: string[]) => deps.github.runGhCommand(args),
+    logger,
+  );
+  if (tier === null) return;
+  recordPrFeedbackRun({
+    tier,
+    usd: estimatePhaseRunUsd(
+      carrier.runStats ?? [],
+      processorDeps.claudeModel ?? DEFAULT_CLAUDE_MODEL,
+    ),
+  });
 }
 
 /** What the body hands back to every one of its successful return paths. */
