@@ -771,6 +771,26 @@ changes shape, and a run with both the split and reviewer switches off still
 emits no `--agents` argument at all. Non-`issue` phases never read the key
 and never carry any of these definitions.
 
+**Served-model check (Issue #3405).** A trial result is only meaningful if
+the Haiku sub-agents really ran on the current Haiku. When an `issue`-phase
+run resolved `issue_sub_agent_tier: "haiku"` and the served models the run
+recorded (`extractServedModels` in
+[`worker/deno/lib/run_stats.ts`](../worker/deno/lib/run_stats.ts)) include a
+previous-generation Haiku — for example `claude-haiku-4-5` — but no current
+Haiku (the `haiku` row of `CURRENT_TIER_MODELS` in
+[`worker/deno/lib/current_models.ts`](../worker/deno/lib/current_models.ts),
+`claude-haiku-5-5`), the worker labels the issue `degraded-model` (via
+`applyDegradedModelLabel`) and adds a
+`- **Haiku sub-agents degraded:** requested … served …` line to the run's
+stats comment naming both models. The check runs where the worker posts an
+`issue`-phase run-stats comment — at PR raise and on the already-resolved
+close — and is implemented in
+[`worker/deno/lib/issue_sub_agent_degradation.ts`](../worker/deno/lib/issue_sub_agent_degradation.ts).
+A `"sonnet"`-tier run never triggers it, even when a Haiku phase served
+`claude-haiku-4-5`. As with every `degraded-model` application, a label
+failure is logged as a warning naming the issue and never fails the run, and
+the worker never removes the label.
+
 **Opt-in trial, not a default change.** Unlike the executor split and
 reviewer sub-agents above, `issue_sub_agent_tier` is not on a before/after
 check of its own and `"sonnet"` is not expected to change. Per the owner's

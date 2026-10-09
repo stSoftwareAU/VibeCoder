@@ -24,13 +24,17 @@ import { type ModelTier, parseClaudeModernVersion } from "./token_usage.ts";
  * The current (latest) model id per tier, for the tiers whose previous
  * generations the worker flags as degraded.
  *
- * **Opus and Fable, deliberately.** Opus is the tier every substantive phase
+ * **Opus, Fable, and Haiku.** Opus is the tier every substantive phase
  * requests by alias since Issue #2560, and Fable is the tier an operator pins
  * back to as that switch's documented rollback; both price their generations
  * differently, so being served a stale one is worth a `degraded-model` label.
- * Adding a row for another tier extends the check to it — with the same
- * consequence, so add one only when a stale generation of that tier is
- * genuinely worth flagging.
+ * Haiku is the tier the cheap phases (`summarise`, `health`, `spelling_fix`)
+ * request by alias, and Haiku 5.5 differs from Haiku 4.5 in both price and
+ * context window (1M vs 200k), so a stale Haiku is worth flagging too (Issue
+ * #3400) — adding this row means {@link previousGenerationOf} now reports a
+ * Haiku 4.x id as a previous generation. Adding a row for another tier
+ * extends the check to it — with the same consequence, so add one only when a
+ * stale generation of that tier is genuinely worth flagging.
  *
  * A row must name a real id of its own tier that is current: the invariant is
  * pinned by `worker/deno/tests/current_models_test.ts`.
@@ -44,6 +48,8 @@ export const CURRENT_TIER_MODELS: ReadonlyMap<ModelTier, string> = new Map<
   // Opus 5.5 — the latest Opus, and the tier every substantive phase now
   // requests by alias (Issue #2560).
   ["opus", "claude-opus-5-5"],
+  // Haiku 5.5 — the latest Haiku since 2026-10-07 (Issue #3400).
+  ["haiku", "claude-haiku-5-5"],
 ]);
 
 /** A model identified as an earlier generation of a tracked tier. */

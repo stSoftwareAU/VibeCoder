@@ -132,6 +132,10 @@ import {
 } from "../issue_run_stats_comment.ts";
 import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
 import {
+  reportIssueSubAgentDegradation,
+} from "../issue_sub_agent_degradation.ts";
+import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
+import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
   hasSecurityLabel,
@@ -1086,6 +1090,20 @@ async function postWorkOnRunStats(
   if (claudeResults.length === 0) return;
 
   const client = deps.github.createClient(deps.logger);
+  // Issue #3405: a haiku-tier run served a previous-generation Haiku is
+  // labelled `degraded-model` and the comment below names both models.
+  const subAgentDegradation = await reportIssueSubAgentDegradation({
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    tier: resolveIssueSubAgentTier(
+      { issueSubAgentTier: ctx.config.issueSubAgentTier },
+      ctx.config.repoConfig?.[ctx.repo],
+      (m) => deps.logger.warn(m),
+    ),
+    claudeResults,
+    ghCommandFn: deps.github.runGhCommand,
+    logger: deps.logger,
+  });
   const posted = await postIssueRunStatsComment({
     repo: ctx.repo,
     issueNumber: ctx.issueNumber,
@@ -1114,6 +1132,7 @@ async function postWorkOnRunStats(
       : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+    ...(subAgentDegradation ? { subAgentDegradation } : {}),
   });
 
   // Issue #2347: the same figures the comment above renders, recorded once per
