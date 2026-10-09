@@ -21,7 +21,8 @@ import { PRIVATE_DIR_MODE } from "./private_cache_dir.ts";
  * Known context window sizes by model tier (tokens).
  *
  * As of Claude 4.7, Fable, Opus and Sonnet have 1M-token context windows.
- * Haiku retains the 200k context window (Issue #1399).
+ * The `haiku` alias is also 1M since Haiku 5.5 (Issue #3400), while Haiku
+ * 4.x ids (e.g. `claude-haiku-4-5`) keep the older 200k window.
  * Fable 5 is the top tier above Opus (Issue #2619).
  * Codex GPT-5 ids (`gpt-5`, `gpt-5-codex`, `gpt-5-mini`) are 400k
  * (Issue #1701).
@@ -32,7 +33,10 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   fable: 1_000_000,
   opus: 1_000_000,
   sonnet: 1_000_000,
-  haiku: 200_000,
+  haiku: 1_000_000,
+  // Haiku 4.x ids (e.g. `claude-haiku-4-5`) keep their 200k window so a
+  // phase pinned to one still escalates before it truncates (Issue #3400).
+  "claude-haiku-4": 200_000,
   // Codex / GPT-5 family (Issue #1701). More specific ids first so
   // `getContextWindowSize("gpt-5-codex")` does not fall through `gpt-5`.
   "gpt-5-codex": 400_000,

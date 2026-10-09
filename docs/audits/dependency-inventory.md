@@ -31,7 +31,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Tool | Kind | Version | SHA-256 | Verdict |
 | --- | --- | --- | --- | --- |
-| claude | provider | 2.1.281 | amd64: 56fe3da88458465fb27d7e9299dddb3fead55750fb9c2de795f233b5eea6dce1<br>arm64: dd27b36438a4fed1670cd29bad2fda6a73b628b6da55443e5c2f647fe6ed328f | exact version + SHA-256 verified |
+| claude | provider | 2.1.293 | amd64: 8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978<br>arm64: a43629e888f0a7d96c5e8de62abf44852433a7ff2481574688db3e5b6399491f | exact version + SHA-256 verified |
 | codex | provider | 0.147.0 | amd64: 0246e2e773834e07f0fb5249ed6ebad12e4591e608f8c7bb97dd6a9690544c36<br>arm64: eb677c80f666b1ab8b4b1d083b66e8d614b1281d960bb6f9fd8ca98f58b38b90 | exact version + SHA-256 verified |
 | deepseek | provider | 2.1.223 | amd64: 98226474f802e3094d6a86c5ade8883c16206d0fcb5c400b7401c800063e99d7<br>arm64: 60e83d8db0e894d0e54413e5e7daa256d180db660f51e139a51b614fc30cf3ac | exact version + SHA-256 verified |
 | gemini | provider | 0.55.1 | noarch: 4587cc6fe4d794cd35517179642cf4df3133a073ef6f96dda691d5604bf4df7e | exact version + SHA-256 verified |
