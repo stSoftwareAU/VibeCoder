@@ -97,6 +97,8 @@ function telemetryFor(tier: IssueSubAgentTier) {
 async function runFeedback(options: {
   body: BodyAnswer;
   prState?: string;
+  /** Fail every git command, so the PR branch cannot be prepared. */
+  gitFails?: boolean;
   stats: RunStats | undefined;
 }): Promise<{ invocations: number }> {
   let invocations = 0;
@@ -121,6 +123,15 @@ async function runFeedback(options: {
       runGhCommand: ghFor(options.body, options.prState),
     } as Partial<GitHubDeps>,
     git: {
+      ...(options.gitFails
+        ? {
+          runGitCommand: (() =>
+            Promise.resolve({
+              ok: true,
+              value: { code: 128, stdout: "", stderr: "fatal: no checkout" },
+            })) as unknown as GitDeps["runGitCommand"],
+        }
+        : {}),
       commitAndPushPending: (() =>
         Promise.resolve({
           ok: true,
@@ -208,6 +219,20 @@ Deno.test(`${NAME} - a PR closed before the agent runs records nothing (Issue #3
     stats: statsWith(100_000, 10_000),
   });
   assertEquals(invocations, 0);
+  assertEquals(telemetryFor("haiku"), { runs: 0, usd: 0 });
+  assertEquals(telemetryFor("sonnet"), { runs: 0, usd: 0 });
+});
+
+Deno.test(`${NAME} - a run that fails before the agent is invoked records nothing (Issue #3404)`, async () => {
+  resetFleetTelemetry();
+  // The claim and heartbeat succeed, then the PR branch cannot be checked
+  // out, so the run ends without ever reaching the agent.
+  const { invocations } = await runFeedback({
+    body: bodyWithTier("haiku"),
+    gitFails: true,
+    stats: statsWith(100_000, 10_000),
+  });
+  assertEquals(invocations, 0, "the agent must not have been invoked");
   assertEquals(telemetryFor("haiku"), { runs: 0, usd: 0 });
   assertEquals(telemetryFor("sonnet"), { runs: 0, usd: 0 });
 });

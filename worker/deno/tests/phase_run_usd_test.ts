@@ -46,7 +46,7 @@ Deno.test("phase_run_usd - matches estimateRunCost over the same entries", () =>
   const entries: ModelUsageEntry[] = attributeUsageByModel(
     s.tokenUsage!,
     s.modelUsage,
-    s.servedModels[0],
+    s.servedModels[0] ?? MODEL,
   );
   const expected = estimateRunCost([...entries, ...entries]).totalCost;
   const actual = estimatePhaseRunUsd([s, undefined, s], "fallback-model");
