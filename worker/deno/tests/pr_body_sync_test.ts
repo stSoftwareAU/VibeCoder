@@ -1565,3 +1565,13 @@ Deno.test("sync - a summary that now marks the criterion partial replaces the no
   assertStringIncludes(synced, "**partial** — the export works");
   assertEquals(synced.includes("No follow-up was filed because"), false);
 });
+
+Deno.test("sync - fails when the issue view carries no string body (Issue #3350)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => JSON.stringify({}),
+  });
+  assertEquals(result.ok, false);
+  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+});
