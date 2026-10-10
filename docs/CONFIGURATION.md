@@ -413,6 +413,37 @@ Do **not** add the bot to `pr_reviewers`. That list is requested as reviewers
 on every new worker PR, and GitHub cannot request a review from an App, so PR
 creation would fail.
 
+## 🔓 Auto-release of issue-required test changes
+
+`pr_reviewer_auto_release` lets the `review-fleet-prs` skill approve, rather
+than hold for the owner, a PR whose only meaningful test change is one its
+linked issue requires. It is off by default: absent or empty, and for any repo
+not listed, the outcome is as before. It is read by the skill's `post.ts` (via
+`auto_release.ts`), never by the worker. A value that is not an array of
+`owner/repo` strings makes `post.ts` fail loud.
+
+```json
+{
+  "pr_reviewer_auto_release": ["stSoftwareAU/VibeCoder"]
+}
+```
+
+For a listed repo, a review that would be held is approved ("Auto-released: …")
+only when all of these hold:
+
+- there are no findings and no test file was removed;
+- the PR has a linked issue (`closingIssuesReferences`) whose title or body
+  could be read;
+- every test change note is kind `expected-value`, quotes an acceptance
+  criterion of at least 5 words verbatim from a linked issue's title or body
+  (comments never count), and states that the edited test still fails without
+  the code it guards.
+
+Anything else keeps the hold, including any fetch failure. The `log.jsonl`
+record carries `autoReleased: true`, and `summary.md` prefixes the approval with
+`(auto-released: issue-required test change)`. When the hold is kept, the
+reasons are logged as `autoReleaseHeld`.
+
 ## 📊 Configuration Defaults
 
 The following settings have built-in defaults. Only values you override via

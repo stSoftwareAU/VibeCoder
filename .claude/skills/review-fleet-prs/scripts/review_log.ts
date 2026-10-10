@@ -23,10 +23,22 @@ export interface Finding {
   fix?: string;
 }
 
+// Lives here (not auto_release.ts) so auto_release.ts can import it without a cycle.
+export type TestChangeKind =
+  | "expected-value"
+  | "removed-case"
+  | "added-skip"
+  | "weakened-assertion"
+  | "removed-file"
+  | "other";
+
 export interface TestChangeNote {
   file: string;
   line: number;
   change: string;
+  kind?: TestChangeKind; // what sort of edit it is; only "expected-value" can auto-release (Issue #3397)
+  criterionQuote?: string; // verbatim acceptance criterion of a linked issue that requires the change
+  failsWithoutChange?: boolean | string; // whether the edited test fails without the code change
 }
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
@@ -73,6 +85,8 @@ export interface LogRecord {
   removedTests: string[];
   filedIssues?: FiledIssue[];
   addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
+  autoReleased?: true; // set only when an issue-required test-change hold was auto-released (Issue #3397)
+  autoReleaseHeld?: string[]; // reasons an opted-in repo's hold was kept; set only on a held PR (Issue #3397)
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -222,10 +236,11 @@ export function unrelatedIssueBody(
 export function decideOutcome(
   review: FableReview,
   removedTests: readonly string[],
+  opts: { autoRelease?: boolean } = {},
 ): Outcome {
   if (review.findings.length > 0) return "changes_requested";
   if (review.testChanges === "meaningful" || removedTests.length > 0) {
-    return "held";
+    return opts.autoRelease === true ? "approved" : "held";
   }
   return "approved";
 }
@@ -244,6 +259,7 @@ export function reviewBody(
   review: FableReview,
   removedTests: readonly string[],
   filed: readonly FiledIssue[] = [],
+  opts: { autoReleased?: boolean } = {},
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -268,6 +284,16 @@ export function reviewBody(
       review.summary,
       "",
       "Approve to merge or request changes; then remove `needs-human`.",
+    );
+  } else if (outcome === "approved" && opts.autoReleased) {
+    lines.push(
+      "Auto-released: this PR changes existing tests, and each change is required by an acceptance criterion of a linked issue.",
+      "",
+      ...review.testChangeNotes.map((n) =>
+        `- \`${n.file}:${n.line}\`: ${n.change} — required by: "${n.criterionQuote}"`
+      ),
+      "",
+      review.summary,
     );
   } else {
     lines.push(review.summary);
@@ -415,7 +441,15 @@ export function renderSummary(
     `## Approved, last 7 days (${approved.length})`,
     "",
     ...(approved.length
-      ? approved.map((r) => line(r, clip(r.summary), isOpen(r)))
+      ? approved.map((r) =>
+        line(
+          r,
+          (r.autoReleased === true
+            ? "(auto-released: issue-required test change) "
+            : "") + clip(r.summary),
+          isOpen(r),
+        )
+      )
       : ["None."]),
     "",
   ];

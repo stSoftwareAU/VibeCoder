@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner (unless the repo opts in to auto-release of issue-required test changes). Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -54,7 +54,16 @@ reviewing as a GitHub App, and persistent failure escalation.
    old implementation) is the owner's call: the PR is held with a
    comment-only review, neither approved nor sent back, and labelled
    `needs-human`; the skill removes that label on a later approve or
-   send-back only when it was the one that added it. Trivial edits
+   send-back only when it was the one that added it. **Opt-in exception:** a
+   repo listed in `.config.json` `pr_reviewer_auto_release` (an array of
+   `owner/repo`; absent or empty is off) has such a hold approved instead
+   (auto-released) only when there are no findings, no test file was removed,
+   the PR has a linked issue (`closingIssuesReferences`) whose title or body
+   could be read, and every note is kind `expected-value` with a
+   `criterionQuote` of at least 5 words found verbatim in a linked issue's
+   title or body (comments never count) and a positive `failsWithoutChange`.
+   A removed case, added skip, weakened or deleted assertion, removed test
+   file or any fetch failure keeps the hold. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not, and
    neither are edits that only **tighten** a meaningful behavioural or
    contractual test (it now asserts more or allows less, as the issue asks):
@@ -242,6 +251,13 @@ at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 >    make the build pass), report it as a blocking **finding** asking for the
 >    test to be restored, not only under `testChanges`. Report it under
 >    `testChanges` as **meaningful** only when the issue requires the change.
+>    For each `testChangeNotes` entry give `kind` (`expected-value` for a
+>    changed expected value or behaviour, `removed-case`, `added-skip`,
+>    `weakened-assertion`, `removed-file` or `other`); `criterionQuote`, the
+>    acceptance criterion from a linked issue that requires the change,
+>    quoted verbatim from the issue's title or body (not comments), or
+>    omitted if there is none; and `failsWithoutChange`, `true` or a short
+>    statement that the edited test still fails without the code it guards.
 > 6. {previousFindings, if not empty: "An earlier review of this PR asked
 >    for these fixes: {previousFindings}. Check each one is fixed; one that
 >    is not is still a finding."}
@@ -276,7 +292,7 @@ at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 > always a finding, never an unrelated issue.
 >
 > Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
+> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
 
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.
@@ -304,7 +320,12 @@ The script does the rest, so do not post anything yourself:
 - It decides the outcome: reviewer findings mean **request changes** (the
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
-  worker ignores; otherwise **approve**.
+  worker ignores; otherwise **approve**. **Auto-release:** for a repo in
+  `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
+  makes `post.ts` fail loud), a hold is instead an approval when rule 4's
+  conditions all hold. The body opens "Auto-released: ..." and lists each
+  change with its quoted criterion; there is no held comment and no
+  `needs-human` label.
 - After an approval, when the PR is behind its base (and is not a Dependabot
   PR), it asks GitHub to bring the branch up to date at the reviewed head
   (rule 9), so the armed auto-merge can complete once CI re-runs. The result
@@ -322,8 +343,13 @@ The script does the rest, so do not post anything yourself:
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, filedIssues?, labelError?, branchUpdated?,
-branchUpdateError?, reason? }`.
+It prints `{ posted, outcome?, autoReleased?, autoReleaseHeld?,
+filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
+`autoReleased: true` is also in the `log.jsonl` record, and `summary.md`
+prefixes that PR's "Approved, last 7 days" line with
+`(auto-released: issue-required test change)` as an audit trail.
+`autoReleaseHeld` lists the reasons an opted-in repo's hold was kept; it is
+printed and logged only for a held PR in an opted-in repo.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
 code 2 means the reviewer's reply was malformed: nothing was posted, and the PR

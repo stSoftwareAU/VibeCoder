@@ -17,8 +17,10 @@
 // worker container passes it (Issue #3293): there the host's log directory is
 // mounted at another path, so the resolution stateDir() makes on the host
 // would point somewhere else.
+// An opted-in repo (`pr_reviewer_auto_release` in .config.json) has an
+// issue-required test-change hold auto-released as an approval (Issue #3397).
 // Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
-// branchUpdated?, branchUpdateError?, reason? }.
+// branchUpdated?, branchUpdateError?, autoReleased?, autoReleaseHeld?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
 // reported in `labelError`; a refused branch update likewise in
 // `branchUpdateError` (the next gate pass retries it).
@@ -42,7 +44,12 @@ import {
   unrelatedIssueBody,
   writeSummary,
 } from "./review_log.ts";
-import { type LabelError, syncNeedsHumanLabel } from "./needs_human.ts";
+import {
+  type LabelError,
+  type RunGh,
+  syncNeedsHumanLabel,
+} from "./needs_human.ts";
+import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
 import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
 
 interface Input {
@@ -144,6 +151,8 @@ export function postedResult(
   filedIssues: readonly FiledIssue[],
   labelError?: LabelError,
   branchUpdate?: BranchUpdateResult,
+  autoReleased?: boolean,
+  autoReleaseHeld?: readonly string[],
 ) {
   return {
     posted: true,
@@ -153,6 +162,45 @@ export function postedResult(
     ...(branchUpdate?.updated === true ? { branchUpdated: true } : {}),
     ...(branchUpdate?.updated === false
       ? { branchUpdateError: branchUpdate.error }
+      : {}),
+    ...(autoReleased ? { autoReleased: true } : {}),
+    ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
+  };
+}
+
+const isNotOptedIn = (reasons: readonly string[]) =>
+  reasons.length === 1 && reasons[0] === "repo not opted in";
+
+// The outcome, with an issue-required test-change hold released when the repo
+// opted in and every note checks out; any doubt keeps the hold (Issue #3397).
+export async function decidePostOutcome(
+  pr: { repo: string; number: number },
+  review: FableReview,
+  removedTests: readonly string[],
+  repos: readonly string[],
+  runGh: RunGh,
+): Promise<
+  {
+    outcome: Outcome;
+    autoReleased: boolean;
+    autoReleaseReasons: string[];
+    autoReleaseHeld?: string[];
+  }
+> {
+  const { release, reasons } = await resolveAutoRelease(
+    pr,
+    review,
+    removedTests,
+    repos,
+    runGh,
+  );
+  const outcome = decideOutcome(review, removedTests, { autoRelease: release });
+  return {
+    outcome,
+    autoReleased: release && outcome === "approved",
+    autoReleaseReasons: reasons,
+    ...(outcome === "held" && !isNotOptedIn(reasons)
+      ? { autoReleaseHeld: reasons }
       : {}),
   };
 }
@@ -222,7 +270,14 @@ export async function main() {
   }
 
   const removed = pr.testChanges.removed;
-  const outcome = decideOutcome(review, removed);
+  const repos = await loadAutoReleaseRepos();
+  const { outcome, autoReleased, autoReleaseHeld } = await decidePostOutcome(
+    pr,
+    review,
+    removed,
+    repos,
+    (args) => run("gh", args),
+  );
   const dir = Deno.args.find((a) => a.startsWith("--state-dir="))?.slice(12) ??
     stateDir();
   const previous = latestByPr(await readLog(dir)).get(
@@ -231,7 +286,7 @@ export async function main() {
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
   await Deno.writeTextFile(
     bodyFile,
-    reviewBody(outcome, review, removed, filedIssues),
+    reviewBody(outcome, review, removed, filedIssues, { autoReleased }),
   );
   const flag = outcome === "approved"
     ? "--approve"
@@ -286,6 +341,8 @@ export async function main() {
     removedTests: removed,
     filedIssues,
     addedNeedsHuman: label.addedNeedsHuman,
+    ...(autoReleased ? { autoReleased: true as const } : {}),
+    ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
   };
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
@@ -310,7 +367,14 @@ export async function main() {
   }
   console.log(
     JSON.stringify(
-      postedResult(outcome, filedIssues, label.labelError, branchUpdate),
+      postedResult(
+        outcome,
+        filedIssues,
+        label.labelError,
+        branchUpdate,
+        autoReleased,
+        autoReleaseHeld,
+      ),
     ),
   );
 }
