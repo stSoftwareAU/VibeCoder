@@ -1240,7 +1240,11 @@ The file MUST contain:
    to do before the summary, not reporting: add the test, or remove the
    branch; the worker blocks PR creation on it, and only an entry written
    `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` may
-   stand. The Test Plan carries this enumeration as a
+   stand. Before the PR is raised the worker also mutates the lines the diff
+   adds and re-runs the covering tests; a mutation the tests do not catch
+   blocks the PR unless the summary names it as `` `path:line` `` with
+   `exempt (untestable): <reason>` (a non-empty reason), the same convention.
+   The Test Plan carries this enumeration as a
    `Branch outcomes:` list — one line per outcome naming `path:line`, the
    outcome, the test that reaches it, and that flipping it went red — or
    `Branch outcomes: none added` when the diff adds no branch. When the diff

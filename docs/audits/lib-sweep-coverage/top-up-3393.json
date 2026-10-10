@@ -1,0 +1,13 @@
+{
+  "issue": 3393,
+  "chunk": "top-up-3393",
+  "title": "top-up: the diff-scoped mutation check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3393",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: mutation_gate.ts, mutation_runner.ts (#3393)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/mutation_gate.ts",
+    "worker/deno/lib/mutation_runner.ts"
+  ],
+  "sweptAt": "ebf3c12d53e1b3e28238ef74121e80189f05dc62"
+}
