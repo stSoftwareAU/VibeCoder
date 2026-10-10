@@ -415,3 +415,6 @@ the last 7 days. Every gate pass rewrites it at no token cost.
 
 Read [references/notes.md](references/notes.md) for why approval counts, the
 idle cost, and where `<logs>` (used throughout this file) lives.
+
+When you change the `description` above, rerun the triggering check in
+[references/trigger-queries.md](references/trigger-queries.md).
