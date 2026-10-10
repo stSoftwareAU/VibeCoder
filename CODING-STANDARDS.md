@@ -172,7 +172,11 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    covers the behaviour and say where. The worker enforces this at PR
    creation (`removed_assertion_gate.ts`, Issue #3131): the removed
    assertion must be named in the summary's Test Plan, and the Standards
-   reviewer is asked to judge each one.
+   reviewer is asked to judge each one. The requirement shows the new value
+   is right, not that the edited test still checks anything: each edited
+   expectation also owes the red-check in **An edited expectation must
+   still go red without its guard** under **Test coverage expectations**
+   below.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
@@ -426,7 +430,23 @@ each moved check in its own section instead. A test that only pins current
 behaviour — the fault was unreproduced or already fixed, and no production
 change was made — is expected green on base, and the Test Plan says so.
 **A negative test must be able to fail** below is this rule for an
-assertion that something does *not* happen.
+assertion that something does *not* happen, and **An edited expectation
+must still go red without its guard** below is this rule for a test the
+diff edits rather than adds.
+
+**An edited expectation must still go red without its guard.** When an
+issue changes an expected value or expected behaviour in an existing test,
+the edited test must still fail when the code its name says it guards is
+broken. The issue requirement that justifies the new value does not show
+this: a new value the code produces either way — a de-duplicated list, an
+action taken with or without the bound, an earlier refusal — leaves the
+test green with that code gone, and nothing replaces the check it made.
+Break that code on purpose (delete the check, invert the condition, drop
+the stop), run the edited test, confirm it goes red, then restore the code.
+If it stays green, add an assertion that does go red, or move the lost
+check to a test that still covers it and name that test. Record the
+red-check result per edited expectation in the Test Plan. An edited test
+that stays green without its guard is a blocking self-review finding.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
