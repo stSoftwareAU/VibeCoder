@@ -2587,6 +2587,9 @@ async function completionBody(
   // run is logged as not checked (by `runSummaryClaimCheck` itself), never
   // read as clean, and does not block.
   //
+  // Issue #3347: the question also covers the manual and prompt Markdown in
+  // the branch's changed-file list (`changedFiles`), not just the summary.
+  //
   // Skipped entirely when no summary file with content was loaded — with no
   // summary there are no claims about named code to check.
   // ---------------------------------------------------------------------
@@ -2600,6 +2603,7 @@ async function completionBody(
         baseRef: comparableBase.ok ? comparableBase.value : null,
         summaryPath: summarySource,
         summaryContent,
+        changedFiles: changedFilesKnown ? changedFiles : null,
       },
       {
         runGit: async (args) => {
@@ -2999,6 +3003,7 @@ async function completionBody(
   if (claimCheckVerdict.blocked && claimCheck !== null) {
     logger.warn("Summary claim check blocked PR creation", {
       findings: claimCheck.findings.length,
+      docFindings: claimCheck.docFindings.length,
       testPlanProblems: claimCheck.testPlanProblems.length,
       notChecked: claimCheck.notChecked.length,
     });
@@ -3011,7 +3016,15 @@ async function completionBody(
     // posted yet, because the correction turn may yet clear the finding
     // before anything reaches the thread. The re-run posts the comment via
     // this same gate if the sentence survives.
-    if (summarySource !== null && shouldOfferClaimCorrection(state)) {
+    //
+    // Issue #3347: the correction turn rewrites only the PR summary, so a
+    // block that carries a finding in a changed manual or prompt
+    // (`docFindings`) can never be cleared by it — that goes to
+    // `reportSummaryRuleBlock` like any other later block.
+    if (
+      summarySource !== null && shouldOfferClaimCorrection(state) &&
+      claimCheck.docFindings.length === 0
+    ) {
       state.summaryClaimCorrection = {
         status: "pending",
         reason: claimCheckVerdict.reason,

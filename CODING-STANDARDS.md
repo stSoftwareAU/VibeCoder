@@ -1502,6 +1502,19 @@ script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
 
+The worker checks this mechanically too (Issue #3347). Whenever a PR summary
+was loaded, the first-run claim check asks a read-only model, before the PR is
+raised, whether the head code agrees with such sentences on the lines the
+branch adds or edits in its manual and prompt Markdown (outside
+`docs/archive/pr-summaries/`), for up to 20 files; files past that cap are
+logged as not checked. A confirmed contradiction is a summary-rule block: on
+the run's first summary-rule block the run gets one recovery turn to rewrite
+the sentence, and a block that survives it fails the run or, when a PR already
+exists, finalises it as `summary_incomplete`. On a review-fix push that edits
+such a file, the drift check asks the same question and gives one recovery turn
+before reporting what remains. This enforces the rule above; it does not
+replace it.
+
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling
 sub-issue of the same epic or milestone, or a follow-up — only as planned

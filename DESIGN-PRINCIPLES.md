@@ -3076,8 +3076,10 @@ or not the agent already raised the PR itself from inside the execute phase
 (Issue #3163): a PR the agent raised itself is not finalised or auto-merged
 until that turn has run. A block that survives that turn — the run's
 second — finalises an existing PR as before, unless the claim check alone is
-still blocking: that block first gets one summary-only correction turn
-(Issue #3324), and only a block that survives it finalises the PR.
+still blocking on the summary's own sentences (a doc finding never qualifies,
+since that turn can only rewrite the summary): that block first gets one
+summary-only correction turn (Issue #3324), and only a block that survives it
+finalises the PR.
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

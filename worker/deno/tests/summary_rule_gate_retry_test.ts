@@ -321,6 +321,7 @@ Deno.test("summary-rule retry - a folded summary-claim-check section reaches the
         reason: "the head's parseRow builds no regex",
       },
     ],
+    docFindings: [],
     unconfirmedFindings: [],
     testPlanProblems: [],
     notChecked: [],
