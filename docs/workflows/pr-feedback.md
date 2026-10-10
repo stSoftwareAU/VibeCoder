@@ -451,7 +451,8 @@ Five checks run, each only when it applies:
    `with N tests`) is not compared with that file's whole count. Lines it
    cannot total (an uncounted file, `--filter`, two different numbers, "N
    new tests", a paired result in a block naming several files whose runs
-   differ) are skipped.
+   differ, a paired result in a block citing `./quality.sh`, whose figures
+   cover the whole suite) are skipped.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.

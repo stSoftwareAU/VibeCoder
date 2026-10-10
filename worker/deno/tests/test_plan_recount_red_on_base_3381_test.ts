@@ -217,3 +217,13 @@ Deno.test("paired run result - hostile separators scale linearly", () => {
     { baseChars: 5_000 },
   );
 });
+
+Deno.test("paired run result - a quality.sh full-gate line naming a failing test file is skipped", () => {
+  const file = "worker/deno/tests/issue_cache_test.ts";
+  const summary =
+    "## Test Plan\n\n- `./quality.sh < /dev/null`: `deno test` 26066 passed, 1 failed — `issue_cache - returns null for expired entry` (`worker/deno/tests/issue_cache_test.ts`).\n";
+  assertEquals(
+    findTestPlanMismatches({ summary, headCounts: counts({ [file]: 7 }) }),
+    [],
+  );
+});

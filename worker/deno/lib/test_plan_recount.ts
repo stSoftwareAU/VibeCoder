@@ -420,7 +420,8 @@ const TOKEN_RE =
 const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
 // A paired run result in either order, e.g. "76 passed, 4 failed",
 // "4 failed, 76 passed", "76 passed and 4 failed" or deno's
-// "FAILED | 76 passed | 4 failed (1s)". Bounded quantifiers keep it linear.
+// "FAILED | 76 passed | 4 failed (1s)". Each start scans one separator run,
+// so the cost stays linear; see the hostile-input test.
 const RESULT_RE =
   /(?<![\w.#])(\d{1,5})\s+(passed|failed)\b[\s,;|]*(?:and\s+)?(\d{1,5})\s+(passed|failed)\b/gi;
 const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
@@ -585,6 +586,9 @@ function checkRunResults(
   headCounts: ReadonlyMap<string, TestDeclarationCounts>,
   soleFile: string | undefined,
 ): TestPlanMismatch | null {
+  // A full-gate result covers the whole suite, so a failing test file it names
+  // is not the file the figures count (corpus: pr-summary-3255.md, pr-summary-3292.md).
+  if (/\bquality\.sh\b/.test(rawLine)) return null;
   const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
   let files: Set<string>;
   let candidates = runs;
