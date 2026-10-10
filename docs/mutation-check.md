@@ -143,8 +143,8 @@ never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not inherited by it (Issue #572, the same control as the quality
 gate). The only additions are the declared credentials described below.
 
-The credentials the repository declared in `quality_credentials` (Issues #573,
-#574) are resolved once in the completion phase and added to each child's
+The credentials the repository declared in `quality_credentials` (Issues #573
+and #574) are resolved once in the completion phase and added to each child's
 environment, the same way the quality gate does, so tests that need them (for
 example minted AWS credentials) pass their baseline here too. Only the declared
 variables are added. If the mint fails, the check is reported as not applicable
