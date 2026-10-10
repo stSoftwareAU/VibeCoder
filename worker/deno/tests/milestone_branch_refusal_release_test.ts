@@ -19,12 +19,17 @@ import {
   getFailureDiagnosisOneliner,
   isInfrastructureFailure,
   normaliseFailureCategory,
+  SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import {
   isRepoLevelBranchRejection,
   isRepoLevelMilestoneBranchRefusal,
 } from "../lib/milestone_branch_rejection.ts";
-import { handleIssueFailure } from "../lib/label_failure.ts";
+import {
+  handleIssueFailure,
+  markIssueAsFailed,
+  markIssueAsFailedOnce,
+} from "../lib/label_failure.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
 import {
   applyCodingFailureLadder,
@@ -589,6 +594,34 @@ Deno.test("refusalIsMostRecentFailure - a quality failure quoting the milestone 
     `for refs/heads/${BRANCH}.\n> 5 of 6 required status checks are expected.`;
   assertEquals(detectFailureCategory(quotingQuality), "quality_check");
   assertEquals(refusalIsMostRecentFailure([quotingQuality]), false);
+});
+
+Deno.test("refusalIsMostRecentFailure - a marked summary-gate refusal quoting the milestone GH013 rejection keeps its labels (PR #3440 review)", async () => {
+  const reason = `${SUMMARY_RULE_GATE_MARKER}: Removed test assertions: ` +
+    `${GH013}\n! [remote rejected] HEAD -> ${BRANCH} (push declined due to ` +
+    `repository rule violations)`;
+  // At failure time the marker wins: the refusal is `summary_incomplete`.
+  assertEquals(detectFailureCategory(reason), "summary_incomplete");
+  for (const write of [markIssueAsFailedOnce, markIssueAsFailed]) {
+    let body = "";
+    await write({
+      repo: REPO,
+      issueNumber: 1,
+      githubUser: "VibeCoderST",
+      failureMessage: reason,
+    }, {
+      ghCommandFn: (args: string[]) => {
+        if (args[1] === "comment") {
+          body = args[args.indexOf("--body") + 1] ?? "";
+        }
+        return Promise.resolve("");
+      },
+    });
+    // Fixture check: the posted body, marker no longer leading, would read as
+    // the repository's refusal.
+    assertEquals(detectFailureCategory(body), "repo_config");
+    assertEquals(refusalIsMostRecentFailure([body]), false);
+  }
 });
 
 // ===========================================================================
