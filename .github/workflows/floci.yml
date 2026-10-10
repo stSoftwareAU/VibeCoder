@@ -1,0 +1,87 @@
+# Floci CloudFormation deployment test (Issue #3369).
+#
+# Deploys every CloudFormation template under infra/cloudformation/ into
+# the Floci AWS emulator via infra/cloudformation/test-floci.sh and asserts
+# each stack reaches CREATE_COMPLETE, so a template that cannot be deployed
+# fails the PR rather than the first real deployment.
+#
+# The Floci image tag and digest below must equal the docker.io/floci/floci
+# tag and digest in container/tools.json; that equality is pinned by
+# worker/deno/tests/issue_3369_floci_workflow_test.ts.
+#
+# The docker socket is mounted into the Floci service because Floci runs
+# AWS::EC2::Instance resources as containers.
+#
+# Third-party actions are pinned to 40-character commit SHAs (Issue
+# #2123) so a hijacked tag cannot inject code into the workflow. The
+# version tag each SHA corresponds to is captured in a leading comment.
+
+name: Floci CloudFormation
+
+on:
+  pull_request:
+    # Issue #3360 — milestone sub-issue PRs target a shared
+    # `milestone/<name>` branch (Issue #1300); include it so the check
+    # runs before those PRs merge, not only on Develop/main PRs.
+    branches: [Develop, main, 'milestone/*']
+    paths:
+      - 'infra/cloudformation/**'
+      - '.github/workflows/floci.yml'
+  push:
+    branches: [Develop, main]
+    paths:
+      - 'infra/cloudformation/**'
+      - '.github/workflows/floci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs; only the latest commit's result matters.
+concurrency:
+  group: floci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cloudformation:
+    name: Deploy CloudFormation into Floci
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      floci:
+        # floci/floci:2.2.0 — must match container/tools.json
+        image: floci/floci:2.2.0@sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520
+        ports:
+          - '4566:4566'
+        volumes:
+          - '/var/run/docker.sock:/var/run/docker.sock'
+        env:
+          FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES: 'true'
+    steps:
+      - name: Assert Docker socket is mounted
+        run: |
+          set -euo pipefail
+          if [ ! -S /var/run/docker.sock ]; then
+            echo "::error::/var/run/docker.sock is missing; Floci needs it to run AWS::EC2::Instance"
+            exit 1
+          fi
+
+      - name: Checkout code
+        # actions/checkout@v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check AWS CLI
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            echo "::error::aws CLI not found on the runner"
+            exit 1
+          fi
+          aws --version
+
+      - name: Deploy templates into Floci
+        run: |
+          set -euo pipefail
+          ./infra/cloudformation/test-floci.sh

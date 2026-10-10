@@ -1,0 +1,12 @@
+{
+  "issue": 3369,
+  "chunk": "top-up-3369",
+  "title": "top-up: Floci CloudFormation CI workflow check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3369",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: floci_workflow_check.ts (#3369)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/floci_workflow_check.ts"
+  ],
+  "sweptAt": "b424db9a641615ccbb38c0f5a51ff435de2f552a"
+}

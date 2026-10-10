@@ -65,6 +65,9 @@ export const INTEGRATION_TEST_FILES: readonly string[] = [
   // next_release_tag_test.ts below.
   "tests/empty_array_expansion_check_test.ts",
   "tests/first_run_script_test.ts",
+  // Issue #3369 (PR #3478 review): runs infra/cloudformation/test-floci.sh in a
+  // throwaway tree under stub aws/curl binaries.
+  "tests/issue_3369_floci_script_test.ts",
   // Issue #1594: runs container/install-toolchains.sh against fixture
   // fragments, the same shape as the provider-set suite above.
   "tests/install_toolchains_test.ts",
@@ -228,6 +231,11 @@ export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
     "tests/workflow_definitions_test.ts",
     "reads .github/scripts/deno-test-shard.sh to assert the workflow and " +
     "the script agree on sharding; runs in 1.2s",
+  ],
+  [
+    "tests/issue_3369_floci_workflow_test.ts",
+    "stat()s infra/cloudformation/test-floci.sh for the executable bit; " +
+    "never spawns it, and runs in milliseconds",
   ],
 ]);
 
