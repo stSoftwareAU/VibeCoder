@@ -1,13 +1,20 @@
 /**
  * Opt-in auto-release of issue-required test-change holds (Issue #3397).
  */
-import { assert, assertEquals, assertFalse, assertThrows } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertRejects,
+  assertThrows,
+} from "@std/assert";
 import {
   autoReleaseDecision,
   autoReleaseRepos,
   isAutoReleaseRepo,
   loadAutoReleaseRepos,
   quoteFound,
+  resolveAutoRelease,
 } from "../../../.claude/skills/review-fleet-prs/scripts/auto_release.ts";
 import {
   decidePostOutcome,
@@ -390,4 +397,61 @@ Deno.test("parseFableReview accepts new and old note shapes", () => {
   const r = parseFableReview(text);
   assertEquals(r.testChangeNotes[0]?.kind, "expected-value");
   assertEquals(r.testChangeNotes[1]?.kind, undefined);
+});
+
+Deno.test("autoReleaseDecision names each whole-review reason", () => {
+  const issues = [{ title: "T", body: CRITERION }];
+  assertEquals(
+    autoReleaseDecision(
+      review({
+        findings: [{ file: "a.ts", line: 1, problem: "bug" }],
+        testChangeNotes: [note()],
+      }),
+      [],
+      issues,
+    ),
+    { release: false, reasons: ["review has findings"] },
+  );
+  assertEquals(
+    autoReleaseDecision(
+      review({ testChanges: "trivial", testChangeNotes: [note()] }),
+      [],
+      issues,
+    ),
+    { release: false, reasons: ["test changes are not meaningful"] },
+  );
+  assertEquals(
+    autoReleaseDecision(review({ testChangeNotes: [] }), [], issues),
+    { release: false, reasons: ["no test change notes"] },
+  );
+  for (const none of [undefined, []]) {
+    assertEquals(autoReleaseDecision(qualifying(), [], none).reasons, [
+      "no linked issue could be read",
+      "`a_test.ts:7`: criterion quote not found in a linked issue",
+    ]);
+  }
+});
+
+Deno.test("loadAutoReleaseRepos rethrows a read error other than NotFound", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await assertRejects(() => loadAutoReleaseRepos(dir));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("opted-in repo with no hold: no release and gh is never called", async () => {
+  const g = fakeGh();
+  const r = review({ testChanges: "none", testChangeNotes: [] });
+  assertEquals(await resolveAutoRelease(pr, r, [], repos, g.run), {
+    release: false,
+    reasons: ["no hold"],
+  });
+  assertEquals(g.calls, []);
+  const res = await decide(r, [], g);
+  assertEquals(res.outcome, "approved");
+  assertFalse(res.autoReleased);
+  assertEquals(res.autoReleaseHeld, undefined);
+  assertEquals(g.calls, []);
 });
