@@ -23,7 +23,10 @@ import {
   type AlertDedupAuthorOptions,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
-import { detectFailureCategory } from "./failure_diagnosis.ts";
+import {
+  detectFailureCategory,
+  isSummaryGateFailureRecord,
+} from "./failure_diagnosis.ts";
 import {
   FAILURE_RECORD_HEADING_PATTERN,
   parseCommentRows,
@@ -142,6 +145,10 @@ export function resetMilestoneBranchRefusalSweepsForTest(): void {
  * `quality_check` here, so its label survives — matching the refusal pattern
  * against the comment body alone would have released it.
  *
+ * A summary-gate refusal record (`isSummaryGateFailureRecord`) is
+ * `summary_incomplete` at failure time, so it is never the refusal and keeps
+ * the labels even when the agent's summary it quotes shows the rejection text.
+ *
  * A newer claim-churn, question-answering-failure or planning-escalation
  * record also keeps the labels: it is a genuine failure record of its own,
  * just not one this sweep is allowed to release (Issue #2943).
@@ -152,6 +159,9 @@ export function refusalIsMostRecentFailure(
   for (let i = commentBodies.length - 1; i >= 0; i--) {
     const body = commentBodies[i];
     if (body === undefined || !FAILURE_RECORD_RE.test(body)) continue;
+    // A summary-gate refusal is `summary_incomplete` at failure time; its
+    // quoted agent text must not read as the repository's refusal here.
+    if (isSummaryGateFailureRecord(body)) return false;
     return REFUSAL_CANDIDATE_RE.test(body) &&
       detectFailureCategory(body) === "repo_config";
   }
