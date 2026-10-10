@@ -14,6 +14,7 @@ the worker.
   - [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain)
   - [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase)
   - [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase)
+  - [Pre-PR verifier (issue phase)](#pre-pr-verifier-issue-phase)
   - [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase)
   - [Codex per-phase routing](#-codex-per-phase-routing)
   - [Gemini per-phase routing](#-gemini-per-phase-routing)
@@ -103,6 +104,7 @@ a section without a marker, fails `deno test`.
 | [Model/effort precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) | ✅ | ✅ | ⚠️ | ⚠️ | The same six steps run from `phase_routing.ts` under `CODEX_*` / `GEMINI_*` / `DEEPSEEK_*` keys; Gemini and DeepSeek have model keys only |
 | [Advisor and executor split (issue phase)](#advisor-and-executor-split-issue-phase) | ✅ | ❌ | ❌ | ❌ | The split is built from the Claude CLI's `--agents` definitions: `codex` and `gemini` never build the arguments, and `deepseek` strips them and warns |
 | [Reviewer sub-agents (issue phase)](#reviewer-sub-agents-issue-phase) | ✅ | ❌ | ❌ | ❌ | The reviewers are Claude CLI `--agents` definitions: `codex` and `gemini` never build the argument, and `deepseek` strips it and warns. The spawn caps are Claude Code environment variables |
+| [Pre-PR verifier (issue phase)](#pre-pr-verifier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The verifier is one extra pass through the Claude runner with the `issue` phase's model; it is not a `--agents` definition, and the `claude` provider is the one that runs it |
 | [Haiku sub-agent tier (issue phase)](#haiku-sub-agent-tier-issue-phase) | ✅ | ❌ | ❌ | ❌ | The tier picks the model of Claude CLI `--agents` definitions (executor, Standards reviewer, explorer): `codex` and `gemini` never build the argument, and `deepseek` strips it and warns |
 | [Codex per-phase routing](#-codex-per-phase-routing) | ❌ | ✅ | ❌ | ❌ | Claude uses the precedence chain; Gemini and DeepSeek use their own sections |
 | [Gemini per-phase routing](#-gemini-per-phase-routing) | ❌ | ❌ | ✅ | ❌ | Claude uses the precedence chain; Codex and DeepSeek use their own sections |
@@ -735,6 +737,33 @@ These caps are spawn environment, not an operator setting. A value already in
 the worker's own environment wins, but no `.config.json` key sets them. The
 concurrency cap also bounds a split run's executors, which the split prompt
 itself does not cap.
+
+### Pre-PR verifier (issue phase)
+
+> **Applies to:** `claude` ✅ · `codex` ❌ · `gemini` ❌ · `deepseek` ❌ — the verifier runs through the Claude runner.
+
+Issue #3395 adds a worker step, the pre-PR verifier
+([`worker/deno/lib/pre_pr_verifier.ts`](../worker/deno/lib/pre_pr_verifier.ts),
+called from
+[`worker/deno/lib/phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)).
+It is not a sub-agent the issue prompt dispatches: it is one extra model pass
+the worker makes itself.
+
+- **Model.** The `issue` phase's model, resolved by the same
+  [precedence chain](#%EF%B8%8F-modeleffort-precedence-chain) as the main
+  session. It is not tied to `issue_reviewer_agents` or
+  `issue_sub_agent_tier`.
+- **Timeout.** Capped at 1800 seconds, or the run's `claude_timeout` when that
+  is lower.
+- **Frequency.** One session per completion attempt that has a PR summary
+  file loaded, on every issue run whether or not the issue carries acceptance
+  criteria. That is normally one per run; two when the in-run recovery re-runs
+  completion, and a third if the summary-only claim correction turn re-runs it.
+- **Cost.** Its tokens are recorded in the run's stats, like the summary claim
+  check's.
+
+How it works, what it may run and how its findings block is in
+[issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).
 
 ### Haiku sub-agent tier (issue phase)
 

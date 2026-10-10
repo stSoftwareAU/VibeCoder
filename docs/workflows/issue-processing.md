@@ -1162,6 +1162,81 @@ flowchart TD
     style B fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
+### Pre-PR verifier (Issue #3395)
+
+The two reviewers above read a diff and judge it; neither runs anything, and
+neither sees the PR summary the gates read. Issue #3395 adds a third check the
+**worker** runs itself, the pre-PR verifier
+([`pre_pr_verifier.ts`](../../worker/deno/lib/pre_pr_verifier.ts), wired into the
+completion phase, [`completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)).
+On every issue run's completion attempt that has a PR summary file loaded,
+whether or not the issue carries acceptance criteria, the worker makes one extra
+model pass after the summary is written and committed and before the PR is
+raised. The agent dispatches nothing for it.
+
+- **Model and cap.** The `issue` phase's model, through the Claude runner,
+  capped at 1800 seconds or the run's `claude_timeout` if that is lower. No
+  browser (Playwright MCP) is given.
+- **Brief.** The fleet reviewer's own,
+  [`prompts/pr_review_brief/prompt.md`](../../prompts/pr_review_brief/prompt.md),
+  which `.claude/skills/review-fleet-prs/SKILL.md` also uses. It is one shared
+  template, and `pr_review_brief_shared_3395_test.ts` fails if the two diverge.
+  The reply has the fleet reviewer's JSON shape: `summary`, `findings`,
+  `testChanges`, `testChangeNotes` and `unrelatedIssues`.
+- **Disposable checkout.** A `git clone --shared` of the issue checkout at the
+  head commit, with its `origin` remote removed, holding the exact PR summary
+  text the gates read. The verifier may run commands there: tests, flipping a
+  line and rerunning, timing a regex, building. `gh`, `git push`, `curl`,
+  `wget`, WebFetch, WebSearch and sub-agents are denied through the CLI's
+  `disallowedTools`, the checkout has no push destination, and the agent-side
+  `gh` guard still applies. The issue checkout's `git status` and HEAD are
+  compared before and after, and a change made outside the disposable copy
+  becomes a blocking finding. The disposable directory is deleted afterwards.
+
+| | Spec / Standards reviewers | Pre-PR verifier |
+| --- | --- | --- |
+| Runs when | Before the summary is written, dispatched by the agent, only when the issue states criteria | After the summary is committed, dispatched by the worker, on every issue run |
+| Sees | The diff plus the issue body or `CODING-STANDARDS.md` | A shared clone of the head commit, with the exact PR summary text |
+| Can execute | No (read-only tools) | Yes, in the disposable clone; network, push and sub-agents denied |
+| Reads the PR summary | No | Yes |
+
+**What blocks.** Any `findings` entry is a blocking finding, a late
+summary-rule verdict. It is folded into whichever earlier summary gate blocks
+first, or blocks on its own after the summary claim check. It reaches the run's
+single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn
+as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
+(the recovery prompt allows it for this item only), and the quality gate re-runs
+afterwards. Findings still present on the re-run are reported like other
+summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
+existing PR, with the comment on the issue thread. `testChanges: meaningful`
+is not a finding and does not block.
+
+**When it cannot run.** A pass that cannot run (brief missing, git failure,
+launch error, timeout, unparseable reply) is logged at error as "not checked",
+never read as clean, and does not block. `unrelatedIssues` are logged, not
+filed.
+
+**Cost.** One extra agent session per completion attempt: normally one per run,
+two when the in-run recovery re-runs completion, and a third if the
+summary-only claim correction turn re-runs it. Its tokens are recorded in the
+run's stats like the claim check's. See
+[MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md#pre-pr-verifier-issue-phase).
+
+```mermaid
+flowchart TD
+    S["Summary written<br/>and committed"] --> V["Verifier in disposable clone<br/>fleet reviewer's brief"]
+    V --> F{"Any findings?"}
+    F -->|no| PR["PR raised"]
+    F -->|yes| R["Folded into recovery turn<br/>as a REQUIRED ITEM"]
+    R --> Q["Code and summary fixed,<br/>quality gate re-runs,<br/>completion re-runs"]
+    Q --> V2{"Findings still present?"}
+    V2 -->|no| PR
+    V2 -->|yes| B["Reported like other summary-gate blocks:<br/>failure, or summary_incomplete over a PR"]
+    style V fill:#7aa8d4,stroke:#1d3f5a,color:#1a1a1a
+    style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style B fill:#c45858,stroke:#6b2020,color:#fff
+```
+
 ## 🐛 Reproduction status on a bug fix
 
 All three work-tier labels run the **same pipeline** and `bug` is a purely
@@ -1626,8 +1701,9 @@ reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
 folded into that gate's own notice (Issue #3085 review), and only a summary
 that passes all three reaches the late summary gates' own block, which reports
-every one of docs sweep, the placeholder-token gate, the branch-outcomes gate
-and the summary claim check that fails, at once (Issue #3147, #3257).
+every one of docs sweep, the placeholder-token gate, the branch-outcomes gate,
+the summary claim check and the [pre-PR verifier](#pre-pr-verifier-issue-3395)
+that fails, at once (Issue #3147, #3257, #3395).
 
 It is a summary-rule gate like the other three, so the same
 [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) gives the
