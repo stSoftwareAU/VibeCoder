@@ -1217,8 +1217,9 @@ never read as clean, and does not block. `unrelatedIssues` are logged, not
 filed.
 
 **Cost.** One extra agent session per completion attempt: normally one per run,
-two when the in-run recovery re-runs completion, and a third if the
-summary-only claim correction turn re-runs it. Its tokens are recorded in the
+and each re-run of completion (the in-run recoveries and the #1550
+infrastructure retry) runs it again. It runs even when an earlier summary gate
+blocks, because its verdict is folded into that block. Its tokens are recorded in the
 run's stats like the claim check's. See
 [MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md#pre-pr-verifier-issue-phase).
 
@@ -2084,8 +2085,10 @@ Two independent checks feed one result:
    messages sitting beside other backtick spans).
 
 Either kind of hit is a summary-rule block, folded into whichever summary
-gate blocks first — it is last in the late-summary chain, after docs sweep,
-removed assertions, the result placeholder and branch outcomes — and goes
+gate blocks first — the claim check comes after docs sweep, removed
+assertions, the result placeholder and branch outcomes, and before the
+[pre-PR verifier](#pre-pr-verifier-issue-3395), the one verdict that can fold
+into its block — and goes
 through the existing [in-run
 recovery](#-the-in-run-recovery-from-a-summary-rule-block) path when it is
 not alone: the run's first block, or a later block folded with another gate,
@@ -2114,6 +2117,9 @@ after recovery — the run's second block, spent with no correction turn left.
 A claim-check block folded with another gate on a later attempt is not this
 case and gets no correction turn — the ordinary recovery (or its absence)
 applies.
+A pre-PR verifier block on that same attempt is not folded into the
+correction turn: the claim gate returns first, so the verifier is gated again
+on the re-run that follows.
 
 ```mermaid
 flowchart TD
@@ -2192,7 +2198,7 @@ collected, a changed file that cannot be read, and a file whose YAML does not
 parse are each reported as a fault and block the PR. "No findings" is only a
 pass when the checks actually ran over the text.
 
-Like the security-fix gate and unlike the eight summary gates above, a finding
+Like the security-fix gate and unlike the nine summary gates above, a finding
 here is a defect in the **change**, not a shortfall in the summary, so it stops
 the run whether or not a PR already exists.
 
@@ -2230,10 +2236,10 @@ rediscovered by hand and refiled as #2560.
 [`degraded_delivery.ts`](../../worker/deno/lib/degraded_delivery.ts) closes the
 gap in [`phases/completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts).
 Its place depends on whether the branch already has an open PR. On a branch
-with **no** PR yet, each of the eight summary-rule gates — closure,
+with **no** PR yet, each of the nine summary-rule gates — closure,
 independent review, reproduction status, docs sweep, removed test
-assertions, the placeholder-token gate, the branch-outcomes gate and the
-summary claim check — still pre-empts the guard: a follow-up filed there
+assertions, the placeholder-token gate, the branch-outcomes gate, the
+summary claim check and the pre-PR verifier (#3395) — still pre-empts the guard: a follow-up filed there
 would promise "that run's PR still completes #N on merge" for a PR any of
 those gates can still prevent from ever being raised, so whichever gate
 blocks first fails the run and the guard never runs. On an existing-PR
@@ -2242,7 +2248,7 @@ branch the guard instead runs from inside `reportSummaryRuleBlock` itself
 gate's recovery finalises the PR. Before Issue #3092, only the docs-sweep
 gate took the guard on an existing-PR branch, because that gate ran after
 the guard; the closure, independent-review and reproduction-status gates ran
-ahead of the guard and skipped it. Once all eight gates pass, `completionBody`
+ahead of the guard and skipped it. Once all nine gates pass, `completionBody`
 runs the same guard once more — via the
 shared `applyDegradedDeliveryGuard` helper — whether the PR is then raised
 or recovered:
@@ -2326,10 +2332,10 @@ flowchart TD
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
-The eight summary gates above — acceptance-criteria closure, independent review,
+The nine summary gates above — acceptance-criteria closure, independent review,
 reproduction status, docs sweep, removed test assertions, the
-placeholder-token gate, the branch-outcomes gate and the summary claim check
-— sit at the completion phase's PR-creation chokepoint, so blocking one
+placeholder-token gate, the branch-outcomes gate, the summary claim check and
+the pre-PR verifier — sit at the completion phase's PR-creation chokepoint, so blocking one
 normally costs the next
 attempt a rewrite and nothing else. The
 chokepoint is not always ahead of the PR: the agent raises its own PR from inside
@@ -2545,10 +2551,11 @@ when a PR exists, failed when none does — unless it is the claim check
 alone still blocking, in which case it gets the one summary-only correction
 turn first (Issue #3324).
 
-All eight summary gates route through it: closure (#518), independent review
+All nine summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
 assertions (#3131), the placeholder-token gate (#3124), the
-branch-outcomes gate (#3147) and the summary claim check (#3257). The two
+branch-outcomes gate (#3147), the summary claim check (#3257) and the pre-PR
+verifier (#3395). The two
 exceptions above do not — the
 security-fix and changed-workflow gates report defects in the change, not
 documentation shortfalls, so they still stop the run.

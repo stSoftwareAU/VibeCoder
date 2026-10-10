@@ -757,8 +757,11 @@ the worker makes itself.
   is lower.
 - **Frequency.** One session per completion attempt that has a PR summary
   file loaded, on every issue run whether or not the issue carries acceptance
-  criteria. That is normally one per run; two when the in-run recovery re-runs
-  completion, and a third if the summary-only claim correction turn re-runs it.
+  criteria. That is normally one per run; each re-run of completion (the in-run
+  recoveries — summary-rule, security-fix, screenshot and the summary-only
+  claim correction turn — and the infrastructure retry) runs it again. It
+  runs even when an earlier summary gate blocks, because its verdict is
+  folded into that block.
 - **Cost.** Its tokens are recorded in the run's stats, like the summary claim
   check's.
 
