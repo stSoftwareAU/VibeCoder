@@ -173,6 +173,9 @@ export const executeClaudePhaseCommand: Command = {
       issueExecutorSplit: config.issueExecutorSplit,
       // The reviewer sub-agent switch (Issue #2575); off by default.
       issueReviewerAgents: config.issueReviewerAgents,
+      // The host-wide sub-agent tier (Issue #3402); the repo override is
+      // layered over it inside the phase.
+      issueSubAgentTier: config.issueSubAgentTier,
       // Issue #2930: this host's operator-configured fleet run archive.
       fleetRunArchive: config.fleetRunArchive,
       // Context budget thresholds, including the hard ceiling (Issue #3713)
