@@ -276,6 +276,7 @@ Deno.test("run failure classifier - every FailureCategory member is covered; a n
     "push_failure",
     "no_changes",
     "evidence_missing",
+    "summary_incomplete",
     "internal_error",
     "missing_tools",
     "unknown",
@@ -668,4 +669,13 @@ Deno.test("classify - an agent WRITING about the secondary limit is not a GitHub
     "the PR instead of failing the run.\n</details>";
   const got = classifyRunFailure("timeout", message);
   assertEquals(got.failureClass, "timeout");
+});
+
+Deno.test("run failure classifier - summary_incomplete is an agent outcome even over a stack-trace-looking line (Issue #3431)", () => {
+  const got = classifyRunFailure(
+    "summary_incomplete",
+    "the PR summary did not pass the worker's completion gates: quoted TypeError: x\n    at Object.<anonymous> (file.ts:1:1)",
+  );
+  assertEquals(got.fixability, "not_code_fixable");
+  assertEquals(got.failureClass, "agent-outcome");
 });

@@ -6,7 +6,12 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { buildHostFaultMarker } from "../lib/host_fault.ts";
+import { buildHostFaultMarker, detectHostFault } from "../lib/host_fault.ts";
+import { SUMMARY_RULE_GATE_MARKER } from "../lib/failure_diagnosis.ts";
+import {
+  markIssueAsFailed,
+  markIssueAsFailedOnce,
+} from "../lib/label_failure.ts";
 import {
   buildHostFaultReleaseComment,
   releaseHostFaultFailureLabels,
@@ -503,4 +508,88 @@ Deno.test("releaseHostFaultFailureLabels - an unexplained failed keeps both labe
   assertEquals(outcome.released, []);
   assertEquals(outcome.retained, [113]);
   assertEquals(gh.byNumber.get(113)?.labels, ["failed-once", "failed"]);
+});
+
+// ===========================================================================
+// A summary-gate refusal record is never re-read as a host fault (PR #3440)
+// ===========================================================================
+
+/** A marked refusal whose quoted summary carries a git clone-corrupt line. */
+const MARKED_REFUSAL_QUOTING_BROKEN_REF = `${SUMMARY_RULE_GATE_MARKER}: ` +
+  `Removed test assertions: assertStringIncludes(log, ` +
+  `"warning: ignoring broken ref refs/heads/main");`;
+
+/** The comment body the worker really posts for `failureMessage`. */
+async function postedRecord(
+  write: typeof markIssueAsFailedOnce,
+  failureMessage: string,
+): Promise<string> {
+  let body = "";
+  await write({
+    repo: REPO,
+    issueNumber: 1,
+    githubUser: FLEET_AUTHOR,
+    failureMessage,
+  }, {
+    ghCommandFn: (args: string[]) => {
+      if (args[1] === "comment") body = args[args.indexOf("--body") + 1] ?? "";
+      return Promise.resolve("");
+    },
+  });
+  return body;
+}
+
+Deno.test("releaseHostFaultFailureLabels - a marked summary-gate refusal quoting 'ignoring broken ref' keeps failed-once and failed (PR #3440 review)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const first = await postedRecord(
+    markIssueAsFailedOnce,
+    MARKED_REFUSAL_QUOTING_BROKEN_REF,
+  );
+  const second = await postedRecord(
+    markIssueAsFailed,
+    MARKED_REFUSAL_QUOTING_BROKEN_REF,
+  );
+  // Fixture check: the reason alone is no host fault, but the posted body —
+  // where the marker no longer opens the text — would read as one.
+  assertEquals(detectHostFault(MARKED_REFUSAL_QUOTING_BROKEN_REF), null);
+  assertEquals(detectHostFault(first), "clone-corrupt");
+  assertEquals(detectHostFault(second), "clone-corrupt");
+
+  const issues: FakeIssue[] = [
+    { number: 120, labels: ["failed-once"], comments: [first] },
+    { number: 121, labels: ["failed"], comments: [first, second] },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, []);
+  assertEquals(outcome.retained.sort(), [120, 121]);
+  assertEquals(gh.byNumber.get(120)?.labels, ["failed-once"]);
+  assertEquals(gh.byNumber.get(121)?.labels, ["failed"]);
+  assertEquals(gh.calls.filter((c) => c[1] === "edit"), []);
+});
+
+Deno.test("releaseHostFaultFailureLabels - a quoted summary-incomplete category line deeper in a real clone-corrupt record does not shield it (PR #3440 review)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  // The category line only counts at the head of the comment, where the
+  // worker wrote it; the agent's quotation further down cannot forge it.
+  const forged = `## Automated Processing Failed (First Attempt)\n\n` +
+    `**Category:** \`unknown\`\n\n### Error Output\n` +
+    `> **Category:** \`summary-incomplete\`\n` +
+    `> warning: ignoring broken ref refs/remotes/origin/Develop\n`;
+  const gh = fakeGh([{
+    number: 122,
+    labels: ["failed-once"],
+    comments: [forged],
+  }]);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+  assertEquals(outcome.released, [122]);
 });
