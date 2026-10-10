@@ -118,6 +118,7 @@ import {
 import {
   describeTestPlanMismatch,
   findTestPlanMismatches,
+  findUncheckedRunResults,
   isCountableTestPath,
   recountTestFile,
   type TestDeclarationCounts,
@@ -1121,6 +1122,22 @@ export async function runPrFeedbackDriftCheck(
     prFiles,
     changesBehaviour,
   );
+  // A paired run result the recount cannot check is reported, not passed
+  // silently (Issue #3381).
+  for (const s of summaries) {
+    const unchecked = findUncheckedRunResults({
+      summary: s.content,
+      headCounts,
+    });
+    if (unchecked.length === 0) continue;
+    logger.warn(
+      `Test Plan recount could not check ${unchecked.length} run result(s) ` +
+        `in ${s.path}: ${
+          unchecked.map((u) => `${u.reason} — "${u.line}"`).join("; ")
+        }`,
+      { repo, prNumber },
+    );
+  }
 
   // Deterministic, no-model-needed check: sentences the change request
   // quotes that are still present in the PR summaries it names (Issue
