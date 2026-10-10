@@ -565,7 +565,7 @@ Deno.test("agent provider deepseek - sub-agent definitions are dropped from the 
     args = provider.buildInvocation({
       prompt: "PROMPT",
       phase: "issue",
-      agents: buildIssueExecutorAgents(),
+      agents: buildIssueExecutorAgents("sonnet"),
     });
   });
 
