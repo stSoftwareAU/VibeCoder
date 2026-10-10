@@ -258,7 +258,9 @@ export function isAnnotationClassSuppressed(
 ): boolean {
   const lineCount = fileText.split("\n").length;
   for (let line = 1; line <= lineCount; line++) {
-    if (isFindingSuppressed(fileText, line, cls.classId)) return true;
+    if (isFindingSuppressed({ rawText: fileText }, line, cls.classId)) {
+      return true;
+    }
   }
   return false;
 }
