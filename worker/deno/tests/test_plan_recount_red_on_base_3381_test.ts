@@ -304,6 +304,11 @@ Deno.test("unchecked run results - quality.sh and file-less green blocks are not
     findUncheckedRunResults({ summary, headCounts: HEAD_FOO }),
     [],
   );
+  // The green 4000-test total must not be compared with foo_test.ts's 80.
+  assertEquals(
+    findTestPlanMismatches({ summary, headCounts: HEAD_FOO }),
+    [],
+  );
 });
 
 Deno.test("paired run result - two passed figures are not read as a pass/fail pair", () => {
