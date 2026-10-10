@@ -255,6 +255,10 @@ Deno.test("runPrePrVerifier: a failed run is not_checked and the disposable dire
       ),
     );
     assertEquals(result.status, "not_checked");
+    assert(
+      result.status === "not_checked" &&
+        result.reason.includes("verifier run failed"),
+    );
     assert(!prePrVerifierBlocked(result));
     assertEquals(tmps.length, 1);
     assert(!(await exists(tmps[0]!)));
@@ -271,6 +275,10 @@ Deno.test("runPrePrVerifier: a malformed reply is not_checked", async () => {
       makeDeps(() => Promise.resolve(okRun({ output: "looks fine" })), []),
     );
     assertEquals(result.status, "not_checked");
+    assert(
+      result.status === "not_checked" &&
+        result.reason.includes("verifier reply was not usable"),
+    );
   } finally {
     await f.cleanup();
   }
