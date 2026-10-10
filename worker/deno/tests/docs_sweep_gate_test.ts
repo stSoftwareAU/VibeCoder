@@ -361,7 +361,7 @@ Deno.test("validateDocsSweep - a siblings: value that quotes no term is refused,
   const accepted = validateDocsSweep({
     changedFiles: CODE_FILES,
     prSummaryContent: SIBLINGS_LINE +
-      "; siblings: `max_buy_price`, \"buy ceiling\" (`OWNER_TUNED`)",
+      '; siblings: `max_buy_price`, "buy ceiling" (`OWNER_TUNED`)',
   });
   assertEquals(accepted.valid, true, accepted.problems.join("; "));
 });
@@ -413,7 +413,11 @@ Deno.test("buildDocsSweepGateComment - each example Docs sweep line it shows pas
       prSummaryContent: example,
     });
     assertEquals(result.applicable, true);
-    assertEquals(result.valid, true, `${example}: ${result.problems.join("; ")}`);
+    assertEquals(
+      result.valid,
+      true,
+      `${example}: ${result.problems.join("; ")}`,
+    );
   }
 });
 

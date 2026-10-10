@@ -1641,9 +1641,9 @@ the PR.
 
 **The line names the sibling members it grepped (Issue #3371).** The #3137
 rule that adding a member owes a docs change was prose only, and a grep for
-the new member's name finds nothing, so four GRQ-AutoTrader PRs (#2460, #2481,
-#2682, #2792) left a doc or contract list one short: each sweep grepped only
-the new name. GRQ-AutoTrader#2792's sweep grepped only the new trim-tolerance
+the new member's name finds nothing, so four GRQ-AutoTrader PRs
+(#2460, #2481, #2682, #2792) left a doc or contract list one short: each sweep
+grepped only the new name. GRQ-AutoTrader#2792's sweep grepped only the new trim-tolerance
 names, never `OWNER_TUNED` or the buy ceiling. The `siblings:` part of the
 **Docs sweep** line now names the existing sibling members grepped for each set
 the change adds a member to, backticked or double-quoted, or

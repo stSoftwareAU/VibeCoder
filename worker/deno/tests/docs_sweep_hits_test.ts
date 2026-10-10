@@ -745,7 +745,9 @@ Deno.test("extractSiblingTerms - stops at the first field separator outside a te
 
 Deno.test("extractSiblingTerms - the none — negative returns no terms, even with a quoted span in the reason", () => {
   assertEquals(
-    extractSiblingTerms("section: `docs/a.md`; siblings: none — `Foo` is a new set"),
+    extractSiblingTerms(
+      "section: `docs/a.md`; siblings: none — `Foo` is a new set",
+    ),
     [],
   );
 });
@@ -770,7 +772,8 @@ Deno.test("extractSweepTerms - merges grep then sibling terms, deduplicated case
 Deno.test("extractSweepTerms - twenty grep terms do not crowd out the sibling terms", () => {
   const grep = Array.from({ length: MAX_TERMS }, (_, i) => `\`term${i}\``)
     .join(", ");
-  const raw = `grep: ${grep}; section: \`docs/a.md\`; siblings: \`Sibling::get\``;
+  const raw =
+    `grep: ${grep}; section: \`docs/a.md\`; siblings: \`Sibling::get\``;
   assertEquals(extractGrepTerms(raw).length, MAX_TERMS);
   const terms = extractSweepTerms(raw);
   assertEquals(terms.length, MAX_TERMS + 1);
@@ -791,7 +794,8 @@ Deno.test("checkDocsSweepTerms - a sibling-only line is checked, not skipped", a
 
 Deno.test("checkDocsSweepTerms - a line quoting no grep or sibling term is skipped with the combined reason", async () => {
   const check = await checkDocsSweepTerms({
-    rawBody: "section: `docs/a.md`; siblings: none — no existing set gained a member",
+    rawBody:
+      "section: `docs/a.md`; siblings: none — no existing set gained a member",
     base: "main",
     runGit: stubGit({}),
   });
