@@ -86,7 +86,9 @@ Deno.test("Issue #3021 - issue prompt's workflow-files section requires extendin
 });
 
 Deno.test("Issue #3021 - the standards-reviewer sub-agent prompt flags a documented-but-not-validated workflow invariant", () => {
-  const reviewer = buildIssueReviewerAgents()[STANDARDS_REVIEWER_AGENT_NAME]!;
+  const reviewer = buildIssueReviewerAgents(
+    "sonnet",
+  )[STANDARDS_REVIEWER_AGENT_NAME]!;
   const text = flatWholeFile(reviewer.prompt);
 
   for (
