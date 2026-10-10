@@ -3,7 +3,7 @@
  *
  * A milestone-fix PR targets its milestone branch, and a milestone child PR
  * targets a milestone branch too. Editing either PR's base to the default
- * branch (`gh pr edit --base main`, or `PATCH repos/o/r/pulls/N` with
+ * branch (`gh pr edit --base main`, or `PATCH`/`POST repos/o/r/pulls/N` with
  * `base=main`) lands that work on the default branch and auto-merges it there,
  * skipping the milestone's final review. The worker owns PR targeting, so:
  *
@@ -200,8 +200,9 @@ function inputBodyBase(
 /**
  * Recognise a request that changes a PR's base branch.
  *
- * Covers `gh pr edit --base|-B`, and `gh api -X PATCH repos/o/r/pulls/N` with a
- * `base` field (inline, or in an `--input` file).
+ * Covers `gh pr edit --base|-B`, and `gh api repos/o/r/pulls/N` with a `base`
+ * field (inline, or in an `--input` file) sent as PATCH or POST — POST being
+ * what `gh api` uses when a field is given and `-X` is not.
  *
  * @returns undefined when the command changes no PR's base.
  */
@@ -225,7 +226,9 @@ export function classifyPrBaseChange(
     };
   }
 
-  if (info.verb !== "api-patch") return undefined;
+  // GitHub routes POST on `pulls/N` to the same update handler as PATCH, and
+  // `gh api` sends POST whenever a field is given without `-X` (PR #3514 review).
+  if (info.verb !== "api-patch" && info.verb !== "api-post") return undefined;
   const match = endpointPath(info.target ?? "").match(
     /^repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/,
   );

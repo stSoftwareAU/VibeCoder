@@ -914,6 +914,33 @@ Deno.test("gh-guard #3433 - query-suffixed and absolute-URL PR PATCH spellings a
   }
 });
 
+Deno.test("gh-guard #3433 - POST spellings of a PR base change (implicit and -X POST) are refused", () => {
+  for (
+    const args of [
+      ["api", "repos/o/r/pulls/12", "-f", "base=main"],
+      ["api", "-X", "POST", "repos/o/r/pulls/12", "-f", "base=main"],
+      ["api", "--method=POST", "repos/o/r/pulls/12", "--field=base=main"],
+      ["api", "repos/o/r/pulls/12?x=1", "-f", "base=main"],
+      ["api", "repos/o/r/pulls/12", "--input", "body.json"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, {
+      ...OR_ACTIVE,
+      readBodyFile: (_path: string) => JSON.stringify({ base: "main" }),
+    });
+    assertEquals(decision.allowed, false, `expected refusal: ${args}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+  // Same spelling without a base field stays allowed.
+  assertEquals(
+    evaluateGhCommand(
+      ["api", "repos/o/r/pulls/12", "-f", "title=x"],
+      OR_ACTIVE,
+    ).allowed,
+    true,
+  );
+});
+
 Deno.test("gh-guard #3433 - an unreadable --input body on a PR PATCH is refused by the base rule", () => {
   const decision = evaluateGhCommand(
     ["api", "-X", "PATCH", "repos/o/r/pulls/12", "--input", "body.json"],
