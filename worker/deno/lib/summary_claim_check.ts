@@ -37,13 +37,21 @@
  *      never asked about, mirroring the review-fix drift check's own
  *      posture.
  *
+ * The model question also covers the Markdown manuals and prompts the branch
+ * changes (Issue #3347): `isManualProsePath` in `doc_prose_claims.ts` picks
+ * them from the changed files, capped at `MAX_DOC_PROSE_FILES` with the rest
+ * reported as not checked. It asks whether the head code that decides a
+ * when / refuses-allows / absolute-word sentence agrees with it. Such a
+ * finding is confirmed only when it names one of those files and quotes its
+ * current text, and lands in `docFindings`, never in `findings`.
+ *
  * ```mermaid
  * flowchart TD
  *     A["Completion phase, before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
  *     A --> C{"Base ref known?"}
  *     C -- no --> D["notChecked"]
- *     C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code"]
- *     E --> F["Confirm each finding against<br/>the summary's own text"]
+ *     C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code<br/>and changed manual and prompt prose"]
+ *     E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
  *     B --> G["SummaryClaimCheckResult"]
  *     F --> G
  *     D --> G
@@ -64,6 +72,12 @@ import {
 import { extractTestPlanSection, logicalBlocks } from "./test_plan_recount.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { generateBoundaryId, isBoundaryId } from "./prompt_delimiter.ts";
+import {
+  docProseClaimInstruction,
+  isManualProsePath,
+  MAX_DOC_PROSE_FILES,
+  selectManualProseFiles,
+} from "./doc_prose_claims.ts";
 import type { Logger, Result } from "../types.ts";
 
 /** A PR's base ref: a plausible git ref, never a flag or an absolute path. */
@@ -98,6 +112,10 @@ const SUMMARY_CLAIM_FILE_BLOCK = "the summary file to check";
  *   Validated as a plausible git ref — never a flag or an absolute path.
  * @param opts.summaryPath - The PR summary's repo-relative path. Must be one
  *   of the recognised PR-summary shapes.
+ * @param opts.docFiles - The manual or prompt Markdown files the branch
+ *   changes (Issue #3347), at most {@link MAX_DOC_PROSE_FILES}, each passing
+ *   `isManualProsePath`. Empty asks the summary question alone; otherwise the
+ *   question also covers the changed lines of each file.
  * @param opts.boundaryId - Pinned nonce for tests; production mints one.
  */
 export function buildSummaryClaimQuestionPrompt(opts: {
@@ -105,8 +123,21 @@ export function buildSummaryClaimQuestionPrompt(opts: {
   issueNumber: number;
   baseRef: string;
   summaryPath: string;
+  docFiles: readonly string[];
   boundaryId?: string;
 }): string {
+  if (opts.docFiles.length > MAX_DOC_PROSE_FILES) {
+    throw new Error(
+      `buildSummaryClaimQuestionPrompt accepts at most ${MAX_DOC_PROSE_FILES} manual or prompt files, got ${opts.docFiles.length}`,
+    );
+  }
+  for (const docFile of opts.docFiles) {
+    if (!isManualProsePath(docFile)) {
+      throw new Error(
+        `buildSummaryClaimQuestionPrompt requires manual or prompt Markdown paths, got '${docFile}'`,
+      );
+    }
+  }
   if (
     !BASE_REF_PATTERN.test(opts.baseRef) ||
     opts.baseRef.includes("..") ||
@@ -132,36 +163,57 @@ export function buildSummaryClaimQuestionPrompt(opts: {
     ? opts.boundaryId
     : generateBoundaryId();
 
+  const hasDocs = opts.docFiles.length > 0;
+  const summaryInstruction = "Check only sentences that name a function, " +
+    "file, test, regex or pattern and say what it does, contains, matches " +
+    "or covers — an " +
+    'illustrative example ("for example `X`") is such a claim too. ' +
+    "Check each against the head with Read or Grep (open the named " +
+    "code, or grep the named file for the stated property). List every " +
+    "such sentence that is false at the head: the named thing does not " +
+    "exist, or does not do, contain, match or cover what the sentence " +
+    "says. Quote each verbatim, one per entry, `file` = the summary " +
+    "path. Do not report a sentence you could not check, and do not " +
+    "judge wording, style, or completeness.";
+  const summaryExample = {
+    file: opts.summaryPath,
+    sentence:
+      "`parseRow()` escapes the phrase and joins its words with `\\s+`.",
+    reason: "the head's parseRow builds no regex",
+  };
+
   return renderDriftVerdictQuestion({
     intro: [
       `The worker is about to raise the PR for ${opts.repo}#${opts.issueNumber}. ` +
       `Run \`git diff ${opts.baseRef}...HEAD\` — the whole change on this ` +
-      "branch — and `git status`, then read the summary file listed below " +
-      "at its current working-tree content.",
+      "branch — and `git status`, then read the summary file " +
+      (hasDocs
+        ? "and each manual or prompt file listed below at its current " +
+          "working-tree content."
+        : "listed below at its current working-tree content."),
     ],
-    files: [opts.summaryPath],
-    filesLabel: "The summary file to check:",
+    files: hasDocs ? [opts.summaryPath, ...opts.docFiles] : [opts.summaryPath],
+    filesLabel: hasDocs
+      ? "The files to check (the PR summary first, then the manuals and " +
+        "prompts this branch changes):"
+      : "The summary file to check:",
     filesBlockName: SUMMARY_CLAIM_FILE_BLOCK,
-    instruction:
-      "Check only sentences that name a function, file, test, regex or " +
-      "pattern and say what it does, contains, matches or covers — an " +
-      'illustrative example ("for example `X`") is such a claim too. ' +
-      "Check each against the head with Read or Grep (open the named " +
-      "code, or grep the named file for the stated property). List every " +
-      "such sentence that is false at the head: the named thing does not " +
-      "exist, or does not do, contain, match or cover what the sentence " +
-      "says. Quote each verbatim, one per entry, `file` = the summary " +
-      "path. Do not report a sentence you could not check, and do not " +
-      "judge wording, style, or completeness.",
+    instruction: hasDocs
+      ? "For the summary file: " + summaryInstruction.replace(/^C/, "c") +
+        "\n\n" + docProseClaimInstruction("this branch's diff")
+      : summaryInstruction,
     example: {
-      findings: [
-        {
-          file: opts.summaryPath,
-          sentence:
-            "`parseRow()` escapes the phrase and joins its words with `\\s+`.",
-          reason: "the head's parseRow builds no regex",
-        },
-      ],
+      findings: hasDocs
+        ? [
+          summaryExample,
+          {
+            file: opts.docFiles[0]!,
+            sentence: "A negative `cash` on a cash account is refused.",
+            reason:
+              "src/capacity.rs:88 catches the error, logs it and carries on with no capacity",
+          },
+        ]
+        : [summaryExample],
     },
     boundaryId,
   });
@@ -618,8 +670,17 @@ export function describeTestPlanClaimProblem(p: TestPlanClaimProblem): string {
 
 /** What the first-run summary claim check found. */
 export interface SummaryClaimCheckResult {
-  /** Findings confirmed against the summary's own current text. */
+  /**
+   * Findings confirmed against the summary's own current text. Summary-only:
+   * the #3324 correction turn and carry-forward in
+   * `summary_claim_correction.ts` act only on these.
+   */
   findings: DriftFinding[];
+  /**
+   * Findings confirmed against a changed manual or prompt file's own current
+   * text (Issue #3347).
+   */
+  docFindings: DriftFinding[];
   /** Findings the model returned that could not be confirmed — never acted on. */
   unconfirmedFindings: DriftFinding[];
   /** Deterministic Test Plan problems. */
@@ -630,7 +691,8 @@ export interface SummaryClaimCheckResult {
 
 /** Whether the result should gate the PR via the summary-rule block path. */
 export function summaryClaimCheckBlocked(r: SummaryClaimCheckResult): boolean {
-  return r.findings.length > 0 || r.testPlanProblems.length > 0;
+  return r.findings.length > 0 || r.docFindings.length > 0 ||
+    r.testPlanProblems.length > 0;
 }
 
 /** Git/model seams {@link runSummaryClaimCheck} needs, injected for testability. */
@@ -653,6 +715,11 @@ export interface SummaryClaimCheckInput {
   baseRef: string | null;
   summaryPath: string;
   summaryContent: string;
+  /**
+   * The branch's changed files against the base, as the completion phase
+   * listed them (Issue #3347); null when they could not be listed.
+   */
+  changedFiles: readonly string[] | null;
 }
 
 /**
@@ -715,6 +782,7 @@ export async function runSummaryClaimCheck(
   }
 
   const findings: DriftFinding[] = [];
+  const docFindings: DriftFinding[] = [];
   const unconfirmedFindings: DriftFinding[] = [];
 
   if (input.baseRef === null) {
@@ -723,6 +791,48 @@ export async function runSummaryClaimCheck(
     notChecked.push(msg);
     deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
   } else {
+    const docContents = new Map<string, string>();
+    if (input.changedFiles === null) {
+      const msg = "the branch's changed files could not be listed; changed " +
+        "manual and prompt prose was not checked";
+      notChecked.push(msg);
+      deps.logger.error(`Summary claim check: ${msg}`, { repo, issueNumber });
+    } else {
+      const selected = selectManualProseFiles(
+        input.changedFiles.filter((f) => f !== input.summaryPath),
+        MAX_DOC_PROSE_FILES,
+      );
+      if (selected.overCap.length > 0) {
+        const msg =
+          `${selected.overCap.length} changed manual or prompt file(s) over ` +
+          `the ${MAX_DOC_PROSE_FILES}-file cap were not checked: ` +
+          selected.overCap.join(", ");
+        notChecked.push(msg);
+        deps.logger.error(`Summary claim check: ${msg}`, {
+          repo,
+          issueNumber,
+        });
+      }
+      for (const file of selected.files) {
+        try {
+          docContents.set(
+            file,
+            await Deno.readTextFile(`${input.repoPath}/${file}`),
+          );
+        } catch (err) {
+          // Deleted on the branch: no prose left to check.
+          if (err instanceof Deno.errors.NotFound) continue;
+          const msg =
+            `\`${file}\` could not be read; its prose was not checked`;
+          notChecked.push(msg);
+          deps.logger.error(`Summary claim check: ${msg}`, {
+            repo,
+            issueNumber,
+          });
+        }
+      }
+    }
+
     let prompt: string | undefined;
     try {
       prompt = buildSummaryClaimQuestionPrompt({
@@ -730,6 +840,7 @@ export async function runSummaryClaimCheck(
         issueNumber,
         baseRef: input.baseRef,
         summaryPath: input.summaryPath,
+        docFiles: [...docContents.keys()],
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -763,10 +874,17 @@ export async function runSummaryClaimCheck(
           });
         } else {
           for (const finding of parsed.value) {
-            const confirmed = finding.file === input.summaryPath &&
-              sentenceFoundIn(finding.sentence, input.summaryContent);
-            if (confirmed) {
+            const docContent = docContents.get(finding.file);
+            if (
+              finding.file === input.summaryPath &&
+              sentenceFoundIn(finding.sentence, input.summaryContent)
+            ) {
               findings.push(finding);
+            } else if (
+              docContent !== undefined &&
+              sentenceFoundIn(finding.sentence, docContent)
+            ) {
+              docFindings.push(finding);
             } else {
               unconfirmedFindings.push(finding);
               deps.logger.warn(
@@ -785,7 +903,13 @@ export async function runSummaryClaimCheck(
     }
   }
 
-  return { findings, unconfirmedFindings, testPlanProblems, notChecked };
+  return {
+    findings,
+    docFindings,
+    unconfirmedFindings,
+    testPlanProblems,
+    notChecked,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -802,6 +926,11 @@ function flatten(text: string, maxChars: number): string {
  */
 export function summaryClaimBlockReason(r: SummaryClaimCheckResult): string {
   const first = r.findings[0]?.sentence ?? r.testPlanProblems[0]?.quote ?? "";
+  const docFinding = r.docFindings[0];
+  if (first === "" && r.findings.length === 0 && docFinding !== undefined) {
+    return "Changed doc describes the PR's own behaviour wrongly: " +
+      `\`${docFinding.file}\`: ${flatten(docFinding.sentence, 200)}`;
+  }
   return `PR summary describes named code wrongly: ${flatten(first, 200)}`;
 }
 
@@ -812,39 +941,83 @@ export function buildSummaryClaimGateComment(
   r: SummaryClaimCheckResult,
 ): string {
   const lines: string[] = [];
-  lines.push("⚠️ **PR summary describes named code wrongly.**");
-  lines.push("");
-  lines.push(
-    "Before raising the PR, the worker checked the summary's claims " +
-      "about named code against the head:",
-  );
-  lines.push("");
-
-  for (const f of r.findings) {
+  const summaryProblems = r.findings.length + r.testPlanProblems.length > 0;
+  const hasDocFindings = r.docFindings.length > 0;
+  if (summaryProblems) {
+    lines.push("⚠️ **PR summary describes named code wrongly.**");
+    lines.push("");
     lines.push(
-      `- "${flatten(f.sentence, 500)}" — ${flatten(f.reason, 500)}`,
+      "Before raising the PR, the worker checked the summary's claims " +
+        "about named code against the head:",
+    );
+    lines.push("");
+
+    for (const f of r.findings) {
+      lines.push(
+        `- "${flatten(f.sentence, 500)}" — ${flatten(f.reason, 500)}`,
+      );
+    }
+    for (const p of r.testPlanProblems) {
+      lines.push(`- ${describeTestPlanClaimProblem(p)}`);
+    }
+    lines.push("");
+  } else {
+    lines.push(
+      "⚠️ **A changed manual or prompt describes the PR's own behaviour " +
+        "wrongly.**",
+    );
+    lines.push("");
+  }
+
+  if (hasDocFindings) {
+    lines.push(
+      "Before raising the PR, the worker checked the sentences this branch " +
+        "adds or edits in its manuals and prompts against the head code " +
+        "that decides them:",
+    );
+    lines.push("");
+    for (const f of r.docFindings) {
+      lines.push(
+        `- \`${f.file}\`: "${flatten(f.sentence, 500)}" — ${
+          flatten(f.reason, 500)
+        }`,
+      );
+    }
+    lines.push("");
+  }
+
+  const steps: string[] = [];
+  if (summaryProblems) {
+    steps.push(
+      "Open the named function, file, or test at the head (Read or " +
+        "Grep) and rewrite each sentence to say what the head actually " +
+        "does, or remove it.",
+      'An illustrative example ("for example `X`") is a claim too — ' +
+        "grep `X` for the stated property before naming it.",
+      "For a Test Plan bullet that quotes a behaviour, quote the name " +
+        "of the test in that file that covers it, or drop the claim.",
     );
   }
-  for (const p of r.testPlanProblems) {
-    lines.push(`- ${describeTestPlanClaimProblem(p)}`);
+  if (hasDocFindings) {
+    steps.push(
+      "For each flagged manual or prompt sentence, open the head code that " +
+        "decides it (the branch condition, its callers, the list it names) " +
+        "and rewrite that sentence in that file to say what the head code " +
+        "does — name each condition, or scope it to the path it describes " +
+        "— or remove it.",
+    );
   }
-  lines.push("");
+  steps.push(
+    !hasDocFindings
+      ? "Fix the summary, not the code."
+      : summaryProblems
+      ? "Fix the summary and the flagged manual or prompt sentences, not " +
+        "the code."
+      : "Fix the flagged manual or prompt sentences, not the code.",
+  );
 
   lines.push("Procedure:");
-  lines.push(
-    "1. Open the named function, file, or test at the head (Read or " +
-      "Grep) and rewrite each sentence to say what the head actually " +
-      "does, or remove it.",
-  );
-  lines.push(
-    '2. An illustrative example ("for example `X`") is a claim too — ' +
-      "grep `X` for the stated property before naming it.",
-  );
-  lines.push(
-    "3. For a Test Plan bullet that quotes a behaviour, quote the name " +
-      "of the test in that file that covers it, or drop the claim.",
-  );
-  lines.push("4. Fix the summary, not the code.");
+  steps.forEach((step, i) => lines.push(`${i + 1}. ${step}`));
 
   return lines.join("\n").trimEnd();
 }

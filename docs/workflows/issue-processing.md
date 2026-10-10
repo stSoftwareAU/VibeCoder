@@ -1968,9 +1968,38 @@ takes the one recovery turn, then a further block fails the run (or
 finalises an existing PR as `summary_incomplete`). The claim check runs again
 on the re-run after that turn either way.
 
+**Changed manuals and prompts (Issue #3347).** The one read-only model question
+also covers the manual and prompt files among the branch's changed files (the
+completion phase's `git diff --name-only <base>...HEAD` list, so committed
+changes), up to 20 of them. A file qualifies when
+[`isManualProsePath`](../../worker/deno/lib/doc_prose_claims.ts) accepts it: a
+Markdown path outside `docs/archive/pr-summaries/` that is not a PR summary, a
+test file or a worker state file, and has a safe relative shape. For each, the
+shared question (`docProseClaimInstruction`) asks the model to check only the
+lines the change adds or edits, and only the sentences that say when the new
+behaviour happens, what it refuses, rejects, allows or skips, or that use an
+absolute word ("only", "never", "always", "any", "every", "all", "each",
+"automatically") or a counted or closed list. It opens the head code that
+decides each one (the branch condition, the callers, the list the sentence
+names) and reports the sentence, quoted verbatim, when that code contradicts
+it, naming the contradicting `file:line`. Files past the cap are logged at error
+level and recorded as not checked; a changed file deleted on the branch is
+skipped; one that cannot be read is recorded as not checked. If the
+changed-files list itself could not be read, the doc part is recorded as not
+checked (an error log) and the summary is still questioned. A doc finding is
+confirmed only when it names one of those files and its sentence is found in
+that file's current text; it goes into a separate `docFindings` list and blocks
+like any other claim-check finding, through the same summary-rule block. The
+gate comment names the file and asks for that sentence to be rewritten in that
+file to say what the head code does, or removed — "not the code".
+GRQ-AutoTrader#2609, #2685 and #2699 and VibeCoder#3308 each shipped a manual or
+prompt sentence about the PR's own new behaviour that the head code
+contradicted, after #3120 and #3232 had asked for this care in prose only.
+
 **Issue #3324.** A later block where the claim check is the only gate still
-failing — reached only once every earlier summary gate has passed — instead
-gets one summary-only correction turn before the ordinary recovery path even
+failing — reached only once every earlier summary gate has passed, and every
+finding it confirmed is in the summary itself — instead gets one summary-only
+correction turn before the ordinary recovery path even
 applies: the claim gate's comment and the current summary, fenced as
 untrusted data, go to a fresh agent invocation with file-writing tools and
 `Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
@@ -1988,15 +2017,17 @@ VibeCoder#3322, where the claim check found its wrong sentence only on the re-ru
 after recovery — the run's second block, spent with no correction turn left.
 A claim-check block folded with another gate on a later attempt is not this
 case and gets no correction turn — the ordinary recovery (or its absence)
-applies.
+applies. Neither does a block carrying a doc finding (Issue #3347): the turn can
+only rewrite the summary file, so that block takes the ordinary path (fails the
+run, or finalises an existing PR as `summary_incomplete`).
 
 ```mermaid
 flowchart TD
     A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
     A --> C{"Base ref known?"}
     C -- no --> D["Not checked"]
-    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code"]
-    E --> F["Confirm each finding against<br/>the summary's own text"]
+    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>and changed manual and prompt prose"]
+    E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
     D --> G
@@ -2004,7 +2035,7 @@ flowchart TD
     G -- no --> I["PR raised"]
     H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
     RT --> A
-    H -- no --> J{"Claim check the only<br/>gate still blocking?"}
+    H -- no --> J{"Claim check the only gate,<br/>summary findings only?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
     J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
     L --> M["Re-run: wrong sentences<br/>still present carried forward"]
@@ -2225,7 +2256,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2235,7 +2266,8 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
 existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, it first gets
+claim check alone is still blocking on that second attempt, on the summary's
+own sentences, it first gets
 one summary-only correction turn (Issue #3324), and only a block that
 survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
@@ -2393,7 +2425,8 @@ A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
 recovered again, with one exception: when the claim check alone is still
-blocking — every earlier summary gate having passed — the run instead gets
+blocking on the summary's own sentences — every earlier summary gate having
+passed — the run instead gets
 one summary-only correction turn before it is treated as a second block
 (Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
 Any other second block fails exactly as a block did before, with the
@@ -2417,8 +2450,8 @@ the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before — finalised as `summary_incomplete`
 when a PR exists, failed when none does — unless it is the claim check
-alone still blocking, in which case it gets the one summary-only correction
-turn first (Issue #3324).
+alone still blocking on the summary's own sentences, in which case it gets the
+one summary-only correction turn first (Issue #3324).
 
 All eight summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test

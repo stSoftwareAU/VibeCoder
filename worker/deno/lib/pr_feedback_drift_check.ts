@@ -22,7 +22,8 @@
  * sentence was still standing, often with a "PR-feedback round N" correction
  * appended below it rather than a rewrite. Both are fixed here: the model
  * pass now runs whenever this push changes a code *or* test file (a
- * docs-only push still gets none); the question is given the change
+ * push that changes no code or test file gets one only under Issue #3347,
+ * below); the question is given the change
  * request, fenced, and asks for each quoted sentence to be confirmed
  * rewritten or removed, and for an earlier sentence a later one
  * contradicts; and a deterministic, no-model-needed check
@@ -44,13 +45,21 @@
  * although its cited lines were changed or removed by this push — carrying
  * a stale verdict forward rather than re-reading the code at the head.
  *
+ * Issue #3347 found that a fix push which only rewrites a manual or prompt
+ * sentence was never questioned. The model pass now also runs when the push
+ * edits manual or prompt Markdown (`isManualProsePath`), and the question
+ * then asks the shared doc-prose question from `doc_prose_claims.ts` — the
+ * same one the first-run claim check asks — about the lines this push adds or
+ * edits. A push changing only the PR summary or non-Markdown docs still gets
+ * no model pass.
+ *
  * ```mermaid
  * flowchart TD
  *     A["Agent's review-fix turn"] --> B{"beforeSha known<br/>and this push<br/>changed something?"}
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
  *     C --> D["Deterministic checks:<br/>Test Plan recount,<br/>Docs sweep gate,<br/>stale change-request quotes,<br/>line-citation check"]
- *     C --> E{"Code or test changed?"}
+ *     C --> E{"Code, test or manual/prompt<br/>Markdown changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]
  *     E -- no --> G["No model pass"]
  *     D --> H{"Any hit at all?"}
@@ -93,6 +102,10 @@ import {
   isDocsSweepExemptPath,
   validateDocsSweep,
 } from "./docs_sweep_gate.ts";
+import {
+  docProseClaimInstruction,
+  isManualProsePath,
+} from "./doc_prose_claims.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { prResponseMessagePath } from "./pr_branch_preparation.ts";
 import {
@@ -399,6 +412,9 @@ export function buildDriftQuestionPrompt(opts: {
         "correction added after it — is drift; report it, quoted as it " +
         "appears in the file.",
     );
+  }
+  if (opts.files.some((f) => isManualProsePath(f))) {
+    instruction.push(docProseClaimInstruction("this push's change"));
   }
   instruction.push(
     "A sentence that was already false before this push, but untouched " +
@@ -1130,18 +1146,27 @@ export async function runPrFeedbackDriftCheck(
   );
 
   // One constrained, read-only model question — when this push changed a
-  // code or test file (Issue #3244); a docs-only push gets none.
+  // code or test file (Issue #3244) or a manual or prompt Markdown file
+  // (Issue #3347); a push changing only the PR summary or non-Markdown docs
+  // gets none.
   const findingsWithStatus: { finding: DriftFinding; foundBefore: boolean }[] =
     [];
   let modelPassUnavailable: string | undefined;
   let files: string[] = [];
   const modelPassNeeded = changesBehaviour ||
-    pushFiles.some((f) => isTestFilePath(f));
+    pushFiles.some((f) => isTestFilePath(f)) ||
+    pushFiles.some((f) => isManualProsePath(f));
   if (modelPassNeeded) {
     const docFiles = prFiles.filter(
       (p) => isDocsSweepExemptPath(p) && !isTestFilePath(p),
     );
-    const candidates = uniq([...summaries.map((s) => s.path), ...docFiles]);
+    // Manuals this push edited come before the other docs so the cap can
+    // never silently drop one (Issue #3347).
+    const candidates = uniq([
+      ...summaries.map((s) => s.path),
+      ...pushFiles.filter((f) => isManualProsePath(f)),
+      ...docFiles,
+    ]);
     const existing: string[] = [];
     for (const candidate of candidates) {
       if (await readIfExists(repoPath, candidate) !== undefined) {
@@ -1149,6 +1174,16 @@ export async function runPrFeedbackDriftCheck(
       }
     }
     files = existing.slice(0, MAX_MODEL_PASS_FILES);
+    if (existing.length > MAX_MODEL_PASS_FILES) {
+      logger.warn(
+        `Drift check's model pass skipped ${
+          existing.length - MAX_MODEL_PASS_FILES
+        } file(s) over the ${MAX_MODEL_PASS_FILES}-file cap: ${
+          existing.slice(MAX_MODEL_PASS_FILES).join(", ")
+        }`,
+        { repo, prNumber },
+      );
+    }
 
     if (files.length > 0) {
       const prompt = buildDriftQuestionPrompt({

@@ -392,22 +392,29 @@ changed nothing.
 
 Five checks run, each only when it applies:
 
-1. **Model drift pass** — only when the push changes a code file or a test
-   file (a docs-only push gets no model pass). A read-only question
-   (file-writing, sub-agent, web and plan-mode tools denied, the same list
-   as the closure-verdict question) is asked over the PR summary and every
-   doc/prompt/README the PR diff touches against its base (capped at 40
-   files): list every sentence the change makes false or leaves incomplete,
-   quoted verbatim. The change request this push answers (the review or
-   comment body, carried as the agent's own prompt) is fenced into the
-   question as untrusted text; when it quotes a sentence from the PR
+1. **Model drift pass** — only when the push changes a code file, a test
+   file or a manual or prompt Markdown file (`isManualProsePath`); a push that
+   changes only the PR summary or non-Markdown docs gets no model pass. A
+   read-only question (file-writing, sub-agent, web and plan-mode tools
+   denied, the same list as the closure-verdict question) is asked over the
+   PR summary and every doc/prompt/README the PR diff touches against its
+   base (capped at 40 files): list every sentence the change makes false or
+   leaves incomplete, quoted verbatim. The change request this push answers
+   (the review or comment body, carried as the agent's own prompt) is fenced
+   into the question as untrusted text; when it quotes a sentence from the PR
    summary, a doc or the PR body, the question asks the model to confirm
    that sentence has been rewritten or removed at the head — a quoted
    sentence still present, even with a correction added after it, is drift.
    The question also always asks for any sentence that a later sentence in
    the same file corrects, supersedes or contradicts (an earlier-round
    paragraph followed by a "PR-feedback round N" correction, say) — the
-   earlier one is reported.
+   earlier one is reported. When the files the question asks about include a
+   manual or prompt file, it also asks the shared doc-prose question (Issue
+   #3347), scoped to this push's change: in each such file, check only the
+   lines the push adds or edits, and report a sentence about when the new
+   behaviour happens, what it refuses, rejects, allows or skips, or that uses
+   an absolute word or a counted list, quoting it verbatim and naming the
+   contradicting `file:line`, when the code at the head contradicts it.
 2. **Deterministic Test Plan recount** — whenever the PR diff carries a
    summary, the worker counts top-level `Deno.test(` / `it(` declarations
    at the head for every test file the PR diff adds or edits, and flags a

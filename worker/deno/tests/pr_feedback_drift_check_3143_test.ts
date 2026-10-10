@@ -494,10 +494,10 @@ async function setupDocsOnlyBaseline(
   return { dir, beforeSha: rev.stdout.trim() };
 }
 
-Deno.test("runPrFeedbackDriftCheck - a docs-only push makes no model call and reports clean", async () => {
+Deno.test("runPrFeedbackDriftCheck - a docs-only push that edits no Markdown makes no model call and reports clean", async () => {
   const { dir, beforeSha } = await setupDocsOnlyBaseline(undefined);
   try {
-    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    await writeFile(dir, "docs/notes.txt", "Some updated notes.\n");
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent([], calls);
@@ -532,7 +532,7 @@ No tests changed.
 `;
   const { dir, beforeSha } = await setupDocsOnlyBaseline(summaryNoDocsSweep);
   try {
-    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    await writeFile(dir, "docs/notes.txt", "Some updated notes.\n");
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent([], calls);
@@ -613,7 +613,7 @@ Some unrelated prose.
 Deno.test("runPrFeedbackDriftCheck - a docs-only push that also drops .pr_response_message (untracked, no ignore rule) makes no model call and reports clean", async () => {
   const { dir, beforeSha } = await setupDocsOnlyBaseline(undefined);
   try {
-    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    await writeFile(dir, "docs/notes.txt", "Some updated notes.\n");
     // The agent's reply file, written at the clone root per the prompts'
     // instructions — untracked, since this repo has no `.*` ignore rule.
     await Deno.writeTextFile(
