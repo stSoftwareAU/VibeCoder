@@ -51,6 +51,12 @@
  * committed on the issue branch before completion re-runs — the run that
  * prompted #2242 left its 103-line summary untracked on a detached checkout.
  *
+ * Issue #3382: the "do not change the code" rule covers the documentary
+ * REQUIRED ITEMs only. A Standards `violation` left standing on a line the
+ * branch itself adds or changes can only be settled by the #3196
+ * independent-review gate with `reason: fixed in this diff`, which needs a code
+ * change, so those arrive as CODE FIX items the turn may change code for.
+ *
  * Australian English throughout.
  */
 
@@ -71,6 +77,7 @@ import {
   isBoundaryId,
 } from "./prompt_delimiter.ts";
 import { reviewBlockTemplateLines } from "./review_block_template.ts";
+import type { StandingViolation } from "./standing_violation_routing.ts";
 
 /** One summary-rule gate verdict observed during a single run. */
 export interface SummaryRuleRunVerdict {
@@ -94,6 +101,13 @@ export interface SummaryRuleRunVerdict {
    * `comment` is the one item.
    */
   sections?: readonly string[];
+  /**
+   * The Standards `violation`s left standing on lines this branch adds or
+   * changes (Issue #3382), found by `findOwnLineStandingViolations` before the
+   * gates ran. Each becomes a CODE FIX item the recovery turn may change code
+   * for. Absent or empty means every item is documentary.
+   */
+  standingViolations?: readonly StandingViolation[];
 }
 
 /**
@@ -125,6 +139,11 @@ const SUMMARY_RULE_NOTICE_BLOCK = "the PR-summary gate retry notice";
  * `## Standards Review` provenance markers the agent must reproduce are
  * printed separately below, outside the fence, from the trusted
  * `review_block_template.ts` template — never copied from inside the notice.
+ *
+ * The "do not change the code" rule covers the documentary REQUIRED ITEMs
+ * only. Standing own-line Standards violations arrive as CODE FIX items the
+ * turn may change code for (Issue #3382), because the #3196 gate accepts only
+ * `fixed in this diff` for them.
  *
  * Fails loud on an unusable verdict — a prompt that names no gate comment would
  * send the agent off to re-derive the shortfall itself.
@@ -178,6 +197,49 @@ export function buildSummaryRuleRetryPrompt(
     ? `The gates found ${items.length} separate problems with the PR summary, each listed below as its own REQUIRED ITEM. Every REQUIRED ITEM must be fixed before you finish — completion re-runs every gate, so fixing one and leaving another blocks the run again, and a PR that ships anyway carries the remaining shortfall recorded against it.`
     : `The gate found one problem with the PR summary, listed below as REQUIRED ITEM 1 of 1.`;
 
+  const standing = (verdict.standingViolations ?? []).filter((v) =>
+    v.text.trim() !== ""
+  );
+  const standingBlockNames: string[] = [];
+  let standingSection = "";
+  if (standing.length > 0) {
+    const n = standing.length;
+    const blocks = standing.map((v, i) => {
+      standingBlockNames.push(
+        `the standing violation, code fix ${i + 1} of ${n}`,
+      );
+      return fenceUntrustedIssueText(
+        v.text,
+        `STANDING VIOLATION — CODE FIX ${
+          i + 1
+        } of ${n} (untrusted data — quotes the PR summary's Standards Review):`,
+        id,
+      ).join("\n");
+    });
+    standingSection = `The Standards Review also records ${n} \`violation\`${
+      n === 1 ? "" : "s"
+    } left standing on lines this branch adds or changes, listed below as CODE FIX items. The independent-review gate accepts only \`reason: fixed in this diff\` for a breach on the branch's own lines (Issue #3196), so for these — and only these — this turn MAY change code:
+
+- Edit the cited file(s) to remove each breach, and add or update the tests the finding or its reason names.
+- Run those tests with stdin from \`/dev/null\`.
+- Re-dispatch the Standards reviewer sub-agent over the new \`git diff\` and record its verdict.
+- Write \`reason: fixed in this diff\` only for a breach you actually fixed.
+- If a cited line turns out to be unchanged context already on the base branch, file a follow-up issue and write \`reason: pre-existing, filed #<n>\` instead.
+- "This turn cannot change code" is never a reason — for a CODE FIX item it can.
+
+The worker re-runs the quality gate over the changed tree before completion re-runs.
+
+${blocks.join("\n\n")}
+
+`;
+  }
+  const step2 = standing.length > 0
+    ? `Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. A REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is the one exception: change the code it cites, as described under the CODE FIX items.`
+    : `Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.`;
+  const itemRef = standing.length > 0
+    ? "each REQUIRED ITEM and CODE FIX item"
+    : "each REQUIRED ITEM";
+
   return `${openingLine}
 
 ${
@@ -192,12 +254,12 @@ ${itemsIntro}
 
 ${itemBlocks.join("\n\n")}
 
-Do exactly this, and nothing else:
+${standingSection}Do exactly this, and nothing else:
 
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
-2. Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.
+2. ${step2}
 3. Where a REQUIRED ITEM asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
-4. Before you commit, re-read the summary against each REQUIRED ITEM in turn, checking that item is actually fixed. In your final message, name each REQUIRED ITEM by number and say what you changed for it.
+4. Before you commit, re-read the summary against ${itemRef} in turn, checking that item is actually fixed. In your final message, name ${itemRef} by number and say what you changed for it.
 5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses a REQUIRED ITEM will be asked for as a structured verdict instead, which costs the run another turn.
 
 If a REQUIRED ITEM is wrong — the summary already carries what it asks for — say so plainly in your final message for that item and commit nothing for it.
@@ -210,6 +272,7 @@ ${
     buildBoundaryIntegrityInstruction(id, [
       SUMMARY_RULE_REASON_BLOCK,
       ...itemBlockNames,
+      ...standingBlockNames,
     ])
   }`;
 }
@@ -222,7 +285,9 @@ ${
  * an agent-raised PR gets this same recovery turn rather than being
  * finalised straight off that first block. The agent is re-invoked with the
  * gate's comment, the quality gate runs again over the changed tree, and
- * completion is attempted once more. A block on that attempt is the run's
+ * completion is attempted once more. The quality gate re-runs over whatever
+ * the turn changed, code included (a CODE FIX item may change code, Issue
+ * #3382). A block on that attempt is the run's
  * second and is returned as the failure (or, over an existing PR,
  * `summary_incomplete`) it is — the caller does not re-enter here, so a run
  * spends at most one recovery invocation.

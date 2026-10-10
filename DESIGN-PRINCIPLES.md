@@ -3079,7 +3079,10 @@ second — finalises an existing PR as before, unless the claim check alone is
 still blocking on the summary's own sentences (a doc finding never qualifies,
 since that turn can only rewrite the summary): that block first gets one
 summary-only correction turn (Issue #3324), and only a block that survives it
-finalises the PR.
+finalises the PR. A standing Standards violation on the branch's own lines is
+a defect in the change, not a documentation shortfall, so that recovery turn
+may fix the code for it, and an existing PR finalised with one still standing
+is labelled `standing-violation` rather than auto-merged (Issue #3382).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

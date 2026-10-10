@@ -138,6 +138,8 @@ interface Scenario {
   prExistsForBranch: boolean;
   /** The URL that lookup returns; defaults to a well-formed one. */
   prUrl?: string;
+  /** Output of `git diff --unified=0 <base>...HEAD`, when a scenario needs it. */
+  diffUnified0?: string;
 }
 
 interface Observed {
@@ -150,6 +152,8 @@ interface Observed {
   prCreateCalls: number;
   recoverCalls: number;
   finaliseCalls: number;
+  /** Label sets passed to `updatePrLabels`, in call order. */
+  labelCalls: string[][];
   comments: string[];
   prUrl?: string;
   prNumber?: number;
@@ -171,6 +175,7 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
   let prCreateCalls = 0;
   let recoverCalls = 0;
   let finaliseCalls = 0;
+  const labelCalls: string[][] = [];
 
   const config = buildDefaultWorkerConfig();
   // Never inherit the host's work directory: the security-fix gate persists
@@ -223,10 +228,17 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok("worker/deno/lib/run_outcome.ts");
         }
+        if (cmdArgs.includes("diff") && cmdArgs.includes("--unified=0")) {
+          return ok(scenario.diffUnified0 ?? "");
+        }
         return ok("");
       },
     },
     pr: {
+      updatePrLabels: (_repo: string, _pr: number, labels: string[]) => {
+        labelCalls.push([...labels]);
+        return Promise.resolve({ ok: true as const, value: undefined });
+      },
       findExistingPrForIssue: () =>
         Promise.resolve({ ok: false, error: new Error("none") }),
       findExistingPrForBranch: () =>
@@ -277,6 +289,7 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
     prCreateCalls,
     recoverCalls,
     finaliseCalls,
+    labelCalls,
     comments,
     prUrl: state.prUrl,
     prNumber: state.prNumber,
@@ -442,5 +455,73 @@ Deno.test(
     assertEquals(observed.status, "continue");
     assertEquals(observed.prCreateCalls, 1);
     assertEquals(observed.comments.length, 0);
+  },
+);
+
+/** A Standards `violation` standing on a cited line, with the reason left as-is. */
+const SUMMARY_STANDING_VIOLATION = SUMMARY_COMPLETE.replace(
+  "- **clean** — Australian English, TDD, fail-loud error handling",
+  "- **violation** — American spelling in the new code — evidence: " +
+    "`worker/deno/lib/run_outcome.ts:12` — reason: not fixed — this turn " +
+    "may not change code",
+);
+
+/** A unified=0 diff whose added lines are 10-15 of run_outcome.ts. */
+const DIFF_ADDS_LINES_10_TO_15 =
+  `diff --git a/worker/deno/lib/run_outcome.ts b/worker/deno/lib/run_outcome.ts
+--- a/worker/deno/lib/run_outcome.ts
++++ b/worker/deno/lib/run_outcome.ts
+@@ -9,0 +10,6 @@
++a
++b
++c
++d
++e
++f
+`;
+
+Deno.test(
+  "completion - an own-line standing violation left after recovery holds auto-merge and labels the PR (Issue #3382)",
+  async () => {
+    const observed = await runCompletion({
+      issueBody: ISSUE_WITH_CRITERIA,
+      summary: SUMMARY_STANDING_VIOLATION,
+      labels: ["enhancement"],
+      prExistsForBranch: true,
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+    });
+
+    assertEquals(observed.status, "early_exit");
+    assertEquals(observed.outcomeKind, "summary_incomplete");
+    assertEquals(observed.recoverCalls, 1);
+    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
+    assertEquals(
+      observed.labelCalls.some((l) => l.includes("standing-violation")),
+      true,
+      "the PR must be labelled standing-violation",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a standing violation on unchanged context still arms auto-merge and adds no label (Issue #3382)",
+  async () => {
+    const observed = await runCompletion({
+      issueBody: ISSUE_WITH_CRITERIA,
+      summary: SUMMARY_STANDING_VIOLATION,
+      labels: ["enhancement"],
+      prExistsForBranch: true,
+      // Lines 40-41 only: the cited line 12 is unchanged context.
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15.replace("+10,6", "+40,6"),
+    });
+
+    assertEquals(observed.status, "early_exit");
+    assertEquals(observed.outcomeKind, "summary_incomplete");
+    assertEquals(observed.recoverCalls, 1);
+    assertEquals(observed.finaliseCalls, 1);
+    assertEquals(
+      observed.labelCalls.some((l) => l.includes("standing-violation")),
+      false,
+    );
   },
 );
