@@ -15,6 +15,7 @@
 
 import type { Result } from "../types.ts";
 import { parsePreFlightCommands } from "./repo_config.ts";
+import { installConsoleRedaction } from "./console_redaction.ts";
 import { runPrePushGate } from "./pre_push_gate.ts";
 
 /** Injectable seams. */
@@ -111,8 +112,7 @@ export async function runPrePushGateCli(
     if (!result.ok) {
       writeErr(
         `[PRE_PUSH_BLOCKED] ${result.error.message}\n` +
-          "Fix the failure above and push again. Never bypass this gate " +
-          "with `git push --no-verify`.\n",
+          "Fix the failure above and push again; never bypass this gate.\n",
       );
       return 1;
     }
@@ -130,4 +130,7 @@ async function readProcessStdin(): Promise<string> {
   return await new Response(Deno.stdin.readable).text();
 }
 
-if (import.meta.main) Deno.exit(await runPrePushGateCli(Deno.args));
+if (import.meta.main) {
+  installConsoleRedaction();
+  Deno.exit(await runPrePushGateCli(Deno.args));
+}

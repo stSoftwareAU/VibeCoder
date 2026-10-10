@@ -23,6 +23,7 @@
 import type { Result } from "../types.ts";
 import { outermostConfigDirs } from "./repo_formatters.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
+import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
 
 /** One ref line from git's pre-push hook stdin. */
@@ -73,21 +74,25 @@ export type PrePushGit = (
   cwd: string,
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-/** Default {@link PrePushGit}: spawns `git`, inheriting the environment. */
+/**
+ * Default {@link PrePushGit}: routes through the git chokepoint. A `Result`
+ * error or a timeout comes back as a non-zero code with the message in
+ * stderr, so the gate fails closed.
+ */
 export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
-  const output = await new Deno.Command("git", {
-    args,
-    cwd,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  const decoder = new TextDecoder();
-  return {
-    code: output.code,
-    stdout: decoder.decode(output.stdout),
-    stderr: decoder.decode(output.stderr),
-  };
+  const result = await runGitCommand(args, { cwd });
+  if (!result.ok) {
+    return { code: 1, stdout: "", stderr: result.error.message };
+  }
+  const { code, stdout, stderr } = result.value;
+  if (code === TIMEOUT_EXIT_CODE) {
+    return {
+      code,
+      stdout,
+      stderr: stderr || `git ${args[0] ?? ""} timed out`,
+    };
+  }
+  return { code, stdout, stderr };
 };
 
 /**
