@@ -454,10 +454,53 @@ Deno.test("a 429 with no rate-limit headers stays a throttled probe (Issue #2040
     fetchFn: fetcher.fetchFn,
   });
 
-  assertEquals(fetcher.calls(), 1);
+  // One request per model: a header-less 429 may be the model's, so the next
+  // Haiku is tried before the probe gives up.
+  assertEquals(fetcher.calls(), 2);
   assert(!result.known, "a throttled probe measured nothing");
   assertEquals(result.reason, "http-429");
   assertEquals(result.label, "provider-3");
+});
+
+Deno.test("a header-less 429 carries the API's error message as its detail", async () => {
+  const errorBody = JSON.stringify({
+    type: "error",
+    error: {
+      type: "rate_limit_error",
+      message: "This request would exceed your rate limit",
+    },
+  });
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: () =>
+      Promise.resolve(new Response(errorBody, { status: 429, headers: {} })),
+  });
+
+  assert(!result.known);
+  assertEquals(result.reason, "http-429");
+  assert(
+    result.detail?.includes(
+      "claude-haiku-4-5 http-429 (rate_limit_error: This request would exceed your rate limit)",
+    ),
+    result.detail,
+  );
+});
+
+Deno.test("a rejected probe's detail is scrubbed of the token and bounded", async () => {
+  const errorBody = `bad token ${TOKEN} ` + "x".repeat(2000);
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: () => Promise.resolve(new Response(errorBody, { status: 401 })),
+  });
+
+  assert(!result.known);
+  assertEquals(result.reason, "http-401");
+  assert(result.detail !== undefined);
+  assert(!result.detail.includes("UNIQUE-PROBE-TOKEN-VALUE"), result.detail);
+  assert(
+    result.detail.length <= 300,
+    `detail is ${result.detail.length} chars`,
+  );
 });
 
 Deno.test("a 401 carrying rate-limit headers is still unknown (Issue #2040)", async () => {
@@ -507,4 +550,96 @@ Deno.test("the token value reaches no returned value on the 429 paths (Issue #20
       `${path.name}: a fragment of the token leaked: ${serialised}`,
     );
   }
+});
+
+Deno.test("the probe names the newest Haiku first and stops when it answers", async () => {
+  const fetcher = countingFetch(() =>
+    Promise.resolve(stubResponse(LIVE_HEADERS))
+  );
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assert(result.known);
+  assertEquals(fetcher.calls(), 1, "a healthy token costs one request");
+  // String literals, not the exported list: this must fail if the order is
+  // ever reversed or the newest Haiku dropped.
+  assertEquals(
+    JSON.parse(String(fetcher.lastInit()?.body)).model,
+    "claude-haiku-5-5",
+  );
+});
+
+Deno.test("a header-less 429 on the newest Haiku falls back to the next model", async () => {
+  // What every pool token answered from 2026-10-09 01:11Z for claude-haiku-5-5.
+  const models: string[] = [];
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: (_url, init) => {
+      const model = JSON.parse(String(init.body)).model;
+      models.push(model);
+      return Promise.resolve(
+        model === "claude-haiku-5-5"
+          ? stubResponse({}, 429)
+          : stubResponse(LIVE_HEADERS),
+      );
+    },
+  });
+
+  assertEquals(models, ["claude-haiku-5-5", "claude-haiku-4-5"]);
+  assert(result.known, "the fallback model's headers are the budget");
+});
+
+Deno.test("a retired model (404) falls back to the next model", async () => {
+  const models: string[] = [];
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: (_url, init) => {
+      const model = JSON.parse(String(init.body)).model;
+      models.push(model);
+      return Promise.resolve(
+        model === "claude-haiku-5-5"
+          ? stubResponse({}, 404)
+          : stubResponse(LIVE_HEADERS),
+      );
+    },
+  });
+
+  assertEquals(models.length, 2);
+  assert(result.known);
+});
+
+Deno.test("a 401 ends the probe without trying another model", async () => {
+  const fetcher = countingFetch(() => Promise.resolve(stubResponse({}, 401)));
+
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: fetcher.fetchFn,
+  });
+
+  assertEquals(fetcher.calls(), 1, "another model cannot fix a revoked token");
+  assert(!result.known);
+  assertEquals(result.reason, "http-401");
+});
+
+Deno.test("when every model refuses, the detail names what each one said", async () => {
+  const errorBody = JSON.stringify({
+    type: "error",
+    error: { type: "rate_limit_error", message: "Error" },
+  });
+  const result = await probeClaudeTokenBudget(TOKEN, {
+    label: "provider",
+    fetchFn: () =>
+      Promise.resolve(new Response(errorBody, { status: 429, headers: {} })),
+  });
+
+  assert(!result.known);
+  assertEquals(result.reason, "http-429");
+  assertEquals(
+    result.detail,
+    "claude-haiku-5-5 http-429 (rate_limit_error: Error); " +
+      "claude-haiku-4-5 http-429 (rate_limit_error: Error)",
+  );
 });

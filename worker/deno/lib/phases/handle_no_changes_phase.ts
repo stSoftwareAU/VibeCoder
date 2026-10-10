@@ -49,6 +49,10 @@ import {
   postIssueRunStatsComment,
 } from "../issue_run_stats_comment.ts";
 import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
+import {
+  reportIssueSubAgentDegradation,
+} from "../issue_sub_agent_degradation.ts";
+import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 
 /**
  * Phase name the `work-on` coding run is routed under (`PHASE_MODEL_DEFAULTS`).
@@ -273,6 +277,20 @@ export async function workOnIssueHandleNoChanges(
           formatAlreadyResolvedEvidence(evidence)
         }\n\n<details>\n<summary>Claude's analysis</summary>\n\n\`\`\`\n${outputSnippet}\n\`\`\`\n\n</details>`;
       await ghClient.closeIssue(repo, issueNumber, closeComment);
+      // Issue #3405: label a haiku-tier run served a stale Haiku, and name
+      // both models in the comment below.
+      const subAgentDegradation = await reportIssueSubAgentDegradation({
+        repo,
+        issueNumber,
+        tier: resolveIssueSubAgentTier(
+          { issueSubAgentTier: ctx.config.issueSubAgentTier },
+          ctx.config.repoConfig?.[repo],
+          (m) => logger.warn(m),
+        ),
+        claudeResults: state.claudeRunStats ?? [],
+        ghCommandFn: deps.github.runGhCommand,
+        logger,
+      });
       // Issue #3756 — the worker closed the issue itself, so this is its
       // wrap-up point: post the run's single cost/model stats comment.
       const posted = await postIssueRunStatsComment({
@@ -301,6 +319,9 @@ export async function workOnIssueHandleNoChanges(
           : {}),
         // …and its RTK status, `off` included (Issue #2385).
         ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+        ...(subAgentDegradation ? { subAgentDegradation } : {}),
+        // A safety refusal this run recorded and recovered from (Issue #3406).
+        ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),
       });
       // Issue #2347: this is the second path that wraps up an `issue`-phase
       // run, so it records the same figures its comment renders. Leaving it
@@ -309,9 +330,17 @@ export async function workOnIssueHandleNoChanges(
       // hole in the CodeGraph data above. The run passed no quality gate — it
       // raised no PR — so it counts towards the runs and not the passes.
       if (posted.reason !== "already_posted") {
+        // Issue #3403: the tier this run resolved rides the same figures the
+        // comment above renders.
+        const subAgentTier = resolveIssueSubAgentTier(
+          ctx.config,
+          ctx.config.repoConfig?.[repo],
+          (message) => logger.warn(message),
+        );
         const figures = measureIssuePhaseRun({
           phase: WORK_ON_STATS_PHASE,
           claudeResults: state.claudeRunStats ?? [],
+          subAgentTier,
         });
         if (figures) recordIssuePhaseRun(figures);
       }

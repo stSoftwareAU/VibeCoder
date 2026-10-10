@@ -307,6 +307,39 @@ Deno.test("hasBackReference - ignores a parent link inside an inline code span (
   );
 });
 
+// Issue #3313: same wrapped-span mechanics as stripCodeSpans's other
+// callers — a span may wrap across a line break within one paragraph.
+Deno.test("hasBackReference - a link inside a span wrapped across two lines is not honoured (evasion)", () => {
+  const body = "see `Parent: #5\nmore` text";
+  assertEquals(hasBackReference(body, 5), false);
+});
+
+Deno.test("hasBackReference - a real link after a wrapped span is still found (look-alike)", () => {
+  const body = "see `foo\nbar` and Parent: #7 after `baz`";
+  assertEquals(hasBackReference(body, 7), true);
+});
+
+// PR #3351 review (round 3): a quoted blank line never ended a paragraph,
+// so a stray backtick in a quoted line paired with one two lines later and
+// hid a quoted "Parent: #N" in between.
+Deno.test("hasBackReference - a quoted blank line ends the paragraph, so a stray backtick does not hide a quoted parent link (evasion)", () => {
+  const body = "> Handle the ` key\n>\n> Parent: #796 per `docs`";
+  assertEquals(hasBackReference(body, 796), true);
+});
+
+// PR #3351 review (round 4): a nested quote opening inside a quote did not
+// end the outer paragraph, so a stray backtick in the outer quote paired
+// with one in the nested quote and hid a nested "Parent: #N".
+Deno.test("hasBackReference - a nested quote ends the paragraph, so a stray backtick does not hide a nested parent link (evasion)", () => {
+  const body = "> Handle the ` key\n> > Parent: #796 per `docs`";
+  assertEquals(hasBackReference(body, 796), true);
+});
+
+Deno.test("hasBackReference - a parent link inside a span wrapped across two same-depth nested quote lines is not honoured (look-alike)", () => {
+  const body = "> > Write it as `the\n> > Parent: #796` link";
+  assertEquals(hasBackReference(body, 796), false);
+});
+
 // =============================================================================
 // extractDependencyReferences tests
 // =============================================================================
@@ -386,6 +419,129 @@ Deno.test("extractDependencyReferences - keeps a real prose dependency alongside
     "```",
   ].join("\n");
   assertEquals(extractDependencyReferences(body), [42]);
+});
+
+// Issue #3313: stripCodeSpans now delegates to the paragraph-aware
+// splitter, so an inline span may wrap across a line break within one
+// paragraph, and the stripper must follow it there rather than treating
+// each line in isolation.
+Deno.test("extractDependencyReferences - a reference inside a span wrapped across two lines is not a dependency (evasion)", () => {
+  // The opening backtick before "start of span" has no closer until the
+  // one right after "#5" on the next line, so the whole thing — including
+  // "Depends on #5" — sits inside one inline code span.
+  const body = "see `start of span\nDepends on #5` here";
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+Deno.test("extractDependencyReferences - a real dependency after a wrapped span is still found (look-alike)", () => {
+  // "`foo\nbar`" is a span wrapped across two lines; "depends on #7" sits
+  // in plain prose between it and the next span "`baz`", and must be kept.
+  const body = "see `foo\nbar` and depends on #7 and `baz`";
+  assertEquals(extractDependencyReferences(body), [7]);
+});
+
+// PR #3351 review: a paragraph only ended at a blank line, so a lone
+// unmatched backtick in one list item paired with a backtick two list items
+// later and hid a genuine "Depends on #5" line as if it were code.
+Deno.test("extractDependencyReferences - a list item marker ends the paragraph, so a stray backtick does not hide the next item (evasion)", () => {
+  const body =
+    "- Handle the ` key in the parser\n- Depends on #5\n- See `docs` for details";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+// PR #3351 review (round 2): the block-start markers only matched indent
+// 0-3, so a nested (4-space) list item did not end the paragraph.
+Deno.test("extractDependencyReferences - a 4-space nested list item ends the paragraph (evasion)", () => {
+  const body =
+    "- Parser work\n    - Handle the ` key in the parser\n    - Depends on #5\n    - See `docs` for details";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a table row ends the paragraph (evasion)", () => {
+  const body =
+    "| key | the ` key |\n| dep | Depends on #5 |\n| docs | see `docs` |";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a setext heading underline ends the paragraph (evasion)", () => {
+  const body = "Handle the ` key\n---\nDepends on #5 per `docs`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+// PR #3351 review (round 2): BLOCK_QUOTE_RE reset the paragraph on every
+// `>` line, so a span wrapped across two quoted lines never paired — a
+// regression for the base result_placeholder_gate splitter's handling of
+// quoted paragraphs. A "Depends on #N" inside such a wrapped span must stay
+// hidden, the same as it would unquoted.
+Deno.test("extractDependencyReferences - a reference inside a span wrapped across two quoted lines is not a dependency (evasion)", () => {
+  const body = "> Use `foo\n> Depends on #5` here";
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+// PR #3351 review (round 3): the blank-line and block-start checks tested
+// the raw `>`-prefixed line, so nothing except leaving the quote ever ended
+// a paragraph inside one — a quoted blank line and a quoted list item never
+// flushed, and a stray backtick in one quoted "paragraph" paired with one
+// in the next, hiding a real "Depends on #N" declared inside the quote.
+
+Deno.test("extractDependencyReferences - a quoted blank line ends the paragraph, so a stray backtick does not hide the dependency after it (evasion)", () => {
+  const body =
+    "> Handle the ` key in the parser\n>\n> Depends on #5 per `docs`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a quoted list item ends the paragraph, so a stray backtick does not hide the next item's dependency (evasion)", () => {
+  const body = "> - Handle the ` key\n> - Depends on #6\n> - See `docs`";
+  assertEquals(extractDependencyReferences(body), [6]);
+});
+
+// PR #3351 review (round 4): a nested quote (`> > ...` after `> ...`)
+// interrupts the outer quote's paragraph in CommonMark and on GitHub, but
+// the boolean quote check kept both lines in one paragraph.
+
+Deno.test("extractDependencyReferences - a nested quote ends the paragraph, so a stray backtick does not hide the nested dependency (evasion)", () => {
+  const body = "> Handle the ` key\n> > Depends on #5 per `docs`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a dependency inside a span wrapped across two same-depth nested quote lines is not a dependency (look-alike)", () => {
+  const body = "> > Use `foo\n> > Depends on #5` here";
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+// PR #3351 review (round 3): startsNewBlock did not treat a line starting
+// `<!--` as a block start, so a stray backtick before a fleet marker
+// comment paired with a backtick after it, hiding a dependency declared
+// between the marker and the stray backtick's eventual closer.
+
+Deno.test("extractDependencyReferences - an HTML comment line ends the paragraph, so a stray backtick before it does not hide a dependency after it (evasion)", () => {
+  const body = "Fix the ` parsing\n<!-- vibe-x -->\nDepends on #5 per `docs`";
+  assertEquals(extractDependencyReferences(body), [5]);
+});
+
+Deno.test("extractDependencyReferences - a genuine dependency still found alongside nested-list, table and setext code (look-alike)", () => {
+  const body = [
+    "- Parser work",
+    "    - the ` key breaks parsing",
+    "    - Depends on #5",
+    "| key | the ` key |",
+    "| dep | Depends on #6 |",
+    "Heading",
+    "---",
+    "Depends on #7 per `docs`",
+  ].join("\n");
+  assertEquals(extractDependencyReferences(body), [5, 6, 7]);
+});
+
+Deno.test("extractDependencyReferences - a genuine span still pairs within one list item (look-alike)", () => {
+  const body = "- See `docs` for details, not #5";
+  assertEquals(stripCodeSpans(body).includes("docs"), false);
+  assertEquals(extractDependencyReferences(body), []);
+});
+
+Deno.test("extractDependencyReferences - an ATX heading ends the paragraph, so a stray backtick does not hide the dependency on the next line (evasion)", () => {
+  const body = "## Blocked: the ` key breaks parsing\nDepends on #5 per `foo`";
+  assertEquals(extractDependencyReferences(body), [5]);
 });
 
 // =============================================================================

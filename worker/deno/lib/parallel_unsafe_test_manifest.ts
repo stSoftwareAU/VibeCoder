@@ -190,10 +190,19 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // growth measurement separates its linear hand-written scanners from a
   // backtracking regex (#3244).
   "tests/change_request_quotes_3244_test.ts",
+  // The cross-file anchor link scanner reads every docs Markdown line; only a
+  // growth measurement separates its linear inline-link and code-span
+  // patterns from the quadratic link regex it replaced (Issue #3337).
+  "tests/cross_file_anchors_test.ts",
   // The grill-me stem strip walks a run of trailing punctuation an untrusted
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).
   "tests/grill_me_stall_guard_bounds_2183_test.ts",
+  // The failure-category catch-all scans an untrusted run failure message (it
+  // can quote agent-written PR-summary text); only a growth measurement
+  // separates the linear `Error:(?!:)` test from a backtracking one
+  // (Issue #3431).
+  "tests/failure_diagnosis_bounds_3431_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
   // The pre-commit safety gate's dotenv/config/secrets patterns scan a staged
@@ -203,6 +212,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   "tests/pre_commit_safety_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
+  // The PR-body tier-marker finder scans an untrusted PR body for an
+  // unterminated marker prefix; only a growth measurement separates its linear
+  // scan from a backtracking one (Issue #3403).
+  "tests/pr_body_test.ts",
   "tests/prompt_leak_redaction_test.ts",
   // The removed-assertion gate lexes an agent-written test file whole; only a
   // growth measurement separates its capped, linear scans from a quadratic
@@ -230,6 +243,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // agent-written summary and a test file with bounded span and declaration
   // regexes; only a growth measurement pins them (#3257).
   "tests/summary_claim_check_test.ts",
+  // The shared Markdown code-span splitter pairs backtick runs in untrusted
+  // issue bodies and PR summaries; only a growth measurement separates its
+  // linear pairing from the quadratic forward scan it replaced (Issue
+  // #3313).
+  "tests/markdown_code_spans_test.ts",
 ];
 
 /**

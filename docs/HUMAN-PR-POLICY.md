@@ -8,7 +8,7 @@ and will not do to a PR authored by a trusted human, how to hand it a PR, how to
 take it back, and why your open PR never parks the worker's queue. The two configuration lists behind it are described in the
 [Configuration Reference](CONFIGURATION.md#-fleet-pr-authors-fleet-aware-pr-maintenance);
 the incident that produced the policy is recorded in
-[Lessons learnt](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership-issue-4074).
+[Lessons learnt](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership).
 
 ## 🔑 The rule
 
@@ -264,7 +264,7 @@ worker action on a human-authored PR.
 
 - [Configuration Reference § Fleet PR authors](CONFIGURATION.md#-fleet-pr-authors-fleet-aware-pr-maintenance)
   — the two lists and how to set them.
-- [Lessons learnt § A set defined by trust is not a set defined by ownership](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership-issue-4074)
+- [Lessons learnt § A set defined by trust is not a set defined by ownership](LESSONS-LEARNT.md#-a-set-defined-by-trust-is-not-a-set-defined-by-ownership)
   — the incident this policy came from.
 - [PR Feedback & Upkeep](workflows/pr-feedback.md) — what maintenance actually
   does to a PR it owns.

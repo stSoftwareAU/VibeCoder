@@ -1026,8 +1026,11 @@ export function findToolchainInstallViolations(
       );
     }
     // One dropped connection must not fail the image build (Issue #1014): the
-    // fragment inherits the Containerfile's shared policy, so it has to use it.
-    if (FETCH_RE.test(fragment) && !RETRY_POLICY_RE.test(fragment)) {
+    // fragment inherits the Containerfile's shared policy, so it has to use
+    // it. A loopback probe of a server the fragment itself started (Issue
+    // #3367: floci's smoke check against http://127.0.0.1:4566/) is not a
+    // download, so it is exempt from this rule.
+    if (fragmentDownloads(fragment) && !RETRY_POLICY_RE.test(fragment)) {
       violations.push(
         `${path} downloads without the \${${CURL_RETRY_ARG}} retry policy, ` +
           `so one dropped connection fails the image build`,
@@ -1402,6 +1405,38 @@ export const PIP_RETRY_ARG = "PIP_RETRY";
 
 /** A fetch carrying the shared retry policy. */
 const RETRY_POLICY_RE = /\$\{CURL_RETRY\}/;
+
+/** A URL a fetch command names; disjoint character classes keep this linear. */
+const URL_RE = /(?:https?|ftp):\/\/[^\s"')]*/g;
+
+/**
+ * A URL that names loopback and nothing past the host — `127.0.0.1` or
+ * `localhost`, an optional `:port`, then `/path` or end of string. Anchored
+ * end-to-end so `localhost.evil.com` and `127.0.0.1.evil.com` do not match.
+ */
+const LOOPBACK_URL_RE =
+  /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/[^\s"')]*)?$/;
+
+/** True when a line names at least one URL and every URL on it is loopback. */
+function isLoopbackOnlyLine(line: string): boolean {
+  const urls = line.match(URL_RE);
+  return urls !== null && urls.length > 0 &&
+    urls.every((url) => LOOPBACK_URL_RE.test(url));
+}
+
+/**
+ * True when `fragment` fetches something over the network that is not a
+ * build-time smoke probe against a server the fragment itself started on
+ * loopback (Issue #3367: floci's smoke check hits http://127.0.0.1:4566/).
+ * Joins `\`-continued lines first, so a probe split across lines still reads
+ * as one logical command.
+ */
+function fragmentDownloads(fragment: string): boolean {
+  const joined = fragment.replace(/\\\r?\n[ \t]*/g, " ");
+  return joined
+    .split("\n")
+    .some((line) => FETCH_RE.test(line) && !isLoopbackOnlyLine(line));
+}
 
 /** A step that has pip fetch from the index. */
 const PIP_FETCH_RE = /\/pip["']?\s+(?:download|install)\b/;

@@ -100,11 +100,13 @@ export function createGhIssueFetcher(
       // 30 would silently truncate a large parent's child set, and a missing
       // child reads as "not blocked"), de-duplicates, and keeps each child's
       // own repo (Issue #3319: a sub-issue can live in another repository).
-      try {
-        return await fetchNativeSubIssueRefs(_repo, issueNumber, runGhFn);
-      } catch {
-        return [];
-      }
+      //
+      // Issue #3333: no catch here — a failed read (a `gh` error, empty or
+      // unparseable output) rejects, per the Issue #3321 `IssueFetcher.getSubIssues`
+      // contract, so `checkParentBlocked` returns `{ ok: false }` and the
+      // command reports an error; answering `[]` would read as "no
+      // sub-issues — not blocked".
+      return await fetchNativeSubIssueRefs(_repo, issueNumber, runGhFn);
     },
 
     async getIssueBody(_repo: string, issueNumber: number): Promise<string> {
@@ -149,28 +151,45 @@ export const checkParentDepsCommand: Command = {
     // Import dynamically to avoid circular dependency issues
     const { runGhCommand } = await import("../lib/github.ts");
 
-    const fetcher = createGhIssueFetcher(runGhCommand);
-    const result = await checkParentBlocked(fetcher, repo, issueNumber);
-
-    if (!result.ok) {
-      return {
-        success: false,
-        message: `Error checking parent dependencies: ${result.error.message}`,
-      };
-    }
-
-    const message = formatParentBlockedMessage(issueNumber, result.value, repo);
-
-    return {
-      success: true,
-      message,
-      data: {
-        isBlocked: result.value.isBlocked,
-        openChildren: result.value.openChildren,
-        closedChildren: result.value.closedChildren,
-        totalChildren: result.value.totalChildren,
-        message,
-      },
-    };
+    return await runCheckParentDeps(
+      createGhIssueFetcher(runGhCommand),
+      repo,
+      issueNumber,
+    );
   },
 };
+
+/**
+ * Run the parent-dependency check with an injected fetcher (Issue #3333:
+ * the seam lets a test drive a failed sub-issues read through the command's
+ * own reporting). A fetcher rejection is reported as an error, never as
+ * "not blocked".
+ */
+export async function runCheckParentDeps(
+  fetcher: IssueFetcher,
+  repo: string,
+  issueNumber: number,
+): Promise<CommandResult<CheckParentDepsData>> {
+  const result = await checkParentBlocked(fetcher, repo, issueNumber);
+
+  if (!result.ok) {
+    return {
+      success: false,
+      message: `Error checking parent dependencies: ${result.error.message}`,
+    };
+  }
+
+  const message = formatParentBlockedMessage(issueNumber, result.value, repo);
+
+  return {
+    success: true,
+    message,
+    data: {
+      isBlocked: result.value.isBlocked,
+      openChildren: result.value.openChildren,
+      closedChildren: result.value.closedChildren,
+      totalChildren: result.value.totalChildren,
+      message,
+    },
+  };
+}

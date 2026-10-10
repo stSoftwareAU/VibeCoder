@@ -35,6 +35,14 @@
       "arg": "DENO_IMAGE",
       "provides": ["deno"],
       "notes": "Scratch image containing only the deno binary; copied in via a build stage so no archive extractor is needed."
+    },
+    {
+      "name": "docker.io/floci/floci",
+      "tag": "2.2.0",
+      "digest": "sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520",
+      "arg": "FLOCI_IMAGE",
+      "provides": [],
+      "notes": "The multi-arch floci image (OCI index digest) whose /app/application Quarkus native binary the floci fragment copies out via a COPY --from=floci stage; nothing from the image's own runtime is used (Issue #3367)."
     }
   ],
   "providers": [
@@ -42,13 +50,13 @@
       "id": "claude",
       "binary": "claude",
       "fragment": "providers/claude.sh",
-      "version": "2.1.281",
+      "version": "2.1.293",
       "source": "https://storage.googleapis.com/claude-code-dist-86c565f3-f756-42ad-8dfa-d59b1c096819/claude-code-releases",
       "sha256": {
-        "amd64": "56fe3da88458465fb27d7e9299dddb3fead55750fb9c2de795f233b5eea6dce1",
-        "arm64": "dd27b36438a4fed1670cd29bad2fda6a73b628b6da55443e5c2f647fe6ed328f"
+        "amd64": "8968405e26db478af44eabc4635ab5ca557057b702a54460a59c13e1b253e978",
+        "arm64": "a43629e888f0a7d96c5e8de62abf44852433a7ff2481574688db3e5b6399491f"
       },
-      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here. Raised from 2.1.223 to 2.1.261 by Issue #1362: the CLI resolves the `fable` alias from its own bundled table, 2.1.223 resolved it to claude-fable-5, and in-container the image IS the update mechanism (skipSoftwareUpdateFromEnv) so softwareMinVersions cannot pull a running container forward. 2.1.261 carries Fable 5.1 as the default fable model (2.1.257) plus its prompt-cache fixes (2.1.260), and cleared the 24h dependency quarantine; checksums verified against the pinned artefacts and the arm64 binary run to confirm it reports 2.1.261. Raised to 2.1.281 by Issue #2560: 2.1.280 added Claude Opus 5.5 (`claude-opus-5-5`) as the default `opus` model, which every substantive phase now requests by alias; 2.1.281 was the newest release past the 24h quarantine (2.1.282 was 5 hours old), and both checksums match the release manifest.json and the bundle carries the `claude-opus-5-5` id."
+      "notes": "Coding-agent provider layer (Issue #4067). container/providers/claude.sh reads these pins with jq and verifies the download before installing it; the base Containerfile only selects the fragments via the set-valued AGENT_PROVIDERS build argument (Issue #4105), so a second provider adds a fragment and an entry here. Raised from 2.1.223 to 2.1.261 by Issue #1362: the CLI resolves the `fable` alias from its own bundled table, 2.1.223 resolved it to claude-fable-5, and in-container the image IS the update mechanism (skipSoftwareUpdateFromEnv) so softwareMinVersions cannot pull a running container forward. 2.1.261 carries Fable 5.1 as the default fable model (2.1.257) plus its prompt-cache fixes (2.1.260), and cleared the 24h dependency quarantine; checksums verified against the pinned artefacts and the arm64 binary run to confirm it reports 2.1.261. Raised to 2.1.281 by Issue #2560: 2.1.280 added Claude Opus 5.5 (`claude-opus-5-5`) as the default `opus` model, which every substantive phase now requests by alias; 2.1.281 was the newest release past the 24h quarantine (2.1.282 was 5 hours old), and both checksums match the release manifest.json and the bundle carries the `claude-opus-5-5` id. Raised to 2.1.293 by PR #3432 review (Issue #3400): #3400 set `MODEL_CONTEXT_WINDOWS.haiku` to 1M on the premise that the `haiku` alias is served by Haiku 5.5, but 2.1.281's bundled table still had `haiku:\"claude-haiku-4-5\"` — no `claude-haiku-5-5` string anywhere in that binary — so a container on it kept serving the 200k Haiku 4.5 for a 1M-windowed alias, defeating the large-input escalation guard (Issue #2393). 2.1.292 still resolves `haiku:\"claude-haiku-4-5\"`; 2.1.293 is the first release whose bundled table carries `haiku:\"claude-haiku-5-5\"` (`strings` on the downloaded arm64 and amd64 binaries) and was 30.1h past publish (2.1.294 was 19.6h old, inside the 24h quarantine); both checksums match the release's own manifest.json and the installed arm64 binary reports 2.1.293."
     },
     {
       "id": "codex",
@@ -336,6 +344,20 @@
       },
       "repos": ["stSoftwareAU/VibeCoder"],
       "notes": "The RTK CLI trialled by the worker itself (Issue #2381, parent #2328). Like codegraph — and unlike every other entry here — this toolchain exists for the worker's own trial, not for a monitored repository's quality gate: nothing in the fleet's gates invokes it, so it is absent from REQUIRED_REPO_TOOLCHAIN_COMMANDS; `repos` names this repository because parseContainerManifest rejects an empty list, not because a gate here needs the binary. Both digests are the v0.49.0 release's own checksums.txt entries for rtk-x86_64-unknown-linux-musl.tar.gz and rtk-aarch64-unknown-linux-gnu.tar.gz, copied rather than computed from a download; the stable release is pinned, never a daily pre-release, and never built with cargo install. Each tarball carries a bare rtk binary at its top level, so the fragment installs it straight to /usr/local/bin/rtk and aborts if that layout ever changes. `rtk --version` prints \"rtk <version>\", so the manifest needs no versionArgs and the start-up self-check probes it unchanged. The image also sets RTK_TELEMETRY_DISABLED and RTK_SUPPRESS_HOOK_WARNING: RTK does not honour DO_NOT_TRACK, so telemetry needs its own switch, which the binary honours. The second asks for RTK's daily missing-hook warning to stay off stderr — noise where the hook reaches the agent CLI through an explicit --settings path rather than the CLI's own user settings file — but v0.49.0 reads no such variable (the warning is throttled by a stamp file under RTK's data dir), so it is declared and inert until a release honours it."
+    },
+    {
+      "id": "floci",
+      "version": "2.2.0",
+      "fragment": "toolchains/floci.sh",
+      "commands": ["floci"],
+      "versionCommand": "floci",
+      "source": "https://hub.docker.com/r/floci/floci",
+      "sha256": {
+        "amd64": "3d7b4e5c9bde62c0005e5d15878a2c32f4914304818d50c05f89ab2b60280667",
+        "arm64": "7137285fac8d0baf4f6f7dc3f72868a551b28d1d1dddb424c009dc5a1cca48f7"
+      },
+      "repos": ["stSoftwareAU/VibeCoder"],
+      "notes": "Floci, the MIT-licensed LocalStack drop-in on port 4566 that the worker's own runs use (Issue #3367, parent #3346). The sha256 pins are of /app/application inside each architecture's image under the pinned digest; the binary has no version flag, so the fragment installs a /usr/local/bin/floci wrapper that answers --version with \"floci <version>\" and execs the native binary otherwise. Not started by the entrypoint."
     }
   ],
   "tools": [

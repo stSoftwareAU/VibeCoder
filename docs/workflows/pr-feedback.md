@@ -116,10 +116,14 @@ monitor the PR — author is sufficient.
   PR title) in the same pass. The merged-PR close-out sweep remains the
   backstop for merges the worker did not perform.
 - Feedback is processed once: after handling, comments are marked (e.g. eyes
-  reaction) and reviews are dismissed so they are not picked up again. For a
-  review the dismissal is the **only** retirement marker — a moved PR head no
-  longer is (Issue #2697) — so a dismissal that fails at claim time is logged
-  rather than swallowed.
+  reaction), and a review is dismissed once the run retires it so it is not
+  picked up again. A review is never dismissed at claim time (Issue #3383) —
+  claiming it instead posts a lease-carrying claim comment that keeps other
+  hosts off it while the run is alive; see **A review is dismissed only once
+  the run retires it** below. For a review the dismissal is the **only**
+  retirement marker — a moved PR head no longer is (Issue #2697) — so a
+  dismissal that fails when the run retires the review is logged rather than
+  swallowed.
 
 ## ✅ Happy path
 
@@ -153,28 +157,37 @@ match wins and the loop restarts.
    Of those still outstanding, a review is skipped only when a **fleet fix
    commit** landed after it — never because a base merge or a bot's formatting or
    version bump moved the head (Issue #2702). That skip is logged at info.
+   A review already covered by a **live, fleet-authored claim lease**
+   (Issue #3383) is skipped too — not yet dismissed, just claimed by a run
+   still in flight; a lapsed lease (the run timed out, crashed or went
+   silent) makes the review actionable again.
 
    ```mermaid
    flowchart TD
        R["Read every page of reviews<br/>(gh api --paginate)"] --> L["Latest submitted review<br/>per reviewer (COMMENTED ignored)"]
        L --> Q{"Latest is<br/>CHANGES_REQUESTED?"}
        Q -- "no: DISMISSED,<br/>later APPROVED" --> S["Skip — INFO log<br/>with the reason"]
-       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?"}
+       Q -- yes --> O{"Own review?<br/>Unauthorised? Empty body?<br/>Fleet fix commit after it?<br/>Live claim lease?"}
        O -- yes --> S
-       O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>then dismiss the review"]
+       O -- no --> C["Claim (PR_COMMENT_CLAIM)<br/>with a lease line"]
        C --> F["Feedback run"]
+       F --> Ret["Run retires the review:<br/>dismiss"]
    ```
 2. **Checkout** — Checkout the PR branch in the target repo.
 3. **Process** — Run Claude (or equivalent) to address feedback; apply code or
    reply; run the **drift check** (see [The worker's drift check (Issue
    #3143)](#the-workers-drift-check-issue-3143) below); commit and push.
-4. **Mark processed** — Add eyes reaction to comment and/or dismiss review so it
-   is not picked again. The claim adds that reaction *before* it verifies the
+4. **Mark processed** — For a comment, add the eyes reaction so it is not
+   picked again. The claim adds that reaction *before* it verifies the
    claim, to narrow the race window, so it **takes the reaction back** whenever
    the claim ends with no winner — a failed verification read, or a re-read
    that cannot see this host's own claim (Issue #2269). A marker left on a
    comment nobody claimed is feedback no host would ever rediscover; when the
    claim is genuinely lost, the marker stands because the winner answers it.
+   For a review, nothing is marked at claim time — no reaction is ever made
+   for a review, since a review has no reactions endpoint of its own. The
+   review is dismissed only once the run retires it (see **A review is
+   dismissed only once the run retires it** below).
 
 #### Every finding ends fixed or rebutted (Issue #2917)
 
@@ -187,10 +200,22 @@ other exit is the existing escape hatch above: a filed follow-up issue named in
 `.pr_response_message`. When a finding is fixed, the PR summary text that
 recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
-rule). After a verified push to the PR's own head, when that push changed
-`pr-summary-<N>.md`, the worker rebuilds the description from the summary.
-Fix branches are skipped, and only a worker-authored PR is edited. A failed
-sync is logged once at warning and does not fail the run (Issue #3089).
+rule). After a verified push to the PR's own head, the worker re-syncs the
+description from `pr-summary-<N>.md` when the summary at the head differs
+from the SHA-256 digest recorded in the body's hidden marker — whichever push
+changed it, this run's or an earlier one. A pr_feedback run also re-syncs
+when it pushed nothing and has no commits left unpushed, so a run that
+answers a finding without a push still refreshes a stale body (Issue #3315).
+A body raised before the digest marker existed keeps the older rule:
+rebuilt only when this run's own push changed the summary file. Fix branches
+for a gated milestone head are skipped, and only a worker-authored PR is
+edited. A failed sync is logged once at warning and does not fail the run
+(Issue #3089).
+
+Writing `Refs #N` in the summary does not stop the rebuilt description from
+closing the issue, since the rebuild appends `Closes #N` unless a closing
+keyword is already present; marking each unmet acceptance criterion `missing`
+is the way to keep the PR open against the issue instead (Issue #3315).
 
 Before writing `.pr_response_message`, the agent pushes, runs `git fetch origin
 <branch>`, and confirms `origin/<branch>` contains every cited fix commit
@@ -203,12 +228,14 @@ the agent runs.
 
 #### A request-changes review is never answered with "no change" (Issue #3246)
 
-A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) dismisses
-the review, and a dismissal cannot be undone — so if the agent's run ends
-with nothing to show for it, no later cycle can rediscover the finding. The
+A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) is dismissed
+only once the run retires it (Issue #3383; see **A review is dismissed only
+once the run retires it** below) — but a run that ends with nothing to show
+for it, and no rebuttal either, still has to end somewhere, or the review
+would be retried for ever with no record that anything was ever tried. The
 worker (`worker/deno/lib/pr_feedback_processor.ts`, with the decision
-helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) now guards
-against that case:
+helpers in `worker/deno/lib/pr_feedback_reviewer_no_change.ts`) guards
+against that case by escalating to a human rather than looping silently:
 
 - If the run leaves no commit, no working-tree change and no
   `.pr_response_message`, the worker re-runs the agent once, in the same
@@ -242,6 +269,63 @@ flowchart TD
     F -- "no, and no .pr_response_message" --> NH["Label needs-human;<br/>comment names review id,<br/>run count, exit code, duration"]
     U --> F
     P["Inline comment or<br/>top-level PR comment,<br/>no change found"] --> NEU["Neutral 'could not identify<br/>a code change' reply"]
+```
+
+#### A review is dismissed only once the run retires it (Issue #3383)
+
+Claiming a `CHANGES_REQUESTED` review used to dismiss it immediately
+(Issue #2697), which made the claim irreversible before any work happened —
+a run that died mid-flight left the review dismissed with nobody having
+answered it. The claim comment (`PR_COMMENT_CLAIM`) on a review now carries a
+lease line (`PR_COMMENT_CLAIM_LEASE:<time>`) instead: the processor renews it
+from its own heartbeat every 5 minutes (renewing edits the comment, which
+bumps GitHub's `updated_at`), and the lease is live while its last renewal is
+within 15 minutes — the fleet's heartbeat live window. The scan skips a
+review a live, fleet-authored lease covers; a lapsed lease (the run timed
+out, crashed or went silent) makes the review actionable again, and the
+stale sweep deletes only lapsed leases. Other comment types are unaffected:
+they still get the eyes reaction at claim time and keep the 60-second claim
+rule.
+
+The review is dismissed only when the run **retires** it: a fix verified on
+the remote, a fix pushed to a gated head's fix branch whose PR could not be
+raised (a human is asked), the agent's rebuttal posted, the escape-hatch
+hand-off, the no-fix-no-rebuttal `needs-human` escalation above, or the
+second failure below. Each of those first five outcomes also requires its
+own announcement to have actually reached the PR — the push-success reply,
+the fix-PR-raise-failed hand-off, the rebuttal, the escape-hatch reply, or
+(for the escalation) the label add or the comment post. A `gh` call that
+fails to post that announcement charges a failed attempt instead of
+dismissing a review nothing was said about (Issue #3408 review). Any other
+outcome — an agent error, a timeout, a push that never lands on the remote,
+or any outcome that settles nothing, such as a prompt-build failure — is
+charged as a failed attempt instead:
+
+- The **first** failure posts a "First Attempt" reply carrying a hidden
+  `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker and leaves the review
+  undismissed, so it still requests changes and is retried once its lease
+  lapses.
+- The **second** failure (the marker found, fleet-authored) dismisses the
+  review with a "Permanently Failed" reply.
+
+No reaction is ever made for a review — a review has no reactions endpoint
+of its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
+resource. A branch the host could not check out (held by another worktree,
+or a checkout failure) releases the review **uncharged**, with no reply, so
+it is not counted as an attempt. Because the review stays
+`CHANGES_REQUESTED` until it is retired, the #2702 no-update-branch-while-
+changes-requested guard keeps applying while a fix is pending.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Outstanding
+    Outstanding --> Leased : Claim posts a<br/>lease line
+    Leased --> Outstanding : Lease lapses<br/>(no renewal in 15 min)
+    Leased --> Retired : Run retires it<br/>(fix, rebuttal,<br/>escape hatch, needs-human)
+    Leased --> FailedOnce : First failure<br/>(PR_REVIEW_FAILED_ONCE marker)
+    FailedOnce --> Outstanding : Lease lapses
+    FailedOnce --> Retired : Second failure<br/>(Permanently Failed)
+    Retired --> [*] : Dismissed
 ```
 
 #### Fix the defect everywhere it lives (Issues #3086, #3114)
@@ -306,7 +390,7 @@ against the branch head captured before the agent ran, plus any untracked
 files. The check is skipped when there is no before-run head, or the push
 changed nothing.
 
-Four checks run, each only when it applies:
+Five checks run, each only when it applies:
 
 1. **Model drift pass** — only when the push changes a code file or a test
    file (a docs-only push gets no model pass). A read-only question
@@ -351,27 +435,56 @@ Four checks run, each only when it applies:
    hit. A named summary that cannot be read at the head is reported as not
    checked rather than given a recovery turn on its own — the same as a
    model pass that returns no verdict.
+5. **Deterministic line-citation check (Issue #3341)** — on every
+   non-skipped push, for each `docs/archive/pr-summaries/pr-summary-*.md`
+   the PR diff carries that also existed at the before-run head, the
+   summary as it stood at the before-run head is read with `git show`, and
+   its `Branch outcomes:` list entries — plus the header's own inline body,
+   not a table under the header — are parsed for `path:N` / `path:N-M`
+   citations. A citation naming a file this push changed (an exact path
+   match, or a unique `/`-boundary suffix match such as a bare basename) is
+   mapped through this push's diff of that file (`git diff -U0
+   <before-run head> -- <path>`, the working tree against the before-run
+   head). Two things count as a hit: the cited line(s) moved and the
+   `Branch outcomes:` entry still cites the old `path:N`/`N-M`, reported
+   naming the old and the new line numbers; or this push changed or removed
+   a cited line and the entry citing it is word-for-word unchanged from the
+   before-run head, reported as a flip result carried over. Rewriting the
+   entry — renumbered, with the flip re-run — clears it. A citation of a
+   file this push did not change is never a hit, and a citation this push
+   added (absent from the before-run summary) is not checked. The check
+   reports, as not-checked rather than a hit, a cited name matching more
+   than one changed file, a diff it cannot read as text (`git` failed, or a
+   binary file), a malformed citation (line `0`, a reversed range) of a
+   changed file, a before-run summary it could not read, and a before-run
+   `Branch outcomes:` list longer than the parser reads.
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
 rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
-line, and rewrite or remove each stale quoted sentence — without changing
-code. The checks are then re-run; a prose finding counts as fixed only when
-its quoted sentence was present before the recovery turn and is gone after
-it — a finding whose file was not one of the files the question was asked
-about is never read back, so it stays reported regardless of the recovery
-turn. A stale quoted sentence counts as fixed only when it is actually gone
-after the recovery turn — a correction appended below it leaves it standing,
-so it stays reported. A model pass that returns no verdict is not a hit and
-does not trigger a recovery turn on its own; it goes straight to the reply
-note, and a named summary the quoted-sentence check could not read at the
-head goes there too. Whatever remains after the recovery turn — plus a model
-pass that returned no verdict and a summary that could not be checked — is
-appended to `.pr_response_message` under `### Drift check (Issue #3143)`, so
-it reaches the PR reply instead of being pushed silently.
+line, rewrite or remove each stale quoted sentence, and renumber each
+listed line citation to the head — re-running the flip for any entry whose
+cited code this push changed rather than carrying the old result over —
+without changing code. The checks are then re-run; a prose finding counts
+as fixed only when its quoted sentence was present before the recovery turn
+and is gone after it — a finding whose file was not one of the files the
+question was asked about is never read back, so it stays reported
+regardless of the recovery turn. A stale quoted sentence counts as fixed
+only when it is actually gone after the recovery turn — a correction
+appended below it leaves it standing, so it stays reported. A line-citation
+hit counts as fixed only when the re-run check no longer reports it. A
+model pass that returns no verdict is not a hit and does not trigger a
+recovery turn on its own; it goes straight to the reply note, and a named
+summary the quoted-sentence or line-citation check could not read at the
+head goes there too, along with any not-checked citation case the
+line-citation check reported. Whatever remains after the recovery turn —
+plus a model pass that returned no verdict and a summary that could not be
+checked — is appended to `.pr_response_message` under `### Drift check
+(Issue #3143)`, so it reaches the PR reply instead of being pushed
+silently.
 
 ```mermaid
 flowchart TD
-    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check"]
+    A["Agent turn"] --> D["Drift check: model pass,<br/>Test Plan recount, docs sweep,<br/>quoted-sentence check,<br/>line-citation check"]
     D --> H{"Any hits?"}
     H -- no --> P["Commit and push"]
     H -- "no verdict" --> N["Residual appended to<br/>.pr_response_message"]
@@ -747,10 +860,12 @@ flowchart TD
   `CHANGES_REQUESTED` review whose run leaves no commit, no working-tree
   change and no `.pr_response_message` is re-run once (in the same worker
   run, with a note appended) rather than answered with the neutral reply,
-  because dismissing the review cannot be undone; if the final run still has
-  neither a pushed fix nor a `.pr_response_message`, the worker labels the PR
-  `needs-human` instead of posting a reply (see **A request-changes review is
-  never answered with "no change"** above).
+  because the review would otherwise sit retried for ever with no record
+  that anything was tried; if the final run still has neither a pushed fix
+  nor a `.pr_response_message`, the worker labels the PR `needs-human`
+  instead of posting a reply — one of the outcomes that retires the review
+  (see **A request-changes review is never answered with "no change"** and
+  **A review is dismissed only once the run retires it** above).
 
 ## 📚 Further reading
 

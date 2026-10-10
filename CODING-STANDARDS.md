@@ -262,6 +262,35 @@ earns its place by meeting all four conditions:
    prints one `doc not on base` line. Record the result for every pinned
    phrase in the PR's Test Plan.
 
+**Re-scoping an existing drift test.** Converting an existing whole-file drift
+test to `section()` moves pins whose phrases are meant to be on base, so
+condition 4 and "the test goes red against the base" say nothing about them.
+Keeping every pinned string is not enough. Two fleet PRs were sent back for
+this: a review round of VibeCoder#3240 had narrowed two absence checks to one
+section, and one of VibeCoder#3297 had moved the pin "In an issue run" into a
+list where a longer pin already contained it, leaving the
+Blocked-on-another-issue sentence unguarded. For every check the conversion
+moves:
+
+- **Map each pin to its rule.** Find the sentence the pin was written for —
+  `git log -S '<pin>'` on the test names the commit and the doc line it
+  guarded — and scope the pin to the heading that holds that sentence, not to
+  any heading where the phrase happens to appear.
+- **No subsumed pins.** A pin that is a substring of another pin in the same
+  scoped list checks nothing: make it the full sentence of its rule, or move
+  it to its rule's section. `assertPins(section, pins)` from
+  `worker/deno/tests/support/markdown_docs.ts` throws on a subsumed pin, so
+  assert a scoped list through it.
+- **Absence checks keep their reach.** An absence check (`=== false`,
+  `assertNotMatch`, `assertFalse`) that read the whole file stays on
+  `flatWholeFile`. Narrowing it to a section weakens it, which is a finding
+  unless the issue asks for it.
+- **Red-check each moved check, not the test.** Delete the rule's text from
+  its section only, leaving every other copy of the phrase alone, run the
+  test, see it fail, then restore it. For an absence check, add the forbidden
+  text under a different heading instead. The Test Plan records one line per
+  moved check: the pin, its section and the red-check result.
+
 A filesystem-derived invariant is a different species and needs no exemption:
 `worker/deno/tests/bucket_docs_test.ts` fails when a bucket file is added
 without being listed or a link stops resolving, which is a fact about the tree
@@ -389,11 +418,15 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A test that
-only pins current behaviour — the fault was unreproduced
-or already fixed, and no production change was made — is expected green on
-base, and the Test Plan says so. **A negative test must be able to fail**
-below is this rule for an assertion that something does *not* happen.
+the base section already held is a blocking self-review finding. A pin a
+change only moves, while converting an existing whole-file drift test to
+`section()`, is meant to be on base, so this check does not apply to it:
+**Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
+each moved check in its own section instead. A test that only pins current
+behaviour — the fault was unreproduced or already fixed, and no production
+change was made — is expected green on base, and the Test Plan says so.
+**A negative test must be able to fail** below is this rule for an
+assertion that something does *not* happen.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
@@ -502,9 +535,14 @@ enumeration as a `Branch outcomes:` list in its Test Plan — one line per
 outcome naming `path:line`, the outcome, the test that reaches it, and that
 flipping it went red — or `Branch outcomes: none added` when the diff adds
 no branch; every test it names must exist at the head (see **A named test
-must exist**). A fix to an existing PR re-enumerates every branch its own
-commits add, not only those a review finding named, and refreshes the list
-to the head.
+must exist**). An entry that admits no test reaches its outcome is work
+still to do, not a record: add the test that goes red, or remove the
+branch. Only an outcome the issue puts out of scope, or one no test can
+reach, may stand, written `exempt (out of scope): <reason>` or `exempt
+(untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
+creation on any other admission (Issue #3288). A fix to an existing PR
+re-enumerates every branch its own commits add, not only those a review
+finding named, and refreshes the list to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -659,7 +697,12 @@ stale. Before calling a gate done (Issue #3149):
    template literal, a skipped or ignored declaration (`Deno.test.ignore`,
    `it.skip`), an example inside a code block — add a test asserting it does
    **not** fire. A gate that reads source code blanks out comments and
-   literals before it matches, or uses a tokeniser.
+   literals before it matches, or uses a tokeniser. A gate that must ignore
+   Markdown code uses the shared helper in
+   `worker/deno/lib/markdown_code_spans.ts` (`splitMarkdownCode`,
+   `maskMarkdownCode` or `stripMarkdownCode`); it never pairs backticks with
+   a per-line regex, because a hard-wrapped span continues onto the next line
+   (VibeCoder#3132, Issue #3313).
 2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
    recent PR diffs, closure-verdict logs, the PR's own test files — run the
    matcher across it and report the false-positive and false-negative counts
@@ -1130,26 +1173,57 @@ instructions for adding a command, see [docs/EXTENDING.md](docs/EXTENDING.md).
 ## Commit Safety — never commit hidden files
 
 Hidden files (any path matching `.*`) routinely carry secrets — `.env`, API
-keys, OAuth tokens, SSH keys. Never stage or commit a hidden path outside the
-small allowlist.
+keys, OAuth tokens, SSH keys. Never stage or commit a hidden path unless it is
+on the fleet-wide allowlist below, or the target repository's own tracked
+`.gitignore` explicitly re-allows it (Issue #3296, see below) — secret
+patterns are forbidden regardless of either route.
 
-**Allowlist — the only hidden paths that may ever be tracked:** `.gitignore`,
-`.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared editor
-settings), `.markdownlint-cli2.jsonc`. These are the five entries
+**Allowlist — the fleet-wide hidden paths that may always be tracked:**
+`.gitignore`, `.gitattributes`, `.github/` (workflow YAML), `.vscode/` (shared
+editor settings), `.markdownlint-cli2.jsonc`. These are the five entries
 `REQUIRED_GITIGNORE_PATTERNS` re-allows in
 `worker/deno/lib/gitignore_enforcer.ts`, which is what writes each repository's
 `.gitignore`; this list and `prompts/coding_guidelines/` restate it, and
 neither may drift from it.
 
+**Per-repo opt-in — a path the repository's own `.gitignore` re-allows**
+(Issue #3296). The pre-commit safety gate (`assertSafeToCommit()`) also
+accepts a staged hidden path outside the five-entry allowlist when
+`git check-ignore -v -n --no-index`, walked over that path and its ancestor
+directories, finds an explicit `!`-negation rule decided by the target
+repository's tracked, unmodified root `.gitignore` itself — for example
+this repository's `.gitignore` re-allows `.claude/skills/` and
+`.claude/agents/` (Issues #2675, #2976). Exit 1 from a plain
+`check-ignore -q` alone is not enough, since that only means "no rule
+matches" — equally true of a repository whose `.gitignore` never governs
+the path at all (PR #3308 review) — and a decision from a nested or untracked
+`.gitignore` does not count either. `HEAD:.gitignore` must also match
+`.gitignore` on the local `origin/<default>` ref byte for byte: `.gitignore`
+is itself on the fleet-wide allowlist, so a re-allow committed only on the
+branch under review — never published on the repository's own default
+branch — must not be able to exempt a later commit on that same branch
+(PR #3308 review). This never widens the fleet-wide allowlist above:
+it only recognises what a specific repository has already chosen to track.
+The forbidden patterns below are never exempt under this route, and if
+`.gitignore` cannot be read, has been modified (in the index or the working
+tree), differs from `origin/<default>`'s copy, `origin/HEAD` cannot be
+resolved, or no rule in the path's ancestor chain decides it at all, nothing
+is exempt (fail closed). Each exemption is logged at INFO.
+
 **Always-forbidden patterns:** `.env`, `.env.*`, `.config.json`,
 `.config*.json`, `*.secret.json`, `.secrets/`, `.aws/`, `.ssh/`, `.gnupg/`,
-`.netrc`, and any other hidden file not on the allowlist.
+`.netrc` (credential stores, refused at any depth — e.g. `deploy/.ssh/`,
+Issue #3336), and any other hidden file not on the allowlist or re-allowed by
+the repository's own tracked `.gitignore`.
 
 **Also forbidden — private key material and credential files:** `*.pem`,
-`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `credentials.json`,
+`*.key`, `*.p12`, `*.pfx`, `id_rsa`, `id_rsa.*`, `id_dsa`, `id_dsa.*`,
+`id_ecdsa`, `id_ecdsa.*`, `id_ed25519`, `id_ed25519.*`, `id_ecdsa_sk`,
+`id_ecdsa_sk.*`, `id_ed25519_sk`, `id_ed25519_sk.*`, `credentials.json`,
 `service-account*.json`. These are not hidden files, so the `.*` rule never
 covered them — the worker reads a GitHub App private key from disk, and a `.pem`
-left in a working tree would otherwise be staged by `git add -A`. If a repo
+left in a working tree would otherwise be staged by `git add -A`. The OpenSSH
+private-key names are refused at any depth (Issue #3336). If a repo
 intentionally tracks a fixture matching one of these patterns, negate it
 explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
 
@@ -1158,8 +1232,16 @@ explicitly (e.g. `!tests/fixtures/*.pem`) rather than dropping the broad rule.
   `git reset HEAD <file>`.
 - **Never use `git add -f`** to bypass `.gitignore`, and never bypass the
   pre-commit safety gate with `git commit --no-verify`.
-- If a hidden file legitimately needs tracking, raise an issue and update the
-  allowlist in `worker/deno/lib/gitignore_enforcer.ts` via PR.
+- If a hidden file legitimately needs tracking in every monitored repository,
+  raise an issue and update the fleet-wide allowlist in
+  `worker/deno/lib/gitignore_enforcer.ts` via PR. If it only needs tracking in
+  one repository, a human adds the re-allow to that repository's own
+  `.gitignore` as its own change on the default branch first (Issue #3296) —
+  the pre-commit safety gate only recognises a re-allow once
+  `origin/<default>`'s `.gitignore` already carries it. An agent never adds
+  the re-allow itself: the gate checks `HEAD:.gitignore` against
+  `origin/<default>:.gitignore`, so a re-allow added and staged in the same
+  worker PR can never pass.
 
 ## Secret Redaction — Every Outbound Sink
 

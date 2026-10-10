@@ -17,6 +17,17 @@
  * path the list names to actually exist at HEAD, so a fabricated citation
  * cannot pass.
  *
+ * A later gap (Issue #3288, GRQ-AutoTrader#2682, VibeCoder#3282): an entry
+ * can satisfy every rule above while admitting, in its own words, that no
+ * test actually reaches the outcome it names — "no test reaches it", a flip
+ * that "never went red", or one that "left the suite green". The gate above
+ * never read the PROSE of an entry, only its shape, so this sailed straight
+ * through. This module now also blocks any entry (or stray text the list
+ * parser itself skipped, so an admission cannot dodge the check merely by
+ * sitting in a table row or after a sibling bullet) that admits its own
+ * outcome is unreached, with a single narrow exemption for an outcome the
+ * issue genuinely puts out of scope, or one no test can reach at all.
+ *
  * Modelled on `docs_sweep_gate.ts`: pure functions, hardcoded regexes (no
  * `new RegExp()` built from input), and a bounded scan of the PR summary —
  * agent-authored and steered by an untrusted issue body, so it is treated as
@@ -29,20 +40,39 @@ import { codeChangingFiles } from "./docs_sweep_gate.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import type { Result } from "../types.ts";
 
-/** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
-const MAX_SCAN_CHARS = 200_000;
+/**
+ * Cap on untrusted text scanned by the gate's regexes (defence in depth).
+ * Also read by `branch_outcome_citations.ts` (Issue #3341) to report a
+ * truncated list as not checked.
+ */
+export const MAX_SCAN_CHARS = 200_000;
 
-/** Cap on one Branch-outcomes entry after continuation lines are joined. */
-const MAX_ENTRY_CHARS = 4_000;
+/**
+ * Cap on one Branch-outcomes entry after continuation lines are joined.
+ * Also read by `branch_outcome_citations.ts` (Issue #3341) to report a
+ * truncated list as not checked.
+ */
+export const MAX_ENTRY_CHARS = 4_000;
 
-/** Cap on the number of entries parsed out of one list. */
-const MAX_ENTRIES = 100;
+/**
+ * Cap on the number of entries parsed out of one list.
+ * Also read by `branch_outcome_citations.ts` (Issue #3341) to report a
+ * truncated list as not checked.
+ */
+export const MAX_ENTRIES = 100;
 
 /** Every line terminator, so a lone CR or Unicode separator cannot stay inside a line. */
 const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
+
+/**
+ * A markdown table row. Each one is kept as its own paragraph group (PR
+ * #3312 review) — merging table rows into one joined unit would let a test
+ * citation in one row clear a weak admission in another.
+ */
+const TABLE_ROW_RE = /^\s*\|/;
 
 /** A markdown heading, capturing its `#` run so the level can be read off. */
 const HEADING_RE = /^\s{0,3}(#{1,6})\s/;
@@ -136,6 +166,17 @@ export interface BranchOutcomesRecord {
   /** Parsed list entries (empty when `noneDeclared`, a heading, or no list follows). */
   entries: string[];
   /**
+   * Raw (pre-decoration) line indices behind each member of `entries`, in
+   * the same order — `entryLineIndices[2]` lists the lines that fed
+   * `entries[2]`, in document order. The admission check blanks test
+   * citations straight from these raw lines rather than re-parsing a
+   * separately blanked copy of the whole document (Issue #3288, PR #3312
+   * review round 3): an independent re-parse can identify different
+   * header/entry boundaries than the real one and block an honest summary
+   * on a shape mismatch that was never an actual line merge.
+   */
+  entryLineIndices: number[][];
+  /**
    * Every line between the header and the next section-boundary heading (or
    * the next `Branch outcomes` header, or the end of the document), scanned
    * for named test paths only — independent of the list-shaped
@@ -148,6 +189,34 @@ export interface BranchOutcomesRecord {
    * (PR #3160 review, sixth round).
    */
   scanText: string;
+  /**
+   * Decoration-stripped, non-empty lines from each header's scanned region
+   * (the same region `scanText` is built from) that were NOT folded into a
+   * recorded `entries` member or into the inline body/wrap text — a table
+   * row, prose after the list, a sibling bullet that ended the list, an
+   * entry dropped once `entries.length` reached `MAX_ENTRIES`, or a
+   * continuation/entry line whose content was cut by `capEntry`.
+   *
+   * Purpose (Issue #3288): the unreached-outcome admission check reads this
+   * field so an admission sitting in text the list-shaped parser legitimately
+   * skips is still caught — fail closed, per CODING-STANDARDS' "Writing a
+   * gate over text" rule 3 (a gate must not trust the shape of the input it
+   * is policing more than the words in it).
+   */
+  uncapturedLines: string[];
+  /** Raw line index behind each member of `uncapturedLines`, in the same order. */
+  uncapturedLineIndices: number[];
+  /**
+   * Raw line indices behind each contribution folded into `body`, grouped
+   * in the same order `body` joins them — one group per header, joining an
+   * inline header's own body line with the wrap lines it continues onto
+   * (Issue #3288, PR #3312 review round 5), so a backtick span straddling
+   * that line break still pairs when `blankedUnitLines` blanks the group.
+   * A heading-form header with no inline text groups just its wrap lines.
+   * Used to blank `body` per group, the same construction `entryLineIndices`
+   * supports for `entries`.
+   */
+  bodyLineIndexGroups: number[][];
 }
 
 /**
@@ -176,8 +245,12 @@ export function parseBranchOutcomes(
   const raw = (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS);
   const lines = raw.split(LINE_TERMINATOR_RE);
   const entries: string[] = [];
+  const entryLineIndices: number[][] = [];
   const bodyParts: string[] = [];
+  const bodyLineIndexGroups: number[][] = [];
   const scanTextParts: string[] = [];
+  const uncapturedLines: string[] = [];
+  const uncapturedLineIndices: number[] = [];
   let present = false;
   let onlyNone = true;
   let lastHeadingLevel = 0;
@@ -211,27 +284,62 @@ export function parseBranchOutcomes(
       ? stripped.slice(inlineMatch[0].length).trim()
       : "";
     if (isNoneBody(body)) {
-      if (body) bodyParts.push(body);
+      if (body) {
+        bodyParts.push(body);
+        bodyLineIndexGroups.push([i]);
+      }
       // An honest `none` still gets its trailing region scanned for a named
       // test path: a review-fix rewording ("none added." + a refreshed list
       // of the earlier rounds' arms) must not let an invented citation past
-      // the header's own words (PR #3160 review, seventh round).
-      scanTextParts.push(scanRegionText(lines, i + 1, boundaryLevel));
+      // the header's own words (PR #3160 review, seventh round). None of
+      // this region's lines are folded into a recorded entry here, so every
+      // non-empty line in it is uncaptured (Issue #3288).
+      const region = scanRegion(lines, i + 1, boundaryLevel);
+      scanTextParts.push(region.text);
+      for (const idx of region.indices) {
+        uncapturedLines.push(stripDecoration(lines[idx]!));
+        uncapturedLineIndices.push(idx);
+      }
       continue;
     }
 
     onlyNone = false;
-    if (body) bodyParts.push(body);
     const headerIndent = inlineMatch && LIST_MARKER_RE.test(rawLine)
       ? leadingIndent(rawLine)
       : -1;
     const collected = collectEntries(lines, i + 1, headerIndent, boundaryLevel);
-    for (const entry of collected.entries) {
+    const capturedLines = new Set<number>();
+    for (let k = 0; k < collected.entries.length; k++) {
       if (entries.length >= MAX_ENTRIES) break;
-      entries.push(entry);
+      entries.push(collected.entries[k]!);
+      entryLineIndices.push([...collected.entryLines[k]!]);
+      for (const idx of collected.entryLines[k]!) capturedLines.add(idx);
     }
-    if (collected.bodyExtra) bodyParts.push(collected.bodyExtra);
-    scanTextParts.push(scanRegionText(lines, i + 1, boundaryLevel));
+    // The header's own inline body (text on the header's own line, `body`)
+    // and the wrap lines it continues onto (`collected.bodyExtra`) are
+    // recorded as ONE group, so `blankedUnitLines` pairs a backtick span
+    // across the line break between them. Two separate groups let
+    // backtick pairing reset partway through the inline body's own lines,
+    // hiding an admission that wraps a code span across the break (PR
+    // #3312 review, round 5). When there is no inline body text (a
+    // heading-form header), the group stays just the wrap lines, matching
+    // the earlier shape.
+    if (body || collected.bodyExtra) {
+      if (body) bodyParts.push(body);
+      if (collected.bodyExtra) bodyParts.push(collected.bodyExtra);
+      bodyLineIndexGroups.push(
+        body ? [i, ...collected.bodyExtraLines] : [...collected.bodyExtraLines],
+      );
+      for (const idx of collected.bodyExtraLines) capturedLines.add(idx);
+    }
+    const region = scanRegion(lines, i + 1, boundaryLevel);
+    scanTextParts.push(region.text);
+    for (const idx of region.indices) {
+      if (!capturedLines.has(idx)) {
+        uncapturedLines.push(stripDecoration(lines[idx]!));
+        uncapturedLineIndices.push(idx);
+      }
+    }
     i = collected.nextIndex - 1;
   }
 
@@ -240,7 +348,11 @@ export function parseBranchOutcomes(
     noneDeclared: present && onlyNone,
     body: bodyParts.join(" "),
     entries,
+    entryLineIndices,
     scanText: scanTextParts.join(" "),
+    uncapturedLines,
+    uncapturedLineIndices,
+    bodyLineIndexGroups,
   };
 }
 
@@ -257,13 +369,19 @@ export function parseBranchOutcomes(
  * (PR #3160 review, sixth round). Stopping at the next header, or a
  * section-boundary heading, keeps every header's scan disjoint, so the
  * combined cost across a whole PR summary stays linear.
+ *
+ * Also returns the raw line indices behind `text`, so `parseBranchOutcomes`
+ * can tell which of this header's scanned lines were never folded into a
+ * recorded entry or the inline body/wrap text — those become
+ * `BranchOutcomesRecord.uncapturedLines` (Issue #3288).
  */
-function scanRegionText(
+function scanRegion(
   lines: string[],
   startIndex: number,
   boundaryLevel: number,
-): string {
+): { text: string; indices: number[] } {
   const parts: string[] = [];
+  const indices: number[] = [];
   for (let j = startIndex; j < lines.length; j++) {
     const line = lines[j]!;
     const lvl = headingLevel(line);
@@ -275,9 +393,12 @@ function scanRegionText(
     ) {
       break;
     }
-    if (stripped) parts.push(stripped);
+    if (stripped) {
+      parts.push(stripped);
+      indices.push(j);
+    }
   }
-  return parts.join(" ");
+  return { text: parts.join(" "), indices };
 }
 
 /**
@@ -285,16 +406,38 @@ function scanRegionText(
  * heading deeper than `boundaryLevel` (see `sectionBoundaryLevel`) is
  * skipped over rather than ending the scan, so a `#### path/to/file.ts`
  * grouping heading between the header and its list does not hide that list
- * from `entries` (PR #3160 review, sixth round).
+ * from `entries` (PR #3160 review, sixth round) — but only once it has been
+ * checked against the header forms below and found not to be a real
+ * `Branch outcomes` header. The scan stops at the next `Branch outcomes`
+ * header, inline or heading-form, however deep, same as `scanRegionText`, so
+ * the outer loop in `parseBranchOutcomes` is the one to parse that header
+ * (Issue #3340; the heading-form case was still missed on the first fix —
+ * PR #3372 review).
+ *
+ * Also reports, per entry, which line indices actually contributed to its
+ * final (possibly `capEntry`-truncated) text, and which lines made up
+ * `bodyExtra` — so `parseBranchOutcomes` can build the captured-line set
+ * `uncapturedLines` is the complement of (Issue #3288). A line whose content
+ * was cut by `capEntry` (the joined text exceeded `MAX_ENTRY_CHARS`) is not
+ * counted as captured: its words never actually reached the text the rest of
+ * the gate reads.
  */
 function collectEntries(
   lines: string[],
   startIndex: number,
   headerIndent: number,
   boundaryLevel: number,
-): { entries: string[]; bodyExtra: string; nextIndex: number } {
+): {
+  entries: string[];
+  entryLines: number[][];
+  bodyExtra: string;
+  bodyExtraLines: number[];
+  nextIndex: number;
+} {
   const entries: string[] = [];
+  const entryLines: number[][] = [];
   const wrap: string[] = [];
+  const wrapLines: number[] = [];
   let sawBlank = false;
   let wrapping = true;
   let j = startIndex;
@@ -309,6 +452,22 @@ function collectEntries(
     }
     const lvl = headingLevel(line);
     if (lvl > 0 && lvl <= boundaryLevel) break;
+
+    const stripped = stripDecoration(line);
+    // A real `Branch outcomes` header reached mid-scan ends this call here
+    // rather than being swallowed into `wrap` or pushed as an entry; the
+    // outer loop in `parseBranchOutcomes` parses it on the next iteration
+    // (Issue #3340). Checked before the deeper-heading skip below, same
+    // order `scanRegionText` uses — a heading-form header (e.g. `###
+    // Branch outcomes`) deeper than `boundaryLevel` is still a real header,
+    // not a grouping sub-heading, so it must not fall into that skip
+    // unexamined (PR #3372 review).
+    if (
+      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
+      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
+    ) {
+      break;
+    }
     if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
     const indent = leadingIndent(line);
@@ -322,7 +481,9 @@ function collectEntries(
       // `wrapping` is not reset here: `entries.length > 0` already shuts
       // the wrap branch below once any entry exists, making a reset here
       // unobservable dead code (PR #3160 review, seventh round).
-      entries.push(capEntry(stripDecoration(line)));
+      const capped = capEntry(stripped);
+      entries.push(capped);
+      entryLines.push(capped.length < stripped.length ? [] : [j]);
       sawBlank = false;
       continue;
     }
@@ -330,15 +491,19 @@ function collectEntries(
     // A continuation of the previous entry, indented past the header.
     if (!sawBlank && entries.length > 0 && indent > headerIndent) {
       const lastIndex = entries.length - 1;
-      entries[lastIndex] = capEntry(
-        `${entries[lastIndex]} ${stripDecoration(line)}`.trim(),
-      );
+      const joinedRaw = `${entries[lastIndex]} ${stripped}`.trim();
+      const capped = capEntry(joinedRaw);
+      entries[lastIndex] = capped;
+      if (capped.length === joinedRaw.length) {
+        entryLines[lastIndex]!.push(j);
+      }
       continue;
     }
 
     // Lines an inline header wraps onto, before the first list item.
     if (entries.length === 0 && wrapping) {
-      wrap.push(stripDecoration(line));
+      wrap.push(stripped);
+      wrapLines.push(j);
       continue;
     }
 
@@ -346,7 +511,13 @@ function collectEntries(
     break;
   }
 
-  return { entries, bodyExtra: wrap.join(" ").trim(), nextIndex: j };
+  return {
+    entries,
+    entryLines,
+    bodyExtra: wrap.join(" ").trim(),
+    bodyExtraLines: wrapLines,
+    nextIndex: j,
+  };
 }
 
 /** Cap one entry's length. */
@@ -405,7 +576,16 @@ export function namedTestPaths(record: BranchOutcomesRecord): string[] {
   const texts = [...record.entries];
   if (record.body) texts.push(record.body);
   if (record.scanText) texts.push(record.scanText);
+  return testPathsIn(texts);
+}
 
+/**
+ * The test file paths named across an arbitrary set of texts — the shared
+ * token-scanning loop `namedTestPaths` uses over a whole record, refactored
+ * out (Issue #3288) so the unreached-outcome admission check can run the
+ * identical "does this ONE unit name a test path" test over a single unit.
+ */
+function testPathsIn(texts: readonly string[]): string[] {
   const found: string[] = [];
   const seen = new Set<string>();
 
@@ -455,6 +635,384 @@ function isBarePlaceholder(body: string): boolean {
   return PLACEHOLDER_VALUES.has(normalised);
 }
 
+/**
+ * Blank test/command citations across one unit's own raw lines (an entry,
+ * one body contribution, or one grouped run of uncaptured lines — see
+ * `groupUncapturedIndices`), then decoration-strip the result. The raw lines
+ * are joined with `\n` and passed through `blankLineCitationNames` as ONE
+ * string before being split back apart (PR #3312 review, round 4): a span
+ * opened on one line and closed on the next — hard-wrapped fleet summaries
+ * do this routinely — still pairs correctly, because `split("\`")` does not
+ * care that the joined string contains embedded newlines.
+ *
+ * Pairing is never reset partway through a unit's own lines, unlike the
+ * removed per-document `blankTestCitationNames` this replaced: the caller
+ * already isolated this text to exactly one entry, one body contribution, or
+ * one paragraph of uncaptured lines, so the cross-item leak that function's
+ * list-marker/blank-line reset guarded against cannot happen here — there is
+ * only one item in play. Operating on exactly the raw lines the real parse
+ * already attributed to the unit (Issue #3288, PR #3312 review round 3)
+ * also leaves nothing to re-derive: unlike blanking the whole document and
+ * re-parsing it from scratch, there is no second parse that can disagree in
+ * shape with the real one.
+ */
+function blankedUnitLines(
+  lines: readonly string[],
+  indices: readonly number[],
+): string[] {
+  // No early-return for an empty `indices` (e.g. a capEntry-truncated
+  // entry, see parseBranchOutcomes): `[].join("\n")` is already `""`, and
+  // blanking/splitting/filtering `""` produces `[]` too, so a guard here
+  // would be unreachable-observable dead code.
+  const rawSlice = indices.map((i) => lines[i]).join("\n");
+  return blankLineCitationNames(rawSlice)
+    .split(LINE_TERMINATOR_RE)
+    .map(stripDecoration)
+    .filter((line) => line.length > 0);
+}
+
+/**
+ * `blankedUnitLines`, space-joined into one string — the shape
+ * `collectEntries`/`scanRegion` build entry and body text in.
+ */
+function blankedUnitText(
+  lines: readonly string[],
+  indices: readonly number[],
+): string {
+  return blankedUnitLines(lines, indices).join(" ");
+}
+
+/**
+ * Group consecutive uncaptured line indices into paragraphs, so
+ * `blankedUnitLines` can pair a backtick span across a wrapped line within
+ * one paragraph while never reaching into a different one (Issue #3288, PR
+ * #3312 review round 4). Each `Branch outcomes:` header's uncaptured lines
+ * are otherwise one flat list with no grouping at all — blanking each raw
+ * line on its own (the previous shape) mis-pairs a span that opens on one
+ * line and closes on the next, which can blank away the entry's OWN prose
+ * between the close and the next span and hide a real admission.
+ *
+ * A gap in the index sequence (a blank line, a captured line, or the end of
+ * a header's scanned region) always starts a new paragraph, and so does
+ * every list-marker line (`` `- ` ``, `` `* ` ``, `1. `, …) — the same
+ * cross-item isolation the removed `blankTestCitationNames` used to provide
+ * by resetting at every list-marker line, now applied before blanking
+ * rather than during it: a stray backtick in one bullet can never reach a
+ * later, unrelated bullet's text. A non-list, non-blank line that
+ * immediately follows (whether indented or not — a "lazy" unindented
+ * continuation is still one Markdown paragraph) stays in the current
+ * paragraph, so a span wrapped across that line break still pairs.
+ */
+function groupUncapturedIndices(
+  lines: readonly string[],
+  indices: readonly number[],
+): number[][] {
+  const groups: number[][] = [];
+  let current: number[] = [];
+  let prevIndex = Number.NaN;
+  let prevWasTableRow = false;
+  for (const idx of indices) {
+    const isTableRow = TABLE_ROW_RE.test(lines[idx]!);
+    const startsNewGroup = current.length === 0 ||
+      idx !== prevIndex + 1 ||
+      LIST_MARKER_RE.test(lines[idx]!) ||
+      isTableRow ||
+      prevWasTableRow;
+    if (startsNewGroup) {
+      if (current.length > 0) groups.push(current);
+      current = [idx];
+    } else {
+      current.push(idx);
+    }
+    prevIndex = idx;
+    prevWasTableRow = isTableRow;
+  }
+  if (current.length > 0) groups.push(current);
+  return groups;
+}
+
+/** A closed code-span segment containing whitespace somewhere. */
+const SPAN_HAS_WHITESPACE_RE = /\s/;
+
+/**
+ * Blank the parts of a backtick code span that are not the entry's own
+ * words, for every CLOSED span (an odd-indexed segment of a `` ` ``-split
+ * group that is not the group's last segment — an unterminated trailing
+ * backtick never closes, so the dangling last segment is left alone):
+ *
+ *  - a `path::name`-shaped span keeps only the part before the first `::`:
+ *    `` `worker/deno/tests/foo_test.ts::flags no test reaches` `` becomes
+ *    `` `worker/deno/tests/foo_test.ts` ``, and `` `handler::tests::min_hold` ``
+ *    becomes `` `handler` ``. A quoted test NAME that happens to contain an
+ *    admission phrase (e.g. a test literally named "flags an entry no test
+ *    reaches") must not itself trip the admission check below — only the
+ *    identifier before the first `::` is kept, since that is the part the
+ *    rest of this gate (`namedTestPaths`) treats as meaningful.
+ *  - any OTHER span containing whitespace is blanked outright: a span with a
+ *    space is prose, a test name, or a shell command quoted as code (e.g.
+ *    `` `cargo test --workspace` ``, or a bare test-name span in a list that
+ *    already cited its path earlier, as in the `completion - a Test Plan
+ *    bullet citing a behaviour no test covers blocks; …` shape) — none of it
+ *    is the entry's OWN prose, so a backticked admission such as
+ *    `` `no test reaches it` `` is never read as one: the admission has to
+ *    be in the entry's own words (bold is fine; a code span is not).
+ *  - a span with NO whitespace (a bare path, `path:line`, or identifier) is
+ *    left unchanged — there is nothing to blank, and `namedTestPaths` /
+ *    `unitLabel` still need to read it.
+ *
+ * `text` may contain embedded `\n`s (several joined raw lines): splits on
+ * the backtick character rather than using a regex, so there is nothing
+ * here that can backtrack, and a `\n` is just another character a span can
+ * contain.
+ */
+function blankLineCitationNames(text: string): string {
+  const segments = text.split("`");
+  for (let k = 1; k < segments.length - 1; k += 2) {
+    const segment = segments[k]!;
+    const sep = segment.indexOf("::");
+    if (sep >= 0) {
+      segments[k] = segment.slice(0, sep);
+    } else if (SPAN_HAS_WHITESPACE_RE.test(segment)) {
+      segments[k] = "";
+    }
+  }
+  return segments.join("`");
+}
+
+/**
+ * Strong admission phrases: these block an entry regardless of whether it
+ * also names a test path or mentions a red flip — the words themselves are
+ * already an unambiguous confession that the outcome is unreached.
+ */
+/**
+ * Source of the negated-red pattern, used by `STRONG_ADMISSION_RES` below.
+ * Deliberately NOT folded into `recordsRedFlip`'s global strip
+ * (`NEGATED_RED_GLOBAL_RE`): `admitsUnreached` runs `STRONG_ADMISSION_RES`
+ * first and returns immediately on any match, so by the time
+ * `recordsRedFlip` ever runs on a unit, that unit cannot match this source —
+ * including it in the global strip too is unreachable dead code, not a
+ * drift guard (PR #3312 review, round 2).
+ *
+
+ * Deliberately narrower than a bare "negation word, up to N words, `red`":
+ * a corpus run over `docs/archive/pr-summaries/` turned up genuinely
+ * COVERED entries that happen to carry an unrelated negation ahead of a
+ * `red` that is NOT negated at all — "flipped to **never** add, test went
+ * **red**" (pr-summary-3223.md:178), "flipped to **no** split, test went
+ * **red**" (3244.md:126), "**No** gap: `…`. Flipped: **red**."
+ * (3255.md:109), "flipped to **never** attach/blocked, ... went **red**"
+ * (3257.md:80,124). A loose "negation ... red" match fired on all of these.
+ * Requiring the negation to govern a go/turn verb DIRECTLY ("never went
+ * red", "did not go red", "no test went red", "didn't go red") still catches
+ * every real admission while leaving an unrelated negation elsewhere in the
+ * sentence alone.
+ */
+const NEGATED_RED_SOURCE = "(?:\\bnever|\\bnot|n['’]t|\\bno\\s+tests?)\\s+" +
+  "(?:go|goes|went|gone|going|turn|turns|turned|turning)\\s+" +
+  "(?:\\S+\\s+){0,2}red\\b";
+
+const STRONG_ADMISSION_RES: readonly RegExp[] = [
+  // "no test(s) (yet) reach(es)/cover(s)/exercise(s) <outcome>"
+  /\bno\s+tests?\s+(?:yet\s+)?(?:reach(?:es)?|covers?|exercises?)\b/i,
+  // "not reached/covered/exercised by any/a test(s)"
+  /\bnot\s+(?:reached|covered|exercised)\s+by\s+(?:any|a)\s+tests?\b/i,
+  // A negated flip to red: "never went red", "did not go red", "no test(s)
+  // went red", "didn't go red" (curly apostrophe too), "never turned red".
+  new RegExp(NEGATED_RED_SOURCE, "i"),
+];
+
+/**
+ * Weak admission phrases: these block an entry only when it names no test
+ * path AND records no red flip — past-tense or otherwise hedged wording
+ * ("stayed green" in the SAME breath as a named test and a red flip) is a
+ * covered entry, not an admission.
+ */
+const WEAK_ADMISSION_RES: readonly RegExp[] = [
+  /\bunreach(?:ed|able)\b/i,
+  /\buntested\b/i,
+  // "stayed/stays/stay/remained/.../left/leaves/leave <=6 words> green"
+  /\b(?:stayed|stays|stay|remained|remains|remain|kept|keeps|left|leaves|leave)\s+(?:\S+\s+){0,6}green\b/i,
+];
+
+/**
+ * Further phrasings where `red` appears but no flip actually went red (PR
+ * #3312 review): a bare negation directly adjacent to `red` with no go/turn
+ * verb between ("left it green, not red", "stayed green, never red"), an
+ * "instead of (...) red" contrast ("kept it green instead of turning it
+ * red"), a stated future obligation ("a test that goes red is still to
+ * add"), and an explicit "needs/should ... red" ask. `NEGATED_RED_SOURCE`
+ * above is deliberately narrow (direct negation of a go/turn verb only), so
+ * these are additive, not a replacement — they only feed the global
+ * `recordsRedFlip` strip, never the single-match `STRONG_ADMISSION_RES`
+ * entry (a bare "not red" is weak wording, not an unambiguous confession on
+ * its own).
+ */
+const OTHER_NEGATED_RED_SOURCES = [
+  "(?:\\bnever|\\bnot|n['’]t)\\s+red\\b",
+  "\\binstead\\s+of\\s+(?:\\S+\\s+){0,3}red\\b",
+  "\\b(?:needs?|should)\\s+(?:\\S+\\s+){0,3}red\\b",
+  "\\bred\\b[,:]?\\s+(?:is\\s+)?still\\s+to\\s+add\\b",
+];
+
+/**
+ * Global variant of the weaker negated-red patterns, for stripping before
+ * the red check. Built from `OTHER_NEGATED_RED_SOURCES` only —
+ * `NEGATED_RED_SOURCE` is deliberately excluded (see its own doc comment
+ * above): a unit matching it has already made `admitsUnreached` return at
+ * the `STRONG_ADMISSION_RES` loop, so `recordsRedFlip` never sees one, and
+ * including it here was unreachable (PR #3312 review, round 2).
+ */
+const NEGATED_RED_GLOBAL_RE = new RegExp(
+  OTHER_NEGATED_RED_SOURCES.join("|"),
+  "gi",
+);
+
+/** A bare mention of `red`, checked after negated-red phrases are stripped out. */
+const RED_RE = /\bred\b/i;
+
+/** Whether a unit records a red flip — a test that actually went red. */
+function recordsRedFlip(unit: string): boolean {
+  return RED_RE.test(unit.replace(NEGATED_RED_GLOBAL_RE, " "));
+}
+
+/** Whether a single unit of text admits that no test reaches its outcome. */
+function admitsUnreached(unit: string): boolean {
+  for (const re of STRONG_ADMISSION_RES) {
+    if (re.test(unit)) return true;
+  }
+  if (testPathsIn([unit]).length > 0 || recordsRedFlip(unit)) return false;
+  for (const re of WEAK_ADMISSION_RES) {
+    if (re.test(unit)) return true;
+  }
+  return false;
+}
+
+/**
+ * The one allowed exception: an outcome the issue puts out of scope, or one
+ * no test can reach, written `exempt (out of scope): <reason>` or
+ * `exempt (untestable): <reason>` with a real reason (at least 3 words
+ * containing a letter). Any other parenthesised word is not an exemption.
+ */
+const EXEMPT_RE =
+  /\bexempt\s*\(\s*(?:out\s+of\s+scope|untestable)\s*\)\s*:([^\n]*)/i;
+
+/** A "word" for the exemption-reason word count: anything containing a letter. */
+const WORD_WITH_LETTER_RE = /[A-Za-z]/;
+
+/** Number of words in `reason` that contain at least one letter. */
+function reasonWordCount(reason: string): number {
+  return reason
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word.length > 0 && WORD_WITH_LETTER_RE.test(word))
+    .length;
+}
+
+/** Verdict `evaluateUnitAdmission` reaches for one unit of text. */
+type UnitAdmissionVerdict = "admits" | "exempt-no-reason" | null;
+
+/**
+ * Evaluate one unit (an entry, the record body, or an uncaptured line) for
+ * the unreached-outcome admission rule. A matched `exempt (...)` clause
+ * decides the unit outright — admission wording elsewhere in the same unit
+ * is not separately re-checked once a real exemption reason is present.
+ */
+function evaluateUnitAdmission(unit: string): UnitAdmissionVerdict {
+  const exemptMatch = unit.match(EXEMPT_RE);
+  if (exemptMatch) {
+    const reason = exemptMatch[1] ?? "";
+    return reasonWordCount(reason) >= 3 ? null : "exempt-no-reason";
+  }
+  return admitsUnreached(unit) ? "admits" : null;
+}
+
+/** Cap on a unit's first-N-characters fallback label. */
+const LABEL_MAX_CHARS = 80;
+
+/** A leading digit run, optionally followed by `-digits` or `/digits`. */
+const LABEL_TRAILING_DIGITS_RE = /^(\d+(?:[-/]\d+)?)/;
+
+/**
+ * The LABEL a problem message names an admitting (or badly-exempted) unit
+ * by: the first token (same split `namedTestPaths` uses) whose part before
+ * the first `:` is path-shaped and whose part after starts with a digit,
+ * rendered `path:<digits>` — otherwise the unit's first 80 characters,
+ * `…`-suffixed when cut.
+ */
+function unitLabel(unit: string): string {
+  for (const rawToken of unit.split(TOKEN_SPLIT_RE)) {
+    if (!rawToken || rawToken.length > MAX_TOKEN_CHARS) continue;
+    const colonIndex = rawToken.indexOf(":");
+    if (colonIndex < 0) continue;
+    const pathPart = rawToken.slice(0, colonIndex);
+    const afterPart = rawToken.slice(colonIndex + 1);
+    if (!PATH_SHAPE_RE.test(pathPart)) continue;
+    const digits = afterPart.match(LABEL_TRAILING_DIGITS_RE);
+    if (!digits) continue;
+    return `${pathPart}:${digits[1]}`;
+  }
+  const trimmed = unit.trim();
+  return trimmed.length > LABEL_MAX_CHARS
+    ? `${trimmed.slice(0, LABEL_MAX_CHARS)}…`
+    : trimmed;
+}
+
+/**
+ * The blanked (test-citation-safe) text for each unit
+ * {@link evaluateUnreachedAdmissions} checks. `body` is one string per
+ * header's `bodyLineIndexGroups` entry, kept apart rather than joined into
+ * one string — joining let a test citation in one `Branch outcomes:`
+ * header clear a weak admission in a different header (PR #3312 review).
+ */
+interface BlankedUnits {
+  entries: readonly string[];
+  body: readonly string[];
+  uncapturedLines: readonly string[];
+}
+
+/**
+ * Run the unreached-outcome admission check (Issue #3288) over every
+ * blanked unit of a `Branch outcomes` record: each entry, each header's own
+ * body contribution when non-empty, and every uncaptured line/paragraph.
+ */
+function evaluateUnreachedAdmissions(
+  blanked: BlankedUnits,
+): { problems: string[]; unreachedEntries: string[] } {
+  const units: string[] = [...blanked.entries];
+  for (const group of blanked.body) {
+    if (group) units.push(group);
+  }
+  for (const line of blanked.uncapturedLines) units.push(line);
+
+  const problems: string[] = [];
+  const unreachedEntries: string[] = [];
+
+  for (const unit of units) {
+    const verdict = evaluateUnitAdmission(unit);
+    if (verdict === null) continue;
+    const label = unitLabel(unit);
+    if (verdict === "exempt-no-reason") {
+      problems.push(
+        `the \`Branch outcomes:\` entry for \`${label}\` is marked exempt ` +
+          "but gives no reason — say why the issue puts the outcome out of " +
+          "scope, or why no test can reach it",
+      );
+    } else {
+      unreachedEntries.push(label);
+      problems.push(
+        `the \`Branch outcomes:\` entry for \`${label}\` admits no test ` +
+          "reaches its outcome — add a test that goes red when the outcome " +
+          "is flipped, or remove the branch; only an outcome the issue puts " +
+          "out of scope, or one no test can reach, may stand, written " +
+          "`exempt (out of scope): <reason>` or `exempt (untestable): " +
+          "<reason>`",
+      );
+    }
+  }
+
+  return { problems, unreachedEntries };
+}
+
 /** Verdict of the branch-outcomes gate. */
 export interface BranchOutcomesGateResult {
   /** True when the diff changes a non-test, non-doc file. */
@@ -471,6 +1029,11 @@ export interface BranchOutcomesGateResult {
   namedTests: string[];
   /** Of `namedTests`, those not found at HEAD. */
   missingTests: string[];
+  /**
+   * LABELs of entries that admit no test reaches their outcome (Issue
+   * #3288), in order. Empty when the gate is not applicable, or none admit.
+   */
+  unreachedEntries: string[];
   /** One line per rule broken — empty when the gate passes. */
   problems: string[];
 }
@@ -517,14 +1080,30 @@ export interface ValidateBranchOutcomesInput {
  *      blocked (fail closed).
  *   8. A named test path absent from `testsAtHead` → blocked, named in
  *      `missingTests`.
+ *   9. Present: any entry, the inline body, or a line the list parser itself
+ *      skipped (table row, sibling bullet, prose after the list, …) that
+ *      admits no test reaches its outcome → blocked, labels named in
+ *      `unreachedEntries` (Issue #3288). Test/command citations are blanked
+ *      per-unit from the raw lines `parseBranchOutcomes` already attributed
+ *      to that unit (`entryLineIndices`, `bodyLineIndexGroups`,
+ *      `uncapturedLineIndices`), not by re-parsing a separately blanked
+ *      copy of the whole document — so there is no independent re-parse
+ *      that can disagree in shape with the real one (PR #3312 review,
+ *      round 3).
+ *  10. An `exempt (out of scope): <reason>` / `exempt (untestable): <reason>`
+ *      clause with fewer than 3 real words of reason → blocked — an
+ *      exemption with no stated reason is not an exemption.
  */
 export function validateBranchOutcomes(
   input: ValidateBranchOutcomesInput,
 ): BranchOutcomesGateResult {
   const record = parseBranchOutcomes(input.prSummaryContent ?? "");
+  const lines = (input.prSummaryContent ?? "")
+    .slice(0, MAX_SCAN_CHARS)
+    .split(LINE_TERMINATOR_RE);
 
   if (input.changedFiles === null) {
-    return evaluateApplicable(record, [], false, input.testsAtHead);
+    return evaluateApplicable(record, lines, [], false, input.testsAtHead);
   }
 
   const codeFiles = codeChangingFiles(input.changedFiles);
@@ -537,16 +1116,18 @@ export function validateBranchOutcomes(
       record,
       namedTests: [],
       missingTests: [],
+      unreachedEntries: [],
       problems: [],
     };
   }
 
-  return evaluateApplicable(record, codeFiles, true, input.testsAtHead);
+  return evaluateApplicable(record, lines, codeFiles, true, input.testsAtHead);
 }
 
 /** Shared rule evaluation for the `changedFiles === null` and known cases. */
 function evaluateApplicable(
   record: BranchOutcomesRecord,
+  lines: readonly string[],
   codeFiles: string[],
   changedFilesKnown: boolean,
   testsAtHead: ReadonlySet<string> | null,
@@ -554,6 +1135,7 @@ function evaluateApplicable(
   const problems: string[] = [];
   const namedTests = namedTestPaths(record);
   const missingTests: string[] = [];
+  let unreachedEntries: string[] = [];
 
   if (!record.present) {
     const diffDescription = changedFilesKnown
@@ -590,6 +1172,41 @@ function evaluateApplicable(
     }
   }
 
+  if (record.present) {
+    // Blank test/command citations straight from the raw lines the real
+    // parse already attributed to each entry, body contribution and
+    // uncaptured line — never by re-parsing a separately blanked copy of
+    // the whole document, which could identify different header/entry
+    // boundaries than the real parse and block an honest summary on a
+    // shape mismatch that was never a real line merge (PR #3312 review,
+    // round 3; see `blankedUnitLines`). Uncaptured lines are grouped into
+    // paragraphs first (`groupUncapturedIndices` — each table row its own
+    // group) and each paragraph is checked as ONE joined unit, so an
+    // admission a hard wrap splits across two lines still matches (PR
+    // #3312 review, round 6); a table row stays its own unit so one row's
+    // test citation cannot clear another row's weak admission. Each
+    // header's own `bodyLineIndexGroups` entry is likewise kept as its own
+    // unit rather than joined across headers, so a citation in one header
+    // cannot clear a weak admission in another (PR #3312 review, round 6).
+    const blanked: BlankedUnits = {
+      entries: record.entryLineIndices.map((idxs) =>
+        blankedUnitText(lines, idxs)
+      ),
+      body: record.bodyLineIndexGroups.map((idxs) =>
+        blankedUnitText(lines, idxs)
+      ),
+      uncapturedLines: groupUncapturedIndices(
+        lines,
+        record.uncapturedLineIndices,
+      )
+        .map((idxs) => blankedUnitText(lines, idxs))
+        .filter((text) => text.length > 0),
+    };
+    const admission = evaluateUnreachedAdmissions(blanked);
+    problems.push(...admission.problems);
+    unreachedEntries = admission.unreachedEntries;
+  }
+
   return {
     applicable: true,
     valid: problems.length === 0,
@@ -598,6 +1215,7 @@ function evaluateApplicable(
     record,
     namedTests,
     missingTests,
+    unreachedEntries,
     problems,
   };
 }
@@ -635,6 +1253,12 @@ export function buildBranchOutcomesGateComment(
     "not `tests/foo_test.ts`, even when the test command itself runs from a " +
     "subdirectory such as `worker/deno`) — a fabricated, stale, or " +
     "wrongly-relative citation blocks the PR.",
+    "6. An entry that admits its outcome is unreached — `no test reaches " +
+    "it`, a flip that never went red or left the suite green — is work " +
+    "still to do: add the test that goes red, or remove the branch; only " +
+    "an outcome the issue puts out of scope, or one no test can reach, may " +
+    "stand, written `exempt (out of scope): <reason>` or " +
+    "`exempt (untestable): <reason>`.",
     "",
     "Add a `Branch outcomes` list to " +
     "`docs/archive/pr-summaries/pr-summary-<issue>.md` in this shape:",

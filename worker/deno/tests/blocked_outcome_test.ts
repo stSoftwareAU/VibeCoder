@@ -95,6 +95,74 @@ Deno.test("detectBlockedOutcome ignores dependencies quoted in code blocks", () 
   assertEquals(detectBlockedOutcome(output, SELF), undefined);
 });
 
+// Issue #3313: detectBlockedOutcome's fence detection and stripCodeSpans now
+// share the one rule (closer must use the opener's character, be at least
+// as long, and carry no info string) from markdown_code_spans.ts.
+Deno.test("detectBlockedOutcome: a fence 'closed' by a '```md' line keeps the following heading fenced", () => {
+  // "```md" does not close the "```" opener — a closer may carry no info
+  // string — so everything through the genuine "```" closer, including the
+  // "## Blocked:" heading in between, is still inside the fenced block.
+  const output = [
+    "intro text",
+    "```",
+    "some code",
+    "```md",
+    "## Blocked: still inside the fence",
+    "Depends on org/dep#5",
+    "```",
+    "after the real close",
+  ].join("\n");
+  assertEquals(detectBlockedOutcome(output, SELF), undefined);
+});
+
+// Issue #3313: a span may wrap across a line break within one paragraph —
+// detectBlockedOutcome strips code with the same paragraph-aware splitter.
+Deno.test("detectBlockedOutcome: a dependency inside a span wrapped across two lines is not taken (evasion)", () => {
+  const output = "## Blocked: investigating\n\n" +
+    "`Depends on org/dep#5\nstill inside the span` not a real dependency";
+  assertEquals(detectBlockedOutcome(output, SELF), undefined);
+});
+
+Deno.test("detectBlockedOutcome: a real dependency after a wrapped span is still taken (look-alike)", () => {
+  const output = "## Blocked: investigating\n\n" +
+    "`foo\nbar` and Depends on org/dep#5 and `baz`";
+  const blocked = detectBlockedOutcome(output, SELF);
+  assert(blocked, "expected a blocked outcome");
+  assertEquals(blocked.dependency.repo, "org/dep");
+  assertEquals(blocked.dependency.number, 5);
+});
+
+// PR #3351 review: a paragraph previously only ended at a blank line, so
+// the lone unmatched backtick in a "## Blocked:" heading paired with a
+// backtick on the very next line and masked the "Depends on" declaration.
+Deno.test("detectBlockedOutcome: an ATX heading ends the paragraph, so a stray backtick in it does not hide the declaration line", () => {
+  const output =
+    "## Blocked: the ` key breaks parsing\nDepends on org/dep#5 per `foo`";
+  const blocked = detectBlockedOutcome(output, SELF, {
+    declaredHeadingOnly: true,
+  });
+  assert(blocked, "expected a blocked outcome");
+  assertEquals(blocked.dependency.repo, "org/dep");
+  assertEquals(blocked.dependency.number, 5);
+});
+
+// PR #3351 review (round 2): the block-start markers only matched indent
+// 0-3, so a 4-space nested list item never ended the paragraph and a stray
+// backtick in it hid the "Depends on" declaration line from the committed
+// path's declaredHeadingOnly mode — the shape `declared_handoff.ts` uses, so
+// an unfixed defect here means a run is claimed while its dependency is
+// still open, rather than deferred.
+Deno.test("detectBlockedOutcome: a 4-space nested list item ends the paragraph under declaredHeadingOnly", () => {
+  const output =
+    "## Blocked: parser work stalled\n- Steps\n    - the ` key breaks parsing\n    - Depends on org/dep#5\n    - per `foo`";
+  const blocked = detectBlockedOutcome(output, SELF, {
+    declaredHeadingOnly: true,
+  });
+  assert(blocked, "expected a blocked outcome");
+  assertEquals(blocked.dependency.repo, "org/dep");
+  assertEquals(blocked.dependency.number, 5);
+});
+
 Deno.test("detectBlockedOutcome returns undefined for empty output", () => {
   assertEquals(detectBlockedOutcome("", SELF), undefined);
   assertEquals(detectBlockedOutcome("   \n\n ", SELF), undefined);

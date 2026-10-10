@@ -5,8 +5,9 @@
  * fields that `ClaudeRunResult` would otherwise discard: the **served** model
  * IDs declared per assistant response by the API, plus the optional
  * `num_turns`, `duration_ms`, and `modelUsage` extras from the final `result`
- * line. Token usage is reused from `extractTokenUsage()` — parsing is never
- * duplicated (DRY).
+ * line, plus any safety refusals the stream recorded (Issue #3406). Token
+ * usage is reused from `extractTokenUsage()` — parsing is never duplicated
+ * (DRY).
  *
  * Every field beyond the served-model list is optional: older CLI versions may
  * omit them, and malformed or missing lines must degrade gracefully rather than
@@ -16,6 +17,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { type AgentRefusal, extractAgentRefusals } from "./agent_refusal.ts";
 import { extractTokenUsage, type TokenUsage } from "./token_usage.ts";
 import type { IssueExecutorSplitStats } from "./issue_executor_enforcement.ts";
 import {
@@ -49,6 +51,11 @@ export interface StreamRunStats {
   durationMs?: number;
   /** Per-model usage breakdown from the `result` line, when present. */
   modelUsage?: Record<string, unknown>;
+  /**
+   * The safety refusals the stream recorded (Issue #3406). Absent when the run
+   * had none, so a run with no refusal carries exactly the stats it always did.
+   */
+  refusals?: AgentRefusal[];
 }
 
 /**
@@ -103,6 +110,11 @@ export interface RunStats {
    * a reader can tell an unsplit run from a split run that counted nothing.
    */
   executorSplit?: IssueExecutorSplitStats;
+  /**
+   * The safety refusals the stream recorded (Issue #3406). Absent when the run
+   * had none, so a run with no refusal carries exactly the stats it always did.
+   */
+  refusals?: AgentRefusal[];
 }
 
 // ---------------------------------------------------------------------------
@@ -223,10 +235,12 @@ export function extractRunStats(rawStreamOutput: string): StreamRunStats {
   const servedModels = extractServedModels(rawStreamOutput);
   const tokenUsage = extractTokenUsage(rawStreamOutput) ?? undefined;
   const extras = extractResultExtras(rawStreamOutput);
+  const refusals = extractAgentRefusals(rawStreamOutput);
 
   return {
     servedModels,
     ...(tokenUsage ? { tokenUsage } : {}),
+    ...(refusals.length > 0 ? { refusals } : {}),
     ...extras,
   };
 }
@@ -262,6 +276,7 @@ export function buildRunStats(
     ...(parsed.tokenUsage ? { tokenUsage: parsed.tokenUsage } : {}),
     ...(parsed.numTurns !== undefined ? { numTurns: parsed.numTurns } : {}),
     ...(parsed.modelUsage ? { modelUsage: parsed.modelUsage } : {}),
+    ...(parsed.refusals ? { refusals: parsed.refusals } : {}),
     // Result-line duration wins; otherwise fall back to wall-clock.
     durationMs: parsed.durationMs ?? context.wallClockMs,
     wallClockMs: context.wallClockMs,

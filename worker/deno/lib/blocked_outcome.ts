@@ -20,6 +20,7 @@
  */
 
 import { stripCodeSpans } from "./issue_dependencies.ts";
+import { isClosingFence, parseFenceLine } from "./markdown_code_spans.ts";
 
 /** One issue the run reported itself blocked on. */
 export interface BlockedDependency {
@@ -133,18 +134,21 @@ function blockedSection(lines: readonly string[], start: number): string {
  *
  * The section scan runs over the *original* lines so the reason can be quoted
  * verbatim (code spans and all), which means it must skip fenced content
- * itself — an example block containing `## Blocked:` is documentation. Mirrors
- * the fence rule in `stripCodeSpans`, including its fail-safe treatment of an
- * unclosed fence (everything after it is inside the block).
+ * itself — an example block containing `## Blocked:` is documentation. Uses
+ * the shared fence rule in `markdown_code_spans.ts` (Issue #3313) — the same
+ * rule `stripCodeSpans` applies — so the two agree on what is fenced: a
+ * closer must use the opener's character, be at least as long, and carry no
+ * info string. An unclosed fence fails safe, marking every line to the end
+ * of the output as fenced.
  */
 function fencedLines(lines: readonly string[]): boolean[] {
   const fenced: boolean[] = [];
-  let fenceChar: string | null = null;
+  let opener: ReturnType<typeof parseFenceLine> = null;
   for (const line of lines) {
-    const fence = line.trimStart().match(/^(`{3,}|~{3,})/);
-    if (fenceChar === null) {
-      if (fence) {
-        fenceChar = fence[1]![0]!;
+    if (opener === null) {
+      const candidate = parseFenceLine(line);
+      if (candidate) {
+        opener = candidate;
         fenced.push(true);
         continue;
       }
@@ -152,7 +156,7 @@ function fencedLines(lines: readonly string[]): boolean[] {
       continue;
     }
     fenced.push(true);
-    if (fence && fence[1]![0] === fenceChar) fenceChar = null;
+    if (isClosingFence(line, opener)) opener = null;
   }
   return fenced;
 }

@@ -668,6 +668,110 @@ Deno.test(
 );
 
 Deno.test(
+  "handle_no_changes_phase - a haiku-tier already-complete close labels degraded-model and names both Haiku models (Issue #3405)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ghCalls: string[][] = [];
+    const ctx = makeContext({
+      config: makeConfig({ issueSubAgentTier: "haiku" }),
+    });
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-5-5", "claude-haiku-4-5"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: {
+        createClient: () => makeStubGhClient(calls),
+        runGhCommand: (args: string[]) => {
+          ghCalls.push(args);
+          return Promise.resolve(
+            args[0] === "label" && args[1] === "list" ? "[]" : "",
+          );
+        },
+      },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals((result as { reason: string }).reason, "already_complete");
+    const stats = calls.postComment.find((c) =>
+      c.body.includes(ISSUE_RUN_STATS_MARKER)
+    );
+    assert(stats, "expected a run-stats comment on the closed issue");
+    assertStringIncludes(stats.body, "Haiku sub-agents degraded");
+    assertStringIncludes(stats.body, "`claude-haiku-5-5`");
+    assertStringIncludes(stats.body, "`claude-haiku-4-5`");
+    assert(
+      ghCalls.some((a) =>
+        a.includes("labels[]=degraded-model") &&
+        a.some((x) => x.endsWith("/issues/42/labels"))
+      ),
+      "expected an add-label degraded-model call for the issue",
+    );
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - an already-complete close carries the safety-refusal line when the state has one (Issue #3406)",
+  async () => {
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      agentRefusal: {
+        tier: "haiku",
+        refusals: [{ model: "claude-haiku-5-5", category: "cyber" }],
+        retry: "succeeded",
+      },
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-5-5"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    const result = await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    assertEquals((result as { reason: string }).reason, "already_complete");
+    const stats = calls.postComment.find((c) =>
+      c.body.includes(ISSUE_RUN_STATS_MARKER)
+    );
+    assert(stats, "expected a run-stats comment on the closed issue");
+    assertStringIncludes(
+      stats.body,
+      "- **Safety refusal:** `cyber` from `claude-haiku-5-5` on the `haiku` sub-agent tier — a retry ran on the `sonnet` tier and finished without a refusal",
+    );
+  },
+);
+
+Deno.test(
   "handle_no_changes_phase - the already-complete close records the run in fleet telemetry (Issue #2347)",
   async () => {
     resetFleetTelemetry();
@@ -707,6 +811,84 @@ Deno.test(
     // No PR was raised, so no quality gate ran: the run counts, the pass does
     // not.
     assertEquals(telemetry.issuePhaseFirstAttemptGatePasses, 0);
+    resetFleetTelemetry();
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - records the resolved sub-agent tier (Issue #3403)",
+  async () => {
+    resetFleetTelemetry();
+    const calls = makeStubGhCalls();
+    const ctx = makeContext({
+      config: makeConfig({ issueSubAgentTier: "haiku" }),
+    });
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          durationMs: 120_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    const telemetry = getFleetTelemetry(1_000);
+    assertEquals(telemetry.issuePhaseHaikuRuns, 1);
+    assertEquals(telemetry.issuePhaseSonnetRuns, 0);
+    resetFleetTelemetry();
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - the default config records a sonnet-tier run (Issue #3403)",
+  async () => {
+    resetFleetTelemetry();
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          durationMs: 120_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    const telemetry = getFleetTelemetry(1_000);
+    assertEquals(telemetry.issuePhaseSonnetRuns, 1);
+    assertEquals(telemetry.issuePhaseHaikuRuns, 0);
     resetFleetTelemetry();
   },
 );

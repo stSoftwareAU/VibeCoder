@@ -214,6 +214,13 @@ export interface ConfigFileJson {
   deepseek_phase_model_overrides?: Record<string, string>;
   /** Host-wide issue-executor split (Issue #2341) */
   issue_executor_split?: boolean;
+  /**
+   * Host-wide issue sub-agent tier (Issue #3401). Deliberately NOT failed by
+   * `validateConfigFileJson`: `loadConfig` throws on any validation error, so
+   * a bad tier (non-string or unknown value) is warned about and replaced by
+   * the default at load instead of stopping the worker.
+   */
+  issue_sub_agent_tier?: unknown;
   /** Host-wide reviewer sub-agents (Issue #2575) */
   issue_reviewer_agents?: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */

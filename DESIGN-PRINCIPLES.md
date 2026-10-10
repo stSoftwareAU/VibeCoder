@@ -1309,10 +1309,11 @@ operator-side equivalent already exists is the right default.
 Hidden files (paths matching `.*`) routinely carry secrets — `.env`, API keys,
 OAuth tokens, SSH keys. A single leaked secret triggers full credential
 rotation, so the worker must never stage a hidden path outside a small
-allowlist.
+fleet-wide allowlist, unless the target repository's own tracked `.gitignore`
+already re-allows it (Issue #3296; secret patterns stay forbidden regardless).
 
-**Canonical allowlist** (the only hidden paths that may ever be tracked):
-`.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
+**Canonical allowlist** (the fleet-wide hidden paths that may always be
+tracked): `.gitignore`, `.gitattributes`, `.github/`, `.markdownlint-cli2.jsonc`.
 
 **Canonical `.gitattributes` block.** Alongside the `.gitignore` block, the same
 enforcer writes a canonical `.gitattributes` block that pins line
@@ -1342,7 +1343,10 @@ preserved (merge, never clobber). The full pattern set lives in
    line each iteration. File changes ride along in the next normal worker PR for
    the repo — no dedicated commit machinery, no findings issue.
 3. **Pre-commit gate** — blocks any commit that stages a forbidden
-   hidden path.
+   hidden path. It also accepts a hidden path outside the allowlist when the
+   target repository's own tracked, unmodified `.gitignore` re-allows it
+   (Issue #3296); the forbidden secret patterns stay refused regardless. See
+   [SECURITY.md](SECURITY.md) for the full rule.
 
 Bypassing any safeguard (`git commit --no-verify`, `git add -f`) is forbidden.
 If a hidden file legitimately needs to be tracked, raise an issue and update the
@@ -1654,6 +1658,23 @@ pre-filed finding counts against the 6-issue cap. The check is a configuration
 audit — **no linter or compiler is actually invoked**. The compile half was
 added in (extending) after a Deno syntax error reached `main` in a
 monitored repo because no `deno check` ran in CI.
+
+**AWS emulator in CI.** A second deterministic pre-filer runs on
+**every** best-practices scan, whatever bucket the draw picked, before
+Claude runs. `checkAwsEmulatorInCI()` detects AWS usage from dependency
+manifests, CloudFormation templates, or `.tf` files, and checks
+whether any GitHub Actions workflow runs the `floci/floci` emulator
+image as a service container, job container, `docker://` step, or
+`docker run` step. A repo that uses AWS without Floci wired into CI,
+and without a valid `best-practice-ignore: BP-AWS-EMULATOR-MISSING`
+waiver, gets one `severity:medium` finding with the fixed id
+`BP-AWS-EMULATOR-MISSING`, deduplicated through the same
+`fileFindingOnce` mechanism as `BP-LINTER-<bucket>` and added to the
+known-open list passed to Claude. No finding is filed when the repo
+does not use AWS, when no workflow loaded (status unknown — the same
+fail-safe as the zero-workflows rule), or when Floci already runs in
+CI. See [docs/BEST-PRACTICES-SCAN.md → AWS emulator in CI](docs/BEST-PRACTICES-SCAN.md#aws-emulator-in-ci-bp-aws-emulator-missing)
+for the full trigger table, waiver syntax, and suggested-fix contract.
 
 **Cap and priority order.** A single run files at most six standalone findings,
 ordered missing-linter > `severity:high` > `severity:medium` > `severity:low`.
@@ -2394,9 +2415,9 @@ for another day and every `--model fable` invocation would fail meanwhile.
 version is below a configured floor.** Floors live in the
 `software_min_versions` config key (defaults in
 `worker/deno/lib/config_defaults.ts`, the single source of truth; default
-`{ claude: "2.1.280" }` — the oldest release that resolves the `opus` alias
-to Opus 5.5, Issue #2560; it was 2.1.260, the Fable 5.1 floor from
-Issue #1362). The map is
+`{ claude: "2.1.293" }` — the oldest release that resolves the `haiku` alias
+to Haiku 5.5 (PR #3432 review, Issue #3400); it was 2.1.280, the Opus 5.5
+floor from Issue #2560). The map is
 generic per tool so `gh`/`deno` floors can be added later.
 
 - **Below floor → immediate update**, bypassing the timestamp gate. At/above
@@ -2706,7 +2727,7 @@ terminating backstop: once a freed-and-retried issue exceeds the threshold it is
 escalated to a human rather than re-claimed indefinitely.
 
 See
-[`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#1-worker-run-loop-and-process-lifecycle)
+[`docs/INTERNALS.md` → Unified claim release](docs/INTERNALS.md#-1-worker-run-loop-and-process-lifecycle)
 for where this sits in the claim/heartbeat lifecycle.
 
 ### Analysis-only / no-PR hand-off for `work-on`
@@ -3054,7 +3075,9 @@ The run's first summary-rule block gets the one in-run recovery turn whether
 or not the agent already raised the PR itself from inside the execute phase
 (Issue #3163): a PR the agent raised itself is not finalised or auto-merged
 until that turn has run. A block that survives that turn — the run's
-second — finalises an existing PR as before.
+second — finalises an existing PR as before, unless the claim check alone is
+still blocking: that block first gets one summary-only correction turn
+(Issue #3324), and only a block that survives it finalises the PR.
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

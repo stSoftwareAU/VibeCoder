@@ -5,15 +5,38 @@
  * the commit when hidden or secret-bearing files are staged — including
  * the non-hidden private-key and credential filenames added by Issue
  * #3660 (`*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa`, `credentials.json`,
- * `service-account*.json`).
+ * `service-account*.json`) and, added by Issue #3336, the other OpenSSH
+ * private-key names (`id_dsa`, `id_ecdsa`, `id_ed25519`, `id_ecdsa_sk`,
+ * `id_ed25519_sk`) and nested credential-store directories (`.ssh/`,
+ * `.aws/`, `.gnupg/`, `.netrc`) at any depth.
  *
  * Defence-in-depth: protects even when `.gitignore` is missing, has been
  * bypassed (`git add -f`), or the canonical patterns from #1757 have
  * not yet been applied to a repo.
  *
- * The allowlist is derived from `REQUIRED_GITIGNORE_PATTERNS` in
- * `gitignore_enforcer.ts` (the single source of truth), so the two
- * layers cannot drift apart.
+ * `ALLOWED_HIDDEN_PATHS`, derived from `REQUIRED_GITIGNORE_PATTERNS` in
+ * `gitignore_enforcer.ts` (the single source of truth), is not the only way a
+ * hidden path can be exempt: a target repo's own tracked, unmodified
+ * `.gitignore` may re-allow a hidden path this worker's canonical list does
+ * not (Issue #3296) — `.claude/skills` and `.claude/agents` under this very
+ * repo's `.gitignore`, for instance. `gitignoreReallowed` below judges that
+ * case with `git check-ignore -v -n --no-index` against the repo's own
+ * rules, walking the path and its ancestor directories to find the nearest
+ * rule that actually decides it, and exempting only when that rule is an
+ * explicit `!`-negation in the *root* `.gitignore` — exit 1 from a plain
+ * `check-ignore -q` means only "no rule matches", which is equally true of a
+ * repo whose `.gitignore` never governs the path at all, so that alone
+ * cannot be trusted as a re-allow (PR #3308 review). `HEAD:.gitignore` must
+ * also match `.gitignore` on the local `origin/<default>` ref byte for byte, so a
+ * re-allow committed only on the branch under review — `.gitignore` is
+ * itself on `ALLOWED_HIDDEN_PATHS` — cannot opt a path in that the repo's own
+ * default branch has never published (PR #3308 review).
+ * `FORBIDDEN_STAGED_PATTERNS` (secret-bearing filenames, including `.aws/`,
+ * `.ssh/`, `.gnupg/` and `.netrc`) are never exempt this way, and the check
+ * fails closed — nothing is exempt — whenever the repo's `.gitignore` cannot
+ * be proven both tracked at `HEAD` and unmodified in both the index and the
+ * working tree, whenever it differs from `origin/<default>`'s copy or that
+ * ref cannot be resolved, or whenever `check-ignore` itself cannot be run.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -36,10 +59,11 @@ export const ALLOWED_HIDDEN_PATHS: readonly string[] =
 /**
  * Always-forbidden patterns. Each regexp is matched against the full
  * staged path returned by `git diff --cached --name-only -z`. The dotenv,
- * config and secrets-directory patterns below are matched as any path
- * segment (Issue #3311), so `services/api/.env` is caught at any depth —
- * not just at the repo root — mirroring how the slash-free `.gitignore`
- * entries apply at every depth.
+ * config, secrets-directory and credential-store patterns below are
+ * matched as any path segment (Issues #3311, #3336), so
+ * `services/api/.env` and `deploy/.ssh/id_ed25519` are caught at any
+ * depth — not just at the repo root — mirroring how the slash-free
+ * `.gitignore` entries apply at every depth.
  */
 export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   // Matched as any path segment (Issue #3311).
@@ -50,10 +74,15 @@ export const FORBIDDEN_STAGED_PATTERNS: readonly RegExp[] = [
   /\.secret\.json$/,
   // Matched as any path segment (Issue #3311).
   /(^|\/)\.secrets\//,
+  // Credential stores, matched as any path segment (Issue #3336).
+  /(^|\/)\.(aws|ssh|gnupg|netrc)(\/|$)/,
   // Private key material and credential files (Issue #3660). Matched on the
   // final path segment so nested paths (`certs/server.pem`) are caught too.
   /(^|\/)[^/]+\.(pem|key|p12|pfx)$/,
-  /(^|\/)id_rsa(\..*)?$/,
+  // Suffix bounded to one segment and line; `\..*` backtracked quadratically
+  // (Issue #3323). Extended to the other OpenSSH private-key names (Issue
+  // #3336).
+  /(^|\/)id_(rsa|dsa|ecdsa|ed25519|ecdsa_sk|ed25519_sk)(\.[^/\n]*)?$/,
   /(^|\/)credentials\.json$/,
   /(^|\/)service-account[^/]*\.json$/,
 ];
@@ -73,8 +102,8 @@ export interface InspectStagedResult {
  *
  * Order of checks:
  *   1. Explicit forbidden patterns (`.env`, `.config*.json`, `.secrets/`,
- *      etc.), each caught at any depth (Issue #3311), not just at the
- *      repo root.
+ *      `.ssh/`, `.aws/`, `.gnupg/`, `.netrc`, etc.), each caught at any
+ *      depth (Issues #3311, #3336), not just at the repo root.
  *   2. Generic "hidden top-level path outside the allowlist" check —
  *      `^\.[^/]+` minus the entries on the allowlist. The check is
  *      applied to the first path segment so that allowlisted directories
@@ -269,6 +298,185 @@ export async function mergedInUnchanged(args: {
   return exempt;
 }
 
+/** True when `path` matches one of the always-forbidden secret patterns. */
+function isForbiddenStagedPath(path: string): boolean {
+  return FORBIDDEN_STAGED_PATTERNS.some((re) => re.test(path));
+}
+
+/**
+ * The deciding rule from one `git check-ignore -v -n` output line, or `null`
+ * when the line shows no decision (`::` — nothing matched this path at
+ * all). Line format: `<source>:<linenum>:<pattern>\t<pathname>`.
+ */
+function parseCheckIgnoreDecision(
+  line: string,
+): { source: string; pattern: string } | null {
+  const tab = line.indexOf("\t");
+  if (tab < 0) return null;
+  const match = /^([^:]*):(\d*):(.*)$/.exec(line.slice(0, tab));
+  const source = match?.[1];
+  const pattern = match?.[3];
+  if (!source || pattern === undefined) return null;
+  return { source, pattern };
+}
+
+/**
+ * The most specific `git check-ignore -v -n --no-index` decision governing
+ * `path` (PR #3308 review hardening of #3296).
+ *
+ * Walks `path` and its ancestor directories nearest-first (the path itself,
+ * then its parent, grandparent, and so on up to the top-level segment),
+ * stopping at the first one some rule actually decides. This mirrors how
+ * git itself resolves ignore status: a directory explicitly re-allowed by
+ * name (e.g. `!.claude/skills`) governs every path beneath it that no more
+ * specific rule decides, even though `check-ignore` run on a nested file
+ * directly reports no decision (`::`) for that file.
+ *
+ * Returns `null` — nothing governs, fail closed — when every segment in the
+ * chain is undecided (`::`, i.e. exit 1), when any `check-ignore` call
+ * cannot be run, or when a "decided" (exit 0) result's output line cannot be
+ * parsed. A `null` here is deliberately indistinguishable between "this
+ * repo's `.gitignore` never mentions this path" and a tool failure — both
+ * must refuse the exemption, not grant it.
+ */
+async function nearestGovernance(
+  path: string,
+  options: GitCommandOptions,
+  run: typeof runGitCommand,
+): Promise<{ source: string; pattern: string } | null> {
+  const segments = path.split("/").filter((s) => s.length > 0);
+  for (let depth = segments.length; depth >= 1; depth--) {
+    const probe = segments.slice(0, depth).join("/");
+    const checked = await run(
+      ["check-ignore", "-v", "-n", "--no-index", "--", probe],
+      options,
+    );
+    if (!checked.ok) return null;
+    const { code, stdout } = checked.value;
+    if (code !== 0 && code !== 1) return null;
+    if (code === 1) continue; // nothing decided this segment; walk up.
+    return parseCheckIgnoreDecision(stdout.split("\n")[0] ?? "");
+  }
+  return null;
+}
+
+/**
+ * Hidden paths a target repo's own `.gitignore` re-allows (Issue #3296).
+ *
+ * `ALLOWED_HIDDEN_PATHS` is this worker's one canonical list, but a repo may
+ * legitimately re-allow a hidden path of its own — this repo's `.gitignore`
+ * re-allows `.claude/skills` and `.claude/agents`, for instance — and the
+ * gate should not refuse an edit to a file the repo itself tracks on
+ * purpose. A path is exempt here only when:
+ *
+ *   1. It does not match any `FORBIDDEN_STAGED_PATTERNS` entry — secret
+ *      filenames and credential-store directories are never exempt this
+ *      way, regardless of what any `.gitignore` says.
+ *   2. The repo's root `.gitignore` is tracked at `HEAD` and unmodified in
+ *      both the index and the working tree — otherwise an agent could opt a
+ *      path in within the very commit being judged (via either the staged
+ *      content or the on-disk file `check-ignore --no-index` actually
+ *      reads), or the check could read a `.gitignore` the repository does
+ *      not actually carry forward.
+ *   3. `HEAD:.gitignore`'s blob is byte-identical to `.gitignore` on the
+ *      local `origin/<default>` ref (PR #3308 review): `.gitignore`
+ *      is itself on `ALLOWED_HIDDEN_PATHS`, so one worker commit could carry
+ *      a `!`-negation, and a later commit on the *same* branch then stage
+ *      the path it re-allows — the repo's own choice would otherwise be
+ *      decided by whoever authored the branch, not by what the repo
+ *      actually publishes. Unresolvable `origin/HEAD`, a `.gitignore`
+ *      missing from either ref, or a `rev-parse` that cannot run, all leave
+ *      nothing exempt (fail closed) — the same posture as the #2774
+ *      default-branch exemption above.
+ *   4. {@link nearestGovernance} finds, for that path or one of its
+ *      ancestor directories, an explicit `!`-negation decided by the root
+ *      `.gitignore` file itself (source `.gitignore`, not a nested or
+ *      untracked one). No decision anywhere in the chain, a decision from
+ *      any other source, or a non-negation decision, all leave the path not
+ *      exempt — this check fails closed.
+ *
+ * @param args.violations Paths the classifier refused
+ * @param args.options Git command options (cwd, env, timeout)
+ * @param args.run Git command runner override (test seam only); defaults to
+ *   `runGitCommand`
+ * @returns The exempt paths (each logged at INFO), possibly empty
+ */
+export async function gitignoreReallowed(args: {
+  violations: string[];
+  options: GitCommandOptions;
+  run?: typeof runGitCommand;
+}): Promise<Set<string>> {
+  const { violations, options, run = runGitCommand } = args;
+  const exempt = new Set<string>();
+
+  const candidates = violations.filter((p) => !isForbiddenStagedPath(p));
+  if (candidates.length === 0) return exempt;
+
+  // The repo's own .gitignore must be tracked at HEAD and unmodified in both
+  // the index and the working tree — otherwise nothing it says can be
+  // trusted for this commit. The index check catches a `.gitignore` staged
+  // with new content; the working-tree check catches an on-disk edit that
+  // was never staged at all — `check-ignore --no-index` reads the on-disk
+  // file directly, bypassing the index, so either alone could let a commit
+  // opt itself in.
+  const atHead = await run(
+    ["cat-file", "-e", "HEAD:.gitignore"],
+    options,
+  );
+  if (!atHead.ok || atHead.value.code !== 0) return exempt;
+  const unmodifiedIndex = await run(
+    ["diff", "--cached", "--quiet", "HEAD", "--", ".gitignore"],
+    options,
+  );
+  if (!unmodifiedIndex.ok || unmodifiedIndex.value.code !== 0) return exempt;
+  const unmodifiedWorkingTree = await run(
+    ["diff", "--quiet", "HEAD", "--", ".gitignore"],
+    options,
+  );
+  if (!unmodifiedWorkingTree.ok || unmodifiedWorkingTree.value.code !== 0) {
+    return exempt;
+  }
+
+  // HEAD's own commit is not enough: a re-allow committed earlier on *this*
+  // branch is not something the repo's default branch has ever published
+  // (PR #3308 review). Require HEAD:.gitignore to be the identical
+  // blob as origin/<default>:.gitignore, read from the local remote-tracking
+  // ref only — never fetched.
+  const defaultRef = await originDefaultRef(options, run);
+  if (defaultRef === null) return exempt;
+  const headBlob = await run(
+    ["rev-parse", "-q", "--verify", "HEAD:.gitignore"],
+    options,
+  );
+  if (!headBlob.ok || headBlob.value.code !== 0) return exempt;
+  const defaultBlob = await run(
+    ["rev-parse", "-q", "--verify", `${defaultRef}:.gitignore`],
+    options,
+  );
+  if (!defaultBlob.ok || defaultBlob.value.code !== 0) return exempt;
+  if (headBlob.value.stdout.trim() !== defaultBlob.value.stdout.trim()) {
+    return exempt;
+  }
+
+  for (const path of candidates) {
+    const governance = await nearestGovernance(path, options, run);
+    if (
+      governance !== null && governance.source === ".gitignore" &&
+      governance.pattern.startsWith("!")
+    ) {
+      exempt.add(path);
+      console.log(
+        `[pre-commit-safety] INFO: ${path} is exempt from the safety gate ` +
+          `(Issue #3296): the repo's own root .gitignore explicitly ` +
+          `re-allows it (rule: ${governance.pattern})`,
+      );
+    }
+    // No decision anywhere in the chain, a decision from a nested/untracked
+    // .gitignore, or a non-negation decision: not exempt.
+  }
+  return exempt;
+}
+
 /**
  * The local remote-tracking ref of origin's default branch, read from
  * `refs/remotes/origin/HEAD` without touching the network (Issue #2774).
@@ -276,11 +484,15 @@ export async function mergedInUnchanged(args: {
  * `git remote set-head origin --auto` and so contact the remote. Returns
  * `null` — nothing vouches — unless the symbolic ref names a ref under
  * `refs/remotes/origin/`.
+ *
+ * @param run Git command runner override (test seam only); defaults to
+ *   `runGitCommand`.
  */
 async function originDefaultRef(
   options: GitCommandOptions,
+  run: typeof runGitCommand = runGitCommand,
 ): Promise<string | null> {
-  const result = await runGitCommand(
+  const result = await run(
     ["symbolic-ref", "-q", "refs/remotes/origin/HEAD"],
     options,
   );
@@ -302,7 +514,10 @@ async function originDefaultRef(
  * staged blob and mode are identical to that path on the default branch's
  * tip, read from the local `origin/<default>` ref and never fetched (Issue
  * #2774). If that ref cannot be resolved or read, nothing is exempt on its
- * account (fail closed).
+ * account (fail closed). A remaining hidden-path violation is also exempt
+ * when the repo's own tracked, unmodified `.gitignore` re-allows it (Issue
+ * #3296) — secret-bearing filenames from `FORBIDDEN_STAGED_PATTERNS` never
+ * are, and this check too fails closed.
  *
  * @param options Git command options (cwd, env, timeout).
  */
@@ -333,6 +548,10 @@ export async function assertSafeToCommit(
       options,
     });
     violations = violations.filter((p) => !published.has(p));
+  }
+  if (violations.length > 0) {
+    const reallowed = await gitignoreReallowed({ violations, options });
+    violations = violations.filter((p) => !reallowed.has(p));
   }
   if (violations.length === 0) {
     return { ok: true, value: undefined };

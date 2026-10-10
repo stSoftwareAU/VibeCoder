@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -20,100 +20,10 @@ leave the session running:
 
 Optional argument: `owner/name` to review one repo only.
 
-## Running unattended
-
-On an always-on host, `run.sh` in this directory does the same without an
-open session. Every 5 minutes it runs one gate pass, and it starts a headless
-`claude -p` round only when a PR is ready. It loops for ever, retries after
-a failed pass, kills a round that runs over 50 minutes, and keeps one runner
-per machine.
-
-```bash
-.claude/skills/review-fleet-prs/run.sh --install   # start at login, restart on exit
-.claude/skills/review-fleet-prs/run.sh --once      # one pass, in the foreground
-```
-
-`--install` registers a launchd agent on macOS or a systemd user service on
-Linux. The host needs `deno`, `jq`, `gh` signed in, and either `claude`
-signed in or the worker's Claude credential directory
-(`~/.vibe-coder/credentials/claude/provider*.env`, see
-[SETUP.md](../../../docs/SETUP.md)).
-The log is `runner.log` in the log directory below. Every pass writes a
-line to it: an idle pass logs `gate: nothing ready (...)` with the gate's
-skip counts, so a quiet log still shows the gate running every 5 minutes.
-A headless round cannot send the
-PushNotification in step 4; `summary.md` still shows what is waiting.
-
-### Which Claude subscription a round runs on
-
-Each round runs on the subscription the worker itself would pick (Issue
-#3289): `claude_credential.ts` reads the host's Claude credential pool,
-probes each token's remaining budget and ranks them the way the worker does
-at start-up (`worker/deno/lib/claude_token_selection.ts`), and `run.sh`
-exports the winner to `claude -p` alone. The ranking is logged by label
-(`provider`, `provider-2`, …), never by value, and the value is never
-traced. One file in the pool is used without a probe; no pool means the
-host's `claude` login, as before.
-
-When a round ends with the CLI's usage-limit refusal, the pass logs
-`round hit the usage limit on subscription <label>`, selects again with that
-label excluded, and runs the round once more on the next-ranked
-subscription (`claude-retry.log` in the round directory) before counting
-the pass as failed. No other subscription with budget means the round
-stays failed and the pass says so. Any other failure is not retried.
-
-### As a GitHub App
-
-With `pr_reviewer_app` in `.config.json` (see
-[CONFIGURATION.md](../../../docs/CONFIGURATION.md#-reviewer-app-for-fleet-pr-reviews)),
-`run.sh` reviews as that App's bot instead of the `gh` user. `app_token.ts`
-mints a fresh installation token for every pass, since one lasts an hour.
-When minting fails, the pass is skipped; it never falls back to posting as the
-`gh` user. The App needs **Pull requests**, **Issues**, **Contents** and
-**Workflows** read and write, plus **Checks** and **Commit statuses** read:
-Contents write lets the Dependabot upkeep merge an already-clean PR with
-`gh pr merge --auto` and arm auto-merge, and lets the skill bring an approved
-fleet PR's branch up to date (`update-branch`); Workflows write lets it merge
-Dependabot's GitHub Actions bumps, which change `.github/workflows/*`.
-Installation is needed on every monitored repo and on
-`stSoftwareAU/VibeCoder` (for improvement issues).
-Add `<app-slug>[bot]` to `authorized_commenters` (not `pr_reviewers`,
-which would make PR creation fail). An interactive `/review-fleet-prs`
-session still reviews as the `gh` user.
-
-The token must carry Pull requests write, Issues write, Contents write,
-Workflows write, Checks read and Statuses read. `app_token.ts` checks the
-minted token's `permissions` and fails the pass with one message naming each
-missing permission. If the
-App itself lacks a permission, the message points at the App's permission
-settings page; if the App has it but the installation has not yet accepted
-it, the message says to accept the new permissions on the installation page.
-
-### Persistent failure escalation
-
-A pass fails when the App token or the gate fails, or when the headless
-Claude round exits non-zero: it could not start (`claude` not on `PATH`),
-it failed, or the 50-minute alarm killed it. `runner.log` then says
-`round failed (exit N)` or `round timed out after 3000s` instead of
-`round done`.
-
-After 12 consecutive failed passes (about an hour at the 5-minute interval),
-`escalate.ts` opens one deduplicated issue in `stSoftwareAU/VibeCoder`,
-titled `review-fleet-prs runner failing on <host>: <error>`, using the host's
-own `gh` login rather than the App token. If the error changes, it retitles
-the issue and comments on it. It appends a
-`[review-fleet-prs-health] host=… status=unhealthy …` line to `health.log`
-in the log directory, which is also echoed to `runner.log`. The first
-successful pass after that comments, closes the issue and logs
-`status=recovered`. State lives in `failures.json` in the log directory.
-If the escalation itself fails, that is logged as "escalation failed" and
-the next pass retries it.
-
-`run.sh --once` runs the same housekeeping as the loop: pruning rounds older
-than 30 days, rotating `runner.log` past 10 MB, and emptying the
-service's own `service.out` in place past 10 MB (launchd holds it open, and
-everything in it is also in `runner.log`). Running `bash -x run.sh` does not
-print the minted token, since tracing is suspended around the mint.
+Read [references/running-unattended.md](references/running-unattended.md)
+before running the loop without an open session through `scripts/run.sh`:
+installing it, where a round runs and on which Claude subscription,
+reviewing as a GitHub App, and persistent failure escalation.
 
 ## Rules
 
@@ -170,8 +80,8 @@ print the minted token, since tracing is suspended around the mint.
    commits since are merges from the base branch that leave its own diff
    unchanged, the gate skips it as `awaiting-fix` until the fleet pushes its
    fix, so the review is not repeated. The skill runs on more than one host
-   (a laptop as the `gh` user, GRQ-25 as the reviewer App), so a review
-   carrying the skill's marker counts as this skill's review whichever login
+   (a laptop as the `gh` user, an always-on host as the reviewer App), so a
+   review carrying the skill's marker counts as this skill's review whichever login
    posted it, and a PR anyone has approved at its head commit is skipped as
    `approved`: there is nothing left to review, and it merges once it is up
    to date.
@@ -184,7 +94,8 @@ print the minted token, since tracing is suspended around the mint.
    same once per head for a fleet PR already approved at its head but still
    behind. A PR is never brought up to date before its review: the approval
    would then be of a head nobody read. Dependabot branches are never pushed
-   to (see [Dependabot PRs](#dependabot-prs)).
+   to (see
+   [Dependabot PRs](references/edge-cases.md#dependabot-prs)).
 10. **Repeated findings improve the VibeCoder.** Review findings are also
     feedback about the worker itself. After each round, compare blocking
     findings with recent review history. When the same underlying mistake has
@@ -192,7 +103,35 @@ print the minted token, since tracing is suspended around the mint.
     coding-standard or other guidance could reasonably prevent it, file a
     deduplicated improvement issue in `stSoftwareAU/VibeCoder`. Do not turn a
     one-off bug into guidance, and do not weaken the review rule just because
-    a finding is common.
+    a finding is common. Many fleet repos are private and VibeCoder is
+    public, so the issue never references a private repo directly (see
+    [Keeping private repos private](#keeping-private-repos-private)).
+
+## Keeping private repos private
+
+Reviews, held-PR comments and unrelated issues land in the PR's own repo, so
+they may name its files, code and PRs freely. An improvement issue (or a
+runner escalation) lands in the public `stSoftwareAU/VibeCoder`: it may
+reference a public repo's issues, PRs and Actions runs directly, but never a
+private repo's. For a private repo, every part of the issue (title, body,
+evidence table and the closing "found by" line) leaves out:
+
+- the repo's name or slug, and its issue, PR, review, commit or Actions run
+  numbers and links;
+- its branch names, file paths, code, test names, error text and log
+  excerpts;
+- what the product does: its domain, features, customers or data.
+
+Describe the example at concept level instead, keeping what shows the
+pattern: dates, times, the sequence of events and the VibeCoder code at
+fault. A title cites only public examples, so `... (VibeCoder#3308, #3355,
+private-app#2699)` becomes `... (VibeCoder#3308, #3355 and a private fleet
+PR)`; in the evidence table that row reads "a PR in a private fleet repo",
+its default branch is "the default branch", and the round is "found by the
+review-fleet-prs round of 2026-10-08 06:16". Check a repo's visibility with
+`gh api repos/{repo} --jq .visibility` before linking it, and treat any answer
+other than `public` (including an error) as private. The private evidence
+stays on the host, in `log.jsonl` and `summary.md`, where the owner can see it.
 
 ## Which repos
 
@@ -201,35 +140,15 @@ after; other fleet hosts look after others. The gate therefore reviews fleet
 PRs in any repo, and Dependabot PRs in this host's repos plus any repo where
 a fleet account has had a PR in the last 30 days.
 
-## Dependabot PRs
+Read
+[references/edge-cases.md#dependabot-prs](references/edge-cases.md#dependabot-prs)
+when a gate pass reports Dependabot upkeep (rebase requests, auto-merge
+arming or their failures).
 
-Each gate pass also looks after open Dependabot PRs into a default branch,
-with no model involved (`dependabot.ts`):
-
-- **Behind or conflicting:** comments `@dependabot rebase` once per head
-  commit, so Dependabot brings its own branch up to date and resolves the
-  conflict. Never push to a Dependabot branch: Dependabot stops updating a PR
-  someone else has pushed to.
-- **Approved at its head and not yet armed:** arms auto-merge (squash where
-  the repo allows it), so it merges as soon as every required check passes.
-
-Dependabot PRs are still reviewed like any other; this upkeep only
-gets an approved one merged. The pass reports what it did in `upkeep`. A
-failed upkeep action is reported there as `<repo>#<n> auto-merge failed:
-<first line of the error>` (or `rebase failed: ...`), logged, and does not
-stop the pass; that action is not retried until the PR's head commit changes.
-
-## Approved fleet PRs that are behind
-
-Each gate pass also brings up to date any **fleet** PR that is approved at its
-head commit (by any host or by hand) but `BEHIND` its base
-(`branch_update.ts`): it asks GitHub to merge the base in once per head, with
-`expected_head_sha` set to the approved head so a push the fleet made meanwhile
-makes GitHub refuse rather than update a head nobody reviewed. The upkeep line
-is `<repo>#<n> branch update requested`; a refusal is `branch update failed:
-...`, logged, and not retried at that head. An unapproved PR is left as it is:
-it is reviewed first, and `post.ts` brings it up to date after the approval
-(rule 9).
+Read
+[references/edge-cases.md#approved-fleet-prs-that-are-behind](references/edge-cases.md#approved-fleet-prs-that-are-behind)
+when an approved fleet PR is behind its base or the upkeep reports a branch
+update.
 
 ## The loop
 
@@ -242,8 +161,8 @@ the rest are counted as `over-limit` and come back next pass. The search is
 oldest-updated first, so a PR whose head keeps moving cannot starve the quiet
 ones behind it.
 
-1. Start the gate in the background, from this skill's base directory, with
-   the Bash tool's `run_in_background: true`:
+1. Start the gate in the background, from this skill's `scripts/` directory,
+   with the Bash tool's `run_in_background: true`:
 
    ```bash
    deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --watch=300 [--repo=owner/name] [--limit=5]
@@ -365,12 +284,15 @@ that PR; the next gate run reports it again.
 ### 2. Post
 
 For each reply, write `{"pr": <the gate's ready entry>, "review": <the
-reviewer's reply>}` to a file in the scratchpad and run, from this skill's base
-directory:
+reviewer's reply>}` to a file in the scratchpad and run, from this skill's
+`scripts/` directory:
 
 ```bash
 deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
 ```
+
+When the round's prompt names a `--state-dir`, add it to that command: a
+round in the worker container keeps its state under the worker's log mount.
 
 The script does the rest, so do not post anything yourself:
 
@@ -427,7 +349,10 @@ VibeCoder's own guidance:
    do not create another one.
 4. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
    - the recurring failure pattern and why it is preventable;
-   - links to at least two independent PR/review examples;
+   - at least two independent PR/review examples: a link for each one in a
+     public repo, and a concept-level description, with no name, number or
+     link, for each one in a private repo (see
+     [Keeping private repos private](#keeping-private-repos-private));
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
    - the proposed guidance or guardrail and how future reviews can verify it
      worked.
@@ -452,9 +377,9 @@ the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also
 send one PushNotification (status `proactive`) naming those PRs and why,
-under 200 characters, e.g. `GRQ-AutoTrader#1521 held for you: 2 page tests
-moved to the server; GRQ#5032 sent back: fresh-path test never inits the
-market`. It reaches the owner's phone when this session has Remote Control
+under 200 characters, e.g. `example-app#152 held for you: 2 page tests
+moved to the server; example-api#503 sent back: fresh-path test never seeds
+the fixture`. It reaches the owner's phone when this session has Remote Control
 connected (`/remote-control` and the Claude app). Send nothing for rounds
 that only approved or had nothing ready.
 
@@ -462,19 +387,5 @@ The owner's running view is `<logs>/review-fleet-prs/summary.md`: what is
 waiting for them, what was sent back to the fleet, and what was approved in
 the last 7 days. Every gate pass rewrites it at no token cost.
 
-## Notes
-
-- Approval counts only because `gh` is signed in as a reviewer the repos'
-  rulesets accept (`pr_reviewers` in the config). A fleet PR with auto-merge
-  armed merges soon after approval, so the review is the last line of
-  defence.
-- PRs authored by the signed-in user are never candidates: GitHub does not
-  let an author approve their own PR.
-- Cost while idle: one GraphQL search (about 2 points) every 5 minutes, and
-  no model tokens. Each ready PR adds one REST call for its file list; an
-  `over-limit` PR adds none.
-- `<logs>` is the Vibe Coder's own log directory: `.config.json` `log_dir`
-  (the fleet sets `~/logs`), else the platform default. Everything this skill
-  writes lives in `<logs>/review-fleet-prs/`, outside the checkout, which the
-  worker resets. Each machine keeps its own; history from the old hidden
-  `~/.review-fleet-prs` moves there on the first gate pass.
+Read [references/notes.md](references/notes.md) for why approval counts, the
+idle cost, and where `<logs>` (used throughout this file) lives.

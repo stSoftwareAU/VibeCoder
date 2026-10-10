@@ -609,7 +609,7 @@ permissive. See
 2. **Claim issue** — Assign self to the issue; brief pause; re-read assignees; if contested, use alphabetical tie-break; losers unassign themselves.
 3. **Setup repo** — Clone or update target repo; reset worker repo to `origin/Develop`; create or sync feature branch from default or `milestone/<name>`.
 4. **Quality baseline** — Run `./quality.sh` on the clean repo (if it exists) to establish a baseline of any pre-existing quality failures. This baseline is threaded through to failure comments so reviewers can distinguish pre-existing issues from worker-introduced regressions. Non-blocking: work continues regardless of baseline result.
-5. **Clarification (important)** — Unless max rounds reached: the worker runs the clarification phase. **(1)** If the issue is **unclear**, it posts questions, adds `needs-human` (the standalone `needs-clarification` label was retired and the handoff consolidated onto `needs-human`), unassigns, and exits (no implementation this run). **(2)** It checks whether the issue is small enough to complete without timing out. **(3)** If **clear but too complex** for a single PR, it posts an escalation comment asking a trusted human to add the `planning` label and unassigns — once the label is added, the issue is processed via the planning workflow to create sub-issues. The worker does not add operational labels itself (see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels)). See [Clarification](planning-and-questions.md#clarification) and [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour).
+5. **Clarification (important)** — Unless max rounds reached: the worker runs the clarification phase. **(1)** If the issue is **unclear**, it posts questions, adds `needs-human` (the standalone `needs-clarification` label was retired and the handoff consolidated onto `needs-human`), unassigns, and exits (no implementation this run). **(2)** It checks whether the issue is small enough to complete without timing out. **(3)** If **clear but too complex** for a single PR, it posts an escalation comment asking a trusted human to add the `planning` label and unassigns — once the label is added, the issue is processed via the planning workflow to create sub-issues. The worker does not add operational labels itself (see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels)). See [Clarification](planning-and-questions.md#-clarification) and [Automatic complexity-to-planning escalation](planning-and-questions.md#-automatic-complexity-to-planning-escalation-target-behaviour).
 6. **Implement** — Run Claude with issue prompt; run `./quality.sh`; commit changes; push branch.
 7. **PR** — Build PR body from `docs/pr-summary-<issue>.md` (or `docs/archive/pr-summaries/pr-summary-<issue>.md`, or legacy `.pr_summary`); create or recover PR; enable auto-merge; resolve mergeability as needed.
 
@@ -713,7 +713,7 @@ gitGraph
 - **No eligible issue:** Skip implementation this iteration; continue to sleep and next loop.
 - **Claim fails:** Log and skip; do not retry same issue this run (another worker may have won).
 - **Clarification requested:** Post questions, add `needs-human`, unassign; user removes label and responds; next run re-evaluates.
-- **Complexity escalation (target behaviour):** If the issue is clear but too complex for a single PR, the worker posts an explanatory comment asking a trusted human to add the `planning` label, and unassigns. The planning workflow then breaks it into sub-issues once the label is added. The worker does not add `planning` itself — see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels). See also [Automatic complexity-to-planning escalation](planning-and-questions.md#automatic-complexity-to-planning-escalation-target-behaviour). *Note: This is the target workflow — implementation may not yet fully match this documented behaviour.*
+- **Complexity escalation (target behaviour):** If the issue is clear but too complex for a single PR, the worker posts an explanatory comment asking a trusted human to add the `planning` label, and unassigns. The planning workflow then breaks it into sub-issues once the label is added. The worker does not add `planning` itself — see [Worker Label Policy](../../README.md#%EF%B8%8F-supported-labels). See also [Automatic complexity-to-planning escalation](planning-and-questions.md#-automatic-complexity-to-planning-escalation-target-behaviour). *Note: This is the target workflow — implementation may not yet fully match this documented behaviour.*
 - **Implementation failure (first):** Comment, add `failed-once`, clean stale branch, unassign; next run may retry. **Second failure:** Replace with `failed`, skip thereafter until user removes label.
 - **Unrecoverable blocker (`needs-human` escalation):** If the worker determines the task cannot be completed autonomously — e.g. it needs credentials only a human can grant, or depends on a product decision — it adds the `needs-human` label, posts a comment explaining what a human must do next, and stops. The issue is **excluded from discovery** on every subsequent scan until a human removes the label. The worker never self-applies `top-priority` or any other reserved workflow label for this purpose. See [Worker escalation via `needs-human`](#-worker-escalation-via-needs-human) below.
 - **Zero output — prior work on remote branch:** If Claude produces no changes but the remote feature branch has commits from a prior attempt (e.g., worker crashed after push but before PR creation), the worker fast-forwards the local branch and proceeds to create the PR. The issue is completed, not failed.
@@ -1418,6 +1418,20 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**Re-scoping an existing drift test keeps every check's reach
+(Issue #3307).** Fleet PRs converting whole-file drift tests to `section()`
+kept every pinned string and still lost a check, and were sent back for it:
+a review round of VibeCoder#3240 had narrowed two absence checks to one
+section, and one of VibeCoder#3297 had moved a pin into a list where a
+longer pin already contained it. Condition 4's base check cannot see this,
+because a moved pin is meant to be on base. `CODING-STANDARDS.md` §
+Documentation-drift tests now asks for each moved pin to be scoped to the
+section holding its rule and red-checked there, for no pin to be a substring
+of another in the same list (`assertPins` throws on one), and for
+whole-file absence checks to stay on `flatWholeFile`. The issue and
+pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
+check.
+
 **Check where you insert (Issue #3194).** Fleet PRs added a new item or
 paragraph at a point that cut existing text off from what it describes.
 GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another
@@ -1853,6 +1867,27 @@ blocks, fail closed. A test identifier with no test-file path (for example a
 Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
 none added` is accepted when the diff adds no branch.
 
+It also blocks an entry that admits its own outcome is unreached. A strong
+admission — "no test reaches", "covers" or "exercises" it, "not reached by
+any test", or a negation directly governing a go/turn verb ("never went
+red", "did not go red", "no test went red", "does not turn red") — blocks
+whatever the entry names. A weaker admission — "unreached", "untested",
+"unreachable", or a flip that "stayed green" or "left … the suite green" —
+blocks only when the entry names no test-file path and records no red
+flip. The admission must be in the entry's own prose, not inside
+backticks: a closed code span containing `::` is read only up to that
+`::`, any other code span containing whitespace (a quoted test name, a
+command such as `cargo test --workspace`) is not read at all, and a span
+with no whitespace (a path, `path:line`, an identifier) is read as is — so
+bold prose carries the admission, but backticks around it do not. Lines
+the list parser otherwise skips — table rows, prose after the list,
+entries past the 100-entry cap — are still checked for this admission. The
+one exception is an entry written `exempt (out of scope): <reason>` or
+`exempt (untestable): <reason>` with a reason of at least three words; an
+exemption with no reason blocks too (Issue #3288, after
+GRQ-AutoTrader#2682 and VibeCoder#3282 raised with admitted-untested
+entries).
+
 It is a summary-rule gate like docs sweep and the placeholder-token gate: its
 verdict is folded into an earlier summary gate's own notice when that one
 blocks first, it shares the single
@@ -1927,10 +1962,33 @@ Either kind of hit is a summary-rule block, folded into whichever summary
 gate blocks first — it is last in the late-summary chain, after docs sweep,
 removed assertions, the result placeholder and branch outcomes — and goes
 through the existing [in-run
-recovery](#-the-in-run-recovery-from-a-summary-rule-block) path: one recovery
-turn, then the second block fails the run (or finalises an existing PR as
-`summary_incomplete`). The claim check runs again on the re-run after
-recovery.
+recovery](#-the-in-run-recovery-from-a-summary-rule-block) path when it is
+not alone: the run's first block, or a later block folded with another gate,
+takes the one recovery turn, then a further block fails the run (or
+finalises an existing PR as `summary_incomplete`). The claim check runs again
+on the re-run after that turn either way.
+
+**Issue #3324.** A later block where the claim check is the only gate still
+failing — reached only once every earlier summary gate has passed — instead
+gets one summary-only correction turn before the ordinary recovery path even
+applies: the claim gate's comment and the current summary, fenced as
+untrusted data, go to a fresh agent invocation with file-writing tools and
+`Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
+corrected summary between `<!-- vibe-corrected-summary -->` markers. The
+worker writes only the summary file from that reply, commits it, re-runs the
+quality gate, then re-runs completion; every sentence the claim check had
+confirmed wrong that is still in the summary is carried forward as a finding,
+so a re-run model pass that misses it, or cannot run at all, does not wave it
+through — it blocks exactly as before. A launch failure, an unreadable reply
+or an unchanged summary writes nothing and re-runs completion, which then
+blocks on the carried-forward finding. Two incidents motivated it:
+VibeCoder#3310, where the one in-run recovery turn received several
+`---`-separated gate notices folded together and fixed only one of them, and
+VibeCoder#3322, where the claim check found its wrong sentence only on the re-run
+after recovery — the run's second block, spent with no correction turn left.
+A claim-check block folded with another gate on a later attempt is not this
+case and gets no correction turn — the ordinary recovery (or its absence)
+applies.
 
 ```mermaid
 flowchart TD
@@ -1942,8 +2000,19 @@ flowchart TD
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
     D --> G
-    G -- yes --> H["Summary-rule block —<br/>one recovery turn, then fail/finalise"]
+    G -- yes --> H{"First summary-rule<br/>block this run?"}
     G -- no --> I["PR raised"]
+    H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
+    RT --> A
+    H -- no --> J{"Claim check the only<br/>gate still blocking?"}
+    J -- no --> K["Fail / finalise<br/>summary_incomplete"]
+    J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
+    L --> M["Re-run: wrong sentences<br/>still present carried forward"]
+    M --> N{"Gate satisfied?"}
+    N -- yes --> I
+    N -- no --> K
+    style I fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style K fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
 ## 🔧 Changed workflow files are checked before the PR
@@ -2156,7 +2225,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2165,7 +2234,10 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
-existing-PR branch finalises as `summary_incomplete`. Either way the gate's
+existing-PR branch finalises as `summary_incomplete` — except that when the
+claim check alone is still blocking on that second attempt, it first gets
+one summary-only correction turn (Issue #3324), and only a block that
+survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
 
@@ -2261,7 +2333,10 @@ flowchart TD
     G -->|no| R{"First summary-rule block<br/>of this run?"}
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
+    R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
+    CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
+    CT --> G
+    CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
     Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -2270,6 +2345,8 @@ flowchart TD
     style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style RT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style CC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style CT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style F fill:#c45858,stroke:#6b2020,color:#fff
@@ -2300,7 +2377,13 @@ now recover the way the security-fix gate does
    and remediation comment fenced as untrusted data under a per-render nonce,
    a boundary-integrity rule naming that fence's nonce, and the genuine
    review-block markers printed outside it (Issue #3152); told to edit the
-   summary file and commit, and nothing else;
+   summary file and commit, and nothing else. When several gates folded their
+   verdicts into one notice, each folded section is rendered as its own
+   fenced `REQUIRED ITEM k of n`, the agent is told every item must be fixed
+   before it finishes, and it must name each item by number with what it
+   changed in its final message (Issue #3324) — a single combined notice
+   used to let the agent fix only one of several folded sections and still
+   conclude the work was done;
 3. the worker renders the closure block itself when that summary still fails
    either criteria gate (Issue #2242, below);
 4. whatever the recovery produced is committed on the issue branch;
@@ -2309,7 +2392,11 @@ now recover the way the security-fix gate does
 A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
-recovered again: with no PR it fails exactly as a block did before, with the
+recovered again, with one exception: when the claim check alone is still
+blocking — every earlier summary gate having passed — the run instead gets
+one summary-only correction turn before it is treated as a second block
+(Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
+Any other second block fails exactly as a block did before, with the
 comment already on the thread; on an existing-PR branch that PR is finalised
 as `summary_incomplete` (Issue #1140). The same verdict is never posted
 twice, so the thread records the shortfall rather than the number of attempts
@@ -2328,8 +2415,10 @@ this way: the gate comment landed on the issue seconds after the agent's own
 PR, with no chance to fix the summary, and #3159 went out still describing
 the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
-survives that turn is handled as before: finalised as `summary_incomplete`
-when a PR exists, failed when none does.
+survives that turn is handled as before — finalised as `summary_incomplete`
+when a PR exists, failed when none does — unless it is the claim check
+alone still blocking, in which case it gets the one summary-only correction
+turn first (Issue #3324).
 
 All eight summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
@@ -2620,6 +2709,24 @@ discard),
 [phases/execute_phase.ts](../../worker/deno/lib/phases/execute_phase.ts)
 (`executeWithFreshSessionFallback`), and the `prompt_too_long` category in
 [failure_diagnosis.ts](../../worker/deno/lib/failure_diagnosis.ts).
+
+A run refused by the PR-summary gates is categorised `summary_incomplete`
+(display `summary-incomplete`, Issue #3431): the worker prefixes the failure
+reason with its own marker, and a message that starts with it is classified
+before the free-text scheduled-release, timeout, kill, rate-limit and disk-full rules, so the
+gates' quotation of the agent's summary (for example a Rust `AppError::X` path,
+or the words "timeout" or `TypeError:`) is not read as a crash. It is an
+`agent-outcome`, not a worker defect, and the normal retry and `failed-once`
+rules apply: when the run fails, the failure ladder and the in-run host-fault
+check do not read the quoted text, so the failure is classified as a
+non-transient ladder failure, not a timeout, a deadline handover or a host
+fault. The posted
+`## Automated Processing Failed` comment embeds the reason under a heading, so
+the two label-release sweeps that re-classify a posted body
+(`host_fault_release.ts` and `milestone_branch_refusal_release.ts`) recognise
+the record by its worker-written `**Category:** \`summary-incomplete\`` line at
+the head of the comment (`isSummaryGateFailureRecord`) and leave its labels
+alone, however the quoted summary reads. The catch-all `Error:` rule excludes `::` paths.
 
 ## 🔁 One run, one attempt per issue
 

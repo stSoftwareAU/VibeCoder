@@ -196,7 +196,10 @@ themselves:
   one; such a pin can never fail. An unresolvable `<doc>` exits 2 naming the
   path, and a doc the base never had prints one `doc not on base` line (see
   [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests),
-  condition 4).
+  condition 4). A pin moved by converting an existing whole-file drift test
+  to `section()` is meant to be on base; red-check it in its own section
+  instead (see **Re-scoping an existing drift test** in
+  [CODING-STANDARDS.md](CODING-STANDARDS.md#documentation-drift-tests)).
 - **Speed budget** — a unit test finishes within 10 seconds. It is a
   target, not a kill: nothing times a unit test at run time, so it is
   enforced by shape (see

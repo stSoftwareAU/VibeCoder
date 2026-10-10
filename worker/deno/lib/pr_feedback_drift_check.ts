@@ -31,12 +31,25 @@
  * present in that summary at the head — a hit gets the same one recovery
  * turn as the model pass's findings, then is reported.
  *
+ * Issue #3341 found a third gap: a review-fix push can edit a file a
+ * `Branch outcomes:` entry cites as `path:line` without renumbering the
+ * list, leaving a citation pointing at the previous head's line numbers
+ * (PR #3160, #3312 review evidence: a cited check had moved from line 398
+ * to 434 and the entry still named 398). This is also deterministic and
+ * no-model-needed (`branch_outcome_citations.ts`): for each PR summary
+ * readable at both the previous head and now, it maps that summary's
+ * previous citations of a file this push changed through `git diff -U0
+ * <beforeSha>`, and flags a citation still at the old line number for a
+ * line that moved, or an entry left unchanged apart from whitespace
+ * although its cited lines were changed or removed by this push — carrying
+ * a stale verdict forward rather than re-reading the code at the head.
+ *
  * ```mermaid
  * flowchart TD
  *     A["Agent's review-fix turn"] --> B{"beforeSha known<br/>and this push<br/>changed something?"}
  *     B -- no --> S["skipped"]
  *     B -- yes --> C["Collect this push's files,<br/>the PR's full file list,<br/>PR summaries, head test counts"]
- *     C --> D["Deterministic checks:<br/>Test Plan recount,<br/>Docs sweep gate,<br/>stale change-request quotes"]
+ *     C --> D["Deterministic checks:<br/>Test Plan recount,<br/>Docs sweep gate,<br/>stale change-request quotes,<br/>line-citation check"]
  *     C --> E{"Code or test changed?"}
  *     E -- yes --> F["One constrained,<br/>read-only model question:<br/>quote the drifted sentences"]
  *     E -- no --> G["No model pass"]
@@ -61,6 +74,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  changedFilesCitedBy,
+  type DiffHunk,
+  findStaleCitations,
+  parseDiffHunks,
+} from "./branch_outcome_citations.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
   type ChangeRequestFinding,
@@ -428,6 +447,7 @@ export function buildDriftRecoveryPrompt(opts: {
   mismatches: readonly string[];
   docsSweepProblems: readonly string[];
   staleQuotes?: readonly string[];
+  staleCitations?: readonly string[];
   boundaryId?: string;
 }): string {
   const boundaryId = isBoundaryId(opts.boundaryId)
@@ -491,6 +511,20 @@ export function buildDriftRecoveryPrompt(opts: {
     blocks.push("the stale quoted sentences");
   }
 
+  const staleCitations = opts.staleCitations ?? [];
+  if (staleCitations.length > 0) {
+    const body = staleCitations.map((c) => `- ${c}`).join("\n");
+    lines.push(
+      ...fenceUntrustedIssueText(
+        body,
+        "Branch outcomes citations left at the previous head's line numbers:",
+        boundaryId,
+      ),
+    );
+    lines.push("");
+    blocks.push("the stale line citations");
+  }
+
   // Only the steps for what this turn actually found are numbered — a
   // mismatch-only recovery must not be asked to touch a Docs sweep line it
   // was never told was wrong (Issue #3143 review).
@@ -518,6 +552,14 @@ export function buildDriftRecoveryPrompt(opts: {
       "Rewrite or remove each quoted sentence still in its file — a " +
         "correction added below it leaves it standing, so do not append " +
         "one.",
+    );
+  }
+  if (staleCitations.length > 0) {
+    steps.push(
+      "Renumber each listed `path:line` citation in the `Branch outcomes:` " +
+        "list to the line its code sits on at the head — re-read it there " +
+        "— and re-run the flip for any entry whose cited code this push " +
+        "changed rather than carrying the old result over.",
     );
   }
   steps.push(
@@ -555,6 +597,11 @@ export interface DriftResidual {
   docsSweepProblems: string[];
   /** Change-request-quoted sentences still present (Issue #3244). */
   staleQuotes?: string[];
+  /**
+   * Branch-outcomes citations left at the previous head's line numbers
+   * (Issue #3341).
+   */
+  staleCitations?: string[];
   /** Set when the model pass returned no usable verdict at all. */
   modelPassUnavailable?: string;
   /**
@@ -565,6 +612,12 @@ export interface DriftResidual {
    * "found text" intro by itself.
    */
   quoteCheckUnavailable?: string;
+  /**
+   * Set when the line-citation check could not read a summary's previous
+   * head, or a cited file's diff, at least once (Issue #3341). Fails loud
+   * like `quoteCheckUnavailable`, but is not a hit on its own.
+   */
+  citationCheckUnavailable?: string;
 }
 
 /** Collapse a quoted sentence or reason to one line for the reply. */
@@ -582,7 +635,8 @@ export function formatDriftResidual(residual: DriftResidual): string {
   const hasHits = residual.findings.length > 0 ||
     residual.mismatches.length > 0 ||
     residual.docsSweepProblems.length > 0 ||
-    (residual.staleQuotes?.length ?? 0) > 0;
+    (residual.staleQuotes?.length ?? 0) > 0 ||
+    (residual.staleCitations?.length ?? 0) > 0;
 
   const lines: string[] = [];
   lines.push("### Drift check (Issue #3143)");
@@ -619,6 +673,10 @@ export function formatDriftResidual(residual: DriftResidual): string {
     for (const q of residual.staleQuotes) lines.push(`- ${flatten(q)}`);
     lines.push("");
   }
+  if (residual.staleCitations && residual.staleCitations.length > 0) {
+    for (const c of residual.staleCitations) lines.push(`- ${flatten(c)}`);
+    lines.push("");
+  }
   if (residual.modelPassUnavailable) {
     lines.push(
       "The drift check's model pass returned no verdict " +
@@ -629,6 +687,10 @@ export function formatDriftResidual(residual: DriftResidual): string {
   }
   if (residual.quoteCheckUnavailable) {
     lines.push(flatten(residual.quoteCheckUnavailable));
+    lines.push("");
+  }
+  if (residual.citationCheckUnavailable) {
+    lines.push(flatten(residual.citationCheckUnavailable));
     lines.push("");
   }
 
@@ -810,6 +872,92 @@ async function checkStaleQuotes(
   };
 }
 
+/**
+ * Check every loaded PR summary's Branch-outcomes line citations against
+ * this push's diff (Issue #3341).
+ *
+ * For each summary, reads it at the before-run head with `git ls-tree` /
+ * `git show` — a summary new in this push (empty `ls-tree` result) has
+ * nothing to compare and is skipped; an unreadable before-run summary is
+ * reported unchecked rather than silently passed. The paths handed to git
+ * (`s.path`, and the cited paths resolved against `pushFiles`) come from
+ * git's own `--name-only`/`ls-files` output or from the caller's own
+ * summary list, never parsed out of the untrusted summary text itself, so a
+ * `--` separator before each path is enough defence against an option-like
+ * value.
+ */
+async function checkLineCitations(
+  deps: DriftCheckDeps,
+  beforeSha: string,
+  summaries: readonly LoadedSummary[],
+  pushFiles: readonly string[],
+): Promise<{ stale: string[]; unchecked: string[] }> {
+  const stale: string[] = [];
+  const unchecked: string[] = [];
+
+  for (const s of summaries) {
+    const lsTree = await deps.runGit([
+      "ls-tree",
+      "--name-only",
+      beforeSha,
+      "--",
+      s.path,
+    ]);
+    if (lsTree === null || lsTree.code !== 0) {
+      unchecked.push(
+        `${s.path}: could not read the summary at the before-run head, ` +
+          "so its Branch outcomes citations were not checked",
+      );
+      continue;
+    }
+    if (lsTree.stdout.trim() === "") {
+      // New in this push — nothing to compare against.
+      continue;
+    }
+
+    const show = await deps.runGit(["show", `${beforeSha}:${s.path}`]);
+    if (show === null || show.code !== 0) {
+      unchecked.push(
+        `${s.path}: could not read the summary at the before-run head, ` +
+          "so its Branch outcomes citations were not checked",
+      );
+      continue;
+    }
+    const previous = show.stdout;
+
+    const cited = changedFilesCitedBy(previous, pushFiles);
+    const hunksByPath = new Map<string, readonly DiffHunk[]>();
+    for (const path of cited) {
+      const diff = await deps.runGit([
+        "diff",
+        "-U0",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        beforeSha,
+        "--",
+        path,
+      ]);
+      if (diff === null || diff.code !== 0) continue;
+      const hunks = parseDiffHunks(diff.stdout);
+      if (hunks === null) continue;
+      hunksByPath.set(path, hunks);
+    }
+
+    const found = findStaleCitations({
+      summaryPath: s.path,
+      previousSummary: previous,
+      currentSummary: s.content,
+      changedFiles: pushFiles,
+      hunksByPath,
+    });
+    stale.push(...found.stale);
+    unchecked.push(...found.unchecked);
+  }
+
+  return { stale: uniq(stale), unchecked: uniq(unchecked) };
+}
+
 /** Append the residual drift to `.pr_response_message`, keeping any existing text first. */
 async function appendResidualToResponseMessage(
   repoPath: string,
@@ -830,7 +978,8 @@ async function appendResidualToResponseMessage(
   const hasHits = residual.findings.length > 0 ||
     residual.mismatches.length > 0 ||
     residual.docsSweepProblems.length > 0 ||
-    (residual.staleQuotes?.length ?? 0) > 0;
+    (residual.staleQuotes?.length ?? 0) > 0 ||
+    (residual.staleCitations?.length ?? 0) > 0;
   const lead = hasHits
     ? "I've pushed a fix for this feedback, but the worker's drift check " +
       "found text it leaves out of step with the code — see below."
@@ -969,6 +1118,17 @@ export async function runPrFeedbackDriftCheck(
     changeRequestFindings,
   );
 
+  // Deterministic, no-model-needed check: Branch-outcomes `path:line`
+  // citations left at the previous head's line numbers (Issue #3341). Runs
+  // on every non-skipped push, not gated on `changesBehaviour` or the model
+  // pass — a citation can go stale on a docs-only push too.
+  const initialCitations = await checkLineCitations(
+    deps,
+    beforeSha,
+    summaries,
+    pushFiles,
+  );
+
   // One constrained, read-only model question — when this push changed a
   // code or test file (Issue #3244); a docs-only push gets none.
   const findingsWithStatus: { finding: DriftFinding; foundBefore: boolean }[] =
@@ -1043,6 +1203,8 @@ export async function runPrFeedbackDriftCheck(
     initialChecks.docsSweepProblems.length === 0 &&
     initialStaleQuotes.stale.length === 0 &&
     initialStaleQuotes.unchecked.length === 0 &&
+    initialCitations.stale.length === 0 &&
+    initialCitations.unchecked.length === 0 &&
     modelPassUnavailable === undefined
   ) {
     return { status: "clean", checked };
@@ -1057,7 +1219,8 @@ export async function runPrFeedbackDriftCheck(
     findingsWithStatus.length > 0 ||
     initialChecks.mismatches.length > 0 ||
     initialChecks.docsSweepProblems.length > 0 ||
-    initialStaleQuotes.stale.length > 0
+    initialStaleQuotes.stale.length > 0 ||
+    initialCitations.stale.length > 0
   ) {
     logger.warn(
       "Drift check found hits — running one recovery turn (Issue #3143)",
@@ -1068,6 +1231,7 @@ export async function runPrFeedbackDriftCheck(
         mismatches: initialChecks.mismatches.length,
         docsSweepProblems: initialChecks.docsSweepProblems.length,
         staleQuotes: initialStaleQuotes.stale.length,
+        staleCitations: initialCitations.stale.length,
       },
     );
     const recoveryResult = await deps.runAgent({
@@ -1078,6 +1242,7 @@ export async function runPrFeedbackDriftCheck(
         mismatches: initialChecks.mismatches,
         docsSweepProblems: initialChecks.docsSweepProblems,
         staleQuotes: initialStaleQuotes.stale,
+        staleCitations: initialCitations.stale,
       }),
       readOnly: false,
     });
@@ -1117,6 +1282,12 @@ export async function runPrFeedbackDriftCheck(
     repoPath,
     changeRequestFindings,
   );
+  const freshCitations = await checkLineCitations(
+    deps,
+    beforeSha,
+    freshSummaries,
+    pushFiles,
+  );
 
   const residual: DriftResidual = {
     findings: remainingFindings,
@@ -1124,6 +1295,9 @@ export async function runPrFeedbackDriftCheck(
     docsSweepProblems: freshChecks.docsSweepProblems,
     ...(freshStaleQuotes.stale.length > 0
       ? { staleQuotes: freshStaleQuotes.stale }
+      : {}),
+    ...(freshCitations.stale.length > 0
+      ? { staleCitations: freshCitations.stale }
       : {}),
     ...(modelPassUnavailable !== undefined ? { modelPassUnavailable } : {}),
     ...(freshStaleQuotes.unchecked.length > 0
@@ -1135,6 +1309,13 @@ export async function runPrFeedbackDriftCheck(
           "were not checked",
       }
       : {}),
+    ...(freshCitations.unchecked.length > 0
+      ? {
+        citationCheckUnavailable: `the line-citation check could not check: ${
+          freshCitations.unchecked.join("; ")
+        }`,
+      }
+      : {}),
   };
 
   if (
@@ -1142,8 +1323,10 @@ export async function runPrFeedbackDriftCheck(
     residual.mismatches.length === 0 &&
     residual.docsSweepProblems.length === 0 &&
     (residual.staleQuotes?.length ?? 0) === 0 &&
+    (residual.staleCitations?.length ?? 0) === 0 &&
     residual.modelPassUnavailable === undefined &&
-    residual.quoteCheckUnavailable === undefined
+    residual.quoteCheckUnavailable === undefined &&
+    residual.citationCheckUnavailable === undefined
   ) {
     logger.info(
       "Drift check's recovery turn resolved everything it found",
@@ -1161,8 +1344,10 @@ export async function runPrFeedbackDriftCheck(
       mismatches: residual.mismatches.length,
       docsSweepProblems: residual.docsSweepProblems.length,
       staleQuotes: residual.staleQuotes?.length ?? 0,
+      staleCitations: residual.staleCitations?.length ?? 0,
       modelPassUnavailable: residual.modelPassUnavailable,
       quoteCheckUnavailable: residual.quoteCheckUnavailable,
+      citationCheckUnavailable: residual.citationCheckUnavailable,
     },
   );
   await appendResidualToResponseMessage(repoPath, residual);

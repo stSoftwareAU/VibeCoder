@@ -97,12 +97,13 @@ calls it. Its row says so, and it is deliberately absent from
 | `pyyaml` 6.0.3 (wheel in the system interpreter's `purelib`) | *module* `yaml` — no command | NEAT-AI-core's workflow-assertion BATS suites, which parse workflow YAML with `python3 -c "import yaml"` |
 | `codegraph` 1.6.0 (bundle in `/opt/codegraph`, symlinked onto the PATH) | `codegraph` | The CodeGraph repo-context trial (Issue #2145) — the worker's own runs, not a monitored repository's gate |
 | `rtk` 0.49.0 (bare binary in `/usr/local/bin`)      | `rtk`                                     | The RTK trial (Issue #2328) — the worker's own runs, not a monitored repository's gate           |
+| `floci` 2.2.0 (native binary from the digest-pinned `floci/floci` image) | `floci`                | This repo's worker **runtime**, not a gate: the LocalStack drop-in on port 4566 for the worker's own runs (Issue #3367) — not started by the entrypoint |
 | `node` (LTS) + `markdownlint-cli2`                  | `node`, `npm`, `markdownlint-cli2`        | This repo's `check-markdownlint` stage, configured by `.markdownlint-cli2.jsonc`                |
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 | `graft` 0.18.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
 `rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
-`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
+`bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture
 SHA-256 out of `container/tools.json` with `jq`, so the Containerfile carries
@@ -112,7 +113,7 @@ that exemption honest. Adding one is a fragment, a `container/tools.json`
 entry carrying `fragment`, its path in `CONTAINER_IMAGE_INPUTS`, and the id
 added to one of the Containerfile's `install-toolchains.sh` runs.
 
-Eight consequences worth knowing:
+Nine consequences worth knowing:
 
 - **Rust is pinned to 1.99.0, not `stable`.** That is the channel
   NEAT-AI-scorer, NEAT-AI-Discovery, NEAT-AI-Lamarck and NEAT-AI-Backpropagation
@@ -207,6 +208,25 @@ Eight consequences worth knowing:
   which resolves symlinks itself to find its bundle directory. That bundle is
   about 62 MB downloaded and 280 MB unpacked, so it is the third-largest
   toolchain in the image after `rust` and `semgrep`.
+- **`floci` is the one fragment whose binary comes from a container image,
+  not a download** (Issue #3367, parent #3346). The Containerfile adds a
+  digest-pinned `FROM ${FLOCI_IMAGE} AS floci` stage and `COPY --from=floci
+  /app/application /tmp/floci-application` — floci publishes no standalone
+  release binary, and the image's `/app/application` is a native Quarkus
+  binary linking only libc — so the fragment's sha256 in `container/tools.json`
+  is per-architecture against the binary inside that digest-pinned image, not
+  against a fetched tarball. It installs to `/usr/local/lib/floci/application`
+  and writes a `/usr/local/bin/floci` wrapper: the native binary has no
+  `--version` flag (passing one starts the server), so the wrapper answers
+  `--version` with `floci 2.2.0` itself and otherwise execs straight through.
+  The build then smoke-checks it — starts floci in the background bound to
+  `127.0.0.1`, runs a bounded `curl --retry … --retry-connrefused` against
+  `http://127.0.0.1:4566/`, logs the HTTP status, fails the build on no
+  response, then stops the process and removes the copied binary — so a
+  broken image fails on the pull request rather than the worker's first run.
+  Like `codegraph`, it exists for the worker's own runs, not a monitored
+  repository's gate, and `container/entrypoint.sh` does not start it; whatever
+  needs the LocalStack drop-in on port 4566 starts it itself.
 
 Node.js is the runtime `markdownlint-cli2`, Graft, Playwright and the Gemini
 CLI provider need; the worker itself is Deno. Graft is the one consumer that
@@ -376,7 +396,7 @@ restate the pin as `ARG`s; `fragment` means `container/toolchains/<id>.sh`
 installs it and reads the pin from `container/tools.json` with `jq`, so the
 Containerfile states no version at all. `shellcheck`, `actionlint`,
 `cargo-deny`, `gitleaks`, `pwsh`, `bats-core`, `codespell`, `pyyaml`,
-`codegraph`, `rtk` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153 and #2381) —
+`codegraph`, `rtk`, `floci` and `rust` are fragments (Issues #1594, #1595, #1596, #1628, #2153, #2381 and #3367) —
 they are the fetch-verify-extract toolchains, whose `ARG` blocks
 and `RUN` bodies were the bulk of the Containerfile's size. `node`, `npm`,
 `markdownlint-cli2`, `graft` and `semgrep` keep `versionArg`: Node's layer must precede the provider layer, and
@@ -389,7 +409,11 @@ toolchain id is named by some `install-toolchains.sh` run — a pin the build
 never installs is a violation, because absence of a failure is not success —
 and that each fragment verifies its download with `sha256sum -c`, carries the
 shared `${CURL_RETRY}` policy, pipes nothing into a shell, and restates no
-version the manifest already pins.
+version the manifest already pins. A `curl`/`wget` command is exempt from the
+`${CURL_RETRY}` check only when every URL it names is loopback (`127.0.0.1` or
+`localhost`) — a build-time smoke probe of a server the fragment itself just
+started, as `floci.sh` runs against `http://127.0.0.1:4566/` (Issue #3367), is
+not a download.
 
 ## The image proves itself at start-up (Issue #1956)
 

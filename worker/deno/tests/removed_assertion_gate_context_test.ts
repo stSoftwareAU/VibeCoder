@@ -40,6 +40,14 @@ async function gatePatch(files: FileVersions): Promise<string> {
         "user.email=test@example.com",
         "-c",
         "user.name=Test",
+        // `commit`/`checkout` otherwise spawn a detached
+        // `git maintenance run --auto` that keeps writing into `.git` after
+        // the awaited command returns, racing the recursive `Deno.remove`
+        // below and failing it with "Directory not empty" (Issue #1135).
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
         ...args,
       ],
       cwd: dir,

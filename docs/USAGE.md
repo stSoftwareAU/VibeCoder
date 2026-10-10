@@ -67,7 +67,7 @@ When creating a PR, the worker includes appropriate evidence based on the type
 of change:
 
 - **UI (User Interface) Changes**: Include a screenshot (see
-  [Screenshot Support](DEPLOYMENT.md#screenshot-support-setup)). If a screenshot
+  [Screenshot Support](DEPLOYMENT.md#-screenshot-support-setup)). If a screenshot
   cannot be generated, you must explicitly state why in the PR summary.
 - **Performance Changes**: Include benchmark results (before/after). If no
   measurable improvement, document this finding.
@@ -87,11 +87,23 @@ committed to the repository as permanent documentation and contains:
 - A test plan listing tests added or modified
 
 The worker reads this file and includes its contents in the PR body. If no PR
-summary file is created, a warning note is included in the PR body. A later
-PR-feedback, CI-fix or merge-conflict run that pushes a change to this file
-has the PR description re-synced from it by `syncPrBodyFromSummary`
-(`worker/deno/lib/pr_body_sync.ts`), so the description never drifts from a
-summary rewritten after creation.
+summary file is created, a warning note is included in the PR body. PR
+creation records a SHA-256 digest of the summary's content in the PR body as
+a hidden marker, and the sub-agent tier the issue run resolved as a second
+one, `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR
+outcome can be attributed to that tier (Issue #3403); the fleet summary's
+per-tier PR-outcome figures do this (Issue #3404). A re-sync carries the
+tier marker over unchanged. A later CI-fix or merge-conflict run re-syncs the PR
+description from the summary, via `syncPrBodyFromSummary`
+(`worker/deno/lib/pr_body_sync.ts`), after a verified push to the PR's own
+head when the summary at the head differs from that recorded digest —
+whichever push changed it, this run's or an earlier one. A PR-feedback run
+re-syncs under the same condition, and also when it pushed nothing and has no
+commits left unpushed, so a feedback run that only answers a finding still
+refreshes a stale body. A body raised before this digest marker existed keeps
+the older rule: rebuilt only when this run's own push changed the summary
+file. So the description never drifts from a summary rewritten after
+creation, for as long as that run's conditions are met.
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -611,9 +623,9 @@ a configured floor.
 
 Floors are configured per tool in `.config.json` via `software_min_versions`
 (see [Configuration](CONFIGURATION.md#%EF%B8%8F-minimum-version-floor)). The
-default floor pins `claude` to `2.1.280` — the oldest release that resolves the
-`opus` alias to Opus 5.5, the tier every substantive phase requests
-(Issue #2560).
+default floor pins `claude` to `2.1.293` — the oldest release that resolves the
+`haiku` alias to Haiku 5.5, the model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window
+assumes (PR #3432 review, Issue #3400).
 
 - Below floor → the update runs immediately, bypassing the timestamp gate.
 - At/above floor → existing interval behaviour is preserved exactly.
@@ -724,7 +736,10 @@ For other reviewers:
 2. Click "Review changes"
 3. Write your feedback and select "Request changes"
 
-The worker will process the feedback, push fixes, and dismiss the review.
+The worker will process the feedback, push fixes, and dismiss the review once
+it has addressed it — not at the moment it claims the review. A run that dies
+mid-flight leaves the review undismissed rather than silently answered, so it
+is picked up again (by this host or another) once its claim lapses.
 
 **How the worker handles feedback:**
 
@@ -733,7 +748,9 @@ The worker will process the feedback, push fixes, and dismiss the review.
 - Analyse the feedback
 - Either fix the code or respond with an explanation
 - Always push unpushed commits
-- Mark feedback as processed (👀 reaction for comments, dismissal for reviews)
+- Mark feedback as processed (👀 reaction for comments; a review is dismissed
+  only once it has been fixed, rebutted, handed off or escalated — not at
+  claim time)
 
 ## 👍 Reaction System
 

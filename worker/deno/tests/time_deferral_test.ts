@@ -129,6 +129,39 @@ Deno.test("detectTimeDeferral - a marker inside a code fence or span is not a re
   assertEquals(request.reason, "`metrics_export` has not run");
 });
 
+// Issue #3313: the probe now uses the paragraph-aware splitter, so an inline
+// span wrapped across a line break is code throughout, and a lone backtick
+// on one line still pairs with one on the next within the same paragraph.
+Deno.test("detectTimeDeferral - a marker fully inside a span wrapped across two lines is not honoured", () => {
+  const quoted = marker(
+    'until="2026-10-07T00:00:00Z" reason="quoted template"',
+  );
+  // The opening backtick has no closer until "more`" on the next line, so
+  // the whole marker sits inside one inline code span.
+  const output = `\`${quoted}\nmore\` trailing`;
+  assertEquals(detectTimeDeferral(output, NOW), undefined);
+});
+
+Deno.test("detectTimeDeferral - a real marker between a wrapped span's close and a later span on the same line is honoured", () => {
+  const real = marker(
+    'until="2026-10-07T00:00:00Z" reason="data not ready yet"',
+  );
+  // "`abc\ndef`" is itself a span wrapped across two lines; the real marker
+  // follows it in plain prose on the second line, and a further span
+  // "`z`" follows the marker on that same line. A per-line regex pairs the
+  // closing backtick of "def`" with the next opening backtick it meets —
+  // the one before "z" — swallowing the marker text in between as if it
+  // were code, which hides a real marker. The paragraph-aware splitter
+  // must not do that: the marker sits in plain prose and must still be
+  // found.
+  const output = `\`abc\ndef\` ${real} and \`z\``;
+  const result = detectTimeDeferral(output, NOW);
+  assertEquals(result?.kind, "valid");
+  const request = (result as { kind: "valid"; request: TimeDeferralRequest })
+    .request;
+  assertEquals(request.reason, "data not ready yet");
+});
+
 Deno.test("detectTimeDeferral - invalid: missing reason", () => {
   const output = marker(`until="2026-10-07T00:00:00Z"`);
   const result = detectTimeDeferral(output, NOW);

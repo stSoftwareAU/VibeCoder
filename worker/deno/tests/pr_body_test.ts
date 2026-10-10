@@ -8,11 +8,15 @@ import { assertEquals } from "@std/assert";
 import {
   buildIdempotencyMarker,
   buildMilestonePrSection,
+  buildSubAgentTierMarker,
   ensurePrReferencesIssue,
   extractClosingIssueNumbers,
   extractIssueNumberFromPrTitle,
   hasClosingKeyword,
+  neutraliseSubAgentTierMarkers,
+  subAgentTierFromBody,
 } from "../lib/pr_body.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // --- extractClosingIssueNumbers (Issue #1113) ---
 
@@ -223,4 +227,67 @@ Deno.test("pr_body - extractIssueNumberFromPrTitle returns error for no match", 
 Deno.test("pr_body - extractIssueNumberFromPrTitle requires trailing pattern", () => {
   const result = extractIssueNumberFromPrTitle("Fix (#42) description");
   assertEquals(result.ok, false);
+});
+
+// --- buildSubAgentTierMarker / subAgentTierFromBody / neutraliseSubAgentTierMarkers (Issue #3403) ---
+
+Deno.test("pr_body - buildSubAgentTierMarker renders the exact marker for each tier", () => {
+  assertEquals(
+    buildSubAgentTierMarker("haiku"),
+    '<!-- vibe-sub-agent-tier tier="haiku" -->',
+  );
+  assertEquals(
+    buildSubAgentTierMarker("sonnet"),
+    '<!-- vibe-sub-agent-tier tier="sonnet" -->',
+  );
+});
+
+Deno.test("pr_body - subAgentTierFromBody reads the last occurrence", () => {
+  const body = `${buildSubAgentTierMarker("sonnet")}\n\nsome text\n\n${
+    buildSubAgentTierMarker("haiku")
+  }`;
+  assertEquals(subAgentTierFromBody(body), "haiku");
+});
+
+Deno.test("pr_body - subAgentTierFromBody returns undefined when no marker is present", () => {
+  assertEquals(
+    subAgentTierFromBody("## Summary\n\nNo marker here."),
+    undefined,
+  );
+});
+
+Deno.test("pr_body - subAgentTierFromBody skips an occurrence naming an unknown tier", () => {
+  const body = '<!-- vibe-sub-agent-tier tier="opus" -->\n' +
+    buildSubAgentTierMarker("sonnet");
+  assertEquals(subAgentTierFromBody(body), "sonnet");
+  // And when the unknown-tier marker is the only occurrence, there is
+  // nothing recognised to return.
+  assertEquals(
+    subAgentTierFromBody('<!-- vibe-sub-agent-tier tier="opus" -->'),
+    undefined,
+  );
+});
+
+Deno.test("pr_body - neutraliseSubAgentTierMarkers strips the comment delimiters off every occurrence", () => {
+  const body = `Before ${buildSubAgentTierMarker("haiku")} middle ${
+    buildSubAgentTierMarker("sonnet")
+  } after`;
+  const neutralised = neutraliseSubAgentTierMarkers(body);
+  assertEquals(
+    neutralised,
+    'Before vibe-sub-agent-tier tier="haiku" middle vibe-sub-agent-tier tier="sonnet" after',
+  );
+  // The neutralised text no longer reads as a marker to the finder.
+  assertEquals(subAgentTierFromBody(neutralised), undefined);
+});
+
+Deno.test("pr_body - subAgentTierFromBody stays linear on an unterminated hostile marker prefix", () => {
+  // A ratio of two readings, never a constant.
+  const result = assertLinearGrowth(
+    "subAgentTierFromBody unterminated marker",
+    (chars) => '<!-- vibe-sub-agent-tier tier="' + "a".repeat(chars),
+    (input) => subAgentTierFromBody(input),
+    { baseChars: 10_000 },
+  );
+  assertEquals(result, undefined);
 });

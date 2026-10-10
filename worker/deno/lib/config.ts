@@ -38,6 +38,7 @@ import { parseRtkOutput } from "./rtk_output_config.ts";
 import { assertCallbacksConfig } from "./run_callbacks_config.ts";
 import { assertGraftContextConfig } from "./graft_context_config.ts";
 import { assertCustomLabelPrompts } from "./custom_label_prompts_config.ts";
+import { resolveHostIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 import {
   CUSTOM_PROMPT_PATH_MAP_ENV,
   customPromptPathResolver,
@@ -210,6 +211,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   phase_effort_overrides: "phaseEffortOverrides",
   // Per-repo issue-executor split override (Issue #2341).
   issue_executor_split: "issueExecutorSplit",
+  // Per-repo issue sub-agent tier override (Issue #3401).
+  issue_sub_agent_tier: "issueSubAgentTier",
   // Per-repo Codex model/effort routing (Issue #363).
   codex_model: "codexModel",
   codex_phase_model_overrides: "codexPhaseModelOverrides",
@@ -913,6 +916,12 @@ export async function loadConfig(
   const issueExecutorSplit = file.issue_executor_split ??
     OPERATIONAL_DEFAULTS.issueExecutorSplit;
 
+  // Issue sub-agent tier, host-wide (Issue #3401). A `repo_config` entry of
+  // the same name overrides it per repository.
+  const issueSubAgentTier = resolveHostIssueSubAgentTier(
+    file.issue_sub_agent_tier,
+  );
+
   // Reviewer sub-agents, host-wide only (Issue #2575).
   const issueReviewerAgents = file.issue_reviewer_agents ??
     OPERATIONAL_DEFAULTS.issueReviewerAgents;
@@ -1170,6 +1179,7 @@ export async function loadConfig(
     geminiPhaseModelOverrides,
     deepseekPhaseModelOverrides,
     issueExecutorSplit,
+    issueSubAgentTier,
     issueReviewerAgents,
     fleetRunArchive,
     includeRecentActivity,

@@ -112,12 +112,22 @@ function makeState(overrides?: Partial<PhaseState>): PhaseState {
   };
 }
 
-function makeDeps(comments: RecordedComment[], existing: string[] = []) {
+function makeDeps(
+  comments: RecordedComment[],
+  existing: string[] = [],
+  ghCalls: string[][] = [],
+) {
   return createMockDeps({
     github: {
       createClient: () => makeStubClient(comments, existing),
-      runGhCommand: () =>
-        Promise.resolve("https://github.com/org/repo/pull/42"),
+      runGhCommand: (args: string[]) => {
+        ghCalls.push(args);
+        return Promise.resolve(
+          args[0] === "label" && args[1] === "list"
+            ? "[]"
+            : "https://github.com/org/repo/pull/42",
+        );
+      },
     },
     pr: {
       findExistingPrForIssue: () =>
@@ -471,6 +481,31 @@ Deno.test("completion - a run already counted is not counted twice (Issue #2347)
   assertEquals(getFleetTelemetry().issuePhaseRuns, 0);
 });
 
+Deno.test("completion - records the resolved sub-agent tier (Issue #3403)", async () => {
+  const ctx = makeContext();
+  ctx.config = { ...ctx.config, issueSubAgentTier: "haiku" };
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps([]));
+
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseHaikuRuns, 1);
+  assertEquals(snapshot.issuePhaseSonnetRuns, 0);
+});
+
+Deno.test("completion - the default config records a sonnet-tier run (Issue #3403)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps([]));
+
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseSonnetRuns, 1);
+  assertEquals(snapshot.issuePhaseHaikuRuns, 0);
+});
+
 Deno.test("completion - a run where Claude never ran records no issue-phase run (Issue #2347)", async () => {
   const ctx = makeContext();
 
@@ -530,4 +565,98 @@ Deno.test("completion - a run that never reached the RTK preparation mentions no
     !stats.body.includes("RTK"),
     `a run without the preparation must not mention it: ${stats.body}`,
   );
+});
+
+/** Whether a recorded gh call added `degraded-model` to the issue. */
+function addedDegradedLabel(ghCalls: string[][], issueNumber: number): boolean {
+  return ghCalls.some((a) =>
+    a.includes("labels[]=degraded-model") &&
+    a.some((x) => x.endsWith(`/issues/${issueNumber}/labels`))
+  );
+}
+
+const STALE_HAIKU_SERVED = ["claude-opus-5-5", "claude-haiku-4-5"];
+
+Deno.test("completion - a haiku-tier run served haiku-4-5 labels degraded-model and names both models (Issue #3405)", async () => {
+  const ctx = makeContext();
+  ctx.config = { ...ctx.config, issueSubAgentTier: "haiku" };
+  const state = makeState({ claudeRunStats: [claudeRun(STALE_HAIKU_SERVED)] });
+  const comments: RecordedComment[] = [];
+  const ghCalls: string[][] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments, [], ghCalls));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(stats.body, "Haiku sub-agents degraded");
+  assertStringIncludes(stats.body, "`claude-haiku-5-5`");
+  assertStringIncludes(stats.body, "`claude-haiku-4-5`");
+  assert(addedDegradedLabel(ghCalls, ctx.issueNumber));
+});
+
+Deno.test("completion - a repo_config haiku override on a sonnet host does the same (Issue #3405)", async () => {
+  const ctx = makeContext();
+  ctx.config = {
+    ...ctx.config,
+    issueSubAgentTier: "sonnet",
+    repoConfig: { "org/repo": { issueSubAgentTier: "haiku" } },
+  };
+  const state = makeState({ claudeRunStats: [claudeRun(STALE_HAIKU_SERVED)] });
+  const comments: RecordedComment[] = [];
+  const ghCalls: string[][] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments, [], ghCalls));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(stats.body, "Haiku sub-agents degraded");
+  assert(addedDegradedLabel(ghCalls, ctx.issueNumber));
+});
+
+Deno.test("completion - the default sonnet tier never labels or renders the Haiku line (Issue #3405)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(STALE_HAIKU_SERVED)] });
+  const comments: RecordedComment[] = [];
+  const ghCalls: string[][] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments, [], ghCalls));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assert(!stats.body.includes("Haiku sub-agents degraded"));
+  assert(!ghCalls.some((a) => a.some((x) => x.includes("degraded-model"))));
+});
+
+Deno.test("completion - the PR-raise stats comment carries the safety-refusal line when the state has one (Issue #3406)", async () => {
+  const ctx = makeContext();
+  const state = makeState({
+    claudeRunStats: [claudeRun(["claude-opus-5-5"])],
+    agentRefusal: {
+      tier: "haiku",
+      refusals: [{ model: "claude-haiku-5-5", category: "cyber" }],
+      retry: "succeeded",
+    },
+  });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assertStringIncludes(
+    stats.body,
+    "- **Safety refusal:** `cyber` from `claude-haiku-5-5` on the `haiku` sub-agent tier — a retry ran on the `sonnet` tier and finished without a refusal",
+  );
+});
+
+Deno.test("completion - a run with no refusal renders no safety-refusal line (Issue #3406)", async () => {
+  const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-5-5"])] });
+  const comments: RecordedComment[] = [];
+
+  await workOnIssueCompletion(ctx, state, makeDeps(comments));
+
+  const stats = statsCommentOn(comments, ctx.issueNumber);
+  assert(stats, "expected a run-stats comment on the issue");
+  assert(!stats.body.includes("Safety refusal"));
 });

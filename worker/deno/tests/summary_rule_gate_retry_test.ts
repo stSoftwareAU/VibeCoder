@@ -10,6 +10,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { buildSummaryRuleRetryPrompt } from "../lib/summary_rule_gate_retry.ts";
+import { buildSummaryClaimGateComment } from "../lib/summary_claim_check.ts";
 
 const VERDICT = {
   reason:
@@ -275,4 +276,79 @@ Deno.test("summary-rule retry - two renders without a pinned id get different no
     "not-a-nonce",
   );
   assertEquals(malformed.includes("BOUNDARY_not-a-nonce"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Per-section "REQUIRED ITEM" rendering (Issue #3324).
+// ---------------------------------------------------------------------------
+
+Deno.test("summary-rule retry - two folded sections render as two numbered REQUIRED ITEMs, each with its own text", () => {
+  const sectionOne = "⚠️ **Acceptance-criteria closure missing.** Add a " +
+    "`## Acceptance Criteria` block.";
+  const sectionTwo = "⚠️ **Independent two-axis review missing.** Add a " +
+    "`## Standards Review` block.";
+  const prompt = buildSummaryRuleRetryPrompt(
+    {
+      reason: VERDICT.reason,
+      comment: `${sectionOne}\n\n---\n\n${sectionTwo}`,
+      sections: [sectionOne, sectionTwo],
+    },
+    "org/repo",
+    7,
+    "0123456789ab",
+  );
+
+  assertStringIncludes(prompt, "REQUIRED ITEM 1 of 2");
+  assertStringIncludes(prompt, "REQUIRED ITEM 2 of 2");
+
+  const item1HeaderIndex = prompt.indexOf("REQUIRED ITEM 1 of 2");
+  const item2HeaderIndex = prompt.indexOf("REQUIRED ITEM 2 of 2");
+  const sectionOneIndex = prompt.indexOf(sectionOne, item1HeaderIndex);
+  const sectionTwoIndex = prompt.indexOf(sectionTwo, item2HeaderIndex);
+
+  // Each section's text sits inside its own fence, following its own header.
+  assertEquals(sectionOneIndex > item1HeaderIndex, true);
+  assertEquals(sectionOneIndex < item2HeaderIndex, true);
+  assertEquals(sectionTwoIndex > item2HeaderIndex, true);
+});
+
+Deno.test("summary-rule retry - a folded summary-claim-check section reaches the prompt as its own required item", () => {
+  const claimComment = buildSummaryClaimGateComment({
+    findings: [
+      {
+        file: "docs/archive/pr-summaries/pr-summary-7.md",
+        sentence: "`parseRow()` escapes the phrase and joins its words.",
+        reason: "the head's parseRow builds no regex",
+      },
+    ],
+    unconfirmedFindings: [],
+    testPlanProblems: [],
+    notChecked: [],
+  });
+  const baseComment = "⚠️ **Acceptance-criteria closure missing.**";
+  const prompt = buildSummaryRuleRetryPrompt(
+    {
+      reason: VERDICT.reason,
+      comment: `${baseComment}\n\n---\n\n${claimComment}`,
+      sections: [baseComment, claimComment],
+    },
+    "org/repo",
+    7,
+    "0123456789ab",
+  );
+
+  assertStringIncludes(prompt, "REQUIRED ITEM 2 of 2");
+  const item2HeaderIndex = prompt.indexOf("REQUIRED ITEM 2 of 2");
+  const claimTextIndex = prompt.indexOf(
+    "PR summary describes named code wrongly",
+    item2HeaderIndex,
+  );
+  assertEquals(claimTextIndex > item2HeaderIndex, true);
+});
+
+Deno.test("summary-rule retry - no sections carries the whole comment as REQUIRED ITEM 1 of 1", () => {
+  const prompt = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
+
+  assertStringIncludes(prompt, "REQUIRED ITEM 1 of 1");
+  assertStringIncludes(prompt, VERDICT.comment);
 });

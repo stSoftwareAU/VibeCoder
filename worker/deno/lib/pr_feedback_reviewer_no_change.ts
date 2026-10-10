@@ -9,10 +9,11 @@
  * change to apply…" via `replyNoChanges`. It also ignored an agent-written
  * `.pr_response_message` rebuttal on the no-change path.
  *
- * A `pr_review` claim dismisses the review (`markCommentProcessed` in
- * `pr_comments.ts`), and a dismissal cannot be undone (`removeProcessedMark`
- * errors for `pr_review`), so a later cycle can never retry it — the retry
- * must happen inside this run instead.
+ * A `pr_review` claim no longer dismisses the review at claim time
+ * (Issue #3383) — the review is only dismissed once the run retires it. But a
+ * run that ends with no fix and no rebuttal still escalates to
+ * `needs-human` rather than looping forever, so the agent needs its second
+ * attempt inside this run, before that escalation happens.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -33,7 +34,7 @@ export const MAX_REVIEWER_NO_CHANGE_ATTEMPTS = 2;
  * `pr_review` only for a CHANGES_REQUESTED review from an authorised
  * commenter or trusted review bot, which is how the fleet reviewer App posts
  * its findings (`gh pr review --request-changes`,
- * `.claude/skills/review-fleet-prs/post.ts`); the App's login is not known to
+ * `.claude/skills/review-fleet-prs/scripts/post.ts`); the App's login is not known to
  * the worker (`pr_reviewer_app` is read only by that skill), so the review
  * state, not the login, decides. Inline (`review`) and top-level (`issue`)
  * comments keep the neutral reply.

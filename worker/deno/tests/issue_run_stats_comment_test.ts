@@ -1675,6 +1675,7 @@ Deno.test("measureIssuePhaseRun - a non-implementation phase is not measured", (
     measureIssuePhaseRun({
       phase: "grill_me",
       claudeResults: [claudeResult(["claude-opus-5"])],
+      subAgentTier: "sonnet",
     }),
     undefined,
   );
@@ -1684,18 +1685,50 @@ Deno.test("measureIssuePhaseRun - a run no invocation produced stats for is not 
   // The same runs `postIssueRunStatsComment` answers `no_stats` for: there is
   // no comment, so there are no figures to record and no run to count.
   assertEquals(
-    measureIssuePhaseRun({ phase: "issue", claudeResults: [{}] }),
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults: [{}],
+      subAgentTier: "sonnet",
+    }),
     undefined,
   );
   assertEquals(
-    measureIssuePhaseRun({ phase: "issue", claudeResults: [] }),
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults: [],
+      subAgentTier: "sonnet",
+    }),
     undefined,
+  );
+});
+
+Deno.test("measureIssuePhaseRun - returns the sub-agent tier it was given", () => {
+  const claudeResults = [claudeResult(["claude-opus-5"])];
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      subAgentTier: "haiku",
+    })?.subAgentTier,
+    "haiku",
+  );
+  assertEquals(
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      subAgentTier: "sonnet",
+    })?.subAgentTier,
+    "sonnet",
   );
 });
 
 Deno.test("measureIssuePhaseRun - the spend is the figure the comment renders", () => {
   const claudeResults = [claudeResult(["claude-opus-5"])];
-  const figures = measureIssuePhaseRun({ phase: "issue", claudeResults });
+  const figures = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults,
+    subAgentTier: "sonnet",
+  });
   const body = buildIssueRunStatsComment({
     phase: "issue",
     claudeResults,
@@ -1713,7 +1746,11 @@ Deno.test("measureIssuePhaseRun - an invocation with no served model is priced a
   // off it instead would report a figure the comment never showed — on exactly
   // the runs whose price is least certain.
   const claudeResults = [claudeResult([], { requestedModel: "haiku" })];
-  const figures = measureIssuePhaseRun({ phase: "issue", claudeResults });
+  const figures = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults,
+    subAgentTier: "sonnet",
+  });
   const body = buildIssueRunStatsComment({
     phase: "issue",
     claudeResults,
@@ -1731,6 +1768,7 @@ Deno.test("measureIssuePhaseRun - duration sums the invocations and the split is
       claudeResult(["claude-opus-5"], { durationMs: 90_000 }),
       claudeResult(["claude-opus-5"], { durationMs: 30_000 }),
     ],
+    subAgentTier: "sonnet",
   });
 
   assert(figures);
@@ -1748,6 +1786,7 @@ Deno.test("measureIssuePhaseRun - only a gate that passed carries its attempt", 
       phase: "issue",
       claudeResults,
       qualityGate: { status: "passed", attempt: 2 },
+      subAgentTier: "sonnet",
     })?.gatePassedOnAttempt,
     2,
   );
@@ -1756,12 +1795,41 @@ Deno.test("measureIssuePhaseRun - only a gate that passed carries its attempt", 
       phase: "issue",
       claudeResults,
       qualityGate: { status: "failed" },
+      subAgentTier: "sonnet",
     })?.gatePassedOnAttempt,
     undefined,
   );
   assertEquals(
-    measureIssuePhaseRun({ phase: "issue", claudeResults })
+    measureIssuePhaseRun({
+      phase: "issue",
+      claudeResults,
+      subAgentTier: "sonnet",
+    })
       ?.gatePassedOnAttempt,
     undefined,
   );
+});
+
+Deno.test("buildIssueRunStatsComment - renders the safety-refusal line after the stats and leaves other comments byte-identical (Issue #3406)", () => {
+  const base = {
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-5-5"])],
+    runId: "r1",
+  };
+  const plain = buildIssueRunStatsComment(base);
+  const withRefusal = buildIssueRunStatsComment({
+    ...base,
+    agentRefusal: {
+      tier: "sonnet",
+      refusals: [{ model: "claude-sonnet-5-5", category: "frontier_llm" }],
+      retry: "not-retried",
+    },
+  });
+
+  assertStringIncludes(
+    withRefusal,
+    "- **Safety refusal:** `frontier_llm` from `claude-sonnet-5-5` on the `sonnet` sub-agent tier — not retried; the run failed",
+  );
+  assert(!plain.includes("Safety refusal"));
+  assertEquals(buildIssueRunStatsComment({ ...base }), plain);
 });

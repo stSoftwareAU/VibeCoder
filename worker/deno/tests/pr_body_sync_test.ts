@@ -8,11 +8,18 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   assemblePrBody,
+  buildSummaryDigestMarker,
+  PR_SUMMARY_DIGEST_PREFIX,
+  prSummaryDigest,
   runPrBodySync,
+  summaryDigestFromBody,
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
 } from "../lib/pr_body_sync.ts";
-import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
+import {
+  buildSubAgentTierMarker,
+  WORKER_PR_MARKER_PREFIX,
+} from "../lib/pr_body.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 import type {
   GitCommandOptions,
@@ -85,6 +92,17 @@ interface GitStubOptions {
   diffChanged?: boolean;
   diffFails?: boolean;
   headSha?: string;
+  /**
+   * [ancestor, descendant] pairs for which `merge-base --is-ancestor
+   * <ancestor> <descendant>` should report success (exit 0). Models real
+   * git ancestry instead of a fixed answer, so a caller that swaps the two
+   * SHAs gets the opposite result (PR #3353 review, round 3). Any argv not
+   * in this list reports "not an ancestor" (exit 1) — fails closed, since
+   * most tests never reach this branch.
+   */
+  ancestorPairs?: Array<[string, string]>;
+  /** When true, `merge-base` itself fails (ok: false) — models exit 128 when the compared SHA is not in the local checkout. */
+  mergeBaseFails?: boolean;
 }
 
 function stubGit(gitCalls: string[][], opts: GitStubOptions = {}) {
@@ -116,6 +134,22 @@ function stubGit(gitCalls: string[][], opts: GitStubOptions = {}) {
         value: { code: 0, stdout: `${opts.headSha ?? HEAD_SHA}\n`, stderr: "" },
       });
     }
+    if (args[0] === "merge-base") {
+      if (opts.mergeBaseFails) {
+        return Promise.resolve({
+          ok: false,
+          error: new Error("fatal: Not a valid commit name"),
+        });
+      }
+      const [ancestor, descendant] = args.slice(2);
+      const isAncestor = (opts.ancestorPairs ?? []).some(
+        ([a, d]) => a === ancestor && d === descendant,
+      );
+      return Promise.resolve({
+        ok: true,
+        value: { code: isAncestor ? 0 : 1, stdout: "", stderr: "" },
+      });
+    }
     throw new Error(`unexpected git call: ${args.join(" ")}`);
   };
 }
@@ -125,8 +159,16 @@ function baseBody(issueNumber: number): string {
     `🤖 Processed by: old-worker\n${marker(issueNumber)}`;
 }
 
-function viewJson(body: string, files: string[] = []): string {
-  return JSON.stringify({ body, files: files.map((path) => ({ path })) });
+function viewJson(
+  body: string,
+  files: string[] = [],
+  headRefOid: string = HEAD_SHA,
+): string {
+  return JSON.stringify({
+    body,
+    files: files.map((path) => ({ path })),
+    headRefOid,
+  });
 }
 
 // --- assemblePrBody -------------------------------------------------------
@@ -137,6 +179,8 @@ Deno.test("assemblePrBody - uses the summary content when present", () => {
     issueNumber: 42,
     extraSections: "",
     footer: "\n---\n\nfooter",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
   });
   assertStringIncludes(body, "Did the thing.");
   assertStringIncludes(body, "footer");
@@ -149,6 +193,8 @@ Deno.test("assemblePrBody - falls back to a minimal body when the summary is emp
     issueNumber: 42,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
   });
   assertStringIncludes(body, "## Summary");
   assertStringIncludes(body, "Closes #42.");
@@ -160,8 +206,115 @@ Deno.test("assemblePrBody - appends a closing keyword when the summary lacks one
     issueNumber: 42,
     extraSections: "",
     footer: "",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
   });
   assertStringIncludes(body, "Closes #42");
+});
+
+Deno.test("assemblePrBody - records the summary digest marker right after the worker marker", () => {
+  const digest = "a".repeat(64);
+  const body = assemblePrBody({
+    summaryContent: "## Summary\n\nDid the thing. Closes #42.",
+    issueNumber: 42,
+    extraSections: "",
+    footer: "\n---\n\nfooter",
+    summaryDigest: digest,
+    subAgentTier: undefined,
+  });
+  const markerIdx = body.indexOf(marker(42));
+  const digestMarker = buildSummaryDigestMarker(digest);
+  const digestIdx = body.indexOf(digestMarker);
+  assert(markerIdx !== -1, "expected worker marker to be present");
+  assert(digestIdx !== -1, "expected digest marker to be present");
+  assert(
+    digestIdx > markerIdx,
+    "expected digest marker to follow the worker marker",
+  );
+  assertEquals(
+    body.slice(markerIdx + marker(42).length, digestIdx + digestMarker.length)
+      .trim(),
+    digestMarker,
+  );
+  assertEquals(summaryDigestFromBody(body), digest);
+});
+
+// --- subAgentTier (Issue #3403) --------------------------------------------
+
+/** Every occurrence of the sub-agent tier marker in `body`. */
+function tierMarkerOccurrences(body: string): string[] {
+  return body.match(/<!-- vibe-sub-agent-tier tier="[a-z]+" -->/g) ?? [];
+}
+
+Deno.test("assemblePrBody - carries exactly one tier marker, even when the summary quotes a different one", () => {
+  const body = assemblePrBody({
+    summaryContent: `## Summary\n\nQuoting the marker: ${
+      buildSubAgentTierMarker("sonnet")
+    }\n\nDid the thing. Closes #42.`,
+    issueNumber: 42,
+    extraSections: "",
+    footer: "\n---\n\nfooter",
+    summaryDigest: "deadbeef",
+    subAgentTier: "haiku",
+  });
+  assertEquals(tierMarkerOccurrences(body), [buildSubAgentTierMarker("haiku")]);
+});
+
+Deno.test("assemblePrBody - carries no tier marker when subAgentTier is undefined", () => {
+  const body = assemblePrBody({
+    summaryContent: "## Summary\n\nDid the thing. Closes #42.",
+    issueNumber: 42,
+    extraSections: "",
+    footer: "\n---\n\nfooter",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(tierMarkerOccurrences(body), []);
+});
+
+// --- prSummaryDigest / summaryDigestFromBody -------------------------------
+
+Deno.test("prSummaryDigest - produces 64 lowercase hex characters", async () => {
+  const digest = await prSummaryDigest("## Summary\n\nSome content.\n");
+  assertEquals(digest.length, 64);
+  assert(
+    /^[0-9a-f]{64}$/.test(digest),
+    `expected lowercase hex, got ${digest}`,
+  );
+});
+
+Deno.test("prSummaryDigest - same content yields the same digest", async () => {
+  const a = await prSummaryDigest("## Summary\n\nSame content.\n");
+  const b = await prSummaryDigest("## Summary\n\nSame content.\n");
+  assertEquals(a, b);
+});
+
+Deno.test("prSummaryDigest - different content yields a different digest", async () => {
+  const a = await prSummaryDigest("## Summary\n\nContent A.\n");
+  const b = await prSummaryDigest("## Summary\n\nContent B.\n");
+  assert(a !== b);
+});
+
+Deno.test("summaryDigestFromBody - returns undefined when no marker is present", () => {
+  assertEquals(summaryDigestFromBody(baseBody(ISSUE_NUMBER)), undefined);
+});
+
+Deno.test("summaryDigestFromBody - ignores a malformed marker (not 64 hex characters)", () => {
+  const body = `${
+    baseBody(ISSUE_NUMBER)
+  }\n${PR_SUMMARY_DIGEST_PREFIX}abc123" -->`;
+  assertEquals(summaryDigestFromBody(body), undefined);
+});
+
+Deno.test("summaryDigestFromBody - the last occurrence wins when the summary quotes an earlier marker", () => {
+  const earlier = "b".repeat(64);
+  const real = "c".repeat(64);
+  const body =
+    `## Summary\n\nQuoting an old marker: ${
+      buildSummaryDigestMarker(earlier)
+    }\n\n` +
+    `${baseBody(ISSUE_NUMBER)}\n${buildSummaryDigestMarker(real)}`;
+  assertEquals(summaryDigestFromBody(body), real);
 });
 
 // --- syncPrBodyFromSummary -------------------------------------------------
@@ -213,6 +366,93 @@ Deno.test("sync - summary changed: edits the PR once with the refreshed body", a
     assertStringIncludes(newBody, marker(ISSUE_NUMBER));
     assertStringIncludes(newBody, "Processed by:");
     assertStringIncludes(newBody, `Closes #${ISSUE_NUMBER}`);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a legacy body with no tier marker gets none added (Issue #3403)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // `baseBody` carries no summary-digest marker and no tier marker —
+          // the legacy shape from before either existed.
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertEquals(tierMarkerOccurrences(newBody), []);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a live body carrying the haiku tier marker rebuilds with exactly one haiku marker (Issue #3403)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    // An OLD digest, so the recorded digest differs from the current
+    // summary file's content and the sync proceeds via the digest path
+    // (not the legacy before-push-SHA path).
+    const oldDigest = "0".repeat(64);
+    const liveBody = `${baseBody(ISSUE_NUMBER)}\n${
+      buildSummaryDigestMarker(oldDigest)
+    }\n${buildSubAgentTierMarker("haiku")}`;
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody, ["src/a.ts"]));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertEquals(tierMarkerOccurrences(newBody), [
+      buildSubAgentTierMarker("haiku"),
+    ]);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
@@ -298,6 +538,276 @@ Deno.test("sync - no worker marker: skips without editing or diffing", async () 
     }
     assertEquals(ghCalls.length, 0);
     assertEquals(gitCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- issueNumberFromMarker: quoted markers in the summary (PR #3353 review) ---
+
+Deno.test("sync - a summary quoting an earlier numeric worker marker is not mistaken for this PR's issue", async () => {
+  const repoPath = await makeRepo(); // writes pr-summary-42.md only
+  try {
+    const quotedMarker = marker(7);
+    const liveBody =
+      `## Summary\n\nThe marker \`${quotedMarker}\` records the issue.\n\n` +
+      `---\n\n🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`;
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    // Pre-fix: issueNumberFromMarker took the FIRST occurrence (7), which
+    // has no pr-summary-7.md file, so the broken code would report
+    // {status: "skipped", reason: "summary file deleted"} instead.
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, "Rewritten summary text.");
+    assertStringIncludes(newBody, `Closes #${ISSUE_NUMBER}`);
+    assertEquals(newBody.includes("Closes #7"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a non-numeric placeholder marker in the summary does not block the real marker", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const placeholder = "<!-- vibe-worker-issue-N -->";
+    const liveBody =
+      `## Summary\n\nThe marker \`${placeholder}\` records the issue.\n\n` +
+      `---\n\n🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`;
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    // Pre-fix: issueNumberFromMarker stopped at the FIRST occurrence of the
+    // prefix (the placeholder), whose digits regex failed to match "N", so
+    // the broken code would report {status: "skipped", reason: "no worker
+    // marker"} instead of reaching the real marker that follows it.
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- checkout freshness vs the PR's remote head (PR #3353 review) ------------
+
+Deno.test("sync - checkout HEAD differs from the PR's remote head: skips without editing", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // A concurrent run pushed a newer head after this checkout was
+          // made — the remote's headRefOid no longer matches this
+          // checkout's local HEAD (which the git stub reports as
+          // HEAD_SHA below).
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), [], "newer-remote-head-sha"),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      // Trap for a swapped argument order (PR #3353 review, round 3): the
+      // real ancestry here is "local HEAD_SHA is behind newer-remote-head-
+      // sha", so the pair below only matches if the production code were to
+      // call merge-base with the two SHAs swapped — which would wrongly
+      // report "is an ancestor" and make this test edit instead of skip.
+      runGitCommand: stubGit(gitCalls, {
+        diffChanged: true,
+        ancestorPairs: [[HEAD_SHA, "newer-remote-head-sha"]],
+      }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "checkout is not the PR head",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
+    assertEquals(
+      gitCalls.find((call) => call[0] === "merge-base"),
+      ["merge-base", "--is-ancestor", "newer-remote-head-sha", HEAD_SHA],
+      "expected the remote (older) head to be checked as the ancestor argument",
+    );
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - PR's reported head lags behind this checkout's own verified push: still edits (PR #3353 review, round 2)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // GitHub's API has not yet caught up with the push this run just
+          // made and verified against the remote: it still reports the
+          // PRE-push SHA as headRefOid, while local HEAD is already at the
+          // pushed HEAD_SHA (an ancestor relationship, not a divergence).
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), [], BEFORE_SHA),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      // Only [BEFORE_SHA, HEAD_SHA] (the remote's stale head is an ancestor
+      // of our own verified push) answers "is an ancestor" — a swapped argv
+      // would miss this pair, fall through to the default "not an ancestor",
+      // and skip instead of editing (PR #3353 review, round 3).
+      runGitCommand: stubGit(gitCalls, {
+        diffChanged: true,
+        ancestorPairs: [[BEFORE_SHA, HEAD_SHA]],
+      }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    assertEquals(
+      gitCalls.find((call) => call[0] === "merge-base"),
+      ["merge-base", "--is-ancestor", BEFORE_SHA, HEAD_SHA],
+      "expected the PR's reported (stale) head checked as the ancestor argument",
+    );
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - merge-base itself fails: skips without editing (PR #3353 review, round 3)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // Remote reports a head that is not reachable from this shallow
+          // or stale local checkout at all — merge-base can't even compare
+          // them (git exits 128, "fatal: Not a valid commit name").
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), [], "newer-remote-head-sha"),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, {
+        diffChanged: true,
+        mergeBaseFails: true,
+      }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "checkout is not the PR head",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }
@@ -611,16 +1121,226 @@ Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () 
     assertEquals(synced.includes("Old preamble that must not survive."), false);
     assertEquals(synced.includes("Original summary."), false);
 
+    // Issue #3315: the first sync recorded the summary digest inside the
+    // body, so the second call now short-circuits on that recorded digest
+    // (reason "summary unchanged") rather than reaching the "body already
+    // current" comparison — same observable outcome (skipped, no edit).
     const second = await syncPrBodyFromSummary(input, deps);
     assert(second.ok);
     if (second.ok) {
       assertEquals(second.value, {
         status: "skipped",
-        reason: "body already current",
+        reason: "summary unchanged",
       });
     }
     assertEquals(ghCalls.length, 1);
     assertEquals(live, synced);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+// --- recorded-digest staleness (Issue #3315 / GRQ#5175) -------------------
+
+Deno.test("sync - recorded digest of an OLDER summary, no before-push SHA, git stub reports unchanged: still updates", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const oldDigest = await prSummaryDigest(
+      "## Summary\n\nOlder summary text.\n",
+    );
+    const liveBody =
+      `## Summary\n\nOlder summary text.\n\n---\n\n🤖 Processed by: old-worker\n${
+        marker(ISSUE_NUMBER)
+      }\n${buildSummaryDigestMarker(oldDigest)}`;
+
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody, ["src/a.ts"]));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      // A missed-sync GRQ#5175 shape: the pre-push SHA diff would report
+      // "unchanged" (it only catches a change made by *this* run), but the
+      // recorded digest is stale regardless.
+      runGitCommand: stubGit(gitCalls, { diffChanged: false }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "updated",
+        issueNumber: ISSUE_NUMBER,
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+    assertEquals(
+      gitCalls.filter((c) => c[0] === "diff").length,
+      0,
+      "expected no git diff call when a recorded digest decides staleness",
+    );
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertStringIncludes(newBody, "Rewritten summary text.");
+    const currentDigest = await prSummaryDigest(
+      `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`,
+    );
+    assertEquals(summaryDigestFromBody(newBody), currentDigest);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - recorded digest equals the current summary's digest: skips even though the git stub reports changed", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const currentDigest = await prSummaryDigest(
+      `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n`,
+    );
+    const liveBody =
+      `## Summary\n\nRewritten summary text. Closes #${ISSUE_NUMBER}.\n\n---\n\n🤖 Processed by: old-worker\n${
+        marker(ISSUE_NUMBER)
+      }\n${buildSummaryDigestMarker(currentDigest)}`;
+
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "summary unchanged",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - round trip: a body produced by one sync is skipped as unchanged by the next", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    let live = baseBody(ISSUE_NUMBER);
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: async (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return viewJson(live);
+        }
+        const out = await stubGh(ghCalls)(args);
+        const edited = ghCalls.at(-1)?.bodyFileContent;
+        if (args[0] === "pr" && args[1] === "edit" && edited) live = edited;
+        return out;
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+    const input = {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    };
+
+    const first = await syncPrBodyFromSummary(input, deps);
+    assert(first.ok);
+    if (first.ok) assertEquals(first.value.status, "updated");
+    assertEquals(ghCalls.length, 1);
+
+    const second = await syncPrBodyFromSummary(input, deps);
+    assert(second.ok);
+    if (second.ok) {
+      assertEquals(second.value, {
+        status: "skipped",
+        reason: "summary unchanged",
+      });
+    }
+    assertEquals(ghCalls.length, 1);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - recorded digest present and summary file deleted: skips without editing", async () => {
+  const repoPath = await makeRepo({ withSummary: false });
+  try {
+    const digest = "d".repeat(64);
+    const liveBody = `${baseBody(ISSUE_NUMBER)}\n${
+      buildSummaryDigestMarker(digest)
+    }`;
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: undefined,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok);
+    if (result.ok) {
+      assertEquals(result.value, {
+        status: "skipped",
+        reason: "summary file deleted",
+      });
+    }
+    assertEquals(ghCalls.length, 0);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

@@ -28,6 +28,7 @@ import {
   getFleetTelemetry,
   type IssuePhaseCounters,
   type PriorFleetTelemetryTotals,
+  type PrOutcomeCounters,
 } from "./fleet_telemetry.ts";
 import { getHostname } from "./worker_identity.ts";
 
@@ -100,6 +101,24 @@ export function emptyTotals(): FleetTelemetryTotals {
     issuePhaseFirstAttemptGatePasses: 0,
     issuePhaseDurationSeconds: 0,
     issuePhaseSplitRuns: 0,
+    // Issue #3403 — the per-tier split of the counters above.
+    issuePhaseSonnetRuns: 0,
+    issuePhaseSonnetUsd: 0,
+    issuePhaseHaikuRuns: 0,
+    issuePhaseHaikuUsd: 0,
+    // Issue #3404 — per-tier PR outcome counters.
+    prRejectionsSonnet: 0,
+    prRejectionsHaiku: 0,
+    ciFixRunsSonnet: 0,
+    ciFixRunsHaiku: 0,
+    ciFixUsdSonnet: 0,
+    ciFixUsdHaiku: 0,
+    prFeedbackRunsSonnet: 0,
+    prFeedbackRunsHaiku: 0,
+    prFeedbackUsdSonnet: 0,
+    prFeedbackUsdHaiku: 0,
+    mergedPrsSonnet: 0,
+    mergedPrsHaiku: 0,
   };
 }
 
@@ -110,27 +129,77 @@ function counterFrom(value: unknown): number {
 
 /**
  * Fill the issue-phase counters a sidecar written before they existed does not
- * carry (Issue #2347).
+ * carry (Issue #2347), and the per-tier split a sidecar written before that
+ * existed does not carry either (Issue #3403).
  *
  * A missing — or unusable — counter reads as zero, so the host's accumulated
  * history survives the upgrade instead of the merge producing `NaN` totals.
- * The schema version deliberately does **not** move for this: the addition is
- * purely additive, every prior file still loads, and bumping it would make an
- * older worker treat the new file as `future-schema` and drop the very history
- * this preserves.
+ * The schema version deliberately does **not** move for either addition: same
+ * reasoning as #2347 — the addition is purely additive, every prior file
+ * still loads, and bumping it would make an older worker treat the new file
+ * as `future-schema` and drop the very history this preserves.
+ *
+ * The per-tier split carries one extra rule: older JSON without tier fields
+ * loads as all-sonnet. `haiku` reads
+ * straight off the stored value (0 when absent), but `sonnet` is read from
+ * the stored value only when it is itself a finite number — otherwise it is
+ * backfilled as `max(0, issuePhaseRuns − haikuRuns)` (and the USD equivalent)
+ * so a legacy file's pre-split runs and spend are attributed to `sonnet`
+ * rather than vanishing from both tiers.
  */
 function withIssuePhaseCounters<T extends PriorFleetTelemetryTotals>(
   totals: T,
 ): T & IssuePhaseCounters {
+  const issuePhaseRuns = counterFrom(totals.issuePhaseRuns);
+  const issuePhaseUsd = counterFrom(totals.issuePhaseUsd);
+  const issuePhaseHaikuRuns = counterFrom(totals.issuePhaseHaikuRuns);
+  const issuePhaseHaikuUsd = counterFrom(totals.issuePhaseHaikuUsd);
+  const storedSonnetRuns = totals.issuePhaseSonnetRuns;
+  const storedSonnetUsd = totals.issuePhaseSonnetUsd;
   return {
     ...totals,
-    issuePhaseRuns: counterFrom(totals.issuePhaseRuns),
-    issuePhaseUsd: counterFrom(totals.issuePhaseUsd),
+    issuePhaseRuns,
+    issuePhaseUsd,
     issuePhaseFirstAttemptGatePasses: counterFrom(
       totals.issuePhaseFirstAttemptGatePasses,
     ),
     issuePhaseDurationSeconds: counterFrom(totals.issuePhaseDurationSeconds),
     issuePhaseSplitRuns: counterFrom(totals.issuePhaseSplitRuns),
+    issuePhaseSonnetRuns: typeof storedSonnetRuns === "number" &&
+        Number.isFinite(storedSonnetRuns)
+      ? storedSonnetRuns
+      : Math.max(0, issuePhaseRuns - issuePhaseHaikuRuns),
+    issuePhaseSonnetUsd: typeof storedSonnetUsd === "number" &&
+        Number.isFinite(storedSonnetUsd)
+      ? storedSonnetUsd
+      : Math.max(0, issuePhaseUsd - issuePhaseHaikuUsd),
+    issuePhaseHaikuRuns,
+    issuePhaseHaikuUsd,
+  };
+}
+
+/**
+ * Fill the PR outcome counters (Issue #3404) a sidecar written before they
+ * existed does not carry. Absent or unusable reads as zero; the schema version
+ * does not move, for the same reasons as the issue-phase counters.
+ */
+function withPrOutcomeCounters<T extends PriorFleetTelemetryTotals>(
+  totals: T,
+): T & PrOutcomeCounters {
+  return {
+    ...totals,
+    prRejectionsSonnet: counterFrom(totals.prRejectionsSonnet),
+    prRejectionsHaiku: counterFrom(totals.prRejectionsHaiku),
+    ciFixRunsSonnet: counterFrom(totals.ciFixRunsSonnet),
+    ciFixRunsHaiku: counterFrom(totals.ciFixRunsHaiku),
+    ciFixUsdSonnet: counterFrom(totals.ciFixUsdSonnet),
+    ciFixUsdHaiku: counterFrom(totals.ciFixUsdHaiku),
+    prFeedbackRunsSonnet: counterFrom(totals.prFeedbackRunsSonnet),
+    prFeedbackRunsHaiku: counterFrom(totals.prFeedbackRunsHaiku),
+    prFeedbackUsdSonnet: counterFrom(totals.prFeedbackUsdSonnet),
+    prFeedbackUsdHaiku: counterFrom(totals.prFeedbackUsdHaiku),
+    mergedPrsSonnet: counterFrom(totals.mergedPrsSonnet),
+    mergedPrsHaiku: counterFrom(totals.mergedPrsHaiku),
   };
 }
 
@@ -157,6 +226,7 @@ export function mergeCumulative(
   run: FleetTelemetryTotals,
 ): FleetTelemetryTotals {
   const priorIssuePhase = withIssuePhaseCounters(prior);
+  const priorPrOutcomes = withPrOutcomeCounters(prior);
   return {
     wallSeconds: prior.wallSeconds + run.wallSeconds,
     idleSeconds: prior.idleSeconds + run.idleSeconds,
@@ -183,6 +253,34 @@ export function mergeCumulative(
       run.issuePhaseDurationSeconds,
     issuePhaseSplitRuns: priorIssuePhase.issuePhaseSplitRuns +
       run.issuePhaseSplitRuns,
+    // Issue #3403 — the per-tier split of the counters above.
+    issuePhaseSonnetRuns: priorIssuePhase.issuePhaseSonnetRuns +
+      run.issuePhaseSonnetRuns,
+    issuePhaseSonnetUsd: priorIssuePhase.issuePhaseSonnetUsd +
+      run.issuePhaseSonnetUsd,
+    issuePhaseHaikuRuns: priorIssuePhase.issuePhaseHaikuRuns +
+      run.issuePhaseHaikuRuns,
+    issuePhaseHaikuUsd: priorIssuePhase.issuePhaseHaikuUsd +
+      run.issuePhaseHaikuUsd,
+    // Issue #3404 — per-tier PR outcome counters.
+    prRejectionsSonnet: priorPrOutcomes.prRejectionsSonnet +
+      run.prRejectionsSonnet,
+    prRejectionsHaiku: priorPrOutcomes.prRejectionsHaiku +
+      run.prRejectionsHaiku,
+    ciFixRunsSonnet: priorPrOutcomes.ciFixRunsSonnet + run.ciFixRunsSonnet,
+    ciFixRunsHaiku: priorPrOutcomes.ciFixRunsHaiku + run.ciFixRunsHaiku,
+    ciFixUsdSonnet: priorPrOutcomes.ciFixUsdSonnet + run.ciFixUsdSonnet,
+    ciFixUsdHaiku: priorPrOutcomes.ciFixUsdHaiku + run.ciFixUsdHaiku,
+    prFeedbackRunsSonnet: priorPrOutcomes.prFeedbackRunsSonnet +
+      run.prFeedbackRunsSonnet,
+    prFeedbackRunsHaiku: priorPrOutcomes.prFeedbackRunsHaiku +
+      run.prFeedbackRunsHaiku,
+    prFeedbackUsdSonnet: priorPrOutcomes.prFeedbackUsdSonnet +
+      run.prFeedbackUsdSonnet,
+    prFeedbackUsdHaiku: priorPrOutcomes.prFeedbackUsdHaiku +
+      run.prFeedbackUsdHaiku,
+    mergedPrsSonnet: priorPrOutcomes.mergedPrsSonnet + run.mergedPrsSonnet,
+    mergedPrsHaiku: priorPrOutcomes.mergedPrsHaiku + run.mergedPrsHaiku,
   };
 }
 
@@ -230,10 +328,16 @@ export async function readFleetTelemetryFile(
   // typed as a number. `run` is normalised only when the file carries one —
   // the cumulative totals are what a later run merges onto, and rejecting a
   // file for a missing `run` would throw away the very history this preserves.
+  // Issue #3403: a file written before the per-tier split existed loads its
+  // runs and spend as `sonnet`, so it loads rather than failing.
   return {
     ...parsed,
-    ...(parsed.run ? { run: withIssuePhaseCounters(parsed.run) } : {}),
-    cumulative: withIssuePhaseCounters(parsed.cumulative),
+    ...(parsed.run
+      ? { run: withPrOutcomeCounters(withIssuePhaseCounters(parsed.run)) }
+      : {}),
+    cumulative: withPrOutcomeCounters(
+      withIssuePhaseCounters(parsed.cumulative),
+    ),
   };
 }
 

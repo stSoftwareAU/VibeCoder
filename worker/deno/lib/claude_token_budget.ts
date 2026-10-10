@@ -74,9 +74,11 @@
  *
  * ## Cost and blast radius
  *
- * Exactly **one** request per call, bounded by `timeoutMs`, with no retry loop:
- * worker startup must not stall behind an unresponsive endpoint, and a probe
- * that retried would multiply both the delay and the spend. The token value is
+ * One request per model at most, each bounded by `timeoutMs`, with no retry
+ * loop: worker startup must not stall behind an unresponsive endpoint, and a
+ * probe that retried would multiply both the delay and the spend. A healthy
+ * token costs exactly one request; only a model-specific refusal moves on to
+ * the next model in {@link CLAUDE_BUDGET_PROBE_MODELS}. The token value is
  * never returned, logged, interpolated into a message, or thrown — only
  * `label` identifies the token, and every operator-facing string this module
  * produces is scrubbed of the token before it leaves.
@@ -95,14 +97,42 @@ import { redactSecrets } from "./secret_redaction.ts";
 export const CLAUDE_BUDGET_PROBE_URL = "https://api.anthropic.com/v1/messages";
 
 /**
- * Model named on the probe request.
+ * Models the probe may name, newest first.
  *
- * The cheapest model in the family: with `max_tokens: 0` nothing is generated,
- * so the whole cost is the few input tokens of {@link PROBE_PROMPT}. The model
- * choice does not affect the headers — they describe the token's subscription
- * window, not the model.
+ * A cheap model: with `max_tokens: 0` nothing is generated, so the whole cost
+ * is the few input tokens of {@link PROBE_PROMPT}. The headers describe the
+ * token's subscription window, not the model — but the model has to be one the
+ * subscription answers *with* those headers, and the Messages API has no
+ * unversioned "latest Haiku" alias to lean on. So the probe names the newest
+ * Haiku first and falls back to the next only when the answer carried no
+ * figures because of the model (a header-less `429`, or a `400`/`404` for a
+ * model the API does not serve): a newer Haiku is used the moment it answers
+ * with headers, and a retired one costs one extra request, not the ranking.
+ *
+ * Issue #3400 named `claude-haiku-5-5` alone, and from 2026-10-09 01:11Z every
+ * probe on every pool token came back a `429` with no
+ * `anthropic-ratelimit-unified-*` headers. Selection fell back to discovery
+ * order and drained two tokens' weekly windows while a fresh one sat unused.
  */
-export const CLAUDE_BUDGET_PROBE_MODEL = "claude-haiku-4-5";
+export const CLAUDE_BUDGET_PROBE_MODELS: readonly string[] = [
+  "claude-haiku-5-5",
+  "claude-haiku-4-5",
+];
+
+/**
+ * Statuses that say the *model* gave no figures, so the next model in
+ * {@link CLAUDE_BUDGET_PROBE_MODELS} is worth a request. A `401` is the
+ * token, a `5xx` is the service, and a timeout is the network — another
+ * model changes none of those, so they end the probe.
+ */
+const NEXT_MODEL_STATUSES: ReadonlySet<string> = new Set([
+  "http-400",
+  "http-404",
+  "http-429",
+]);
+
+/** Most of a rejected response's error message kept as operator detail. */
+const MAX_DETAIL_CHARS = 300;
 
 /** Shortest prompt that is still a valid request. */
 const PROBE_PROMPT = ".";
@@ -315,17 +345,53 @@ function mostConstrained(
   return best;
 }
 
+/**
+ * The reason a rejected response gives, scrubbed of the token and bounded.
+ *
+ * Anthropic's error body is `{ error: { type, message } }`; anything else is
+ * kept as raw text. Never throws — a body that cannot be read leaves the
+ * status as the only signal, exactly as before.
+ */
+async function readRejectionDetail(
+  response: Response,
+  token: string,
+): Promise<string | undefined> {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return undefined;
+  }
+  let reason = text;
+  try {
+    const error = JSON.parse(text)?.error;
+    if (typeof error?.message === "string") {
+      reason = typeof error.type === "string"
+        ? `${error.type}: ${error.message}`
+        : error.message;
+    }
+  } catch {
+    // Not JSON: the raw text is the reason.
+  }
+  const collapsed = scrub(reason, token).replace(/\s+/g, " ").trim();
+  if (collapsed.length === 0) return undefined;
+  return collapsed.length > MAX_DETAIL_CHARS
+    ? `${collapsed.slice(0, MAX_DETAIL_CHARS - 1)}…`
+    : collapsed;
+}
+
 /** The request body: valid, minimal, and generating nothing. */
-function probeBody(): string {
+function probeBody(model: string): string {
   return JSON.stringify({
-    model: CLAUDE_BUDGET_PROBE_MODEL,
+    model,
     max_tokens: 0,
     messages: [{ role: "user", content: PROBE_PROMPT }],
   });
 }
 
 /**
- * Probe one Claude OAuth token's remaining budget with exactly one request.
+ * Probe one Claude OAuth token's remaining budget — one request on a healthy
+ * token, and one more per fallback model only when a model gave no figures.
  *
  * Never throws and never retries: every failure — a rejected `fetch`, a
  * timeout, a non-2xx status, headers that do not carry the figures — comes
@@ -347,16 +413,39 @@ export async function probeClaudeTokenBudget(
   options: ProbeClaudeTokenBudgetOptions,
 ): Promise<ClaudeTokenBudget> {
   const { label } = options;
+  // An empty credential file is a configuration fault, not a budget of zero.
+  if (token.trim().length === 0) {
+    return { known: false, label, reason: "missing-token" };
+  }
+
+  const refusals: string[] = [];
+  let result: ClaudeTokenBudget | undefined;
+  for (const model of CLAUDE_BUDGET_PROBE_MODELS) {
+    result = await probeWithModel(token, model, options);
+    if (result.known || !NEXT_MODEL_STATUSES.has(result.reason)) break;
+    refusals.push(
+      `${model} ${result.reason}${result.detail ? ` (${result.detail})` : ""}`,
+    );
+  }
+  if (result === undefined || result.known || refusals.length < 2) {
+    return result ?? { known: false, label, reason: "missing-token" };
+  }
+  // Every model refused: say what each one said, not only the last.
+  return { ...result, detail: refusals.join("; ") };
+}
+
+/** One request naming `model` — the whole probe before the model fallback. */
+async function probeWithModel(
+  token: string,
+  model: string,
+  options: ProbeClaudeTokenBudgetOptions,
+): Promise<ClaudeTokenBudget> {
+  const { label } = options;
   const timeoutMs = options.timeoutMs ??
     DEFAULT_CLAUDE_BUDGET_PROBE_TIMEOUT_MS;
   const fetchFn = options.fetchFn ??
     ((url: string, init: RequestInit) => globalThis.fetch(url, init));
   const url = options.url ?? CLAUDE_BUDGET_PROBE_URL;
-
-  // An empty credential file is a configuration fault, not a budget of zero.
-  if (token.trim().length === 0) {
-    return { known: false, label, reason: "missing-token" };
-  }
 
   let response: Response;
   try {
@@ -370,7 +459,7 @@ export async function probeClaudeTokenBudget(
           "anthropic-version": ANTHROPIC_VERSION,
           "content-type": "application/json",
         },
-        body: probeBody(),
+        body: probeBody(model),
       }, timeoutMs),
     );
   } catch (error: unknown) {
@@ -384,15 +473,25 @@ export async function probeClaudeTokenBudget(
     };
   }
 
-  // The body is never read — the budget is in the headers — so cancel it
-  // rather than leave a server streaming into a connection we are done with.
+  // A success body is never read — the budget is in the headers — so cancel
+  // it rather than leave a server streaming into a connection we are done
+  // with. A rejection's body is the only place its reason is given, so it is
+  // kept as operator detail: a bare `http-429` cannot say why.
   try {
-    await discardBody(response);
+    let rejectionDetail: string | undefined;
+    if (response.ok) await discardBody(response);
+    else rejectionDetail = await readRejectionDetail(response, token);
+    const rejected = () => ({
+      known: false as const,
+      label,
+      reason: `http-${response.status}` as const,
+      ...(rejectionDetail ? { detail: rejectionDetail } : {}),
+    });
 
     // A `429` is the one rejection whose headers are the answer this probe
     // came for, rather than noise about the probe itself (Issue #2040).
     if (!response.ok && response.status !== TOO_MANY_REQUESTS) {
-      return { known: false, label, reason: `http-${response.status}` };
+      return rejected();
     }
 
     const windows = parseWindows(response.headers);
@@ -400,9 +499,7 @@ export async function probeClaudeTokenBudget(
     if (headline === undefined) {
       // A `429` carrying no figures is a throttled probe — it measured
       // nothing, so it keeps the status it arrived with.
-      if (!response.ok) {
-        return { known: false, label, reason: `http-${response.status}` };
-      }
+      if (!response.ok) return rejected();
       return {
         known: false,
         label,

@@ -200,5 +200,5 @@ Because the change is a name, it lands as an edit to each affected directory's
 - [Prompt goals (summary)](PROMPTS.md) — what each prompt type is for.
 - [Prompt best-practices checklist](PROMPT-BEST-PRACTICES-CHECKLIST.md) — the
   rubric a prompt surface is scored against.
-- [Extending the Worker](EXTENDING.md#prompt-templates) — how prompt templates
+- [Extending the Worker](EXTENDING.md#-prompt-templates) — how prompt templates
   are laid out and edited.

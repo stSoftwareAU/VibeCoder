@@ -22,6 +22,7 @@ import type { PhaseClaudeResult } from "./phase_run_stats.ts";
 import type { GraftContextResult } from "./graft_context.ts";
 import type { CodegraphContextResult } from "./codegraph_context.ts";
 import type { RtkOutputResult } from "./rtk_output.ts";
+import type { AgentRefusalOutcome } from "./haiku_refusal_retry.ts";
 import type { MemoryPressureReading } from "./memory_pressure.ts";
 import type { ExtensionTelemetry } from "./timeout_extension_telemetry.ts";
 import type { PreservedWip } from "./preserved_wip_branch.ts";
@@ -34,6 +35,7 @@ import type {
 import type { ImageReference } from "./untrusted_image_signal.ts";
 import type { SecurityGateRunVerdict } from "./security_fix_gate_retry.ts";
 import type { SummaryRuleRunVerdict } from "./summary_rule_gate_retry.ts";
+import type { SummaryClaimCorrection } from "./summary_claim_correction.ts";
 import type { ScreenshotGateBlock } from "./screenshot_gate_retry.ts";
 import type { PostMergeReapproval } from "./reapproval_superseded_handoff.ts";
 
@@ -319,6 +321,13 @@ export interface PhaseState {
    */
   rtkOutput?: RtkOutputResult;
   /**
+   * A safety refusal the execute phase saw and what the one sonnet retry did
+   * (Issue #3406). Once set, every later execute attempt in this run resolves
+   * its sub-agent tier to `REFUSAL_RETRY_TIER`. Absent on a run with no
+   * refusal.
+   */
+  agentRefusal?: AgentRefusalOutcome;
+  /**
    * The PR this run raised or recovered (Issue #4325): set by the
    * completion phase so the run outcome can name it at claim release.
    */
@@ -354,10 +363,29 @@ export interface PhaseState {
    * finalises it instead. The first entry triggers the in-run recovery — one
    * agent invocation carrying the gate's own remediation comment, then the
    * quality gate and the completion gates again — so a documentation
-   * shortfall no longer costs a whole run. A second entry on a no-PR run ends
-   * the run in `failure`, with the comment already on the thread.
+   * shortfall no longer costs a whole run. A second entry whose block came
+   * from the claim check alone first gets the one summary-only correction
+   * turn (`summary_claim_correction.ts`, Issue #3324) rather than ending the
+   * run immediately — see `summaryClaimCorrection` below. Any other second
+   * entry on a no-PR run ends the run in `failure`, with the comment already
+   * on the thread.
    */
   summaryRuleBlocks?: SummaryRuleRunVerdict[];
+  /**
+   * State for the one summary-only claim correction turn within THIS run
+   * (Issue #3324).
+   *
+   * `pending` is set when a completion attempt deferred a claim-check-only
+   * later block to the correction turn rather than reporting it immediately
+   * — the recovery turn has already been spent, so a still-blocked run would
+   * otherwise fail (or finalise an existing PR as `summary_incomplete`) over
+   * a claim the claim check only raised on this re-run. `used` means the
+   * correction turn has already been spent this run, and its findings
+   * (`findings`) are carried forward into the next claim-check result so a
+   * flaky re-run model pass cannot wave through a sentence the gate already
+   * confirmed wrong.
+   */
+  summaryClaimCorrection?: SummaryClaimCorrection;
   /**
    * The screenshot gate's verdict for THIS run (Issue #2960), when it has
    * blocked. Set by the completion phase on the first block; the in-run

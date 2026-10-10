@@ -204,3 +204,47 @@ Deno.test("parseRepoSettingsFindingId - a marker only quoted in code yields null
     assertEquals(parseRepoSettingsFindingId(body), null, body);
   }
 });
+
+// Issue #3266 — a security-policy finding is fixed by an ordinary PR.
+Deno.test("isAdminOnlyRepoSettingsIssue - BP-REPO-SECURITY-POLICY-MISSING is worker-fixable on its marker alone (Issue #3266)", () => {
+  for (
+    const marker of [
+      "<!-- finding-id: BP-REPO-SECURITY-POLICY-MISSING -->",
+      "<!--   finding-id:   bp-repo-security-policy-missing   -->",
+    ]
+  ) {
+    assertEquals(
+      isAdminOnlyRepoSettingsIssue(`${marker}\n\nAdd a SECURITY.md`),
+      false,
+      marker,
+    );
+  }
+  assertEquals(
+    parseRepoSettingsFindingId(
+      "<!-- finding-id: BP-REPO-SECURITY-POLICY-MISSING -->",
+    ),
+    "BP-REPO-SECURITY-POLICY-MISSING",
+  );
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the admin-action prose still wins over a worker-fixable marker (Issue #3266)", () => {
+  assertEquals(
+    isAdminOnlyRepoSettingsIssue(
+      "<!-- finding-id: BP-REPO-SECURITY-POLICY-MISSING -->\n\n" +
+        "Repository admin action — the worker cannot change repository settings.",
+    ),
+    true,
+  );
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - other BP-REPO ids stay admin-only beside the allowlist (Issue #3266)", () => {
+  for (
+    const id of ["BP-REPO-PVR-OFF", "BP-REPO-CODEOWNERS-REVIEW-OFF"]
+  ) {
+    assertEquals(
+      isAdminOnlyRepoSettingsIssue(`<!-- finding-id: ${id} -->`),
+      true,
+      id,
+    );
+  }
+});

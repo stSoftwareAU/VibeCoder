@@ -21,6 +21,10 @@ const GIT_ENV = {
   GIT_AUTHOR_EMAIL: "test@example.com",
   GIT_COMMITTER_NAME: "test",
   GIT_COMMITTER_EMAIL: "test@example.com",
+  // Hermetic: a developer's global core.quotePath=false would otherwise
+  // hide Issue #3370's C-quoting bug.
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_NOSYSTEM: "1",
 };
 
 async function runGit(args: string[], cwd: string): Promise<number> {
@@ -55,19 +59,24 @@ async function stage(dir: string, path: string): Promise<void> {
 interface HookRun {
   code: number;
   stdout: string;
+  stderr: string;
 }
 
-async function runHook(dir: string): Promise<HookRun> {
+async function runHook(
+  dir: string,
+  env: Record<string, string> = GIT_ENV,
+): Promise<HookRun> {
   const out = await new Deno.Command("bash", {
     args: [HOOK_PATH],
     cwd: dir,
     stdout: "piped",
     stderr: "piped",
-    env: GIT_ENV,
+    env,
   }).output();
   return {
     code: out.code,
     stdout: new TextDecoder().decode(out.stdout),
+    stderr: new TextDecoder().decode(out.stderr),
   };
 }
 
@@ -121,6 +130,92 @@ Deno.test({
 
 Deno.test({
   name:
+    "pre-commit hook - blocks other OpenSSH private key names, not just id_rsa (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        "id_ed25519",
+        "id_ecdsa",
+        "id_dsa",
+        "id_ecdsa_sk",
+        "id_ed25519_sk",
+        "keys/id_ed25519.pub",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(run.code, 1, `expected hook to block '${path}'`);
+      assertStringIncludes(run.stdout, path);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "pre-commit hook - allows source files merely named after OpenSSH keys (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    const dir = await makeRepo();
+    try {
+      await stage(dir, "src/id_ed25519_helper.ts");
+      await stage(dir, "src/id_ecdsa_parser.ts");
+      const run = await runHook(dir);
+      assertEquals(run.code, 0, `hook rejected safe files: ${run.stdout}`);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "pre-commit hook - blocks nested credential-store paths at any depth (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        ".aws/credentials",
+        "services/api/.aws/credentials",
+        ".netrc",
+        "pkg/.netrc",
+        ".gnupg/pubring.kbx",
+        "home/.gnupg/pubring.kbx",
+        "deploy/.ssh/config",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(run.code, 1, `expected hook to block '${path}'`);
+      assertStringIncludes(run.stdout, path);
+    }
+  },
+});
+
+Deno.test({
+  name: "pre-commit hook - allows credential-store look-alikes (Issue #3336)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        "docs/ssh/setup.md",
+        "aws/config",
+        "src/aws/client.ts",
+        "deploy/.sshrc",
+        "pkg/netrc.md",
+        "pkg/foo.netrc.md",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(
+        run.code,
+        0,
+        `hook wrongly blocked '${path}': ${run.stdout}`,
+      );
+    }
+  },
+});
+
+Deno.test({
+  name:
     "pre-commit hook - blocks force-added files under .secrets/ regardless of extension (Issue #3957)",
   ignore: windows,
   fn: async () => {
@@ -158,6 +253,66 @@ Deno.test({
         0,
         `hook wrongly blocked '${path}': ${run.stdout}`,
       );
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "pre-commit hook - blocks secret files whose path git would quote (Issue #3370)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        "clés/id_ed25519",
+        "naïve.pem",
+        "café/.config.json",
+        "café/api.secret.json",
+        ".secrets/tökén",
+        "café/.secrets/token",
+        ".aws/crédentials",
+        'say"hi"/id_rsa',
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(run.code, 1, `expected hook to block '${path}'`);
+      assertStringIncludes(run.stdout, path);
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "pre-commit hook - allows ordinary files whose path git would quote (Issue #3370)",
+  ignore: windows,
+  fn: async () => {
+    for (const path of ["café/readme.md", "docs/naïve.ts"]) {
+      const run = await hookVerdict(path);
+      assertEquals(
+        run.code,
+        0,
+        `hook wrongly blocked '${path}': ${run.stdout}`,
+      );
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "pre-commit hook - fails loud when the staged list cannot be read (Issue #3370)",
+  ignore: windows,
+  fn: async () => {
+    const dir = await Deno.makeTempDir({ prefix: "hook_pre_commit_nogit_" });
+    try {
+      const parent = dir.slice(0, dir.lastIndexOf("/"));
+      const run = await runHook(dir, {
+        ...GIT_ENV,
+        GIT_CEILING_DIRECTORIES: parent,
+      });
+      assertEquals(run.code, 1, `expected hook to fail loud: ${run.stdout}`);
+      assertStringIncludes(run.stderr, "could not list staged files");
+    } finally {
+      await Deno.remove(dir, { recursive: true });
     }
   },
 });

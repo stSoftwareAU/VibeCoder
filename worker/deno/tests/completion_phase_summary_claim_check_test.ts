@@ -26,6 +26,10 @@ import {
   DRIFT_VERDICT_CLOSE,
   DRIFT_VERDICT_OPEN,
 } from "../lib/pr_feedback_drift_check.ts";
+import {
+  CORRECTED_SUMMARY_CLOSE,
+  CORRECTED_SUMMARY_OPEN,
+} from "../lib/summary_claim_correction.ts";
 
 const SHA = "a1b2c3d4e5f60718293a4b5c6d7e8f901122334455";
 const REPO = "stSoftwareAU/VibeCoder";
@@ -149,11 +153,24 @@ interface QuestionCall {
   disallowedTools: readonly string[] | undefined;
 }
 
+interface ClaudeCall {
+  prompt: string;
+  disallowedTools: readonly string[] | undefined;
+}
+
 interface Scenario {
   /** Summary on the branch when the completion phase starts. */
   summary: string;
   /** Summary the recovery invocation writes; omitted, it changes nothing. */
   retryWrites?: string;
+  /**
+   * Per-`runClaudeWithRetry`-call scripted behaviour, one entry per call
+   * (repeats the last entry once exhausted). When absent, falls back to the
+   * single `retryWrites` behaviour for every call. `writes` sets the summary
+   * file's content after the call; `output` is the reply text (used by the
+   * correction turn's `CORRECTED_SUMMARY_OPEN`/`CLOSE` markers).
+   */
+  claudeTurns?: Array<{ writes?: string; output?: string }>;
   /** The branch's changed files, as `git diff --name-only` reports them. */
   changedFiles: string;
   /** Tracked files `ls-files` reports. */
@@ -168,15 +185,22 @@ interface Scenario {
   questionReplies?: string[];
   /** Issue labels. Defaults to a non-bug enhancement. */
   issueLabels?: string[];
+  /** When true, an open PR already exists for this run's branch. */
+  existingPr?: boolean;
 }
 
 interface Outcome {
   status: string;
   reason?: string;
+  outcomeKind?: string;
   claudeCalls: number;
+  claudeCallDetails: ClaudeCall[];
   prCreateCalls: number;
+  finalisePrCalls: number;
   questionCalls: QuestionCall[];
   comments: string[];
+  /** The summary file's content when the run ended, before cleanup. */
+  finalSummary: string | undefined;
 }
 
 /** Drive the live completion phase over a (possibly) blocked claim check. */
@@ -198,10 +222,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const comments: string[] = [];
   let prCreateCalls = 0;
-  let claudeCalls = 0;
+  let finalisePrCalls = 0;
+  let claudeCallIndex = 0;
+  const claudeCallDetails: ClaudeCall[] = [];
   let questionCallIndex = 0;
   const questionCalls: QuestionCall[] = [];
-  let retried = false;
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -263,11 +288,32 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     claude: {
-      runClaudeWithRetry: (_options: { prompt: string }) => {
-        claudeCalls++;
+      runClaudeWithRetry: (
+        options: { prompt: string; disallowedTools?: readonly string[] },
+      ) => {
+        claudeCallDetails.push({
+          prompt: options.prompt,
+          disallowedTools: options.disallowedTools,
+        });
+        const turn = scenario.claudeTurns?.[
+          Math.min(claudeCallIndex, (scenario.claudeTurns?.length ?? 1) - 1)
+        ];
+        claudeCallIndex++;
+        if (turn !== undefined) {
+          if (turn.writes !== undefined) {
+            Deno.writeTextFileSync(summaryPath, turn.writes);
+          }
+          return Promise.resolve({
+            ok: true as const,
+            value: {
+              exitCode: 0,
+              output: turn.output ?? "done",
+              timedOut: false,
+            },
+          });
+        }
         if (scenario.retryWrites !== undefined) {
           Deno.writeTextFileSync(summaryPath, scenario.retryWrites);
-          retried = true;
         }
         return Promise.resolve({
           ok: true as const,
@@ -314,37 +360,54 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
     pr: {
       findExistingPrForIssue: () =>
-        Promise.resolve({ ok: false, error: new Error("none") }),
+        scenario.existingPr
+          ? Promise.resolve({ ok: true as const, value: PR_URL })
+          : Promise.resolve({ ok: false, error: new Error("none") }),
       findExistingPrForBranch: () =>
-        Promise.resolve({ ok: false as const, error: new Error("none") }),
+        scenario.existingPr
+          ? Promise.resolve({ ok: true as const, value: PR_URL })
+          : Promise.resolve({ ok: false as const, error: new Error("none") }),
       recoverExistingPr: () =>
         Promise.resolve({ ok: true, value: "recovered" }),
-      finalisePr: () =>
-        Promise.resolve({
+      finalisePr: () => {
+        finalisePrCalls++;
+        return Promise.resolve({
           ok: true,
           value: { result: AutoMergeResult.Enabled, message: "armed" },
-        }),
+        });
+      },
     },
   });
 
   let result;
+  let finalSummary: string | undefined;
   try {
     result = await workOnIssueCompletion(ctx, state, deps);
+    try {
+      finalSummary = await Deno.readTextFile(summaryPath);
+    } catch {
+      finalSummary = undefined;
+    }
   } finally {
     await Deno.remove(repoPath, { recursive: true });
     await Deno.remove(workDir, { recursive: true });
   }
 
-  void retried;
   return {
     status: result.status,
     reason: result.status === "failure" || result.status === "early_exit"
       ? result.reason
       : undefined,
-    claudeCalls,
+    outcomeKind: result.status === "early_exit"
+      ? result.outcome?.kind
+      : undefined,
+    claudeCalls: claudeCallDetails.length,
+    claudeCallDetails,
     prCreateCalls,
+    finalisePrCalls,
     questionCalls,
     comments,
+    finalSummary,
   };
 }
 
@@ -399,7 +462,14 @@ Deno.test(
 
     assertEquals(outcome.status, "failure");
     assertEquals(outcome.prCreateCalls, 0);
-    assertEquals(outcome.claudeCalls, 1, "only one recovery turn");
+    // Issue #3324: the second attempt's block is claim-only (every other
+    // gate passed), so it now gets the one summary-only correction turn
+    // before the run fails — one recovery turn plus one correction turn.
+    assertEquals(
+      outcome.claudeCalls,
+      2,
+      "one recovery turn plus one correction turn",
+    );
   },
 );
 
@@ -491,6 +561,283 @@ Deno.test(
     assertStringIncludes(outcome.comments[0]!, "Branch outcomes");
     assertStringIncludes(outcome.comments[0]!, "describes named code wrongly");
     assertEquals(outcome.claudeCalls, 1, "exactly one recovery invocation");
+
+    // Issue #3324: the folded branch-outcomes + claim-check comment reaches
+    // the recovery prompt as two separate numbered REQUIRED ITEMs.
+    const recoveryPrompt = outcome.claudeCallDetails[0]!.prompt;
+    assertStringIncludes(recoveryPrompt, "REQUIRED ITEM 1 of 2");
+    assertStringIncludes(recoveryPrompt, "REQUIRED ITEM 2 of 2");
+    const item2HeaderIndex = recoveryPrompt.indexOf("REQUIRED ITEM 2 of 2");
+    const claimTextIndex = recoveryPrompt.indexOf(
+      "describes named code wrongly",
+      item2HeaderIndex,
+    );
+    assertEquals(claimTextIndex > item2HeaderIndex, true);
+    const claimSentenceIndex = recoveryPrompt.indexOf(
+      WRONG_CLAIM_SENTENCE,
+      item2HeaderIndex,
+    );
+    assertEquals(claimSentenceIndex > item2HeaderIndex, true);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Summary-only claim correction turn (Issue #3324): a sentence the claim
+// check only flags on the re-run, after the recovery turn was already
+// spent.
+// ---------------------------------------------------------------------------
+
+const SENTENCE_B =
+  "`anotherHelper()` strips whitespace before comparing values.";
+
+/** (h) A summary carrying two wrong claims, A and B. */
+const SUMMARY_TWO_WRONG_CLAIMS = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+${WRONG_CLAIM_SENTENCE}
+
+${SENTENCE_B}
+
+## Test Plan
+
+- manually verified
+`;
+
+/** (h) After the recovery turn removes A but leaves B untouched. */
+const SUMMARY_AFTER_RECOVERY_LEAVES_B = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+${SENTENCE_B}
+
+## Test Plan
+
+- manually verified
+`;
+
+/** (h) After the correction turn removes B too. */
+const SUMMARY_AFTER_CORRECTION = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+## Test Plan
+
+- manually verified
+`;
+
+const SUMMARY_PATH_3257 = `docs/archive/pr-summaries/pr-summary-${ISSUE}.md`;
+
+function findingFor(sentence: string, reason: string) {
+  return { file: SUMMARY_PATH_3257, sentence, reason };
+}
+
+// (h)
+Deno.test(
+  "completion - a claim found only on the re-run is corrected by the one summary-only correction turn",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_TWO_WRONG_CLAIMS,
+      changedFiles: "docs/notes.md",
+      claudeTurns: [
+        { writes: SUMMARY_AFTER_RECOVERY_LEAVES_B },
+        {
+          output:
+            `${CORRECTED_SUMMARY_OPEN}\n${SUMMARY_AFTER_CORRECTION}${CORRECTED_SUMMARY_CLOSE}`,
+        },
+      ],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          findingFor(SENTENCE_B, "the head's anotherHelper does not compare"),
+        ]),
+        verdictReply([]),
+      ],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(
+      outcome.claudeCalls,
+      2,
+      "one recovery turn, one correction turn",
+    );
+    const correctionCall = outcome.claudeCallDetails[1]!;
+    assert(correctionCall.disallowedTools?.includes("Bash"));
+    assert(correctionCall.disallowedTools?.includes("Edit"));
+    assert(correctionCall.disallowedTools?.includes("Write"));
+    assertEquals(
+      (outcome.finalSummary ?? "").includes(SENTENCE_B),
+      false,
+      "the corrected summary no longer carries sentence B",
+    );
+  },
+);
+
+// (i)
+Deno.test(
+  "completion - the correction turn finalises an existing PR normally when the claim clears",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_TWO_WRONG_CLAIMS,
+      changedFiles: "docs/notes.md",
+      existingPr: true,
+      claudeTurns: [
+        { writes: SUMMARY_AFTER_RECOVERY_LEAVES_B },
+        {
+          output:
+            `${CORRECTED_SUMMARY_OPEN}\n${SUMMARY_AFTER_CORRECTION}${CORRECTED_SUMMARY_CLOSE}`,
+        },
+      ],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          findingFor(SENTENCE_B, "the head's anotherHelper does not compare"),
+        ]),
+        verdictReply([]),
+      ],
+    });
+
+    assertEquals(outcome.status !== "early_exit", true);
+    assertEquals(outcome.reason, undefined);
+    assertEquals(
+      outcome.finalisePrCalls > 0,
+      true,
+      "the existing PR was finalised",
+    );
+  },
+);
+
+// (j) Negative test for carry-forward: the correction turn fails to remove
+// the sentence (or replies with no markers at all) and the re-run's own
+// model pass misses it too — the carried-forward finding still blocks.
+Deno.test(
+  "completion - a correction that leaves the sentence still blocks via the carried-forward finding (no PR)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_TWO_WRONG_CLAIMS,
+      changedFiles: "docs/notes.md",
+      claudeTurns: [
+        { writes: SUMMARY_AFTER_RECOVERY_LEAVES_B },
+        // No CORRECTED_SUMMARY_OPEN/CLOSE markers — the correction leaves
+        // the file untouched, so sentence B is still on the branch.
+        { output: "I looked, but nothing needed fixing." },
+      ],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          findingFor(SENTENCE_B, "the head's anotherHelper does not compare"),
+        ]),
+        // The re-run's own model pass misses sentence B entirely; only the
+        // carried-forward finding should still catch it.
+        verdictReply([]),
+      ],
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.claudeCalls, 2);
+  },
+);
+
+Deno.test(
+  "completion - a correction that leaves the sentence blocks an existing PR as summary_incomplete via carry-forward",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_TWO_WRONG_CLAIMS,
+      changedFiles: "docs/notes.md",
+      existingPr: true,
+      claudeTurns: [
+        { writes: SUMMARY_AFTER_RECOVERY_LEAVES_B },
+        { output: "I looked, but nothing needed fixing." },
+      ],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          findingFor(SENTENCE_B, "the head's anotherHelper does not compare"),
+        ]),
+        verdictReply([]),
+      ],
+    });
+
+    assertEquals(outcome.status, "early_exit");
+    assertEquals(outcome.outcomeKind, "summary_incomplete");
+  },
+);
+
+// (k) The correction turn runs at most once per run: a new sentence C
+// flagged on the attempt right after the correction does not get a second
+// correction turn.
+Deno.test(
+  "completion - the correction turn runs at most once per run",
+  async () => {
+    const SENTENCE_C = "`thirdHelper()` rounds to two decimal places.";
+    // The correction turn fixes B but, in rewriting that line, introduces a
+    // brand-new wrong claim C — a new, never-before-seen block.
+    const SUMMARY_AFTER_CORRECTION_WITH_C = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+${SENTENCE_C}
+
+## Test Plan
+
+- manually verified
+`;
+    const outcome = await runCompletion({
+      summary: SUMMARY_TWO_WRONG_CLAIMS,
+      changedFiles: "docs/notes.md",
+      claudeTurns: [
+        { writes: SUMMARY_AFTER_RECOVERY_LEAVES_B },
+        {
+          output:
+            `${CORRECTED_SUMMARY_OPEN}\n${SUMMARY_AFTER_CORRECTION_WITH_C}${CORRECTED_SUMMARY_CLOSE}`,
+        },
+      ],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          findingFor(SENTENCE_B, "the head's anotherHelper does not compare"),
+        ]),
+        // Attempt 3, after the correction turn: a brand-new sentence C.
+        verdictReply([
+          findingFor(SENTENCE_C, "the head's thirdHelper does not round"),
+        ]),
+      ],
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(
+      outcome.claudeCalls,
+      2,
+      "no third (correction) turn — the correction runs at most once per run",
+    );
   },
 );
 

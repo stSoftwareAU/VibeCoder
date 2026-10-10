@@ -45,7 +45,7 @@ instructed to follow TDD (Test-Driven Development), KISS (Keep It Simple), DRY
 **How it's done internally** (run loop, issue selection, claiming, PR
 monitoring, milestone handling) is **not** the focus of these documents. That is
 documented in the project's internal/architecture docs — see the main
-[README](../../README.md#documentation) and **Further reading** at the end of
+[README](../../README.md#-documentation) and **Further reading** at the end of
 each workflow page.
 
 ---
@@ -103,7 +103,7 @@ diagram — scroll to the table below, pick a topic, and you’ll get the gist i
 seconds. The rest of each doc is the full detail when you need it.
 
 For configuration, deployment, and security, see the
-[main documentation](../../README.md#documentation). For how the worker is
+[main documentation](../../README.md#-documentation). For how the worker is
 implemented internally, see **Further reading** in each workflow doc.
 
 ## 📋 Table of Contents
@@ -489,7 +489,7 @@ These behaviours are required for the workflow:
   stsvcbot) is often used by **many** Vibe Coders; there is **one Vibe Coder
   per hostname**. PRs are identified by **author** (that user); any worker using
   that account sees the same set of open PRs. See
-  [pr-feedback.md](pr-feedback.md#which-prs-are-monitored).
+  [pr-feedback.md](pr-feedback.md#-which-prs-are-monitored).
 - **Distinct workflow types** — Implementation, planning, question answering,
   refinement, clarification, PR feedback, spelling/quality fixes, and milestones
   each have defined semantics and do not substitute for one another.
@@ -497,7 +497,7 @@ These behaviours are required for the workflow:
   `failed`, `needs-human`, `circular-dependency`) are
   **automatically created** when first needed, with **consistent colours and
   descriptions** across repositories. See
-  [projects-and-dependencies.md](projects-and-dependencies.md#workflow-labels).
+  [projects-and-dependencies.md](projects-and-dependencies.md#%EF%B8%8F-workflow-labels).
 - **Worker escalation via `needs-human`** — When the worker hits an
   unrecoverable blocker (e.g. a decision only a human can make, or a missing
   credential), it adds the `needs-human` label, posts an explanatory comment,

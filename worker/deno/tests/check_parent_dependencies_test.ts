@@ -7,10 +7,16 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertFalse,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   checkParentDepsCommand,
   createGhIssueFetcher,
+  runCheckParentDeps,
 } from "../commands/check_parent_dependencies.ts";
 import { checkParentBlocked } from "../lib/issue_dependencies.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -78,15 +84,19 @@ Deno.test("createGhIssueFetcher - getIssueBody handles null body", async () => {
   assertEquals(body, "");
 });
 
-Deno.test("createGhIssueFetcher - getSubIssues returns empty on failure", async () => {
+Deno.test("createGhIssueFetcher - getSubIssues rejects when the sub-issues read fails (Issue #3333)", async () => {
   const mockGh = async (_args: string[]): Promise<string> => {
-    throw new Error("API error");
+    throw new Error("HTTP 502: Bad Gateway");
   };
 
   const fetcher = createGhIssueFetcher(mockGh);
-  const subs = await fetcher.getSubIssues("owner/repo", 42);
 
-  assertEquals(subs, []);
+  // [] would read as "no sub-issues — not blocked" (Issue #3321 contract).
+  await assertRejects(
+    () => fetcher.getSubIssues("owner/repo", 42),
+    Error,
+    "sub_issues lookup",
+  );
 });
 
 // =============================================================================
@@ -226,4 +236,29 @@ Deno.test("checkParentDepsCommand - returns error for missing issue", async () =
 Deno.test("checkParentDepsCommand - has correct name and description", () => {
   assertEquals(checkParentDepsCommand.name, "check-parent-deps");
   assertStringIncludes(checkParentDepsCommand.description, "sub-issues");
+});
+
+Deno.test('runCheckParentDeps - reports an error, not "not blocked", when the sub-issues read fails (Issue #3333)', async () => {
+  const mockGh = (args: string[]): Promise<string> => {
+    if (args.some((a) => a.includes("/sub_issues"))) {
+      throw new Error("HTTP 502: Bad Gateway");
+    }
+    if (args.includes("number,state,title")) {
+      return Promise.resolve(
+        JSON.stringify({ number: 42, state: "OPEN", title: "Parent" }),
+      );
+    }
+    return Promise.resolve(JSON.stringify({ body: "" }));
+  };
+
+  const result = await runCheckParentDeps(
+    createGhIssueFetcher(mockGh),
+    "owner/repo",
+    42,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Error checking parent dependencies");
+  assertFalse(result.message.includes("no sub-issues"));
+  assertEquals(result.data, undefined);
 });

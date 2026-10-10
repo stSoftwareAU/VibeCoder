@@ -379,7 +379,7 @@ singular key with an array value:
 ## 🔍 Reviewer App for fleet PR reviews
 
 `pr_reviewer_app` makes the unattended `review-fleet-prs` runner
-(`.claude/skills/review-fleet-prs/run.sh`) review as a GitHub App instead of
+(`.claude/skills/review-fleet-prs/scripts/run.sh`) review as a GitHub App instead of
 the host's signed-in `gh` user. It is read by that skill only, never by the
 worker.
 
@@ -403,7 +403,7 @@ lets the gate's Dependabot upkeep merge an already-clean PR with
 `gh pr merge --auto` and arm auto-merge, and lets the skill bring an approved
 fleet PR's branch up to date (`update-branch`); Workflows write lets it merge
 Dependabot's GitHub Actions bumps, which change `.github/workflows/*`. See
-[the skill doc](../.claude/skills/review-fleet-prs/SKILL.md#as-a-github-app)
+[the skill doc](../.claude/skills/review-fleet-prs/references/running-unattended.md#as-a-github-app)
 for details.
 
 Then add `<app-slug>[bot]` to `authorized_commenters` on every fleet host, so
@@ -449,11 +449,12 @@ explicitly overridden.
 | `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
-| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of a Sonnet executor (`medium` effort; `Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) while the advisor — the main session — keeps the phase's own model and effort. Off, no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and the run's executor (Sonnet) tokens are costed separately from the advisor's (Opus) rather than all charged at the advisor's rate. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
-| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
+| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Sonnet at `medium` effort by default, or Haiku at `high` effort when `issue_sub_agent_tier` resolves `"haiku"` (Issue #3402) — while the advisor — the main session — keeps the phase's own model and effort. Off, no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and the run's executor tokens are costed separately from the advisor's (Opus) rather than all charged at the advisor's rate. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
+| `issue_sub_agent_tier` | `"sonnet"` | Model tier for the `issue`-phase executor and Standards-reviewer sub-agents, and for whether the run carries the read-only explorer sub-agent (Issue #3402). `"sonnet"` (the default) leaves the `--agents` JSON byte-identical to before the key existed. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and the Standards reviewer (when `issue_reviewer_agents` is on) to Haiku at `medium` effort, and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"sonnet"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
+| `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort by default — Haiku at `medium` effort when `issue_sub_agent_tier` resolves `"haiku"`, Issue #3402; the Spec reviewer stays `sonnet`/`medium` at every tier), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                      |
 | `idle_task_cadence` |  policy | Guaranteed scan cadence for the important idle-task templates (see [Idle-Task Cadence](#%EF%B8%8F-idle-task-cadence)) |
-| `software_min_versions`      | `{ "claude": "2.1.280" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
+| `software_min_versions`      | `{ "claude": "2.1.293" }` | Per-tool minimum version floors for software auto-update (see [Minimum-Version Floor](#%EF%B8%8F-minimum-version-floor))                                                                                                                                                                       |
 | `log_dir` | platform default | Host directory the fleet's logs are written to. An absolute path, or one anchored at `~` (`"~/logs"`); a relative path is refused. The only way to move it — no environment variable does (Issue #1388); absent, the platform's own convention applies. One value serves `run.sh`, `loop.sh`, `run.ps1`, the container's writable log mount and log compression alike — see [Where the logs go](#-where-the-logs-go). |
 | `verbosity`                  | `standard`                | Global verbosity level (`minimal`, `concise`, `standard`, `verbose`), read by the `grill_me` and `quorum` rounds. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                           |
 | `exclusion_team`             | unset                     | Optional GitHub org team in `org/slug` form, excluded from the derived directing set **on top of** the Vibe Coder logins. Absent means team exclusion is off. Rejected at load if it is not `org/slug`. See [Two axes of trust](#two-axes-of-trust). |
@@ -609,7 +610,7 @@ Semantics:
 
 Full behaviour, including the decision flow and the log lines a biased tick
 emits, is in
-[Idle-task Framework → Configuring the cadence](IDLE-TASK-FRAMEWORK.md#configuring-the-cadence--idle_task_cadence-issue-4011).
+[Idle-task Framework → Configuring the cadence](IDLE-TASK-FRAMEWORK.md#configuring-the-cadence--idle_task_cadence).
 
 ### ⬆️ Minimum-Version Floor
 
@@ -627,7 +628,7 @@ floors for `gh`/`deno` can be added later:
 ```json
 {
   "software_min_versions": {
-    "claude": "2.1.280"
+    "claude": "2.1.293"
   }
 }
 ```
@@ -650,21 +651,21 @@ Semantics:
 - **Skip flag still wins.** `SKIP_CLAUDE_UPDATE=true` (and the `gh`/`deno`
   equivalents) still suppresses the update, but logs that a version floor is
   unmet when it does so.
-- **Default.** `{ "claude": "2.1.280" }` — the oldest Claude CLI release
-  that resolves the `opus` alias to **Opus 5.5** (`claude-opus-5-5`, added as
-  the default Opus model in 2.1.280), the tier every substantive phase requests
-  since Issue #2560. It was 2.1.260 before — the oldest release serving
-  **Fable 5.1** with its prompt-cache fixes (Issue #1362) — and 2.1.280 is above
-  that, so a phase pinned back to Fable keeps both. Setting the key replaces the
-  default map; provide an empty map to remove the floor.
+- **Default.** `{ "claude": "2.1.293" }` — the oldest Claude CLI release
+  that resolves the `haiku` alias to **Haiku 5.5** (`claude-haiku-5-5`), the
+  model `MODEL_CONTEXT_WINDOWS.haiku`'s 1M window assumes (PR #3432 review,
+  Issue #3400). It was 2.1.280 before — the oldest release resolving `opus` to
+  **Opus 5.5** (Issue #2560) — and 2.1.293 is above that, so a phase pinned
+  back to Opus or Fable keeps its own generation too. Setting the key replaces
+  the default map; provide an empty map to remove the floor.
 - **Hosts only, and the update channel bounds it.** Inside the worker container
   the software-update step is suppressed altogether — the image is the update
   mechanism, so `container/tools.json` is what decides the CLI version there
-  (pinned to 2.1.281 since Issue #2560). On a host in the default `dynamic`
+  (pinned to 2.1.293 since PR #3432 review, Issue #3400). On a host in the default `dynamic`
   mode the updater runs bare `claude update`, which follows the CLI's `stable`
-  channel; `stable` was 2.1.236 when this floor was raised, so such a host logs
-  "below required floor" once per interval until `stable` catches up or the host
-  moves to `update_mode: frozen` with a pinned version.
+  channel; `stable` was 2.1.286 when this floor was raised to 2.1.293, so such a
+  host logs "below required floor" once per interval until `stable` catches up
+  or the host moves to `update_mode: frozen` with a pinned version.
 
 **Gate role for new models.** Because the worker passes tier *aliases* (`opus`,
 `fable`, `haiku`) and the CLI resolves each to the latest model of that tier, the
@@ -3869,7 +3870,8 @@ performance, or failures.
    prompt component (issue body, comments, custom instructions, recent activity,
    etc.) using a characters-per-token heuristic (~4 characters per token).
 2. The total is compared against the model's context window (1,000,000 tokens
-   for Opus/Sonnet, 200,000 for Haiku —).
+   for Opus/Sonnet/Haiku — Haiku 5.5, Issue #3400 — or 200,000 for a Haiku 4.x
+   id such as `claude-haiku-4-5`).
 3. If usage exceeds the warning threshold, a warning is logged. If it exceeds
    the error threshold, an error is logged.
 4. If usage reaches `context_budget_block_percent`, the check fails closed
@@ -4484,6 +4486,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `deepseek_model`        | string  | Per-repo base DeepSeek model tier overriding the DeepSeek phase defaults for every phase. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `deepseek_phase_model_overrides` | object | Per-repo per-phase DeepSeek model overrides. See [Per-repository model/effort routing](#-per-repository-modeleffort-routing). |
 | `issue_executor_split` | boolean | Per-repo issue-executor split, overriding the host-wide `issue_executor_split` for this repository. Set `false` here to opt one repository out of a host that enables it (the default since Issue #2812), or `true` to opt one repository in on a host that does not. Omitted, the host-wide value stands. Only the `issue` phase is affected. The per-host counters behind the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) do not separate repositories, so a per-repo opt-out blurs them. |
+| `issue_sub_agent_tier` | string | Per-repo model tier for the `issue`-phase executor and Standards-reviewer sub-agents and the read-only explorer (Issue #3402), overriding the host-wide `issue_sub_agent_tier` for this repository. `"sonnet"` or `"haiku"` — see the host-wide key above for what each tier does. It is also the tier that repository's issue runs count under in the fleet summary's per-tier figures and record in the PR body's hidden `vibe-sub-agent-tier` marker (Issue #3403). Omitted, the host-wide value stands. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the host-wide value stands. |
 
 **Use cases:**
 

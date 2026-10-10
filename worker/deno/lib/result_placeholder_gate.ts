@@ -38,6 +38,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { maskMarkdownCode } from "./markdown_code_spans.ts";
+
 /** Cap on untrusted text scanned by the gate's regex (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
@@ -92,173 +94,6 @@ function resultTailStart(maskedLine: string, commandEnd: number): number {
   return tailStart;
 }
 
-/**
- * Split text into alternating "outside code" / "inside code" segments, so
- * callers can scan or rewrite only the prose a reader actually sees.
- * Fenced blocks (``` or ~~~, to the matching close or end of text) and
- * inline backtick spans are both "inside code" — a token named for
- * discussion (`` `REDACTION_PLACEHOLDER` ``) is not an unfilled result.
- */
-/** A fence line: the marker character, how long the run is, and the rest of the line. */
-interface FenceLine {
-  char: string;
-  length: number;
-  rest: string;
-}
-
-/**
- * A line whose first non-space characters are a fence. Indent is ignored, so
- * a fence under a list item counts. CommonMark's three-space limit does not:
- * archived summaries indent list fences further than that.
- */
-function parseFenceLine(line: string): FenceLine | null {
-  // `split` keeps the line break, and `.` does not match it, so trim first.
-  const match = line.trim().match(/^(`{3,}|~{3,})(.*)$/);
-  if (!match) return null;
-  return {
-    char: match[1]![0]!,
-    length: match[1]!.length,
-    rest: match[2] ?? "",
-  };
-}
-
-/** A closer uses the opener's character, is at least as long, and has no info string. */
-function isClosingFence(line: string, opener: FenceLine): boolean {
-  const parsed = parseFenceLine(line);
-  if (!parsed) return false;
-  return parsed.char === opener.char && parsed.length >= opener.length &&
-    parsed.rest.trim() === "";
-}
-
-/**
- * Pair inline code spans inside one paragraph. A run of N backticks closes
- * at the next run of exactly N, and that span may contain a line break.
- * A run with no closer is literal text. CommonMark does not let a span
- * cross a blank line, so the caller passes one paragraph at a time.
- */
-function splitInlineSpans(
-  block: string,
-): Array<{ value: string; inCode: boolean }> {
-  const runs: Array<{ index: number; length: number }> = [];
-  const runRe = /`+/g;
-  let found: RegExpExecArray | null;
-  while ((found = runRe.exec(block)) !== null) {
-    runs.push({ index: found.index, length: found[0].length });
-  }
-
-  const segments: Array<{ value: string; inCode: boolean }> = [];
-  let cursor = 0;
-  let r = 0;
-  while (r < runs.length) {
-    const open = runs[r]!;
-    if (open.index > cursor) {
-      segments.push({ value: block.slice(cursor, open.index), inCode: false });
-    }
-    let closeAt = -1;
-    for (let k = r + 1; k < runs.length; k++) {
-      if (runs[k]!.length === open.length) {
-        closeAt = k;
-        break;
-      }
-    }
-    if (closeAt === -1) {
-      const end = open.index + open.length;
-      segments.push({ value: block.slice(open.index, end), inCode: false });
-      cursor = end;
-      r++;
-      continue;
-    }
-    const close = runs[closeAt]!;
-    const end = close.index + close.length;
-    segments.push({ value: block.slice(open.index, end), inCode: true });
-    cursor = end;
-    r = closeAt + 1;
-  }
-  if (cursor < block.length) {
-    segments.push({ value: block.slice(cursor), inCode: false });
-  }
-  return segments;
-}
-
-function splitOutsideCode(
-  text: string,
-): Array<{ value: string; inCode: boolean }> {
-  const segments: Array<{ value: string; inCode: boolean }> = [];
-  const lines = text.split(/(?<=\n)/); // keep line terminators attached
-  let i = 0;
-  let fenceCursor = "";
-  let paragraph = "";
-  let inFence = false;
-  let opener: FenceLine | null = null;
-
-  function pushSegment(value: string, inCode: boolean) {
-    if (value.length === 0) return;
-    const last = segments[segments.length - 1];
-    if (last && last.inCode === inCode) last.value += value;
-    else segments.push({ value, inCode });
-  }
-
-  function flushParagraph() {
-    if (paragraph.length === 0) return;
-    for (const segment of splitInlineSpans(paragraph)) {
-      pushSegment(segment.value, segment.inCode);
-    }
-    paragraph = "";
-  }
-
-  while (i < lines.length) {
-    const line = lines[i]!;
-    const fenceMatch = parseFenceLine(line);
-    if (fenceMatch && !inFence) {
-      flushParagraph();
-      inFence = true;
-      opener = fenceMatch;
-      fenceCursor += line;
-      i++;
-      continue;
-    }
-    if (inFence && opener && isClosingFence(line, opener)) {
-      fenceCursor += line;
-      pushSegment(fenceCursor, true);
-      fenceCursor = "";
-      inFence = false;
-      opener = null;
-      i++;
-      continue;
-    }
-    if (inFence) {
-      fenceCursor += line;
-      i++;
-      continue;
-    }
-    // A blank line ends the paragraph, so a code span cannot cross it.
-    if (line.trim() === "") {
-      flushParagraph();
-      pushSegment(line, false);
-      i++;
-      continue;
-    }
-    paragraph += line;
-    i++;
-  }
-  if (inFence) pushSegment(fenceCursor, true);
-  else flushParagraph();
-  return segments;
-}
-
-/**
- * Replace every in-code character (everything but `\n`) with a space, so the
- * result is the same length — and every offset lines up — as `text`, but
- * carries only the prose a reader actually sees.
- */
-function maskCode(text: string): string {
-  return splitOutsideCode(text)
-    .map((segment) =>
-      segment.inCode ? segment.value.replace(/[^\n]/g, " ") : segment.value
-    )
-    .join("");
-}
-
 /** One located fill-in-later token, from either the suffix rule or the backstop. */
 interface TokenMatch {
   /** Offset of the token's first character in the original text. */
@@ -286,7 +121,7 @@ interface TokenMatch {
  * matches are de-duplicated, keeping the earlier one.
  */
 function findTokenMatches(text: string): TokenMatch[] {
-  const masked = maskCode(text);
+  const masked = maskMarkdownCode(text);
   const matches: TokenMatch[] = [];
 
   for (const found of masked.matchAll(PLACEHOLDER_TOKEN_RE)) {
