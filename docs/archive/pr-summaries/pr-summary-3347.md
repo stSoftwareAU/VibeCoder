@@ -100,8 +100,7 @@ Edited existing tests, no assertion removed:
 Results on the head:
 
 - Targeted run: `deno test --allow-all` over the claim-check, correction, retry and drift-check test files passed. The last run of the three `doc_prose_claims`, `summary_claim_check` and `pr_feedback_drift_check_3347` files gave 81 passed, 0 failed.
-- `./quality.sh < /dev/null` passed (completeness, markdownlint, semgrep, deno tests, lint, type check and fmt; config integration skipped).
-- That gate run came before two small follow-ups: the tightened instruction opener, and dropping two redundant clauses from `isManualProsePath`. The targeted tests, fmt, lint and check were re-run after both.
+- `./quality.sh < /dev/null` passed on the final head (completeness, markdownlint, semgrep, deno tests, lint, type check and fmt; config integration skipped).
 
 **Branch outcomes:**
 
