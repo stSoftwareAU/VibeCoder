@@ -108,6 +108,14 @@ export interface SummaryRuleRunVerdict {
    * for. Absent or empty means every item is documentary.
    */
   standingViolations?: readonly StandingViolation[];
+  /**
+   * True when one of the gates folded into `comment` can only be satisfied by
+   * changing tests (the diff-scoped mutation gate, Issue #3393: a surviving
+   * mutant is fixed by adding a test that kills it). The recovery prompt then
+   * allows test changes for that item instead of telling the agent the code is
+   * final. Absent means every item is a documentation shortfall.
+   */
+  allowsTestChanges?: boolean;
 }
 
 /**
@@ -124,6 +132,23 @@ const SUMMARY_RULE_REASON_BLOCK = "the gate's block reason";
  * {@link SUMMARY_RULE_REASON_BLOCK} (Issue #3152).
  */
 const SUMMARY_RULE_NOTICE_BLOCK = "the PR-summary gate retry notice";
+
+/** Step 2 of the recovery prompt when every REQUIRED ITEM is a summary shortfall. */
+const STEP_TWO_DOCS_ONLY =
+  "2. Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.";
+
+/**
+ * The step-2 rule for a mutation-check item among the REQUIRED ITEMS
+ * (Issue #3393), shared by the plain and the standing-violation step 2. That item names changed lines no test pins, so it is fixed by changing
+ * tests; telling the agent the code is final would leave an exemption as its
+ * only way to satisfy the prompt.
+ */
+const STEP_TWO_MUTATION_RULE =
+  "A mutation-check item (it lists `file:line` mutations that no test noticed) is not a documentation shortfall: fix it by adding or strengthening tests so each listed mutation makes a test fail, and change production code only where the mutation shows the line is dead or wrong. Record `exempt (untestable): <reason>` in the summary only for a line that genuinely cannot be tested, never for a line a test can reach. Every other REQUIRED ITEM is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change code for it. ";
+
+/** Step 2 when a mutation-check item is among the REQUIRED ITEMS. */
+const STEP_TWO_WITH_TESTS =
+  `2. Fix every REQUIRED ITEM the notice lists, and nothing else. ${STEP_TWO_MUTATION_RULE}Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.`;
 
 /**
  * Prompt for the in-run recovery invocation.
@@ -233,9 +258,14 @@ ${blocks.join("\n\n")}
 
 `;
   }
+  const allowsTests = verdict.allowsTestChanges === true;
   const step2 = standing.length > 0
-    ? `Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. A REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is the one exception: change the code it cites, as described under the CODE FIX items.`
-    : `Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.`;
+    ? `2. Fix every REQUIRED ITEM the notice lists, and every CODE FIX item below, and nothing else. ${
+      allowsTests ? STEP_TWO_MUTATION_RULE : ""
+    }A REQUIRED ITEM is a documentation shortfall in the summary file: do not change the code for it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. A CODE FIX item is the one exception: change the code it cites, as described under the CODE FIX items.`
+    : allowsTests
+    ? STEP_TWO_WITH_TESTS
+    : STEP_TWO_DOCS_ONLY;
   const itemRef = standing.length > 0
     ? "each REQUIRED ITEM and CODE FIX item"
     : "each REQUIRED ITEM";
@@ -257,7 +287,7 @@ ${itemBlocks.join("\n\n")}
 ${standingSection}Do exactly this, and nothing else:
 
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
-2. ${step2}
+${step2}
 3. Where a REQUIRED ITEM asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
 4. Before you commit, re-read the summary against ${itemRef} in turn, checking that item is actually fixed. In your final message, name ${itemRef} by number and say what you changed for it.
 5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses a REQUIRED ITEM will be asked for as a structured verdict instead, which costs the run another turn.

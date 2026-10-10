@@ -82,6 +82,7 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   "container/toolchains/shellcheck.sh",
   "container/toolchains/actionlint.sh",
   "container/toolchains/cargo-deny.sh",
+  "container/toolchains/cargo-mutants.sh",
   "container/toolchains/gitleaks.sh",
   "container/toolchains/pwsh.sh",
   // The NEAT-AI-core / NEAT-AI-scorer gate tools (Issue #1595): the BATS
