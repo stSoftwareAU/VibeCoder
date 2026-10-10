@@ -171,6 +171,7 @@ export async function runMergeConflictAgent(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "merge_conflict",
+      repo,
       cwd: workDir,
       logger,
     },

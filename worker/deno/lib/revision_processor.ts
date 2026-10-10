@@ -371,6 +371,7 @@ export async function processIssueRevision(
       timeoutSeconds: config.refinementTimeout,
       killAfterSeconds: config.refinementKillAfter,
       phase: "revision",
+      repo,
       logger,
       cwd: config.workDir,
       ...accel.spawnOptions(),

@@ -497,6 +497,7 @@ async function _processQuestionWithHeartbeat(
       timeoutSeconds: config.questionTimeout,
       killAfterSeconds: config.questionKillAfter,
       phase: "question",
+      repo,
       cwd: config.workDir,
       logger,
       // Absent unless the index built, so a switched-off run writes no MCP

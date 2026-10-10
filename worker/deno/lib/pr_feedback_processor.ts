@@ -1135,7 +1135,10 @@ async function _processFeedbackWithHeartbeat(
     options,
   ) => {
     carrier.agentRan = true;
-    const invocation = await deps.claude.runClaudeWithRetry(request, options);
+    const invocation = await deps.claude.runClaudeWithRetry(
+      { repo, ...request },
+      options,
+    );
     if (invocation.ok) {
       (carrier.runStats ??= []).push(invocation.value.runStats);
     }

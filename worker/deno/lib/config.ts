@@ -9,6 +9,7 @@
  * Use setup.sh to configure via .config.json.
  */
 
+import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
@@ -1226,6 +1227,8 @@ export async function loadConfig(
   // Issue #3577: reject a malformed pre-flight gate loudly at config load,
   // rather than silently ignoring it and running the repo unguarded.
   validatePreFlightConfigs(config.repoConfig);
+  // Issue #3394: make the pre-flight commands available to agent spawns.
+  registerAgentPreFlightConfigs(config.repoConfig);
 
   // Issue #630: Optionally validate required fields at load time
   if (options?.validate) {

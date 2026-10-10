@@ -1,0 +1,15 @@
+{
+  "issue": 3394,
+  "chunk": "top-up-3394",
+  "title": "top-up: agent pre-push gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3394",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: agent_pre_flight.ts, pre_push_gate.ts, pre_push_gate_cli.ts, pre_push_hook.ts (#3394)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/agent_pre_flight.ts",
+    "worker/deno/lib/pre_push_gate.ts",
+    "worker/deno/lib/pre_push_gate_cli.ts",
+    "worker/deno/lib/pre_push_hook.ts"
+  ],
+  "sweptAt": "315649331ebce1a99fc5b0ddd31c45d1ab7ac85f"
+}

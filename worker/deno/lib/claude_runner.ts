@@ -20,6 +20,8 @@ import {
   type AgentMcpServerRequest,
   ensureAgentMcpConfig,
 } from "./agent_mcp_config.ts";
+import { agentPreFlightCommands } from "./agent_pre_flight.ts";
+import { installPrePushHook, type PrePushHook } from "./pre_push_hook.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { buildCacheEnvForCheckout } from "./ephemeral_build_cache.ts";
 import { type Clock, systemClock, type TimerHandle } from "./clock.ts";
@@ -444,6 +446,11 @@ export interface ClaudeRunResult {
 export interface RunClaudeOptions {
   /** The prompt to send to Claude. */
   prompt: string;
+  /**
+   * Pre-flight commands the agent's own `git push` must pass (Issue #3394).
+   * Overrides the registry lookup by `repo`; production leaves it unset.
+   */
+  preFlightCommands?: readonly string[];
   /**
    * Static system prompt for Claude prompt caching (Issue #1262).
    *
@@ -1232,6 +1239,7 @@ export async function runClaudeWithTimeout(
   let descendantSnapshotTimer: TimerHandle | undefined;
   let descendantTracker: DescendantTracker | undefined;
   let ghGuard: GhGuardShim | undefined;
+  let prePushHook: PrePushHook | undefined;
   let transcript: AgentTranscriptWriter | undefined;
   // The prompt file (Issue #4385): the prompt is written to disk and
   // streamed from there into the child's stdin — inspectable after the
@@ -1299,6 +1307,27 @@ export async function runClaudeWithTimeout(
     }
     ghGuard = shimOutcome.status === "installed" ? shimOutcome.shim : undefined;
 
+    // Agent self-pushes bypassed the worker's pre-flight chokepoint (Issue
+    // #3394): install a per-run git pre-push hook, active only for the agent's
+    // env. Fail closed, like the shim.
+    const hookOutcome = await installPrePushHook({
+      baseEnv: ghGuard?.env ?? baseEnv,
+      preFlightCommands: options.preFlightCommands ??
+        agentPreFlightCommands(repo),
+    });
+    if (!hookOutcome.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Refused to start the agent: the pre-push gate hook could not be ` +
+            `installed (${hookOutcome.error.message}), so the agent's own git ` +
+            `pushes would bypass the pre-flight and changed-files checks ` +
+            `(Issue #3394).`,
+        ),
+      };
+    }
+    prePushHook = hookOutcome.value;
+
     // Issue #324: run the agent at a lower scheduler priority.
     //
     // On 2026-08-22 two agents each wrote an unbounded bash busy-wait — one
@@ -1338,7 +1367,7 @@ export async function runClaudeWithTimeout(
       args: spawnArgs,
       cwd,
       clearEnv: true,
-      env: ghGuard?.env ?? baseEnv,
+      env: prePushHook.env,
       stdout: "piped",
       stderr: "piped",
       stdin: promptViaStdin ? "piped" : "null",
@@ -2596,6 +2625,7 @@ export async function runClaudeWithTimeout(
     transcript?.close();
     // The shim directory is per-spawn — remove it once the child has exited.
     if (ghGuard) await ghGuard.cleanup();
+    if (prePushHook) await prePushHook.cleanup();
     // The stdin feed has either completed or broken by now; settle it so
     // no pending write outlives the call, then drop the prompt file unless
     // the transcript tee is keeping evidence (Issue #4385).

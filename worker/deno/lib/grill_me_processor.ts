@@ -1971,6 +1971,7 @@ async function _processGrillMeWithHeartbeat(
       // wait when actually thinking" both hold.
       noOutputTimeout: config.claudeNoOutputTimeout,
       phase: "grill_me",
+      repo,
       cwd: config.workDir,
       logger,
       // Issue #2561: the MCP servers (Graft's beside CodeGraph's) and the RTK

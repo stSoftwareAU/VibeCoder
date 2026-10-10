@@ -4468,7 +4468,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
 | `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#%EF%B8%8F-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
-| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
+| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. The same commands also gate the agent's own `git push` through a per-run `pre-push` hook (see the section below). A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
@@ -4522,6 +4522,10 @@ compilation error the worker
 pushed is even reported. The `pre-flight` gate refuses to commit or push work
 that is already known to be broken, so the failure is caught locally in
 seconds instead of downstream in the build.
+
+The gate runs at two points: the worker's own commit chokepoint, and the
+agent's own `git push` through a per-run `pre-push` hook (see
+[Agent pre-push hook](#agent-pre-push-hook-and-the-changed-files-check)).
 
 Configure it per repo with a list of commands (kebab-case `pre-flight`,
 snake_case `pre_flight`, or camelCase `preFlight` are all accepted):
@@ -4588,6 +4592,67 @@ flowchart TD
     style G fill:#14532d,stroke:#052e16,color:#fff
     style S fill:#495057,stroke:#212529,color:#fff
 ```
+
+#### Agent pre-push hook and the changed-files check
+
+The commit chokepoint above only sees the worker's own push. An agent that runs
+`git push` itself during its run would otherwise skip it (Issue #3394). For
+every agent run, the worker writes a per-run
+`pre-push` hook into a temporary directory and enables it in the **agent's
+environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
+agent runs goes through it. The worker's own pushes (its final-mile
+commit-and-push and WIP preservation) do not carry the agent's environment and
+are not gated by the hook; they keep the pre-flight at the commit chokepoint.
+
+The hook runs two stages:
+
+1. **Always-on changed-files check, whatever the run budget.** It lists the
+   files changed by the commits being pushed that are not already on any
+   remote-tracking ref (merge commits and deleted files excluded), then runs
+   the repo's own tools on just those files:
+   - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
+     cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
+     ts/js family), per outermost `deno.json` / `deno.jsonc` directory;
+   - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
+     changed `.rs` file;
+   - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
+     root carries a markdownlint config (`.markdownlint-cli2.*` or
+     `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
+     first, else the one on `PATH`.
+2. **Configured `pre-flight` commands.** The commands are resolved by the
+   run's repo from `repo_config`, so every agent run that names its repo gets
+   that repo's `pre-flight` commands in the hook; a run that names no repo gets
+   only the changed-files check.
+
+It fails closed, by the same rules as pre-flight: a check that fails, cannot
+start, or times out refuses the push; markdownlint configured but
+`markdownlint-cli2` not found refuses the push; a missing hook module, spec or
+`deno` binary refuses the push. Refusals print lines starting
+`[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
+pre-flight (the hook reuses `runPreFlightGate`).
+
+```mermaid
+flowchart TD
+    P["agent runs git push"] --> H["per-run pre-push hook"]
+    H --> C["changed-files check<br/>(always, any run budget)"]
+    C --> O{"pass?"}
+    O -->|no| B["[PRE_PUSH_BLOCKED]<br/>push refused"]
+    O -->|yes| F{"pre-flight commands<br/>passed to hook?"}
+    F -->|no| G["push proceeds"]
+    F -->|yes| R["run pre-flight commands"]
+    R --> Q{"all exit 0?"}
+    Q -->|yes| G
+    Q -->|no| B
+    style B fill:#7f1d1d,stroke:#450a0a,color:#fff
+    style G fill:#14532d,stroke:#052e16,color:#fff
+```
+
+Residual risk: `git push --no-verify`, or the agent rewriting its own
+environment, bypasses the hook. It is containment against honest mistakes, not
+a security boundary. It also overrides `core.hooksPath` for the agent's git, so
+a repository's own hooks directory (for example husky) does not run for agent
+git commands.
 
 ### 🛑 Auto-fix attempt cap
 
