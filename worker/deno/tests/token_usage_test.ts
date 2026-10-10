@@ -697,3 +697,128 @@ Deno.test("token_usage - estimateCost prices a Codex run from its row (Issue #19
   assertAlmostEquals(cost.cacheReadCost, 0.05, 1e-9);
   assertAlmostEquals(cost.totalCost, 0.8, 1e-9);
 });
+
+// =============================================================================
+// Haiku 5.5 banded pricing (Issue #3399)
+// =============================================================================
+
+/** One request's usage whose prompt (input + cache write + cache read) totals `prompt`. */
+function haikuRequest(prompt: number): TokenUsage {
+  return {
+    inputTokens: prompt - 30_000,
+    outputTokens: 10_000,
+    cacheCreationTokens: 10_000,
+    cacheReadTokens: 20_000,
+  };
+}
+
+/** Expected total for `usage` at the given per-million rates. */
+function costAt(
+  usage: TokenUsage,
+  rates: [number, number, number, number],
+): number {
+  const [input, output, write, read] = rates;
+  return (usage.inputTokens * input + usage.outputTokens * output +
+    usage.cacheCreationTokens * write + usage.cacheReadTokens * read) /
+    1_000_000;
+}
+
+const HAIKU_5_5_LOW: [number, number, number, number] = [
+  0.10,
+  0.50,
+  0.125,
+  0.01,
+];
+const HAIKU_5_5_HIGH: [number, number, number, number] = [
+  0.50,
+  2.50,
+  0.625,
+  0.05,
+];
+const HAIKU_4_5_FLAT: [number, number, number, number] = [1, 5, 1.25, 0.10];
+
+Deno.test("token_usage - a 50k-prompt Haiku 5.5 request is costed at the ≤100k band (Issue #3399)", () => {
+  const usage = haikuRequest(50_000);
+  const cost = estimateCost(usage, "claude-haiku-5-5", { singleRequest: true });
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_5_5_LOW), 1e-12);
+});
+
+Deno.test("token_usage - a 150k-prompt Haiku 5.5 request is costed at the >100k band (Issue #3399)", () => {
+  const usage = haikuRequest(150_000);
+  const cost = estimateCost(usage, "claude-haiku-5-5", { singleRequest: true });
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_5_5_HIGH), 1e-12);
+});
+
+Deno.test("token_usage - a Haiku 5.5 request of exactly 100k prompt tokens is in the lower band (Issue #3399)", () => {
+  const usage = haikuRequest(100_000);
+  const cost = estimateCost(usage, "claude-haiku-5-5", { singleRequest: true });
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_5_5_LOW), 1e-12);
+});
+
+Deno.test("token_usage - a run-total Haiku 5.5 estimate uses the >100k band even for a small total (Issue #3399)", () => {
+  // Run totals say nothing about any one request's prompt size, so the
+  // conservative upper band applies whatever the total.
+  const usage = haikuRequest(50_000);
+  const cost = estimateCost(usage, "claude-haiku-5-5");
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_5_5_HIGH), 1e-12);
+  const bounded = estimateCostWithUpperBound(usage, "claude-haiku-5-5");
+  assertEquals(bounded.priced, true);
+  assertAlmostEquals(
+    bounded.cost.totalCost,
+    costAt(usage, HAIKU_5_5_HIGH),
+    1e-12,
+  );
+});
+
+Deno.test("token_usage - estimateCostWithUpperBound bands a single Haiku 5.5 request too (Issue #3399)", () => {
+  const usage = haikuRequest(50_000);
+  const bounded = estimateCostWithUpperBound(usage, "claude-haiku-5-5", {
+    singleRequest: true,
+  });
+  assertEquals(bounded.priced, true);
+  assertAlmostEquals(
+    bounded.cost.totalCost,
+    costAt(usage, HAIKU_5_5_LOW),
+    1e-12,
+  );
+});
+
+Deno.test("token_usage - a dated Haiku 5.5 id resolves to the banded row (Issue #3399)", () => {
+  const usage = haikuRequest(50_000);
+  const cost = estimateCost(usage, "claude-haiku-5-5-20261007", {
+    singleRequest: true,
+  });
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_5_5_LOW), 1e-12);
+});
+
+Deno.test("token_usage - Haiku 4.5 stays flat for a single small request (Issue #3399)", () => {
+  const usage = haikuRequest(50_000);
+  const cost = estimateCost(usage, "claude-haiku-4-5", { singleRequest: true });
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_4_5_FLAT), 1e-12);
+});
+
+Deno.test("token_usage - the bare haiku alias is costed no lower than either Haiku generation (Issue #3399)", () => {
+  // The credit log records the requested alias, not the served model, so the
+  // alias must bound both generations from above: a run served Haiku 4.5
+  // under the alias is never under-costed against the spend ceiling.
+  const alias = lookupModelPricing("haiku");
+  const h45 = lookupModelPricing("claude-haiku-4-5");
+  const h55 = lookupModelPricing("claude-haiku-5-5");
+  assert(alias && h45 && h55);
+  for (const row of [h45, h55]) {
+    assert(alias.inputPerMillion >= row.inputPerMillion);
+    assert(alias.outputPerMillion >= row.outputPerMillion);
+    assert(alias.cacheWritePerMillion >= row.cacheWritePerMillion);
+    assert(alias.cacheReadPerMillion >= row.cacheReadPerMillion);
+  }
+  const usage = haikuRequest(50_000);
+  const cost = estimateCost(usage, "haiku", { singleRequest: true });
+  assert(cost);
+  assertAlmostEquals(cost.totalCost, costAt(usage, HAIKU_4_5_FLAT), 1e-12);
+});

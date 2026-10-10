@@ -45,6 +45,28 @@ export interface ModelPricing {
    * marker.
    */
   apiEquivalent?: true;
+  /**
+   * A cheaper band for requests whose prompt — input plus cache-write plus
+   * cache-read tokens — is at most `maxPromptTokens` (Issue #3399). The
+   * row's own rates are the dearer band above it, so a caller that cannot
+   * see one request's prompt size (run totals) is costed at the upper band
+   * and never under-states.
+   */
+  lowerBand?: PricingBand;
+}
+
+/** The rates of a prompt-size band below a row's own rates (Issue #3399). */
+export interface PricingBand {
+  /** Largest prompt, in tokens, that one request may carry in this band. */
+  maxPromptTokens: number;
+  /** Cost per million input tokens (USD). */
+  inputPerMillion: number;
+  /** Cost per million output tokens (USD). */
+  outputPerMillion: number;
+  /** Cost per million cache-write tokens (USD). */
+  cacheWritePerMillion: number;
+  /** Cost per million cache-read tokens (USD). */
+  cacheReadPerMillion: number;
 }
 
 /** Cost breakdown for a set of token counts. */
@@ -149,12 +171,35 @@ const SONNET_4_PRICING: ModelPricing = {
   cacheReadPerMillion: 0.30,
 };
 
-/** Claude Haiku 4.x pricing (Issue #1400, #1398). */
+/**
+ * Claude Haiku 4.x pricing (Issue #1400, #1398) — flat, with no prompt-size
+ * band. Also the bare `haiku` alias's rate: at or above Haiku 5.5's upper band
+ * on every component, so it bounds both generations (Issue #3399).
+ */
 const HAIKU_PRICING: ModelPricing = {
   inputPerMillion: 1,
   outputPerMillion: 5,
   cacheWritePerMillion: 1.25,
   cacheReadPerMillion: 0.10,
+};
+
+/**
+ * Claude Haiku 5.5 — banded by prompt size per request (Issue #3399). The
+ * row's rates are the >100k band; `lowerBand` carries the ≤100k rates,
+ * a tenth of Haiku 4.5's.
+ */
+const HAIKU_5_5_PRICING: ModelPricing = {
+  inputPerMillion: 0.50,
+  outputPerMillion: 2.50,
+  cacheWritePerMillion: 0.625,
+  cacheReadPerMillion: 0.05,
+  lowerBand: {
+    maxPromptTokens: 100_000,
+    inputPerMillion: 0.10,
+    outputPerMillion: 0.50,
+    cacheWritePerMillion: 0.125,
+    cacheReadPerMillion: 0.01,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -328,6 +373,9 @@ export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["fable", FABLE_5_1_PRICING],
   ["opus", OPUS_5_5_PRICING],
   ["sonnet", SONNET_5_PRICING],
+  // Not Haiku 5.5's row, though `haiku` now serves Haiku 5.5 (Issue #3400):
+  // the credit log records the requested alias, not the served model, so the
+  // alias keeps the flat 4.x rate that bounds both generations (Issue #3399).
   ["haiku", HAIKU_PRICING],
 ]);
 
@@ -377,7 +425,9 @@ export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
   ["claude-sonnet-5", SONNET_5_PRICING],
   ["claude-sonnet-4-6", SONNET_4_PRICING],
   ["claude-sonnet-4", SONNET_4_PRICING],
-  // Claude Haiku 4.5 (Issue #1398) — current Haiku
+  // Claude Haiku 5.5 — banded by prompt size (Issue #3399)
+  ["claude-haiku-5-5", HAIKU_5_5_PRICING],
+  // Claude Haiku 4.5 (Issue #1398) — flat rate
   ["claude-haiku-4-5", HAIKU_PRICING],
   // Legacy models
   ["claude-3-5-sonnet", SONNET_4_PRICING],
@@ -537,6 +587,12 @@ const FABLE_CHEAP_CACHE_MIN_MINOR = 1;
 /** Major version at/above which Sonnet uses the cheaper Sonnet 5 rate. */
 const SONNET_MODERN_MIN_MAJOR = 5;
 
+/** Major version at/above which Haiku can carry the banded 5.5 rate. */
+const HAIKU_5_5_MIN_MAJOR = 5;
+
+/** Minor version at/above which Haiku 5 uses the banded 5.5 rate. */
+const HAIKU_5_5_MIN_MINOR = 5;
+
 /**
  * Parse the major/minor version of a modern (4 or 5 family) Claude id.
  *
@@ -595,7 +651,8 @@ export function lookupModelPricing(model: string): ModelPricing | null {
   //    row happens to match its prefix. Opus 5+ and Opus 4.5+ share the modern
   //    reduced rate and only Opus 4.0/4.1 are legacy (Issue #3559); Fable 5.1+
   //    reads cache at a quarter of the Fable 5 rate and Sonnet 5 is cheaper
-  //    than the Sonnet 4.x line (Issue #747). Haiku uses a single rate.
+  //    than the Sonnet 4.x line (Issue #747). Haiku 5.5+ is banded by
+  //    prompt size and every earlier Haiku is flat (Issue #3399).
   const parsed = parseClaudeModernVersion(normalised);
   if (parsed) {
     if (parsed.tier === "opus") {
@@ -622,7 +679,11 @@ export function lookupModelPricing(model: string): ModelPricing | null {
         ? SONNET_5_PRICING
         : SONNET_4_PRICING;
     }
-    return TIER_CURRENT_PRICING.get(parsed.tier) ?? null;
+    // Both halves matter, as for Opus: the band arrived with Haiku 5.5.
+    return parsed.major >= HAIKU_5_5_MIN_MAJOR &&
+        parsed.minor >= HAIKU_5_5_MIN_MINOR
+      ? HAIKU_5_5_PRICING
+      : HAIKU_PRICING;
   }
 
   // 3. Explicit prefix match for everything else (legacy 3-x models).
@@ -634,20 +695,33 @@ export function lookupModelPricing(model: string): ModelPricing | null {
   return null;
 }
 
+/** How the token counts handed to a cost estimate were gathered. */
+export interface CostEstimateOptions {
+  /**
+   * `true` when the counts are **one request's**, so its prompt size picks a
+   * banded row's band (Issue #3399). Omitted, the counts are taken as run
+   * totals, which say nothing about any one request's prompt, and a banded
+   * row is costed at its upper band — the conservative choice.
+   */
+  singleRequest?: boolean;
+}
+
 /**
  * Estimate the cost of a set of token counts for a given model.
  *
  * @param usage - Token usage counts
  * @param model - Model identifier for pricing lookup
+ * @param options - Whether `usage` is one request's (see {@link CostEstimateOptions})
  * @returns Cost breakdown or null if model pricing is unknown
  */
 export function estimateCost(
   usage: TokenUsage,
   model: string,
+  options: CostEstimateOptions = {},
 ): CostBreakdown | null {
   const pricing = lookupModelPricing(model);
   if (!pricing) return null;
-  return costFor(usage, pricing);
+  return costFor(usage, pricing, options);
 }
 
 /** A cost estimate plus whether it came from a real pricing row. */
@@ -668,21 +742,44 @@ export interface BoundedCostEstimate {
  *
  * @param usage - Token usage counts
  * @param model - Model identifier for pricing lookup
+ * @param options - Whether `usage` is one request's (see {@link CostEstimateOptions})
  * @returns The cost and whether real pricing was found
  */
 export function estimateCostWithUpperBound(
   usage: TokenUsage,
   model: string,
+  options: CostEstimateOptions = {},
 ): BoundedCostEstimate {
   const pricing = lookupModelPricing(model);
   return {
-    cost: costFor(usage, pricing ?? UNPRICED_UPPER_BOUND_PRICING),
+    cost: costFor(usage, pricing ?? UNPRICED_UPPER_BOUND_PRICING, options),
     priced: pricing !== null,
   };
 }
 
+/**
+ * The rates that apply to `usage`: a banded row's lower band when `usage` is
+ * one request whose prompt fits it, otherwise the row's own (upper) rates.
+ */
+function ratesFor(
+  usage: TokenUsage,
+  pricing: ModelPricing,
+  options: CostEstimateOptions,
+): ModelPricing | PricingBand {
+  const band = pricing.lowerBand;
+  if (!band || !options.singleRequest) return pricing;
+  const prompt = usage.inputTokens + usage.cacheCreationTokens +
+    usage.cacheReadTokens;
+  return prompt <= band.maxPromptTokens ? band : pricing;
+}
+
 /** Apply a pricing row to a set of token counts. */
-function costFor(usage: TokenUsage, pricing: ModelPricing): CostBreakdown {
+function costFor(
+  usage: TokenUsage,
+  row: ModelPricing,
+  options: CostEstimateOptions = {},
+): CostBreakdown {
+  const pricing = ratesFor(usage, row, options);
   const inputCost = (usage.inputTokens / 1_000_000) * pricing.inputPerMillion;
   const outputCost = (usage.outputTokens / 1_000_000) *
     pricing.outputPerMillion;
