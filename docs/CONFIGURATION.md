@@ -4597,7 +4597,7 @@ flowchart TD
 
 The commit chokepoint above only sees the worker's own push. An agent that runs
 `git push` itself during its run would otherwise skip it (Issue #3394). For
-every agent run with a working directory, the worker writes a per-run
+every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
@@ -4620,10 +4620,10 @@ The hook runs two stages:
      root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
      first, else the one on `PATH`.
-2. **Configured `pre-flight` commands.** The routes that already gate their own
-   push with pre-flight (PR feedback, CI fix, merge conflict, spelling, and the
-   screenshot-gate and summary-rule-gate retries) pass the repo's `pre-flight`
-   commands to the hook. Other agent runs get the changed-files check only.
+2. **Configured `pre-flight` commands.** The commands are resolved by the
+   run's repo from `repo_config`, so every agent run that names its repo gets
+   that repo's `pre-flight` commands in the hook; a run that names no repo gets
+   only the changed-files check.
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
