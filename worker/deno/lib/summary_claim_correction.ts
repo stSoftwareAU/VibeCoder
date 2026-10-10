@@ -13,10 +13,12 @@
  * flagged the sentence on the re-run after the recovery turn had already
  * been spent (VibeCoder#3322). This module is the one extra, narrow turn for
  * the second shape: when every other gate has passed and only the claim
- * check still blocks, after the recovery turn is gone, the worker asks the
- * model to rewrite just the flagged sentences in the summary — no files
- * edited by the model itself, the worker writes the reply to disk — then
- * re-runs completion exactly once more.
+ * check still blocks on the summary's own sentences, after the recovery turn
+ * is gone, the worker asks the model to rewrite just the flagged sentences in
+ * the summary — no files edited by the model itself, the worker writes the
+ * reply to disk — then re-runs completion exactly once more. A finding in a
+ * changed manual or prompt (Issue #3347) never gets this turn: it rewrites
+ * only the summary, so such a block goes to `reportSummaryRuleBlock`.
  *
  * ```mermaid
  * flowchart TD
@@ -111,7 +113,10 @@ export interface SummaryClaimCorrection {
  * the correction turn rather than reporting it immediately (Issue #3324).
  *
  * Mirrors the notion of "not the first block" that `reportSummaryRuleBlock`'s
- * `isFirstBlock` uses, with the correction offered at most once per run.
+ * `isFirstBlock` uses, with the correction offered at most once per run. This
+ * is only the run-state half of the decision: the caller also withholds the
+ * turn when the block carries a doc finding (Issue #3347), which a
+ * summary-only rewrite cannot clear.
  */
 export function shouldOfferClaimCorrection(state: PhaseState): boolean {
   return (state.summaryRuleBlocks?.length ?? 0) > 0 &&
@@ -282,7 +287,8 @@ function normaliseWhitespace(text: string): string {
  * question misses it. The gate is never loosened by this — it only adds
  * findings the check had already confirmed once, never removes any.
  *
- * Pure; only acts when `correction?.status === "used"`.
+ * Pure; only acts when `correction?.status === "used"`. It touches only
+ * `findings`; `docFindings` pass through untouched.
  */
 export function carryForwardCorrectedClaims(
   result: SummaryClaimCheckResult,

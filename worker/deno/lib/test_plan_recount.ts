@@ -10,10 +10,19 @@
  * disagrees with that recount, so a drift check can catch the mismatch
  * mechanically instead of relying on the model to notice.
  *
+ * A paired run result such as a red-on-base "76 passed, 4 failed" is checked
+ * by its total (passed + failed), not by "passed" alone, because the run
+ * executed every runnable test in the file (Issue #3381).
+ *
  * The PR summary is untrusted, agent-authored text, so this module only
  * ever uses bounded, hardcoded regexes against it (never `new RegExp` built
  * from input) and caps the amount of text it scans at 200_000 characters.
  */
+
+import {
+  markdownLogicalUnits,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
 
 const MAX_SCAN_CHARS = 200_000;
 
@@ -382,6 +391,11 @@ export interface TestPlanMismatch {
   claimed: number;
   /** The sum of the named files' counts at the head. */
   actual: number;
+  /**
+   * Present when the claim is a paired run result, so `claimed` is
+   * passed + failed.
+   */
+  run?: { passed: number; failed: number };
 }
 
 function resolveToken(
@@ -401,57 +415,160 @@ const TOKEN_RE =
   /[A-Za-z0-9_./-]+(?:_test|\.test|\.spec)\.(?:ts|tsx|js|jsx|mjs|mts)/g;
 // `#` is excluded so `Issue #3143 tests` is not read as a count of 3143.
 // A "passed" figure is what `deno test` actually ran (`.ignore`/`.skip`
-// excluded); a "tests" figure is every declaration.
+// excluded); a "tests" figure is every declaration. A block holding a paired
+// `N passed, M failed` result takes the RESULT_RE path instead (Issue #3381).
 const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
+// A paired run result in either order, e.g. "76 passed, 4 failed",
+// "4 failed, 76 passed", "76 passed and 4 failed" or deno's
+// "FAILED | 76 passed | 4 failed (1s)". Each start scans one separator run,
+// so the cost stays linear; see the hostile-input test.
+const RESULT_RE =
+  /(?<![\w.#])(\d{1,5})\s+(passed|failed)\b[\s,;|]*(?:and\s+)?(\d{1,5})\s+(passed|failed)\b/gi;
 const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
 
 /**
- * Join a wrapped list item or a slash-continued command into one claim.
+ * Split a Test Plan section into logical blocks, one claim each.
+ *
+ * Logical units come from the shared `markdownLogicalUnits` (Issue #3356), so
+ * a hard-wrapped paragraph or list item (indented or lazy continuation) is one
+ * block, and blocks never merge across a blank line, heading, new list item,
+ * table row, fence or HTML comment. Each non-code unit becomes its text with
+ * whitespace runs collapsed.
+ *
+ * Fenced lines stay one block per physical line, so two commands in one fence
+ * are compared separately, with one exception: shell line continuation. A
+ * fenced line directly after a fenced line ending in `\` or `/` (after
+ * trimEnd) joins onto it, because a command wrapped that way names its files
+ * on one line and its "N passed" result on the next.
  *
  * Exported for reuse by `summary_claim_check.ts` (Issue #3257), whose Test
  * Plan backstop walks the same logical blocks looking for a quoted
  * behaviour rather than a stale count.
  */
 export function logicalBlocks(section: string): string[] {
-  const lines = section.split("\n");
-  const blocks: string[][] = [];
-  let current: string[] | null = null;
-  const isItem = (line: string) => /^\s*(?:[-*+]|\d+[.)])\s/.test(line);
-  const isBlank = (line: string) =>
-    /^\s*$/.test(line) || /^#{1,6}\s/.test(line);
-  const isIndented = (line: string) => /^\s+\S/.test(line);
-  const endsWithSlash = (line: string) => /[/\\]\s*$/.test(line.trimEnd());
-
-  for (const line of lines) {
-    if (isBlank(line)) {
-      if (current) blocks.push(current);
-      current = null;
+  const lines = splitMarkdownLines(section);
+  const blocks: string[] = [];
+  // Index of the last physical line in the most recent code block, and
+  // whether that block may be continued by the next line.
+  let codeEnd = -2;
+  let codeOpen = false;
+  for (const unit of markdownLogicalUnits(lines)) {
+    const text = unit.text.replace(/\s+/g, " ").trim();
+    if (unit.kind !== "code") {
+      blocks.push(text);
+      codeOpen = false;
       continue;
     }
-    const prev = current?.[current.length - 1];
-    const cont = prev !== undefined && !isItem(line) &&
-      (isIndented(line) || endsWithSlash(prev));
-    if (current && !cont) blocks.push(current);
-    if (!current || !cont) current = [];
-    current.push(line.trim());
+    const idx = unit.lines[0]!;
+    if (codeOpen && idx === codeEnd + 1) {
+      blocks[blocks.length - 1] = `${blocks[blocks.length - 1]} ${text}`;
+    } else {
+      blocks.push(text);
+    }
+    codeEnd = idx;
+    codeOpen = /[/\\]$/.test(lines[idx]!.trimEnd());
   }
-  if (current) blocks.push(current);
-  return blocks.map((block) => block.join(" ").replace(/\s+/g, " ").trim());
+  return blocks.filter((b) => b !== "");
 }
 
-export function findTestPlanMismatches(opts: {
+/**
+ * Flag Test Plan lines whose quoted figure disagrees with the head recount:
+ * a single "N tests"/"N passed" claim is compared with the named files' counts,
+ * and a paired "N passed, M failed" run result is compared by N + M with the
+ * runnable count of the test file it ran (Issue #3381).
+ */
+export function findTestPlanMismatches(
+  opts: TestPlanScanOptions,
+): TestPlanMismatch[] {
+  return scanTestPlan(opts).mismatches;
+}
+
+/**
+ * A paired run result the recount could not check, so it was neither
+ * compared nor passed as correct (Issue #3381). The worker logs these rather
+ * than letting an unchecked figure pass silently.
+ */
+export interface UncheckedRunResult {
+  /** The Test Plan line, trimmed (truncated to 300 chars). */
+  line: string;
+  /** Why the result could not be compared with the head. */
+  reason: string;
+}
+
+/**
+ * The paired run results `findTestPlanMismatches` could not check: a block
+ * naming a test file that is not one of the PR's changed test files, a block
+ * naming several files whose runs differ, or a red result naming no test file
+ * when the section has no sole changed test file. A `quality.sh` block and a
+ * file-less green run are out of scope by design and are not reported. Comes
+ * from the same scan as `findTestPlanMismatches`.
+ */
+export function findUncheckedRunResults(
+  opts: TestPlanScanOptions,
+): UncheckedRunResult[] {
+  return scanTestPlan(opts).unchecked;
+}
+
+interface TestPlanScanOptions {
   summary: string;
   /**
    * Repo-relative path → declaration counts at the head, for the PR's
    * changed test files only (total > 0).
    */
   headCounts: ReadonlyMap<string, TestDeclarationCounts>;
-}): TestPlanMismatch[] {
+}
+
+function scanTestPlan(
+  opts: TestPlanScanOptions,
+): { mismatches: TestPlanMismatch[]; unchecked: UncheckedRunResult[] } {
   const section = extractTestPlanSection(opts.summary);
   const results: TestPlanMismatch[] = [];
+  const unchecked: UncheckedRunResult[] = [];
+
+  // The section's sole changed test file, for a red run that names none. A
+  // run with failures against base must have run a test file the PR changed
+  // (an unchanged test file passes on base), so a test file the PR did not
+  // change, e.g. a path quoted inside an assertion, does not make it ambiguous.
+  let soleFile: string | undefined;
+  {
+    const keys = new Set<string>();
+    for (const m of section.matchAll(TOKEN_RE)) {
+      const resolved = resolveToken(m[0], opts.headCounts);
+      if (resolved !== undefined) keys.add(resolved);
+    }
+    if (keys.size === 1) soleFile = [...keys][0];
+  }
 
   for (const rawLine of logicalBlocks(section)) {
     if (rawLine.includes("--filter")) continue;
+
+    const runs: { passed: number; failed: number }[] = [];
+    for (const m of rawLine.matchAll(RESULT_RE)) {
+      const w1 = (m[2] ?? "").toLowerCase();
+      const w2 = (m[4] ?? "").toLowerCase();
+      if (w1 === w2) continue;
+      const a = Number(m[1]);
+      const b = Number(m[3]);
+      runs.push(
+        w1 === "passed" ? { passed: a, failed: b } : { passed: b, failed: a },
+      );
+    }
+    if (runs.length > 0) {
+      const outcome = checkRunResults(
+        rawLine,
+        runs,
+        opts.headCounts,
+        soleFile,
+      );
+      if (outcome.kind === "mismatch") results.push(outcome.mismatch);
+      else if (outcome.kind === "unchecked") {
+        unchecked.push({
+          line: rawLine.trim().slice(0, 300),
+          reason: outcome.reason,
+        });
+      }
+      continue;
+    }
 
     const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
     if (tokens.length === 0) continue;
@@ -502,11 +619,94 @@ export function findTestPlanMismatches(opts: {
     }
   }
 
-  return results;
+  return { mismatches: results, unchecked };
+}
+
+type RunCheckOutcome =
+  | { kind: "ok" }
+  | { kind: "mismatch"; mismatch: TestPlanMismatch }
+  | { kind: "unchecked"; reason: string };
+
+/**
+ * Compare a block's paired run results with the head: ok (matches, or out of
+ * scope by design), a mismatch, or unchecked with the reason it could not be
+ * compared.
+ */
+function checkRunResults(
+  rawLine: string,
+  runs: { passed: number; failed: number }[],
+  headCounts: ReadonlyMap<string, TestDeclarationCounts>,
+  soleFile: string | undefined,
+): RunCheckOutcome {
+  // A full-gate result covers the whole suite, so a failing test file it names
+  // is not the file the figures count (corpus: pr-summary-3255.md, pr-summary-3292.md).
+  if (/\bquality\.sh\b/.test(rawLine)) return { kind: "ok" };
+  const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
+  let files: Set<string>;
+  let candidates = runs;
+  if (tokens.length > 0) {
+    files = new Set<string>();
+    for (const token of tokens) {
+      const resolved = resolveToken(token, headCounts);
+      if (resolved === undefined) {
+        return {
+          kind: "unchecked",
+          reason:
+            `the block names ${token}, which is not one of the PR's changed test files`,
+        };
+      }
+      files.add(resolved);
+    }
+    // Two runs of different file sets cannot be told apart.
+    if (
+      files.size > 1 &&
+      new Set(candidates.map((r) => r.passed + r.failed)).size > 1
+    ) {
+      return {
+        kind: "unchecked",
+        reason: "the block names several test files and its runs differ",
+      };
+    }
+  } else {
+    // A green full-suite line must never be compared; only a red run is.
+    candidates = runs.filter((r) => r.failed > 0);
+    if (candidates.length === 0) return { kind: "ok" };
+    if (soleFile === undefined) {
+      return {
+        kind: "unchecked",
+        reason:
+          "a red result names no test file and the section has no sole changed test file",
+      };
+    }
+    files = new Set([soleFile]);
+  }
+  let actual = 0;
+  for (const key of files) actual += headCounts.get(key)?.runnable ?? 0;
+  for (const run of candidates) {
+    const claimed = run.passed + run.failed;
+    if (claimed !== actual) {
+      return {
+        kind: "mismatch",
+        mismatch: {
+          line: rawLine.trim().slice(0, 300),
+          files: [...files],
+          claimed,
+          actual,
+          run,
+        },
+      };
+    }
+  }
+  return { kind: "ok" };
 }
 
 /** One line describing a mismatch, for a recovery prompt or a PR reply. */
 export function describeTestPlanMismatch(m: TestPlanMismatch): string {
+  if (m.run) {
+    return `the Test Plan line "${m.line}" reports a run of ${m.claimed} tests (${m.run.passed} passed, ${m.run.failed} failed) for ${
+      m.files.join(", ")
+    }, but the head has ${m.actual} runnable — re-run it on the head test file (against the base branch's production code for a red-on-base run) and replace the figures`;
+  }
   if (m.files.length === 1) {
     return `the Test Plan line "${m.line}" quotes ${m.claimed} tests for ${
       m.files[0]

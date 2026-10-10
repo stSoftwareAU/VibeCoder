@@ -63,6 +63,15 @@
  * new gate that must ignore Markdown code calls into this module rather
  * than pairing backticks with a per-line regex.
  *
+ * The module now also answers "which lines form one statement?" via
+ * {@link markdownLogicalUnits} (Issue #3356): a gate over Markdown prose
+ * matches per logical unit rather than per physical line, because the prose is
+ * hard-wrapped. Its callers are `parseDocsSweepLine` in `docs_sweep_gate.ts`,
+ * `logicalBlocks` in `test_plan_recount.ts` (and through it
+ * `summary_claim_check.ts`), and the uncaptured-line grouping of the
+ * unreached-admission check in `branch_outcomes_gate.ts`. A new gate over
+ * Markdown prose calls it rather than splitting on "\n".
+ *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
@@ -422,4 +431,143 @@ export function stripMarkdownCode(text: string): string {
     .filter((segment) => !segment.inCode)
     .map((segment) => segment.value)
     .join("");
+}
+
+/** Split text into physical lines on every line terminator (terminators dropped). */
+export function splitMarkdownLines(text: string): string[] {
+  return (text ?? "").split(/\r\n|[\n\r\u2028\u2029]/);
+}
+
+/** What kind of Markdown block a {@link MarkdownLogicalUnit} is. */
+export type MarkdownUnitKind =
+  | "paragraph"
+  | "list-item"
+  | "table-row"
+  | "heading"
+  | "html"
+  | "break"
+  | "code";
+
+/** One logical statement: the physical lines that read as a single block. */
+export interface MarkdownLogicalUnit {
+  kind: MarkdownUnitKind;
+  /** 0-based indexes into the `lines` array passed in, ascending and consecutive. */
+  lines: number[];
+  /**
+   * Each source line trimmed, non-empty ones joined with a single space. Quote
+   * and list markers are not stripped: callers strip their own decoration.
+   */
+  text: string;
+}
+
+/**
+ * Group physical Markdown lines into logical units (Issue #3356).
+ *
+ * PR summaries are hard-wrapped at about 78 columns, so `text.split("\n")`
+ * reads half a claim per line: a gate that matches one physical line misses a
+ * phrase wrapped across two. Matching per unit fixes that, and the unit
+ * boundaries stop one unit's evidence excusing another unit's admission.
+ *
+ * One linear pass, one open unit at a time:
+ * - A blank line (after the quote prefix) closes the open unit and belongs to
+ *   none.
+ * - A fence opener closes the open unit; every non-blank line from it to its
+ *   matching closer (or the end of input) is its own one-line `code` unit, so
+ *   a caller ignoring code filters `kind === "code"` and one that must check
+ *   every line still sees each one.
+ * - A change of quote depth closes the open unit.
+ * - An HTML comment is one `html` unit through the first line holding `-->`.
+ * - An ATX heading, a setext underline / thematic break (checked before list
+ *   items) and a table row are each their own one-line unit.
+ * - A list item opens a new `list-item` unit, at any indent.
+ * - Any other line extends an open `paragraph` or `list-item` (indented or
+ *   lazy alike), otherwise opens a new `paragraph`.
+ */
+export function markdownLogicalUnits(
+  lines: readonly string[],
+): MarkdownLogicalUnit[] {
+  const units: MarkdownLogicalUnit[] = [];
+  let open: { kind: MarkdownUnitKind; lines: number[] } | null = null;
+  let openDepth = 0;
+
+  const make = (
+    kind: MarkdownUnitKind,
+    idx: number[],
+  ): MarkdownLogicalUnit => ({
+    kind,
+    lines: idx,
+    text: idx.map((n) => lines[n]!.trim()).filter((t) => t !== "").join(" "),
+  });
+  const flush = () => {
+    if (open) units.push(make(open.kind, open.lines));
+    open = null;
+  };
+  const single = (kind: MarkdownUnitKind, n: number) => {
+    flush();
+    units.push(make(kind, [n]));
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const fence = parseFenceLine(line);
+    if (fence) {
+      flush();
+      openDepth = 0;
+      if (line.trim() !== "") units.push(make("code", [i]));
+      i++;
+      while (i < lines.length) {
+        const inner = lines[i]!;
+        if (inner.trim() !== "") units.push(make("code", [i]));
+        i++;
+        if (isClosingFence(inner, fence)) break;
+      }
+      continue;
+    }
+    const content = stripQuotePrefix(line);
+    if (content.trim() === "") {
+      flush();
+      openDepth = 0;
+      i++;
+      continue;
+    }
+    const depth = quoteDepth(line);
+    if (depth !== openDepth) {
+      flush();
+      openDepth = depth;
+    }
+    if (HTML_COMMENT_START_RE.test(content)) {
+      flush();
+      const idx = [i];
+      let closed = line.includes("-->");
+      i++;
+      while (!closed && i < lines.length) {
+        idx.push(i);
+        closed = lines[i]!.includes("-->");
+        i++;
+      }
+      units.push(make("html", idx));
+      continue;
+    }
+    if (ATX_HEADING_RE.test(content)) {
+      single("heading", i);
+    } else if (SETEXT_OR_THEMATIC_BREAK_RE.test(content)) {
+      single("break", i);
+    } else if (LIST_ITEM_RE.test(content)) {
+      flush();
+      open = { kind: "list-item", lines: [i] };
+    } else if (TABLE_ROW_RE.test(content)) {
+      single("table-row", i);
+    } else if (
+      open && (open.kind === "paragraph" || open.kind === "list-item")
+    ) {
+      open.lines.push(i);
+    } else {
+      flush();
+      open = { kind: "paragraph", lines: [i] };
+    }
+    i++;
+  }
+  flush();
+  return units;
 }

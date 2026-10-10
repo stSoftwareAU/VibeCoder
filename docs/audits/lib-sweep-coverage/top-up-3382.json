@@ -1,0 +1,12 @@
+{
+  "issue": 3382,
+  "chunk": "top-up-3382",
+  "title": "top-up: standing violation recovery routing",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3382",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: standing_violation_routing.ts (#3382)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/standing_violation_routing.ts"
+  ],
+  "sweptAt": "315649331ebce1a99fc5b0ddd31c45d1ab7ac85f"
+}

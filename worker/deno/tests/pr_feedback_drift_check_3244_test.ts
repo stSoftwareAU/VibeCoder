@@ -554,8 +554,8 @@ Deno.test("runPrFeedbackDriftCheck - a change request quoting a sentence already
 Deno.test("runPrFeedbackDriftCheck - a finding naming a pr-summary that does not exist at the head is reported with quoteCheckUnavailable and no recovery call", async () => {
   const { dir, beforeSha } = await setupBaselineNoSummary();
   try {
-    // Docs-only push — no code, no test file, so no model call either.
-    await writeFile(dir, "docs/notes.md", "Updated notes.\n");
+    // Push of a non-Markdown doc — no code, test or manual prose, so no model call.
+    await writeFile(dir, "docs/notes.txt", "Updated notes.\n");
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent([], calls);

@@ -494,10 +494,10 @@ async function setupDocsOnlyBaseline(
   return { dir, beforeSha: rev.stdout.trim() };
 }
 
-Deno.test("runPrFeedbackDriftCheck - a docs-only push makes no model call and reports clean", async () => {
+Deno.test("runPrFeedbackDriftCheck - a docs-only push that edits no Markdown makes no model call and reports clean", async () => {
   const { dir, beforeSha } = await setupDocsOnlyBaseline(undefined);
   try {
-    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    await writeFile(dir, "docs/notes.txt", "Some updated notes.\n");
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent([], calls);
@@ -532,7 +532,7 @@ No tests changed.
 `;
   const { dir, beforeSha } = await setupDocsOnlyBaseline(summaryNoDocsSweep);
   try {
-    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    await writeFile(dir, "docs/notes.txt", "Some updated notes.\n");
 
     const calls: AgentCall[] = [];
     const runAgent = makeRunAgent([], calls);
@@ -613,7 +613,7 @@ Some unrelated prose.
 Deno.test("runPrFeedbackDriftCheck - a docs-only push that also drops .pr_response_message (untracked, no ignore rule) makes no model call and reports clean", async () => {
   const { dir, beforeSha } = await setupDocsOnlyBaseline(undefined);
   try {
-    await writeFile(dir, "docs/notes.md", "Some updated notes.\n");
+    await writeFile(dir, "docs/notes.txt", "Some updated notes.\n");
     // The agent's reply file, written at the clone root per the prompts'
     // instructions — untracked, since this repo has no `.*` ignore rule.
     await Deno.writeTextFile(
@@ -1101,5 +1101,48 @@ Deno.test("runPrFeedbackDriftCheck - a finding naming a path outside the checkou
   } finally {
     await Deno.remove(dir, { recursive: true });
     await Deno.remove(outsideDir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check is warned about (Issue #3381)", async () => {
+  const { dir, beforeSha } = await setupBaseline();
+  try {
+    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    // No test file is named anywhere in the Test Plan, so a red result has no
+    // sole changed test file to be compared with.
+    await writeFile(
+      dir,
+      SUMMARY_PATH,
+      SUMMARY_V1.replace(
+        /- Added .*\n/,
+        "- Red on base: 5 passed, 2 failed.\n",
+      ),
+    );
+
+    const warnings: string[] = [];
+    const calls: AgentCall[] = [];
+    await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
+        logger: {
+          ...noopLogger(),
+          warn: (message: string) => {
+            warnings.push(message);
+          },
+        },
+      },
+    );
+
+    const hit = warnings.filter((w) =>
+      w.startsWith("Test Plan recount could not check 1 run result(s)")
+    );
+    assertEquals(hit.length, 1);
+    assertStringIncludes(hit[0]!, SUMMARY_PATH);
+    assertStringIncludes(hit[0]!, "Red on base: 5 passed, 2 failed.");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });

@@ -43,8 +43,6 @@ import "../lib/idle_task_templates/workflow_annotation_scan_template.ts";
 import { REPO_ROOT } from "./support/repo_root.ts";
 
 const PROMPTS_DIR = `${REPO_ROOT}prompts`;
-const CHECKLIST_PATH = "docs/PROMPT-BEST-PRACTICES-CHECKLIST.md";
-const VOCABULARY_PATH = "docs/PROMPT-HOUSE-VOCABULARY.md";
 
 /** The house heading for a scan's closing self-check. */
 const VERIFICATION_HEADING = "### Verification before exit";
@@ -136,32 +134,6 @@ function personaIdentity(paragraph: string): string {
   return (role ?? paragraph.split(/(?<=\.)\s/)[0] ?? paragraph).toLowerCase();
 }
 
-/** Extract the body of the `## ` section whose heading contains `title`. */
-function section(markdown: string, title: string): string {
-  const lines = markdown.split("\n");
-  const start = lines.findIndex((line) =>
-    line.startsWith("## ") && line.slice(3).includes(title)
-  );
-  assert(start >= 0, `missing section heading containing "${title}"`);
-  const rest = lines.slice(start + 1);
-  const end = rest.findIndex((line) => line.startsWith("## "));
-  return (end < 0 ? rest : rest.slice(0, end)).join("\n");
-}
-
-/** Parse every Markdown table row into trimmed cell arrays. */
-function tableRows(markdown: string): string[][] {
-  return markdown
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith("|") && line.endsWith("|"))
-    .map((line) => line.slice(1, -1).split("|").map((cell) => cell.trim()))
-    .filter((cells) => !cells.every((cell) => /^:?-{2,}:?$/.test(cell)));
-}
-
-async function readChecklist(): Promise<string> {
-  return await Deno.readTextFile(`${REPO_ROOT}${CHECKLIST_PATH}`);
-}
-
 // ---------------------------------------------------------------------------
 // Persona — raised where a model reads the surface
 // ---------------------------------------------------------------------------
@@ -248,33 +220,11 @@ Deno.test("each verification section names the filed issues it re-reads", async 
 // Narrowed claim — the surfaces no model reads
 // ---------------------------------------------------------------------------
 
-Deno.test("the checklist records the wrapper-issue-body surface kind", async () => {
-  const body = section(await readChecklist(), "Applicability");
-
-  assert(
-    body.includes("Wrapper issue body"),
-    "the checklist does not record the third surface kind",
-  );
-  for (const [directory] of WRAPPER_ISSUE_BODIES) {
-    assert(
-      body.includes(`prompts/${directory}/`),
-      `the wrapper-issue-body kind does not cite prompts/${directory}/`,
-    );
-  }
-});
-
-Deno.test("row 5 exempts the surfaces no model reads", async () => {
-  const rows = tableRows(section(await readChecklist(), "Checklist"));
-  const row = rows.find((cells) => cells[0] === "5");
-  assert(row, "the checklist has no row 5");
-
-  const notApplicable = row[4] ?? "";
-  assert(
-    /wrapper issue body/i.test(notApplicable),
-    "row 5 still scores a persona on a surface no model reads; its n/a " +
-      "definition does not name the wrapper-issue-body kind",
-  );
-});
+// The two doc-section presence pins that used to sit here — "the checklist
+// records the wrapper-issue-body surface kind" and "row 5 exempts the
+// surfaces no model reads" — moved to `prompt_presence_gaps_drift_test.ts`
+// (Issue #3309): both pinned phrases within a doc section rather than a
+// filesystem-wide invariant.
 
 Deno.test("the exempt prompts really are rendered as the filed issue body", async () => {
   for (const [directory, slug] of WRAPPER_ISSUE_BODIES) {
@@ -309,25 +259,6 @@ Deno.test("the exempt prompts really are rendered as the filed issue body", asyn
   }
 });
 
-Deno.test("the vocabulary points at the settled presence decision", async () => {
-  const vocabulary = await Deno.readTextFile(`${REPO_ROOT}${VOCABULARY_PATH}`);
-  const body = section(vocabulary, "Out of scope");
-
-  assert(
-    body.includes("841"),
-    `${VOCABULARY_PATH} does not record where the presence-gap decision landed`,
-  );
-  assert(
-    body.includes(CHECKLIST_PATH),
-    `${VOCABULARY_PATH} does not point at the checklist the decision is ` +
-      "recorded in",
-  );
-  assert(
-    /wrapper issue bod/i.test(body),
-    `${VOCABULARY_PATH} does not record which way the persona gap went`,
-  );
-  assert(
-    body.includes(VERIFICATION_HEADING),
-    `${VOCABULARY_PATH} does not record which way the closing-check gap went`,
-  );
-});
+// "the vocabulary points at the settled presence decision" also moved to
+// `prompt_presence_gaps_drift_test.ts` (Issue #3309): it pinned phrases
+// within the vocabulary doc's "Out of scope" section.

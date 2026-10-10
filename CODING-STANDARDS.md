@@ -703,6 +703,13 @@ stale. Before calling a gate done (Issue #3149):
    `maskMarkdownCode` or `stripMarkdownCode`); it never pairs backticks with
    a per-line regex, because a hard-wrapped span continues onto the next line
    (VibeCoder#3132, Issue #3313).
+   A gate over Markdown prose matches per logical unit from the shared helper
+   (`markdownLogicalUnits` in the same module), never per physical line: PR
+   summaries are hard-wrapped, so a phrase or claim often sits on two lines
+   (VibeCoder#3085, #3157, #3312; Issue #3356). The "re-wrapped" evasion test
+   splits the matched phrase or claim itself across a line break, not only a
+   nearby code span, and uses a real wrapped shape from the corpus, not an
+   invented fixture.
 2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
    recent PR diffs, closure-verdict logs, the PR's own test files — run the
    matcher across it and report the false-positive and false-negative counts
@@ -1407,6 +1414,11 @@ for every PR summary — containing:
    reviewer, rather than blocking the PR.
 4. **Test Plan** — Tests added or modified.
 
+In this repository, `deno task pr-summary-check --base <base-branch>
+<summary-file>` from `worker/deno` runs most of the PR-summary gates against a
+draft summary before the PR is raised. A gate it reports as not checked is not
+a pass.
+
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
@@ -1501,6 +1513,19 @@ before the lookup (VibeCoder#3231); a PR summary said "every arm" of three parse
 script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
+
+The worker checks this mechanically too (Issue #3347). Whenever a PR summary
+was loaded, the first-run claim check asks a read-only model, before the PR is
+raised, whether the head code agrees with such sentences on the lines the
+branch adds or edits in its manual and prompt Markdown (outside
+`docs/archive/pr-summaries/`), for up to 20 files; files past that cap are
+logged as not checked. A confirmed contradiction is a summary-rule block: on
+the run's first summary-rule block the run gets one recovery turn to rewrite
+the sentence, and a block that survives it fails the run or, when a PR already
+exists, finalises it as `summary_incomplete`. On a review-fix push that edits
+such a file, the drift check asks the same question and gives one recovery turn
+before reporting what remains. This enforces the rule above; it does not
+replace it.
 
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling

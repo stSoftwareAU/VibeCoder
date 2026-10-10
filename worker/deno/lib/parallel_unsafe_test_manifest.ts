@@ -186,6 +186,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
   // replaced (PR #3160 review).
   "tests/branch_outcomes_gate_test.ts",
+  // The paired run-result scan reads a PR-summary line an agent writes; only
+  // a growth measurement separates its linear separator scan from a
+  // backtracking regex (Issue #3381).
+  "tests/test_plan_recount_red_on_base_3381_test.ts",
   // The change-request quote extractor scans reviewer-written text; only a
   // growth measurement separates its linear hand-written scanners from a
   // backtracking regex (#3244).
@@ -248,6 +252,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // linear pairing from the quadratic forward scan it replaced (Issue
   // #3313).
   "tests/markdown_code_spans_test.ts",
+  // The shared Markdown logical-unit splitter groups the lines of untrusted
+  // PR summaries; only a growth measurement separates its single linear pass
+  // from a rescan per line (Issue #3356).
+  "tests/markdown_logical_units_3356_test.ts",
 ];
 
 /**
