@@ -48,7 +48,7 @@ const SUMMARY_WITHOUT_BLOCK = `## Summary
 
 Closed the loop. Closes #518.
 
-**Docs sweep** — grep: \`AcceptanceCriteria\`; section: \`docs/EXTENDING.md#acceptance-criteria\`; no hits
+**Docs sweep** — grep: \`AcceptanceCriteria\`; section: \`docs/EXTENDING.md#acceptance-criteria\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -90,7 +90,7 @@ Closed the loop. Closes #518.
 
 - **clean** — Australian English, TDD, fail-loud error handling
 
-**Docs sweep** — grep: \`AcceptanceCriteria\`; section: \`docs/EXTENDING.md#acceptance-criteria\`; no hits
+**Docs sweep** — grep: \`AcceptanceCriteria\`; section: \`docs/EXTENDING.md#acceptance-criteria\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 

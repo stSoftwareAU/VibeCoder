@@ -469,7 +469,7 @@ Deno.test(
  * trip those gates (Issue #3147). */
 const SUMMARY_WITH_ASSERTION_AND_DOCS_SWEEP = SUMMARY_WITH_ASSERTION +
   "\n**Docs sweep** — grep: `score`; section: none — internal scoring " +
-  "logic isn't documented; no hits\n" +
+  "logic isn't documented; no hits; siblings: none — no existing set gained a member\n" +
   "\n**Branch outcomes:** none added\n";
 
 Deno.test(

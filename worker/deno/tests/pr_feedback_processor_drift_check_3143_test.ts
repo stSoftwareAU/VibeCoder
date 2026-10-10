@@ -39,7 +39,7 @@ Closes #42.
 
 ${SENTENCE}
 
-**Docs sweep** — grep: \`x\`; section: none — internal only
+**Docs sweep** — grep: \`x\`; section: none — internal only; siblings: none — no existing set gained a member
 
 ## Test Plan
 

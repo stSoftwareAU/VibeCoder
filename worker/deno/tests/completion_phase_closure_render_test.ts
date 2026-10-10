@@ -53,7 +53,7 @@ const PROSE_SUMMARY = `## Summary
 
 Rendered the closure block. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`renderClosureBlocksFromVerdict\`; section: \`docs/EXTENDING.md#closure-verdict\`; no hits
+**Docs sweep** — grep: \`renderClosureBlocksFromVerdict\`; section: \`docs/EXTENDING.md#closure-verdict\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 

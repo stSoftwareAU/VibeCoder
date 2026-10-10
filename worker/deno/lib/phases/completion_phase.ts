@@ -2443,9 +2443,9 @@ async function completionBody(
   // blocks — this is the comment body for that advisory post, built below.
   let docsSweepHitsComment = "";
 
-  // Issue #3172: once the line itself passes, re-run the grep terms it
-  // quotes over the head's docs, and over the comment lines of its source
-  // files (Issue #3219). A hit outside every line the diff changed,
+  // Issue #3172: once the line itself passes, re-run the grep and sibling
+  // terms it quotes (Issue #3371) over the head's docs, and over the comment
+  // lines of its source files (Issue #3219). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
   // and left — Issue #3237 made this advisory only: it is named in a PR
   // comment, not blocked, and costs no recovery turn. A grep or diff that

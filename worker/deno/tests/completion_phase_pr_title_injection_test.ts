@@ -45,7 +45,7 @@ async function makeRepo(): Promise<string> {
   await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
   await Deno.writeTextFile(
     `${root}/docs/archive/pr-summaries/pr-summary-5.md`,
-    "## Summary\n\nAdd caching. Closes #5.\n\n**Docs sweep** — grep: `caching`; section: `docs/MODEL-AND-CACHING.md#caching`; no hits\n\n**Branch outcomes:** none added\n",
+    "## Summary\n\nAdd caching. Closes #5.\n\n**Docs sweep** — grep: `caching`; section: `docs/MODEL-AND-CACHING.md#caching`; no hits; siblings: none — no existing set gained a member\n\n**Branch outcomes:** none added\n",
   );
   return root;
 }

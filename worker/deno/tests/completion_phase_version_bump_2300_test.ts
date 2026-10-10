@@ -68,7 +68,7 @@ async function makeRepo(): Promise<string> {
   await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
   await Deno.writeTextFile(
     `${root}/docs/archive/pr-summaries/pr-summary-211.md`,
-    "## Summary\n\nOnly a bounded log tail is published; the html pages are cache-busted. Closes #211.\n\n## Evidence\n\nBackend/CLI change — there is no new web interface to screenshot.\n\n**Docs sweep** — grep: `log tail`; section: `docs/EXTENDING.md#logging`; no hits\n\n**Branch outcomes:** none added\n",
+    "## Summary\n\nOnly a bounded log tail is published; the html pages are cache-busted. Closes #211.\n\n## Evidence\n\nBackend/CLI change — there is no new web interface to screenshot.\n\n**Docs sweep** — grep: `log tail`; section: `docs/EXTENDING.md#logging`; no hits; siblings: none — no existing set gained a member\n\n**Branch outcomes:** none added\n",
   );
   return root;
 }

@@ -16,6 +16,10 @@
  * grep was run. `section: none — <why no manual documents it>` is accepted as
  * the honest negative; a bare placeholder (`none`, `tbd`, `n/a`, …) is not.
  *
+ * The line also names a `siblings:` part (Issue #3371): the existing members
+ * of each set the change adds a member to, quoted so the worker can re-run
+ * them, or `siblings: none — <why no existing set gained a member>`.
+ *
  * Modelled on `reproduction_status_gate.ts`: pure functions only, hardcoded
  * regexes (no `new RegExp()` built from input), and a bounded scan of the
  * summary — which is agent-authored and steered by an untrusted issue body,
@@ -25,6 +29,7 @@
  */
 
 import { isTestFilePath } from "./security_fix_gate.ts";
+import { extractSiblingTerms } from "./docs_sweep_hits.ts";
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
@@ -70,6 +75,12 @@ export interface DocsSweepLine {
   /** The value of the `section:` (or `sections:`) field, `""` when absent. */
   section: string;
   /**
+   * The value of the `siblings:` (or `sibling:`) field, `""` when absent: the
+   * existing members of each set the change adds a member to, or the
+   * `none — <why>` negative (Issue #3371).
+   */
+  siblings: string;
+  /**
    * The same entry with only list markers stripped — backticks, quotes and
    * underscores intact — so the line's own grep terms and `file:line`
    * references can be read back out of it (Issue #3172). `""` when absent.
@@ -96,6 +107,9 @@ const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 /** The `section:` / `sections:` field inside a Docs sweep line's body. */
 const SECTION_FIELD_RE = /\bsections?\s*:\s*([^;]+)/i;
+
+/** The `siblings:` / `sibling:` field inside a Docs sweep line's body (Issue #3371). */
+const SIBLINGS_FIELD_RE = /\bsiblings?\s*:\s*([^;]+)/i;
 
 /** Trailing/leading backtick and whitespace trim for an extracted value. */
 function trimDecoration(value: string): string {
@@ -160,13 +174,18 @@ export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
     // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
     const sectionMatch = body.match(SECTION_FIELD_RE);
     const section = sectionMatch ? trimDecoration(sectionMatch[1]!) : "";
-    return { present: true, body, section, rawBody };
+    const siblingsMatch = body.match(SIBLINGS_FIELD_RE);
+    const siblings = siblingsMatch ? trimDecoration(siblingsMatch[1]!) : "";
+    return { present: true, body, section, siblings, rawBody };
   }
 
-  return { present: false, body: "", section: "", rawBody: "" };
+  return { present: false, body: "", section: "", siblings: "", rawBody: "" };
 }
 
-/** Bare placeholder values for `section:` that name no manual (Issue #3073). */
+/**
+ * Bare placeholder values for `section:` and `siblings:` that name nothing
+ * (Issue #3073, Issue #3371).
+ */
 const SECTION_PLACEHOLDER_VALUES = new Set([
   "none",
   "n/a",
@@ -220,6 +239,9 @@ export interface DocsSweepGateResult {
   problems: string[];
 }
 
+/** The `none` negative a `siblings:` value opens with (Issue #3371). */
+const SIBLINGS_NONE_RE = /^none\b/i;
+
 /** Up to how many code files are named in a "no Docs sweep line" problem. */
 const MAX_NAMED_CODE_FILES = 5;
 
@@ -243,6 +265,13 @@ function describeCodeFiles(codeFiles: readonly string[]): string {
  *   4. A line present but naming no `section:` → blocked.
  *   5. A `section:` that is a bare placeholder (`none`, `tbd`, …) → blocked;
  *      an explained negative (`none — <why>`) is accepted.
+ *   6. A line naming no `siblings:` → blocked (Issue #3371). The sibling-member
+ *      grep from #3137 was prose only, and fleet PRs still left a list one
+ *      short — GRQ-AutoTrader#2460, #2481, #2682, #2792.
+ *   7. A `siblings:` that is a bare placeholder → blocked; an explained
+ *      negative (`none — <why>`) is accepted (Issue #3371, as rule 6).
+ *   8. A `siblings:` that quotes no term, and is not the `none` negative →
+ *      blocked, so the worker has a term to re-run (Issue #3371, as rule 6).
  *
  * @param opts.changedFiles - The branch's changed files, or `null` when the
  *   diff could not be collected.
@@ -298,6 +327,27 @@ function evaluateApplicable(
     );
   }
 
+  // Issue #3371: checked independently of the section, so a line missing
+  // both parts reports both in one recovery turn.
+  if (line.present) {
+    if (line.siblings === "") {
+      problems.push(
+        "the `Docs sweep` line names no `siblings:` — the existing sibling members you grepped for each set this change adds a member to, or `siblings: none — <why no existing set gained a member>`",
+      );
+    } else if (isBarePlaceholder(line.siblings)) {
+      problems.push(
+        "the `Docs sweep` line's `siblings:` is a bare placeholder — name the existing sibling members you grepped, or write `siblings: none — <why no existing set gained a member>`",
+      );
+    } else if (
+      !SIBLINGS_NONE_RE.test(line.siblings) &&
+      extractSiblingTerms(line.rawBody).length === 0
+    ) {
+      problems.push(
+        "the `Docs sweep` line's `siblings:` quotes no term — backtick or double-quote each existing sibling member you grepped, so the worker can re-run it, or write `siblings: none — <why no existing set gained a member>`",
+      );
+    }
+  }
+
   return {
     applicable: true,
     valid: problems.length === 0,
@@ -336,7 +386,12 @@ export function buildDocsSweepGateComment(
     "3. Read that section through and fix every sentence the change makes " +
     "false. Clear a grep hit only after reading the sentence it is in, " +
     "never by the file's topic.",
-    "4. Fixing a stale doc found this way is part of this fix — it is a " +
+    "4. When the change adds a member to an existing set (a field, enum " +
+    "variant, case, caller or constant-list entry), grep for one or two " +
+    "existing sibling members — the new name is in no doc yet — and make " +
+    "every list those hits find name the new member or stop reading as " +
+    "complete.",
+    "5. Fixing a stale doc found this way is part of this fix — it is a " +
     "docs change, not a code change — and is committed along with the " +
     "summary.",
     "",
@@ -345,13 +400,15 @@ export function buildDocsSweepGateComment(
     "",
     "```markdown",
     '**Docs sweep** — grep: `ProposalStore::list`, "one session at a ' +
-    'time"; section: `docs/reporting-api.md#decisions-report`; updated: ' +
-    "`docs/reporting-api.md`",
+    'time"; section: `docs/reporting-api.md#decisions-report`; ' +
+    "siblings: `ProposalStore::get`; updated: `docs/reporting-api.md`",
     "**Docs sweep** — grep: `retryLimit`; section: " +
-    "`docs/workflows/retries.md#retry-limit`; no hits",
+    "`docs/workflows/retries.md#retry-limit`; siblings: none — no existing " +
+    "set gained a member; no hits",
     "```",
     "",
     "`section: none — <reason>` is the honest answer when no manual " +
-    "documents the surface — a bare `none` is not accepted.",
+    "documents the surface, and `siblings: none — <why>` when no existing " +
+    "set gained a member — a bare `none` is not accepted for either part.",
   ].join("\n");
 }
