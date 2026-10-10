@@ -18,6 +18,8 @@
  */
 
 import type { Logger, Result } from "../types.ts";
+import { recordPrRejection } from "./fleet_telemetry.ts";
+import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { ensureIssueClosedIfPrMerged } from "./issue_lifecycle.ts";
 import { extractIssueNumberFromPrTitle } from "./pr_body.ts";
@@ -1028,6 +1030,16 @@ export async function findPrCommentsToFix(
           );
           continue;
         }
+
+        // Issue #3404: an authorised CHANGES_REQUESTED review is a rejection of this PR's tier.
+        await recordPrRejection({
+          repo,
+          prNumber,
+          reviewId: review.id,
+          submittedAt: review.submitted_at,
+          resolveTier: () =>
+            fetchPrSubAgentTier(repo, prNumber, ghCommandFn, logger),
+        });
 
         if (!review.body.trim()) {
           logReviewSkip(

@@ -16,7 +16,10 @@ import {
   type SyncPrBodyDeps,
   syncPrBodyFromSummary,
 } from "../lib/pr_body_sync.ts";
-import { WORKER_PR_MARKER_PREFIX } from "../lib/pr_body.ts";
+import {
+  buildSubAgentTierMarker,
+  WORKER_PR_MARKER_PREFIX,
+} from "../lib/pr_body.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 import type {
   GitCommandOptions,
@@ -177,6 +180,7 @@ Deno.test("assemblePrBody - uses the summary content when present", () => {
     extraSections: "",
     footer: "\n---\n\nfooter",
     summaryDigest: "deadbeef",
+    subAgentTier: undefined,
   });
   assertStringIncludes(body, "Did the thing.");
   assertStringIncludes(body, "footer");
@@ -190,6 +194,7 @@ Deno.test("assemblePrBody - falls back to a minimal body when the summary is emp
     extraSections: "",
     footer: "",
     summaryDigest: "deadbeef",
+    subAgentTier: undefined,
   });
   assertStringIncludes(body, "## Summary");
   assertStringIncludes(body, "Closes #42.");
@@ -202,6 +207,7 @@ Deno.test("assemblePrBody - appends a closing keyword when the summary lacks one
     extraSections: "",
     footer: "",
     summaryDigest: "deadbeef",
+    subAgentTier: undefined,
   });
   assertStringIncludes(body, "Closes #42");
 });
@@ -214,6 +220,7 @@ Deno.test("assemblePrBody - records the summary digest marker right after the wo
     extraSections: "",
     footer: "\n---\n\nfooter",
     summaryDigest: digest,
+    subAgentTier: undefined,
   });
   const markerIdx = body.indexOf(marker(42));
   const digestMarker = buildSummaryDigestMarker(digest);
@@ -230,6 +237,39 @@ Deno.test("assemblePrBody - records the summary digest marker right after the wo
     digestMarker,
   );
   assertEquals(summaryDigestFromBody(body), digest);
+});
+
+// --- subAgentTier (Issue #3403) --------------------------------------------
+
+/** Every occurrence of the sub-agent tier marker in `body`. */
+function tierMarkerOccurrences(body: string): string[] {
+  return body.match(/<!-- vibe-sub-agent-tier tier="[a-z]+" -->/g) ?? [];
+}
+
+Deno.test("assemblePrBody - carries exactly one tier marker, even when the summary quotes a different one", () => {
+  const body = assemblePrBody({
+    summaryContent: `## Summary\n\nQuoting the marker: ${
+      buildSubAgentTierMarker("sonnet")
+    }\n\nDid the thing. Closes #42.`,
+    issueNumber: 42,
+    extraSections: "",
+    footer: "\n---\n\nfooter",
+    summaryDigest: "deadbeef",
+    subAgentTier: "haiku",
+  });
+  assertEquals(tierMarkerOccurrences(body), [buildSubAgentTierMarker("haiku")]);
+});
+
+Deno.test("assemblePrBody - carries no tier marker when subAgentTier is undefined", () => {
+  const body = assemblePrBody({
+    summaryContent: "## Summary\n\nDid the thing. Closes #42.",
+    issueNumber: 42,
+    extraSections: "",
+    footer: "\n---\n\nfooter",
+    summaryDigest: "deadbeef",
+    subAgentTier: undefined,
+  });
+  assertEquals(tierMarkerOccurrences(body), []);
 });
 
 // --- prSummaryDigest / summaryDigestFromBody -------------------------------
@@ -326,6 +366,93 @@ Deno.test("sync - summary changed: edits the PR once with the refreshed body", a
     assertStringIncludes(newBody, marker(ISSUE_NUMBER));
     assertStringIncludes(newBody, "Processed by:");
     assertStringIncludes(newBody, `Closes #${ISSUE_NUMBER}`);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a legacy body with no tier marker gets none added (Issue #3403)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          // `baseBody` carries no summary-digest marker and no tier marker —
+          // the legacy shape from before either existed.
+          return Promise.resolve(
+            viewJson(baseBody(ISSUE_NUMBER), ["src/a.ts"]),
+          );
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertEquals(tierMarkerOccurrences(newBody), []);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a live body carrying the haiku tier marker rebuilds with exactly one haiku marker (Issue #3403)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const gitCalls: string[][] = [];
+    // An OLD digest, so the recorded digest differs from the current
+    // summary file's content and the sync proceeds via the digest path
+    // (not the legacy before-push-SHA path).
+    const oldDigest = "0".repeat(64);
+    const liveBody = `${baseBody(ISSUE_NUMBER)}\n${
+      buildSummaryDigestMarker(oldDigest)
+    }\n${buildSubAgentTierMarker("haiku")}`;
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(liveBody, ["src/a.ts"]));
+        }
+        return stubGh(ghCalls)(args);
+      },
+      runGitCommand: stubGit(gitCalls, { diffChanged: true }),
+      logger,
+    };
+
+    const result = await syncPrBodyFromSummary(
+      {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        repoPath,
+        beforeSha: BEFORE_SHA,
+        workerName: "worker-a",
+        githubUser: "ghuser",
+      },
+      deps,
+    );
+
+    assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
+    assertEquals(ghCalls.length, 1);
+    const newBody = ghCalls[0]?.bodyFileContent ?? "";
+    assertEquals(tierMarkerOccurrences(newBody), [
+      buildSubAgentTierMarker("haiku"),
+    ]);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

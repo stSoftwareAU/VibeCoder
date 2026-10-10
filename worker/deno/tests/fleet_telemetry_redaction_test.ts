@@ -69,6 +69,7 @@ Deno.test("fleet summary - the issue-phase counters keep their values (Issue #23
     gatePassedOnAttempt: 1,
     durationSeconds: 930,
     split: true,
+    subAgentTier: "sonnet",
   });
   const line = formatFleetSummary(100_000);
 
@@ -77,6 +78,31 @@ Deno.test("fleet summary - the issue-phase counters keep their values (Issue #23
   assertStringIncludes(redacted, "issue_runs=1");
   assertStringIncludes(redacted, "issue_usd=1.2500");
   assertStringIncludes(redacted, "issue_duration=930s");
+  assertEquals(redacted.includes("***REDACTED***"), false, redacted);
+});
+
+Deno.test("fleet summary - the per-tier counters keep their values too (Issue #3403)", () => {
+  resetFleetTelemetry();
+  startFleetTelemetry(0);
+  startFleetCycle(0);
+  recordIssuePhaseRun({
+    usd: 1.25,
+    gatePassedOnAttempt: 1,
+    durationSeconds: 930,
+    split: true,
+    subAgentTier: "sonnet",
+  });
+  recordIssuePhaseRun({
+    usd: 0.4,
+    durationSeconds: 60,
+    subAgentTier: "haiku",
+  });
+  const line = formatFleetSummary(100_000);
+
+  const redacted = redactSecrets(line);
+  assertEquals(redacted, line, line);
+  assertStringIncludes(redacted, "issue_tier_runs=sonnet=1,haiku=1");
+  assertStringIncludes(redacted, "issue_tier_usd=sonnet=1.2500,haiku=0.4000");
   assertEquals(redacted.includes("***REDACTED***"), false, redacted);
 });
 

@@ -89,7 +89,11 @@ committed to the repository as permanent documentation and contains:
 The worker reads this file and includes its contents in the PR body. If no PR
 summary file is created, a warning note is included in the PR body. PR
 creation records a SHA-256 digest of the summary's content in the PR body as
-a hidden marker. A later CI-fix or merge-conflict run re-syncs the PR
+a hidden marker, and the sub-agent tier the issue run resolved as a second
+one, `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`), so a later PR
+outcome can be attributed to that tier (Issue #3403); the fleet summary's
+per-tier PR-outcome figures do this (Issue #3404). A re-sync carries the
+tier marker over unchanged. A later CI-fix or merge-conflict run re-syncs the PR
 description from the summary, via `syncPrBodyFromSummary`
 (`worker/deno/lib/pr_body_sync.ts`), after a verified push to the PR's own
 head when the summary at the head differs from that recorded digest —

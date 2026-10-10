@@ -485,7 +485,9 @@ export const OPERATIONAL_DEFAULTS = {
    * sub-agents, and whether the read-only `explorer` rides the run
    * (Issues #3401, #3402). Resolved per repo by
    * `resolveIssueSubAgentTier` and consumed by `buildIssueRunAgents`
-   * in `issue_executor_agents.ts`.
+   * in `issue_executor_agents.ts`. Each `issue` run also records the
+   * resolved tier in fleet telemetry (per-tier runs and USD) and stamps it
+   * on the PR body as a `vibe-sub-agent-tier` marker (Issue #3403).
    */
   issueSubAgentTier: "sonnet" as IssueSubAgentTier,
   /**

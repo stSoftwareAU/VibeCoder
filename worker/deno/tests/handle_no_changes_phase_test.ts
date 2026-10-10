@@ -816,6 +816,84 @@ Deno.test(
 );
 
 Deno.test(
+  "handle_no_changes_phase - records the resolved sub-agent tier (Issue #3403)",
+  async () => {
+    resetFleetTelemetry();
+    const calls = makeStubGhCalls();
+    const ctx = makeContext({
+      config: makeConfig({ issueSubAgentTier: "haiku" }),
+    });
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          durationMs: 120_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    const telemetry = getFleetTelemetry(1_000);
+    assertEquals(telemetry.issuePhaseHaikuRuns, 1);
+    assertEquals(telemetry.issuePhaseSonnetRuns, 0);
+    resetFleetTelemetry();
+  },
+);
+
+Deno.test(
+  "handle_no_changes_phase - the default config records a sonnet-tier run (Issue #3403)",
+  async () => {
+    resetFleetTelemetry();
+    const calls = makeStubGhCalls();
+    const ctx = makeContext();
+    const state = makeState({
+      claudeOutput:
+        "The implementation is already complete — no changes needed, commit " +
+        "`ab12cd3` covers it.",
+      claudeRunStats: [{
+        runStats: {
+          servedModels: ["claude-opus-4-8"],
+          requestedModel: "opus",
+          wallClockMs: 3_000,
+          durationMs: 120_000,
+          tokenUsage: {
+            inputTokens: 1_500,
+            outputTokens: 2_500,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+          },
+        },
+      }],
+    });
+    const deps = createMockDeps({
+      github: { createClient: () => makeStubGhClient(calls) },
+    });
+
+    await workOnIssueHandleNoChanges(ctx, state, deps);
+
+    const telemetry = getFleetTelemetry(1_000);
+    assertEquals(telemetry.issuePhaseSonnetRuns, 1);
+    assertEquals(telemetry.issuePhaseHaikuRuns, 0);
+    resetFleetTelemetry();
+  },
+);
+
+Deno.test(
   "handle_no_changes_phase - the run-stats comment states a failed Graft run (Issue #2105)",
   async () => {
     const calls = makeStubGhCalls();

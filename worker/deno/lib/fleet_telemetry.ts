@@ -53,6 +53,7 @@
  */
 
 import type { RepoCensusSkipReason } from "./idle_decision_census.ts";
+import type { IssueSubAgentTier } from "../types.ts";
 
 /**
  * Why the fleet was idle. The census's own skip reasons are reused
@@ -96,7 +97,7 @@ export type FleetRunOutcome = "success" | "failure" | "skip";
  * The advisor/executor pilot compares one host against the control hosts, and
  * `successes` / `failures` / `successRate` carry no cost and no quality signal
  * — so the comparison had no per-host source short of reading every run-stats
- * comment on every issue the fleet touched. These five counters are the same
+ * comment on every issue the fleet touched. These counters are the same
  * figures that comment renders, accumulated per host:
  *
  *   - the implementation runs this host completed,
@@ -104,9 +105,12 @@ export type FleetRunOutcome = "success" | "failure" | "skip";
  *   - how many passed the quality gate on the **first** attempt — so the
  *     first-attempt pass rate is a division of two recorded numbers rather
  *     than a grep,
- *   - how long they took, reported beside the cost and gating nothing, and
+ *   - how long they took, reported beside the cost and gating nothing,
  *   - how many of them had the executor split on, so a half-configured host
- *     is visible instead of silently averaging pilot and control runs.
+ *     is visible instead of silently averaging pilot and control runs, and
+ *   - the same runs and spend split by the resolved sub-agent tier
+ *     (`sonnet`/`haiku`, Issue #3403), so a tier migration's cost and volume
+ *     are visible without reading every run-stats comment.
  */
 export interface IssuePhaseCounters {
   /** Completed `issue`-phase runs recorded on this host. */
@@ -119,6 +123,46 @@ export interface IssuePhaseCounters {
   issuePhaseDurationSeconds: number;
   /** Those runs that had the advisor/executor split on. */
   issuePhaseSplitRuns: number;
+  /** Those runs whose resolved sub-agent tier was `sonnet` (Issue #3403). */
+  issuePhaseSonnetRuns: number;
+  /** Summed estimated spend, in USD, across the `sonnet`-tier runs. */
+  issuePhaseSonnetUsd: number;
+  /** Those runs whose resolved sub-agent tier was `haiku` (Issue #3403). */
+  issuePhaseHaikuRuns: number;
+  /** Summed estimated spend, in USD, across the `haiku`-tier runs. */
+  issuePhaseHaikuUsd: number;
+}
+
+/**
+ * Per-tier PR outcome counters (Issue #3404): rejections, CI-fix and
+ * PR-feedback effort, and merges, so cost per merged PR is comparable across
+ * sub-agent tiers.
+ */
+export interface PrOutcomeCounters {
+  /** Authorised CHANGES_REQUESTED reviews on PRs of the `sonnet` tier (Issue #3404). */
+  prRejectionsSonnet: number;
+  /** Authorised CHANGES_REQUESTED reviews on PRs of the `haiku` tier (Issue #3404). */
+  prRejectionsHaiku: number;
+  /** CI-fix runs recorded for PRs of the `sonnet` tier (Issue #3404). */
+  ciFixRunsSonnet: number;
+  /** CI-fix runs recorded for PRs of the `haiku` tier (Issue #3404). */
+  ciFixRunsHaiku: number;
+  /** Summed estimated CI-fix spend, in USD, for the `sonnet` tier (Issue #3404). */
+  ciFixUsdSonnet: number;
+  /** Summed estimated CI-fix spend, in USD, for the `haiku` tier (Issue #3404). */
+  ciFixUsdHaiku: number;
+  /** PR-feedback runs recorded for PRs of the `sonnet` tier (Issue #3404). */
+  prFeedbackRunsSonnet: number;
+  /** PR-feedback runs recorded for PRs of the `haiku` tier (Issue #3404). */
+  prFeedbackRunsHaiku: number;
+  /** Summed estimated PR-feedback spend, in USD, for the `sonnet` tier (Issue #3404). */
+  prFeedbackUsdSonnet: number;
+  /** Summed estimated PR-feedback spend, in USD, for the `haiku` tier (Issue #3404). */
+  prFeedbackUsdHaiku: number;
+  /** Merged PRs of the `sonnet` tier (Issue #3404). */
+  mergedPrsSonnet: number;
+  /** Merged PRs of the `haiku` tier (Issue #3404). */
+  mergedPrsHaiku: number;
 }
 
 /** One completed `issue`-phase run, as {@link recordIssuePhaseRun} takes it. */
@@ -136,10 +180,13 @@ export interface IssuePhaseRun {
   durationSeconds?: number;
   /** Whether the advisor/executor split was on for the run. */
   split?: boolean;
+  /** The sub-agent tier the run resolved (Issue #3403). */
+  subAgentTier: IssueSubAgentTier;
 }
 
 /** Additive totals — the fields that can be summed across runs. */
-export interface FleetTelemetryTotals extends IssuePhaseCounters {
+export interface FleetTelemetryTotals
+  extends IssuePhaseCounters, PrOutcomeCounters {
   /** Wall seconds observed. */
   wallSeconds: number;
   /** Seconds with no issue being worked. */
@@ -187,8 +234,12 @@ export interface FleetTelemetryTotals extends IssuePhaseCounters {
  * merges instead of poisoning every cumulative total with `NaN`.
  */
 export type PriorFleetTelemetryTotals =
-  & Omit<FleetTelemetryTotals, keyof IssuePhaseCounters>
-  & Partial<IssuePhaseCounters>;
+  & Omit<
+    FleetTelemetryTotals,
+    keyof IssuePhaseCounters | keyof PrOutcomeCounters
+  >
+  & Partial<IssuePhaseCounters>
+  & Partial<PrOutcomeCounters>;
 
 /** Totals plus the derived rates. */
 export interface FleetTelemetrySnapshot extends FleetTelemetryTotals {
@@ -267,6 +318,8 @@ interface FleetState {
   hookFailures: number;
   /** Issue #2347 — the per-host `issue`-phase pilot counters. */
   issuePhase: IssuePhaseCounters;
+  /** Issue #3404 — per-tier PR outcome counters. */
+  prOutcomes: PrOutcomeCounters;
 }
 
 /** Zeroed {@link IssuePhaseCounters} — the start of every window. */
@@ -277,8 +330,34 @@ function zeroIssuePhaseCounters(): IssuePhaseCounters {
     issuePhaseFirstAttemptGatePasses: 0,
     issuePhaseDurationSeconds: 0,
     issuePhaseSplitRuns: 0,
+    issuePhaseSonnetRuns: 0,
+    issuePhaseSonnetUsd: 0,
+    issuePhaseHaikuRuns: 0,
+    issuePhaseHaikuUsd: 0,
   };
 }
+
+/** Zeroed {@link PrOutcomeCounters} — the start of every window. */
+function zeroPrOutcomeCounters(): PrOutcomeCounters {
+  return {
+    prRejectionsSonnet: 0,
+    prRejectionsHaiku: 0,
+    ciFixRunsSonnet: 0,
+    ciFixRunsHaiku: 0,
+    ciFixUsdSonnet: 0,
+    ciFixUsdHaiku: 0,
+    prFeedbackRunsSonnet: 0,
+    prFeedbackRunsHaiku: 0,
+    prFeedbackUsdSonnet: 0,
+    prFeedbackUsdHaiku: 0,
+    mergedPrsSonnet: 0,
+    mergedPrsHaiku: 0,
+  };
+}
+
+// SIMPLE-ON-PURPOSE: dedupe is per telemetry window and events before the window start are ignored, so a restart does not re-count, but an event that happened while the worker was down is not counted — upgrade when that undercount matters (persist a seen-set or a high-water mark in the sidecar)
+const seenRejections = new Set<string>();
+const seenMergedPrs = new Set<string>();
 
 function emptyState(runToken: number): FleetState {
   return {
@@ -301,6 +380,7 @@ function emptyState(runToken: number): FleetState {
     failuresByClass: new Map(),
     hookFailures: 0,
     issuePhase: zeroIssuePhaseCounters(),
+    prOutcomes: zeroPrOutcomeCounters(),
   };
 }
 
@@ -309,6 +389,8 @@ let state: FleetState = emptyState(0);
 /** Clear every accumulator and open a new accumulation window. */
 export function resetFleetTelemetry(): void {
   state = emptyState(state.runToken + 1);
+  seenRejections.clear();
+  seenMergedPrs.clear();
 }
 
 /**
@@ -508,7 +590,8 @@ function contribution(value: number | undefined): number {
  * spend, first-attempt gate pass rate and duration are comparable with the
  * control hosts' straight off the fleet summary.
  *
- * @param run - The run's cost, gate attempt, duration and split state
+ * @param run - The run's cost, gate attempt, duration, split state and
+ *   resolved sub-agent tier
  */
 export function recordIssuePhaseRun(run: IssuePhaseRun): void {
   const counters = state.issuePhase;
@@ -519,6 +602,154 @@ export function recordIssuePhaseRun(run: IssuePhaseRun): void {
     counters.issuePhaseFirstAttemptGatePasses += 1;
   }
   if (run.split === true) counters.issuePhaseSplitRuns += 1;
+  // Issue #3403 — only the resolved tier's pair moves, so a tier's spend
+  // and volume never leak into the other tier's figures.
+  switch (run.subAgentTier) {
+    case "sonnet":
+      counters.issuePhaseSonnetRuns += 1;
+      counters.issuePhaseSonnetUsd += contribution(run.usd);
+      break;
+    case "haiku":
+      counters.issuePhaseHaikuRuns += 1;
+      counters.issuePhaseHaikuUsd += contribution(run.usd);
+      break;
+  }
+}
+
+/**
+ * Record an authorised CHANGES_REQUESTED review on a PR (Issue #3404).
+ *
+ * Counted once per `repo#prNumber#reviewId` within the telemetry window, and
+ * only when the review was submitted at or after the window start, so a
+ * restart does not re-count reviews that persist on the PR. A missing or
+ * unparseable `submittedAt` is not counted. The tier is resolved lazily so the
+ * PR-body fetch is only paid for a review that would count; when it resolves
+ * to `null` nothing is recorded and the review is retried on the next scan. A
+ * reset during the await discards the result rather than crediting the new
+ * window.
+ *
+ * @param args - The PR, the review, its submission time and a tier resolver
+ */
+export async function recordPrRejection(
+  args: {
+    repo: string;
+    prNumber: number;
+    reviewId: number | string;
+    submittedAt: string | null | undefined;
+    resolveTier: () => Promise<IssueSubAgentTier | null>;
+  },
+): Promise<void> {
+  const submittedMs = Date.parse(args.submittedAt ?? "");
+  if (!Number.isFinite(submittedMs)) return;
+  const window = state;
+  if (window.runStartMs !== undefined && submittedMs < window.runStartMs) {
+    return;
+  }
+  const key = `${args.repo}#${args.prNumber}#${args.reviewId}`;
+  if (seenRejections.has(key)) return;
+  const tier = await args.resolveTier();
+  if (tier === null) return;
+  // A reset during the await opened a new window: this result is stale.
+  if (state.runToken !== window.runToken) return;
+  // A concurrent call for the same review may have counted it meanwhile.
+  if (seenRejections.has(key)) return;
+  seenRejections.add(key);
+  switch (tier) {
+    case "sonnet":
+      window.prOutcomes.prRejectionsSonnet += 1;
+      break;
+    case "haiku":
+      window.prOutcomes.prRejectionsHaiku += 1;
+      break;
+  }
+}
+
+/**
+ * Record one CI-fix run and its estimated spend (Issue #3404).
+ *
+ * @param args - The run's optional USD cost and the PR's sub-agent tier
+ */
+export function recordCiFixRun(
+  args: { usd?: number; tier: IssueSubAgentTier },
+): void {
+  const counters = state.prOutcomes;
+  switch (args.tier) {
+    case "sonnet":
+      counters.ciFixRunsSonnet += 1;
+      counters.ciFixUsdSonnet += contribution(args.usd);
+      break;
+    case "haiku":
+      counters.ciFixRunsHaiku += 1;
+      counters.ciFixUsdHaiku += contribution(args.usd);
+      break;
+  }
+}
+
+/**
+ * Record one PR-feedback run and its estimated spend (Issue #3404).
+ *
+ * @param args - The run's optional USD cost and the PR's sub-agent tier
+ */
+export function recordPrFeedbackRun(
+  args: { usd?: number; tier: IssueSubAgentTier },
+): void {
+  const counters = state.prOutcomes;
+  switch (args.tier) {
+    case "sonnet":
+      counters.prFeedbackRunsSonnet += 1;
+      counters.prFeedbackUsdSonnet += contribution(args.usd);
+      break;
+    case "haiku":
+      counters.prFeedbackRunsHaiku += 1;
+      counters.prFeedbackUsdHaiku += contribution(args.usd);
+      break;
+  }
+}
+
+/**
+ * Record a merged PR (Issue #3404). Counted once per `repo#number` within the
+ * telemetry window, and only when `mergedAt` parses and is at or after the
+ * window start, so a restart does not re-count the recent merges the listing
+ * keeps returning. An empty or unparseable `mergedAt` is not counted (its
+ * order against the window is unknown).
+ *
+ * @param args - The repo, PR number, merge time and the authoring sub-agent tier
+ */
+export function recordMergedPr(
+  args: {
+    repo: string;
+    number: number;
+    mergedAt: string;
+    tier: IssueSubAgentTier;
+  },
+): void {
+  const mergedMs = Date.parse(args.mergedAt);
+  if (!Number.isFinite(mergedMs)) return;
+  if (state.runStartMs !== undefined && mergedMs < state.runStartMs) return;
+  const key = `${args.repo}#${args.number}`;
+  if (seenMergedPrs.has(key)) return;
+  seenMergedPrs.add(key);
+  switch (args.tier) {
+    case "sonnet":
+      state.prOutcomes.mergedPrsSonnet += 1;
+      break;
+    case "haiku":
+      state.prOutcomes.mergedPrsHaiku += 1;
+      break;
+  }
+}
+
+/**
+ * Cost per merged PR, four decimals, or `n/a` when nothing merged or the
+ * quotient is not finite (Issue #3404).
+ *
+ * @param usd - Total spend attributed to the tier
+ * @param merged - Merged PRs for the tier
+ */
+export function costPerMergedPr(usd: number, merged: number): string {
+  if (merged <= 0) return "n/a";
+  const quotient = usd / merged;
+  return Number.isFinite(quotient) ? quotient.toFixed(4) : "n/a";
 }
 
 function secondsFrom(ms: number): number {
@@ -578,6 +809,7 @@ export function getFleetTelemetry(
     // Issue #2347 — spread copies the counters, so a later record cannot
     // mutate a snapshot a caller already holds (the sidecar serialises one).
     ...state.issuePhase,
+    ...state.prOutcomes,
     successRate: completed > 0 ? state.successes / completed : null,
     utilisation,
   };
@@ -647,6 +879,36 @@ export function formatFleetSummary(nowMs: number = Date.now()): string {
     `issue_usd=${s.issuePhaseUsd.toFixed(4)}`,
     `issue_gate_first_attempt_passes=${s.issuePhaseFirstAttemptGatePasses}`,
     `issue_duration=${s.issuePhaseDurationSeconds}s`,
+    // Issues #3403, #3404: shown only once a haiku run is recorded, so a
+    // sonnet-only fleet's summary line is unchanged.
+    ...(s.issuePhaseHaikuRuns > 0
+      ? [
+        `issue_tier_runs=sonnet=${s.issuePhaseSonnetRuns},haiku=${s.issuePhaseHaikuRuns}`,
+        `issue_tier_usd=sonnet=${s.issuePhaseSonnetUsd.toFixed(4)},haiku=${
+          s.issuePhaseHaikuUsd.toFixed(4)
+        }`,
+        `pr_tier_rejections=sonnet=${s.prRejectionsSonnet},haiku=${s.prRejectionsHaiku}`,
+        `ci_fix_tier_runs=sonnet=${s.ciFixRunsSonnet},haiku=${s.ciFixRunsHaiku}`,
+        `ci_fix_tier_usd=sonnet=${s.ciFixUsdSonnet.toFixed(4)},haiku=${
+          s.ciFixUsdHaiku.toFixed(4)
+        }`,
+        `pr_feedback_tier_usd=sonnet=${
+          s.prFeedbackUsdSonnet.toFixed(4)
+        },haiku=${s.prFeedbackUsdHaiku.toFixed(4)}`,
+        `merged_tier_prs=sonnet=${s.mergedPrsSonnet},haiku=${s.mergedPrsHaiku}`,
+        `cost_per_merged_pr=sonnet=${
+          costPerMergedPr(
+            s.issuePhaseSonnetUsd + s.prFeedbackUsdSonnet + s.ciFixUsdSonnet,
+            s.mergedPrsSonnet,
+          )
+        },haiku=${
+          costPerMergedPr(
+            s.issuePhaseHaikuUsd + s.prFeedbackUsdHaiku + s.ciFixUsdHaiku,
+            s.mergedPrsHaiku,
+          )
+        }`,
+      ]
+      : []),
     `idle_by_reason=${joinCounts(s.idleByReason, "s")}`,
     `failures_by_class=${joinCounts(s.failuresByClass, "")}`,
     `utilisation=${utilisation.length > 0 ? utilisation.join(",") : "none"}`,

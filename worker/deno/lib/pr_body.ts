@@ -8,7 +8,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import type { Result } from "../types.ts";
+import type { IssueSubAgentTier, Result } from "../types.ts";
+import { isIssueSubAgentTier } from "./issue_sub_agent_tier.ts";
 
 /** Prefix used in all worker PR body markers. */
 export const WORKER_PR_MARKER_PREFIX = "<!-- vibe-worker-issue-";
@@ -159,6 +160,77 @@ export function buildMilestonePrSection(
  */
 export function buildIdempotencyMarker(issueNumber: number): string {
   return `${WORKER_PR_MARKER_PREFIX}${issueNumber} -->`;
+}
+
+/**
+ * Prefix of the hidden marker recording the sub-agent tier the issue run
+ * that opened this PR resolved (Issue #3403).
+ *
+ * A later PR outcome — merged, closed unmerged, reverted — is attributed back
+ * to the tier of the run that raised the PR by reading this marker, without
+ * needing to correlate the PR against a fleet-telemetry record from the
+ * original run.
+ */
+export const SUB_AGENT_TIER_MARKER_PREFIX = '<!-- vibe-sub-agent-tier tier="';
+
+/** Pattern matching every occurrence of the canonical tier marker. */
+const SUB_AGENT_TIER_MARKER_PATTERN =
+  /<!-- vibe-sub-agent-tier tier="([a-z]+)" -->/g;
+
+/**
+ * Build the hidden HTML-comment marker recording `tier` on a PR body (Issue
+ * #3403), e.g. `<!-- vibe-sub-agent-tier tier="haiku" -->`.
+ *
+ * @param tier - The sub-agent tier the issue run resolved
+ * @returns The marker, ready to append to the body
+ */
+export function buildSubAgentTierMarker(tier: IssueSubAgentTier): string {
+  return `${SUB_AGENT_TIER_MARKER_PREFIX}${tier}" -->`;
+}
+
+/**
+ * The sub-agent tier a PR body's marker names, or undefined when the body
+ * carries none (Issue #3403).
+ *
+ * Reads the LAST occurrence, mirroring {@link summaryDigestFromBody} in
+ * `pr_body_sync.ts`: the summary content opening the body may quote an
+ * earlier marker verbatim, and the real marker for this body always follows
+ * the footer. An occurrence naming an unrecognised tier is skipped rather
+ * than returned, so a quoted or corrupted marker can never be read as a real
+ * one.
+ *
+ * @param body - The PR body to search
+ * @returns The last recognised tier, or undefined
+ */
+export function subAgentTierFromBody(
+  body: string,
+): IssueSubAgentTier | undefined {
+  let last: IssueSubAgentTier | undefined;
+  for (const match of body.matchAll(SUB_AGENT_TIER_MARKER_PATTERN)) {
+    const tier = match[1];
+    if (isIssueSubAgentTier(tier)) last = tier;
+  }
+  return last;
+}
+
+/**
+ * Strip the comment delimiters off every occurrence of the canonical tier
+ * marker, leaving the bare text `vibe-sub-agent-tier tier="<tier>"` behind (Issue
+ * #3403).
+ *
+ * Run over summary content before it is assembled into a PR body: a summary
+ * that happens to quote the marker verbatim (e.g. documenting this feature)
+ * must not be read back as a second, real marker by {@link
+ * subAgentTierFromBody} once it is embedded.
+ *
+ * @param text - Text that may quote the canonical marker
+ * @returns `text` with every marker occurrence neutralised
+ */
+export function neutraliseSubAgentTierMarkers(text: string): string {
+  return text.replace(
+    SUB_AGENT_TIER_MARKER_PATTERN,
+    (_match, tier) => `vibe-sub-agent-tier tier="${tier}"`,
+  );
 }
 
 /**
