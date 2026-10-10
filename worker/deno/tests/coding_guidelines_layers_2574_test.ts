@@ -208,6 +208,7 @@ const COMMIT_ONLY = [
 
 /** Headings every phase keeps. */
 const CORE = [
+  "## Non-negotiables",
   "## Token Economy",
   "## Working Style",
   "## Long-Horizon Runs",
@@ -411,6 +412,8 @@ const CODE_PHASE_HEADINGS_BEFORE_2574 = [
   "## Merge Conflict Mode",
   "## Never Fail Silently — Fail Loud",
   "## Non-Interactive Test Execution",
+  // Issue #3421: the irreversible-action digest that opens the guidelines.
+  "## Non-negotiables",
   "## PR Feedback Mode",
   "## PR Raising Requirements",
   "## PR Summary File — docs/archive/pr-summaries/pr-summary-ISSUE.md",
