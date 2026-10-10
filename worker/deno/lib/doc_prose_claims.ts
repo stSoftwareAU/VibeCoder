@@ -86,8 +86,8 @@ export function selectManualProseFiles(
 export function docProseClaimInstruction(
   change: "this branch's diff" | "this push's change",
 ): string {
-  return "Every listed file that is not a PR summary is a manual or prompt " +
-    "the change edits. In those files, check only the lines " + change +
+  return "For each listed Markdown manual or prompt (a `.md` file that is " +
+    "not a PR summary), check only the lines " + change +
     " adds or edits, and only sentences that say when the change's new " +
     "behaviour happens, what it refuses, rejects, allows or skips, or that " +
     'use an absolute word ("only", "never", "always", "any", "every", ' +
