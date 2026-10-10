@@ -50,8 +50,12 @@ flowchart LR
 - **Fail closed.** A runner error, a thrown exception, a failing baseline, an
   uncollectable diff or an unparseable `outcomes.json` all block the PR with a
   remedy. A runner that is not wired (no seam) is the only quiet pass.
-- **Budget.** The default is 300 s with a global cap of 40 mutants, and
-  `mutation_check_budget_seconds` is clamped to 3600 s. When the budget runs
+- **Budget.** The default is 300 s (`DEFAULT_MUTATION_BUDGET_SECONDS`). The
+  built-in Deno mutator also stops at 40 mutants per run
+  (`DEFAULT_MUTANT_CAP`). `resolveMutationBudgetSeconds` accepts a
+  `mutation_check_budget_seconds` value only if it is a positive integer no
+  greater than 3600 (`MAX_MUTATION_BUDGET_SECONDS`). Any other value is
+  refused with a warning and the 300 s default is used. When the budget runs
   out, a survivor still blocks. With no survivor the PR is raised with a
   warning that the check was incomplete.
 - **Per-repo opt-out.** `skip_mutation_check: true` never calls the runner.
@@ -69,50 +73,19 @@ flowchart LR
 
 ### Reviews
 
-- Spec reviewer: AC1 to AC5 are all MET.
-- Standards reviewer: no blocking departures. The minor notes are listed under
-  Risks below.
+- Spec reviewer: AC1 to AC5 are all met (see Acceptance Criteria).
+- Standards reviewer: reported departures that this diff has not fixed. They
+  are listed under Standards Review below.
 
 ## Acceptance Criteria
 
-- [x] **AC1:** a surviving changed-condition mutant blocks the PR, and the
-  recovery turn is told the line and the mutation.
-  - Code: `evaluateMutationGate` (`worker/deno/lib/mutation_gate.ts:379`) and
-    `buildMutationGateComment` (`worker/deno/lib/mutation_gate.ts:444`).
-  - Tests:
-    `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a surviving mutant blocks the PR and names file:line and the mutation`
-    and
-    `worker/deno/tests/mutation_gate_test.ts::buildMutationGateComment - names each survivor and the remedy`.
-- [x] **AC2:** Rust uses `cargo mutants --in-diff`
-  (`worker/deno/lib/mutation_runner.ts:496`), and Deno uses the built-in
-  mutator (`generateDenoMutants`, `worker/deno/lib/mutation_gate.ts:284`).
-  `cargo-mutants` is installed by `container/toolchains/cargo-mutants.sh`.
-- [x] **AC3:** only changed lines are checked, within a configurable budget,
-  and running out of budget is reported.
-  - Config: `parseAddedLines` (`worker/deno/lib/mutation_gate.ts:81`),
-    `mutation_check_budget_seconds` (`worker/deno/lib/config.ts:201`) and
-    `resolveMutationBudgetSeconds`
-    (`worker/deno/lib/phases/completion_phase.ts:313`).
-  - Tests:
-    `worker/deno/tests/mutation_gate_test.ts::generateDenoMutants - only mutates added lines`
-    and
-    `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - budget exhausted with no survivor raises the PR and warns`.
-- [x] **AC4:** there are tests for a surviving mutant, a killed mutant and
-  budget exhaustion.
-  - Deno runner:
-    - `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that leave tests green survive`
-    - `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that turn tests red are killed`
-    - `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - budget exhaustion is reported, not passed`
-  - Rust runner:
-    - `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a missed mutant is a survivor`
-    - `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - caught and timed-out mutants are killed`
-    - `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a timed-out run is budget exhausted with partial outcomes`
-- [x] **AC5:** the docs describe the check and how to configure or disable it
-  per repo.
-  - New manual: `docs/mutation-check.md`.
-  - `skip_mutation_check` and `mutation_check_budget_seconds` rows:
-    `docs/CONFIGURATION.md:4466-4467`.
-  - Docs table row: `README.md:519`.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A PR whose changed condition can be flipped without any test going red is blocked before the PR is raised, and the recovery turn is told which line and mutation survived. — evidence: `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a surviving mutant blocks the PR and names file:line and the mutation` — reviewer: met
+- **met** — Rust target repos use `cargo mutants --in-diff`. Deno target repos use the built-in mutator. — evidence: `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a missed mutant is a survivor`, `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that leave tests green survive` — reviewer: met
+- **met** — The check runs only on changed lines, within a configurable time budget, and reports when the budget ran out. — evidence: `worker/deno/tests/mutation_gate_test.ts::generateDenoMutants - only mutates added lines`, `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - budget exhaustion is reported, not passed` — reviewer: met
+- **met** — Tests cover a surviving mutant, a killed mutant and budget exhaustion. — evidence: `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that leave tests green survive`, `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that turn tests red are killed`, `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - budget exhaustion is reported, not passed` — reviewer: met
+- **met** — Docs describe the check and how to configure or disable it per repo. — evidence: `docs/mutation-check.md:120` — reviewer: met
 
 ## Evidence
 
@@ -198,7 +171,21 @@ Node mutation tool (Stryker) or `package.json` was introduced.
 
 ## Standards Review
 
-No blocking departures. The minor items are listed under Risks.
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Never Fail Silently: every mutant whose `deno test` run exits non-zero counts as killed, and the run does not pass `--no-check`, so a mutant that fails to type-check (for example the `return undefined` fallback at `worker/deno/lib/mutation_gate.ts:263` in a typed function) is counted as killed instead of unviable — evidence: `worker/deno/lib/mutation_runner.ts:320` — reason: outstanding — type-check failures can hide real survivors, so the gate can pass when it should block
+- **violation** — Writing a gate over text, rule 3 (no silent pass on unread input): mutants beyond the 40-mutant cap and added lines over 400 characters are not checked, yet the result is still `completed` and nothing reports them as unchecked — evidence: `worker/deno/lib/mutation_runner.ts:229`, `worker/deno/lib/mutation_gate.ts:299`, `worker/deno/lib/mutation_gate.ts:327` — reason: outstanding — truncated lines read as a clean pass
+- **violation** — Writing a gate over text, rule 3 / Fail Loud: a cargo-mutants `summary` value other than Unviable, CaughtMutant, Timeout or MissedMutant is skipped with `continue`, neither killed nor survived, and no test covers it — evidence: `worker/deno/lib/mutation_runner.ts:388` — reason: outstanding — an unrecognised outcome is dropped silently
+- **violation** — Path Confinement, Resolve Before You Check: the walk-up's bare `catch {}` treats any `realPath` failure (dangling symlink, ELOOP, EACCES) as "not yet existing", so a dangling symlink at `target/vibe-mutation-check.diff` passes and the write follows it out of the repo — evidence: `worker/deno/lib/mutation_runner.ts:155` — reason: outstanding — not fixed; previously only listed under Risks
+- **violation** — Vet every regex on untrusted text, one hostile case per pattern: the hostile generator and exemption inputs are rejected by the 400- and 2,000-character caps before any pattern runs, so `NUMERIC_LITERAL`, `CALL_HEAD`, `BOOLEAN_LITERAL`, `LOCATION_SEPARATORS` and `DIGITS` never see a hostile input and the tests assert nothing; `packageNameOf`'s two patterns have no hostile case — evidence: `worker/deno/tests/mutation_gate_test.ts:211`, `worker/deno/lib/mutation_runner.ts:419`, `worker/deno/lib/mutation_runner.ts:425` — reason: outstanding — the Security self-check claim "each with a hostile case" overstates the coverage
+- **violation** — Every outcome of a branch you add needs a test that reaches it: no test reaches the cargo "no mutants" → `not_applicable` arm, the unknown-summary `continue`, or the `comparableBase.ok === false` arm of the mutation diff collection — evidence: `worker/deno/lib/mutation_runner.ts:545`, `worker/deno/lib/mutation_runner.ts:388`, `worker/deno/lib/phases/completion_phase.ts:2755` — reason: outstanding — these outcomes have no test
+- **violation** — Avoid over-engineering / DRY: `defaultMutationRunnerSeams().runProcess` writes its own spawn, timeout, kill and decode logic, which `runWithTimeout` in `worker/deno/lib/subprocess_timeout.ts:50` already provides — evidence: `worker/deno/lib/mutation_runner.ts:594` — reason: outstanding — should call the existing helper
+- **violation** — A Code Change Owes a Docs Change: adding `mutationVerdict` to the late-summary chain left three comments stale (the `foldInLateSummaryVerdicts` doc, the `applyDegradedDeliveryGuard` doc and the branch-outcomes gate comment) — evidence: `worker/deno/lib/phases/completion_phase.ts:2824`, `worker/deno/lib/phases/completion_phase.ts:788`, `worker/deno/lib/phases/completion_phase.ts:3082` — reason: outstanding — the comments do not list the mutation check
+- **violation** — Every doc assertion must match the head code: the flowchart in `docs/mutation-check.md` puts language detection before diff collection, but the code collects the diff first, so an unresolvable base blocks every repo; the mutation table says `c ? a : b` becomes `!(c) ? a : b`, but the code negates only the identifier or member chain directly before ` ? `, without parentheses — evidence: `docs/mutation-check.md:28`, `docs/mutation-check.md:84` — reason: outstanding — the manual overstates the code
+- **violation** — PR Summary and Evidence: a departure the diff itself introduced must be fixed, not listed as standing; the broad catch, the dangling symlink, the unconfined delete and the stale doc comment are listed under Risks — evidence: `docs/archive/pr-summaries/pr-summary-3393.md` (Risks) — reason: outstanding — these are listed, not fixed
+- **violation** — KISS, `// SIMPLE-ON-PURPOSE:` marker: the deliberate limit that only direct importers count is described as a "Known limit" in the module doc, with no `// SIMPLE-ON-PURPOSE: … upgrade when …` marker — evidence: `worker/deno/lib/mutation_runner.ts:15` — reason: outstanding — the marker is missing
+- **violation** — Deno/TypeScript conventions, config defaults in `config_defaults.ts`: the `mutation_check_budget_seconds` default and maximum are defined in the gate and the completion phase — evidence: `worker/deno/lib/mutation_gate.ts:59`, `worker/deno/lib/phases/completion_phase.ts:304` — reason: outstanding — the defaults are outside the single source of truth
+- **clean** — Australian English spelling; `..` traversal confinement (lexical normalisation before canonicalisation) and its tests; fail-closed handling of an error result, a throwing runner, a git-failure uncollectable diff, a failing baseline, a Rust timeout with no outcomes and an unparseable `outcomes.json`; skip and not-wired paths and the fold into an earlier gate's block, tested end to end; budget-value validation; argv-only process spawning and the package-name allow-list; comment sanitisation (`mdSafe`); log levels; discriminated-union result types; `container/toolchains/cargo-mutants.sh` (pinned version and checksum, self-check, loud failure); container manifest, image-hash, `tools.json`, dependency-inventory, CONFIGURATION, CONTAINER and README registrations; matching prompt and standards text; the `config_test` mapping test; `HUNK_HEADER` and `RELATIVE_SPECIFIER` hostile coverage
 
 ## Test Plan
 
