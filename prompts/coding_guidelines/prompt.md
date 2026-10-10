@@ -1281,24 +1281,29 @@ reaches it; one that now stops earlier is a blocking self-review finding.
 new condition, match arm, exit-code check or trait/interface default in the
 diff, list its outcomes (success, absent/empty, error, fail-closed default)
 and name the test that drives each one. A test double that overrides the
-default, or a stub that always returns the same code, does not reach the
-other outcomes. Flip each outcome on purpose (return the lenient value
-instead of the error, treat "absent" as "failed"), run the tests, confirm at
-least one goes red, then restore it. An outcome with no test, or one whose
-flip leaves the suite green, is a blocking self-review finding: add a test
-for it. When the run writes or refreshes a PR summary, record the
-enumeration as a `Branch outcomes:` list in its Test Plan — one line per
-outcome naming `path:line`, the outcome, the test that reaches it, and that
-flipping it went red — or `Branch outcomes: none added` when the diff adds
-no branch; every test it names must exist at the head (see **A named test
-must exist**). An entry that admits no test reaches its outcome is work
-still to do, not a record: add the test that goes red, or remove the
-branch. Only an outcome the issue puts out of scope, or one no test can
-reach, may stand, written `exempt (out of scope): <reason>` or `exempt
-(untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
-creation on any other admission (Issue #3288). A fix to an existing PR
-re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the list to the head.
+default, or a stub that always returns the same code, does not reach the other
+outcomes. Flip each outcome on purpose (return the lenient value instead of
+the error, treat "absent" as "failed"), run the tests, confirm at least one
+goes red, then restore it. A compound condition (`a || b`, `a && b`, a chained
+`?:`) has one outcome per operand: flip each operand on its own, by deleting
+it or forcing it to the value that lets the other operands decide, and name a
+test that goes red for each one. Reverting the whole change, or deleting the
+whole condition, does not show which operand a test reaches. An outcome with
+no test, or one whose flip leaves the suite green, is a blocking self-review
+finding: add a test for it. When the run writes or refreshes a PR summary,
+record the enumeration as a `Branch outcomes:` list in its Test Plan — one
+line per outcome naming `path:line`, the outcome, the test that reaches it,
+and that flipping it went red — or `Branch outcomes: none added` when the diff
+adds no branch; every test it names must exist at the head (see **A named test
+must exist**). A `Branch outcomes:` line for a compound condition names the
+operand it covers, and its flip is that operand's flip (Issue #3376). An entry
+that admits no test reaches its outcome is work still to do, not a record: add
+the test that goes red, or remove the branch. Only an outcome the issue puts
+out of scope, or one no test can reach, may stand, written `exempt (out of
+scope): <reason>` or `exempt (untestable): <reason>`; an issue run's
+branch-outcomes gate blocks PR creation on any other admission (Issue #3288).
+A fix to an existing PR re-enumerates every branch its own commits add, not
+only those a review finding named, and refreshes the list to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that

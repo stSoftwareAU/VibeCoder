@@ -1264,6 +1264,20 @@ The worker now checks this at completion time rather than trusting the
 prompt alone — see
 [A branch outcome with no recorded test blocks the summary](#-a-branch-outcome-with-no-recorded-test-blocks-the-summary-issue-3147).
 
+**Each operand of a compound condition is its own outcome (Issue #3376).**
+Fleet PRs flipped a compound condition as one outcome — reverting the whole
+change or deleting the whole condition — so one operand went untested or was
+cited with a test that reached only the other: VibeCoder#3079 left the
+`fa.filename !== fb.filename` half of an `||` in the review-fleet-prs gate
+untested, and VibeCoder#3372 recorded a `Branch outcomes:` entry for the
+inline-form operand of a `PREFIX_RE || HEADING_RE` break with a test that
+reached only the heading form. `CODING-STANDARDS.md` and the guidelines now
+give a compound condition (`a || b`, `a && b`, a chained `?:`) one outcome per
+operand, each flipped on its own — deleted, or forced to the value that lets
+the other operands decide — with a test that goes red for each, and a `Branch
+outcomes:` line that names its operand. The issue prompt's Test Plan step and
+the pr_feedback re-enumeration rule carry the same requirement.
+
 **Every changed call site needs a test that goes red without it (Issue #3067).**
 A test of a shared helper, or of some of its callers, does not cover the
 other callers' wiring. Fleet PRs threaded a new argument through several
