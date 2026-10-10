@@ -31,24 +31,34 @@ function validWorkflow(): Json {
   return {
     on: {
       pull_request: {
+        branches: ["Develop", "main", "milestone/*"],
         paths: ["infra/cloudformation/**", ".github/workflows/floci.yml"],
       },
       push: {
         paths: ["infra/cloudformation/**", ".github/workflows/floci.yml"],
       },
     },
+    permissions: { contents: "read" },
     jobs: {
       cloudformation: {
         services: {
           floci: {
-            image: `floci/floci@${DIGEST}`,
+            image: `floci/floci:2.2.0@${DIGEST}`,
             volumes: ["/var/run/docker.sock:/var/run/docker.sock"],
+            env: {
+              FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES:
+                "true",
+            },
           },
         },
         steps: [
           {
             run:
               'if [ ! -S /var/run/docker.sock ]; then echo "::error::no socket"; exit 1; fi',
+          },
+          {
+            uses: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            with: { "persist-credentials": false },
           },
           { run: "./infra/cloudformation/test-floci.sh" },
         ],
@@ -82,7 +92,7 @@ Deno.test("floci digest in workflow matches container/tools.json (drift test)", 
   const image = Object.values(workflow.jobs as Json)
     .map((j: Json) => j?.services?.floci?.image)
     .find((i) => typeof i === "string");
-  assertEquals(image, `floci/floci@${digest}`);
+  assertEquals(image, `floci/floci:2.2.0@${digest}`);
 });
 
 Deno.test("real floci.yml passes every check", () => {
@@ -128,8 +138,27 @@ Deno.test("checkFlociWorkflow accepts a valid workflow", () => {
 
 Deno.test("checkFlociWorkflow (a) refuses a drifted image digest", () => {
   const w = validWorkflow();
-  w.jobs.cloudformation.services.floci.image = `floci/floci@${OTHER_DIGEST}`;
-  expectOneProblem(w, "digest");
+  w.jobs.cloudformation.services.floci.image =
+    `floci/floci:2.2.0@${OTHER_DIGEST}`;
+  expectOneProblem(w, "digest drift");
+});
+
+Deno.test("checkFlociWorkflow (a) refuses a bare digest without a tag", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.services.floci.image = `floci/floci@${DIGEST}`;
+  expectOneProblem(w, "with both a tag and a digest");
+});
+
+Deno.test("checkFlociWorkflow (a) refuses a bare tag without a digest", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.services.floci.image = "floci/floci:2.2.0";
+  expectOneProblem(w, "with both a tag and a digest");
+});
+
+Deno.test("checkFlociWorkflow (a) refuses a different image repository", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.services.floci.image = `other/thing:2.2.0@${DIGEST}`;
+  expectOneProblem(w, "with both a tag and a digest");
 });
 
 Deno.test("checkFlociWorkflow (b) refuses a missing docker.sock volume", () => {
@@ -146,7 +175,7 @@ Deno.test("checkFlociWorkflow (c) refuses a first step without the socket assert
 
 Deno.test("checkFlociWorkflow (d) refuses a workflow that never runs test-floci.sh", () => {
   const w = validWorkflow();
-  w.jobs.cloudformation.steps[1].run = "echo nothing";
+  w.jobs.cloudformation.steps[2].run = "echo nothing";
   expectOneProblem(w, "test-floci.sh");
 });
 
@@ -154,6 +183,78 @@ Deno.test("checkFlociWorkflow (e) refuses missing trigger paths", () => {
   const w = validWorkflow();
   w.on.push.paths = ["infra/cloudformation/**"];
   expectOneProblem(w, "paths");
+});
+
+Deno.test("checkFlociWorkflow (d) accepts bash/sh and bare-path invocations", () => {
+  for (
+    const run of [
+      "bash infra/cloudformation/test-floci.sh",
+      "sh ./infra/cloudformation/test-floci.sh",
+    ]
+  ) {
+    const w = validWorkflow();
+    w.jobs.cloudformation.steps[2].run = `set -e\n${run}`;
+    assertEquals(checkFlociWorkflow(w, DIGEST), []);
+  }
+});
+
+Deno.test("checkFlociWorkflow (d) ignores a commented-out invocation", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2].run = "# ./infra/cloudformation/test-floci.sh";
+  expectOneProblem(w, "test-floci.sh");
+});
+
+Deno.test("checkFlociWorkflow (d) ignores an echoed invocation", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2].run =
+    "echo ./infra/cloudformation/test-floci.sh";
+  expectOneProblem(w, "test-floci.sh");
+});
+
+Deno.test("checkFlociWorkflow (c) refuses an echo that merely names the socket", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[0].run = 'echo "::error:: /var/run/docker.sock"';
+  expectOneProblem(w, "first step");
+});
+
+Deno.test("checkFlociWorkflow refuses a pull_request trigger without milestone/*", () => {
+  const w = validWorkflow();
+  w.on.pull_request.branches = ["Develop", "main"];
+  expectOneProblem(w, "milestone/*");
+});
+
+Deno.test("checkFlociWorkflow refuses a floci service without the stub env", () => {
+  const w = validWorkflow();
+  delete w.jobs.cloudformation.services.floci.env;
+  expectOneProblem(w, "ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES");
+});
+
+Deno.test("checkFlociWorkflow refuses permissions other than contents: read", () => {
+  const w = validWorkflow();
+  w.permissions = { contents: "write" };
+  expectOneProblem(w, "permissions.contents");
+});
+
+Deno.test("checkFlociWorkflow refuses checkout without persist-credentials: false", () => {
+  const w = validWorkflow();
+  delete w.jobs.cloudformation.steps[1].with;
+  expectOneProblem(w, "persist-credentials");
+});
+
+Deno.test("checkFlociWorkflow accepts the YAML 1.1 `true` key for `on`", () => {
+  const w = validWorkflow();
+  w["true"] = w.on;
+  delete w.on;
+  assertEquals(checkFlociWorkflow(w, DIGEST), []);
+});
+
+Deno.test("checkFlociWorkflow reports trigger problems when neither `on` nor `true` exists", () => {
+  const w = validWorkflow();
+  delete w.on;
+  const problems = checkFlociWorkflow(w, DIGEST);
+  assert(problems.length > 0);
+  assert(problems.every((p) => p.includes("on.")), problems.join("; "));
+  assert(problems.some((p) => p.includes("paths")));
 });
 
 Deno.test("checkFlociWorkflow reports non-object input without throwing", () => {

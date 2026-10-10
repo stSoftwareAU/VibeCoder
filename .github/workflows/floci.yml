@@ -50,7 +50,7 @@ jobs:
     services:
       floci:
         # floci/floci:2.2.0 — must match container/tools.json
-        image: floci/floci@sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520
+        image: floci/floci:2.2.0@sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520
         ports:
           - '4566:4566'
         volumes:

@@ -39,7 +39,13 @@ fi
 
 to_deploy=()
 for template in "${templates[@]}"; do
-    if grep -q 'AWS::EC2::Instance' "${template}"; then
+    grep_status=0
+    grep -q 'AWS::EC2::Instance' "${template}" || grep_status=$?
+    if [[ "${grep_status}" -ge 2 ]]; then
+        echo "::error::could not read template ${template} (grep exit ${grep_status})"
+        exit 1
+    fi
+    if [[ "${grep_status}" -eq 0 ]]; then
         if [[ -S "${docker_socket}" ]]; then
             to_deploy+=("${template}")
         elif [[ "${in_ci}" == "true" ]]; then
@@ -108,9 +114,8 @@ else
 fi
 
 # --- Per-template helpers ----------------------------------------------------
-# SIMPLE-ON-PURPOSE: awk over the Parameters: block assuming 2-space parameter
-# names and 4-space keys, with single-line Type/Default values — upgrade when a
-# template uses flow-style, anchors, multi-line or tab-indented parameters.
+# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type/Default — upgrade when a template uses flow-style, anchors, multi-line or tab-indented parameters
+# The awk below walks only the Parameters: block of the template.
 # Prints "<Type><TAB><Default>" for each SSM-typed parameter with a Default.
 ssm_parameters() {
     awk '
@@ -144,7 +149,8 @@ for template in "${to_deploy[@]}"; do
     echo "=== ${name} (stack ${stack}) ==="
 
     # Floci cannot resolve public SSM paths, so seed each one with a fake value.
-    while IFS=$'\t' read -r ptype ppath; do
+    params="$(ssm_parameters "${template}")"
+    while [[ -n "${params}" ]] && IFS=$'\t' read -r ptype ppath; do
         [[ -n "${ptype}" ]] || continue
         value="placeholder"
         if [[ "${ptype}" == *"AWS::EC2::Image::Id"* ]]; then
@@ -152,7 +158,7 @@ for template in "${to_deploy[@]}"; do
         fi
         aws ssm put-parameter --endpoint-url "${ENDPOINT}" --name "${ppath}" \
             --type String --value "${value}" --overwrite > /dev/null
-    done < <(ssm_parameters "${template}")
+    done <<< "${params}"
 
     # Record a deploy failure rather than aborting, so every template is tried.
     deploy_failed=0

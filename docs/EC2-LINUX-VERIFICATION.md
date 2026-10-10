@@ -17,8 +17,10 @@ a reader would follow it.
 The template itself is deployed against the Floci emulator in CI by
 [`.github/workflows/floci.yml`](../.github/workflows/floci.yml) via
 [`infra/cloudformation/test-floci.sh`](../infra/cloudformation/test-floci.sh)
-(Issue #3369), which proves it creates cleanly but not that the launcher works
-on the host.
+(Issue #3369). CI deploys it into Floci and fails unless the stack reaches
+`CREATE_COMPLETE`; resource types Floci only stubs are reported as `::warning::`
+annotations rather than proven. This does not show that the launcher works on
+the host.
 
 ## 📋 Table of Contents
 

@@ -229,6 +229,11 @@ export const SCRIPT_READING_UNIT_TESTS: ReadonlyMap<string, string> = new Map([
     "reads .github/scripts/deno-test-shard.sh to assert the workflow and " +
     "the script agree on sharding; runs in 1.2s",
   ],
+  [
+    "tests/issue_3369_floci_workflow_test.ts",
+    "stat()s infra/cloudformation/test-floci.sh for the executable bit; " +
+    "never spawns it, and runs in milliseconds",
+  ],
 ]);
 
 /**
