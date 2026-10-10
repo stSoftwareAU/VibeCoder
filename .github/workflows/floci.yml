@@ -5,8 +5,8 @@
 # each stack reaches CREATE_COMPLETE, so a template that cannot be deployed
 # fails the PR rather than the first real deployment.
 #
-# The Floci image digest below must equal the docker.io/floci/floci digest
-# in container/tools.json; that equality is pinned by
+# The Floci image tag and digest below must equal the docker.io/floci/floci
+# tag and digest in container/tools.json; that equality is pinned by
 # worker/deno/tests/issue_3369_floci_workflow_test.ts.
 #
 # The docker socket is mounted into the Floci service because Floci runs

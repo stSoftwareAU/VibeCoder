@@ -8,8 +8,9 @@
  * runs in the quality gate, enforces them:
  *
  * - the service image is `floci/floci:<tag>@sha256:<digest>` (a tag beside the
- *   digest) and the digest equals the one in `container/tools.json` (no drift
- *   between the worker image and CI);
+ *   digest) and both the tag and the digest equal the Floci entry in
+ *   `container/tools.json` (no drift between the worker image and CI, and no
+ *   stale tag left in front of a new digest);
  * - the Docker socket is mounted and the first step tests for it with `-S`,
  *   emits `::error::` and exits 1 (shell comments are ignored);
  * - a step invokes `infra/cloudformation/test-floci.sh` in command position
@@ -30,7 +31,8 @@
 export const FLOCI_IMAGE_NAME = "docker.io/floci/floci";
 
 const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
-const IMAGE_RE = /^floci\/floci:[^@/\s]+@(sha256:[0-9a-f]{64})$/;
+const IMAGE_RE = /^floci\/floci:([^@/\s]+)@(sha256:[0-9a-f]{64})$/;
+const TAG_RE = /^[^@/\s]+$/;
 const DOCKER_SOCK = "/var/run/docker.sock";
 const DOCKER_SOCK_VOLUME = `${DOCKER_SOCK}:${DOCKER_SOCK}`;
 const SCRIPT_PATH = "infra/cloudformation/test-floci.sh";
@@ -46,8 +48,8 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Return the digest of the Floci image in a parsed `container/tools.json`. */
-export function flociImageDigest(toolsJson: unknown): string {
+/** Return the Floci entry of a parsed `container/tools.json`. */
+function flociEntry(toolsJson: unknown): Record<string, unknown> {
   if (!isObject(toolsJson) || !Array.isArray(toolsJson.images)) {
     throw new Error("tools.json has no images[] array");
   }
@@ -57,13 +59,27 @@ export function flociImageDigest(toolsJson: unknown): string {
   if (!isObject(entry)) {
     throw new Error(`tools.json images[] has no ${FLOCI_IMAGE_NAME} entry`);
   }
-  const digest = entry.digest;
+  return entry;
+}
+
+/** Return the digest of the Floci image in a parsed `container/tools.json`. */
+export function flociImageDigest(toolsJson: unknown): string {
+  const digest = flociEntry(toolsJson).digest;
   if (typeof digest !== "string" || !DIGEST_RE.test(digest)) {
     throw new Error(
       `${FLOCI_IMAGE_NAME} digest must be sha256: followed by 64 lowercase hex characters`,
     );
   }
   return digest;
+}
+
+/** Return the tag of the Floci image in a parsed `container/tools.json`. */
+export function flociImageTag(toolsJson: unknown): string {
+  const tag = flociEntry(toolsJson).tag;
+  if (typeof tag !== "string" || !TAG_RE.test(tag)) {
+    throw new Error(`${FLOCI_IMAGE_NAME} entry needs a non-empty tag`);
+  }
+  return tag;
 }
 
 /** Return the `run` text of a step, or "" when absent. */
@@ -88,12 +104,14 @@ function runsScript(line: string): boolean {
 }
 
 /**
- * Check a parsed floci.yml against the expected digest. Returns human-readable
- * problems; an empty list means the workflow is sound.
+ * Check a parsed floci.yml against the expected tag and digest from
+ * `container/tools.json`. Returns human-readable problems; an empty list means
+ * the workflow is sound.
  */
 export function checkFlociWorkflow(
   workflow: unknown,
   expectedDigest: string,
+  expectedTag: string,
 ): string[] {
   if (!isObject(workflow)) {
     return ["workflow is not an object"];
@@ -111,9 +129,12 @@ export function checkFlociWorkflow(
     if (isObject(floci) && typeof floci.image === "string") {
       seenImage ??= floci.image;
     }
+    const match = isObject(floci) && typeof floci.image === "string"
+      ? IMAGE_RE.exec(floci.image)
+      : null;
     if (
-      isObject(floci) && typeof floci.image === "string" &&
-      IMAGE_RE.exec(floci.image)?.[1] === expectedDigest
+      isObject(floci) && match?.[2] === expectedDigest &&
+      match?.[1] === expectedTag
     ) {
       jobWithFloci = job;
       service = floci;
@@ -127,7 +148,7 @@ export function checkFlociWorkflow(
       );
     } else {
       problems.push(
-        `no job has services.floci.image digest ${expectedDigest} (digest drift from container/tools.json?)`,
+        `no job has services.floci.image floci/floci:${expectedTag}@${expectedDigest} (tag or digest drift from container/tools.json?)`,
       );
     }
   } else {

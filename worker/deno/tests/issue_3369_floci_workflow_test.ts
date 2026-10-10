@@ -11,6 +11,7 @@ import { parse as parseYaml } from "@std/yaml/parse";
 import {
   checkFlociWorkflow,
   flociImageDigest,
+  flociImageTag,
 } from "../lib/floci_workflow_check.ts";
 
 const WORKFLOW_PATH =
@@ -23,6 +24,7 @@ const SCRIPT_PATH =
 
 const DIGEST = "sha256:" + "a".repeat(64);
 const OTHER_DIGEST = "sha256:" + "b".repeat(64);
+const TAG = "2.2.0";
 
 // deno-lint-ignore no-explicit-any
 type Json = any;
@@ -43,7 +45,7 @@ function validWorkflow(): Json {
       cloudformation: {
         services: {
           floci: {
-            image: `floci/floci:2.2.0@${DIGEST}`,
+            image: `floci/floci:${TAG}@${DIGEST}`,
             volumes: ["/var/run/docker.sock:/var/run/docker.sock"],
             env: {
               FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES:
@@ -71,13 +73,13 @@ function validTools(): Json {
   return {
     images: [
       { name: "docker.io/other/thing", digest: OTHER_DIGEST },
-      { name: "docker.io/floci/floci", tag: "2.2.0", digest: DIGEST },
+      { name: "docker.io/floci/floci", tag: TAG, digest: DIGEST },
     ],
   };
 }
 
 function expectOneProblem(workflow: Json, needle: string) {
-  const problems = checkFlociWorkflow(workflow, DIGEST);
+  const problems = checkFlociWorkflow(workflow, DIGEST, TAG);
   assertEquals(problems.length, 1, `expected one problem: ${problems}`);
   assert(
     problems[0]?.includes(needle),
@@ -89,16 +91,24 @@ Deno.test("floci digest in workflow matches container/tools.json (drift test)", 
   const workflow = parseYaml(Deno.readTextFileSync(WORKFLOW_PATH)) as Json;
   const tools = JSON.parse(Deno.readTextFileSync(TOOLS_PATH));
   const digest = flociImageDigest(tools);
+  const tag = flociImageTag(tools);
   const image = Object.values(workflow.jobs as Json)
     .map((j: Json) => j?.services?.floci?.image)
     .find((i) => typeof i === "string");
-  assertEquals(image, `floci/floci:2.2.0@${digest}`);
+  assertEquals(image, `floci/floci:${tag}@${digest}`);
 });
 
 Deno.test("real floci.yml passes every check", () => {
   const workflow = parseYaml(Deno.readTextFileSync(WORKFLOW_PATH));
   const tools = JSON.parse(Deno.readTextFileSync(TOOLS_PATH));
-  assertEquals(checkFlociWorkflow(workflow, flociImageDigest(tools)), []);
+  assertEquals(
+    checkFlociWorkflow(
+      workflow,
+      flociImageDigest(tools),
+      flociImageTag(tools),
+    ),
+    [],
+  );
 });
 
 Deno.test("test-floci.sh exists and is executable", () => {
@@ -108,6 +118,26 @@ Deno.test("test-floci.sh exists and is executable", () => {
 
 Deno.test("flociImageDigest returns the Floci digest", () => {
   assertEquals(flociImageDigest(validTools()), DIGEST);
+});
+
+Deno.test("flociImageTag returns the Floci tag", () => {
+  assertEquals(flociImageTag(validTools()), TAG);
+});
+
+Deno.test("flociImageTag throws when the tag is missing or empty", () => {
+  for (const bad of [undefined, "", "a@b"]) {
+    const tools = validTools();
+    tools.images[1].tag = bad;
+    assertThrows(() => flociImageTag(tools), Error, "non-empty tag");
+  }
+});
+
+Deno.test("flociImageTag throws when the Floci entry is missing", () => {
+  assertThrows(
+    () => flociImageTag({ images: [] }),
+    Error,
+    "no docker.io/floci/floci",
+  );
 });
 
 Deno.test("flociImageDigest throws when the Floci entry is missing", () => {
@@ -133,14 +163,27 @@ Deno.test("flociImageDigest throws when images[] is missing", () => {
 });
 
 Deno.test("checkFlociWorkflow accepts a valid workflow", () => {
-  assertEquals(checkFlociWorkflow(validWorkflow(), DIGEST), []);
+  assertEquals(checkFlociWorkflow(validWorkflow(), DIGEST, TAG), []);
 });
 
 Deno.test("checkFlociWorkflow (a) refuses a drifted image digest", () => {
   const w = validWorkflow();
   w.jobs.cloudformation.services.floci.image =
-    `floci/floci:2.2.0@${OTHER_DIGEST}`;
+    `floci/floci:${TAG}@${OTHER_DIGEST}`;
   expectOneProblem(w, "digest drift");
+});
+
+Deno.test("checkFlociWorkflow (a) refuses a stale tag in front of the current digest", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.services.floci.image = `floci/floci:2.1.9@${DIGEST}`;
+  expectOneProblem(w, "tag or digest drift");
+});
+
+Deno.test("checkFlociWorkflow (a) accepts a new tag when tools.json moves with it", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.services.floci.image =
+    `floci/floci:2.3.0@${OTHER_DIGEST}`;
+  assertEquals(checkFlociWorkflow(w, OTHER_DIGEST, "2.3.0"), []);
 });
 
 Deno.test("checkFlociWorkflow (a) refuses a bare digest without a tag", () => {
@@ -151,13 +194,13 @@ Deno.test("checkFlociWorkflow (a) refuses a bare digest without a tag", () => {
 
 Deno.test("checkFlociWorkflow (a) refuses a bare tag without a digest", () => {
   const w = validWorkflow();
-  w.jobs.cloudformation.services.floci.image = "floci/floci:2.2.0";
+  w.jobs.cloudformation.services.floci.image = `floci/floci:${TAG}`;
   expectOneProblem(w, "with both a tag and a digest");
 });
 
 Deno.test("checkFlociWorkflow (a) refuses a different image repository", () => {
   const w = validWorkflow();
-  w.jobs.cloudformation.services.floci.image = `other/thing:2.2.0@${DIGEST}`;
+  w.jobs.cloudformation.services.floci.image = `other/thing:${TAG}@${DIGEST}`;
   expectOneProblem(w, "with both a tag and a digest");
 });
 
@@ -194,7 +237,7 @@ Deno.test("checkFlociWorkflow (d) accepts bash/sh and bare-path invocations", ()
   ) {
     const w = validWorkflow();
     w.jobs.cloudformation.steps[2].run = `set -e\n${run}`;
-    assertEquals(checkFlociWorkflow(w, DIGEST), []);
+    assertEquals(checkFlociWorkflow(w, DIGEST, TAG), []);
   }
 });
 
@@ -245,19 +288,19 @@ Deno.test("checkFlociWorkflow accepts the YAML 1.1 `true` key for `on`", () => {
   const w = validWorkflow();
   w["true"] = w.on;
   delete w.on;
-  assertEquals(checkFlociWorkflow(w, DIGEST), []);
+  assertEquals(checkFlociWorkflow(w, DIGEST, TAG), []);
 });
 
 Deno.test("checkFlociWorkflow reports trigger problems when neither `on` nor `true` exists", () => {
   const w = validWorkflow();
   delete w.on;
-  const problems = checkFlociWorkflow(w, DIGEST);
+  const problems = checkFlociWorkflow(w, DIGEST, TAG);
   assert(problems.length > 0);
   assert(problems.every((p) => p.includes("on.")), problems.join("; "));
   assert(problems.some((p) => p.includes("paths")));
 });
 
 Deno.test("checkFlociWorkflow reports non-object input without throwing", () => {
-  assertEquals(checkFlociWorkflow(null, DIGEST).length, 1);
-  assertEquals(checkFlociWorkflow("nope", DIGEST).length, 1);
+  assertEquals(checkFlociWorkflow(null, DIGEST, TAG).length, 1);
+  assertEquals(checkFlociWorkflow("nope", DIGEST, TAG).length, 1);
 });
