@@ -87,6 +87,17 @@ Deno.test("planChangedFileChecks: cargo fmt when a .rs file changes", () => {
   ]);
 });
 
+Deno.test("planChangedFileChecks: a Cargo root with no changed .rs file gets no cargo fmt", () => {
+  const tracked = ["Cargo.toml", "src/lib.rs", "README.md"];
+  const opts = { repoRoot: "/r", markdownlintBinary: null };
+  const untouched = planChangedFileChecks(["README.md"], tracked, opts);
+  assert(untouched.ok);
+  assert(untouched.value.every((c) => !c.command.includes("cargo")));
+  const touched = planChangedFileChecks(["src/lib.rs"], tracked, opts);
+  assert(touched.ok);
+  assert(touched.value.some((c) => c.command === "cargo fmt --all --check"));
+});
+
 Deno.test("planChangedFileChecks: markdownlint configured but binary missing is an error", () => {
   const result = planChangedFileChecks(["a.md"], [".markdownlint-cli2.jsonc"], {
     repoRoot: "/r",
@@ -194,6 +205,40 @@ Deno.test("listPushedFiles: only files introduced by unpushed commits", async ()
     });
     assert(files.ok);
     assertEquals(files.value, ["README.md"]);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("listPushedFiles: a committed symlink is not a regular file and is skipped", async () => {
+  const { root, clone } = await makeRepoWithDocCommit();
+  try {
+    await Deno.writeTextFile(`${clone}/target.md`, "# Target\n");
+    await Deno.symlink("target.md", `${clone}/link.md`);
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "symlink");
+    const sha = await git(clone, "rev-parse", "HEAD");
+    const refs = parsePrePushRefs(
+      `refs/heads/main ${sha} refs/heads/main ${"0".repeat(40)}\n`,
+    );
+    assert(refs.ok);
+    const files = await listPushedFiles(refs.value, clone, async (a, c) => {
+      const out = await new Deno.Command("git", {
+        args: a,
+        cwd: c,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const d = new TextDecoder();
+      return {
+        code: out.code,
+        stdout: d.decode(out.stdout),
+        stderr: d.decode(out.stderr),
+      };
+    });
+    assert(files.ok);
+    assert(files.value.includes("target.md"));
+    assert(!files.value.includes("link.md"));
   } finally {
     await Deno.remove(root, { recursive: true });
   }

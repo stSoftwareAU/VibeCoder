@@ -1,7 +1,7 @@
 /**
  * Pre-push gate for the coding agent's own `git push` calls (Issue #3394).
  *
- * The per-repo pre-flight gate (Issue #3577, `pre_flight_gate.ts`) runs at the
+ * The per-repo pre-flight gate (`pre_flight_gate.ts`) runs at the
  * worker's commit chokepoint. An agent that commits and pushes by itself never
  * passes through that chokepoint, so a doc-only push could reach the remote
  * without any check at all. This module is the logic behind a git `pre-push`
