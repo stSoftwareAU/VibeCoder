@@ -192,6 +192,9 @@ flowchart TD
 - Each test below was run with
   `deno task test:unit tests/gh_mutation_fail_closed_test.ts tests/gh_api_body_classification_test.ts < /dev/null`
   from `worker/deno` on the final head: `ok | 82 passed | 0 failed`.
+- Quality gate: `./quality.sh < /dev/null` on the final head exited 0 with
+  "Result: PASSED (with skipped checks)". Only the config integration check
+  was skipped.
 - Known gap: `alias : field` with a space before the colon over-collects.
   It fails closed and is untested by design.
 
