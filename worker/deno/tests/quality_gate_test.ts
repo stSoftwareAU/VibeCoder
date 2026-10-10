@@ -1052,5 +1052,46 @@ Deno.test("runDenoTests - reuses a cached PASS until a .md edit changes the work
 });
 
 Deno.test("denoTestsDigest - null when no cache dir is set", async () => {
-  assertEquals(await denoTestsDigest(createTestConfig()), null);
+  // A real git repo, so only the cacheDir guard can make the digest null.
+  const root = await Deno.makeTempDir({ prefix: "qg_nocache_repo_" });
+  const cacheDir = await Deno.makeTempDir({ prefix: "qg_nocache_cache_" });
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", {
+      args,
+      cwd: root,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(out.success, `git ${args.join(" ")} failed`);
+  };
+  try {
+    await git("init", "-q");
+    await git("config", "user.email", "t@example.com");
+    await git("config", "user.name", "T");
+    await Deno.mkdir(`${root}/worker/deno`, { recursive: true });
+    await Deno.writeTextFile(`${root}/worker/deno/a.ts`, "export {};\n");
+    await git("add", "-A");
+    await git("commit", "-q", "-m", "init");
+
+    assertEquals(
+      await denoTestsDigest(createTestConfig({
+        scriptDir: root,
+        denoDir: `${root}/worker/deno`,
+        cacheDir: undefined,
+      })),
+      null,
+    );
+    // Positive control: the same repo with a cache dir yields a digest.
+    assert(
+      await denoTestsDigest(createTestConfig({
+        scriptDir: root,
+        denoDir: `${root}/worker/deno`,
+        cacheDir,
+      })) !== null,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(cacheDir, { recursive: true });
+  }
 });

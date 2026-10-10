@@ -256,14 +256,21 @@ Deno.test("computeWorkingTreeDigest - never touches the real index", async () =>
   });
 });
 
-Deno.test("computeWorkingTreeDigest - a non-git directory is null (caching off)", async () => {
+Deno.test("computeWorkingTreeDigest - a non-git directory is quietly null (caching off, no warning)", async () => {
   // Temp dirs sit outside any repository.
   const dir = await Deno.makeTempDir({ prefix: "qgc_nogit_" });
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
   try {
     const digest = await computeWorkingTreeDigest(dir);
     assertEquals(digest, null);
+    assertEquals(warnings, []);
     assertEquals(await cachedPassAt("/tmp/unused", "deno tests", digest), null);
   } finally {
+    console.warn = originalWarn;
     await Deno.remove(dir, { recursive: true });
   }
 });
