@@ -1120,7 +1120,9 @@ the PR is raised (Issue #3058). Only a departure that predates the diff may
 stand, and its `reason:` links the follow-up issue the run filed
 (`pre-existing, filed #<n>`); one the issue itself requires names that issue.
 The gate cannot see the diff, so it does not check which lines a finding sits
-on, but it does refuse every other way out: a `violation` whose reason neither
+on (the completion phase does read the diff, to route a standing violation on
+the branch's own lines to a code-capable recovery turn — Issue #3382, see
+[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)), but it does refuse every other way out: a `violation` whose reason neither
 opens with `fixed` (or `corrected` / `resolved`) nor links an issue (`#123`,
 `owner/repo#123` or an issue URL) blocks PR creation. "Stands" and "left for a
 follow-up" used to pass, and fleet review then sent the PR back for the breach
@@ -2420,7 +2422,9 @@ now recover the way the security-fix gate does
    and remediation comment fenced as untrusted data under a per-render nonce,
    a boundary-integrity rule naming that fence's nonce, and the genuine
    review-block markers printed outside it (Issue #3152); told to edit the
-   summary file and commit, and nothing else. When several gates folded their
+   summary file and commit, and nothing else — except for a `CODE FIX` item
+   (Issue #3382, below), which may also edit the cited files and add tests.
+   When several gates folded their
    verdicts into one notice, each folded section is rendered as its own
    fenced `REQUIRED ITEM k of n`, the agent is told every item must be fixed
    before it finishes, and it must name each item by number with what it
@@ -2463,6 +2467,34 @@ survives that turn is handled as before — finalised as `summary_incomplete`
 when a PR exists, failed when none does — unless it is the claim check
 alone still blocking on the summary's own sentences, in which case it gets the
 one summary-only correction turn first (Issue #3324).
+
+**Issue #3382.** The recovery turn used to be told the code had already
+passed the quality gate and must not change, while the Issue #3196 gate
+demands `reason: fixed in this diff` for a breach on the branch's own lines.
+VibeCoder#3308 and #3380 shipped with such violations recorded as "this turn
+may not change code" and were sent back by review. Before the summary gates
+run, the completion phase now finds each Standards `violation` left standing
+(no reason, or a reason that neither records a fix nor links a filed issue)
+whose `file:line` evidence lies on a line `git diff --unified=0 <base>...HEAD`
+adds or changes; a cited path matches a diff path exactly or as a path
+suffix. A violation whose evidence names no `path:line`, or any standing
+violation when the base ref cannot be resolved or the diff cannot be read, is
+treated as on the branch's own lines (fail closed; the not-checked case is
+logged at error). On the run's first summary-rule block the recovery prompt
+lists those violations as fenced `CODE FIX` items: the turn may edit the cited
+files and add the tests the finding or reason names, re-dispatch the Standards
+reviewer over the new diff, and write `reason: fixed in this diff` only for a
+breach it actually fixed. Every other `REQUIRED ITEM` keeps the
+documentation-shortfall rule, "do not change the code", and "this turn cannot
+change code" is not a settling reason. The quality gate re-runs over the
+changed tree before completion re-runs. If a later block in the same run
+finalises an existing PR as `summary_incomplete` while such a violation is
+still standing, the worker does not arm auto-merge on that PR and labels it
+`standing-violation` instead, logging a warning; the rest of finalisation is
+unchanged. Known gap: the Priority 1.65 auto-merge sweep does not read PR
+labels, so it can still arm a held PR on a later cycle (follow-up
+[VibeCoder#3517](https://github.com/stSoftwareAU/VibeCoder/issues/3517)). The
+Issue #3196 gate itself is unchanged; it still cannot see the diff.
 
 All eight summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
