@@ -33,7 +33,10 @@ Backend-only change: no UI files are touched.
 
 - Added one test to `worker/deno/tests/wip_checkpoint_test.ts`. It asserts the message contains no `#<digits>`, that the message is still a WIP subject, and that the old `(Issue #4170)` subject is still a WIP subject. No existing assertion was removed.
 - `deno task test:unit tests/wip_checkpoint_test.ts tests/wip_markers_test.ts tests/wip_commit_marker_test.ts tests/completion_wip_only_gate_test.ts tests/handover_note_test.ts`: `ok | 55 passed | 0 failed`.
-- `deno fmt` and `deno lint` on both changed files: clean.
+- `deno fmt`, `deno lint` and `deno check` on both changed files: clean.
+- `./quality.sh`: every stage up to and including `release-tag ruleset` passed (completeness, mermaid, markdownlint, semgrep, the chokepoint checks). The sequential test-suite stage then ran past the 580s bound and was stopped (`exit=124`), so the full gate did not finish here.
+
+<!-- vibe-quality-gate-skipped reason="budget: the container's sequential full test suite exceeds the 600s foreground bound; stages before it passed and CI runs the full suite" -->
 
 Branch outcomes: none added
 
