@@ -40,6 +40,12 @@ import {
   summaryClaimCheckBlocked,
 } from "../summary_claim_check.ts";
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
+import {
+  buildPrePrVerifierGateComment,
+  prePrVerifierBlocked,
+  prePrVerifierBlockReason,
+  type PrePrVerifierResult,
+} from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
@@ -2648,11 +2654,58 @@ async function completionBody(
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Pre-PR verifier (Issue #3395).
+  //
+  // Runs the fleet reviewer's own brief, with execution rights, in a
+  // disposable checkout once the summary exists. Computed here, with the
+  // other late verdicts, so it folds into whichever summary gate blocks
+  // first and shares the one recovery turn. It runs whether or not the issue
+  // carries acceptance criteria. A pass that cannot run is "not checked": it
+  // is logged, never read as clean, and does not block.
+  // ---------------------------------------------------------------------
+  let prePrVerifier: PrePrVerifierResult | null = null;
+  if (summarySource === null) {
+    logger.info(
+      "Pre-PR verifier skipped: no PR summary file loaded (Issue #3395)",
+    );
+  } else if (!comparableBase.ok) {
+    logger.warn(
+      "Pre-PR verifier not checked — no comparable base ref (Issue #3395)",
+      { baseBranch, error: comparableBase.error.message },
+    );
+  } else {
+    prePrVerifier = await deps.claude.runPrePrVerifier({
+      repo,
+      issueNumber,
+      issueTitle: ctx.issueTitle,
+      issueBody: ctx.issueBody,
+      repoPath: state.repoPath,
+      baseRef: comparableBase.value,
+      summaryPath: summarySource,
+      summaryContent,
+      changedFiles: changedFilesKnown ? changedFiles : null,
+      timeoutSeconds: config.claudeTimeout,
+      killAfterSeconds: config.claudeKillAfter,
+      model: config.claudeModel || undefined,
+      maxRetries: config.maxRateLimitRetries,
+      logger,
+    });
+    if (prePrVerifier.run) recordClaudeRunStats(state, prePrVerifier.run);
+    if (prePrVerifier.status === "not_checked") {
+      logger.warn(
+        "Pre-PR verifier not checked — not read as clean, does not block (Issue #3395)",
+        { reason: prePrVerifier.reason },
+      );
+    }
+  }
+
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, then the summary claim check (Issue #3147
-   * added branch outcomes; Issue #3257 added the claim check last). One
+   * placeholder, branch outcomes, the summary claim check, then the pre-PR
+   * verifier (Issue #3147 added branch outcomes; Issue #3257 added the claim
+   * check; Issue #3395 added the verifier last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
    */
@@ -2690,17 +2743,29 @@ async function completionBody(
     comment: () =>
       claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
   };
+  const prePrVerifierVerdict: LateSummaryVerdict = {
+    blocked: prePrVerifier !== null && prePrVerifierBlocked(prePrVerifier),
+    reason: prePrVerifier?.status === "checked"
+      ? prePrVerifierBlockReason(prePrVerifier.review)
+      : "",
+    comment: () =>
+      prePrVerifier?.status === "checked"
+        ? buildPrePrVerifierGateComment(prePrVerifier.review)
+        : "",
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
     docsSweepVerdict,
     removedAssertionsVerdict,
     placeholderVerdict,
     branchOutcomesVerdict,
     claimCheckVerdict,
+    prePrVerifierVerdict,
   ];
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, summary claim check — in that order) other
+   * placeholder, branch outcomes, summary claim check, pre-PR verifier — in
+   * that order) other
    * than those in `skip` into an earlier gate's block.
    */
   function foldInLateSummaryVerdicts(
@@ -2833,8 +2898,8 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
   // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), and the summary claim check (Issue #3257) — in that
-  // order.
+  // (Issue #3147), the summary claim check (Issue #3257), and the pre-PR
+  // verifier (Issue #3395) — in that order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
@@ -2958,8 +3023,8 @@ async function completionBody(
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
   // reaching it, or named a test that did not exist at the head. Folds in
-  // the summary claim check (Issue #3257), the one late verdict still named
-  // below it.
+  // the summary claim check (Issue #3257) and the pre-PR verifier
+  // (Issue #3395), the two late verdicts still named below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
     logger.warn("Branch-outcomes gate blocked PR creation", {
@@ -2994,7 +3059,8 @@ async function completionBody(
   // A first-run PR summary that quotes a function, file, test, regex or
   // pattern and gets it wrong (VibeCoder#3252, #3132) — the one the #3143
   // drift check cannot reach because it only runs on a review-fix push.
-  // Last in the late-summary chain, so there is nothing further to fold in.
+  // Second to last in the late-summary chain: only the pre-PR verifier
+  // (Issue #3395) can fold into its block.
   // ---------------------------------------------------------------------
   if (claimCheckVerdict.blocked && claimCheck !== null) {
     logger.warn("Summary claim check blocked PR creation", {
@@ -3003,8 +3069,9 @@ async function completionBody(
       notChecked: claimCheck.notChecked.length,
     });
     // This gate is reached only when every earlier summary-rule gate has
-    // passed, so the claim check is the only verdict blocking here — never a
-    // fold-in target. A later block of this same gate (the recovery turn
+    // passed, so the claim check and (Issue #3395) the pre-PR verifier are
+    // the only verdicts that can block here; the verifier folds into this
+    // gate's block below. A later block of this same gate (the recovery turn
     // already spent) gets one summary-only correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
     // immediately: the state is recorded as `pending` and no comment is
@@ -3027,10 +3094,47 @@ async function completionBody(
       return { status: "failure", reason: claimCheckVerdict.reason };
     }
     return await reportSummaryRuleBlock(
+      foldInLateSummaryVerdicts(
+        claimCheckVerdict.reason,
+        claimCheckVerdict.comment(),
+        [
+          docsSweepVerdict,
+          removedAssertionsVerdict,
+          placeholderVerdict,
+          branchOutcomesVerdict,
+          claimCheckVerdict,
+        ],
+      ),
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Pre-PR verifier gate (Issue #3395).
+  //
+  // The pre-PR Spec and Standards reviewers are read-only and diff-only and
+  // run before the summary exists, so a claim the head contradicts, a test
+  // that passes for the wrong reason or a regex that backtracks on hostile
+  // input used to surface only once the fleet reviewer saw the raised PR.
+  // This runs the fleet reviewer's own brief with execution rights after the
+  // summary is written. Its findings reach the single recovery turn and, if
+  // still present on the re-run, are reported like any other summary-rule
+  // block. Last in the late-summary chain, so nothing further folds in.
+  // ---------------------------------------------------------------------
+  if (prePrVerifierVerdict.blocked && prePrVerifier?.status === "checked") {
+    logger.warn("Pre-PR verifier blocked PR creation (Issue #3395)", {
+      findings: prePrVerifier.review.findings.length,
+    });
+    const comment = prePrVerifierVerdict.comment();
+    return await reportSummaryRuleBlock(
       {
-        reason: claimCheckVerdict.reason,
-        comment: claimCheckVerdict.comment(),
-        sections: [claimCheckVerdict.comment()],
+        reason: prePrVerifierVerdict.reason,
+        comment,
+        sections: [comment],
       },
       ctx,
       state,

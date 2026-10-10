@@ -4,8 +4,10 @@
  * The summary gates at the completion phase's PR-creation chokepoint —
  * acceptance-criteria closure (#518), independent two-axis review (#663), bug
  * reproduction status (#521), the docs-sweep line (#3073), the
- * result-placeholder gate (#3124), the branch-outcomes list (#3147) and the
- * first-run summary claim check (#3257) — check a *document*, not the code.
+ * result-placeholder gate (#3124), the branch-outcomes list (#3147), the
+ * first-run summary claim check (#3257) and the pre-PR verifier (#3395) —
+ * check the summary document; the pre-PR verifier also checks the code the
+ * summary describes.
  * A run that had already raised its own PR
  * from inside the execute phase used to skip this module's recovery
  * entirely: `reportSummaryRuleBlock` (#1140) finalised that PR straight off
@@ -71,6 +73,7 @@ import {
   isBoundaryId,
 } from "./prompt_delimiter.ts";
 import { reviewBlockTemplateLines } from "./review_block_template.ts";
+import { PRE_PR_VERIFIER_COMMENT_HEADING } from "./pre_pr_verifier.ts";
 
 /** One summary-rule gate verdict observed during a single run. */
 export interface SummaryRuleRunVerdict {
@@ -110,6 +113,10 @@ const SUMMARY_RULE_REASON_BLOCK = "the gate's block reason";
  * {@link SUMMARY_RULE_REASON_BLOCK} (Issue #3152).
  */
 const SUMMARY_RULE_NOTICE_BLOCK = "the PR-summary gate retry notice";
+
+/** The words of the pre-PR verifier's comment heading, without the markdown. */
+const PRE_PR_VERIFIER_HEADING_WORDS = PRE_PR_VERIFIER_COMMENT_HEADING
+  .replace(/^[^A-Za-z]*/, "").replace(/[*\s]+$/, "");
 
 /**
  * Prompt for the in-run recovery invocation.
@@ -195,7 +202,7 @@ ${itemBlocks.join("\n\n")}
 Do exactly this, and nothing else:
 
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
-2. Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change.
+2. Fix every REQUIRED ITEM the notice lists, and nothing else. This is a documentation shortfall in the summary file: the code on the branch has already passed the quality gate, so do not change it. Updating a stale doc a REQUIRED ITEM asks you to sweep is part of the summary fix, not a code change. One exception (Issue #3395): a REQUIRED ITEM headed \`${PRE_PR_VERIFIER_HEADING_WORDS}\` can name a defect in the code itself. For that item only, fix the code and its tests where a finding asks for it, run the tests covering what you changed, then make the summary describe the head; the worker re-runs the quality gate and the verifier afterwards.
 3. Where a REQUIRED ITEM asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
 4. Before you commit, re-read the summary against each REQUIRED ITEM in turn, checking that item is actually fixed. In your final message, name each REQUIRED ITEM by number and say what you changed for it.
 5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses a REQUIRED ITEM will be asked for as a structured verdict instead, which costs the run another turn.
