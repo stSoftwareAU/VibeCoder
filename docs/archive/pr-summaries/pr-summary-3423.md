@@ -87,6 +87,8 @@ flowchart LR
 
 - `cd worker/deno && deno test --allow-all tests/pr_summary_check_test.ts tests/pr_summary_check_prompt_3423_test.ts < /dev/null`
   reports 23 passed and 0 failed.
+- `./quality.sh < /dev/null` from the repository root: PASSED. Config
+  integration was skipped because no `.config.json` is available.
 - Drift-pin base check: `deno task drift-pins-on-base` found each pinned
   phrase absent from the base version of every section it reads:
   - "defines a `pr-summary-check` task", "deno task pr-summary-check" and
