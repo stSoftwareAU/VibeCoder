@@ -18,6 +18,9 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import { escapeRegExp } from "./regexp_escape.ts";
+import { REPO_ADMIN_ACTION } from "./repo_settings_scanner.ts";
+
 /**
  * The `BP-REPO-*` finding-id marker every repo-settings finding body carries.
  * The single definition: the admin-only hand-off below and setup's close-out
@@ -100,16 +103,22 @@ export function parseRepoSettingsFindingId(issueBody: string): string | null {
 }
 
 /**
- * The prose the scanner puts at the head of every suggested fix — a second,
+ * The scanner's full suggested-fix sentence, lead-in included — a second,
  * independent signal in case the structural marker is ever absent (e.g. a body
- * a human re-typed).
+ * a human re-typed). Derived from `REPO_ADMIN_ACTION` so the two cannot drift;
+ * whitespace runs tolerate line wraps. A fragment quoted in prose or plain
+ * quotes no longer counts (Issue #3360).
  */
-const REPO_ADMIN_ACTION_PROSE = /the worker cannot change repository settings/i;
+const REPO_ADMIN_ACTION_PROSE = new RegExp(
+  escapeRegExp(REPO_ADMIN_ACTION).replace(/ +/g, "\\s+"),
+  "i",
+);
 
 /**
  * `BP-REPO-*` ids whose fix is ordinary repo work (committing a file), so the
  * worker can resolve them with a normal PR (Issue #3266). A finding in this
- * set is admin-only only when its body also carries the admin-action prose.
+ * set is admin-only only when its body also carries the scanner's full
+ * admin-action sentence.
  */
 export const WORKER_FIXABLE_REPO_FINDINGS: ReadonlySet<string> = new Set([
   "BP-REPO-SECURITY-POLICY-MISSING",
@@ -117,11 +126,12 @@ export const WORKER_FIXABLE_REPO_FINDINGS: ReadonlySet<string> = new Set([
 
 /**
  * True when the issue body identifies a repository-admin finding the worker
- * cannot action (a `BP-REPO-*` finding, or the scanner's admin-action prose).
+ * cannot action (a `BP-REPO-*` finding, or the scanner's full admin-action
+ * sentence).
  * Either signal only counts when it appears as real body text: quoted inside
  * a code span, code fence or blockquote, it is ignored (Issue #3295). A
  * worker-fixable finding id (`WORKER_FIXABLE_REPO_FINDINGS`) is not admin-only
- * on its marker alone; the admin-action prose still makes it so.
+ * on its marker alone; the full admin-action sentence still makes it so.
  */
 export function isAdminOnlyRepoSettingsIssue(issueBody: string): boolean {
   if (!issueBody) return false;
