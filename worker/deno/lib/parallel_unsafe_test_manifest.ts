@@ -248,6 +248,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // linear pairing from the quadratic forward scan it replaced (Issue
   // #3313).
   "tests/markdown_code_spans_test.ts",
+  // The mutation runner's import-specifier scan reads test sources a PR
+  // author writes; only a growth measurement separates its linear scan of an
+  // unclosed specifier from a backtracking one (Issue #3393).
+  "tests/mutation_runner_test.ts",
 ];
 
 /**

@@ -352,3 +352,24 @@ Deno.test("summary-rule retry - no sections carries the whole comment as REQUIRE
   assertStringIncludes(prompt, "REQUIRED ITEM 1 of 1");
   assertStringIncludes(prompt, VERDICT.comment);
 });
+
+Deno.test("summary-rule retry - a mutation-check item allows test changes; other items stay documentation-only", () => {
+  const docsOnly = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
+  assertStringIncludes(docsOnly, "so do not change it.");
+  assertEquals(docsOnly.includes("adding or strengthening tests"), false);
+
+  const withTests = buildSummaryRuleRetryPrompt(
+    { ...VERDICT, allowsTestChanges: true },
+    "org/repo",
+    7,
+  );
+  assertStringIncludes(withTests, "adding or strengthening tests");
+  assertEquals(withTests.includes("so do not change it."), false);
+  // The exemption is for lines no test can reach, not an alternative to a test.
+  assertStringIncludes(
+    withTests,
+    "only for a line that genuinely cannot be tested",
+  );
+  // New work and PR creation stay forbidden.
+  assertStringIncludes(withTests, "Do not create the PR yourself");
+});

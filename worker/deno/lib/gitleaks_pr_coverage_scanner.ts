@@ -307,10 +307,9 @@ export async function scanGitleaksPrCoverage(
   const citedLine = lineOfOnKey(primary.rawText);
   if (
     isFindingSuppressed(
-      primary.rawText,
+      primary,
       citedLine,
       GITLEAKS_PR_COVERAGE_FINDING_ID,
-      primary.path,
     )
   ) {
     return [];

@@ -262,10 +262,9 @@ function maybePush(
   if (ctx.knownOpen.has(finding.findingId)) return;
   if (
     isFindingSuppressed(
-      ctx.file.rawText,
+      ctx.file,
       finding.lines,
       finding.findingId,
-      ctx.file.path,
     )
   ) {
     return;
