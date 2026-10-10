@@ -20,6 +20,7 @@ import {
   buildScheduledReleaseReason,
   CLONE_CORRUPT_MARKER,
   DEADLINE_BOUND_TIMEOUT_MARKER,
+  SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import type { HandleFailureOptions } from "../lib/label_types.ts";
 
@@ -447,6 +448,56 @@ Deno.test("buildRepeatedFailureEscalation - a non-transient failure points at th
   assertEquals(escalation.reason.includes("timing out"), false);
   assertEquals(
     escalation.nextStep.includes("per-attempt failure comments"),
+    true,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// PR-summary gate refusals (Issue #3431; PR #3440 review)
+// ---------------------------------------------------------------------------
+
+// Each quotation would trip a free-text check on the raw reason: the
+// scheduled-release marker, the deadline-bound marker, a host-fault pattern
+// and the timeout-class pattern.
+const GATE_REFUSAL_QUOTES: ReadonlyArray<readonly [string, string]> = [
+  [
+    "ENOSPC",
+    "removed assertion: assertEquals(err, 'ENOSPC: no space left on device')",
+  ],
+  ["a clone failure", "removed assertion: Failed to clone o/r: "],
+  ["the cycle deadline", `removed assertion: ${DEADLINE_BOUND_TIMEOUT_MARKER}`],
+  ["timeout", "the request timeout path raises TypeError"],
+  [
+    "a scheduled release",
+    "no test for `Released on schedule: the cycle ended`",
+  ],
+];
+
+for (const [name, quoted] of GATE_REFUSAL_QUOTES) {
+  Deno.test(`classifyCodingFailure / planCodingFailure - a marked gate refusal quoting ${name} earns a normal attempt (PR #3440 review)`, () => {
+    const reason = `${SUMMARY_RULE_GATE_MARKER}: violation — ${quoted}`;
+    const decision = classifyCodingFailure(reason);
+    assertEquals(decision.disposition, "ladder");
+    assertEquals(decision.category, "summary_incomplete");
+    assertEquals(decision.cooldownKind, "non_transient");
+    assertEquals(isSetupFault({ phase: "completion", reason }), false);
+    const plan = planCodingFailure({
+      success: false,
+      expectedSkip: false,
+      phase: "completion",
+      reason,
+    });
+    assertEquals(plan.applyLadder, true);
+    assertEquals(plan.cooldownKind, "non_transient");
+  });
+}
+
+Deno.test("isSetupFault - the same quotation without the gate marker is still a host fault (PR #3440 review)", () => {
+  assertEquals(
+    isSetupFault({
+      phase: "completion",
+      reason: "removed assertion: ENOSPC: no space left on device",
+    }),
     true,
   );
 });
