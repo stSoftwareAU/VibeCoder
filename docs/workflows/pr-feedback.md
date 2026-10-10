@@ -377,6 +377,16 @@ in the summary file itself. The prose rule asks the agent to recount; the
 worker now recounts it too — see **The worker's drift check (Issue #3143)**
 below.
 
+A red-on-base result is recounted the same way (Issue #3381): when the
+push adds, removes or changes a test, the head test file is re-run against
+the base branch's production code and the earlier passed and failed
+figures and failing-test list are replaced, not left beside a second
+block. A run against the PR's own earlier commit is not "red on base" and,
+if kept, is labelled with that commit. Review fixes had left a first
+round's "77 passed, 2 failed" from a 79-test file standing after the file
+grew to 80 tests (VibeCoder#3372), and a "0 passed, 3 failed" after the
+file grew to five tests (VibeCoder#3066).
+
 #### The worker's drift check (Issue #3143)
 
 The prose rules above (Issues #3114, #3117, #3120) ask the agent to keep the
@@ -419,6 +429,15 @@ Five checks run, each only when it applies:
    summary, the worker counts top-level `Deno.test(` / `it(` declarations
    at the head for every test file the PR diff adds or edits, and flags a
    `## Test Plan` line naming those files with a test count that disagrees.
+   A paired run result — `N passed, M failed` in either order, with `|`,
+   `,` or `and` between and an optional `ignored` after — is compared as
+   N + M with the runnable count, so a correct red-on-base result with
+   failures is not flagged and a stale one from a smaller test file is
+   (Issue #3381). When such a result has failures and its block names no
+   test file (a red-on-base line usually names the production file it
+   swapped in), it is compared with the section's sole changed test file
+   — the one test file the section names that the PR diff adds or edits —
+   and skipped when there are none or several.
    A file is left out when a declaration is inside a block, parentheses, or
    a loop, or the scan ends inside a literal or with unbalanced depth.
    A hard-wrapped paragraph or list item is read as one claim, using the
@@ -431,7 +450,11 @@ Five checks run, each only when it applies:
    were added to or extended an existing file (`added to`, `extended`,
    `with N tests`) is not compared with that file's whole count. Lines it
    cannot total (an uncounted file, `--filter`, two different numbers, "N
-   new tests") are skipped.
+   new tests", a paired result in a block citing `./quality.sh`, whose
+   figures cover the whole suite) are skipped. A paired result naming an
+   unchanged test file, several files whose runs differ, or a red result
+   with no file and no sole changed test file is logged by the worker as not
+   checked rather than compared.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.
