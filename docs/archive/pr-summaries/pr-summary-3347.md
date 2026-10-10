@@ -32,18 +32,18 @@ Backend-only change (no UI files).
 
 ```mermaid
 flowchart TD
-    A["Completion phase<br/>(summary loaded, base known)"] --> B["changedFiles → selectManualProseFiles<br/>(isManualProsePath, cap 20)"]
-    B --> C["One read-only question:<br/>summary claims + docProseClaimInstruction"]
-    C --> D{"Finding confirmed against<br/>summary or that doc's text?"}
-    D -- summary --> E["findings"]
-    D -- doc --> F["docFindings"]
-    E --> G["summary-rule block → recovery turn"]
-    F --> G
-    G --> H{"Later block, claim check alone,<br/>docFindings empty?"}
-    H -- yes --> I["#3324 summary-only correction turn"]
-    H -- no --> J["reportSummaryRuleBlock"]
-    K["Review-fix push edits code, test<br/>or manual/prompt .md"] --> L["Drift model pass +<br/>docProseClaimInstruction"]
-    L --> M["existing one recovery turn, then report"]
+    A["Completion phase<br/>(summary loaded, base known)"] --․> B["changedFiles → selectManualProseFiles<br/>(isManualProsePath, cap 20)"]
+    B --․> C["One read-only question:<br/>summary claims + docProseClaimInstruction"]
+    C --․> D{"Finding confirmed against<br/>summary or that doc's text?"}
+    D -- summary --․> E["findings"]
+    D -- doc --․> F["docFindings"]
+    E --․> G["summary-rule block → recovery turn"]
+    F --․> G
+    G --․> H{"Later block, claim check alone,<br/>docFindings empty?"}
+    H -- yes --․> I["#3324 summary-only correction turn"]
+    H -- no --․> J["reportSummaryRuleBlock"]
+    K["Review-fix push edits code, test<br/>or manual/prompt .md"] --․> L["Drift model pass +<br/>docProseClaimInstruction"]
+    L --․> M["existing one recovery turn, then report"]
 ```
 
 Issue numbers this diff cites as provenance:
@@ -61,7 +61,7 @@ Fakes: the completion-phase tests drive `runSummaryClaimQuestion` and `runGitCom
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+<․!-- vibe-spec-review inputs="diff+issue-body" --․>
 
 - **met** — Extend the first-run claim check (`runSummaryClaimCheck`, #3257) to cover prose lines the diff adds or edits in Markdown outside `docs/archive/pr-summaries/` — evidence: `worker/deno/tests/summary_claim_check_test.ts::runSummaryClaimCheck - a confirmed changed-manual finding lands in docFindings and blocks`, `worker/deno/tests/completion_phase_summary_claim_check_test.ts::completion - the changed file list reaches the claim question so a changed manual is checked` — reviewer: met — reason: the reviewer noted the check runs only when a PR summary was loaded and the base ref is known. That is the existing claim check's precondition, and the issue does not ask to change it.
 - **met** — Run the same scope in the review-fix drift check (#3143), so a fix push that rewrites a doc line is checked too — evidence: `worker/deno/tests/pr_feedback_drift_check_3347_test.ts::runPrFeedbackDriftCheck - a push that edits only a manual makes one read-only model call and reports clean on an empty verdict` — reviewer: met
@@ -75,7 +75,7 @@ Fakes: the completion-phase tests drive `runSummaryClaimQuestion` and `runGitCom
 
 ## Standards Review
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+<․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
 - **clean** — Prose about the PR's own change, A code change owes a docs change, A named test must exist, A new test must go red without its change, negative tests able to fail, every branch outcome tested, a new argument reaches every caller (`changedFiles` from `completion_phase.ts`), no silent pass on unread input, path-shape safety, no hostile regex, Australian English. The reviewer found no rule worded "by review only" and checked the blocking self-review rules instead. Optional notes: the new not-checked cases log at error. That matches this module's existing policy for deterministic degradation (null base ref), so it was kept. The shared question's opener was tightened in this diff so it is true in the drift check too.
 
@@ -95,7 +95,7 @@ Edited existing tests:
 
 - `worker/deno/tests/pr_feedback_drift_check_3143_test.ts`: three tests pushed `docs/notes.md` and asserted no model call. #3347 item 2 makes a Markdown manual edit trigger a model pass, so those pushes now write `docs/notes.txt` (a non-Markdown doc) and every assertion is kept. The first test is renamed "a docs-only push that edits no Markdown makes no model call and reports clean".
 - `worker/deno/tests/pr_feedback_drift_check_3244_test.ts`: the same fixture switch in "a finding naming a pr-summary that does not exist at the head …". Its assertions are unchanged.
-- `worker/deno/tests/summary_claim_correction_test.ts`, `worker/deno/tests/summary_rule_gate_retry_test.ts`: they only add the new required `changedFiles: []` and `docFindings: []` fields.
+- `worker/deno/tests/summary_claim_correction_test.ts`, `worker/deno/tests/summary_rule_gate_retry_test.ts`: each only adds one line, the new required `docFindings: []` field.
 - `worker/deno/tests/summary_claim_check_test.ts`: existing tests only add the new required `docFiles: []`, `changedFiles: []` and `docFindings: []` fields. Seven multi-line assertions gain a `docFiles: []` line, so they count as removed and re-added:
 
 - Removed from `worker/deno/tests/summary_claim_check_test.ts`: `assertThrows(() => buildSummaryClaimQuestionPrompt({ repo: "acme/widgets", issueNumber: 1, baseRef: "--output=/tmp/x", summaryPath: ".pr_summary", }) );` — #3347 makes `docFiles` a required argument of `buildSummaryClaimQuestionPrompt`, so the old call no longer type-checks. The assertion stays in the same test with only `docFiles: []` added, so it is rewritten, not dropped.
