@@ -1870,6 +1870,13 @@ the test command runs from `worker/deno` (Issue #3160); a failed lookup also
 blocks, fail closed. A test identifier with no test-file path (for example a
 Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
 none added` is accepted when the diff adds no branch.
+A line that opens with the phrase inside a code span — a hard-wrapped
+sentence quoting `` `Branch outcomes:` `` followed by more prose, say — is a
+quoted mention, not the header: it neither satisfies the gate nor ends a real
+list (Issue #3377). The exception is a code-span line with nothing after the
+separator except `none` or `none added`, such as a bare
+`` `Branch outcomes:` `` line above a list or
+`` `Branch outcomes: none added` ``, which still counts as the header.
 
 It also blocks an entry that admits its own outcome is unreached. A strong
 admission — "no test reaches", "covers" or "exercises" it, "not reached by
