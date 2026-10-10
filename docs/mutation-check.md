@@ -24,44 +24,57 @@ feeds the same single recovery turn.
 flowchart TD
     A["PR summary final"] --> B{"skip_mutation_check?"}
     B -- yes --> Z["Raise PR"]
-    B -- no --> C["Detect language at repo root"]
-    C -- "neither Deno nor Cargo" --> Z
-    C --> D["Compute diff origin/base...HEAD"]
+    B -- no --> D["Compute diff origin/base...HEAD"]
     D -- "diff unavailable" --> X["Block (fail closed)"]
-    D --> E["Mutate added lines, run covering tests"]
+    D --> C["Detect language: Deno config above a changed file, else Cargo.toml"]
+    C -- "neither Deno nor Cargo" --> N["Not applicable: log the reason"]
+    N --> Z
+    C --> E["Mutate added lines, run covering tests"]
     E -- "runner error" --> X
     E --> F{"Unexempted survivor?"}
     F -- yes --> X
-    F -- no --> G{"Budget exhausted?"}
+    F -- no --> G{"Budget exhausted or mutant cap hit?"}
     G -- yes --> W["Warn: remaining mutants untested"]
     G -- no --> Z
     W --> Z
-    X --> R["Recovery turn: each surviving file:line and mutation"]
+    X --> R["Recovery turn: add tests that kill each file:line mutation"]
     R --> A
 ```
 
 The recovery turn is told each surviving `file:line` and the mutation applied,
-so the agent adds the assertion that kills it, or records an exemption.
+so the agent adds the assertion that kills it, or records an exemption. Unlike
+the documentation gates, whose recovery prompt says the code is final, a
+blocked mutation item makes the prompt allow test changes (the quality gate and
+completion re-run afterwards); an exemption is reserved for a line no test can
+reach.
 
 ## Languages
 
-The language is detected at the target repository root.
+Deno is detected first, then Cargo. A Deno project is the nearest ancestor
+directory (the file's own directory up to the repository root) of a changed
+source file that holds `deno.json`, `deno.jsonc` or `deno.lock`, so a nested
+project such as VibeCoder's `worker/deno/` counts. Each module's tests run from
+that directory, so the project's own `deno.json` applies, and only tests inside
+it are run.
 
-| Root file                              | Mutator                                                                                      |
-| -------------------------------------- | -------------------------------------------------------------------------------------------- |
-| `deno.json`, `deno.jsonc`, `deno.lock` | Built-in Deno mutator (below)                                                                |
-| `Cargo.toml`                           | `cargo mutants --in-diff <diff> --no-shuffle --jobs N`, with N = min(4, CPUs)                |
-| neither                                | Not applicable: the gate passes without running                                              |
+| Found                                                          | Mutator                                                                                      |
+| -------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `deno.json`, `deno.jsonc` or `deno.lock` above a changed file  | Built-in Deno mutator (below)                                                                |
+| `Cargo.toml` at the repository root                            | `cargo mutants --in-diff <diff> --output <temp dir> --no-shuffle --jobs N`, with N = min(4, CPUs) |
+| neither                                                        | Not applicable: the gate passes without running and logs the reason                          |
 
-For Cargo the outcomes are read from `mutants.out/outcomes.json`. The worker
+For Cargo `--output` points at a fresh temporary directory outside the
+repository; the outcomes are read from its `mutants.out/outcomes.json` and the
+directory is removed afterwards, so nothing of cargo-mutants' output reaches
+the working tree (a recovery commit stages it with `git add -A`). The worker
 image ships `cargo-mutants` 27.1.0 (amd64 from the release tarball,
 checksum-verified; arm64 built with `cargo install --locked`).
 
 The run is limited to the packages the diff touches: for each changed `.rs`
 file the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
 `--package <name>` argument (names failing `^[A-Za-z0-9_-]+$` are skipped; none
-found means no package arguments). Any stale `mutants.out` directory is removed
-before the run, and a timeout (exit code 3 or a killed run) that leaves no
+found means no package arguments). A `mutants.out` already in the repository is
+neither read nor touched, and a timeout (exit code 3 or a killed run) that leaves no
 parseable `outcomes.json` is an error, not budget exhaustion.
 
 Every path the runner writes (mutated Deno files, the Rust diff under
@@ -81,16 +94,21 @@ The mutator works on added lines of non-test source files.
 | Mutation                   | Effect                                                   |
 | -------------------------- | -------------------------------------------------------- |
 | Negate an `if` condition   | `if (c)` becomes `if (!(c))`                             |
-| Negate a ternary condition | `c ? a : b` becomes `!(c) ? a : b`                       |
+| Negate a ternary condition | `c ? a : b` becomes `!(c) ? a : b`, `c` being the whole condition |
 | Swap booleans              | `true` becomes `false` and the reverse                   |
-| Replace a return value     | `return x` becomes a type-appropriate default            |
+| Replace a return value     | `return x` becomes `return undefined;`; `true`/`false`, numbers and plain strings flip to `false`/`true`, `0`/`1` and `""` |
 | Delete a call statement    | A single call statement is removed                       |
 
 Each mutant runs only the test files that import the mutated module
-(`deno test -A <those files>`). Before any mutant, the unmutated baseline run
+(`deno test --no-check -A <those files>`). `--no-check` is deliberate: a mutant
+such as `return undefined;` in a `: boolean` function fails type-checking, and
+that exit code would otherwise count as a test going red. Before any mutant, the unmutated baseline run
 must pass; if it does not, the gate reports an error. The file is restored
 after every mutant, even when the run fails. A changed module that no test
 imports has its mutants counted as survivors. A run is capped at 40 mutants.
+Candidates past the cap, and added lines over 400 characters (never mutated),
+are counted as untested: the run is reported as capped, with the number
+untested, never as a clean pass.
 
 ## Budget
 
@@ -101,8 +119,23 @@ default 300, maximum 3600. On exhaustion the gate reports:
 mutation budget exhausted after T of N mutants — remaining mutants untested, not passed
 ```
 
-This is a warning and is never reported as a pass. Survivors found before the
-budget ran out still block.
+A run that hit the mutant cap instead reports:
+
+```text
+mutation cap reached: T of N candidate mutants tried — U untested (past the mutant cap or on lines over 400 characters), not passed
+```
+
+Both are warnings and are never reported as a pass. Survivors found before the
+budget ran out or the cap was hit still block.
+
+## Child environment
+
+`deno test -A` and `cargo mutants` run repository code (tests, build scripts)
+after the agent has written tests. Every child process therefore gets only the
+allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
+never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
+credentials are not visible to it (Issue #572, the same control as the quality
+gate).
 
 ## Exemptions
 
@@ -140,10 +173,10 @@ Both keys are per-repo options, set operator-side under
 
 | Outcome                | Meaning                                                | Blocks the PR?            |
 | ---------------------- | ------------------------------------------------------ | ------------------------- |
-| Not applicable         | No Deno or Cargo marker at the root, or check disabled | No                        |
+| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, or check disabled | No                        |
 | Completed, no survivor | Every mutant was killed, or the survivor is exempted   | No                        |
 | Completed, survivors   | At least one unexempted survivor                       | Yes                       |
-| Budget exhausted       | Remaining mutants untested; warning, not a pass        | Only if a survivor found  |
+| Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
 | Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
 
 ## Troubleshooting

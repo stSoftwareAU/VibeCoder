@@ -100,6 +100,7 @@ interface Outcome {
   comments: string[];
   runnerInputs: MutationRunInput[];
   warnings: string[];
+  infos: string[];
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -116,6 +117,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const prompts: string[] = [];
   const runnerInputs: MutationRunInput[] = [];
   const warnings: string[] = [];
+  const infos: string[] = [];
   let prCreateCalls = 0;
 
   const config = buildDefaultWorkerConfig();
@@ -209,7 +211,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
     logger: {
       debug: () => {},
-      info: () => {},
+      info: (message: string) => {
+        infos.push(message);
+      },
       warn: (message: string) => {
         warnings.push(message);
       },
@@ -249,6 +253,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     comments,
     runnerInputs,
     warnings,
+    infos,
   };
 }
 
@@ -396,6 +401,76 @@ Deno.test("completion - a mutation survivor is folded into an earlier gate's blo
   assertEquals(outcome.comments.length, 1);
   assertStringIncludes(outcome.comments[0]!, "Branch outcomes not recorded");
   assertStringIncludes(outcome.comments[0]!, `${CHANGED_FILE}:42`);
+});
+
+Deno.test("completion - the recovery turn for a mutation survivor is allowed to change tests", async () => {
+  const outcome = await runCompletion({ mutation: completed([SURVIVOR]) });
+
+  assertEquals(outcome.claudeCalls, 1);
+  const prompt = outcome.prompts[0]!;
+  assertStringIncludes(prompt, "adding or strengthening tests");
+  // The documentation-only wording would leave an exemption as the way out.
+  assertEquals(prompt.includes("so do not change it."), false);
+});
+
+Deno.test("completion - a survivor folded into another gate's block still lets the recovery turn change tests", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    summary: SUMMARY.replace("**Branch outcomes:** none added\n", ""),
+  });
+
+  assertStringIncludes(outcome.prompts[0]!, "adding or strengthening tests");
+  assertEquals(outcome.prompts[0]!.includes("so do not change it."), false);
+});
+
+Deno.test("completion - a summary-only block keeps the documentation-only recovery prompt", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([]),
+    summary: SUMMARY.replace("**Branch outcomes:** none added\n", ""),
+  });
+
+  assertEquals(outcome.claudeCalls, 1);
+  assertStringIncludes(outcome.prompts[0]!, "so do not change it.");
+  assertEquals(
+    outcome.prompts[0]!.includes("adding or strengthening tests"),
+    false,
+  );
+});
+
+Deno.test("completion - a not-applicable mutation check is logged with its reason", async () => {
+  const outcome = await runCompletion({
+    mutation: { kind: "not_applicable", reason: "no Deno project found" },
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(
+    outcome.infos.some((m) =>
+      m.includes("mutation check not applicable: no Deno project found")
+    ),
+    true,
+    outcome.infos.join(" | "),
+  );
+});
+
+Deno.test("completion - a capped mutation run warns that mutants were left untested", async () => {
+  const outcome = await runCompletion({
+    mutation: {
+      kind: "budget_exhausted",
+      language: "deno",
+      survivors: [],
+      killed: 40,
+      tested: 40,
+      total: 55,
+      budgetSeconds: 300,
+      limit: "mutant_cap",
+    },
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(
+    outcome.warnings.some((w) => w.includes("mutation cap reached: 40 of 55")),
+    true,
+  );
 });
 
 Deno.test("resolveMutationBudgetSeconds - default, valid and invalid values", () => {

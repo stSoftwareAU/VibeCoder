@@ -526,6 +526,11 @@ interface SummaryRuleBlock {
    * nothing folded in passes `[comment]`.
    */
   sections: readonly string[];
+  /**
+   * True when a blocked gate in `sections` is fixed by changing tests (the
+   * mutation gate, Issue #3393), so the recovery prompt allows test changes.
+   */
+  allowsTestChanges?: boolean;
 }
 
 /**
@@ -613,7 +618,7 @@ async function reportSummaryRuleBlock(
   // comment; the existing-PR finalise below is a path that posts it too.
   docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
-  const { reason, comment, sections } = block;
+  const { reason, comment, sections, allowsTestChanges } = block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
@@ -639,6 +644,7 @@ async function reportSummaryRuleBlock(
         reason,
         comment,
         sections,
+        ...(allowsTestChanges ? { allowsTestChanges } : {}),
         ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
       },
     ];
@@ -785,9 +791,9 @@ async function reportSummaryRuleBlock(
  * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
  * because that gate ran after the guard; the closure, independent-review
  * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all five late-summary gates (Issue #3257
- * added the summary claim check as the fifth) pass, whether the PR is then
- * raised or recovered.
+ * in `completionBody` runs once all six late-summary gates (Issue #3393
+ * added the mutation check as the fifth and Issue #3257 the summary claim
+ * check as the sixth) pass, whether the PR is then raised or recovered.
  *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
  *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
@@ -2686,8 +2692,9 @@ async function completionBody(
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, then the summary claim check (Issue #3147
-   * added branch outcomes; Issue #3257 added the claim check last). One
+   * placeholder, branch outcomes, mutation check, then the summary claim check
+   * (Issue #3147 added branch outcomes; Issue #3393 the mutation check; Issue
+   * #3257 added the claim check last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
    */
@@ -2695,6 +2702,8 @@ async function completionBody(
     blocked: boolean;
     reason: string;
     comment: () => string;
+    /** Only a test change satisfies this verdict (the mutation gate). */
+    needsTestChanges?: boolean;
   }
   const docsSweepVerdict: LateSummaryVerdict = {
     blocked: docsSweepBlocked,
@@ -2791,6 +2800,10 @@ async function completionBody(
     const gate = evaluateMutationGate(mutationResult, prBody);
     if (gate.budgetExhausted) {
       logger.warn(gate.note, { repo, issueNumber });
+    } else if (gate.note !== "") {
+      // "Not applicable" and "N of M killed" are logged too, so a gate that
+      // never ran (no Deno project above the changed files) is visible.
+      logger.info(gate.note, { repo, issueNumber });
     }
     if (gate.survivors.length > 0 || gate.blocked) {
       logger.warn("Mutation check found changed lines no test notices", {
@@ -2803,6 +2816,7 @@ async function completionBody(
       blocked: gate.blocked,
       reason: gate.reason,
       comment: () => buildMutationGateComment(gate),
+      needsTestChanges: true,
     };
   }
   const claimCheckVerdict: LateSummaryVerdict = {
@@ -2822,25 +2836,36 @@ async function completionBody(
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, summary claim check — in that order) other
-   * than those in `skip` into an earlier gate's block.
+   * placeholder, branch outcomes, mutation check, summary claim check — in
+   * that order) other than those in `skip` into an earlier gate's block.
+   * `allowsTestChanges` is set on the result when the block, or any verdict
+   * folded in, is one that only a test change satisfies (the mutation check).
    */
   function foldInLateSummaryVerdicts(
     reason: string,
     comment: string,
     skip: readonly LateSummaryVerdict[] = [],
-  ): { reason: string; comment: string; sections: readonly string[] } {
+  ): SummaryRuleBlock {
     let foldedReason = reason;
     let foldedComment = comment;
     const sections = [comment];
+    // `skip` names the verdicts already represented by `reason`/`comment`, so a
+    // blocked mutation verdict there still means the recovery turn must test.
+    let allowsTestChanges = skip.some((v) => v.blocked && v.needsTestChanges);
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
+      if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
       foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
       sections.push(verdictComment);
     }
-    return { reason: foldedReason, comment: foldedComment, sections };
+    return {
+      reason: foldedReason,
+      comment: foldedComment,
+      sections,
+      ...(allowsTestChanges ? { allowsTestChanges } : {}),
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -2955,8 +2980,8 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
   // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), and the summary claim check (Issue #3257) — in that
-  // order.
+  // (Issue #3147), the mutation check (Issue #3393), and the summary claim
+  // check (Issue #3257) — in that order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
@@ -3080,8 +3105,8 @@ async function completionBody(
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
   // reaching it, or named a test that did not exist at the head. Folds in
-  // the summary claim check (Issue #3257), the one late verdict still named
-  // below it.
+  // the mutation check (Issue #3393) and the summary claim check (Issue
+  // #3257), the late verdicts still named below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
     logger.warn("Branch-outcomes gate blocked PR creation", {

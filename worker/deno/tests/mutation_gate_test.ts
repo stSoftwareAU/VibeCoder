@@ -14,6 +14,7 @@ import {
   buildMutationGateComment,
   evaluateMutationGate,
   generateDenoMutants,
+  generateDenoMutantsDetailed,
   type MutationCheckResult,
   parseAddedLines,
   parseMutationExemptions,
@@ -112,7 +113,32 @@ Deno.test("generateDenoMutants - skips an if whose parens do not balance on the 
 Deno.test("generateDenoMutants - negates a simple ternary condition", () => {
   const [m] = mutate("const x = ok ? 1 : 2;\n", [1]);
   assertEquals(m?.description, "negated ternary condition");
-  assertEquals(m?.mutatedSource, "const x = !ok ? 1 : 2;\n");
+  assertEquals(m?.mutatedSource, "const x = !(ok) ? 1 : 2;\n");
+});
+
+Deno.test("generateDenoMutants - a ternary mutant negates the whole condition, not its last operand", () => {
+  const cases: Array<[string, string]> = [
+    ["const x = a === b ? 1 : 2;", "const x = !(a === b) ? 1 : 2;"],
+    ["return a && b.c() ? 1 : 2;", "return !(a && b.c()) ? 1 : 2;"],
+    ["foo(a === b ? 1 : 2);", "foo(!(a === b) ? 1 : 2);"],
+    ["const l = [a === b ? 1 : 2];", "const l = [!(a === b) ? 1 : 2];"],
+    ["f(x, a < b ? 1 : 2);", "f(x, !(a < b) ? 1 : 2);"],
+    ["const o = { k: n >= 3 ? 1 : 2 };", "const o = { k: !(n >= 3) ? 1 : 2 };"],
+    [
+      'const x: T = s === "a ? b" ? 1 : 2;',
+      'const x: T = !(s === "a ? b") ? 1 : 2;',
+    ],
+    [
+      "const g = (v) => v?.a ?? b ? 1 : 2;",
+      "const g = (v) => !(v?.a ?? b) ? 1 : 2;",
+    ],
+  ];
+  for (const [line, expected] of cases) {
+    const m = mutate(`${line}\n`, [1]).find((x) =>
+      x.description === "negated ternary condition"
+    );
+    assertEquals(m?.mutatedSource, `${expected}\n`, line);
+  }
 });
 
 Deno.test("generateDenoMutants - swaps true and false outside strings", () => {
@@ -185,6 +211,23 @@ Deno.test("generateDenoMutants - respects the cap", () => {
   const all = Array.from({ length: 10 }, (_, i) => i + 1);
   assertEquals(mutate(src, all, 3).length, 3);
   assertEquals(mutate(src, all, 0).length, 0);
+});
+
+Deno.test("generateDenoMutantsDetailed - counts the candidates the cap and the line limit drop", () => {
+  const src = Array.from({ length: 10 }, () => "foo();").join("\n");
+  const all = Array.from({ length: 10 }, (_, i) => i + 1);
+  const capped = generateDenoMutantsDetailed("lib/m.ts", src, all, 3);
+  assertEquals([capped.mutants.length, capped.dropped], [3, 7]);
+  const none = generateDenoMutantsDetailed("lib/m.ts", src, all, 0);
+  assertEquals([none.mutants.length, none.dropped], [0, 10]);
+  const roomy = generateDenoMutantsDetailed("lib/m.ts", src, all, 50);
+  assertEquals([roomy.mutants.length, roomy.dropped], [10, 0]);
+  const long = `foo(${"a".repeat(450)});`;
+  const overlong = generateDenoMutantsDetailed("lib/m.ts", `${long}\n// c\n`, [
+    1,
+    2,
+  ], 5);
+  assertEquals([overlong.mutants.length, overlong.dropped], [0, 1]);
 });
 
 Deno.test("generateDenoMutants - skips comment lines and test files", () => {
@@ -351,6 +394,21 @@ Deno.test("evaluateMutationGate - budget exhausted without survivors is flagged,
     v.note,
     "mutation budget exhausted after 2 of 5 mutants (300 s) — remaining mutants untested, not passed",
   );
+});
+
+Deno.test("evaluateMutationGate - a capped run is flagged with its untested count, never described as passed", () => {
+  const v = evaluateMutationGate(
+    { ...EXHAUSTED, limit: "mutant_cap", tested: 40, total: 55, survivors: [] },
+    "",
+  );
+  assertFalse(v.blocked);
+  assert(v.budgetExhausted);
+  assertStringIncludes(
+    v.note,
+    "mutation cap reached: 40 of 55 candidate mutants tried",
+  );
+  assertStringIncludes(v.note, "15 untested");
+  assertStringIncludes(v.note, "not passed");
 });
 
 Deno.test("evaluateMutationGate - error fails closed with a remedy", () => {

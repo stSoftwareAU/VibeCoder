@@ -9,7 +9,8 @@
  * `mutation_runner.ts`.
  *
  * Every pattern here is bounded or hand-scanned so a hostile line cannot cause
- * backtracking; lines over {@link MAX_MUTATED_LINE_LENGTH} are not mutated.
+ * backtracking; lines over {@link MAX_MUTATED_LINE_LENGTH} are not mutated and
+ * are counted as untested (see {@link DenoMutantGeneration}).
  *
  * Australian English spelling used throughout.
  */
@@ -42,8 +43,15 @@ export type MutationCheckResult =
     survivors: Mutant[];
     killed: number;
     tested: number;
+    /** Every candidate mutant, those not tried included. */
     total: number;
     budgetSeconds: number;
+    /**
+     * What ran out: absent means the wall-clock budget; `"mutant_cap"` means
+     * the run finished inside its budget but candidate mutants beyond the cap
+     * (or on over-long lines) were never tried.
+     */
+    limit?: "mutant_cap";
   }
   | { kind: "error"; reason: string };
 
@@ -221,15 +229,73 @@ function negateIf(line: string): string | null {
   return `${indent}${prefix}if (!(${cond}))${rest.slice(close + 1)}`;
 }
 
+/** True when the `=` at `i` is an assignment or arrow, not part of `==`, `<=` etc. */
+function isAssignmentEquals(s: string, i: number): boolean {
+  const prev = i > 0 ? s.charAt(i - 1) : "";
+  const next = s.charAt(i + 1);
+  return (prev === "" || !"=!<>".includes(prev)) && next !== "=";
+}
+
+const CONDITION_LEAD_KEYWORDS = ["return ", "yield ", "throw ", "case "];
+
+/**
+ * Index where the ternary condition ending just before `q` starts, or -1 when
+ * it cannot be found safely. Scans backwards across the whole condition (so
+ * `a === b ? x : y` yields `a === b`, not only `b`), stopping at an unmatched
+ * opening bracket, a comma, `;`, `:`, `?`, an assignment or an arrow.
+ */
+function ternaryConditionStart(line: string, q: number): number {
+  let depth = 0;
+  for (let i = q - 1; i >= 0; i--) {
+    const c = line.charAt(i);
+    if (c === '"' || c === "'" || c === "`") {
+      // Skip the whole string literal; an unmatched quote is unsafe to mutate.
+      let j = i - 1;
+      while (j >= 0 && !(line.charAt(j) === c && line.charAt(j - 1) !== "\\")) {
+        j--;
+      }
+      if (j < 0) return -1;
+      i = j;
+      continue;
+    }
+    if (c === ")" || c === "]" || c === "}") depth++;
+    else if (c === "(" || c === "[" || c === "{") {
+      if (depth === 0) return i + 1;
+      depth--;
+    } else if (depth === 0) {
+      if (c === "," || c === ";" || c === ":") return i + 1;
+      if (c === "=" && isAssignmentEquals(line, i)) {
+        return line.charAt(i + 1) === ">" ? i + 2 : i + 1;
+      }
+      if (
+        c === "?" && line.charAt(i + 1) !== "." && line.charAt(i + 1) !== "?" &&
+        line.charAt(i - 1) !== "?"
+      ) return i + 1;
+    }
+  }
+  return 0;
+}
+
 function negateTernary(line: string): string | null {
-  const q = line.indexOf(" ? ");
+  let q = line.indexOf(" ? ");
+  while (q > 0 && !isCodeAt(line, q)) q = line.indexOf(" ? ", q + 1);
   if (q <= 0 || line.indexOf(" : ", q) < 0) return null;
-  let start = q;
-  while (start > 0 && /[\w$.]/.test(line.charAt(start - 1))) start--;
-  const cond = line.slice(start, q);
-  if (cond === "" || !/^[A-Za-z_$]/.test(cond)) return null;
-  if (!isCodeAt(line, start)) return null;
-  return `${line.slice(0, start)}!${cond}${line.slice(q)}`;
+  let start = ternaryConditionStart(line, q);
+  if (start < 0) return null;
+  const skipSpaces = () => {
+    while (start < q && line.charAt(start) === " ") start++;
+  };
+  skipSpaces();
+  for (const kw of CONDITION_LEAD_KEYWORDS) {
+    if (line.startsWith(kw, start)) {
+      start += kw.length;
+      skipSpaces();
+      break;
+    }
+  }
+  const cond = line.slice(start, q).trimEnd();
+  if (cond === "" || !isCodeAt(line, start)) return null;
+  return `${line.slice(0, start)}!(${cond})${line.slice(q)}`;
 }
 
 function swapBoolean(line: string): { text: string; from: string } | null {
@@ -276,19 +342,32 @@ function deleteCall(line: string): string | null {
   return "";
 }
 
+/** Mutants generated for one file, and how many candidates were not generated. */
+export interface DenoMutantGeneration {
+  mutants: DenoMutant[];
+  /**
+   * Candidate mutations dropped without being tried: those past `cap`, and
+   * one per added line longer than {@link MAX_MUTATED_LINE_LENGTH}. A caller
+   * that ignores this reports a partly mutated change as fully checked.
+   */
+  dropped: number;
+}
+
 /**
  * Generate mutants for the added lines of one source file. One mutant per
- * mutation kind per line, ordered by line then kind, stopping at `cap`.
- * Test files and comment lines yield nothing.
+ * mutation kind per line, ordered by line then kind, stopping at `cap`; the
+ * candidates past `cap` and the over-long lines are counted in `dropped`
+ * rather than silently lost. Test files and comment lines yield nothing.
  */
-export function generateDenoMutants(
+export function generateDenoMutantsDetailed(
   file: string,
   source: string,
   addedLines: readonly number[],
   cap: number,
-): DenoMutant[] {
+): DenoMutantGeneration {
   const out: DenoMutant[] = [];
-  if (isDenoTestFile(file) || cap <= 0) return out;
+  let dropped = 0;
+  if (isDenoTestFile(file)) return { mutants: out, dropped };
   const lines = source.split("\n");
   const sorted = [...new Set(addedLines)].sort((a, b) => a - b);
   for (const n of sorted) {
@@ -296,12 +375,15 @@ export function generateDenoMutants(
     const raw = lines[n - 1] ?? "";
     const cr = raw.endsWith("\r") ? "\r" : "";
     const line = cr ? raw.slice(0, -1) : raw;
-    if (line.length > MAX_MUTATED_LINE_LENGTH) continue;
     const t = line.trimStart();
     if (
       t === "" || t.startsWith("//") || t.startsWith("*") ||
       t.startsWith("/*")
     ) continue;
+    if (line.length > MAX_MUTATED_LINE_LENGTH) {
+      dropped++;
+      continue;
+    }
 
     const candidates: Array<[string | null, string]> = [];
     candidates.push([negateIf(line), "negated if condition"]);
@@ -324,7 +406,10 @@ export function generateDenoMutants(
 
     for (const [text, description] of candidates) {
       if (text === null) continue;
-      if (out.length >= cap) return out;
+      if (out.length >= cap) {
+        dropped++;
+        continue;
+      }
       const mutated = [...lines];
       mutated[n - 1] = text + cr;
       out.push({
@@ -335,7 +420,17 @@ export function generateDenoMutants(
       });
     }
   }
-  return out;
+  return { mutants: out, dropped };
+}
+
+/** The mutants of {@link generateDenoMutantsDetailed}, without the dropped count. */
+export function generateDenoMutants(
+  file: string,
+  source: string,
+  addedLines: readonly number[],
+  cap: number,
+): DenoMutant[] {
+  return generateDenoMutantsDetailed(file, source, addedLines, cap).mutants;
 }
 
 // ---------------------------------------------------------------------------
@@ -412,7 +507,11 @@ export function evaluateMutationGate(
   }
   const budgetExhausted = result.kind === "budget_exhausted";
   const note = result.kind === "budget_exhausted"
-    ? `mutation budget exhausted after ${result.tested} of ${result.total} mutants (${result.budgetSeconds} s) — remaining mutants untested, not passed`
+    ? (result.limit === "mutant_cap"
+      ? `mutation cap reached: ${result.tested} of ${result.total} candidate mutants tried — ${
+        result.total - result.tested
+      } untested (past the mutant cap or on lines over ${MAX_MUTATED_LINE_LENGTH} characters), not passed`
+      : `mutation budget exhausted after ${result.tested} of ${result.total} mutants (${result.budgetSeconds} s) — remaining mutants untested, not passed`)
     : `${result.killed} of ${result.total} mutants killed`;
   if (survivors.length > 0) {
     return {

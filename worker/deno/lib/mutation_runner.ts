@@ -12,6 +12,14 @@
  * canonical repository root is read, written or restored (see
  * {@link confinePath}). A file that fails the check is skipped, never written.
  *
+ * A Deno module is mutated and tested from the directory of its nearest
+ * ancestor `deno.json` / `deno.jsonc` / `deno.lock` (the repository root, or a
+ * nested project such as `worker/deno/`), so that project's own configuration
+ * applies to the tests.
+ *
+ * Every child process runs with an allowlisted environment, never the
+ * worker's own (see {@link defaultMutationRunnerSeams}).
+ *
  * Known limit: a Deno module counts as covered only by tests that import it
  * directly, so a module exercised solely through another module's tests is
  * reported as having no importing test.
@@ -21,13 +29,14 @@
 
 import {
   DEFAULT_MUTANT_CAP,
-  generateDenoMutants,
+  generateDenoMutantsDetailed,
   isDenoTestFile,
   type Mutant,
   type MutationCheckResult,
   type MutationLanguage,
   parseAddedLines,
 } from "./mutation_gate.ts";
+import { buildUntrustedCommandEnv } from "./untrusted_command_env.ts";
 
 export interface ProcessResult {
   code: number;
@@ -53,6 +62,8 @@ export interface MutationRunnerSeams {
   removeDir(path: string): Promise<void>;
   /** Repo-relative `*_test.ts` / `*.test.ts` paths. */
   listTestFiles(repoPath: string): Promise<string[]>;
+  /** Create an empty temporary directory outside any repository. */
+  makeTempDir(): Promise<string>;
 }
 
 export interface MutationRunInput {
@@ -69,16 +80,55 @@ const RELATIVE_SPECIFIER = /["'](\.{1,2}\/[^"']*)["']/g;
 const CARGO_MUTANTS_MISSING =
   "cargo-mutants is not installed; install it or set skip_mutation_check";
 
-/** Deno markers at the repo root win; otherwise `Cargo.toml` means Rust. */
+/**
+ * Repo-relative directory of the nearest ancestor of `file` (itself included)
+ * holding a Deno marker, `""` for the repository root, or null when none does.
+ * A marker that resolves outside the repository does not count.
+ */
+export async function findDenoConfigDir(
+  repoPath: string,
+  file: string,
+  seams: MutationRunnerSeams,
+): Promise<string | null> {
+  let dir = dirOf(normalisePath(file));
+  for (;;) {
+    for (const marker of DENO_MARKERS) {
+      const abs = await confinePath(
+        repoPath,
+        dir === "" ? marker : `${dir}/${marker}`,
+        seams,
+      );
+      if (abs !== null && await seams.exists(abs)) return dir;
+    }
+    if (dir === "") return null;
+    dir = dirOf(dir);
+  }
+}
+
+/**
+ * Deno markers at the repo root win; then a changed non-test source file under
+ * a nested Deno project (`worker/deno/deno.json`); otherwise a root
+ * `Cargo.toml` means Rust.
+ */
 export async function detectMutationLanguage(
   repoPath: string,
   seams: MutationRunnerSeams,
+  changedFiles: Iterable<string> = [],
 ): Promise<MutationLanguage | null> {
   for (const marker of DENO_MARKERS) {
     if (await seams.exists(`${repoPath}/${marker}`)) return "deno";
   }
+  for (const file of changedFiles) {
+    if (!isDenoSource(file)) continue;
+    if (await findDenoConfigDir(repoPath, file, seams) !== null) return "deno";
+  }
   if (await seams.exists(`${repoPath}/Cargo.toml`)) return "rust";
   return null;
+}
+
+function isDenoSource(file: string): boolean {
+  return SOURCE_FILE.test(file) && !file.endsWith(".d.ts") &&
+    !isDenoTestFile(file);
 }
 
 export async function runMutationCheck(
@@ -89,11 +139,17 @@ export async function runMutationCheck(
     if (input.diff.trim() === "") {
       return { kind: "not_applicable", reason: "the diff is empty" };
     }
-    const language = await detectMutationLanguage(input.repoPath, seams);
+    const language = await detectMutationLanguage(
+      input.repoPath,
+      seams,
+      parseAddedLines(input.diff).keys(),
+    );
     if (language === null) {
       return {
         kind: "not_applicable",
-        reason: "no Deno or Rust project found at the repository root",
+        reason: "no Deno project (deno.json, deno.jsonc or deno.lock) " +
+          "above a changed source file and no Cargo.toml at the repository " +
+          "root",
       };
     }
     return language === "deno"
@@ -194,6 +250,18 @@ export function importsModule(
   return false;
 }
 
+/**
+ * `deno test` arguments for the mutation runs. `--no-check` is load-bearing:
+ * a mutant (`return undefined;` in a `: boolean` function, a negated operand)
+ * usually fails type-checking, and a non-zero exit from the type-checker would
+ * be read as a test going red, so every such mutant would count as killed
+ * whether or not a test pins the line. Run without the type-checker, the exit
+ * code reflects only the tests' own verdict.
+ */
+function denoTestArgs(tests: readonly string[]): string[] {
+  return ["test", "--no-check", "-A", ...tests];
+}
+
 async function runDeno(
   input: MutationRunInput,
   seams: MutationRunnerSeams,
@@ -204,56 +272,84 @@ async function runDeno(
   const remaining = () => budgetMs - (seams.now() - start);
 
   const added = parseAddedLines(input.diff);
-  const modules: Array<{ file: string; lines: number[]; abs: string }> = [];
+  const modules: Array<{
+    file: string;
+    lines: number[];
+    abs: string;
+    configDir: string;
+  }> = [];
   for (const [file, lines] of added) {
-    if (
-      !SOURCE_FILE.test(file) || file.endsWith(".d.ts") ||
-      isDenoTestFile(file)
-    ) continue;
+    if (!isDenoSource(file)) continue;
     const abs = await confinePath(repoPath, file, seams);
     if (abs === null || !(await seams.exists(abs))) continue;
-    modules.push({ file: normalisePath(file), lines, abs });
+    const configDir = await findDenoConfigDir(repoPath, file, seams);
+    if (configDir === null) continue;
+    modules.push({ file: normalisePath(file), lines, abs, configDir });
   }
   if (modules.length === 0) {
     return {
       kind: "not_applicable",
-      reason: "the diff adds no lines to non-test Deno source files",
+      reason: "the diff adds no lines to non-test Deno source files " +
+        "inside a Deno project",
     };
   }
 
   const cap = input.mutantCap ?? DEFAULT_MUTANT_CAP;
   const originals = new Map<string, string>();
   const absFor = new Map<string, string>();
-  const mutants: Array<ReturnType<typeof generateDenoMutants>[number]> = [];
+  const configDirFor = new Map<string, string>();
+  const mutants: Array<
+    ReturnType<typeof generateDenoMutantsDetailed>["mutants"][number]
+  > = [];
+  // Candidates the cap or the line-length limit kept from being tried.
+  let dropped = 0;
   for (const mod of modules) {
-    const room = cap - mutants.length;
-    if (room <= 0) break;
     const source = await seams.readTextFile(mod.abs);
     originals.set(mod.file, source);
     absFor.set(mod.file, mod.abs);
-    mutants.push(...generateDenoMutants(mod.file, source, mod.lines, room));
+    configDirFor.set(mod.file, mod.configDir);
+    const generated = generateDenoMutantsDetailed(
+      mod.file,
+      source,
+      mod.lines,
+      Math.max(0, cap - mutants.length),
+    );
+    mutants.push(...generated.mutants);
+    dropped += generated.dropped;
   }
-  if (mutants.length === 0) {
+  if (mutants.length === 0 && dropped === 0) {
     return {
       kind: "not_applicable",
       reason: "no mutable statements on the added lines",
     };
   }
 
+  // Tests run from the module's own project directory, so that project's
+  // deno.json (imports, tasks, permissions) applies.
   const testFiles = await seams.listTestFiles(repoPath);
   const testsFor = new Map<string, string[]>();
   for (const file of new Set(mutants.map((m) => m.file))) {
-    testsFor.set(
+    const configDir = configDirFor.get(file) ?? "";
+    const prefix = configDir === "" ? "" : `${configDir}/`;
+    const inProject = testFiles.filter((t) => t.startsWith(prefix));
+    const importing = await findImportingTests(
       file,
-      await findImportingTests(file, testFiles, seams, repoPath),
+      inProject,
+      seams,
+      repoPath,
     );
+    testsFor.set(file, importing.map((t) => t.slice(prefix.length)));
   }
+  const cwdFor = (file: string) => {
+    const configDir = configDirFor.get(file) ?? "";
+    return configDir === "" ? repoPath : `${repoPath}/${configDir}`;
+  };
 
   const survivors: Mutant[] = [];
   let killed = 0;
   let tested = 0;
-  const total = mutants.length;
-  const exhausted = (): MutationCheckResult => ({
+  const total = mutants.length + dropped;
+  const exhausted = (limit?: "mutant_cap"): MutationCheckResult => ({
     kind: "budget_exhausted",
     language: "deno",
     survivors,
@@ -261,6 +357,7 @@ async function runDeno(
     tested,
     total,
     budgetSeconds,
+    ...(limit === undefined ? {} : { limit }),
   });
 
   // Mutants of modules no test imports cannot be killed.
@@ -280,12 +377,12 @@ async function runDeno(
   const baselined = new Set<string>();
   for (const m of runnable) {
     const tests = testsFor.get(m.file) ?? [];
-    const key = tests.join("\n");
+    const key = `${configDirFor.get(m.file) ?? ""}\n${tests.join("\n")}`;
     if (baselined.has(key)) continue;
     baselined.add(key);
     if (remaining() <= 0) return exhausted();
-    const base = await seams.runProcess("deno", ["test", "-A", ...tests], {
-      cwd: repoPath,
+    const base = await seams.runProcess("deno", denoTestArgs(tests), {
+      cwd: cwdFor(m.file),
       timeoutMs: remaining(),
     });
     if (base.timedOut) return exhausted();
@@ -308,8 +405,8 @@ async function runDeno(
     let result: ProcessResult;
     try {
       await seams.writeTextFile(path, m.mutatedSource);
-      result = await seams.runProcess("deno", ["test", "-A", ...tests], {
-        cwd: repoPath,
+      result = await seams.runProcess("deno", denoTestArgs(tests), {
+        cwd: cwdFor(m.file),
         timeoutMs: remaining(),
       });
     } finally {
@@ -326,6 +423,8 @@ async function runDeno(
       });
     }
   }
+  // A capped run is never a clean pass: candidates past the cap were not tried.
+  if (dropped > 0) return exhausted("mutant_cap");
   return { kind: "completed", language: "deno", survivors, killed, total };
 }
 
@@ -462,7 +561,7 @@ async function runRust(
   input: MutationRunInput,
   seams: MutationRunnerSeams,
 ): Promise<MutationCheckResult> {
-  const { repoPath, budgetSeconds } = input;
+  const { repoPath } = input;
   const added = parseAddedLines(input.diff);
   if (![...added.keys()].some((f) => f.endsWith(".rs"))) {
     return {
@@ -483,8 +582,26 @@ async function runRust(
     };
   }
   const packages = await touchedPackages(repoPath, added.keys(), seams);
-  // Our own output directory: a stale one must never be read as this run's.
-  await seams.removeDir(`${repoPath}/mutants.out`);
+  // cargo-mutants writes `mutants.out/` (outcomes, logs, diffs, lock) under
+  // `--output`. Pointing that at a fresh directory outside the repository
+  // keeps it out of the working tree (a recovery commit runs `git add -A`)
+  // and means a stale copy can never be read as this run's.
+  const outDir = await seams.makeTempDir();
+  try {
+    return await runCargoMutants(input, seams, diffPath, packages, outDir);
+  } finally {
+    await seams.removeDir(outDir);
+  }
+}
+
+async function runCargoMutants(
+  input: MutationRunInput,
+  seams: MutationRunnerSeams,
+  diffPath: string,
+  packages: readonly string[],
+  outDir: string,
+): Promise<MutationCheckResult> {
+  const { repoPath, budgetSeconds } = input;
   await seams.writeTextFile(diffPath, input.diff);
   const jobs = input.jobs ??
     Math.max(1, Math.min(4, globalThis.navigator?.hardwareConcurrency ?? 2));
@@ -495,6 +612,8 @@ async function runRust(
       ...packages.flatMap((p) => ["--package", p]),
       "--in-diff",
       diffPath,
+      "--output",
+      outDir,
       "--no-shuffle",
       "--jobs",
       String(jobs),
@@ -515,7 +634,7 @@ async function runRust(
     return { kind: "error", reason: `${why}; cannot judge mutants` };
   }
 
-  const outcomesPath = `${repoPath}/mutants.out/outcomes.json`;
+  const outcomesPath = `${outDir}/mutants.out/outcomes.json`;
   let text: string | null = null;
   if (await seams.exists(outcomesPath)) {
     text = await seams.readTextFile(outcomesPath);
@@ -588,8 +707,19 @@ async function walkTests(
   }
 }
 
-/** Real seams: `Deno.Command` with kill-on-timeout, real clock and filesystem. */
-export function defaultMutationRunnerSeams(): MutationRunnerSeams {
+/**
+ * Real seams: `Deno.Command` with kill-on-timeout, real clock and filesystem.
+ *
+ * The mutation gate runs repository code (`deno test -A`, `cargo mutants`'s
+ * build scripts and tests) after the agent has written tests, so a child never
+ * inherits the worker's environment: it gets
+ * {@link buildUntrustedCommandEnv}'s allowlist with `clearEnv`, the same
+ * control every other repository-controlled spawn uses (Issue #572).
+ */
+export function defaultMutationRunnerSeams(
+  /** Environment the allowlist is applied to; tests only. Default: the worker's. */
+  envSource?: Record<string, string>,
+): MutationRunnerSeams {
   return {
     async runProcess(cmd, args, opts) {
       let child: Deno.ChildProcess;
@@ -597,6 +727,10 @@ export function defaultMutationRunnerSeams(): MutationRunnerSeams {
         child = new Deno.Command(cmd, {
           args,
           cwd: opts.cwd,
+          env: buildUntrustedCommandEnv(
+            envSource === undefined ? {} : { source: envSource },
+          ),
+          clearEnv: true,
           stdin: "null",
           stdout: "piped",
           stderr: "piped",
@@ -658,6 +792,7 @@ export function defaultMutationRunnerSeams(): MutationRunnerSeams {
         if (!(err instanceof Deno.errors.NotFound)) throw err;
       }
     },
+    makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-mutation-" }),
     async listTestFiles(repoPath) {
       const out: string[] = [];
       await walkTests(repoPath, "", out);

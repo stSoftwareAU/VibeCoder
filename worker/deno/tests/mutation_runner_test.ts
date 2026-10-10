@@ -22,6 +22,7 @@ import {
   type ProcessResult,
   runMutationCheck,
 } from "../lib/mutation_runner.ts";
+import { ALLOWED_ENV_NAMES } from "../lib/untrusted_command_env.ts";
 
 const REPO = "/repo";
 const MODULE = "lib/m.ts";
@@ -37,7 +38,7 @@ const DIFF =
 interface Fake {
   seams: MutationRunnerSeams;
   files: Map<string, string>;
-  calls: Array<{ cmd: string; args: string[]; timeoutMs: number }>;
+  calls: Array<{ cmd: string; args: string[]; timeoutMs: number; cwd: string }>;
   clock: { t: number };
 }
 
@@ -53,9 +54,10 @@ function fake(
   const fs = new Map(Object.entries(files));
   const calls: Fake["calls"] = [];
   const clock = { t: 0 };
+  let tempDirs = 0;
   const seams: MutationRunnerSeams = {
     runProcess: async (cmd, args, opts) => {
-      calls.push({ cmd, args, timeoutMs: opts.timeoutMs });
+      calls.push({ cmd, args, timeoutMs: opts.timeoutMs, cwd: opts.cwd });
       const r = await run(cmd, args, fs);
       clock.t += tick;
       return r;
@@ -79,6 +81,7 @@ function fake(
       }
       return Promise.resolve();
     },
+    makeTempDir: () => Promise.resolve(`/tmp/vibe-mutation-${++tempDirs}`),
     listTestFiles: () =>
       Promise.resolve(
         [...fs.keys()].filter((k) => k.endsWith("_test.ts")).map((k) =>
@@ -194,7 +197,12 @@ Deno.test("runMutationCheck deno - mutants that turn tests red are killed", asyn
   assert(r.total > 0);
   // First call is the baseline, then one per mutant; all pass the importing test only.
   assertEquals(f.calls.length, r.total + 1);
-  assertEquals(f.calls[0]?.args, ["test", "-A", "tests/m_test.ts"]);
+  assertEquals(f.calls[0]?.args, [
+    "test",
+    "--no-check",
+    "-A",
+    "tests/m_test.ts",
+  ]);
 });
 
 Deno.test("runMutationCheck deno - budget exhaustion is reported, not passed", async () => {
@@ -274,17 +282,116 @@ Deno.test("runMutationCheck deno - importing tests are matched through ./ and ..
   const f = fake(files, scripted(1));
   const r = await runMutationCheck(input(), f.seams);
   assert(r.kind === "completed");
-  assertEquals(f.calls[0]?.args.slice(2).sort(), [
+  assertEquals(f.calls[0]?.args.slice(3).sort(), [
     "lib/m_test.ts",
     "tests/deep/x_test.ts",
   ]);
 });
 
-Deno.test("runMutationCheck deno - the mutant cap is global", async () => {
+Deno.test("runMutationCheck deno - the mutant cap is global and a capped run is not a pass", async () => {
   const f = fake(denoFiles(), scripted(1));
   const r = await runMutationCheck(input(300, 2), f.seams);
+  assert(r.kind === "budget_exhausted", JSON.stringify(r));
+  assertEquals(r.limit, "mutant_cap");
+  assertEquals(r.tested, 2);
+  assert(r.total > 2, "total counts the candidates the cap dropped");
+  assertEquals(r.killed, 2);
+});
+
+Deno.test("runMutationCheck deno - a line over the length limit is reported as untested, not passed", async () => {
+  const long = `  const s = ${"a".repeat(450)}; if (a) { return 1; }`;
+  const source =
+    `export function f(a: boolean) {\n${long}\n  if (a) {\n    return 1;\n  }\n}\n`;
+  const files = denoFiles({ [`${REPO}/${MODULE}`]: source });
+  const diff =
+    `--- a/${MODULE}\n+++ b/${MODULE}\n@@ -0,0 +1,3 @@\n+${long}\n+  if (a) {\n+    return 1;\n`;
+  const f = fake(
+    files,
+    (_c, _a, fs) => ok(fs.get(`${REPO}/${MODULE}`) === source ? 0 : 1),
+  );
+  const r = await runMutationCheck({ ...input(), diff }, f.seams);
+  assert(r.kind === "budget_exhausted", JSON.stringify(r));
+  assertEquals(r.limit, "mutant_cap");
+  assert(r.total > r.tested);
+});
+
+Deno.test("runMutationCheck deno - mutants run without the type-checker, so a type-invalid mutant is not killed by it", async () => {
+  // Like `deno test`: a mutated file fails type-checking (exit 1) unless
+  // --no-check is passed; the tests themselves are green either way.
+  const f = fake(
+    denoFiles(),
+    (_c, args, fs) =>
+      ok(
+        fs.get(`${REPO}/${MODULE}`) !== SOURCE && !args.includes("--no-check")
+          ? 1
+          : 0,
+      ),
+  );
+  const r = await runMutationCheck(input(), f.seams);
   assert(r.kind === "completed");
-  assertEquals(r.total, 2);
+  assert(r.survivors.length > 0, "a type error must not read as a kill");
+  assertEquals(r.killed, 0);
+  assert(f.calls.every((c) => c.args.includes("--no-check")));
+});
+
+Deno.test("runMutationCheck deno - a nested deno.json project runs its tests from its own directory", async () => {
+  const mod = "worker/deno/lib/m.ts";
+  const files: Record<string, string> = {
+    [`${REPO}/worker/deno/deno.json`]: "{}",
+    [`${REPO}/${mod}`]: SOURCE,
+    [`${REPO}/worker/deno/tests/m_test.ts`]: TEST_SRC,
+    // A same-named test outside the project must not be run from inside it.
+    [`${REPO}/other/tests/m_test.ts`]:
+      'import { f } from "../../worker/deno/lib/m.ts";\n',
+  };
+  const diff = DIFF.replaceAll(MODULE, mod);
+  const f = fake(
+    files,
+    (_c, _a, fs) => ok(fs.get(`${REPO}/${mod}`) === SOURCE ? 0 : 1),
+  );
+  const r = await runMutationCheck({ ...input(), diff }, f.seams);
+  assert(r.kind === "completed", JSON.stringify(r));
+  assert(r.killed > 0);
+  assertEquals(await detectMutationLanguage(REPO, f.seams, [mod]), "deno");
+  assertEquals(await detectMutationLanguage(REPO, f.seams, []), null);
+  const seen = new Set(
+    f.calls.map((c) => JSON.stringify([c.cwd, c.args.slice(3)])),
+  );
+  assertEquals([...seen], [
+    JSON.stringify([`${REPO}/worker/deno`, ["tests/m_test.ts"]]),
+  ]);
+});
+
+Deno.test("runMutationCheck deno - a changed file with no deno config above it is skipped, one with a config is mutated", async () => {
+  const files = denoFiles();
+  delete files[`${REPO}/deno.json`];
+  files[`${REPO}/pkg/deno.json`] = "{}";
+  files[`${REPO}/pkg/lib/m.ts`] = SOURCE;
+  files[`${REPO}/pkg/tests/m_test.ts`] = TEST_SRC;
+  const diff = DIFF + DIFF.replaceAll(MODULE, "pkg/lib/m.ts");
+  const f = fake(files, scripted(0));
+  const r = await runMutationCheck({ ...input(), diff }, f.seams);
+  assert(r.kind === "completed", JSON.stringify(r));
+  assert(r.survivors.length > 0);
+  assert(
+    r.survivors.every((s) => s.file === "pkg/lib/m.ts"),
+    JSON.stringify(r.survivors),
+  );
+  // The unconfigured module is never rewritten.
+  assertEquals(f.files.get(`${REPO}/${MODULE}`), SOURCE);
+});
+
+Deno.test("runMutationCheck deno - added lines with nothing to mutate are not applicable", async () => {
+  const diff =
+    `--- a/${MODULE}\n+++ b/${MODULE}\n@@ -0,0 +1 @@\n+// a comment\n`;
+  const f = fake(
+    denoFiles({ [`${REPO}/${MODULE}`]: "// a comment\n" }),
+    () => ok(),
+  );
+  const r = await runMutationCheck({ ...input(), diff }, f.seams);
+  assert(r.kind === "not_applicable", JSON.stringify(r));
+  assertStringIncludes(r.reason, "no mutable statements");
+  assertEquals(f.calls.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -327,12 +434,21 @@ function outcomesJson(summaries: Array<[string, number]>): string {
   });
 }
 
+/** Like cargo-mutants, write `mutants.out/` under the `--output` directory. */
+function writeOutcomes(
+  fs: Map<string, string>,
+  args: string[],
+  outcomes: string,
+): void {
+  const out = args[args.indexOf("--output") + 1];
+  assert(out !== undefined && args.includes("--output"), "missing --output");
+  fs.set(`${out}/mutants.out/outcomes.json`, outcomes);
+}
+
 /** `outcomes` is written by the fake cargo run itself, as the real one does. */
 function rustFake(outcomes: string | null, proc: ProcessResult) {
-  return fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, _a, fs) => {
-    if (outcomes !== null) {
-      fs.set(`${REPO}/mutants.out/outcomes.json`, outcomes);
-    }
+  return fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, args, fs) => {
+    if (outcomes !== null) writeOutcomes(fs, args, outcomes);
     return proc;
   });
 }
@@ -357,6 +473,8 @@ Deno.test("runMutationCheck rust - a missed mutant is a survivor", async () => {
     "mutants",
     "--in-diff",
     `${REPO}/target/vibe-mutation-check.diff`,
+    "--output",
+    "/tmp/vibe-mutation-1",
     "--no-shuffle",
     "--jobs",
     "2",
@@ -443,13 +561,30 @@ Deno.test("runMutationCheck rust - a timeout with no outcomes fails closed", asy
   }
 });
 
-Deno.test("runMutationCheck rust - a stale outcomes.json from a previous run is not reported", async () => {
+Deno.test("runMutationCheck rust - a stale outcomes.json in the repo is neither read nor deleted", async () => {
   const stale = outcomesJson([["MissedMutant", 2]]);
   const f = rustFake(null, ok(0)); // cargo writes nothing this time
   f.files.set(`${REPO}/mutants.out/outcomes.json`, stale);
   const r = await runMutationCheck(rsInput, f.seams);
   assert(r.kind === "error", JSON.stringify(r));
-  assertEquals(f.files.has(`${REPO}/mutants.out/outcomes.json`), false);
+  assertEquals(f.files.get(`${REPO}/mutants.out/outcomes.json`), stale);
+});
+
+Deno.test("runMutationCheck rust - mutants.out lands outside the repo and is removed", async () => {
+  for (const proc of [ok(2), ok(1)]) {
+    const f = rustFake(outcomesJson([["MissedMutant", 2]]), proc);
+    await runMutationCheck(rsInput, f.seams);
+    const argv = f.calls[0]?.args ?? [];
+    const out = argv[argv.indexOf("--output") + 1] ?? "";
+    assert(out !== "" && !out.startsWith(`${REPO}/`), `output ${out}`);
+    // Nothing of cargo-mutants' output is left in the working tree...
+    assertEquals(
+      [...f.files.keys()].filter((k) => k.includes("mutants.out")),
+      [],
+    );
+    // ...and its temporary home is gone, on success and on error alike.
+    assertEquals([...f.files.keys()].filter((k) => k.startsWith(out)), []);
+  }
 });
 
 Deno.test("runMutationCheck rust - only packages the diff touches are passed via --package", async () => {
@@ -460,9 +595,9 @@ Deno.test("runMutationCheck rust - only packages the diff touches are passed via
       '[package] # a\nname = "crate-a"\nversion = "0.1.0"\n\n[dependencies]\nname = "x"\n',
     [`${REPO}/crates/b/Cargo.toml`]: '[package]\nname = "crate_b"\n',
     [`${REPO}/crates/evil/Cargo.toml`]: '[package]\nname = "x; rm -rf /"\n',
-  }, (_c, _a, fs) => {
+  }, (_c, args, fs) => {
     // Cargo "writes" fresh outcomes during the run.
-    fs.set(`${REPO}/mutants.out/outcomes.json`, outcomesJson([]));
+    writeOutcomes(fs, args, outcomesJson([]));
     return ok(0);
   });
   const diff = "--- a/crates/a/src/lib.rs\n+++ b/crates/a/src/lib.rs\n" +
@@ -700,4 +835,41 @@ Deno.test("importsModule - hostile unclosed-specifier text scans in linear time"
     importsModule("import '../lib/m.ts'", "tests", "lib/m.ts"),
     true,
   );
+});
+
+// ---------------------------------------------------------------------------
+// Child environment (Issue #572: repository code never sees worker credentials)
+// ---------------------------------------------------------------------------
+
+Deno.test("defaultMutationRunnerSeams runProcess - the child gets the allowlisted environment, not the worker's", async () => {
+  const source: Record<string, string> = {
+    PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+    GH_TOKEN: "ghp_mutation_runner_test_secret",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth_mutation_runner_test_secret",
+    AWS_SECRET_ACCESS_KEY: "aws_mutation_runner_test_secret",
+    VIBE_MUTATION_TEST_PLAIN: "plain_mutation_runner_test_value",
+  };
+  const r = await defaultMutationRunnerSeams(source).runProcess("env", [], {
+    cwd: Deno.cwd(),
+    timeoutMs: 20_000,
+  });
+  assertEquals(r.code, 0, r.stderr);
+  const names = r.stdout.split("\n").filter((l) => l !== "").map((l) =>
+    l.split("=")[0] ?? ""
+  );
+  for (
+    const name of [
+      "GH_TOKEN",
+      "CLAUDE_CODE_OAUTH_TOKEN",
+      "AWS_SECRET_ACCESS_KEY",
+    ]
+  ) {
+    assertEquals(names.includes(name), false, `${name} reached the child`);
+  }
+  assertEquals(r.stdout.includes("_mutation_runner_test_secret"), false);
+  assert(names.includes("PATH"));
+  // Nothing outside the allowlist: not the planted variable, and not whatever
+  // this test process itself inherited (clearEnv).
+  const allowed = new Set(ALLOWED_ENV_NAMES);
+  assertEquals(names.filter((n) => !allowed.has(n)), []);
 });
