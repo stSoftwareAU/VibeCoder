@@ -121,7 +121,11 @@ export const PRIVATE_VULNERABILITY_REPORTING_SKIP_CHECK =
 /** Why it was skipped — GitHub offers it on public repositories only. */
 export const PRIVATE_VULNERABILITY_REPORTING_SKIP_REASON =
   "private repository — GitHub offers it on public repositories only";
-const ADMIN =
+/**
+ * The suggested-fix lead-in on every admin-only finding; `admin_only_finding.ts`
+ * matches on it (Issue #3360).
+ */
+export const REPO_ADMIN_ACTION =
   "Repository admin action — the worker cannot change repository settings.";
 
 async function readJson<T>(
@@ -175,7 +179,7 @@ export async function scanRepoSettings(
           "its own read-only permissions today, so safety rests on every future author remembering the block; the guide's " +
           "core ask is a read-only default so a forgotten block fails closed (Issue #4398, GHA-PERM-002).",
         suggestedFix:
-          `${ADMIN} Settings → Actions → General → Workflow permissions → "Read repository contents and packages permissions".`,
+          `${REPO_ADMIN_ACTION} Settings → Actions → General → Workflow permissions → "Read repository contents and packages permissions".`,
         evidence:
           `default_workflow_permissions=${workflow.default_workflow_permissions}`,
       });
@@ -192,7 +196,7 @@ export async function scanRepoSettings(
           "With this setting on, a workflow token can approve a pull request; combined with a ruleset that requires no " +
           "human approval this is a self-approval path for anything that can run a workflow (Issue #4398, GHA-PERM-002).",
         suggestedFix:
-          `${ADMIN} Settings → Actions → General → untick "Allow GitHub Actions to create and approve pull requests".`,
+          `${REPO_ADMIN_ACTION} Settings → Actions → General → untick "Allow GitHub Actions to create and approve pull requests".`,
         evidence:
           `can_approve_pull_request_reviews=${workflow.can_approve_pull_request_reviews}`,
       });
@@ -222,7 +226,7 @@ export async function scanRepoSettings(
           'Actions permissions is "Allow all actions and reusable workflows". An allow-list confines what a workflow ' +
           "edit can pull in to the actions the repository has vetted (Issue #4398, GHA-PERM-003 / GHA-HYGIENE-004).",
         suggestedFix:
-          `${ADMIN} Settings → Actions → General → "Allow enterprise, and select non-enterprise, actions and reusable workflows", ` +
+          `${REPO_ADMIN_ACTION} Settings → Actions → General → "Allow enterprise, and select non-enterprise, actions and reusable workflows", ` +
           "listing the actions the workflows use (see the SHA-pin catalogue).",
         evidence: `allowed_actions=${actions.allowed_actions}`,
       });
@@ -256,7 +260,7 @@ export async function scanRepoSettings(
               "including the ones a composite action pulls in (a composite `uses:` is enforced like a workflow `uses:`). " +
               "The affected job is refused before its first step, so the check it provides is silently absent (Issue #4424).",
             suggestedFix:
-              `${ADMIN} Run \`mod.ts repo-settings-harden --repo <owner/name> --apply\` from the checkout: it follows composite ` +
+              `${REPO_ADMIN_ACTION} Run \`mod.ts repo-settings-harden --repo <owner/name> --apply\` from the checkout: it follows composite ` +
               "actions' own uses: and extends the list; --allow-action owner/repo adds anything it cannot read.",
             evidence: `patterns_allowed misses: ${missing.join(", ")}`,
           });
@@ -276,7 +280,7 @@ export async function scanRepoSettings(
           "reference fail to run outright. Today a tag reference merged by mistake would run until the weekly audit " +
           "noticed (Issue #4398, GHA-PERM-003).",
         suggestedFix:
-          `${ADMIN} Settings → Actions → General → tick "Require actions to be pinned to a full-length commit SHA".`,
+          `${REPO_ADMIN_ACTION} Settings → Actions → General → tick "Require actions to be pinned to a full-length commit SHA".`,
         evidence: `sha_pinning_required=${actions.sha_pinning_required}`,
       });
     }
@@ -314,7 +318,7 @@ export async function scanRepoSettings(
           ". A change to .github/workflows/ — an unreviewed grant of CI credentials — can merge unreviewed " +
           "(Issue #4397, GHA-PERM-004).",
         suggestedFix:
-          `${ADMIN} On the ${options.defaultBranch} ruleset's pull_request rule set required approving review count to at least 1 ` +
+          `${REPO_ADMIN_ACTION} On the ${options.defaultBranch} ruleset's pull_request rule set required approving review count to at least 1 ` +
           "and consider requiring last-push approval.",
         evidence: `required_approving_review_count=${approvals}`,
       });
@@ -365,7 +369,7 @@ export async function scanRepoSettings(
           "its history continuously and adds validity checks — a leaked credential is found even when no PR touches it " +
           "(Issue #4401, GHA-MONITOR-004). Private repositories need GitHub Secret Protection for this.",
         suggestedFix:
-          `${ADMIN} Settings → Code security → enable secret scanning (and validity checks); may require enabling Secret Protection.`,
+          `${REPO_ADMIN_ACTION} Settings → Code security → enable secret scanning (and validity checks); may require enabling Secret Protection.`,
         evidence: `secret scanning status: ${scanning}`,
       });
     }
@@ -381,7 +385,7 @@ export async function scanRepoSettings(
           "Push protection blocks the push before the credential is in history — the difference between rotating a " +
           "credential and rotating it AND rewriting history across every clone (Issue #4401, GHA-MONITOR-004).",
         suggestedFix:
-          `${ADMIN} Settings → Code security → enable push protection.`,
+          `${REPO_ADMIN_ACTION} Settings → Code security → enable push protection.`,
         evidence: `push protection status: ${push}`,
       });
     }
@@ -427,7 +431,7 @@ export async function scanRepoSettings(
             "maintainers privately, as a draft security advisory. With it off, the only channel left is a public " +
             "issue, which discloses the flaw before a fix exists (Issue #3268).",
           suggestedFix:
-            `${ADMIN} Settings → Code security → enable "Private vulnerability reporting", or run ` +
+            `${REPO_ADMIN_ACTION} Settings → Code security → enable "Private vulnerability reporting", or run ` +
             "`mod.ts repo-settings-harden --repo <owner/name> --apply` from the checkout.",
           evidence: `private-vulnerability-reporting enabled=${pvr.enabled}`,
         });
