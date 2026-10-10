@@ -216,6 +216,54 @@ Deno.test({
 
 Deno.test({
   name:
+    "pre-commit hook - blocks force-added dotenv files at any depth (Issue #3390)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        ".env",
+        ".env.local",
+        ".env.production",
+        "services/api/.env",
+        "services/api/.env.production",
+        "config/.env.local",
+        ".env/secret",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(run.code, 1, `expected hook to block '${path}'`);
+      assertStringIncludes(run.stdout, path);
+      assertStringIncludes(run.stdout, "Attempting to commit sensitive");
+    }
+  },
+});
+
+Deno.test({
+  name: "pre-commit hook - allows dotenv look-alikes (Issue #3390)",
+  ignore: windows,
+  fn: async () => {
+    for (
+      const path of [
+        "src/env.ts",
+        ".envrc-docs/README.md",
+        ".envrc",
+        "docs/dotenv.md",
+        "env.example",
+        "config/my.env",
+      ]
+    ) {
+      const run = await hookVerdict(path);
+      assertEquals(
+        run.code,
+        0,
+        `hook wrongly blocked '${path}': ${run.stdout}`,
+      );
+    }
+  },
+});
+
+Deno.test({
+  name:
     "pre-commit hook - blocks force-added files under .secrets/ regardless of extension (Issue #3957)",
   ignore: windows,
   fn: async () => {
