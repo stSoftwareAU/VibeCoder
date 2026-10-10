@@ -104,6 +104,55 @@ Deno.test("classifyPrBaseChange - REST spellings", () => {
   );
 });
 
+Deno.test("classifyPrBaseChange - POST spellings (implicit and explicit) are base changes", () => {
+  const expected = { newBase: "main", repo: "o/r", prSelector: "12" };
+  // No -X: `gh api` sends POST because a field is given.
+  assertEquals(
+    classifyPrBaseChange(["api", "repos/o/r/pulls/12", "-f", "base=main"]),
+    expected,
+  );
+  assertEquals(
+    classifyPrBaseChange([
+      "api",
+      "-X",
+      "POST",
+      "repos/o/r/pulls/12",
+      "--field=base=main",
+    ]),
+    expected,
+  );
+  assertEquals(
+    classifyPrBaseChange(
+      ["api", "--method=POST", "repos/o/r/pulls/12", "--input", "b.json"],
+      () => '{"base":"main"}',
+    )?.newBase,
+    "main",
+  );
+  assertEquals(
+    classifyPrBaseChange(["api", "repos/o/r/pulls/12", "--input", "b.json"])
+      ?.newBase,
+    null,
+  );
+  // Non-base POSTs and other endpoints stay unclassified.
+  assertEquals(
+    classifyPrBaseChange(["api", "repos/o/r/pulls/12", "-f", "title=x"]),
+    undefined,
+  );
+  assertEquals(
+    classifyPrBaseChange([
+      "api",
+      "repos/o/r/pulls/12/comments",
+      "-f",
+      "base=x",
+    ]),
+    undefined,
+  );
+  assertEquals(
+    classifyPrBaseChange(["api", "repos/o/r/pulls", "-f", "base=main"]),
+    undefined,
+  );
+});
+
 Deno.test("classifyPrBaseChange - query, fragment and absolute-URL spellings", () => {
   for (
     const endpoint of [
@@ -243,4 +292,35 @@ Deno.test("enforcePrBaseChangeGuard - logs and throws on refusal, no-op otherwis
       }),
     PrBaseChangeRefusedError,
   );
+});
+
+Deno.test("enforcePrBaseChangeGuard - implicit-POST REST spelling looks up the PR and refuses", async () => {
+  const logs: string[] = [];
+  const looked: string[] = [];
+  const deps = {
+    lookup: (change: { prSelector?: string }) => {
+      looked.push(change.prSelector ?? "");
+      return Promise.resolve({
+        headRefName: "milestone-fix/x/pr-5-ci",
+        baseRefName: "milestone/x",
+      });
+    },
+    log: (l: string) => logs.push(l),
+  };
+  await assertRejects(
+    () =>
+      enforcePrBaseChangeGuard(
+        ["api", "repos/o/r/pulls/12", "-f", "base=main"],
+        deps,
+      ),
+    PrBaseChangeRefusedError,
+  );
+  assertEquals(looked, ["12"]);
+  assertEquals(logs.length, 1);
+  // Moving to its own milestone branch is still allowed on the same spelling.
+  await enforcePrBaseChangeGuard(
+    ["api", "repos/o/r/pulls/12", "-f", "base=milestone/x"],
+    deps,
+  );
+  assertEquals(looked, ["12", "12"]);
 });

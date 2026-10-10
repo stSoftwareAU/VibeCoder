@@ -39,7 +39,7 @@
  *      it can call the REST API directly, where none of the above applies.
  *      Refused unconditionally — see `gh_credential_disclosure_guard.ts`.
  *   5. **PR base change** (Issue #3433). `gh pr edit --base` and the REST
- *      `PATCH …/pulls/N` with `base` are refused unconditionally (alongside
+ *      `PATCH`/`POST …/pulls/N` with `base` are refused unconditionally (alongside
  *      the PR-lifecycle refusal): moving a milestone PR to the default branch
  *      skips the milestone's final review.
  *   6. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
