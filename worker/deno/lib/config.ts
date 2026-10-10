@@ -196,6 +196,9 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
   skip_security_fix_check: "skipSecurityFixCheck",
+  // Diff-scoped mutation gate (Issue #3393).
+  skip_mutation_check: "skipMutationCheck",
+  mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",

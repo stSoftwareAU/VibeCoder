@@ -31,10 +31,13 @@
  */
 
 import {
+  type BlameFileFn,
+  blameSuppressionMarkerLines,
   isFindingSuppressed,
   readWorkflowFiles,
   type WorkflowFile,
 } from "./workflow_scan_common.ts";
+import { blameFileLineLogins } from "./suppression_identity.ts";
 import {
   type ContainerManifest,
   parseContainerManifest,
@@ -132,6 +135,8 @@ export interface ScanGateSkipDriftOptions {
   env?: EnvLookup;
   /** Gate scripts to inspect, in order. Defaults to `["quality.sh"]`. */
   gateScriptNames?: readonly string[];
+  /** Blames a file into line → login. Defaults to `blameFileLineLogins`; tests inject a stub. */
+  blameFileFn?: BlameFileFn;
 }
 
 // ---------------------------------------------------------------------------
@@ -547,8 +552,12 @@ export interface CorrelateGateSkipDriftOptions {
   enforcements: readonly CiToolEnforcement[];
   /** Commands the image already carries for the repository. */
   bakedTools: readonly string[];
-  /** Gate script text and path, for in-source waiver detection. */
-  gateScript?: { path: string; text: string };
+  /** Gate script text, path and blamed line authors, for in-source waiver detection. */
+  gateScript?: {
+    path: string;
+    text: string;
+    lineAuthors?: Readonly<Record<number, string>>;
+  };
 }
 
 /**
@@ -570,10 +579,15 @@ export function correlateGateSkipDrift(
     const findingId = gateSkipFindingId(skip.tool);
     if (
       opts.gateScript !== undefined && isFindingSuppressed(
-        opts.gateScript.text,
+        {
+          rawText: opts.gateScript.text,
+          path: opts.gateScript.path,
+          ...(opts.gateScript.lineAuthors
+            ? { lineAuthors: opts.gateScript.lineAuthors }
+            : {}),
+        },
         skip.skipLine,
         findingId,
-        opts.gateScript.path,
       )
     ) {
       continue;
@@ -696,7 +710,13 @@ export async function scanGateSkipDrift(
     };
   }
 
-  let gateScript: { path: string; text: string } | null = null;
+  const blameFileFn: BlameFileFn = opts.blameFileFn ??
+    ((dir, file) => blameFileLineLogins(dir, file));
+  let gateScript: {
+    path: string;
+    text: string;
+    lineAuthors?: Readonly<Record<number, string>>;
+  } | null = null;
   for (const name of opts.gateScriptNames ?? DEFAULT_GATE_SCRIPTS) {
     const path = `${opts.repoPath}/${name}`;
     let text: string;
@@ -715,13 +735,19 @@ export async function scanGateSkipDrift(
         },
       };
     }
-    gateScript = { path: name, text };
+    const lineAuthors = await blameSuppressionMarkerLines(
+      opts.repoPath,
+      name,
+      text,
+      blameFileFn,
+    );
+    gateScript = { path: name, text, ...(lineAuthors ? { lineAuthors } : {}) };
     break;
   }
 
   const skips = gateScript === null ? [] : findGateToolSkips(gateScript.text);
   const bakedTools = bakedToolsForRepo(manifest, opts.repo);
-  const files = await readWorkflowFiles(opts.repoPath);
+  const files = await readWorkflowFiles(opts.repoPath, { blameFileFn });
   const readFailure = await workflowReadFailure(opts.repoPath, files);
   if (readFailure !== null) return { ok: false, error: readFailure };
   const enforcements = findCiToolEnforcements(

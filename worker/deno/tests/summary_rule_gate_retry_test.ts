@@ -354,6 +354,44 @@ Deno.test("summary-rule retry - no sections carries the whole comment as REQUIRE
   assertStringIncludes(prompt, VERDICT.comment);
 });
 
+Deno.test("summary-rule retry - a mutation-check item allows test changes; other items stay documentation-only", () => {
+  const docsOnly = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
+  assertStringIncludes(docsOnly, "so do not change it.");
+  assertEquals(docsOnly.includes("adding or strengthening tests"), false);
+
+  const withTests = buildSummaryRuleRetryPrompt(
+    { ...VERDICT, allowsTestChanges: true },
+    "org/repo",
+    7,
+  );
+  assertStringIncludes(withTests, "adding or strengthening tests");
+  assertEquals(withTests.includes("so do not change it."), false);
+  // The exemption is for lines no test can reach, not an alternative to a test.
+  assertStringIncludes(
+    withTests,
+    "only for a line that genuinely cannot be tested",
+  );
+  // New work and PR creation stay forbidden.
+  assertStringIncludes(withTests, "Do not create the PR yourself");
+});
+
+Deno.test("summary-rule retry - a standing violation and a mutation-check item both allow code and test changes", () => {
+  const prompt = buildSummaryRuleRetryPrompt(
+    {
+      ...VERDICT,
+      allowsTestChanges: true,
+      standingViolations: [{ text: STANDING_TEXT, cited: STANDING_CITED }],
+    },
+    "org/repo",
+    7,
+    "0123456789ab",
+  );
+  assertStringIncludes(prompt, "CODE FIX 1 of 1");
+  assertStringIncludes(prompt, "adding or strengthening tests");
+  assertStringIncludes(prompt, "A CODE FIX item is the one exception");
+  assertEquals(prompt.includes("so do not change it"), false);
+});
+
 const STANDING_TEXT =
   "**violation** — breach — evidence: `worker/deno/lib/pre_commit_safety.ts:321` — reason: not fixed — this turn may not change code";
 const STANDING_CITED = [
