@@ -1460,6 +1460,26 @@ Deno.test("config - loadConfig normalises repo_config snake_case keys to camelCa
   });
 });
 
+Deno.test("config - loadConfig maps the mutation gate repo_config keys (Issue #3393)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    repo_config: {
+      "org/test-repo": {
+        skip_mutation_check: true,
+        mutation_check_budget_seconds: 120,
+      } as unknown as import("../types.ts").RepoConfig,
+    },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    const repoConf = config.repoConfig?.["org/test-repo"];
+    assertEquals(repoConf?.skipMutationCheck, true);
+    assertEquals(repoConf?.mutationCheckBudgetSeconds, 120);
+  });
+});
+
 Deno.test("config - loadConfig preserves repo_config camelCase keys (Issue #1296)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],

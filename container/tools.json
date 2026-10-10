@@ -155,6 +155,27 @@
       "notes": "`cargo deny check` is not optional in these gates: private-repo-16 exits non-zero when the binary is absent and private-repo-17 runs it unguarded. The linux release is a static musl build, so it runs on the glibc base image."
     },
     {
+      "id": "cargo-mutants",
+      "version": "27.1.0",
+      "fragment": "toolchains/cargo-mutants.sh",
+      "commands": ["cargo-mutants"],
+      "versionCommand": "cargo-mutants",
+      "versionArgs": ["mutants", "--version"],
+      "source": "https://github.com/sourcefrog/cargo-mutants/releases",
+      "sha256": {
+        "amd64": "dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e"
+      },
+      "repos": [
+        "stSoftwareAU/private-repo-9",
+        "stSoftwareAU/private-repo-15",
+        "stSoftwareAU/private-repo-17",
+        "stSoftwareAU/private-repo-21",
+        "stSoftwareAU/private-repo-16",
+        "stSoftwareAU/private-repo-22"
+      ],
+      "notes": "Backs the diff-scoped mutation check (Issue #3393): Rust target repos run `cargo mutants --in-diff`. Upstream publishes only an x86_64 Linux release asset, so amd64 is checksum-verified and arm64 builds the pinned version from source with `cargo install --locked` (installed in the same run as, and after, the rust toolchain)."
+    },
+    {
       "id": "gitleaks",
       "version": "8.30.1",
       "fragment": "toolchains/gitleaks.sh",

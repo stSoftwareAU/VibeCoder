@@ -540,9 +540,12 @@ still to do, not a record: add the test that goes red, or remove the
 branch. Only an outcome the issue puts out of scope, or one no test can
 reach, may stand, written `exempt (out of scope): <reason>` or `exempt
 (untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
-creation on any other admission (Issue #3288). A fix to an existing PR
-re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the list to the head.
+creation on any other admission (Issue #3288). The diff-scoped mutation check
+(Issue #3393, `docs/mutation-check.md`) blocks the PR on any added line whose
+mutation the tests do not catch, exempt only by the same `exempt (untestable):
+<reason>` record naming `path:line`. A fix to an existing PR re-enumerates every
+branch its own commits add, not only those a review finding named, and refreshes
+the list to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
