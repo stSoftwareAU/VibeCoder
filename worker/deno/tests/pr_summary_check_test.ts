@@ -12,7 +12,7 @@ import {
   hasBlock,
   runPrSummaryCheck,
 } from "../lib/pr_summary_check.ts";
-import { main, parseArgs } from "../lib/pr_summary_check_cli.ts";
+import { type CliDeps, main, parseArgs } from "../lib/pr_summary_check_cli.ts";
 
 const ROOT = "/repo";
 const TEST_PATH = "worker/deno/tests/foo_test.ts";
@@ -68,6 +68,26 @@ function fakeGit(opts: {
   return { runGit, calls };
 }
 
+/** Fake git on which no base ref resolves and the fetch fails. */
+function unresolvableBaseGit(): { runGit: GitRunner; calls: Call[] } {
+  const calls: Call[] = [];
+  const runGit: GitRunner = (args, options) => {
+    calls.push({ args, cwd: options?.cwd });
+    return Promise.resolve({
+      ok: true as const,
+      value: { code: 128, stdout: "", stderr: "fatal: bad revision" },
+    });
+  };
+  return { runGit, calls };
+}
+
+const ISSUE_WITH_CRITERIA = [
+  "## Acceptance Criteria",
+  "",
+  "- [ ] foo is handled",
+  "",
+].join("\n");
+
 function statusOf(reports: GateReport[], ref: string): string | undefined {
   return reports.find((r) => r.issueRef === ref)?.status;
 }
@@ -90,20 +110,17 @@ async function run(
 function deps(summary: string | Error, git = fakeGit()) {
   const out: string[] = [];
   const err: string[] = [];
-  return {
-    out,
-    err,
-    deps: {
-      readTextFile: (_p: string) =>
-        summary instanceof Error
-          ? Promise.reject(summary)
-          : Promise.resolve(summary),
-      runGit: git.runGit,
-      repoRoot: () => Promise.resolve({ ok: true as const, value: ROOT }),
-      stdout: (l: string) => out.push(l),
-      stderr: (l: string) => err.push(l),
-    },
+  const cliDeps: CliDeps = {
+    readTextFile: (_p: string) =>
+      summary instanceof Error
+        ? Promise.reject(summary)
+        : Promise.resolve(summary),
+    runGit: git.runGit,
+    repoRoot: () => Promise.resolve({ ok: true as const, value: ROOT }),
+    stdout: (l: string) => out.push(l),
+    stderr: (l: string) => err.push(l),
   };
+  return { out, err, deps: cliDeps };
 }
 
 Deno.test("runPrSummaryCheck - well-formed summary passes docs sweep and branch outcomes", async () => {
@@ -250,4 +267,48 @@ Deno.test("main - bad args and an unreadable summary exit 2", async () => {
   const unreadable = deps(new Error("no such file"));
   assertEquals(await main(["--base", "main", "s.md"], unreadable.deps), 2);
   assertStringIncludes(unreadable.err.join("\n"), "no such file");
+});
+
+Deno.test("runPrSummaryCheck - an unresolvable base ref is an error, and main exits 2", async () => {
+  const git = unresolvableBaseGit();
+  const r = await run(GOOD_SUMMARY, {}, git);
+  assert(!r.ok);
+  assertStringIncludes(r.error.message, "not resolvable");
+  assert(!git.calls.some((c) => c.args[0] === "diff"));
+
+  const d = deps(GOOD_SUMMARY, unresolvableBaseGit());
+  assertEquals(await main(["--base", "main", "s.md"], d.deps), 2);
+  assertStringIncludes(d.err.join("\n"), "not resolvable");
+  assertEquals(d.out.length, 0);
+});
+
+Deno.test("runPrSummaryCheck - criteria in the issue body with no closure block blocks the closure gate", async () => {
+  const r = await run(GOOD_SUMMARY, { issueBody: ISSUE_WITH_CRITERIA });
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#518"), "blocked");
+  assert(r.value.find((g) => g.issueRef === "#518")!.problems.length > 0);
+  assertEquals(statusOf(r.value, "#3073"), "passed");
+  assertEquals(statusOf(r.value, "#3147"), "passed");
+  assertEquals(statusOf(r.value, "#3124"), "passed");
+});
+
+Deno.test("runPrSummaryCheck - criteria in the issue body with no reviewer blocks block the review gate", async () => {
+  const r = await run(GOOD_SUMMARY, { issueBody: ISSUE_WITH_CRITERIA });
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#663"), "blocked");
+  assert(r.value.find((g) => g.issueRef === "#663")!.problems.length > 0);
+  assertEquals(statusOf(r.value, "#3073"), "passed");
+  assertEquals(statusOf(r.value, "#3147"), "passed");
+  assertEquals(statusOf(r.value, "#3124"), "passed");
+});
+
+Deno.test("main - a repository root failure exits 2 and names the repository root", async () => {
+  const d = deps(GOOD_SUMMARY);
+  d.deps.repoRoot = () =>
+    Promise.resolve({ ok: false as const, error: new Error("not a git repo") });
+  assertEquals(await main(["--base", "main", "s.md"], d.deps), 2);
+  const stderr = d.err.join("\n");
+  assertStringIncludes(stderr, "repository root");
+  assertStringIncludes(stderr, "not a git repo");
+  assertEquals(d.out.length, 0);
 });
