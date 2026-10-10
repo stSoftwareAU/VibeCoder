@@ -2743,10 +2743,11 @@ never dropped from cost tracking.
 **Opus 5.5** (model id `claude-opus-5-5`, and what the alias `opus` now resolves
 to) is cheaper again on every rate — $4 / $20 per MTok, cache $5.00 / $0.20 —
 with cache hits at 0.05× the base input rate rather than the usual 0.1×
-(Issue #2543). Its row precedes the broader `claude-opus-5` key so the ordered
-prefix walk in `batch_api.ts` reaches it, and `lookupModelPricing` prices any
-5.5-or-later id at this rate while 5.0–5.4 keep the row above. These rows mirror
-`MODEL_PRICING` in
+(Issue #2543). Its row precedes the broader `claude-opus-5` key, per
+`MODEL_PRICING`'s more-specific-first rule, and `lookupModelPricing` — which
+`estimateBatchSavings` in `batch_api.ts` also calls (Issue #3436) — prices any
+5.5-or-later id at this rate while 5.0–5.4 keep the row above. These rows
+mirror `MODEL_PRICING` in
 [`worker/deno/lib/token_usage.ts`](../worker/deno/lib/token_usage.ts).
 
 Fable (alias `fable`) is the top tier above Opus with a 1M-token context
