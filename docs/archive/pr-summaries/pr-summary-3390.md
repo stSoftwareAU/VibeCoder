@@ -49,11 +49,13 @@ Backend-only change: no UI files are touched.
 - Issue numbers this diff adds as provenance: #3390, "Repo pre-commit hook lets
   a force-added .env or .env.* file through".
 
-**Docs sweep** — grep: `\.env`, `dotenv`, `Protected Patterns`. `SECURITY.md`
-Protected Patterns gains a `.env`, `.env.*` bullet. `SECURITY.md:748-749`
-already lists `.env*`, so it is still true. The C26 entry in
-`docs/THREAT-MODEL.md` describes the hook in general terms, so it is also still
-true.
+**Docs sweep** — grep: `\.env`, `dotenv`, `Protected Patterns`, `pre-commit`; section: `SECURITY.md#-configuration-file-configjson`; updated: `SECURITY.md`
+
+The Protected Patterns list in that section gains a `.env`, `.env.*` bullet.
+`SECURITY.md:748-749` already lists `.env*`, so it is still true. The C26 and
+AP-15 entries in `docs/THREAT-MODEL.md` and the hook mentions in
+`docs/SETUP.md:233` and `docs/SETUP.md:1604` describe the hook in general
+terms, so they are also still true.
 
 ## Standards Review
 
