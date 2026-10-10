@@ -325,10 +325,9 @@ export function scanGitleaksDrift(
     if (knownOpen.has(finding.findingId)) return;
     if (
       isFindingSuppressed(
-        file.rawText,
+        file,
         finding.lines,
         finding.findingId,
-        file.path,
       )
     ) {
       return;
