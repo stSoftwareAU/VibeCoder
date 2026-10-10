@@ -3,9 +3,9 @@
 ## Summary
 
 `gh api --hostname <host> …` no longer has the host read as the endpoint.
-`--hostname` is now in `GH_VALUE_FLAGS`
-(`worker/deno/lib/audit_mutation_classifier.ts`), so `classifyGhApi` skips
-its value. `MutationInfo.target` is now the real endpoint again, which means:
+`classifyGhApi` (`worker/deno/lib/audit_mutation_classifier.ts`) now consumes
+the `--hostname` value in its own branch, recording the host and skipping the
+value, so it is never read as the endpoint. `MutationInfo.target` is now the real endpoint again, which means:
 
 - the reserved-label-definition denylist (Issue #2518) applies to this
   spelling again, including with an inactive guard context such as a
@@ -32,8 +32,10 @@ Closes #3540
 
 ### Essential Design Decisions
 
-- One set-member addition, matching how `gh_argv.ts` `VALUE_TAKING_LONG_FLAGS`
-  already treats `--hostname`.
+- `--hostname` joins `GH_VALUE_FLAGS`, matching how `gh_argv.ts`
+  `VALUE_TAKING_LONG_FLAGS` already treats it. `classifyGhApi` also parses
+  `--hostname` in a dedicated branch (before the `GH_VALUE_FLAGS` lookup) that
+  records the host, and fails closed on a foreign host (PR #3556 review).
 - The issue's optional fail-closed rule for a mutating `gh api` endpoint that
   is not a path is not included, to keep this PR to the bug fix.
 
@@ -74,14 +76,16 @@ Closes #3540
   repeated flag spellings. Neither names `--hostname`. This fix makes the
   denylist sentence true again for `gh api --hostname <host> …`, so no
   sentence in §6a is now false. The §6 bullet "An absolute endpoint's HOST
-  is checked" is about the host inside an absolute endpoint URL, not the
-  `--hostname` flag, so it is still true.
-- Updated: none; the only doc change is the inline comment on the new set
+  is checked" was updated in the PR #3556 review (see above) to state the
+  `--hostname` rule as well as the absolute-endpoint-URL host rule, so it is
+  true of the head.
+- Updated: `SECURITY.md` §6 host bullet, the doc comments in
+  `audit_mutation_classifier.ts`, and the inline comment on the new set
   member. Remaining hits:
   - `docs/GH-API-OPTIMISATION.md:465` — still true because it describes
     `gh_argv.ts` `VALUE_TAKING_LONG_FLAGS`, which already listed
     `--hostname`.
-  - `worker/deno/lib/audit_mutation_classifier.ts:760` — still true because
+  - `worker/deno/lib/audit_mutation_classifier.ts:785` — still true because
     `GH_VALUE_FLAGS` still holds none of the git globals.
 
 ## Test Plan
@@ -92,10 +96,13 @@ Closes #3540
   tests/security_gh_api_endpoint_host_1420_test.ts` — 107 passed, 0 failed.
 - Red check (host rule): with `foreignHost` forced to `false`, 10 of the new
   tests went red (every foreign-host case); restored.
-- Red check: with `"--hostname"` removed from `GH_VALUE_FLAGS`, the
-  classifier test, the reserved DELETE refusal and the reserved PATCH rename
-  refusal went red. The inline-form pin and the control stayed green, as
-  expected (both are expected green on base).
+- Red check (first fix, before the dedicated `--hostname` branch): with
+  `"--hostname"` removed from `GH_VALUE_FLAGS`, the classifier test, the
+  reserved DELETE refusal and the reserved PATCH rename refusal went red. The
+  inline-form pin and the control stayed green, as expected (both are expected
+  green on base). At the head the dedicated branch consumes the value, so that
+  removal is no longer a red check; the host-rule red check above and the
+  branch outcomes below cover the head.
 - `./quality.sh < /dev/null` — exit 0, `Result: PASSED (with skipped
   checks)`; the only skip is `config integration`, which needs a worker
   config.
