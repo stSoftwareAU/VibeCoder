@@ -100,8 +100,8 @@ flowchart LR
 ## Test Plan
 
 - `deno task test:unit tests/issue_3369_floci_workflow_test.ts
-  tests/integration_test_manifest_test.ts`: 42 passed, 0 failed (the workflow
-  test file holds 32).
+  tests/integration_test_manifest_test.ts`: 54 passed, 0 failed (the workflow
+  test file holds 44).
 - `deno test --allow-read --allow-env --allow-run --allow-write
   tests/issue_3369_floci_script_test.ts` (the flags `lib/unit_test_passes.ts`
   gives the integration pass): 18 passed, 0 failed, three consecutive runs.
@@ -220,8 +220,8 @@ flowchart LR
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
 - **violation** — Shell is for orchestration only; new logic belongs in Deno TypeScript (awk YAML parse of SSM parameters, deploy/skip decision, stubbed-resource parsing). — evidence: `infra/cloudformation/test-floci.sh:120` — reason: open — on lines this diff adds and not fixed in this diff
-- **violation** — Writing a gate over text: a loosened invocation ( test-floci.sh true ) is accepted, and step-level continue-on-error: true and if: false are ignored. — evidence: `worker/deno/lib/floci_workflow_check.ts:98` (`runsScript`) and `:196-200` (`invokesScript`) — reason: open — on lines this diff adds and not fixed in this diff
-- **violation** — A workflow validator must pin the load-bearing invariant: the check accepts the script being run from any job, not specifically the job that has the Floci service. — evidence: `worker/deno/lib/floci_workflow_check.ts:196-200` — reason: open — on lines this diff adds and not fixed in this diff
+- **violation** — Writing a gate over text: a loosened invocation (`test-floci.sh || true`) was accepted, and step-level `continue-on-error: true` and `if: false` were ignored. — evidence: `worker/deno/lib/floci_workflow_check.ts` (`runsScript` rejects `|`, `;` and `&` on the call line; the service job and script step may set neither `continue-on-error` nor `if:`), tests `checkFlociWorkflow (i) …` in `tests/issue_3369_floci_workflow_test.ts` — reason: fixed in this diff (PR #3478 review)
+- **violation** — A workflow validator must pin the load-bearing invariant: the check accepted the script being run from any job, not specifically the job that has the Floci service. — evidence: `worker/deno/lib/floci_workflow_check.ts` (only the Floci service job's steps count), test `checkFlociWorkflow (i) refuses the script run from a job without the Floci service` — reason: fixed in this diff (PR #3478 review)
 - **violation** — DRY: re-implements in-repo workflow policy (checkout-persist-credentials in checkout persist credentials scanner.ts, milestone-branch-filters with a literal match stricter than GitHub's, workflow-permissions in workflow file checks.ts). — evidence: `worker/deno/lib/floci_workflow_check.ts:180-190` — reason: open — on lines this diff adds and not fixed in this diff
 - **violation** — Avoid over-engineering: handles a YAML 1.1 true key for on that the only caller never produces, and the workflow repeats the script's aws CLI check. — evidence: `worker/deno/lib/floci_workflow_check.ts:204-208` — reason: open — on lines this diff adds and not fixed in this diff
 - **clean** — Australian English spelling; fail-loud shell (set -euo pipefail, counted failures, commented true ); SIMPLE-ON-PURPOSE marker format; workflow hygiene (SHA-pinned actions, persist-credentials: false, contents: read, tag plus digest); unit-test classification and manifest entry; positive and negative

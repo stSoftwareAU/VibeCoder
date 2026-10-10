@@ -13,8 +13,12 @@
  *   stale tag left in front of a new digest);
  * - the Docker socket is mounted and the first step tests for it with `-S`,
  *   emits `::error::` and exits 1 (shell comments are ignored);
- * - a step invokes `infra/cloudformation/test-floci.sh` in command position
- *   (an `echo` or a comment does not count);
+ * - a step of the job that runs the Floci service invokes
+ *   `infra/cloudformation/test-floci.sh` in command position (an `echo` or a
+ *   comment does not count), and a failure of the script fails the job: the
+ *   call is not followed by `|`, `;` or `&` (so no `|| true`, pipe or
+ *   background), and neither the step nor the job sets `continue-on-error`
+ *   or an `if:` (PR #3478 review);
  * - both `pull_request` and `push` triggers watch the templates and the
  *   workflow itself;
  * - `pull_request` also targets `milestone/*` branches (Issue #3360);
@@ -94,8 +98,14 @@ function codeLines(run: string): string[] {
   );
 }
 
-/** Whether a line runs the test script in command position. */
+/**
+ * Whether a line runs the test script in command position with its exit
+ * status intact: any `|`, `;` or `&` on the line could swallow the status
+ * (`|| true`, a pipe, a trailing command or a background job), so such a line
+ * does not count as running the script.
+ */
 function runsScript(line: string): boolean {
+  if (/[|;&]/.test(line)) return false;
   const tokens = line.split(/\s+/);
   const first = tokens[0] ?? "";
   if (first.endsWith(SCRIPT_PATH)) return true;
@@ -192,13 +202,37 @@ export function checkFlociWorkflow(
     }
   }
 
-  // (d) some step invokes the test script.
-  const invokesScript = jobs.some((job) =>
-    isObject(job) && Array.isArray(job.steps) &&
-    job.steps.some((s: unknown) => codeLines(runOf(s)).some(runsScript))
+  // (d) a step of the job running the Floci service invokes the test script,
+  //     and (i) nothing lets the script fail without failing the job. The
+  //     service job is found by its `floci` service whatever the image, so an
+  //     image drift reported under (a) does not also report the script.
+  const serviceJob = jobs.find((job) =>
+    isObject(job) && isObject(job.services) && isObject(job.services.floci)
+  ) as Record<string, unknown> | undefined;
+  const serviceSteps = serviceJob && Array.isArray(serviceJob.steps)
+    ? serviceJob.steps
+    : [];
+  const scriptStep = serviceSteps.find((s: unknown) =>
+    codeLines(runOf(s)).some(runsScript)
   );
-  if (!invokesScript) {
-    problems.push(`no step runs ${SCRIPT_PATH} (test-floci.sh)`);
+  if (!isObject(scriptStep) || !serviceJob) {
+    problems.push(
+      `no step of the Floci service job runs ${SCRIPT_PATH} (test-floci.sh) with its exit status intact`,
+    );
+  } else {
+    const softFails = [serviceJob, scriptStep].some((o) =>
+      o["continue-on-error"] !== undefined && o["continue-on-error"] !== false
+    );
+    if (softFails) {
+      problems.push(
+        "continue-on-error must not be set on the Floci job or its test-floci.sh step: a failed deploy must fail the job",
+      );
+    }
+    if ([serviceJob, scriptStep].some((o) => o.if !== undefined)) {
+      problems.push(
+        "an if: on the Floci job or its test-floci.sh step could skip the deploy, and a skipped job reports success",
+      );
+    }
   }
 
   // (e) trigger paths. YAML 1.1 parsers may read `on` as boolean true.

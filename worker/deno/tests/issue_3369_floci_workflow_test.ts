@@ -304,3 +304,67 @@ Deno.test("checkFlociWorkflow reports non-object input without throwing", () => 
   assertEquals(checkFlociWorkflow(null, DIGEST, TAG).length, 1);
   assertEquals(checkFlociWorkflow("nope", DIGEST, TAG).length, 1);
 });
+
+// (i) A failure of test-floci.sh must fail the job (PR #3478 review): no
+// variant that swallows the exit status or disables the step counts as a run.
+
+for (
+  const [label, run] of [
+    ["|| true", "./infra/cloudformation/test-floci.sh || true"],
+    ["; true", "./infra/cloudformation/test-floci.sh; true"],
+    ["& (backgrounded)", "./infra/cloudformation/test-floci.sh &"],
+    ["| pipe", "./infra/cloudformation/test-floci.sh | tee out.log"],
+    ["&& chained", "./infra/cloudformation/test-floci.sh && echo done"],
+  ] as const
+) {
+  Deno.test(`checkFlociWorkflow (i) refuses a script call followed by ${label}`, () => {
+    const w = validWorkflow();
+    w.jobs.cloudformation.steps[2].run = run;
+    expectOneProblem(w, "test-floci.sh");
+  });
+}
+
+Deno.test("checkFlociWorkflow (i) accepts the script call with arguments", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2].run =
+    "./infra/cloudformation/test-floci.sh infra/cloudformation/a.yaml";
+  assertEquals(checkFlociWorkflow(w, DIGEST, TAG), []);
+});
+
+Deno.test("checkFlociWorkflow (i) refuses continue-on-error on the script step", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2]["continue-on-error"] = true;
+  expectOneProblem(w, "continue-on-error");
+});
+
+Deno.test("checkFlociWorkflow (i) refuses continue-on-error on the job", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation["continue-on-error"] = true;
+  expectOneProblem(w, "continue-on-error");
+});
+
+Deno.test("checkFlociWorkflow (i) refuses an if: on the script step", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2].if = "false";
+  expectOneProblem(w, "if:");
+});
+
+Deno.test("checkFlociWorkflow (i) refuses an if: on the job", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.if = "false";
+  expectOneProblem(w, "if:");
+});
+
+Deno.test("checkFlociWorkflow (i) refuses the script run from a job without the Floci service", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2].run = "echo nothing";
+  w.jobs.other = { steps: [{ run: "./infra/cloudformation/test-floci.sh" }] };
+  expectOneProblem(w, "test-floci.sh");
+});
+
+Deno.test("checkFlociWorkflow (i) accepts continue-on-error: false stated explicitly", () => {
+  const w = validWorkflow();
+  w.jobs.cloudformation.steps[2]["continue-on-error"] = false;
+  w.jobs.cloudformation["continue-on-error"] = false;
+  assertEquals(checkFlociWorkflow(w, DIGEST, TAG), []);
+});

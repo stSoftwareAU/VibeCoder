@@ -967,14 +967,10 @@ async function runConfigSmokeTest(
   // instead — the check's invariant is that load-config *populates* REPOS and
   // ALLOWED_AUTHORS, and starting them empty is exactly what proves the
   // override (mirroring load_config_test.ts's own harness).
-  // Issue #1066: `allowed_authors` is optional (the trusted set comes from
-  // repository collaborators), so a config without it legitimately renders
-  // `ALLOWED_AUTHORS=()`. REPOS must be populated; ALLOWED_AUTHORS must
-  // merely be overridden, so it is seeded with a sentinel that must not survive.
   const script = `
     set -euo pipefail
     REPOS=()
-    ALLOWED_AUTHORS=("__unloaded__")
+    ALLOWED_AUTHORS=()
     ISSUE_LABELS=()
     _output=$(cd ${posixSingleQuote(config.scriptDir)} && ${
     posixSingleQuote(denoCmd)
@@ -986,8 +982,8 @@ async function runConfigSmokeTest(
         echo 'FAIL: REPOS is empty after loading config — load-config output did not populate REPOS'
         exit 1
     fi
-    if [[ " \${ALLOWED_AUTHORS[*]:-} " == *" __unloaded__ "* ]]; then
-        echo 'FAIL: ALLOWED_AUTHORS was not overridden by load-config output'
+    if [[ \${#ALLOWED_AUTHORS[@]} -eq 0 ]]; then
+        echo 'FAIL: ALLOWED_AUTHORS is empty after loading config'
         exit 1
     fi
     echo "OK: \${#REPOS[@]} repo(s), \${#ALLOWED_AUTHORS[@]} author(s)"
