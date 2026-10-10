@@ -591,7 +591,7 @@ export function scanCiInstallPins(
         }`;
         const line = lineOfCommand(lines, install.anchor, claimed);
         // Honour in-source suppression markers per call-site.
-        if (isFindingSuppressed(file.rawText, line, findingId, file.path)) {
+        if (isFindingSuppressed(file, line, findingId)) {
           continue;
         }
 
