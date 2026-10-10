@@ -114,27 +114,25 @@ else
 fi
 
 # --- Per-template helpers ----------------------------------------------------
-# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type/Default — upgrade when a template uses flow-style, anchors, multi-line or tab-indented parameters
+# SIMPLE-ON-PURPOSE: 2-space names, 4-space keys, single-line Type — upgrade when a template uses flow-style, anchors, multi-line or tab-indented parameters
 # The awk below walks only the Parameters: block of the template.
-# Prints "<Type><TAB><Default>" for each SSM-typed parameter with a Default.
+# Prints "<Name><TAB><Type>" for each SSM-typed parameter.
 ssm_parameters() {
     awk '
         /^Parameters:[[:space:]]*$/ { inparams = 1; next }
         inparams && /^[^[:space:]#]/ { inparams = 0 }
         !inparams { next }
-        /^  [^[:space:]#][^:]*:[[:space:]]*$/ { type = ""; next }
+        /^  [^[:space:]#][^:]*:[[:space:]]*$/ {
+            pname = $0
+            sub(/^  /, "", pname)
+            sub(/:[[:space:]]*$/, "", pname)
+            next
+        }
         /^    Type:[[:space:]]/ {
             type = $0
             sub(/^    Type:[[:space:]]*/, "", type)
             sub(/[[:space:]]+$/, "", type)
-            next
-        }
-        /^    Default:[[:space:]]/ {
-            def = $0
-            sub(/^    Default:[[:space:]]*/, "", def)
-            sub(/[[:space:]]+$/, "", def)
-            gsub(/^["\x27]|["\x27]$/, "", def)
-            if (type ~ /^AWS::SSM::Parameter::Value</) { printf "%s\t%s\n", type, def }
+            if (type ~ /^AWS::SSM::Parameter::Value</) { printf "%s\t%s\n", pname, type }
         }
     ' "$1"
 }
@@ -148,16 +146,19 @@ for template in "${to_deploy[@]}"; do
     stack="floci-${base}"
     echo "=== ${name} (stack ${stack}) ==="
 
-    # Floci cannot resolve public SSM paths, so seed each one with a fake value.
+    # Floci rejects PutParameter on the public /aws/service/... paths, so an
+    # SSM-typed parameter cannot be seeded. Floci does not resolve SSM-typed
+    # parameters either (Ref returns the supplied value), so override each with
+    # a literal placeholder instead.
+    overrides=()
     params="$(ssm_parameters "${template}")"
-    while [[ -n "${params}" ]] && IFS=$'\t' read -r ptype ppath; do
-        [[ -n "${ptype}" ]] || continue
+    while [[ -n "${params}" ]] && IFS=$'\t' read -r pname ptype; do
+        [[ -n "${pname}" ]] || continue
         value="placeholder"
         if [[ "${ptype}" == *"AWS::EC2::Image::Id"* ]]; then
             value="ami-0123456789abcdef0"
         fi
-        aws ssm put-parameter --endpoint-url "${ENDPOINT}" --name "${ppath}" \
-            --type String --value "${value}" --overwrite > /dev/null
+        overrides+=("${pname}=${value}")
     done <<< "${params}"
 
     # Record a deploy failure rather than aborting, so every template is tried.
@@ -165,7 +166,8 @@ for template in "${to_deploy[@]}"; do
     if ! aws cloudformation deploy --endpoint-url "${ENDPOINT}" \
         --template-file "${template}" --stack-name "${stack}" \
         --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
-        --no-fail-on-empty-changeset; then
+        --no-fail-on-empty-changeset \
+        ${overrides[@]+--parameter-overrides "${overrides[@]}"}; then
         deploy_failed=1
     fi
 
