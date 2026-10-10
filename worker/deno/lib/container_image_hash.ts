@@ -99,6 +99,10 @@ export const CONTAINER_IMAGE_INPUTS: readonly string[] = [
   // the second fragment here that exists for the worker rather than for a
   // monitored repository's gate.
   "container/toolchains/rtk.sh",
+  // Floci, the LocalStack drop-in the worker's own runs use (Issue #3367,
+  // parent #3346): another fragment that exists for the worker rather than
+  // for a monitored repository's gate.
+  "container/toolchains/floci.sh",
   "container/toolchains/rust.sh",
   "worker/deno/deno.lock",
 ];

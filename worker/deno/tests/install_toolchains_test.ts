@@ -1086,3 +1086,393 @@ Deno.test("container/toolchains/rtk.sh - an archive without rtk at its top level
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/**
+ * Floci's fragment never downloads: the Containerfile's own
+ * `COPY --from=floci` stage places the binary at `FLOCI_SOURCE` before the
+ * fragment runs (Issue #3367), so these tests assert on whether `install` ran
+ * rather than on a stubbed `curl`.
+ */
+async function installWasCalled(dir: string): Promise<boolean> {
+  try {
+    await Deno.stat(`${dir}/install.log`);
+    return true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+    return false;
+  }
+}
+
+/** Stub `install` on the PATH that only logs its invocation and exits 0. */
+async function stubInstall(dir: string): Promise<void> {
+  await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  await Deno.writeTextFile(
+    `${dir}/bin/install`,
+    `#!/bin/sh\necho "$@" >> "${dir}/install.log"\nexit 0\n`,
+  );
+  await Deno.chmod(`${dir}/bin/install`, 0o755);
+}
+
+Deno.test("container/toolchains/floci.sh - a missing sha256 pin aborts before installing", async () => {
+  // The checksum verifies the binary the Containerfile's own COPY stage
+  // placed at FLOCI_SOURCE; drop this architecture's pin and the fragment
+  // must stop at the lookup rather than installing unverified bytes.
+  const key = await currentDigestKey();
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+    );
+    const floci = manifest.toolchains.find(
+      (t: Record<string, unknown>) => t.id === "floci",
+    );
+    assert(floci !== undefined, "container/tools.json must pin floci");
+    const sha256 = floci.sha256 as Record<string, string>;
+    assert(key in sha256, `floci must pin ${key} before it is removed`);
+    delete sha256[key];
+    await Deno.writeTextFile(
+      `${dir}/tools.json`,
+      JSON.stringify(manifest, null, 2),
+    );
+
+    await stubInstall(dir);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${dir}/tools.json`,
+        FLOCI_SOURCE: `${dir}/floci-application`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "an unpinned checksum must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "the sha256 pin for",
+    );
+    assert(
+      !(await installWasCalled(dir)),
+      "the fragment installed before resolving its pin — a missing digest " +
+        "must stop it at the lookup",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/floci.sh - a missing version pin aborts, naming it", async () => {
+  // The version resolves before the architecture does, so its own absence
+  // has to be reported by name rather than by a bare jq exit code.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const manifest = JSON.parse(
+      await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+    );
+    const floci = manifest.toolchains.find(
+      (t: Record<string, unknown>) => t.id === "floci",
+    );
+    assert(floci !== undefined, "container/tools.json must pin floci");
+    delete floci.version;
+    await Deno.writeTextFile(
+      `${dir}/tools.json`,
+      JSON.stringify(manifest, null, 2),
+    );
+
+    await stubInstall(dir);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${dir}/tools.json`,
+        FLOCI_SOURCE: `${dir}/floci-application`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "an unpinned version must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "the version pin is missing from",
+    );
+    assert(
+      !(await installWasCalled(dir)),
+      "the fragment installed before resolving its version",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/floci.sh - an unsupported architecture aborts, naming it", async () => {
+  // Only x86_64 and aarch64 resolve a manifest key, so an architecture the
+  // manifest pins no digest for must fail loud rather than looking one up.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    await Deno.mkdir(`${dir}/bin`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/bin/uname`, `#!/bin/sh\necho riscv64\n`);
+    await Deno.chmod(`${dir}/bin/uname`, 0o755);
+    await stubInstall(dir);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        FLOCI_SOURCE: `${dir}/floci-application`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(
+      result.code !== 0,
+      "an unsupported architecture must fail the build",
+    );
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "Unsupported build architecture: riscv64",
+    );
+    assert(
+      !(await installWasCalled(dir)),
+      "the fragment installed for an architecture the manifest pins no " +
+        "digest for",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/floci.sh - a tampered source binary aborts before installing", async () => {
+  // The digest is what makes trusting the Containerfile's own COPY stage
+  // safe. Point FLOCI_SOURCE at bytes no pinned digest matches and the
+  // fragment must stop at `sha256sum -c -`, never reaching `install`.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const source = `${dir}/floci-application`;
+    await Deno.writeTextFile(source, "tampered\n");
+    await stubInstall(dir);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        FLOCI_SOURCE: source,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "a checksum mismatch must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "did NOT match",
+    );
+    assert(
+      !(await installWasCalled(dir)),
+      "the fragment installed bytes that failed verification",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/floci.sh - a missing source binary aborts before installing", async () => {
+  // FLOCI_SOURCE is where the Containerfile's `COPY --from=floci` stage is
+  // meant to have placed the binary before this fragment runs; its absence
+  // must stop the build rather than the fragment reaching for a checksum of
+  // nothing.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const source = `${dir}/floci-application`;
+    await stubInstall(dir);
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: `${REPO_ROOT}/container/tools.json`,
+        FLOCI_SOURCE: source,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(result.code !== 0, "a missing source binary must fail the build");
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      `${source} is missing`,
+    );
+    assert(
+      !(await installWasCalled(dir)),
+      "the fragment installed without a source binary to verify",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+/**
+ * Shared setup for the smoke-check tests below: a stub `floci-application`
+ * whose digest is pinned into a per-test copy of the manifest, and a stub
+ * `curl` on the PATH answering the HTTP code the caller asks for. Neither
+ * `install` nor the fragment's other behaviour is stubbed — these tests run
+ * the real fragment end to end, installing under `${dir}/prefix` via
+ * FLOCI_PREFIX so the build-time smoke check actually starts the stub
+ * application and probes it.
+ */
+async function setUpFlociSmokeCheck(
+  dir: string,
+  httpCode: { body: string; exitCode: number },
+): Promise<{ source: string; manifest: string; version: string }> {
+  const source = `${dir}/floci-application`;
+  await Deno.writeTextFile(
+    source,
+    `#!/bin/sh\necho "$@" >> "${dir}/app.log"\nexit 0\n`,
+  );
+  await Deno.chmod(source, 0o755);
+
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    await Deno.readFile(source),
+  );
+  const hex = Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+
+  const key = await currentDigestKey();
+  const manifest = JSON.parse(
+    await Deno.readTextFile(`${REPO_ROOT}/container/tools.json`),
+  );
+  const floci = manifest.toolchains.find(
+    (t: Record<string, unknown>) => t.id === "floci",
+  );
+  assert(floci !== undefined, "container/tools.json must pin floci");
+  (floci.sha256 as Record<string, string>)[key] = hex;
+  const manifestPath = `${dir}/tools.json`;
+  await Deno.writeTextFile(manifestPath, JSON.stringify(manifest, null, 2));
+
+  await Deno.mkdir(`${dir}/bin`, { recursive: true });
+  // Real curl's --retry-connrefused only succeeds once the backgrounded
+  // server has actually started, which naturally gives the OS time to
+  // schedule it. This fake answers instantly, so without a wait here a
+  // loaded runner can kill the backgrounded `floci-application` before it
+  // is ever scheduled to run: app.log is then never written, and the
+  // test's Deno.readTextFile fails with NotFound (Issue #3367). Poll for
+  // the stub app's own log instead, so the fake only answers once the
+  // backgrounded process has actually run.
+  await Deno.writeTextFile(
+    `${dir}/bin/curl`,
+    `#!/bin/sh\nfor _ in $(seq 1 100); do\n  [ -f "${dir}/app.log" ] && break\n  sleep 0.05\ndone\nprintf '${httpCode.body}'\nexit ${httpCode.exitCode}\n`,
+  );
+  await Deno.chmod(`${dir}/bin/curl`, 0o755);
+
+  return { source, manifest: manifestPath, version: floci.version as string };
+}
+
+Deno.test("container/toolchains/floci.sh - a smoke check that gets no HTTP answer fails the build", async () => {
+  // A stub curl mirrors real curl's `-w '%{http_code}'` contract: on a
+  // connection failure it prints 000 and exits 7, exactly as curl itself
+  // does when every retry is refused.
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const { source, manifest } = await setUpFlociSmokeCheck(dir, {
+      body: "000",
+      exitCode: 7,
+    });
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: manifest,
+        FLOCI_SOURCE: source,
+        FLOCI_PREFIX: `${dir}/prefix`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assert(
+      result.code !== 0,
+      "a binary that never answers must fail the build",
+    );
+    assertStringIncludes(
+      new TextDecoder().decode(result.stderr),
+      "did not answer on http://127.0.0.1:4566/",
+    );
+    assertStringIncludes(
+      new TextDecoder().decode(result.stdout),
+      "answered HTTP 000",
+    );
+    assert(
+      await Deno.stat(source).then(() => true).catch(() => false),
+      "the source is only removed on success, so a failed smoke check must " +
+        "leave it in place",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("container/toolchains/floci.sh - installs the wrapper and passes the smoke check on an HTTP answer", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "vibe-fragment-" });
+  try {
+    const { source, manifest, version } = await setUpFlociSmokeCheck(dir, {
+      body: "200",
+      exitCode: 0,
+    });
+
+    const result = await new Deno.Command("bash", {
+      args: [`${REPO_ROOT}/container/toolchains/floci.sh`],
+      env: {
+        PATH: await containerPath(dir),
+        TOOLCHAIN_MANIFEST: manifest,
+        FLOCI_SOURCE: source,
+        FLOCI_PREFIX: `${dir}/prefix`,
+      },
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+
+    assertEquals(result.code, 0, new TextDecoder().decode(result.stderr));
+    const stdout = new TextDecoder().decode(result.stdout);
+    assertStringIncludes(stdout, "answered HTTP 200");
+    assertStringIncludes(stdout, `Installed floci ${version}`);
+
+    const wrapperVersion = await new Deno.Command(`${dir}/prefix/bin/floci`, {
+      args: ["--version"],
+      stdout: "piped",
+      stderr: "piped",
+      stdin: "null",
+    }).output();
+    assertEquals(
+      new TextDecoder().decode(wrapperVersion.stdout).trim(),
+      `floci ${version}`,
+    );
+
+    assertStringIncludes(
+      await Deno.readTextFile(`${dir}/app.log`),
+      "-Dquarkus.http.host=127.0.0.1",
+    );
+
+    assert(
+      !(await Deno.stat(source).then(() => true).catch(() => false)),
+      "a successful smoke check must remove FLOCI_SOURCE",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

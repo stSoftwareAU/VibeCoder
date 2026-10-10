@@ -305,6 +305,10 @@ const REAL_IMAGE_OUTPUT: Record<
   // architecture the image builds for (Issue #2381): the toolchain is new and
   // the image above predates it, so there is no in-image capture to quote yet.
   rtk: { command: "rtk 0.49.0\n" },
+  // The native binary has no --version flag, so container/toolchains/
+  // floci.sh installs a /usr/local/bin/floci wrapper whose --version prints
+  // "floci <pinned version>" (Issue #3367).
+  floci: { command: "floci 2.2.0\n" },
 };
 
 Deno.test("checkContainerToolchains - every probe of the committed manifest passes against what the image really prints", async () => {

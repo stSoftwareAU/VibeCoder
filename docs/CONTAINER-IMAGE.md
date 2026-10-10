@@ -48,7 +48,7 @@ the largest download, so it sits last and a Rust bump rebuilds only itself.
 
 The fetch-verify-extract toolchains in that block are **fragments**
 (Issue #1594): `COPY toolchains/*.sh` puts them in the image, then
-`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk`
+`RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
 blocks. `markdownlint-cli2` and `graft` sit between the two runs, unchanged —
@@ -68,6 +68,27 @@ file — but v0.49.0 reads no such variable: the warning is throttled by a stamp
 file under RTK's data dir, so the setting is declared and inert until a release
 honours it. Setting both before the install keeps the fragment's own
 `rtk --version` probe quiet too.
+
+`floci` is the one fragment whose binary is copied out of a container image
+rather than downloaded (Issue #3367, parent #3346): floci publishes no
+standalone release binary, so the Containerfile declares `ARG
+FLOCI_IMAGE=docker.io/floci/floci:2.2.0@sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520`,
+adds a `FROM ${FLOCI_IMAGE}
+AS floci` stage, and `COPY --from=floci /app/application
+/tmp/floci-application` pulls that image's native Quarkus binary — which links
+only libc — into the build. The fragment verifies it against the per-architecture
+sha256 recorded in `container/tools.json`, installs it to
+`/usr/local/lib/floci/application`, and writes a `/usr/local/bin/floci`
+wrapper, because the native binary has no `--version` flag of its own —
+passing one would start the server instead of reporting a version — so the
+wrapper answers `--version` with `floci 2.2.0` itself and execs straight
+through for every other invocation. The build then runs a bounded smoke
+check: start floci in the background bound to `127.0.0.1`, `curl --retry …
+--retry-connrefused` against `http://127.0.0.1:4566/`, log the HTTP status,
+fail the build on no response, stop the process, and remove the copied
+binary. `container/entrypoint.sh` does not start floci; it exists for the
+worker's own runs as the LocalStack drop-in on port 4566, and whatever needs
+it starts it.
 
 ## Node and npm
 

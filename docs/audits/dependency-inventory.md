@@ -23,8 +23,9 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 
 | Image | Digest | Declared in | Verdict |
 | --- | --- | --- | --- |
-| docker.io/denoland/deno:bin-2.9.6 | sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba | container/Containerfile:18 (ARG DENO_IMAGE) | digest-pinned |
-| docker.io/library/ruby:3.4-trixie | sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b | container/Containerfile:20 (ARG BASE_IMAGE) | digest-pinned |
+| docker.io/denoland/deno:bin-2.9.6 | sha256:4cf0029b9aeeeed5efcbb71828737f0d7c8c8a20072df960e51a5679ef0d21ba | container/Containerfile:19 (ARG DENO_IMAGE) | digest-pinned |
+| docker.io/floci/floci:2.2.0 | sha256:e97cd0c1dc2aa14e7697fb5ef5018404c4d6345169dbd276315f0bed2c7b0520 | container/Containerfile:21 (ARG FLOCI_IMAGE) | digest-pinned |
+| docker.io/library/ruby:3.4-trixie | sha256:a9d6c36be5d7bc09d275b6df5eba2e98db2e35fcfe132f1fd23cddd91e2d674b | container/Containerfile:23 (ARG BASE_IMAGE) | digest-pinned |
 
 ## Container tools (container/tools.json)
 
@@ -43,6 +44,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | cargo-deny | toolchain | 0.20.2 | amd64: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f<br>arm64: 995c82be0defc7a025cae49a2aa2644ce8245c9a3318fc4103907c6a285e8c7d | exact version + SHA-256 verified |
 | codegraph | toolchain | 1.6.0 | amd64: de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0<br>arm64: 6dc935a7b8f1a61e688a578b98ea34680eb2e36d7b91db079d64f4011f1a668f | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
+| floci | toolchain | 2.2.0 | amd64: 3d7b4e5c9bde62c0005e5d15878a2c32f4914304818d50c05f89ab2b60280667<br>arm64: 7137285fac8d0baf4f6f7dc3f72868a551b28d1d1dddb424c009dc5a1cca48f7 | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
 | graft | toolchain | 0.18.0 | noarch: 729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc | exact version + SHA-256 verified |
 | markdownlint-cli2 | toolchain | 0.23.2 | noarch: b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09 | exact version + SHA-256 verified |
