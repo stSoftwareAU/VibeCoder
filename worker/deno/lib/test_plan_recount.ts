@@ -10,6 +10,10 @@
  * disagrees with that recount, so a drift check can catch the mismatch
  * mechanically instead of relying on the model to notice.
  *
+ * A paired run result such as a red-on-base "76 passed, 4 failed" is checked
+ * by its total (passed + failed), not by "passed" alone, because the run
+ * executed every runnable test in the file (Issue #3381).
+ *
  * The PR summary is untrusted, agent-authored text, so this module only
  * ever uses bounded, hardcoded regexes against it (never `new RegExp` built
  * from input) and caps the amount of text it scans at 200_000 characters.
@@ -387,6 +391,11 @@ export interface TestPlanMismatch {
   claimed: number;
   /** The sum of the named files' counts at the head. */
   actual: number;
+  /**
+   * Present when the claim is a paired run result, so `claimed` is
+   * passed + failed.
+   */
+  run?: { passed: number; failed: number };
 }
 
 function resolveToken(
@@ -406,8 +415,14 @@ const TOKEN_RE =
   /[A-Za-z0-9_./-]+(?:_test|\.test|\.spec)\.(?:ts|tsx|js|jsx|mjs|mts)/g;
 // `#` is excluded so `Issue #3143 tests` is not read as a count of 3143.
 // A "passed" figure is what `deno test` actually ran (`.ignore`/`.skip`
-// excluded); a "tests" figure is every declaration.
+// excluded); a "tests" figure is every declaration. A block holding a paired
+// `N passed, M failed` result takes the RESULT_RE path instead (Issue #3381).
 const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
+// A paired run result in either order, e.g. "76 passed, 4 failed",
+// "4 failed, 76 passed", "76 passed and 4 failed" or deno's
+// "FAILED | 76 passed | 4 failed (1s)". Bounded quantifiers keep it linear.
+const RESULT_RE =
+  /(?<![\w.#])(\d{1,5})\s+(passed|failed)\b[\s,;|]*(?:and\s+)?(\d{1,5})\s+(passed|failed)\b/gi;
 const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
 
 /**
@@ -455,6 +470,12 @@ export function logicalBlocks(section: string): string[] {
   return blocks.filter((b) => b !== "");
 }
 
+/**
+ * Flag Test Plan lines whose quoted figure disagrees with the head recount:
+ * a single "N tests"/"N passed" claim is compared with the named files' counts,
+ * and a paired "N passed, M failed" run result is compared by N + M with the
+ * runnable count of the test file it ran (Issue #3381).
+ */
 export function findTestPlanMismatches(opts: {
   summary: string;
   /**
@@ -466,8 +487,44 @@ export function findTestPlanMismatches(opts: {
   const section = extractTestPlanSection(opts.summary);
   const results: TestPlanMismatch[] = [];
 
+  // The section's sole changed test file, for a red run that names none. A
+  // run with failures against base must have run a test file the PR changed
+  // (an unchanged test file passes on base), so a test file the PR did not
+  // change, e.g. a path quoted inside an assertion, does not make it ambiguous.
+  let soleFile: string | undefined;
+  {
+    const keys = new Set<string>();
+    for (const m of section.matchAll(TOKEN_RE)) {
+      const resolved = resolveToken(m[0], opts.headCounts);
+      if (resolved !== undefined) keys.add(resolved);
+    }
+    if (keys.size === 1) soleFile = [...keys][0];
+  }
+
   for (const rawLine of logicalBlocks(section)) {
     if (rawLine.includes("--filter")) continue;
+
+    const runs: { passed: number; failed: number }[] = [];
+    for (const m of rawLine.matchAll(RESULT_RE)) {
+      const w1 = (m[2] ?? "").toLowerCase();
+      const w2 = (m[4] ?? "").toLowerCase();
+      if (w1 === w2) continue;
+      const a = Number(m[1]);
+      const b = Number(m[3]);
+      runs.push(
+        w1 === "passed" ? { passed: a, failed: b } : { passed: b, failed: a },
+      );
+    }
+    if (runs.length > 0) {
+      const mismatch = checkRunResults(
+        rawLine,
+        runs,
+        opts.headCounts,
+        soleFile,
+      );
+      if (mismatch) results.push(mismatch);
+      continue;
+    }
 
     const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
     if (tokens.length === 0) continue;
@@ -521,8 +578,58 @@ export function findTestPlanMismatches(opts: {
   return results;
 }
 
+/** Compare a block's paired run results with the head; null when fine or unsure. */
+function checkRunResults(
+  rawLine: string,
+  runs: { passed: number; failed: number }[],
+  headCounts: ReadonlyMap<string, TestDeclarationCounts>,
+  soleFile: string | undefined,
+): TestPlanMismatch | null {
+  const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
+  let files: Set<string>;
+  let candidates = runs;
+  if (tokens.length > 0) {
+    files = new Set<string>();
+    for (const token of tokens) {
+      const resolved = resolveToken(token, headCounts);
+      if (resolved === undefined) return null;
+      files.add(resolved);
+    }
+    // Two runs of different file sets cannot be told apart.
+    if (
+      files.size > 1 &&
+      new Set(candidates.map((r) => r.passed + r.failed)).size > 1
+    ) return null;
+  } else {
+    // A green full-suite line must never be compared; only a red run is.
+    candidates = runs.filter((r) => r.failed > 0);
+    if (candidates.length === 0 || soleFile === undefined) return null;
+    files = new Set([soleFile]);
+  }
+  let actual = 0;
+  for (const key of files) actual += headCounts.get(key)?.runnable ?? 0;
+  for (const run of candidates) {
+    const claimed = run.passed + run.failed;
+    if (claimed !== actual) {
+      return {
+        line: rawLine.trim().slice(0, 300),
+        files: [...files],
+        claimed,
+        actual,
+        run,
+      };
+    }
+  }
+  return null;
+}
+
 /** One line describing a mismatch, for a recovery prompt or a PR reply. */
 export function describeTestPlanMismatch(m: TestPlanMismatch): string {
+  if (m.run) {
+    return `the Test Plan line "${m.line}" reports a run of ${m.claimed} tests (${m.run.passed} passed, ${m.run.failed} failed) for ${
+      m.files.join(", ")
+    }, but the head has ${m.actual} runnable — re-run the head test file against the base branch's production code and replace the figures`;
+  }
   if (m.files.length === 1) {
     return `the Test Plan line "${m.line}" quotes ${m.claimed} tests for ${
       m.files[0]
