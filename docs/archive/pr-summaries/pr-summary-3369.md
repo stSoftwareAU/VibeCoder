@@ -57,10 +57,12 @@ path applies; per-service tests are not applicable.
 ## Evidence
 
 Docs sweep — grep: `floci`, `emulatorConfigured`, `cloudformation`; section:
-CONTAINER.md Floci row, EC2-LINUX-VERIFICATION.md CI wording; updated:
+CONTAINER.md Floci row, EC2-LINUX-VERIFICATION.md intro; updated:
 `docs/CONTAINER.md:100` (row now names the `floci.yml` job),
-`docs/EC2-LINUX-VERIFICATION.md:115-119` (template is now emulator-tested in
-CI; wording softened to say a live deploy is still the final proof);
+`docs/EC2-LINUX-VERIFICATION.md:17-23` (new paragraph: CI deploys the template
+into Floci and fails unless it reaches `CREATE_COMPLETE`, stubbed types are
+reported as `::warning::`, and this does not show the launcher works on the
+host);
 `CONTRIBUTING.md:126-129` — still true because it describes the local quality
 gate, which is unchanged; `docs/BEST-PRACTICES-SCAN.md:255-268` — still true
 because the detector semantics are unchanged; `DESIGN-PRINCIPLES.md:1666` —
@@ -88,43 +90,93 @@ flowchart LR
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **partial** — The Floci CI job is green on this PR and logs `CREATE_COMPLETE`
-  for `linux-verification-host`. — evidence:
-  `.github/workflows/floci.yml`, `infra/cloudformation/test-floci.sh`; needs
-  the CI run on this PR — reviewer: partial
-- **partial** — A deliberately broken template makes the job fail. — evidence:
-  the script exits 1 on any non-`CREATE_COMPLETE` status
-  (`infra/cloudformation/test-floci.sh`); not runnable without Docker here —
-  reviewer: partial
-- **met** — Stubbed resource types appear as `::warning::` annotations. —
-  evidence: `infra/cloudformation/test-floci.sh` (one unique warning per type)
-  — reviewer: met
+- **missing** — The Floci CI job is green on this PR and logs `CREATE_COMPLETE`
+  for `linux-verification-host`. — evidence: `.github/workflows/floci.yml`,
+  `infra/cloudformation/test-floci.sh`; CI run 38033819415 — reviewer: missing
+  — reason: the job fails in "Deploy templates into Floci" (exit 254) because
+  `aws ssm put-parameter` on the template's `/aws/service/...` AMI path is
+  rejected by Floci (`can't be prefixed with "aws" or "ssm"`), so the deploy
+  never runs.
+- **missing** — A deliberately broken template makes the job fail. — evidence:
+  `infra/cloudformation/test-floci.sh` (`describe-stacks` status check and
+  failure count) — reviewer: missing — reason: no broken-template run exists,
+  and none can be shown until the job reaches the deploy step.
+- **partial** — Stubbed resource types appear as `::warning::` annotations. —
+  evidence: `infra/cloudformation/test-floci.sh` (`describe-stack-resources`
+  query for "stubbed"), stub env set in `.github/workflows/floci.yml` —
+  reviewer: partial — reason: the code has never run in CI, and the "stubbed"
+  reason text has not been checked against real Floci output.
 - **met** — Running the script without Docker prints
-  `SKIPPED (needs Docker):` and does not fail. — evidence: local run exit 0 —
+  `SKIPPED (needs Docker):` and does not fail. — evidence: local run with no
+  socket and `CI` unset printed
+  `SKIPPED (needs Docker): linux-verification-host.yaml`, exit 0 —
   reviewer: met
 - **met** — The digest-agreement test passes; actionlint and shellcheck are
   green. — evidence:
   `worker/deno/tests/issue_3369_floci_workflow_test.ts::floci digest in workflow matches container/tools.json (drift test)`
   — reviewer: met
-- **partial** — After merge the #3366/#3346 detector reports
-  `emulatorConfigured: true` for VibeCoder. — evidence: the workflow runs a
-  `floci/floci` image, which `isFlociImage` accepts; confirmed only after merge
-  — reviewer: partial
-- **unrequested** — Extra structural checks (permissions, checkout
-  `persist-credentials: false`, `milestone/*` branch, stub env) in
-  `checkFlociWorkflow`. — reviewer: unrequested — reason: required by the
-  workflow-validator rule (each load-bearing workflow property gets a
-  validator invariant) and the repo's workflow hygiene conventions.
+- **missing** — After merge the #3366/#3346 detector reports
+  `emulatorConfigured: true` for VibeCoder. — evidence:
+  `.github/workflows/floci.yml` — reviewer: missing — reason: can only be
+  checked after merge, and merge is blocked by the failing Floci job.
+- **unrequested** — Extra structural checks in `checkFlociWorkflow`
+  (`milestone/*` trigger, stub env, `permissions: contents: read`,
+  `persist-credentials: false`, socket step, script call, trigger paths). —
+  reviewer: unrequested — reason: the issue asked only for the digest test;
+  added under the workflow-validator rule.
+- **unrequested** — The extra "Check AWS CLI" step in `floci.yml` and the
+  `milestone/*` branch filter. — reviewer: unrequested — reason: the CLI step
+  follows the issue's failure-detection section; the branch filter follows the
+  repo convention from #3360.
+- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3369.json`, the
+  `integration_test_manifest.ts` entry, and the `docs/CONTAINER.md`,
+  `docs/EC2-LINUX-VERIFICATION.md` and `docs/audits/dependency-inventory.md`
+  updates. — reviewer: unrequested — reason: repo housekeeping and doc sweep
+  for the new module, test and workflow.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **clean** — material findings from the review were fixed: image reference
-  moved to tag+digest (hardening test), new lib module claimed by a sweep slice
-  (`docs/audits/lib-sweep-coverage/top-up-3369.json`), manifest entry added,
-  shellcheck SC2329 on the trap function disabled with a comment, command-position
-  matching so an echoed or commented `test-floci.sh` does not satisfy the check.
+- **violation** — Shell is for orchestration only; new logic belongs in Deno
+  TypeScript. — evidence: `infra/cloudformation/test-floci.sh:120-140` (awk
+  YAML parse of SSM parameters), `:40-60` (deploy/skip decision), `:188-200`
+  (stubbed-resource parsing) — reason: open, not fixed in this diff.
+- **violation** — Every outcome of an added branch needs a test that reaches
+  it. — evidence: `infra/cloudformation/test-floci.sh:27-30`, `:44-56`,
+  `:68-71`, `:120-140` — reason: open; these branches can be reached with a
+  stub PATH, `CI`/socket overrides and fixture templates, so the "untestable"
+  exemption covers only the live deploy.
+- **violation** — Writing a gate over text: loosened or conditioned
+  invocations. — evidence: `worker/deno/lib/floci_workflow_check.ts:82-88`
+  accepts `test-floci.sh || true`; `:174-178` ignores step-level
+  `continue-on-error: true` and `if: false` — reason: open, not fixed in this
+  diff.
+- **violation** — A workflow validator must pin the load-bearing invariant. —
+  evidence: `worker/deno/lib/floci_workflow_check.ts:175-178` checks that any
+  job runs the script, not the job with the Floci service — reason: open, not
+  fixed in this diff.
+- **violation** — DRY: in-repo workflow policy re-implemented. — evidence:
+  `worker/deno/lib/floci_workflow_check.ts:159-171` (duplicates
+  `checkout-persist-credentials`), `:200-206` (duplicates
+  `milestone-branch-filters` with a literal match stricter than GitHub's
+  matching), `:208-212` (overlaps `workflow-permissions`) — reason: open, not
+  fixed in this diff.
+- **violation** (minor) — Single source of truth. — evidence:
+  `worker/deno/tests/issue_3369_floci_workflow_test.ts:95` hard-codes the tag
+  `2.2.0` instead of reading it from `container/tools.json` — reason: open,
+  not fixed in this diff.
+- **violation** (minor) — Avoid over-engineering. — evidence:
+  `worker/deno/lib/floci_workflow_check.ts:183-188` (YAML 1.1 `true` key the
+  only caller never produces), `.github/workflows/floci.yml:75-82` (repeats the
+  script's own aws CLI check) — reason: open, not fixed in this diff.
+- **clean** — Australian English spelling; fail-loud shell
+  (`set -euo pipefail`, counted failures, commented `|| true`); log levels;
+  `SIMPLE-ON-PURPOSE` marker format; workflow hygiene (SHA pins,
+  `persist-credentials: false`, least-privilege permissions, tag plus digest,
+  `milestone/*`); unit-test classification and manifest entry; a positive and a
+  negative test for each checker invariant; doc sweep and dependency
+  inventory; commit safety.
 
 ## Test Plan
 
@@ -149,23 +201,26 @@ flowchart LR
 **Branch outcomes:**
 
 - `worker/deno/lib/floci_workflow_check.ts:52` — missing `images[]` throws.
-  Test: `worker/deno/tests/issue_3369_floci_workflow_test.ts::flociImageDigest throws on missing images[]`.
+  Test: `worker/deno/tests/issue_3369_floci_workflow_test.ts::flociImageDigest throws when images[] is missing`.
   Flipped (return empty): went red.
 - `worker/deno/lib/floci_workflow_check.ts:58` — no Floci entry throws. Test:
-  `…::flociImageDigest throws on a missing Floci entry`. Flipped: went red.
+  `…::flociImageDigest throws when the Floci entry is missing`. Flipped: went red.
 - `worker/deno/lib/floci_workflow_check.ts:62` — malformed digest throws.
   Test: `…::flociImageDigest throws on a malformed digest`. Flipped: went red.
 - `worker/deno/lib/floci_workflow_check.ts:99` — non-object input. Test:
   `…::reports non-object input without throwing`. Flipped: went red.
-- `worker/deno/lib/floci_workflow_check.ts:125-150` — image digest drift, bare
+- `worker/deno/lib/floci_workflow_check.ts:123-132` — image digest drift, bare
   digest, bare tag, wrong repo. Tests: the four `(a) refuses …` cases.
   Flipped: went red.
 - `worker/deno/lib/floci_workflow_check.ts:157` — stub env not `"true"`. Test:
   `…::refuses a floci service without the stub env`. Flipped: went red.
-- `worker/deno/lib/floci_workflow_check.ts:168` — missing docker.sock volume /
-  first step not the socket assertion. Tests: `(b) refuses a missing docker.sock
-  volume`, `(c) refuses a first step without the socket assertion`, `(c)
-  refuses an echo that merely names the socket`. Flipped: went red.
+- `worker/deno/lib/floci_workflow_check.ts:135-141` — missing docker.sock
+  volume. Test: `…::checkFlociWorkflow (b) refuses a missing docker.sock
+  volume`. Flipped: went red.
+- `worker/deno/lib/floci_workflow_check.ts:146-152` — first step not the socket
+  assertion. Tests: `…::checkFlociWorkflow (c) refuses a first step without the
+  socket assertion`, `…::checkFlociWorkflow (c) refuses an echo that merely
+  names the socket`. Flipped: went red.
 - `worker/deno/lib/floci_workflow_check.ts:180` — no step runs the script.
   Tests: `(d) refuses a workflow that never runs test-floci.sh`, commented-out
   and echoed variants; accepting variants in `(d) accepts bash/sh and bare-path
@@ -177,7 +232,8 @@ flowchart LR
   `…::refuses a pull_request trigger without milestone/*`. Flipped: went red.
 - `worker/deno/lib/floci_workflow_check.ts:211` — permissions. Test:
   `…::refuses permissions other than contents: read`. Flipped: went red.
-- Checkout without `persist-credentials: false`. Test:
+- `worker/deno/lib/floci_workflow_check.ts:164-170` — checkout without
+  `persist-credentials: false`. Test:
   `…::refuses checkout without persist-credentials: false`. Flipped: went red.
 - `infra/cloudformation/test-floci.sh` branches (Docker gate skip/error, `aws`
   missing, non-`CREATE_COMPLETE`, stub warning): `exempt (untestable): needs
