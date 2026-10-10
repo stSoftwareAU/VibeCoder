@@ -132,7 +132,8 @@ flowchart LR
   `--allow-write` for the supply-chain gate test): 124 passed, 0 failed.
 - `deno task check:manifests`, `deno fmt --check`, `deno lint`, `actionlint`,
   `shellcheck`, `bash -n`: pass.
-- Full `./quality.sh` result: GATE_RESULT_PLACEHOLDER
+- Full `./quality.sh` on the final tree: `Result: PASSED (with skipped checks)`;
+  the only skip is config integration ("deno or .config.json not available").
 - An earlier gate run failed on three items (bare-digest image rejected by the
   hardening test; `floci_workflow_check.ts` claimed by no sweep slice; manifest
   entry) — all fixed above.
