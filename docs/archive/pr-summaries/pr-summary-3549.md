@@ -85,11 +85,10 @@ flowchart TD
   `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - evaluateGhCommand: refuses the multi-operation and comment shapes`.
 - Quality gate: `./quality.sh < /dev/null` exited 0 with "Result: PASSED
   (with skipped checks)". Only the config integration check was skipped.
-- Docs sweep: I grepped for `graphqlMutationFields`, `changeUserStatus`,
-  `GH_SANCTIONED_GRAPHQL_MUTATIONS`, `first mutation`, `non-repo` and
-  `GraphQL`. I read SECURITY.md's write-repo allowlist section and
-  `docs/AGENT-ACCOUNTABILITY.md`. I updated `SECURITY.md:1759` and the doc
-  comments in `audit_mutation_classifier.ts`. Hits I left in place:
+- **Docs sweep** — grep: `graphqlMutationFields`, `scanGraphqlMutations`, `changeUserStatus`, `GH_SANCTIONED_GRAPHQL_MUTATIONS`, "first mutation", `non-repo`, `GraphQL`; section: `SECURITY.md#6-egress-containment--per-run-write-repo-allowlist`; updated: `SECURITY.md`
+  - I read §6 of `SECURITY.md` (the write-repo allowlist) and
+    `docs/AGENT-ACCOUNTABILITY.md`. I added `SECURITY.md:1759` and updated
+    the doc comments in `audit_mutation_classifier.ts`. Hits I left in place:
   - `SECURITY.md:1756` — still true because `changeUserStatus` is still
     the one named exception.
   - `SECURITY.md:1758` — still true because a body that is not on the
@@ -115,8 +114,8 @@ flowchart TD
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — "Make the parser skip `#` comments (and string literals)" —
-  evidence: `scanGraphqlMutations` (`audit_mutation_classifier.ts:524`,
-  `:543`, `:558`); tests `Issue #3549 - graphqlMutationFields: a comment brace does not end the operation`
+  evidence: `scanGraphqlMutations` (`audit_mutation_classifier.ts:527`–`:530`
+  for comments, `:531`–`:560` for strings and block strings); tests `Issue #3549 - graphqlMutationFields: a comment brace does not end the operation`
   and `Issue #3549 - look-alike: braces, hash and quotes inside a string argument stay non-repo`
   — reviewer: met
 - **met** — "collect the top-level fields of **every** operation in the
@@ -170,64 +169,54 @@ flowchart TD
 - Known gap: `alias : field` with a space before the colon over-collects.
   It fails closed and is untested by design.
 
-Branch outcomes (all lines are in
-`worker/deno/lib/audit_mutation_classifier.ts`; all tests are in
-`worker/deno/tests/gh_mutation_fail_closed_test.ts`):
+**Branch outcomes:**
 
-- `:506` — a `mutation` keyword sets `hasMutation` — `Issue #3549 - look-alike: a read whose string or comment says mutation is a read`
-  (treating `query` as a mutation went red).
-- `:508` — a non-keyword token at depth 0 sets `clean = false` —
-  `Issue #3549 - fail closed: malformed documents are never non-repo`
-  (ignoring `clean` went red).
-- `:513` — a root field of every mutation operation is collected —
-  `Issue #3549 - graphqlMutationFields: collects every operation`
-  (stopping after the first operation went red).
-- `:524` — a `#` comment is skipped to the end of the line —
-  `Issue #3549 - classifyGhMutation: brace inside a comment is not non-repo`
-  (not skipping `#` went red).
-- `:543` — an unterminated block string sets `clean = false` —
-  `Issue #3549 - fail closed: malformed documents are never non-repo`
-  (accepting unterminated strings went red).
-- `:558` — an unterminated string sets `clean = false` — the same test
-  (accepting unterminated strings went red). String skipping itself is
-  reached by `Issue #3549 - look-alike: braces, hash and quotes inside a string argument stay non-repo`
-  (not skipping strings went red).
-- `:572` — a closer that does not match sets `clean = false` —
-  `Issue #3549 - fail closed: malformed documents are never non-repo`
-  (ignoring `clean` went red).
-- `:585` — a dangling `@` sets `clean = false`, while a real directive keeps
-  the mark — `Issue #3549 - a dangling @ never hides the next field` and
-  `Issue #3549 - look-alike: a normal directive on a mutation field stays non-repo`
-  (`@` always setting the mark went red, and so did `@` without
-  `clean = false`).
-- `:590` — a `.` at the mutation root sets `clean = false` —
-  `Issue #3549 - fragments at the mutation root are never non-repo` and
-  `Issue #3549 - evaluateGhCommand: refuses inline fragments at the mutation root`
-  (turning the rule off went red). A nested spread stays allowed —
-  `Issue #3549 - look-alike: a spread nested inside a mutation field stays non-repo`
-  (applying the rule at any depth went red).
-- `:592` — an unexpected character sets `clean = false` —
-  `Issue #3549 - fail closed: malformed documents are never non-repo`
-  (ignoring `clean` went red).
-- `:599` — an unbalanced stack or a pending keyword at the end sets
-  `clean = false` — the same test (ignoring `clean` went red).
-- `:602` — the inert rule: no mutation and no `{` gives `clean` —
-  `worker/deno/tests/gh_api_body_classification_test.ts::classifyGhMutation - graphql query=@file on -f/--raw-field is a visible literal, not a file read`
-  (the first strict rule without this line went red).
-- `:619` — `graphqlMutationFields` returns `null` only for a clean scan with
-  no mutation, and `[]` otherwise —
-  `Issue #3549 - fail closed: an unparseable document with no mutation is not a read`
-  (ignoring `clean` went red).
-- `:657` — a clean scan with no mutation is skipped —
-  `Issue #3549 - look-alike: a sanctioned mutation plus a query operation stays non-repo`
-  (treating `query` as a mutation went red).
-- `:659` — an unclean scan clears `allClean` —
-  `Issue #3549 - fail closed: malformed documents are never non-repo`
-  (ignoring `clean` went red).
-- `:667` — sanctioned only when the scan is readable and clean, there is at
-  least one field, and every field is sanctioned —
-  `Issue #3549 - evaluateGhCommand: refuses the multi-operation and comment shapes`,
-  whose `SANCTIONED_DOC` control is allowed (ignoring `clean` went red, and
-  so did stopping after the first operation).
+Each flip below was applied to the head and the two test files run
+(`deno test -A --no-check tests/gh_mutation_fail_closed_test.ts
+tests/gh_api_body_classification_test.ts` in `worker/deno`), then reverted.
+
+Not yet reached: the flips at `:451`, `:461`, `:464`, `:504`, `:508`,
+`:536`, `:555`, `:564`, `:574`, `:575`, `:591` and the pending-keyword half
+of `:599` left the suite green. Each needs a test that goes red. The
+earlier version of this list said the `:508` and `:591` flips went red;
+that was wrong.
+
+- `worker/deno/lib/audit_mutation_classifier.ts:451` — comment skipped (a `#` comment between `@` and the directive name) — no test reaches it — removed the `#` skip, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:461` — error (a digit after `@` is not a directive name) — no test reaches it — dropped the digit check, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:464` — absent (`@` at the end of the document is dangling) — no test reaches it — returned `true` instead, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:497` — skip (a directive name after `@` is not collected as a field) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: a normal directive on a mutation field stays non-repo` — disabled the skip, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:502` — skip (the operation name after a keyword is not checked as a keyword) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: a sanctioned mutation plus a query operation stays non-repo` — removed the skip, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:504` — error (a capitalised `Mutation` is not an operation keyword) — no test reaches it — made the keyword match case-insensitive, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:506` — success (`mutation` sets `hasMutation`; `query` does not) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: a read whose string or comment says mutation is a read` — made every keyword set `hasMutation`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:508` — error (a non-keyword token at depth 0 sets `clean = false`) — no test reaches it — removed `clean = false`, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:511` — skip (an alias before `:` is not collected) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: escaped quote and aliases/directives still parse` — dropped the `:` check, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:513` — success (a root field of every mutation operation is collected) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - graphqlMutationFields: collects every operation` — kept only the first field, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:527` — skip (a `#` comment is skipped to the end of the line) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - classifyGhMutation: brace inside a comment is not non-repo` — disabled the skip, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:531` — skip (a `"…"` string is skipped) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: braces, hash and quotes inside a string argument stay non-repo` — disabled string skipping, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:532` — skip (a `"""…"""` block string is skipped) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: a block string argument is skipped` — disabled block-string detection, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:536` — skip (an escaped `\"""` inside a block string does not close it) — no test reaches it — removed the escape rule, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:543` — error (an unterminated block string sets `clean = false`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: malformed documents are never non-repo` — removed `clean = false`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:550` — skip (a backslash escape inside a string) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: escaped quote and aliases/directives still parse` — disabled the escape, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:555` — error (a newline ends a `"…"` string unterminated) — no test reaches it — removed the newline rule, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:558` — error (an unterminated string sets `clean = false`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: malformed documents are never non-repo` — removed `clean = false`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:562` — success (a `{` marks the text as having a selection set) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: an unparseable document with no mutation is not a read` — removed the mark, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:563` — success (a depth-0 `{` opens an operation) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - graphqlMutationFields: collects every operation` — disabled the branch, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:564` — default (an anonymous `{` opens a query) — no test reaches it — defaulted to `mutation` instead, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:565` — success (an opened mutation sets `hasMutation`) — exempt (untestable): `openKind` is `mutation` only when `pendingKind` was `mutation`, which already set `hasMutation` at `:506`, so no input tells the two apart; removing the line left the suite green
+- `worker/deno/lib/audit_mutation_classifier.ts:572` — error (a closer that does not match sets `clean = false`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: malformed documents are never non-repo` — removed `clean = false`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:574` — error path (a mismatched closer leaves the opener on the stack) — no test reaches it — removed the push-back, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:575` — success (closing the last bracket resets `openKind`) — no test reaches it — disabled the reset, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:581` — success (a real directive keeps the `@` mark) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - a dangling @ never hides the next field` — made `@` always set the mark, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:585` — error (a dangling `@` sets `clean = false`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - a dangling @ never hides the next field` — removed `clean = false`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:587` — error (a `.` at the mutation root sets `clean = false`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fragments at the mutation root are never non-repo` — disabled the rule, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:587` — success (a `.` below the mutation root stays allowed) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - look-alike: a spread nested inside a mutation field stays non-repo` — applied the rule at any depth, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:591` — error (an unexpected character sets `clean = false`) — no test reaches it — removed `clean = false`, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:599` — error (an unbalanced bracket stack at the end sets `clean = false`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: malformed documents are never non-repo` — dropped the stack check, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:599` — error (an operation keyword never followed by a selection set sets `clean = false`) — no test reaches it — dropped the pending-keyword check, suite stayed green
+- `worker/deno/lib/audit_mutation_classifier.ts:602` — inert (no mutation and no `{` is clean) — `worker/deno/tests/gh_api_body_classification_test.ts::classifyGhMutation - graphql query=@file on -f/--raw-field is a visible literal, not a file read` — removed the rule, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:621` — absent (`null` only for a clean scan with no mutation; `[]` otherwise) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: an unparseable document with no mutation is not a read` — ignored `clean`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:657` — skip (a clean scan with no mutation is skipped as a read) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: an unparseable document with no mutation is not a read` — ignored `clean`, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:659` — error (an unclean scan clears `allClean`) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: malformed documents are never non-repo` — removed the line, test went red
+- `worker/deno/lib/audit_mutation_classifier.ts:667` — success / fail-closed default (non-repo only when readable, clean, non-empty and all sanctioned) — `worker/deno/tests/gh_mutation_fail_closed_test.ts::Issue #3549 - fail closed: malformed documents are never non-repo` — dropped `allClean`, test went red
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
