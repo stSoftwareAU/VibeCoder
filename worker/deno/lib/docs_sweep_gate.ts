@@ -337,7 +337,7 @@ function evaluateApplicable(
         "the `Docs sweep` line's `siblings:` is a bare placeholder — name the existing sibling members you grepped, or write `siblings: none — <why no existing set gained a member>`",
       );
     } else if (
-      !/^none\b/i.test(line.siblings) &&
+      !isSiblingsNegative(line.siblings) &&
       extractSiblingTerms(line.rawBody).length === 0
     ) {
       problems.push(
