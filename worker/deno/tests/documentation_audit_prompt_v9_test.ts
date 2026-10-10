@@ -19,50 +19,58 @@
  * edit that drops a check — or renumbers the catalogue without saying so —
  * fails in CI.
  *
+ * Positive pins are scoped to the heading whose section holds them with
+ * `section()`/`readRepoDoc()` from `support/markdown_docs.ts` (Issue #3309) —
+ * a whole-file `includes` still passes on a page that moved the rule into an
+ * unrelated section. Absence checks (stale check counts and ranges) stay
+ * whole-file, as they were before the conversion.
+ *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { assert, assertStringIncludes } from "@std/assert";
 import { hasProjectConventionsStanza } from "../lib/project_conventions_stanza.ts";
+import {
+  type DocSection,
+  excerpt,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
+const loadDocumentationAudit = () =>
+  readRepoDoc("prompts/documentation_audit/prompt.md");
 
-async function loadDocumentationAudit(): Promise<string> {
-  const result = await loadPrompt("documentation_audit", PROMPTS_DIR);
-  assertEquals(result.ok, true, "documentation_audit failed to load");
-  if (!result.ok) {
-    throw new Error("documentation_audit failed to load");
-  }
-  return result.value;
-}
+const readDoc = (relPath: string) => readRepoDoc(relPath);
 
-const readDoc = (relPath: string) =>
-  Deno.readTextFile(`${REPO_ROOT}${relPath}`);
-
-/**
- * Collapse every run of whitespace to a single space, so an assertion about a
- * sentence does not depend on where the Markdown source happens to wrap it.
- */
-const flatten = (text: string) => text.replace(/\s+/g, " ");
+/** The exact catalogue heading text, by check number — kept in sync with the
+ * template's own numbering so a renumbering fails loudly via `section()`. */
+const CHECK_TITLES: Record<number, string> = {
+  13: "13. Comment contradicts the code",
+  14: "14. Agent instructions do not follow Claude Code guidance",
+};
 
 /**
- * One numbered Phase 2 check, from its `### <n>.` heading to the next check's
- * heading (or the worked examples for the last one), flattened.
+ * One numbered Phase 2 check, from its heading to the next check's heading
+ * (or the shared worked-examples block, for the last check), flattened.
  */
 async function catalogueSection(n: number): Promise<string> {
-  const text = await loadDocumentationAudit();
-  const start = text.indexOf(`### ${n}. `);
-  assert(start >= 0, `check ${n} heading not found in the catalogue`);
-  const next = text.indexOf(`### ${n + 1}. `, start);
-  const end = next >= 0 ? next : text.indexOf("<examples>", start);
-  assert(end > start, `check ${n} section is empty`);
-  return flatten(text.slice(start, end));
+  const title = CHECK_TITLES[n];
+  assert(title, `no catalogue title mapped for check ${n}`);
+  const body = await loadDocumentationAudit();
+  const whole = section(body, title);
+  const examplesAt = whole.indexOf("<examples>");
+  const trimmed: DocSection = examplesAt >= 0
+    ? excerpt(whole, 0, examplesAt)
+    : whole;
+  return flat(trimmed);
 }
 
 Deno.test("documentation_audit - keeps the dedup and attribution placeholders", async () => {
-  const body = await loadDocumentationAudit();
+  // All four placeholders live together under "## Inputs".
+  const inputs = flat(
+    section(await loadDocumentationAudit(), "Inputs"),
+  );
   for (
     const placeholder of [
       "{{SUPPRESSED_IDS}}",
@@ -71,7 +79,7 @@ Deno.test("documentation_audit - keeps the dedup and attribution placeholders", 
       "{{ATTRIBUTION_FOOTER}}",
     ]
   ) {
-    assertStringIncludes(body, placeholder);
+    assertStringIncludes(inputs, placeholder);
   }
 });
 
@@ -91,9 +99,10 @@ Deno.test("documentation_audit - the H1 names the audit", async () => {
 // --- Check 13: comments that contradict the code ---
 
 Deno.test("documentation_audit - carries check 13 for comments that contradict the code", async () => {
-  const text = await loadDocumentationAudit();
-  assertStringIncludes(text, "### 13. Comment contradicts the code");
-  assertStringIncludes(text, "The source code is the truth");
+  // catalogueSection(13) throws if the "13. Comment contradicts the code"
+  // heading is renamed or removed.
+  const check = await catalogueSection(13);
+  assertStringIncludes(check, "The source code is the truth");
 });
 
 Deno.test("documentation_audit - check 13 removes the comment by default, citing file and line", async () => {
@@ -115,10 +124,16 @@ Deno.test("documentation_audit - check 13 files a possible code bug when the com
 
 Deno.test("documentation_audit - check 13 states the doc-coverage ownership boundary", async () => {
   // The sibling boundary used to cover only missing or paraphrase-only
-  // docstrings; check 13 claims contradicting comments explicitly.
-  const text = await loadDocumentationAudit();
-  assertStringIncludes(text, "contradicts the code it sits beside");
-  assertStringIncludes(text, "paraphrase");
+  // docstrings; check 13 claims contradicting comments explicitly. Lives
+  // under "## Sibling boundary — what belongs to this scan".
+  const boundary = flat(
+    section(
+      await loadDocumentationAudit(),
+      "Sibling boundary — what belongs to this scan",
+    ),
+  );
+  assertStringIncludes(boundary, "contradicts the code it sits beside");
+  assertStringIncludes(boundary, "paraphrase");
 });
 
 Deno.test("documentation_audit - check 13 carves out the legitimate look-alikes", async () => {
@@ -138,32 +153,38 @@ Deno.test("documentation_audit - check 13 collapses per source file", async () =
 });
 
 Deno.test("documentation_audit - check 13 has worked examples for both verdicts", async () => {
-  const text = await loadDocumentationAudit();
+  // The worked examples for every check share one block at the end of
+  // Phase 2, so this is scoped to the whole catalogue section rather than
+  // check 13's own subsection.
+  const phase2 = flat(
+    section(
+      await loadDocumentationAudit(),
+      "Phase 2 — Apply the fourteen-check catalogue",
+    ),
+  );
   assertStringIncludes(
-    text,
+    phase2,
     '<example name="comment-contradicts-adjacent-code">',
   );
   assertStringIncludes(
-    text,
+    phase2,
     '<example name="comment-documents-a-guard-the-code-lacks">',
   );
-  assertStringIncludes(text, '<example name="comment-explaining-why">');
+  assertStringIncludes(phase2, '<example name="comment-explaining-why">');
 });
 
 // --- Check 14: agent instructions versus the Claude Code guidance ---
 
 /**
- * The check-14 section on its own — heading to the worked examples — with its
- * line wrapping flattened away.
+ * The check-14 section on its own — heading to the shared worked examples —
+ * with its line wrapping flattened away.
  */
 const checkFourteen = () => catalogueSection(14);
 
 Deno.test("documentation_audit - carries check 14 for the agent-instruction guidance", async () => {
-  const text = await loadDocumentationAudit();
-  assertStringIncludes(
-    text,
-    "### 14. Agent instructions do not follow Claude Code guidance",
-  );
+  // catalogueSection(14) throws if the heading text is renamed or removed.
+  const check = await checkFourteen();
+  assert(check.length > 0, "check 14 section is empty");
 });
 
 Deno.test("documentation_audit - check 14 assesses the detection set plus its @path imports", async () => {
@@ -278,37 +299,43 @@ Deno.test("documentation_audit - check 14 collapses to one finding per repo unde
 });
 
 Deno.test("documentation_audit - check 14 has worked examples for both verdicts", async () => {
-  const text = await loadDocumentationAudit();
+  // Shared examples block at the end of Phase 2, as for check 13 above.
+  const phase2 = flat(
+    section(
+      await loadDocumentationAudit(),
+      "Phase 2 — Apply the fourteen-check catalogue",
+    ),
+  );
   assertStringIncludes(
-    text,
+    phase2,
     '<example name="oversized-agent-instruction-file">',
   );
   assertStringIncludes(
-    text,
+    phase2,
     '<example name="gate-command-satisfies-both-stages">',
   );
 });
 
 Deno.test("documentation_audit - the line count check 14 needs is a permitted command", async () => {
-  const text = await loadDocumentationAudit();
-  const constraints = text.slice(
-    text.indexOf("2. **No code execution.**"),
-    text.indexOf("3. **Read before you assert.**"),
+  const constraints = section(
+    await loadDocumentationAudit(),
+    "Hard Constraints",
+  );
+  const scoped = excerpt(
+    constraints,
+    constraints.indexOf("2. **No code execution.**"),
+    constraints.indexOf("3. **Read before you assert.**"),
   );
   assert(
-    constraints.length > 0,
+    scoped.length > 0,
     "the no-code-execution constraint was not found",
   );
-  assertStringIncludes(constraints, "`wc`");
+  assertStringIncludes(scoped, "`wc`");
 });
 
 Deno.test("documentation_audit - severity guidance covers the check-14 gaps", async () => {
-  const text = await loadDocumentationAudit();
-  const severitySection = flatten(
-    text.slice(
-      text.indexOf("### Severity guidance"),
-      text.indexOf("## Stable finding ID recipe"),
-    ),
+  const severitySection = flat(
+    section(await loadDocumentationAudit(), "Severity guidance"),
   );
   assert(severitySection.length > 0, "the severity guidance was not found");
   // Both halves: the mandatory gaps are medium, the conditional ones low.
@@ -320,19 +347,27 @@ Deno.test("documentation_audit - severity guidance covers the check-14 gaps", as
 });
 
 Deno.test("documentation_audit - the suggested-fix guidance tells the filer what a check-14 body says", async () => {
-  const text = await loadDocumentationAudit();
-  const phase4 = flatten(text.slice(
-    text.indexOf("## Phase 4 — File one issue per finding"),
-  ));
+  // "## Why this matters" and "## Suggested fix" below are headings *inside*
+  // the fenced worked-example skeleton, not real document headings, so
+  // section() masks them; both pins live in the real
+  // "## Phase 4 — File one issue per finding" section, which is the
+  // document's last real level-2 heading and so runs to end of file.
+  const phase4 = flat(
+    section(
+      await loadDocumentationAudit(),
+      "Phase 4 — File one issue per finding",
+    ),
+  );
   assertStringIncludes(phase4, "for an agent-instruction gap (check 14)");
 });
 
 Deno.test("documentation_audit - Phase 1 inventories the imports and line counts check 14 reads", async () => {
-  const text = await loadDocumentationAudit();
-  const inventory = flatten(text.slice(
-    text.indexOf("## Phase 1 — Inventory the documentation surface"),
-    text.indexOf("## Phase 2"),
-  ));
+  const inventory = flat(
+    section(
+      await loadDocumentationAudit(),
+      "Phase 1 — Inventory the documentation surface",
+    ),
+  );
   assertStringIncludes(inventory, "@path");
   assertStringIncludes(inventory, "line count");
 });
@@ -340,19 +375,22 @@ Deno.test("documentation_audit - Phase 1 inventories the imports and line counts
 // --- Inventory and bookkeeping the check depends on ---
 
 Deno.test("documentation_audit - Phase 1 inventories the source comments check 13 reads", async () => {
-  const text = await loadDocumentationAudit();
-  const inventory = text.slice(
-    text.indexOf("## Phase 1 — Inventory the documentation surface"),
-    text.indexOf("## Phase 2"),
+  const inventory = section(
+    await loadDocumentationAudit(),
+    "Phase 1 — Inventory the documentation surface",
   );
   assertStringIncludes(inventory, "Source comments");
 });
 
 Deno.test("documentation_audit - the Phase 2 sweep bound cannot starve check 13", async () => {
-  const text = await loadDocumentationAudit();
-  const bound = text.slice(
-    text.indexOf("**Bound the sweep, not just the results.**"),
-    text.indexOf("### 1. Unabsorbed PR-summary learnings"),
+  const phase2 = section(
+    await loadDocumentationAudit(),
+    "Phase 2 — Apply the fourteen-check catalogue",
+  );
+  const bound = excerpt(
+    phase2,
+    phase2.indexOf("**Bound the sweep, not just the results.**"),
+    phase2.indexOf("### 1. Unabsorbed PR-summary learnings"),
   );
   assert(bound.length > 0, "the Phase 2 sweep bound was not found");
   // The source-comment shortlist is ranked below the docs in the drift
@@ -370,6 +408,7 @@ Deno.test("documentation_audit - an unresolved check-13 direction does not outra
 Deno.test("documentation_audit - states the check counts consistently", async () => {
   const text = await loadDocumentationAudit();
   assertStringIncludes(text, "## Phase 2 — Apply the fourteen-check catalogue");
+  // Absence checks stay whole-file: a stale count can appear anywhere.
   assert(
     !text.includes("twelve-check"),
     "the template must not still describe the catalogue as twelve checks",
@@ -382,7 +421,9 @@ Deno.test("documentation_audit - states the check counts consistently", async ()
 
 Deno.test("documentation_audit - the read-before-you-assert rule extends to check 14", async () => {
   const text = await loadDocumentationAudit();
-  assertStringIncludes(text, "This binds hardest on checks 10–14");
+  const constraints = flat(section(text, "Hard Constraints"));
+  assertStringIncludes(constraints, "This binds hardest on checks 10–14");
+  // Absence checks stay whole-file: a stale range can appear anywhere.
   for (const stale of ["10–12", "10–13"]) {
     assert(
       !text.includes(`binds hardest on checks ${stale}`),
@@ -392,15 +433,22 @@ Deno.test("documentation_audit - the read-before-you-assert rule extends to chec
 });
 
 Deno.test("documentation_audit - severity guidance covers a contradicting comment", async () => {
-  const text = await loadDocumentationAudit();
-  const severitySection = text.slice(text.indexOf("### Severity guidance"));
-  assertStringIncludes(severitySection, "comment");
+  const severitySection = flat(
+    section(await loadDocumentationAudit(), "Severity guidance"),
+  );
+  assertStringIncludes(
+    severitySection,
+    "a comment the adjacent code refutes and that should simply be removed (check 13)",
+  );
 });
 
 Deno.test("documentation_audit - the suggested-fix guidance tells the filer what to write", async () => {
-  const text = await loadDocumentationAudit();
-  const phase4 = text.slice(
-    text.indexOf("## Phase 4 — File one issue per finding"),
+  // See the comment on the check-14 variant of this test above: both pins
+  // live in the real "## Phase 4" section, not the fenced example's nested
+  // "## Suggested fix" heading.
+  const phase4 = section(
+    await loadDocumentationAudit(),
+    "Phase 4 — File one issue per finding",
   );
   assertStringIncludes(phase4, "for a contradicting comment (check 13)");
 });
@@ -409,12 +457,13 @@ Deno.test("documentation_audit - the suggested-fix guidance tells the filer what
 
 Deno.test("operator manual - documents the fourteen-check catalogue including checks 13 and 14", async () => {
   const manual = await readDoc("docs/DOCUMENTATION-AUDIT-SCAN.md");
-  assertStringIncludes(manual, "## The fourteen-check catalogue");
-  assertStringIncludes(manual, "13. **Comment contradicts the code**");
+  const catalogue = section(manual, "The fourteen-check catalogue");
+  assertStringIncludes(catalogue, "13. **Comment contradicts the code**");
   assertStringIncludes(
-    manual,
+    catalogue,
     "14. **Agent instructions do not follow Claude Code guidance**",
   );
+  // Absence checks stay whole-file: a stale count can appear anywhere.
   assert(
     !manual.includes("twelve-check"),
     "the manual must not still claim a twelve-check catalogue",
@@ -435,31 +484,31 @@ Deno.test("operator manual - documents the fourteen-check catalogue including ch
 
 Deno.test("operator manual - the sibling table keeps the doc-coverage boundary", async () => {
   const manual = await readDoc("docs/DOCUMENTATION-AUDIT-SCAN.md");
+  const siblings = section(manual, "Relationship to sibling scans");
   assertStringIncludes(
-    manual,
+    siblings,
     "Comments that contradict the code they sit beside",
   );
 });
 
 Deno.test("design principles - records checks 13 and 14 and no longer claims thirteen checks", async () => {
   const principles = await readDoc("DESIGN-PRINCIPLES.md");
-  const section = principles.slice(
-    principles.indexOf("### Documentation-audit scans (template #13)"),
-    principles.indexOf("### Workflow-annotation scans (template #15)"),
+  const docSection = section(
+    principles,
+    "Documentation-audit scans (template #13)",
   );
-  assert(section.length > 0, "documentation-audit design section not found");
-  assertStringIncludes(section, "Fourteen checks");
-  assertStringIncludes(section, "fourteen-check catalogue");
-  assertStringIncludes(section, "Claude Code guidance");
+  assertStringIncludes(docSection, "Fourteen checks");
+  assertStringIncludes(docSection, "fourteen-check catalogue");
+  assertStringIncludes(docSection, "Claude Code guidance");
   for (const stale of ["Twelve checks", "twelve-check catalogue"]) {
     assert(
-      !section.includes(stale),
+      !docSection.includes(stale),
       `DESIGN-PRINCIPLES.md must not still claim "${stale}"`,
     );
   }
   for (const stale of ["Thirteen checks", "thirteen-check catalogue"]) {
     assert(
-      !section.includes(stale),
+      !docSection.includes(stale),
       `DESIGN-PRINCIPLES.md must not still claim "${stale}"`,
     );
   }
