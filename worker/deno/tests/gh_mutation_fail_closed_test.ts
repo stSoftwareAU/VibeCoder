@@ -307,3 +307,246 @@ Deno.test("evaluateGhCommand - inert guard allows an undeterminable mutation", (
   );
   assertEquals(decision.allowed, true);
 });
+
+// ---------------------------------------------------------------------------
+// GraphQL scanner — every operation, comments and strings (Issue #3549)
+// ---------------------------------------------------------------------------
+
+const SANCTIONED_DOC = "mutation{changeUserStatus(input:{}){clientMutationId}}";
+const MULTI_OP_DOC =
+  "mutation A{changeUserStatus(input:{}){clientMutationId}} " +
+  'mutation B{markPullRequestReadyForReview(input:{pullRequestId:"x"}){clientMutationId}}';
+const COMMENT_DOC =
+  "mutation{changeUserStatus(input:{}){clientMutationId} # }\n " +
+  'markPullRequestReadyForReview(input:{pullRequestId:"x"}){clientMutationId}}';
+
+/** `gh api graphql` argv carrying one query document. */
+function graphqlArgs(document: string, ...extra: string[]): string[] {
+  return ["api", "graphql", "-f", `query=${document}`, ...extra];
+}
+
+const AGENT_CTX = { active: true, allowedRepos: ["me/target"] };
+
+Deno.test("Issue #3549 - classifyGhMutation: multi-operation document is not non-repo", () => {
+  const info = classifyGhMutation(
+    graphqlArgs(MULTI_OP_DOC, "-f", "operationName=B"),
+  );
+  assertEquals(info?.verb, "api-graphql-mutation");
+  assertEquals(info?.scope, "unknown");
+  assertStringIncludes(info?.target ?? "", "markPullRequestReadyForReview");
+});
+
+Deno.test("Issue #3549 - classifyGhMutation: brace inside a comment is not non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(COMMENT_DOC));
+  assertEquals(info?.verb, "api-graphql-mutation");
+  assertEquals(info?.scope, "unknown");
+  assertStringIncludes(info?.target ?? "", "markPullRequestReadyForReview");
+});
+
+Deno.test("Issue #3549 - graphqlMutationFields: collects every operation", () => {
+  assertEquals(graphqlMutationFields(MULTI_OP_DOC), [
+    "changeUserStatus",
+    "markPullRequestReadyForReview",
+  ]);
+});
+
+Deno.test("Issue #3549 - graphqlMutationFields: a comment brace does not end the operation", () => {
+  assertEquals(graphqlMutationFields(COMMENT_DOC), [
+    "changeUserStatus",
+    "markPullRequestReadyForReview",
+  ]);
+});
+
+Deno.test("Issue #3549 - evaluateGhCommand: refuses the multi-operation and comment shapes", () => {
+  for (
+    const args of [
+      graphqlArgs(MULTI_OP_DOC, "-f", "operationName=B"),
+      graphqlArgs(COMMENT_DOC),
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, AGENT_CTX);
+    assertEquals(decision.allowed, false);
+    assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE");
+  }
+  // Positive control: the plain sanctioned mutation is allowed.
+  assertEquals(
+    evaluateGhCommand(graphqlArgs(SANCTIONED_DOC), AGENT_CTX).allowed,
+    true,
+  );
+});
+
+Deno.test("Issue #3549 - look-alike: braces, hash and quotes inside a string argument stay non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    'mutation{changeUserStatus(input:{message:"has } and # and { inside"}){clientMutationId}}',
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - look-alike: a trailing comment naming a mutation stays non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    `${SANCTIONED_DOC} # mutation{deleteRepository}`,
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - look-alike: a read whose string or comment says mutation is a read", () => {
+  const doc =
+    'query{search(query:"mutation{x}",type:ISSUE,first:1){issueCount}} # mutation{addComment}';
+  assertEquals(graphqlMutationFields(doc), null);
+  assertEquals(classifyGhMutation(graphqlArgs(doc)), null);
+});
+
+Deno.test("Issue #3549 - look-alike: a sanctioned mutation plus a query operation stays non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    `${SANCTIONED_DOC} query Q{viewer{login}}`,
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - look-alike: a block string argument is skipped", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    'mutation{changeUserStatus(input:{message:"""a } # { \\""" " b"""}){clientMutationId}}',
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - look-alike: escaped quote and aliases/directives still parse", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    'mutation S($a:Boolean!) @x{s: changeUserStatus(input:{message:"q\\" }"}) @include(if:$a){clientMutationId}}',
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - fail closed: malformed documents are never non-repo", () => {
+  const docs = [
+    // unterminated string
+    'mutation{changeUserStatus(input:{message:"oops}){x}}',
+    // unterminated block string
+    'mutation{changeUserStatus(input:{message:"""oops}){x}}',
+    // brackets balanced, but a trailing string never closes
+    `${SANCTIONED_DOC} "oops`,
+    `${SANCTIONED_DOC} """oops`,
+    // unbalanced braces
+    "mutation{changeUserStatus(input:{}){clientMutationId}",
+    // stray closing brace at depth 0
+    `${SANCTIONED_DOC}}`,
+    // unbalanced parens
+    "mutation{changeUserStatus(input:{}{clientMutationId}}",
+    // stray closing paren
+    `${SANCTIONED_DOC})`,
+    // unparseable text after the keyword
+    "mutation changeUserStatus",
+    "mutation ???",
+  ];
+  for (const doc of docs) {
+    const info = classifyGhMutation(graphqlArgs(doc));
+    assertEquals(info?.verb, "api-graphql-mutation", doc);
+    assertEquals(info?.scope, "unknown", doc);
+  }
+});
+
+Deno.test("Issue #3549 - fail closed: an unparseable document with no mutation is not a read", () => {
+  assertEquals(graphqlMutationFields("query{viewer{login}"), []);
+  assertEquals(graphqlMutationFields('query{a(b:"x)}'), []);
+  assertEquals(
+    classifyGhMutation(graphqlArgs("query{viewer{login}"))?.scope,
+    "unknown",
+  );
+});
+
+Deno.test("Issue #3549 - hostile input: long runs of scanner-significant characters finish", () => {
+  const n = 100_000;
+  for (
+    const doc of [
+      "mutation{" + "#".repeat(n),
+      "mutation{" + '"'.repeat(n),
+      "mutation{" + "{".repeat(n),
+      "mutation{" + "(".repeat(n),
+      "mutation{" + "}".repeat(n),
+      "mutation{a" + "\\".repeat(n) + '"',
+    ]
+  ) {
+    const info = classifyGhMutation(graphqlArgs(doc));
+    assertEquals(info?.scope, "unknown");
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GraphQL scanner — root fragments and dangling directive marks (Issue #3549)
+// ---------------------------------------------------------------------------
+
+const HIDDEN = 'markPullRequestReadyForReview(input:{pullRequestId:"x"})' +
+  "{clientMutationId}";
+const INLINE_FRAGMENT_DOCS = [
+  `mutation{changeUserStatus(input:{}){clientMutationId} ...{${HIDDEN}}}`,
+  `mutation{changeUserStatus(input:{}){clientMutationId} ... @include(if:true){${HIDDEN}}}`,
+];
+const ROOT_FRAGMENT_DOCS = [
+  ...INLINE_FRAGMENT_DOCS,
+  "mutation{changeUserStatus(input:{}){clientMutationId} ...F} fragment F on Mutation{x}",
+  `mutation{changeUserStatus(input:{}){clientMutationId} ... on Mutation{${HIDDEN}}}`,
+];
+const DANGLING_AT_DOCS = [
+  "mutation{changeUserStatus(input:{}){clientMutationId} @()}",
+  `mutation{changeUserStatus(input:{}){clientMutationId} @() ${HIDDEN}}`,
+  `mutation{changeUserStatus(input:{}){clientMutationId} @,{} ${HIDDEN}}`,
+  `mutation{@ {x} ${HIDDEN}}`,
+  `mutation{changeUserStatus(input:{}){clientMutationId} @(x) ${HIDDEN}}`,
+];
+
+Deno.test("Issue #3549 - fragments at the mutation root are never non-repo", () => {
+  for (const doc of ROOT_FRAGMENT_DOCS) {
+    const info = classifyGhMutation(graphqlArgs(doc));
+    assertEquals(info?.verb, "api-graphql-mutation", doc);
+    assertEquals(info?.scope, "unknown", doc);
+  }
+});
+
+Deno.test("Issue #3549 - evaluateGhCommand: refuses inline fragments at the mutation root", () => {
+  for (const doc of INLINE_FRAGMENT_DOCS) {
+    const decision = evaluateGhCommand(graphqlArgs(doc), AGENT_CTX);
+    assertEquals(decision.allowed, false, doc);
+    assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE", doc);
+  }
+  // Control: the same command with the fragment removed is allowed.
+  assertEquals(
+    evaluateGhCommand(graphqlArgs(SANCTIONED_DOC), AGENT_CTX).allowed,
+    true,
+  );
+});
+
+Deno.test("Issue #3549 - a dangling @ never hides the next field", () => {
+  for (const doc of DANGLING_AT_DOCS) {
+    const info = classifyGhMutation(graphqlArgs(doc));
+    assertEquals(info?.verb, "api-graphql-mutation", doc);
+    assertEquals(info?.scope, "unknown", doc);
+  }
+});
+
+Deno.test("Issue #3549 - look-alike: a spread nested inside a mutation field stays non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    "mutation{changeUserStatus(input:{}){status{...F}}} fragment F on UserStatus{message}",
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - look-alike: queries with spreads and inline fragments stay reads", () => {
+  const doc = "query{viewer{...F ... on User{login} ...{id}}} " +
+    "fragment F on User{name}";
+  assertEquals(graphqlMutationFields(doc), null);
+  assertEquals(classifyGhMutation(graphqlArgs(doc)), null);
+});
+
+Deno.test("Issue #3549 - look-alike: a normal directive on a mutation field stays non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    "mutation{changeUserStatus(input:{}) @include(if:true){clientMutationId}}",
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
