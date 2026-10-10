@@ -1574,7 +1574,8 @@ through and fixing every sentence the change makes false; a hit is cleared
 only once the sentence it sits in has been read, never by the file's topic
 matching. The **Docs sweep** line now names the section read, e.g.
 `section: docs/reporting-pwa.md#broker-balance`, or `section: none — <why no
-manual documents it>`.
+manual documents it>`, and it names the sibling members grepped in its
+`siblings:` part (Issue #3371).
 
 **The gate.** [`docs_sweep_gate.ts`](../../worker/deno/lib/docs_sweep_gate.ts)
 (`validateDocsSweep`, `buildDocsSweepGateComment`) runs as a fourth
@@ -1584,9 +1585,13 @@ whenever `git diff --name-only <base>...HEAD` carries any file that is
 neither a test (`isTestFilePath`, shared with the security-fix gate) nor
 documentation (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`, or a
 `docs/` path segment) — and also when the diff cannot be read, fail closed.
-It blocks a summary with no **Docs sweep** line, or a `section:` that is
-empty or a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`);
-`section: none — <reason>` and `no hits` are both accepted. Its verdict is
+It blocks a summary with no **Docs sweep** line, a `section:` that is empty or
+a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`), or a
+`siblings:` part (Issue #3371) that is missing, a bare placeholder (`none`,
+`n/a`, `tbd`, …), or quotes no backticked or double-quoted term and is not the
+`siblings: none — <reason>` negative. `section: none — <reason>` and `no hits`
+are both accepted, and a bad `section:` and a bad `siblings:` are reported
+together. Its verdict is
 computed once, early, so it stands beside — not strictly after — the
 reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
@@ -1611,8 +1616,9 @@ it named and stopped (GRQ-AutoTrader#2413), or grepped one inflection and
 missed another (#2405: "replaces or removes" against "replaced or removed").
 Once the line passes,
 [`docs_sweep_hits.ts`](../../worker/deno/lib/docs_sweep_hits.ts)
-(`checkDocsSweepTerms`) re-runs each term the line quotes after `grep:`
-(backticked or double-quoted) with `git grep -i` at `HEAD` over `README.md`,
+(`checkDocsSweepTerms`) re-runs each term the line quotes after `grep:` and
+each sibling term in its `siblings:` part (backticked or double-quoted) with
+`git grep -i` at `HEAD` over `README.md`,
 every `*/README.md` and `docs/` (excluding `docs/archive/`). Terms are
 literal, except that a `\w*` or `\w+` stem marker matches a run of word
 characters, so `replac\w*` finds both forms. A hit is cleared when it sits
@@ -1632,6 +1638,20 @@ is logged as not checked line by line, while its hits in files the diff
 touched are still listed. A grep or diff that cannot run, or an
 unresolvable base ref, is logged at ERROR as not checked and does not block
 the PR.
+
+**The line names the sibling members it grepped (Issue #3371).** The #3137
+rule that adding a member owes a docs change was prose only, and a grep for
+the new member's name finds nothing, so four GRQ-AutoTrader PRs (#2460, #2481,
+#2682, #2792) left a doc or contract list one short: each sweep grepped only
+the new name. GRQ-AutoTrader#2792's sweep grepped only the new trim-tolerance
+names, never `OWNER_TUNED` or the buy ceiling. The `siblings:` part of the
+**Docs sweep** line now names the existing sibling members grepped for each set
+the change adds a member to, backticked or double-quoted, or
+`siblings: none — <why no existing set gained a member>`. The worker re-runs
+the quoted sibling terms exactly as it re-runs the `grep:` terms, with the same
+paths, clearing rule and advisory handling; a `none — …` negative re-runs
+nothing. The pr_feedback drift check runs the same gate, so a feedback push's
+summary needs `siblings:` too.
 
 **Doc comments in source files are swept too (Issue #3219).** Fleet PRs fixed
 the manuals and the comment directly above the code they edited, and left doc

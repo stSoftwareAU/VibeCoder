@@ -194,7 +194,7 @@ Deno.test("validateDocsSweep - a wrapped plain entry with section on the next li
     changedFiles: ["worker/deno/lib/x.ts"],
     prSummaryContent:
       '**Docs sweep** — grep: "A stub mirrors the real callee\'s contract", "stub\n' +
-      'must mirror"; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md',
+      'must mirror"; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md; siblings: none — no existing set gained a member',
   });
   assertEquals(result.valid, true);
   assertEquals(result.line.section, "docs/workflows/issue-processing.md#stubs");
@@ -204,7 +204,7 @@ Deno.test("validateDocsSweep - a wrapped list item with section on the continuat
   const result = validateDocsSweep({
     changedFiles: ["worker/deno/lib/x.ts"],
     prSummaryContent: "- **Docs sweep** — grep: `stub`\n" +
-      "  must mirror; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md",
+      "  must mirror; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md; siblings: none — no existing set gained a member",
   });
   assertEquals(result.valid, true);
   assertEquals(result.line.section, "docs/workflows/issue-processing.md#stubs");
@@ -223,7 +223,7 @@ Deno.test("validateDocsSweep - 'section: none — <reason>' is accepted", () => 
   const result = validateDocsSweep({
     changedFiles: CODE_FILES,
     prSummaryContent:
-      "**Docs sweep** — grep: `x`; section: none — no manual documents this flag; no hits",
+      "**Docs sweep** — grep: `x`; section: none — no manual documents this flag; siblings: none — no existing set gained a member; no hits",
   });
   assertEquals(result.valid, true, result.problems.join("; "));
 });
@@ -241,7 +241,7 @@ Deno.test(
     const accepted = validateDocsSweep({
       changedFiles: CODE_FILES,
       prSummaryContent:
-        "**Docs sweep** — grep: `retryLimit`; section: `docs/workflows/retries.md#retry-limit`; no hits",
+        "**Docs sweep** — grep: `retryLimit`; section: `docs/workflows/retries.md#retry-limit`; siblings: none — no existing set gained a member; no hits",
     });
     assertEquals(accepted.valid, true, accepted.problems.join("; "));
   },
@@ -262,7 +262,7 @@ Deno.test("validateDocsSweep - changedFiles null is accepted with a valid line",
   const result = validateDocsSweep({
     changedFiles: null,
     prSummaryContent:
-      "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; no hits",
+      "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; siblings: none — no existing set gained a member; no hits",
   });
   assertEquals(result.applicable, true);
   assertEquals(result.valid, true, result.problems.join("; "));
@@ -299,6 +299,122 @@ Deno.test("buildDocsSweepGateComment - contains the problems and the section sha
   assertStringIncludes(comment, result.problems[0]!);
   assertStringIncludes(comment, "section:");
   assertStringIncludes(comment, "Docs sweep");
+});
+
+// ---------------------------------------------------------------------------
+// The siblings: part (Issue #3371)
+// ---------------------------------------------------------------------------
+
+const SIBLINGS_LINE =
+  "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; no hits";
+
+Deno.test("parseDocsSweepLine - reads siblings from a wrapped continuation line", () => {
+  const line = parseDocsSweepLine(
+    "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; siblings: `Foo::get`,\n" +
+      '  "Foo::set"; updated: docs/x.md',
+  );
+  assert(line.present);
+  assertEquals(line.siblings, 'Foo::get, "Foo::set"');
+});
+
+Deno.test("validateDocsSweep - a line with no siblings: is refused, and accepted once an explained none is added", () => {
+  const refused = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE,
+  });
+  assertEquals(refused.valid, false);
+  assertEquals(refused.problems.length, 1);
+  assertStringIncludes(refused.problems[0]!, "names no `siblings:`");
+
+  const accepted = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE +
+      "; siblings: none — no existing set gained a member",
+  });
+  assertEquals(accepted.valid, true, accepted.problems.join("; "));
+});
+
+Deno.test("validateDocsSweep - a bare siblings: placeholder is refused, with only the placeholder problem", () => {
+  for (const placeholder of ["none", "tbd", "n/a."]) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: ${placeholder}`,
+    });
+    assertEquals(result.valid, false, placeholder);
+    assertEquals(result.problems.length, 1, placeholder);
+    assertStringIncludes(
+      result.problems[0]!,
+      "`siblings:` is a bare placeholder",
+    );
+  }
+});
+
+Deno.test("validateDocsSweep - a siblings: value that quotes no term is refused, and accepted once terms are quoted", () => {
+  const refused = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE + "; siblings: max_buy_price, buy ceiling",
+  });
+  assertEquals(refused.valid, false);
+  assertEquals(refused.problems.length, 1);
+  assertStringIncludes(refused.problems[0]!, "`siblings:` quotes no term");
+
+  const accepted = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE +
+      "; siblings: `max_buy_price`, \"buy ceiling\" (`OWNER_TUNED`)",
+  });
+  assertEquals(accepted.valid, true, accepted.problems.join("; "));
+});
+
+Deno.test("validateDocsSweep - a line with neither section nor siblings reports both problems, section first", () => {
+  const refused = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: "**Docs sweep** — grep: `x`; no hits",
+  });
+  assertEquals(refused.valid, false);
+  assertEquals(refused.problems.length, 2);
+  assertStringIncludes(refused.problems[0]!, "names no `section:`");
+  assertStringIncludes(refused.problems[1]!, "names no `siblings:`");
+
+  const fixed = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent:
+      "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; siblings: none — no existing set gained a member; no hits",
+  });
+  assertEquals(fixed.valid, true, fixed.problems.join("; "));
+});
+
+Deno.test("validateDocsSweep - a siblings label with no colon and a long space run is read quickly and refused", () => {
+  const hostile = "**Docs sweep** — grep: `x`; section: none — r; siblings" +
+    " ".repeat(3_500) + "x";
+  const result = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: hostile,
+  });
+  assertEquals(result.line.present, true);
+  assertEquals(result.problems.length, 1);
+  assertStringIncludes(result.problems[0]!, "names no `siblings:`");
+});
+
+Deno.test("buildDocsSweepGateComment - each example Docs sweep line it shows passes the gate", () => {
+  const comment = buildDocsSweepGateComment(
+    validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: "## Summary\n\nNo docs sweep line.\n",
+    }),
+  );
+  const examples = comment.split("\n").filter((l) =>
+    l.startsWith("**Docs sweep**")
+  );
+  assertEquals(examples.length, 2);
+  for (const example of examples) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: example,
+    });
+    assertEquals(result.applicable, true);
+    assertEquals(result.valid, true, `${example}: ${result.problems.join("; ")}`);
+  }
 });
 
 // ---------------------------------------------------------------------------
