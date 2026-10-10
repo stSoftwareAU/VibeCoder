@@ -181,6 +181,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the capped, linear scan from the quadratic regex it replaced
   // (Issue #3085 review).
   "tests/docs_sweep_gate_test.ts",
+  // The docs-sweep re-run reads the `siblings:` label and its `none`
+  // negative from a Docs sweep line an agent (steered by an untrusted issue
+  // body) writes; only a growth measurement separates those linear patterns
+  // from a backtracking one on hostile space and quote runs (Issue #3371).
+  "tests/docs_sweep_hits_test.ts",
   // The branch-outcomes heading regex scans a PR-summary line an agent
   // (steered by an untrusted issue body) writes; only a growth measurement
   // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
