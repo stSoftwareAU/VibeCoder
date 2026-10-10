@@ -608,6 +608,23 @@ and asserts it survives. List the inventory in the PR summary, with what is
 guarded and what is accepted as lost. A destructive operation that deletes
 state it never checked is a blocking self-review finding (Issue #3107).
 
+**State recorded on a failure path is cleared on the path that recovers.**
+When a change writes a persistent record of a bad condition (a health or
+capability ledger entry, a degraded or failure streak, a marker or lock file,
+any `first_seen` or count carried between runs), list every path on which a
+later run finds the condition gone. That includes a repair that succeeds and
+also a run that measures and finds nothing wrong, is below a threshold, or is
+switched off. Each of those paths must clear the record, or the PR summary
+must say why the record should outlive a healthy run. Search the repo for an
+existing set/clear pair on a sibling path and follow it. A record held in
+shared GitHub state (a label, a marker comment) is cleared only as **Remove
+only what you can prove you added** allows. Add a test that uses the real
+record helper against a temporary store, not a stub: drive the failure, then
+a healthy run, and assert the record is gone. Then delete the clear and
+confirm the test goes red. List the set/clear pairs checked in the PR summary.
+A record with no clear on a healthy path is a blocking self-review finding
+(Issue #3430).
+
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
 file in the PR's diff or already tracked at the head, named **relative to the
