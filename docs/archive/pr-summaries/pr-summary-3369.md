@@ -86,98 +86,6 @@ flowchart LR
     D["container/tools.json digest"] -.agrees with.-> W
 ```
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **missing** — The Floci CI job is green on this PR and logs `CREATE_COMPLETE`
-  for `linux-verification-host`. — evidence: `.github/workflows/floci.yml`,
-  `infra/cloudformation/test-floci.sh`; CI run 38033819415 — reviewer: missing
-  — reason: the job fails in "Deploy templates into Floci" (exit 254) because
-  `aws ssm put-parameter` on the template's `/aws/service/...` AMI path is
-  rejected by Floci (`can't be prefixed with "aws" or "ssm"`), so the deploy
-  never runs.
-- **missing** — A deliberately broken template makes the job fail. — evidence:
-  `infra/cloudformation/test-floci.sh` (`describe-stacks` status check and
-  failure count) — reviewer: missing — reason: no broken-template run exists,
-  and none can be shown until the job reaches the deploy step.
-- **partial** — Stubbed resource types appear as `::warning::` annotations. —
-  evidence: `infra/cloudformation/test-floci.sh` (`describe-stack-resources`
-  query for "stubbed"), stub env set in `.github/workflows/floci.yml` —
-  reviewer: partial — reason: the code has never run in CI, and the "stubbed"
-  reason text has not been checked against real Floci output.
-- **met** — Running the script without Docker prints
-  `SKIPPED (needs Docker):` and does not fail. — evidence: local run with no
-  socket and `CI` unset printed
-  `SKIPPED (needs Docker): linux-verification-host.yaml`, exit 0 —
-  reviewer: met
-- **met** — The digest-agreement test passes; actionlint and shellcheck are
-  green. — evidence:
-  `worker/deno/tests/issue_3369_floci_workflow_test.ts::floci digest in workflow matches container/tools.json (drift test)`
-  — reviewer: met
-- **missing** — After merge the #3366/#3346 detector reports
-  `emulatorConfigured: true` for VibeCoder. — evidence:
-  `.github/workflows/floci.yml` — reviewer: missing — reason: can only be
-  checked after merge, and merge is blocked by the failing Floci job.
-- **unrequested** — Extra structural checks in `checkFlociWorkflow`
-  (`milestone/*` trigger, stub env, `permissions: contents: read`,
-  `persist-credentials: false`, socket step, script call, trigger paths). —
-  reviewer: unrequested — reason: the issue asked only for the digest test;
-  added under the workflow-validator rule.
-- **unrequested** — The extra "Check AWS CLI" step in `floci.yml` and the
-  `milestone/*` branch filter. — reviewer: unrequested — reason: the CLI step
-  follows the issue's failure-detection section; the branch filter follows the
-  repo convention from #3360.
-- **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3369.json`, the
-  `integration_test_manifest.ts` entry, and the `docs/CONTAINER.md`,
-  `docs/EC2-LINUX-VERIFICATION.md` and `docs/audits/dependency-inventory.md`
-  updates. — reviewer: unrequested — reason: repo housekeeping and doc sweep
-  for the new module, test and workflow.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — Shell is for orchestration only; new logic belongs in Deno
-  TypeScript. — evidence: `infra/cloudformation/test-floci.sh:120-140` (awk
-  YAML parse of SSM parameters), `:40-60` (deploy/skip decision), `:188-200`
-  (stubbed-resource parsing) — reason: open, not fixed in this diff.
-- **violation** — Every outcome of an added branch needs a test that reaches
-  it. — evidence: `infra/cloudformation/test-floci.sh:27-30`, `:44-56`,
-  `:68-71`, `:120-140` — reason: open; these branches can be reached with a
-  stub PATH, `CI`/socket overrides and fixture templates, so the "untestable"
-  exemption covers only the live deploy.
-- **violation** — Writing a gate over text: loosened or conditioned
-  invocations. — evidence: `worker/deno/lib/floci_workflow_check.ts:82-88`
-  accepts `test-floci.sh || true`; `:174-178` ignores step-level
-  `continue-on-error: true` and `if: false` — reason: open, not fixed in this
-  diff.
-- **violation** — A workflow validator must pin the load-bearing invariant. —
-  evidence: `worker/deno/lib/floci_workflow_check.ts:175-178` checks that any
-  job runs the script, not the job with the Floci service — reason: open, not
-  fixed in this diff.
-- **violation** — DRY: in-repo workflow policy re-implemented. — evidence:
-  `worker/deno/lib/floci_workflow_check.ts:159-171` (duplicates
-  `checkout-persist-credentials`), `:200-206` (duplicates
-  `milestone-branch-filters` with a literal match stricter than GitHub's
-  matching), `:208-212` (overlaps `workflow-permissions`) — reason: open, not
-  fixed in this diff.
-- **violation** (minor) — Single source of truth. — evidence:
-  `worker/deno/tests/issue_3369_floci_workflow_test.ts:95` hard-codes the tag
-  `2.2.0` instead of reading it from `container/tools.json` — reason: open,
-  not fixed in this diff.
-- **violation** (minor) — Avoid over-engineering. — evidence:
-  `worker/deno/lib/floci_workflow_check.ts:183-188` (YAML 1.1 `true` key the
-  only caller never produces), `.github/workflows/floci.yml:75-82` (repeats the
-  script's own aws CLI check) — reason: open, not fixed in this diff.
-- **clean** — Australian English spelling; fail-loud shell
-  (`set -euo pipefail`, counted failures, commented `|| true`); log levels;
-  `SIMPLE-ON-PURPOSE` marker format; workflow hygiene (SHA pins,
-  `persist-credentials: false`, least-privilege permissions, tag plus digest,
-  `milestone/*`); unit-test classification and manifest entry; a positive and a
-  negative test for each checker invariant; doc sweep and dependency
-  inventory; commit safety.
-
 ## Test Plan
 
 - `deno task test:unit` over the five targeted test files (with
@@ -239,3 +147,30 @@ flowchart LR
   missing, non-`CREATE_COMPLETE`, stub warning): `exempt (untestable): needs
   Docker and the aws CLI, neither of which the worker has; the skip path was
   run locally and the rest are exercised by the CI job itself`.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **missing** — The Floci CI job is green on this PR, and its log shows CREATE COMPLETE for linux-verification-host . — reviewer: missing — reason: the last CI run (38033819415) failed in 'Deploy templates into Floci' because Floci rejects aws ssm put-parameter on the /aws/service/... path, so no deploy or CREATE COMPLETE has been logged
+- **missing** — A deliberately broken template (verified locally or in a throwaway commit) makes the job fail. — reviewer: missing — reason: no broken-template run exists, and none can show anything until the job gets past the SSM seeding step
+- **partial** — Any stubbed resource type appears as a ::warning:: annotation. — evidence: `infra/cloudformation/test-floci.sh:187-200` — reviewer: partial — reason: the warning code has never run against real Floci output, and no test covers it
+- **partial** — Running the script in the worker without Docker prints SKIPPED (needs Docker): and does not fail. — evidence: `infra/cloudformation/test-floci.sh:48-65` — reviewer: partial — reason: the only evidence is a manual local run; no committed test runs this path
+- **met** — The digest-agreement test passes; actionlint and shellcheck are green. — evidence: `worker/deno/tests/issue 3369 floci workflow test.ts::floci digest in workflow matches container/tools.json (drift test)` — reviewer: met
+- **missing** — After merge, the #3366/#3346 detector reports emulatorConfigured: true for VibeCoder. — reviewer: missing — reason: can only be checked after merge, and merge is blocked by the failing Floci job
+- **unrequested** — Extra structural checks in checkFlociWorkflow (milestone/ trigger, stub env, permissions, persist-credentials, socket step, script call, trigger paths) — reviewer: unrequested — reason: the issue asked only for the digest-agreement test
+- **unrequested** — Extra 'Check AWS CLI' workflow step and milestone/ branch filter — reviewer: unrequested — reason: not asked for by the issue; the CLI step repeats the script's own check
+- **unrequested** — lib-sweep top-up ledger, integration test manifest entry, and doc/dependency-inventory updates — reviewer: unrequested — reason: repo housekeeping needed by the new module, test and workflow
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Shell is for orchestration only; new logic belongs in Deno TypeScript (awk YAML parse of SSM parameters, deploy/skip decision, stubbed-resource parsing). — evidence: `infra/cloudformation/test-floci.sh:120` — reason: open — on lines this diff adds and not fixed; this turn may not change code, so neither 'fixed in this diff' nor 'pre-existing, filed' would be true
+- **violation** — Every outcome of an added branch needs a test that reaches it; the no-templates, unreadable-template, Docker gate and aws-missing branches, and the SSM parse, are untested although a stub PATH, CI/socket overrides and fixture templates can reach them. — evidence: `infra/cloudformation/test-floci.sh:27` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **violation** — Writing a gate over text: a loosened invocation ( test-floci.sh true ) is accepted, and step-level continue-on-error: true and if: false are ignored. — evidence: `worker/deno/lib/floci workflow check.ts:82` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **violation** — A workflow validator must pin the load-bearing invariant: the check accepts the script being run from any job, not specifically the job that has the Floci service. — evidence: `worker/deno/lib/floci workflow check.ts:175` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **violation** — DRY: re-implements in-repo workflow policy (checkout-persist-credentials in checkout persist credentials scanner.ts, milestone-branch-filters with a literal match stricter than GitHub's, workflow-permissions in workflow file checks.ts). — evidence: `worker/deno/lib/floci workflow check.ts:159` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **violation** — Single source of truth: the test hard-codes the Floci tag 2.2.0 instead of reading it from container/tools.json. — evidence: `worker/deno/tests/issue 3369 floci workflow test.ts:95` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **violation** — Avoid over-engineering: handles a YAML 1.1 true key for on that the only caller never produces, and the workflow repeats the script's aws CLI check. — evidence: `worker/deno/lib/floci workflow check.ts:183` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **clean** — Australian English spelling; fail-loud shell (set -euo pipefail, counted failures, commented true ); SIMPLE-ON-PURPOSE marker format; workflow hygiene (SHA-pinned actions, persist-credentials: false, contents: read, tag plus digest); unit-test classification and manifest entry; positive and negative
