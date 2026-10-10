@@ -69,8 +69,7 @@ text was deleted from its own section only, and the test went red. Closes #3309.
 ## Evidence
 
 Test-only change, no UI. The touched test files pass, and the full
-`./quality.sh` gate passed on the head before the last two fix commits. Those
-commits change only test files, and their tests were re-run (see Test Plan).
+`./quality.sh` gate passed on the final head (see Test Plan).
 
 **Docs sweep** — grep: `overflow_tracker_scope`, `scan_prompt_open_issue_titles_test`, `idle_task_live_recheck_dedup`, "Re-scoping an existing drift test"; section: `CODING-STANDARDS.md#documentation-drift-tests` (read; the rule this PR applies, unchanged); no hits outside `docs/archive/`
 
@@ -113,7 +112,7 @@ flowchart LR
 
 - `deno test -A` on all 20 touched test files, run on the final head: `ok | 194 passed | 0 failed`.
 - `deno fmt --check`, `deno lint` and `deno check` on the same files: clean.
-- `./quality.sh < /dev/null` on the final head: QUALITY_RESULT_LINE
+- `./quality.sh < /dev/null` on the final head: passed (exit 0); every stage passed except `config integration`, which the gate skips
 - Completeness family: `deriveCompletenessTestFiles()` returns the same 49 files on base and head. Before 9551475d, `tests/overflow_tracker_scope_test.ts` was missing from the head list.
 - These are moved pins, which CODING-STANDARDS.md § "Re-scoping an existing drift test" expects to be on base already. So each one was red-checked rather than checked absent on base. The rule's text was deleted from its own section only, leaving other copies of the phrase alone, in a scratch worktree, and the test file was run. One line per moved check follows.
 
