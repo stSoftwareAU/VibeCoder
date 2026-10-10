@@ -114,7 +114,10 @@ export function isSourceCommentLine(text: string): boolean {
   return SOURCE_COMMENT_RE.test(text);
 }
 
-/** Up to how many grep terms are re-run from one Docs sweep line. */
+/**
+ * Up to how many grep terms, and separately how many sibling terms, are
+ * re-run from one Docs sweep line.
+ */
 export const MAX_TERMS = 20;
 
 /** A term longer than this is not a grep term anyone typed; it is skipped. */

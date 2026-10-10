@@ -2843,11 +2843,11 @@ async function completionBody(
   // went unaccounted for, and fleet PRs shipped a new branch with no test
   // reaching it (or named a test that did not exist), and a first-run
   // summary described named code wrongly. When the diff changes a
-  // non-test, non-doc file, the summary must name the manual `section:`
-  // that documents the surface, account for every removed assertion, carry
-  // no unfilled result placeholder, carry a `Branch outcomes:` list whose
-  // every named test exists at the head, and get its claims about named
-  // code right.
+  // non-test, non-doc file, the summary must name the manual `section:` that
+  // documents the surface and the `siblings:` it grepped (Issue #3371),
+  // account for every removed assertion, carry no unfilled result placeholder,
+  // carry a `Branch outcomes:` list whose every named test exists at the head,
+  // and get its claims about named code right.
   //
   // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
   // delivery guard itself, against the existing PR, before it recovers and
