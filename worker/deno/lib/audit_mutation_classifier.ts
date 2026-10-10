@@ -253,6 +253,8 @@ const GH_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--cache",
   "-R",
   "--repo",
+  // `gh api --hostname <host>`: the host is a value, not the endpoint (Issue #3540).
+  "--hostname",
 ]);
 
 /**
