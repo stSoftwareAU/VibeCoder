@@ -105,7 +105,7 @@ with `Deno.makeTempDir` and removed in `finally`.
   - `computeWorkingTreeDigest - editing only a .yml, .sh or Dockerfile changes it`
   - `computeWorkingTreeDigest - untracked files count; ignored and excluded files do not`
   - `computeWorkingTreeDigest - never touches the real index`
-  - `computeWorkingTreeDigest - a non-git directory is null (caching off)`
+  - `computeWorkingTreeDigest - a non-git directory is quietly null (caching off, no warning)`
   - `cachedPassAt - an old-shape bare sha-256 entry never matches a git-tree digest`
   - `computeWorkingTreeDigest - leaves no vibe_gate_index_ temp dir behind`
   - `computeWorkingTreeDigest - a failing git add (corrupt index) is null, not a digest`
@@ -121,7 +121,7 @@ with `Deno.makeTempDir` and removed in `finally`.
   - `denoTestsDigest - null when no cache dir is set`
 - No assertions were removed from existing tests.
 - Targeted run: `deno task test:unit tests/quality_gate_cache_test.ts tests/quality_gate_test.ts`
-  passed (75 tests).
+  passed (57 tests).
 - `./quality.sh < /dev/null` passed on the head with exit 0. Its result line
   was "PASSED (with skipped checks)", and the only skips were the ones the
   gate always makes in this environment.
@@ -142,17 +142,19 @@ matches a git-tree digest` seeds the old shape and asserts this.
 
 **Branch outcomes:**
 
-- `worker/deno/lib/quality_gate.ts:1247` — no cache dir means `null`. Reached
-  by `denoTestsDigest - null when no cache dir is set`; flipping it to always
-  digest went red.
+- `worker/deno/lib/quality_gate.ts:1247-1249` — no cache dir means `null`.
+  Reached by `denoTestsDigest - null when no cache dir is set`, which uses a
+  real git repo and has a positive control with a cache dir; flipping it to
+  always digest went red.
 - `worker/deno/lib/quality_gate.ts:1279` — the digest feeds the cache, so an
   unchanged tree gives a cached PASS and a `.md` edit re-runs the suite.
   Reached by `runDenoTests - reuses a cached PASS until a .md edit changes the working tree`;
   flipping to `computeQualityInputDigest` went red.
 - `worker/deno/lib/quality_gate_cache.ts:153` — an empty `rev-parse` result,
   or not a git repo, gives `null`. Reached by
-  `computeWorkingTreeDigest - a non-git directory is null (caching off)`;
-  flipping it to fall through went red.
+  `computeWorkingTreeDigest - a non-git directory is quietly null (caching off, no warning)`,
+  which also asserts no warning; deleting the guard went red (the fall-through
+  throws and warns).
 - `worker/deno/lib/quality_gate_cache.ts:154` — an absolute index path is
   used as is, and a relative one is joined to `repoRoot`. Reached by
   `computeWorkingTreeDigest - a linked worktree uses its absolute index path and keeps force-tracked ignored files`
@@ -164,8 +166,9 @@ matches a git-tree digest` seeds the old shape and asserts this.
   swallowing every error went red.
 - `worker/deno/lib/quality_gate_cache.ts:164` — a failing `git add -A` gives
   `null`. Reached by
-  `computeWorkingTreeDigest - a failing git add (corrupt index) is null, not a digest`;
-  ignoring the failure went red.
+  `computeWorkingTreeDigest - an unreadable untracked file makes git add fail, so null`;
+  ignoring the failure went red. The corrupt-index test is extra coverage
+  only: it stays green under that flip, because `write-tree` fails too.
 - `worker/deno/lib/quality_gate_cache.ts:166` — a failing `git write-tree`
   gives `null`. Reached by
   `computeWorkingTreeDigest - a failing git write-tree (missing blob) is null, not a digest`;
@@ -173,7 +176,7 @@ matches a git-tree digest` seeds the old shape and asserts this.
 - `worker/deno/lib/quality_gate_cache.ts:168-172` — the catch warns and gives
   `null`. Reached by the non-NotFound copy-error test; going through the
   rethrow, it asserts `null`.
-- `worker/deno/lib/quality_gate_cache.ts:173-180` — the `finally` removes the
+- `worker/deno/lib/quality_gate_cache.ts:173-179` — the `finally` removes the
   temp dir. Reached by `computeWorkingTreeDigest - leaves no vibe_gate_index_ temp dir behind`;
   dropping the remove went red.
 
