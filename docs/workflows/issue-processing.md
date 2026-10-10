@@ -1586,7 +1586,11 @@ documentation (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`, or a
 `docs/` path segment) — and also when the diff cannot be read, fail closed.
 It blocks a summary with no **Docs sweep** line, or a `section:` that is
 empty or a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`);
-`section: none — <reason>` and `no hits` are both accepted. Its verdict is
+`section: none — <reason>` and `no hits` are both accepted. The entry is
+read as one logical unit from the shared `markdownLogicalUnits` splitter
+(Issue #3356), so a hard-wrapped entry is joined up to the next blank
+line, list item, heading, table row, fence or HTML comment, and a
+`Docs sweep` line inside a fenced example is not the entry. Its verdict is
 computed once, early, so it stands beside — not strictly after — the
 reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is

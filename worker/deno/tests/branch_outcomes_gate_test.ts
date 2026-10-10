@@ -2025,13 +2025,13 @@ Deno.test("validateBranchOutcomes - an admission on a lazy unindented continuati
   assert(result.problems.some((p) => p.includes("admits no test reaches")));
 });
 
-// `groupUncapturedIndices` must reset at a GAP in the index sequence (a
-// blank line between two uncaptured regions) even when neither side is a
-// list-marker line: an unclosed backtick in the first uncaptured paragraph
-// must not flip parity for the second. Without the gap reset, the two
-// paragraphs would be joined as one unit and the dangling backtick would
-// swallow the real admission as a false "closed span containing
-// whitespace".
+// The shared-unit grouping (`groupUncapturedIndices`, Issue #3356) must reset
+// at a GAP in the index sequence (a blank line between two uncaptured
+// regions) even when neither side is a list-marker line: an unclosed backtick
+// in the first uncaptured paragraph must not flip parity for the second.
+// Without the gap reset, the two paragraphs would be joined as one unit and the
+// dangling backtick would swallow the real admission as a false "closed span
+// containing whitespace".
 Deno.test("validateBranchOutcomes - a stray backtick in one uncaptured paragraph does not blank an admission in a later, blank-line-separated paragraph (PR #3312 review, round 4)", () => {
   const result = validateBranchOutcomes({
     changedFiles: [FOO_TS],
@@ -2047,10 +2047,11 @@ Deno.test("validateBranchOutcomes - a stray backtick in one uncaptured paragraph
   assert(result.problems.some((p) => p.includes("admits no test reaches")));
 });
 
-// `groupUncapturedIndices` must also reset at a list-marker line even when
-// it is index-consecutive with the previous uncaptured line: the same
-// unclosed-backtick parity flip, but via adjacency rather than a blank-line
-// gap, so the two reset conditions are each independently exercised.
+// The shared-unit grouping (`groupUncapturedIndices`, Issue #3356) must also
+// reset at a list-marker line even when it is index-consecutive with the
+// previous uncaptured line: the same unclosed-backtick parity flip, but via
+// adjacency rather than a blank-line gap, so the two reset conditions are each
+// independently exercised.
 Deno.test("validateBranchOutcomes - a stray backtick in uncaptured prose does not blank an admission in the immediately following uncaptured bullet (PR #3312 review, round 4)", () => {
   const result = validateBranchOutcomes({
     changedFiles: [FOO_TS],

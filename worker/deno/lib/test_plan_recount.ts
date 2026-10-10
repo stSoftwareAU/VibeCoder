@@ -15,6 +15,11 @@
  * from input) and caps the amount of text it scans at 200_000 characters.
  */
 
+import {
+  markdownLogicalUnits,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
+
 const MAX_SCAN_CHARS = 200_000;
 
 /**
@@ -406,37 +411,48 @@ const CLAIM_RE = /(?<![\w.#])(\d{1,5})\s+(tests?|passed)\b/gi;
 const PARTIAL_ADD_RE = /\badded to\b|\bextended\b|\bwith\s+\d{1,5}\s+tests?\b/i;
 
 /**
- * Join a wrapped list item or a slash-continued command into one claim.
+ * Split a Test Plan section into logical blocks, one claim each.
+ *
+ * Logical units come from the shared `markdownLogicalUnits` (Issue #3356), so
+ * a hard-wrapped paragraph or list item (indented or lazy continuation) is one
+ * block, and blocks never merge across a blank line, heading, new list item,
+ * table row, fence or HTML comment. Each non-code unit becomes its text with
+ * whitespace runs collapsed.
+ *
+ * Fenced lines stay one block per physical line, so two commands in one fence
+ * are compared separately, with one exception: shell line continuation. A
+ * fenced line directly after a fenced line ending in `\` or `/` (after
+ * trimEnd) joins onto it, because a command wrapped that way names its files
+ * on one line and its "N passed" result on the next.
  *
  * Exported for reuse by `summary_claim_check.ts` (Issue #3257), whose Test
  * Plan backstop walks the same logical blocks looking for a quoted
  * behaviour rather than a stale count.
  */
 export function logicalBlocks(section: string): string[] {
-  const lines = section.split("\n");
-  const blocks: string[][] = [];
-  let current: string[] | null = null;
-  const isItem = (line: string) => /^\s*(?:[-*+]|\d+[.)])\s/.test(line);
-  const isBlank = (line: string) =>
-    /^\s*$/.test(line) || /^#{1,6}\s/.test(line);
-  const isIndented = (line: string) => /^\s+\S/.test(line);
-  const endsWithSlash = (line: string) => /[/\\]\s*$/.test(line.trimEnd());
-
-  for (const line of lines) {
-    if (isBlank(line)) {
-      if (current) blocks.push(current);
-      current = null;
+  const lines = splitMarkdownLines(section);
+  const blocks: string[] = [];
+  // Index of the last physical line in the most recent code block, and
+  // whether that block may be continued by the next line.
+  let codeEnd = -2;
+  let codeOpen = false;
+  for (const unit of markdownLogicalUnits(lines)) {
+    const text = unit.text.replace(/\s+/g, " ").trim();
+    if (unit.kind !== "code") {
+      blocks.push(text);
+      codeOpen = false;
       continue;
     }
-    const prev = current?.[current.length - 1];
-    const cont = prev !== undefined && !isItem(line) &&
-      (isIndented(line) || endsWithSlash(prev));
-    if (current && !cont) blocks.push(current);
-    if (!current || !cont) current = [];
-    current.push(line.trim());
+    const idx = unit.lines[0]!;
+    if (codeOpen && idx === codeEnd + 1) {
+      blocks[blocks.length - 1] = `${blocks[blocks.length - 1]} ${text}`;
+    } else {
+      blocks.push(text);
+    }
+    codeEnd = idx;
+    codeOpen = /[/\\]$/.test(lines[idx]!.trimEnd());
   }
-  if (current) blocks.push(current);
-  return blocks.map((block) => block.join(" ").replace(/\s+/g, " ").trim());
+  return blocks.filter((b) => b !== "");
 }
 
 export function findTestPlanMismatches(opts: {

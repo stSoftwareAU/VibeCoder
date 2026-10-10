@@ -421,7 +421,12 @@ Five checks run, each only when it applies:
    `## Test Plan` line naming those files with a test count that disagrees.
    A file is left out when a declaration is inside a block, parentheses, or
    a loop, or the scan ends inside a literal or with unbalanced depth.
-   Wrapped list items and slash-continued commands are read as one claim.
+   A hard-wrapped paragraph or list item is read as one claim, using the
+   shared `markdownLogicalUnits` splitter in
+   `worker/deno/lib/markdown_code_spans.ts` (Issue #3356); claims never
+   join across a blank line, a heading, a new list item, a table row or a
+   fence. Inside a fenced block each line is its own claim, except a
+   command continued onto the next line with a trailing `\` or `/`.
    An issue number (`#3143`) is not a count, and a line that says tests
    were added to or extended an existing file (`added to`, `extended`,
    `with N tests`) is not compared with that file's whole count. Lines it
