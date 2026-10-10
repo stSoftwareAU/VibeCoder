@@ -1250,6 +1250,24 @@ export async function denoTestsDigest(
 }
 
 /**
+ * The `deno type check` cache key. `deno check` type-checks every `.ts` file
+ * under `worker/deno`, tests included. Those tests import `.ts` files outside
+ * `worker/deno` (`.claude/skills/review-fleet-prs/scripts/*.ts`), and
+ * `deno test` runs with `--no-check`, so a stale PASS here goes red only in CI. The key is therefore
+ * the working tree as git sees it plus the `.ts` digest (which also covers
+ * ignored `.ts` files under `worker/deno`). Null (caching off) when no cache
+ * dir is set or either half cannot be computed.
+ */
+export async function denoCheckDigest(
+  config: QualityGateConfig,
+): Promise<string | null> {
+  if (!config.cacheDir) return null;
+  const tree = await computeWorkingTreeDigest(config.scriptDir);
+  const sources = await computeQualityInputDigest(config.denoDir ?? ".");
+  return tree === null || sources === null ? null : `${tree}+${sources}`;
+}
+
+/**
  * Run the unit suite as two `deno test` passes (Issue #940).
  *
  * One sequential invocation took 42+ minutes on a 10-core host against a
@@ -1475,9 +1493,7 @@ export async function runDenoCheck(
   denoCmd: string,
 ): Promise<CheckExecutionResult> {
   const name = "deno type check";
-  const digest = config.cacheDir
-    ? await computeQualityInputDigest(config.denoDir ?? ".")
-    : null;
+  const digest = await denoCheckDigest(config);
   const cachedAt = await cachedPassAt(config.cacheDir, name, digest);
   if (cachedAt) {
     return {

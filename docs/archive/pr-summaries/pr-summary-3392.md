@@ -4,8 +4,10 @@ The quality gate's `deno tests` cache is now keyed on the whole working tree
 as git sees it, not only on the `.ts` files under `worker/deno`. A docs,
 prompt, PR-summary, workflow, shell or container edit made after a cached PASS
 now re-runs the suite instead of reusing a stale PASS that then fails in CI.
-`deno check` keeps its `.ts`-only key, because `.ts` files are all it reads.
-Closes #3392.
+`deno check` is keyed on that working tree plus its existing `.ts` digest,
+because it type-checks `tests/**`, which import `.ts` files outside
+`worker/deno` (`.claude/skills/review-fleet-prs/scripts/*.ts`), and
+`deno test` runs with `--no-check`. Closes #3392.
 
 ```mermaid
 flowchart LR
@@ -41,6 +43,13 @@ flowchart LR
 - The `git-tree:` prefix acts as the version bump for the persisted key. A
   bare sha-256 entry from the old scheme never matches it.
 - git runs through `runGitCommand` (the spawn chokepoint from Issue #1214).
+- `deno check` uses `denoCheckDigest`: `<git-tree>+<ts digest>`, and `null`
+  (caching off) when either half is `null`. The tree half covers out-of-tree
+  imports; the `.ts` half still covers ignored `.ts` files under `worker/deno`.
+  A docs-only edit now also re-runs `deno check`; that costs a warm type
+  check, and is the price of a key that cannot reuse a stale PASS.
+- `computeWorkingTreeDigest` takes an optional `tempRoot` (production passes
+  nothing), so the cleanup test owns the directory it inspects.
 
 ### Undiscoverable Facts
 
@@ -67,8 +76,9 @@ doc comment and skip comment in `worker/deno/lib/quality_gate.ts`;
 `worker/deno/lib/quality_gate_cache.ts:21-26` — still true because the module
 doc now names what the key misses (ignored or excluded files, environment,
 network, files outside the repo) and no longer claims a false skip is
-impossible; `worker/deno/lib/quality_gate_cache.ts:78-85` — still true because
-`computeQualityInputDigest` is now documented as the `deno check` key only;
+impossible; the module doc bullet for `deno check` and the
+`computeQualityInputDigest` doc comment were corrected to say it is only the
+`.ts` half of the `deno check` key (the earlier "reads only those" was false);
 `docs/INTERNALS.md:3541` — still true because it describes the separate
 baseline cache (`baseline_quality_cache.ts`); `CODING-STANDARDS.md:831` — still
 true because it only says which two passes the `deno tests` stage runs, which
@@ -84,6 +94,7 @@ with `Deno.makeTempDir` and removed in `finally`.
 - **met** — "Editing only a `.yml`, `.sh` or container file does the same." — evidence: `worker/deno/tests/quality_gate_cache_test.ts::computeWorkingTreeDigest - editing only a .yml, .sh or Dockerfile changes it` — reviewer: met
 - **met** — "A tree with no changes since the last PASS still reuses the cache." — evidence: `worker/deno/tests/quality_gate_cache_test.ts::computeWorkingTreeDigest - unchanged tree is stable and a recorded PASS is reused`; the first call in the `runDenoTests` wiring test returns the cached PASS — reviewer: met
 - **met** — "A test goes red if the digest is reverted to the `.ts`-only walk." — evidence: swapping `denoTestsDigest` back to `computeQualityInputDigest` turned `runDenoTests - reuses a cached PASS until a .md edit changes the working tree` and `denoTestsDigest - keys the whole working tree, so a docs-only edit busts the cache` red — reviewer: met
+- **met** — "`deno check` also needs a wider key (review question)." — evidence: `worker/deno/tests/quality_gate_test.ts::runDenoCheck - editing a .ts outside worker/deno that a test imports busts the cached PASS (PR #3522 review)` — reviewer: met
 - **met** — "The module doc no longer claims false skips are impossible unless the new key makes that true." — evidence: `worker/deno/lib/quality_gate_cache.ts:21-26` — reviewer: met
 - **unrequested** — `runDenoTests` exported for tests — reviewer: unrequested — reason: the call-site rule requires a test through the production caller, not only through the helper
 
@@ -113,7 +124,8 @@ with `Deno.makeTempDir` and removed in `finally`.
   - `computeWorkingTreeDigest - never touches the real index`
   - `computeWorkingTreeDigest - a non-git directory is quietly null (caching off, no warning)`
   - `cachedPassAt - an old-shape bare sha-256 entry never matches a git-tree digest`
-  - `computeWorkingTreeDigest - leaves no vibe_gate_index_ temp dir behind`
+  - `computeWorkingTreeDigest - leaves nothing behind in the temp root it is given`
+  - `computeWorkingTreeDigest - the temp root is honoured: an unusable one is null, not a silent fallback`
   - `computeWorkingTreeDigest - a failing git add (corrupt index) is null, not a digest`
   - `computeWorkingTreeDigest - an unreadable untracked file makes git add fail, so null`
     (skipped where mode 000 does not block reads, for example as root)
@@ -125,9 +137,14 @@ with `Deno.makeTempDir` and removed in `finally`.
   - `denoTestsDigest - keys the whole working tree, so a docs-only edit busts the cache`
   - `runDenoTests - reuses a cached PASS until a .md edit changes the working tree`
   - `denoTestsDigest - null when no cache dir is set`
+  - `denoCheckDigest - null when no cache dir is set, a tree+sources key when one is`
+  - `runDenoCheck - editing a .ts outside worker/deno that a test imports busts the cached PASS (PR #3522 review)`
+- Changed in `worker/deno/tests/quality_gate_test.ts`: the existing
+  `runDenoCheck` cached-PASS test now runs in a `git init` directory, because
+  the key includes the working tree; its assertions are unchanged.
 - No assertions were removed from existing tests.
 - Targeted run: `deno task test:unit tests/quality_gate_cache_test.ts tests/quality_gate_test.ts`
-  passed (57 tests).
+  passed (60 tests) on the head.
 - `./quality.sh < /dev/null` passed on the head with exit 0. Its result line
   was "PASSED (with skipped checks)", and the only skips were the ones the
   gate always makes in this environment.
@@ -144,46 +161,70 @@ matches a git-tree digest` seeds the old shape and asserts this.
   `runDenoTests` itself.
 - `denoTestsDigest` is called only from `runDenoTests`.
 - `computeWorkingTreeDigest` is called only from `denoTestsDigest`.
-- `runDenoCheck` still uses `computeQualityInputDigest`, on purpose.
+- `runDenoCheck` has one production caller, the `mainChecks.push` in
+  `worker/deno/lib/quality_gate.ts:1780`, and calls `denoCheckDigest`
+  (`quality_gate.ts:1496`); `denoCheckDigest` is called only from there. The
+  new test goes through `runDenoCheck`.
+- Temp dir seam: `computeWorkingTreeDigest`'s only production caller is
+  `denoTestsDigest` and now also `denoCheckDigest`; neither passes `tempRoot`.
 
 **Branch outcomes:**
 
-- `worker/deno/lib/quality_gate.ts:1247-1249` — no cache dir means `null`.
+- `worker/deno/lib/quality_gate.ts:1247` — no cache dir means `null`.
   Reached by `denoTestsDigest - null when no cache dir is set`, which uses a
   real git repo and has a positive control with a cache dir; flipping it to
   always digest went red.
-- `worker/deno/lib/quality_gate.ts:1279` — the digest feeds the cache, so an
+- `worker/deno/lib/quality_gate.ts:1297` — the digest feeds the cache, so an
   unchanged tree gives a cached PASS and a `.md` edit re-runs the suite.
   Reached by `runDenoTests - reuses a cached PASS until a .md edit changes the working tree`;
   flipping to `computeQualityInputDigest` went red.
-- `worker/deno/lib/quality_gate_cache.ts:153` — an empty `rev-parse` result,
+- `worker/deno/lib/quality_gate.ts:1267` — either half `null` gives `null`,
+  otherwise `<tree>+<sources>`. Reached by
+  `runDenoCheck - editing a .ts outside worker/deno that a test imports busts the cached PASS (PR #3522 review)`
+  (and the existing cached-PASS test, in a `git init` directory); flipping the
+  key to the `.ts` digest alone went red ("PASSED (cached …)" where `FAILED`
+  was expected). `exempt (untestable)`: the `tree === null` and
+  `sources === null` arms. `computeWorkingTreeDigest` returning `null` is
+  tested below, and `computeQualityInputDigest` returns `null` only when the
+  walk throws, which `walkTs` swallows, so no input reaches it.
+- `worker/deno/lib/quality_gate.ts:1264` — no cache dir means `null` for the
+  check digest. Reached by
+  `denoCheckDigest - null when no cache dir is set, a tree+sources key when one is`
+  (which also asserts the `git-tree:<oid>+<sha-256>` shape); removing the
+  guard went red.
+- `worker/deno/lib/quality_gate_cache.ts:164-167` — the optional `tempRoot` is
+  honoured. Reached by
+  `computeWorkingTreeDigest - the temp root is honoured: an unusable one is null, not a silent fallback`;
+  dropping the spread went red.
+- `worker/deno/lib/quality_gate_cache.ts:162` — an empty `rev-parse` result,
   or not a git repo, gives `null`. Reached by
   `computeWorkingTreeDigest - a non-git directory is quietly null (caching off, no warning)`,
   which also asserts no warning; deleting the guard went red (the fall-through
   throws and warns).
-- `worker/deno/lib/quality_gate_cache.ts:154` — an absolute index path is
+- `worker/deno/lib/quality_gate_cache.ts:163` — an absolute index path is
   used as is, and a relative one is joined to `repoRoot`. Reached by
   `computeWorkingTreeDigest - a linked worktree uses its absolute index path and keeps force-tracked ignored files`
   and the unchanged-tree test; always prefixing `repoRoot` went red.
-- `worker/deno/lib/quality_gate_cache.ts:161` — NotFound starts an empty
+- `worker/deno/lib/quality_gate_cache.ts:173` — NotFound starts an empty
   index, and any other copy error is rethrown, which gives `null`. Reached by
   `computeWorkingTreeDigest - a fresh repo with no index yet still digests its files`
   and `computeWorkingTreeDigest - a non-NotFound index copy error is null, not an empty index`;
   swallowing every error went red.
-- `worker/deno/lib/quality_gate_cache.ts:164` — a failing `git add -A` gives
+- `worker/deno/lib/quality_gate_cache.ts:176` — a failing `git add -A` gives
   `null`. Reached by
   `computeWorkingTreeDigest - an unreadable untracked file makes git add fail, so null`;
   ignoring the failure went red. The corrupt-index test is extra coverage
   only: it stays green under that flip, because `write-tree` fails too.
-- `worker/deno/lib/quality_gate_cache.ts:166` — a failing `git write-tree`
+- `worker/deno/lib/quality_gate_cache.ts:178` — a failing `git write-tree`
   gives `null`. Reached by
   `computeWorkingTreeDigest - a failing git write-tree (missing blob) is null, not a digest`;
   ignoring the failure went red.
-- `worker/deno/lib/quality_gate_cache.ts:168-172` — the catch warns and gives
+- `worker/deno/lib/quality_gate_cache.ts:180-184` — the catch warns and gives
   `null`. Reached by the non-NotFound copy-error test; going through the
   rethrow, it asserts `null`.
-- `worker/deno/lib/quality_gate_cache.ts:173-179` — the `finally` removes the
-  temp dir. Reached by `computeWorkingTreeDigest - leaves no vibe_gate_index_ temp dir behind`;
-  dropping the remove went red.
+- `worker/deno/lib/quality_gate_cache.ts:185-191` — the `finally` removes the
+  temp dir. Reached by `computeWorkingTreeDigest - leaves nothing behind in the temp root it is given`
+  (a private temp root, on both the success and failure paths); dropping the
+  remove went red.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

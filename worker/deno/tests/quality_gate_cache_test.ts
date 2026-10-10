@@ -296,23 +296,41 @@ Deno.test("cachedPassAt - an old-shape bare sha-256 entry never matches a git-tr
   });
 });
 
-Deno.test("computeWorkingTreeDigest - leaves no vibe_gate_index_ temp dir behind", async () => {
-  const tmpRoot = Deno.env.get("TMPDIR") ?? "/tmp";
-  const list = async () => {
-    const names = new Set<string>();
-    for await (const e of Deno.readDir(tmpRoot)) {
-      if (e.name.startsWith("vibe_gate_index_")) names.add(e.name);
-    }
-    return names;
+Deno.test("computeWorkingTreeDigest - leaves nothing behind in the temp root it is given", async () => {
+  // A private temp root, so no other test or gate run can add to it.
+  const tempRoot = await Deno.makeTempDir({ prefix: "qgc_tmproot_" });
+  try {
+    await withRepo(async (root) => {
+      assert(await computeWorkingTreeDigest(root, tempRoot) !== null);
+      // The failure path cleans up too.
+      await Deno.writeTextFile(`${root}/.git/index`, "not an index\n");
+      assertEquals(await computeWorkingTreeDigest(root, tempRoot), null);
+    });
+    assertEquals(await Array.fromAsync(Deno.readDir(tempRoot)), []);
+  } finally {
+    await Deno.remove(tempRoot, { recursive: true });
+  }
+});
+
+Deno.test("computeWorkingTreeDigest - the temp root is honoured: an unusable one is null, not a silent fallback", async () => {
+  const originalWarn = console.warn;
+  const warnings: string[] = [];
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
   };
-  await withRepo(async (root) => {
-    const before = await list();
-    assert(await computeWorkingTreeDigest(root) !== null);
-    const after = await list();
-    for (const name of after) {
-      assert(before.has(name), `leaked temp dir ${name}`);
-    }
-  });
+  try {
+    await withRepo(async (root) => {
+      assertEquals(
+        await computeWorkingTreeDigest(root, `${root}/does/not/exist`),
+        null,
+      );
+      // Positive control: the same repo digests with the default temp root.
+      assert(await computeWorkingTreeDigest(root) !== null);
+    });
+    assertEquals(warnings.length, 1, warnings.join("\n"));
+  } finally {
+    console.warn = originalWarn;
+  }
 });
 
 Deno.test("computeWorkingTreeDigest - a failing git add (corrupt index) is null, not a digest", async () => {

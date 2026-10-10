@@ -20,6 +20,7 @@ import {
 } from "../lib/quality_gate_cache.ts";
 import {
   type CheckExecutionResult,
+  denoCheckDigest,
   denoTestsDigest,
   formatCheckProgress,
   type QualityGateConfig,
@@ -494,6 +495,15 @@ Deno.test("runDenoCheck - a cached PASS is reused on the second run with the sam
       `${tmpDir}/mod.ts`,
       'export const greeting: string = "hi";\n',
     );
+    // The key includes the working tree (PR #3522 review), so it needs a repo.
+    const init = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd: tmpDir,
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assert(init.success, "git init failed");
     const config: QualityGateConfig = {
       scriptDir: tmpDir,
       denoDir: tmpDir,
@@ -522,6 +532,64 @@ Deno.test("runDenoCheck - a cached PASS is reused on the second run with the sam
   } finally {
     await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
     await Deno.remove(cacheDir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("runDenoCheck - editing a .ts outside worker/deno that a test imports busts the cached PASS (PR #3522 review)", async () => {
+  const root = await Deno.makeTempDir({ prefix: "qg_check_repo_" });
+  const cacheDir = await Deno.makeTempDir({ prefix: "qg_check_cache_" });
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", {
+      args,
+      cwd: root,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(out.success, `git ${args.join(" ")} failed`);
+  };
+  try {
+    await git("init", "-q");
+    await git("config", "user.email", "t@example.com");
+    await git("config", "user.name", "T");
+    const denoDir = `${root}/worker/deno`;
+    const skill = `${root}/.claude/skills/x/scripts`;
+    await Deno.mkdir(`${denoDir}/tests`, { recursive: true });
+    await Deno.mkdir(skill, { recursive: true });
+    await Deno.writeTextFile(
+      `${skill}/gate.ts`,
+      "export function gate(n: number): number { return n; }\n",
+    );
+    await Deno.writeTextFile(
+      `${denoDir}/tests/uses_gate_test.ts`,
+      'import { gate } from "../../../.claude/skills/x/scripts/gate.ts";\n' +
+        "export const v: number = gate(1);\n",
+    );
+    await git("add", "-A");
+    await git("commit", "-q", "-m", "init");
+    const config: QualityGateConfig = {
+      scriptDir: root,
+      denoDir,
+      options: { strict: false, sequential: true, validatePrompts: false },
+      cacheDir,
+    };
+
+    assertEquals((await runDenoCheck(config, "deno")).status, "PASSED");
+    const hit = await runDenoCheck(config, "deno");
+    assertStringIncludes(hit.output, "cached");
+
+    // The signature change makes the (unchanged) test call a type error. Only
+    // the out-of-tree file differs, so the cached PASS must not be reused.
+    await Deno.writeTextFile(
+      `${skill}/gate.ts`,
+      "export function gate(n: string): number { return n.length; }\n",
+    );
+    const after = await runDenoCheck(config, "deno");
+    assertEquals(after.status, "FAILED", after.output);
+    assertEquals(after.output.includes("cached"), false);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(cacheDir, { recursive: true });
   }
 });
 
@@ -1089,6 +1157,35 @@ Deno.test("denoTestsDigest - null when no cache dir is set", async () => {
         denoDir: `${root}/worker/deno`,
         cacheDir,
       })) !== null,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(cacheDir, { recursive: true });
+  }
+});
+
+Deno.test("denoCheckDigest - null when no cache dir is set, a tree+sources key when one is", async () => {
+  const root = await Deno.makeTempDir({ prefix: "qg_checkkey_repo_" });
+  const cacheDir = await Deno.makeTempDir({ prefix: "qg_checkkey_cache_" });
+  try {
+    const init = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd: root,
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assert(init.success, "git init failed");
+    await Deno.writeTextFile(`${root}/a.ts`, "export {};\n");
+    const base = { scriptDir: root, denoDir: root };
+    assertEquals(
+      await denoCheckDigest(createTestConfig({ ...base, cacheDir: undefined })),
+      null,
+    );
+    const key = await denoCheckDigest(createTestConfig({ ...base, cacheDir }));
+    assert(
+      key !== null && /^git-tree:[0-9a-f]+\+[0-9a-f]{64}$/.test(key),
+      `${key}`,
     );
   } finally {
     await Deno.remove(root, { recursive: true });

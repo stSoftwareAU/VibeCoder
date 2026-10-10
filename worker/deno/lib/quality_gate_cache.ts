@@ -15,8 +15,12 @@
  *   non-TS inputs too (CODING-STANDARDS.md, docs, prompts, workflows and
  *   container files). A `.ts`-only key reused a stale PASS after such an edit.
  * - `deno check` is keyed on {@link computeQualityInputDigest} (every `.ts`
- *   file under `worker/deno`, plus `deno.json`, `deno.lock` and the pinned
- *   `.deno-version`), because it reads only those.
+ *   file under `worker/deno`, ignored or not, plus `deno.json`, `deno.lock`
+ *   and the pinned `.deno-version`) **and** on {@link computeWorkingTreeDigest}
+ *   (PR #3522 review). It type-checks `tests/**`, which import `.ts` files
+ *   outside `worker/deno` (`.claude/skills/review-fleet-prs/scripts/*.ts`),
+ *   and `deno test` runs with `--no-check`, so this stage is the only type
+ *   check. See `denoCheckDigest` in `quality_gate.ts`.
  *
  * A cached PASS is reused only when the current digest is byte-for-byte
  * identical to the one that last passed. A FAIL is never cached, so a broken
@@ -76,9 +80,11 @@ async function* walkTs(dir: string): AsyncGenerator<string> {
 }
 
 /**
- * Compute the `deno check` input digest: every
- * `.ts` file under `denoDir`, plus the dependency/config/toolchain pins. Path is
- * folded in with content so a rename changes the digest.
+ * Compute the `.ts` half of the `deno check` input digest: every `.ts` file
+ * under `denoDir`, plus the dependency/config/toolchain pins. Path is folded in
+ * with content so a rename changes the digest. It does not see `.ts` files
+ * outside `denoDir` that the checked files import; `denoCheckDigest` pairs it
+ * with {@link computeWorkingTreeDigest} for those.
  *
  * @param denoDir - `worker/deno`
  * @returns A hex digest, or null when the tree cannot be read (caching off).
@@ -141,18 +147,24 @@ async function runGit(
  * sha-256 key from the older `.ts`-only scheme can never match.
  *
  * @param repoRoot - The repository root (working tree top level).
+ * @param tempRoot - Directory to hold the private index copy; defaults to the
+ *   system temp directory. A seam so a test can assert on a directory it owns.
  * @returns `git-tree:<oid>`, or null when it cannot be computed (not a git
  *   repo, git failure): caching is then off.
  */
 export async function computeWorkingTreeDigest(
   repoRoot: string,
+  tempRoot?: string,
 ): Promise<string | null> {
   let tmp: string | undefined;
   try {
     const rel = await runGit(["rev-parse", "--git-path", "index"], repoRoot);
     if (!rel) return null;
     const realIndex = rel.startsWith("/") ? rel : `${repoRoot}/${rel}`;
-    tmp = await Deno.makeTempDir({ prefix: "vibe_gate_index_" });
+    tmp = await Deno.makeTempDir({
+      prefix: "vibe_gate_index_",
+      ...(tempRoot ? { dir: tempRoot } : {}),
+    });
     const tmpIndex = `${tmp}/index`;
     try {
       await Deno.copyFile(realIndex, tmpIndex);
@@ -167,7 +179,7 @@ export async function computeWorkingTreeDigest(
     return `git-tree:${oid}`;
   } catch (error) {
     console.warn(
-      `Deno tests cache is off for this run (could not digest the working tree): ${error}`,
+      `Quality gate cache is off for this run (could not digest the working tree): ${error}`,
     );
     return null;
   } finally {
