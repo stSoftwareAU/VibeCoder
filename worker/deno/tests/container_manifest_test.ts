@@ -1968,6 +1968,9 @@ Deno.test("container/ - the image supplies every monitored-repo toolchain comman
   // from container/tools.json fails here.
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("bats"));
   assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("codespell"));
+  // Issue #3393: the diff-scoped mutation check runs `cargo mutants
+  // --in-diff` in the Rust repos.
+  assert(REQUIRED_REPO_TOOLCHAIN_COMMANDS.includes("cargo-mutants"));
 });
 
 Deno.test("container/ - every committed toolchain names the repositories it exists for", async () => {
