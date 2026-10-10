@@ -7,7 +7,12 @@
  * tree as git sees it (Issue #3392), not just `.ts` files.
  */
 
-import { assert, assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+} from "@std/assert";
 import {
   cachedPassAt,
   computeQualityInputDigest,
@@ -362,4 +367,23 @@ Deno.test("computeWorkingTreeDigest - a failing git write-tree (missing blob) is
     await Deno.remove(obj);
     assertEquals(await computeWorkingTreeDigest(root), null);
   });
+});
+
+Deno.test("computeWorkingTreeDigest - a fresh repo with no index yet still digests its files", async () => {
+  const root = await Deno.makeTempDir({ prefix: "qgc_fresh_" });
+  try {
+    await git(root, "init", "-q");
+    await assertRejects(
+      () => Deno.stat(`${root}/.git/index`),
+      Deno.errors.NotFound,
+    );
+    await put(root, "docs/a.md", "a\n");
+    const first = await computeWorkingTreeDigest(root);
+    assert(first !== null);
+    assert(first.startsWith("git-tree:"));
+    await put(root, "docs/b.md", "b\n");
+    assertNotEquals(await computeWorkingTreeDigest(root), first);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
