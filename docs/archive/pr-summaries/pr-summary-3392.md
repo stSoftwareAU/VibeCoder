@@ -57,7 +57,11 @@ This is a backend-only change, verified by unit tests in
 `worker/deno/tests/quality_gate_test.ts`. No visual surface changed.
 
 **Docs sweep** — grep: `computeQualityInputDigest`, `cached PASS`,
-`quality_gate_cache`, `gate cache`, `cached — inputs`; updated: module doc and
+`quality_gate_cache`, `gate cache`, `cached — inputs`, `quality-gate-cache`,
+`deno tests`, `Quality gate`; section: `docs/INTERNALS.md#quality-gate` — read
+through, still true because it lists the gate's stages, the semgrep stage and
+streamed progress and says nothing about the check cache or its key, so no
+sentence in it is made false; updated: module doc and
 doc comments in `worker/deno/lib/quality_gate_cache.ts`, the `runDenoTests`
 doc comment and skip comment in `worker/deno/lib/quality_gate.ts`;
 `worker/deno/lib/quality_gate_cache.ts:21-26` — still true because the module
@@ -66,7 +70,9 @@ network, files outside the repo) and no longer claims a false skip is
 impossible; `worker/deno/lib/quality_gate_cache.ts:78-85` — still true because
 `computeQualityInputDigest` is now documented as the `deno check` key only;
 `docs/INTERNALS.md:3541` — still true because it describes the separate
-baseline cache (`baseline_quality_cache.ts`); `docs/audits/filesystem-path-temp-sweep-1215.md:300`
+baseline cache (`baseline_quality_cache.ts`); `CODING-STANDARDS.md:831` — still
+true because it only says which two passes the `deno tests` stage runs, which
+this change leaves alone; `docs/audits/filesystem-path-temp-sweep-1215.md:300`
 — still true because it only lists the file, and the new temp dir is made
 with `Deno.makeTempDir` and removed in `finally`.
 
