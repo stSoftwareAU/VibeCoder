@@ -1414,6 +1414,11 @@ for every PR summary — containing:
    reviewer, rather than blocking the PR.
 4. **Test Plan** — Tests added or modified.
 
+In this repository, `deno task pr-summary-check --base <base-branch>
+<summary-file>` from `worker/deno` runs most of the PR-summary gates against a
+draft summary before the PR is raised. A gate it reports as not checked is not
+a pass.
+
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
 it names, and rewrite — never append to — the summary so every claim
