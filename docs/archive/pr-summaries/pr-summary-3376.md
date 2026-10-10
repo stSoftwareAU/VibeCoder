@@ -115,7 +115,7 @@ flipping an operand is flipping an outcome; siblings: the #3069 paragraph in
   `worker/deno/tests/branch_outcome_coverage_3069_test.ts` and
   `worker/deno/tests/branch_outcomes_record_3147_test.ts`): 892 passed,
   0 failed.
-- `./quality.sh`: QUALITY_RESULT
+- `./quality.sh` on the final head: passed (config integration skipped by the gate itself).
 
 **Branch outcomes:** none added — the diff changes prose and adds a drift test.
 
