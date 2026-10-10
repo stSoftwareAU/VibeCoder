@@ -28,7 +28,7 @@ with a code span as a quoted mention, unless nothing but `none` or
   therefore neither opens a header nor ends a real list's scan.
 - A bare `` `Branch outcomes:` `` line above a list is still a header,
   because PR #3312's review supported that form.
-  `branch_outcomes_gate_test.ts::a backticked header still runs the admission check`
+  `worker/deno/tests/branch_outcomes_gate_test.ts::a backticked header still runs the admission check`
   pins it.
 - A heading form inside a code span (`` `### Branch outcomes` ``) is never a
   header, because a real ATX heading cannot open with a backtick.
@@ -110,7 +110,7 @@ end of that paragraph covers the code-span case.
     mention-and-call-site tests red. The look-alikes stayed green, as
     expected.
   - Dropping the exemption turned the 3 exempt-form tests and
-    `branch_outcomes_gate_test.ts::a backticked header still runs the admission check`
+    `worker/deno/tests/branch_outcomes_gate_test.ts::a backticked header still runs the admission check`
     red.
 - `./quality.sh < /dev/null`: the first run reported `deno tests FAILED`
   with no failing test named in the condensed output. It ran while the
