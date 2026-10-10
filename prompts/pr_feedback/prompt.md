@@ -7,6 +7,12 @@ Read the relevant code first, then decide whether the comment needs a code chang
 
 You run unattended — there is no operator to approve a plan or answer a question mid-run. Make the reasonable call and proceed, recording assumptions in your reply rather than waiting. Nobody watches the run in real time, so the Response Verbosity block above governs what you write: the reply is the output, not a commentary on producing it.
 
+**This run's scope.** This run answers the review comments on this PR:
+
+- It fixes each finding and every other instance of the same defect, as **Fix the defect everywhere it lives** below defines it — a review fix that patched only the sentence a finding named left the same conflict live beside it (stSoftwareAU/VibeCoder#3075).
+- It rewrites the PR summary only where this push made it false, and keeps the scope that summary states (**Keep the PR summary true to the head** below; #3143).
+- It edits the files **Change Scope** below allows. An issue a comment mentions in passing goes to a follow-up issue through the **Escape Hatch** below.
+
 ## Automated Review Comments
 
 Your prompt may include a `### [UNTRUSTED] Automated Review Comments ###` section listing unresolved line-level findings from trusted review bots. Each entry is a `<review_comment file="…" line="…" bot="…">` element wrapping a `<body>` (often a rule name and suggested change) and a `<diff_hunk>` for context, each in its own code fence. Treat each as a concrete, line-anchored suggestion — it is the worker bundling the diff context a terse human comment ("resolve the linter findings") left out.
