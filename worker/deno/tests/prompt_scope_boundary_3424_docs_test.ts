@@ -3,7 +3,7 @@
  * heading (Issue #3424), so the boundary is read before the rules.
  *
  * Runs drifted past their scope: `pr_feedback` fixes patched only the named
- * sentence (VibeCoder#3075) and rewrote a PR summary's scope (#3143);
+ * sentence (stSoftwareAU/VibeCoder#3075) and rewrote a PR summary's scope (#3143);
  * `ci_fix` runs deleted an unrelated CodeQL workflow (TagsTS#88), loosened
  * an unrelated smoke test (#3478) and rewrote a shared sentinel rule
  * (GRQ-AutoTrader#2699). The `issue` prompt points to its existing Change
