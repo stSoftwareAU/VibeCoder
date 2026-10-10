@@ -64,6 +64,50 @@ Deno.test("githubSlug - full issue-number heading keeps every token", () => {
   );
 });
 
+// Connector punctuation (`\p{Pc}`, e.g. `_`) survives slugging because
+// GitHub's `github-slugger` keeps it; ids observed from GitHub's rendered
+// HTML via `gh api repos/stSoftwareAU/VibeCoder/contents/docs/CALLBACKS.md
+// -H "Accept: application/vnd.github.html"` (Issue #3337).
+Deno.test("githubSlug - connector punctuation (underscore) survives (Issue #3337)", () => {
+  assertEquals(
+    githubSlug("Host-level failures — `callbacks.host_failure`"),
+    "host-level-failures--callbackshost_failure",
+  );
+  assertEquals(
+    githubSlug("Migrating from `fleet_health_dir` / `fleet_health_repo`"),
+    "migrating-from-fleet_health_dir--fleet_health_repo",
+  );
+});
+
+// `_name_` is underscore emphasis at a word boundary, not connector
+// punctuation — GitHub renders it as `<em>name</em>` and drops the
+// delimiters. Id observed from GitHub's rendered HTML via `gh api
+// repos/stSoftwareAU/VibeCoder/contents/docs/audits/security-sweep-1218-commands-cli.md
+// -H "Accept: application/vnd.github.html"` (review on PR #3363, Issue
+// #3337).
+Deno.test("githubSlug - underscore emphasis delimiters drop, unlike connector-punctuation underscores (PR #3363)", () => {
+  assertEquals(
+    githubSlug(
+      "SEC-1218-F5 — an unescaped shell variable _name_ in text that is `eval`'d",
+    ),
+    "sec-1218-f5--an-unescaped-shell-variable-name-in-text-that-is-evald",
+  );
+});
+
+// A word-boundary underscore pair inside a code span (`__init__`) must be
+// left alone — the code span is not emphasis — while a real emphasis pair
+// outside the span still drops its delimiters. This is the case the review
+// on PR #3363 found uncovered: every existing heading either had only
+// intraword underscores inside code spans, or none at all, so a regression
+// that applied `EMPHASIS_UNDERSCORES` to the whole heading (code spans
+// included) left every other test green (Issue #3337).
+Deno.test("githubSlug - word-boundary underscores inside a code span survive, emphasis outside still drops (PR #3363 review)", () => {
+  assertEquals(
+    githubSlug("Overriding `__init__` and _x_"),
+    "overriding-__init__-and-x",
+  );
+});
+
 /**
  * In-scope anchor references: each link that the audit flagged, expressed as
  * the referencing file, the exact `target#fragment` string it must contain,

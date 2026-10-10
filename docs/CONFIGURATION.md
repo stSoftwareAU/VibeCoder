@@ -610,7 +610,7 @@ Semantics:
 
 Full behaviour, including the decision flow and the log lines a biased tick
 emits, is in
-[Idle-task Framework → Configuring the cadence](IDLE-TASK-FRAMEWORK.md#configuring-the-cadence--idle_task_cadence-issue-4011).
+[Idle-task Framework → Configuring the cadence](IDLE-TASK-FRAMEWORK.md#configuring-the-cadence--idle_task_cadence).
 
 ### ⬆️ Minimum-Version Floor
 

@@ -1604,7 +1604,7 @@ private: setup creates it owner-only (permissions `600`), it is git-ignored,
 and the pre-commit hook refuses to commit it. Its overrides-only semantics —
 defaults are never written, so changed defaults flow through on upgrade — are
 covered in the
-[Configuration File section](CONFIGURATION.md#configuration-file) of the
+[Configuration File section](CONFIGURATION.md#-configuration-file) of the
 Configuration Reference.
 
 ### The minimum viable config
@@ -1629,12 +1629,12 @@ PRs, what it monitors, and how it authenticates:
   set `pr_reviewers` and drop it. See
   [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 - `pr_reviewers` — logins requested as reviewers on every PR the worker
-  raises; see [Multiple PR Reviewers](CONFIGURATION.md#multiple-pr-reviewers).
+  raises; see [Multiple PR Reviewers](CONFIGURATION.md#-multiple-pr-reviewers).
 - `repos` — the monitored repository list, `owner/name` per entry; see
-  [Monitored Repositories](CONFIGURATION.md#monitored-repositories).
+  [Monitored Repositories](CONFIGURATION.md#-monitored-repositories).
 - `ssh_key_path` — the service account's SSH private key, used for all git
   transport; see
-  [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth).
+  [Service Account Authentication](CONFIGURATION.md#-service-account-authentication-ssh--gh-auth).
 - `gh_config_dir` — the `gh` CLI identity directory built in
   [Manual setup: credentials](#manual-setup-credentials), used for all `gh`
   operations; same reference section as `ssh_key_path`.
@@ -1667,7 +1667,7 @@ explained beneath the block, never inside it.
   startup. These logins are fleet accounts, so they are also unioned into the
   effective `fleet_pr_authors` and a sibling's open PR blocks this host from
   duplicating the work. See the identity guard notes under
-  [Service Account Authentication](CONFIGURATION.md#service-account-authentication-ssh--gh-auth)
+  [Service Account Authentication](CONFIGURATION.md#-service-account-authentication-ssh--gh-auth)
   and
   [Service accounts are fleet PR authors too](CONFIGURATION.md#service-accounts-are-fleet-pr-authors-too).
 - `authorized_commenters` — the **known** logins whose input the worker acts
@@ -1677,7 +1677,7 @@ explained beneath the block, never inside it.
   honoured (Issue #2882). Note the key itself is spelt
   `authorized_commenters`. Defaults to
   `["github-copilot[bot]", "github-actions[bot]"]` when absent. See
-  [Authorised Commenters](CONFIGURATION.md#authorised-commenters) and
+  [Authorised Commenters](CONFIGURATION.md#-authorised-commenters) and
   [Two axes of trust](CONFIGURATION.md#two-axes-of-trust).
 - `exclusion_team` — optional **additional** exclusion from the derived
   directing set, on top of the Vibe Coder logins that are always excluded.
@@ -1689,9 +1689,9 @@ explained beneath the block, never inside it.
   overrides, not a snapshot. `sleep_interval` defaults to `120` seconds
   (Issue #2446); the sample above sets `60` purely to show an override, so omit
   the key unless you want a different cadence. Values and defaults are in
-  [Configuration Defaults](CONFIGURATION.md#configuration-defaults).
+  [Configuration Defaults](CONFIGURATION.md#-configuration-defaults).
 - `worker_name` — multi-worker visibility, optional and in the same
-  [defaults table](CONFIGURATION.md#configuration-defaults). Host health
+  [defaults table](CONFIGURATION.md#-configuration-defaults). Host health
   reporting is not built in: use a
   [post-run callback](CONFIGURATION.md#-post-run-callbacks).
 
@@ -1744,7 +1744,7 @@ in the Container Guide.
 This section deliberately stops at the two examples above. The
 [Configuration Reference](CONFIGURATION.md) owns the complete key catalogue,
 the defaults table and the operational constants;
-[Per-Repository Configuration](CONFIGURATION.md#per-repository-configuration)
+[Per-Repository Configuration](CONFIGURATION.md#-per-repository-configuration)
 owns the `repo_config` block. The `container_tools` key is documented in the
 [Configuration Reference](CONFIGURATION.md) and the
 [Container Guide](CONTAINER.md), not here.

@@ -124,7 +124,7 @@ sequenceDiagram
 - **Implement:** Branch from default (or milestone branch), then **clarification
   phase** (is the issue clear? small enough? too large → add `planning` to break
   into sub-issues?), then Claude + quality gate (`./quality.sh`), commit, push.
-  See [Clarification](workflows/planning-and-questions.md#clarification).
+  See [Clarification](workflows/planning-and-questions.md#-clarification).
 - **PR:** Create PR (with auto-merge when mergeable), then the worker keeps the
   PR healthy: spelling/quality/CI (Continuous Integration) fixes, branch
   updates, conflict resolution.
@@ -390,7 +390,7 @@ your phone to one final PR to review.
 | **Agent accountability (tamper-evident GitHub-mutation audit log, identity delegation, Rule of Two)** | [Agent Accountability](AGENT-ACCOUNTABILITY.md) |
 | **Project overview**                                                               | [README](../README.md)                      |
 
-All of the above are linked from the main [README](../README.md#documentation).
+All of the above are linked from the main [README](../README.md#-documentation).
 
 ---
 

@@ -826,7 +826,7 @@ merge and logs the conflict. To resolve:
 3. The worker will continue processing on the next scan
 
 For more milestone troubleshooting, see the
-[Milestone Workflow Guide](workflows/milestones.md#decision-points-and-exceptions).
+[Milestone Workflow Guide](workflows/milestones.md#-decision-points-and-exceptions).
 
 ## 🤫 Silent failures (Claude completes but produces invalid or empty output)
 

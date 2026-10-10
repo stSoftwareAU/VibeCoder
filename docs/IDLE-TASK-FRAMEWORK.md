@@ -1081,7 +1081,7 @@ The **tier-3 suppression** gate (Issue #499) closes the same hole one level up.
 Every gate above is per-issue; this one is per-repo. `selectHighestPriority`
 drops every `low-priority` candidate from a repo that holds a _suppressing_ open
 `work-on` issue (`reposWithOpenWorkOn` — see
-[issue-processing.md → Per-repo tier suppression](workflows/issue-processing.md#per-repo-tier-suppression-a-suppressing-work-on-issue-parks-the-lower-tiers)),
+[issue-processing.md → Per-repo tier suppression](workflows/issue-processing.md#per-repo-tier-suppression--a-suppressing-work-on-issue-parks-the-lower-tiers)),
 so such a backlog is not work the scan refused — it is work the scan is
 deliberately serialising. The census counted it anyway. On 2026-08-28
 `stSoftwareAU/NEAT-AI-Rebase` logged
@@ -2339,7 +2339,7 @@ back to a uniform pick. The picker (`weightedPickTemplate` in
 `commands/maybe_file_idle_task.ts`) is injected through the same
 `pickTemplateFn` seam the tests use, so the weighting is fully unit-tested
 without the network. See
-[CONFIGURATION.md → Idle-Task Template Weights](CONFIGURATION.md#%EF%B8%8F-idle-task-template-weights-issue-2401).
+[CONFIGURATION.md → Idle-Task Template Weights](CONFIGURATION.md#%EF%B8%8F-idle-task-template-weights).
 
 ### Skipping the per-template milestone
 
