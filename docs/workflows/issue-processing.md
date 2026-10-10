@@ -2656,6 +2656,24 @@ discard),
 (`executeWithFreshSessionFallback`), and the `prompt_too_long` category in
 [failure_diagnosis.ts](../../worker/deno/lib/failure_diagnosis.ts).
 
+A run refused by the PR-summary gates is categorised `summary_incomplete`
+(display `summary-incomplete`, Issue #3431): the worker prefixes the failure
+reason with its own marker, and a message that starts with it is classified
+before the free-text scheduled-release, timeout, kill, rate-limit and disk-full rules, so the
+gates' quotation of the agent's summary (for example a Rust `AppError::X` path,
+or the words "timeout" or `TypeError:`) is not read as a crash. It is an
+`agent-outcome`, not a worker defect, and the normal retry and `failed-once`
+rules apply: when the run fails, the failure ladder and the in-run host-fault
+check do not read the quoted text, so the failure is classified as a
+non-transient ladder failure, not a timeout, a deadline handover or a host
+fault. The posted
+`## Automated Processing Failed` comment embeds the reason under a heading, so
+the two label-release sweeps that re-classify a posted body
+(`host_fault_release.ts` and `milestone_branch_refusal_release.ts`) recognise
+the record by its worker-written `**Category:** \`summary-incomplete\`` line at
+the head of the comment (`isSummaryGateFailureRecord`) and leave its labels
+alone, however the quoted summary reads. The catch-all `Error:` rule excludes `::` paths.
+
 ## 🔁 One run, one attempt per issue
 
 The scan ranks a **cached** issue list (`issues_all`, TTL 600 s), and until

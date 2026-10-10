@@ -157,6 +157,20 @@ export function classifyCodingFailure(
   const category = detectFailureCategory(message);
   const { failureClass, rationale } = classifyRunFailure(category, message);
 
+  // A PR-summary gate refusal (Issue #3431; PR #3440 review) is the worker's
+  // refusal plus the agent's quoted summary, so no free-text check below may
+  // read it: a quoted "at the cycle deadline" or "timeout" must neither make
+  // it transient nor a timeout-class failure. It earns a normal attempt.
+  if (category === "summary_incomplete") {
+    return {
+      disposition: "ladder",
+      category,
+      failureClass,
+      cooldownKind: "non_transient",
+      rationale,
+    };
+  }
+
   // A deadline-bound timeout (VibeCoder#174) is a handover, not a defeat:
   // the cycle ended with the WIP committed, so the next cycle resumes it.
   // Checked before the class table because its category is `timeout`.
