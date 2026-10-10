@@ -113,7 +113,8 @@ sequenceDiagram
 - `worker/deno/lib/pre_push_gate.ts:406`: pre-flight fails → blocked. Reached by `runPrePushGate: pre-flight failure blocks after changed-file checks ran`; skipping pre-flight went red.
 - `worker/deno/lib/pre_push_hook.ts:90`: an invalid `GIT_CONFIG_COUNT` → error. Reached by `installPrePushHook: invalid GIT_CONFIG_COUNT is an error`; flipping it went red.
 - `worker/deno/lib/pre_push_hook.ts` (rendered script): a missing deno exits 1. Reached by `renderPrePushHookScript: missing deno blocks the push`; making it exit 0 went red.
-- `worker/deno/lib/pre_push_gate_cli.ts:79`: no or invalid spec → 1. Reached by `no --spec blocks; with --spec the same run passes` and the spec tests; inverting `!spec.ok` went red.
+- `worker/deno/lib/pre_push_gate_cli.ts:89`: no `--spec` path (`!specPath`) → 1. Reached by `no --spec blocks; with --spec the same run passes` and `--spec after -- is ignored and blocks`; removing the check turned both red.
+- `worker/deno/lib/pre_push_gate_cli.ts:92`: an unreadable or invalid spec (`!spec.ok`) → 1. Reached by `missing spec file blocks`, `spec that is not a JSON object blocks`, `invalid pre-flight command blocks; legal one passes` and `invalid timeoutSeconds blocks; positive integer passes`; inverting `!spec.ok` went red.
 - `worker/deno/lib/pre_push_gate_cli.ts:117`: gate Err → 1. Reached by `gate Err blocks with the message; gate Ok passes`; returning 0 went red.
 - `worker/deno/lib/pre_push_gate_cli.ts:123`: gate Ok → 0. Reached by `gate Err blocks with the message; gate Ok passes`; inverting `!spec.ok` turned this case red too.
 - `worker/deno/lib/claude_runner.ts:1318`: the hook install fails → the agent is refused. Reached by `agent start - refused when the pre-push hook cannot be installed (Issue #3394)`; bypassing it went red.
