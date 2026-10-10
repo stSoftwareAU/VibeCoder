@@ -414,72 +414,211 @@ function repoFromEndpoint(endpoint: string): string | undefined {
   return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
+/** Result of scanning a GraphQL document for mutation operations. */
+export interface GraphqlScan {
+  /** Depth-1 field names of every `mutation` operation, in document order. */
+  fields: string[];
+  /** Whether at least one `mutation` operation was seen. */
+  hasMutation: boolean;
+  /**
+   * Whether the document parsed cleanly: strings terminated, brackets
+   * balanced, only GraphQL characters. A document that is not clean can never
+   * be vouched for, whatever fields were found before it broke.
+   */
+  clean: boolean;
+}
+
+const GRAPHQL_OPERATION_KEYWORDS: ReadonlySet<string> = new Set([
+  "mutation",
+  "query",
+  "subscription",
+  "fragment",
+]);
+
+/** Characters GraphQL permits outside strings and comments (besides names). */
+const GRAPHQL_PUNCTUATION = ' \t\n\r\uFEFF,!$&().:=@[]{|}-+"#';
+
+function isGraphqlNameChar(ch: string): boolean {
+  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") ||
+    (ch >= "0" && ch <= "9") || ch === "_";
+}
+
+/** Whether the next token after `from` (past blanks, commas, comments) starts a name. */
+function nextSignificantIsNameStart(document: string, from: number): boolean {
+  let i = from;
+  while (i < document.length) {
+    const ch = document[i]!;
+    if (ch === "#") {
+      while (
+        i < document.length && document[i] !== "\n" && document[i] !== "\r"
+      ) i++;
+    } else if (
+      ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "," ||
+      ch === "\uFEFF"
+    ) {
+      i++;
+    } else {
+      return isGraphqlNameChar(ch) && !(ch >= "0" && ch <= "9");
+    }
+  }
+  return false;
+}
+
 /**
- * Top-level field names selected by a GraphQL mutation document, or `null`
- * when the document contains no mutation operation (i.e. it is a read).
+ * Scan a GraphQL document with a single-pass character scanner (no regex, so
+ * no backtracking) and collect the depth-1 fields of every mutation
+ * operation (Issue #3549).
  *
- * Only the depth-1 selections are returned, so a nested field name can never
- * be mistaken for the mutation being performed. Argument lists are skipped
- * wholesale, so an object literal inside `(input: {…})` does not perturb the
- * brace depth.
+ * `#` comments, `"…"` strings and `"""…"""` block strings are skipped in every
+ * context, so a brace or the word `mutation` inside one cannot move the
+ * depth count. A bracket stack tracks `(`/`{` over the whole document;
+ * argument lists and variable definitions are skipped wholesale. Aliases
+ * (`alias: field`) yield the field; directive names (`@x`) are ignored.
+ *
+ * @param document - The GraphQL document text.
+ */
+export function scanGraphqlMutations(document: string): GraphqlScan {
+  const fields: string[] = [];
+  const stack: string[] = [];
+  let hasMutation = false;
+  let clean = true;
+  /** Keyword of the operation whose selection set has not opened yet. */
+  let pendingKind: string | undefined;
+  /** Kind of the operation whose selection set is currently open. */
+  let openKind: string | undefined;
+  let token = "";
+  let afterDirectiveMark = false;
+  let sawSelectionSet = false;
+
+  const flush = (terminator: string): void => {
+    if (!token) return;
+    const name = token;
+    token = "";
+    if (afterDirectiveMark) {
+      afterDirectiveMark = false;
+      return;
+    }
+    if (stack.length === 0) {
+      if (pendingKind !== undefined) return;
+      const keyword = name.toLowerCase();
+      if (name === keyword && GRAPHQL_OPERATION_KEYWORDS.has(keyword)) {
+        pendingKind = keyword;
+        if (keyword === "mutation") hasMutation = true;
+      } else {
+        clean = false;
+      }
+    } else if (
+      stack.length === 1 && openKind === "mutation" && terminator !== ":"
+    ) {
+      fields.push(name);
+    }
+  };
+
+  const n = document.length;
+  let i = 0;
+  while (i < n) {
+    const ch = document[i]!;
+    if (isGraphqlNameChar(ch)) {
+      token += ch;
+      i++;
+      continue;
+    }
+    flush(ch);
+    if (ch === "#") {
+      while (i < n && document[i] !== "\n" && document[i] !== "\r") i++;
+      continue;
+    }
+    if (ch === '"') {
+      if (document.startsWith('"""', i)) {
+        i += 3;
+        let closed = false;
+        while (i < n) {
+          if (document.startsWith('\\"""', i)) i += 4;
+          else if (document.startsWith('"""', i)) {
+            i += 3;
+            closed = true;
+            break;
+          } else i++;
+        }
+        if (!closed) clean = false;
+        continue;
+      }
+      i++;
+      let closed = false;
+      while (i < n) {
+        const c = document[i]!;
+        if (c === "\\") i += 2;
+        else if (c === '"') {
+          i++;
+          closed = true;
+          break;
+        } else if (c === "\n" || c === "\r") break;
+        else i++;
+      }
+      if (!closed) clean = false;
+      continue;
+    }
+    if (ch === "(" || ch === "{") {
+      if (ch === "{") sawSelectionSet = true;
+      if (ch === "{" && stack.length === 0) {
+        openKind = pendingKind ?? "query";
+        pendingKind = undefined;
+      }
+      stack.push(ch);
+    } else if (ch === ")" || ch === "}") {
+      const open = stack.pop();
+      if (open !== (ch === ")" ? "(" : "{")) {
+        clean = false;
+        // Keep the stack consistent: a mismatched closer is not consumed.
+        if (open !== undefined) stack.push(open);
+      } else if (stack.length === 0) {
+        openKind = undefined;
+      }
+    } else if (ch === "@") {
+      // A directive name must follow; otherwise the mark would swallow the
+      // next real field name (Issue #3549).
+      if (nextSignificantIsNameStart(document, i + 1)) {
+        afterDirectiveMark = true;
+      } else {
+        afterDirectiveMark = false;
+        clean = false;
+      }
+    } else if (ch === "." && stack.length === 1 && openKind === "mutation") {
+      // A spread or inline fragment at the mutation root can select further
+      // mutation fields below depth 1; refuse to vouch for it (Issue #3549).
+      clean = false;
+    } else if (!GRAPHQL_PUNCTUATION.includes(ch)) {
+      clean = false;
+    }
+    i++;
+  }
+  flush("");
+  // An operation keyword never followed by a selection set, an open bracket
+  // or an unterminated string all mean the text was not understood.
+  if (stack.length > 0 || pendingKind !== undefined) clean = false;
+  // With no mutation keyword and no `{` at all, nothing is executable (GitHub
+  // rejects it), so garbage such as `@/tmp/q.graphql` is inert, not a mutation.
+  if (!hasMutation && !sawSelectionSet) clean = true;
+  return { fields, hasMutation, clean };
+}
+
+/**
+ * Top-level field names selected by the mutation operations of a GraphQL
+ * document, or `null` when the document provably contains no mutation
+ * operation (i.e. it is a read).
+ *
+ * Issue #3549: every `mutation` operation is collected, not just the first,
+ * and comments and strings are skipped (see {@link scanGraphqlMutations}). A
+ * document that does not parse cleanly is never `null`: it cannot be proven a
+ * read, so the (possibly empty) field list is returned and callers must use
+ * {@link scanGraphqlMutations} to learn whether it may be sanctioned.
  *
  * @param document - The GraphQL document text.
  */
 export function graphqlMutationFields(document: string): string[] | null {
-  const start = /(^|[^A-Za-z0-9_])mutation(?![A-Za-z0-9_])/.exec(document);
-  if (!start) return null;
-
-  // Walk to the operation's selection set, skipping the variable definitions.
-  let i = start.index + start[0].length;
-  let parens = 0;
-  for (; i < document.length; i++) {
-    const ch = document[i];
-    if (ch === "(") parens++;
-    else if (ch === ")") parens--;
-    else if (ch === "{" && parens === 0) break;
-  }
-  if (i >= document.length) return [];
-
-  const fields: string[] = [];
-  let depth = 0;
-  let token = "";
-  parens = 0;
-  for (; i < document.length; i++) {
-    const ch = document[i]!;
-    if (parens > 0) {
-      if (ch === "(") parens++;
-      else if (ch === ")") parens--;
-      continue;
-    }
-    if (ch === "(") {
-      if (depth === 1 && token) fields.push(token);
-      token = "";
-      parens = 1;
-      continue;
-    }
-    if (ch === "{") {
-      if (depth === 1 && token) fields.push(token);
-      token = "";
-      depth++;
-      continue;
-    }
-    if (ch === "}") {
-      if (depth === 1 && token) fields.push(token);
-      token = "";
-      depth--;
-      if (depth === 0) break;
-      continue;
-    }
-    if (/[A-Za-z0-9_]/.test(ch)) {
-      token += ch;
-      continue;
-    }
-    // A separator (whitespace, comma, colon): an alias (`alias: field`) ends
-    // here too, and the aliased field is captured by the next token.
-    if (depth === 1 && token && ch !== ":") fields.push(token);
-    token = "";
-  }
-  return fields;
+  const scan = scanGraphqlMutations(document);
+  if (scan.clean && !scan.hasMutation) return null;
+  return scan.fields;
 }
 
 /**
@@ -497,6 +636,11 @@ export function graphqlMutationFields(document: string): string[] | null {
  * nor dismissed as a read. Such a call is undeterminable rather than `null`,
  * which is what every downstream control short-circuits on.
  *
+ * Issue #3549: a document is sanctioned as non-repo only when it parses
+ * cleanly and every field of every mutation operation is sanctioned. A
+ * malformed document (unterminated string, unbalanced brackets) falls to
+ * `unknown`, since the parser cannot know what GitHub would execute.
+ *
  * @param documents - Values of `query=` fields on the command line.
  * @param unreadable - Whether part of the request body is off the command line.
  */
@@ -506,18 +650,20 @@ function classifyGhGraphql(
 ): MutationInfo | null {
   const fields: string[] = [];
   let isMutation = false;
+  let allClean = true;
   for (const document of documents) {
-    const mutationFields = graphqlMutationFields(document);
-    if (mutationFields === null) continue;
+    const scan = scanGraphqlMutations(document);
+    if (scan.clean && !scan.hasMutation) continue;
     isMutation = true;
-    fields.push(...mutationFields);
+    if (!scan.clean) allClean = false;
+    fields.push(...scan.fields);
   }
   if (!isMutation) {
     if (!unreadable) return null;
     return { verb: "api-graphql-unknown", target: "graphql", scope: "unknown" };
   }
 
-  const sanctioned = !unreadable && fields.length > 0 &&
+  const sanctioned = !unreadable && allClean && fields.length > 0 &&
     fields.every((f) => GH_SANCTIONED_GRAPHQL_MUTATIONS.has(f.toLowerCase()));
   return {
     verb: "api-graphql-mutation",
