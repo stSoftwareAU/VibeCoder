@@ -2,12 +2,15 @@
 
 ## Summary
 
-Closes #3424. The `pr_feedback` and `ci_fix` prompts gain a 3-bullet
-"**This run's scope.**" block right under the mode heading, each bullet citing
-a real drift. The `issue` prompt gains a one-line pointer to its existing
-`## Change Scope`, which stays in place so the section pins from #3263 and #3262
-are untouched. The phrasing is positive ("This run …"), per CODING-STANDARDS'
-prefer-positive-instructions guidance.
+Closes #3424. The `pr_feedback` and `ci_fix` prompts gain a 3-bullet "**This
+run's scope.**" block right under the mode heading. The first two bullets in
+each block cite a past issue or PR; the third cites none — in `pr_feedback` it
+points to the existing **Change Scope** and **Escape Hatch** sections, and in
+`ci_fix` it points to the existing **Dependency audit failures** and
+**Base-branch failures** sections. The `issue` prompt gains a one-line pointer
+to its existing `## Change Scope`, which stays in place so the section pins from
+#3263 and #3262 are untouched. The phrasing is positive ("This run …"), per
+CODING-STANDARDS' prefer-positive-instructions guidance.
 
 - [x] pr_feedback scope block
 - [x] ci_fix scope block
