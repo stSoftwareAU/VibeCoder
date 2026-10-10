@@ -1072,18 +1072,25 @@ token defaults (`actions/permissions/workflow`), which actions may run and
 whether SHA pinning is enforced (`actions/permissions`), the default
 branch's pull-request rule (`rules/branches/<default>` — the approval
 count; code-owner review is deliberately off fleet-wide and never a
-finding, see THREAT-MODEL R14), and
-secret scanning / push protection (`security_and_analysis`). Each open
+finding, see THREAT-MODEL R14),
+secret scanning / push protection (`security_and_analysis`), and private
+vulnerability reporting (`private-vulnerability-reporting`, public
+repositories only), and the presence of a `SECURITY.md` (public
+repositories only). Each open
 setting is one stable finding (`BP-REPO-DEFAULT-TOKEN-WRITE`,
 `BP-REPO-ACTIONS-MAY-APPROVE-PRS`, `BP-REPO-ACTIONS-ALLOW-ALL`,
 `BP-REPO-SHA-PIN-NOT-ENFORCED`, `BP-REPO-RULESET-NO-REVIEW`,
 `BP-REPO-SECRET-SCANNING-OFF`,
-`BP-REPO-PUSH-PROTECTION-OFF`, and — when the repository runs a "selected"
+`BP-REPO-PUSH-PROTECTION-OFF`, `BP-REPO-PVR-OFF`,
+`BP-REPO-SECURITY-POLICY-MISSING`, and — when the repository
+runs a "selected"
 allow-list — `BP-REPO-ACTIONS-ALLOW-LIST-INCOMPLETE` for any action the
-workflows need that the list omits, composite steps included,)
-whose fix text says plainly that a
+workflows need that the list omits, composite steps included,).
+Except for `BP-REPO-SECURITY-POLICY-MISSING`, whose fix is committing a
+file (see below), each fix text says plainly that a
 repository admin must act — the worker cannot change settings; it makes
-the drift visible on the board instead of in a report. An unreadable
+the drift visible on the board instead of in a report.
+An unreadable
 endpoint is logged and yields nothing. Wording avoids the literal
 `secret_scanning*: value` and `id-token: write` pairs the outbound secret
 masker rewrites.
@@ -1106,12 +1113,54 @@ Protection)` and logged once at `WARNING`, never `ERROR`, because nothing
 failed. Findings already open on private repositories stay open for a
 human to close; the audit never closes them.
 
+**A missing `SECURITY.md` is a worker-fixable finding on a public repository
+(Issues #3269, #3266).** The scanner looks for `SECURITY.md` at the three
+places GitHub recognises a security policy — the repository root,
+`.github/` and `docs/` — on the default branch, through
+`findFileOnDefaultBranch` (the finder `findCodeownersOnDefaultBranch`
+wraps). Presence alone passes; the wording is not inspected. A 404 at all
+three files `BP-REPO-SECURITY-POLICY-MISSING`; any other read error is a
+lookup failure and yields no finding, never a pass. A private or internal
+repository is not read: the skip is named in the audit summary as `security
+policy` and logged at `INFO`, since nobody can act on it. Unlike every
+other `BP-REPO-*` finding, the fix text carries no admin-action prose and
+`isAdminOnlyRepoSettingsIssue` (`admin_only_finding.ts`) lets this id
+through its `WORKER_FIXABLE_REPO_FINDINGS` allowlist, so the worker raises a
+normal pull request adding the file instead of handing the issue to a human;
+a body that did carry the admin-action prose would be admin-only again. Setup
+has no harden step and no write path for `SECURITY.md`, and the audit closer
+has no mapping for this id: the pull request that adds the file resolves the
+finding.
+
+**Private vulnerability reporting is checked on a public repository only
+(Issue #3268).** GitHub offers it on public repositories only, so the
+scanner reads `private-vulnerability-reporting` only when the
+`repos/{owner}/{repo}` visibility is not `private` or `internal` (an
+unreadable visibility is not treated as exempt, as for secret scanning);
+`"enabled": false` files `BP-REPO-PVR-OFF`; a private or internal
+repository is not read and the skip is named in the audit summary as
+`private vulnerability reporting (private repository — GitHub offers it
+on public repositories only)`. That skip is logged at `INFO`, not
+`WARNING` — unlike the secret-protection skip above, which a licence would
+lift, nobody can act on GitHub simply not offering PVR on a private or
+internal repository, and `WARNING` is reserved for a gap a human could
+close. Any read failure — including a response without a boolean
+`enabled` field, which is treated as unreadable rather than silently
+passing — is reported as a lookup failure and yields no finding, never a
+pass; a 403 on this read names the repository "Administration"
+fine-grained read permission, not "Actions policies" (GitHub's
+"Permissions required for fine-grained personal access tokens" page lists
+`GET /repos/{owner}/{repo}/private-vulnerability-reporting` under
+Administration).
+
 **A check that could not run says so (Issue #1094).** An HTTP 403 on these
 endpoints is a static limit of the token's scopes, not a fault: it says the
 same thing on every run of every affected repository, and logging it at
 `ERROR` trains the reader to ignore `ERROR` in the worker log. Such a lookup
-is logged once at `WARNING`, naming the repository "Actions policies"
-fine-grained read permission it would take. A 5xx, a network failure or a
+is logged once at `WARNING`, naming the fine-grained read permission it would
+take — the repository "Actions policies" permission for the Actions-policy
+endpoints, the repository "Administration" permission for
+`private-vulnerability-reporting` (Issue #3268). A 5xx, a network failure or a
 malformed response is a genuine fault and still logs `ERROR`. Either way the
 check is recorded as **skipped** and named in the audit's own summary —
 `Checks skipped — NOT covered by this audit: …` — because an audit that
@@ -1185,6 +1234,14 @@ not planned at all and the plan carries one line, `secret scanning / push
 protection: skipped — private repository needs paid GitHub Secret
 Protection`, so `--apply` sends no `security_and_analysis` write
 (Issue #2225).
+Private vulnerability reporting is turned on for a **public** repository
+only (Issue #3267): the command reads `private-vulnerability-reporting`
+and plans a bare `PUT` only when it reads `"enabled": false`; on a
+private or internal repository it is not read, and the plan carries one
+line, `private vulnerability reporting: skipped — available on public
+repositories only`. Setup's audit closer then closes an open
+`BP-REPO-PVR-OFF` issue only when that step ran cleanly and a re-read of
+`private-vulnerability-reporting` shows `"enabled": true` (Issue #3268).
 One approving review on the default branch is part of the default plan
 (Issue #2680): fleet PRs wait for the `/review-fleet-prs` skill or the owner
 before they merge. A `pull_request` rule below one is raised in the ruleset
