@@ -2691,7 +2691,8 @@ the run retires the review (Issue #3383):
    `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker; the review is left
    undismissed, so it is retried once its claim lease lapses.
 2. **Second failure** (the marker found, fleet-authored) — dismisses the
-   review; posts "Permanently Failed". No further retries.
+   review (with a "Not addressed after two automated attempts" message, not
+   "addressed"); posts "Permanently Failed". No further retries.
 
 No reaction is ever posted for a review — the old code reacted on
 `issues/comments/<reviewId>`, the wrong resource for a review id. Any other

@@ -741,7 +741,9 @@ For other reviewers:
 3. Write your feedback and select "Request changes"
 
 The worker will process the feedback, push fixes, and dismiss the review once
-it has addressed it — not at the moment it claims the review. A run that dies
+it has settled it — not at the moment it claims the review. The dismissal
+message says how it was settled (addressed, rebutted, escalated, handed off or
+permanently failed), so only a fixed review reads as addressed. A run that dies
 mid-flight leaves the review undismissed rather than silently answered, so it
 is picked up again (by this host or another) once its claim lapses.
 
