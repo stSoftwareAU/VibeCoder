@@ -221,6 +221,83 @@ each Lambda without `Architectures: [arm64]` or without a retained log
 group under `## Deterministic pre-scan candidates` in the prompt. They
 are candidates, not findings: the scan confirms and triages each one.
 
+### AWS emulator in CI (`BP-AWS-EMULATOR-MISSING`)
+
+A second deterministic pre-filer runs on **every** best-practices
+scan, whatever bucket the SLOC-weighted draw picked, before Claude
+runs. It calls `checkAwsEmulatorInCI()` in
+[`worker/deno/lib/aws_emulator_in_ci_check.ts`](../worker/deno/lib/aws_emulator_in_ci_check.ts)
+against the repo's checkout — mirroring the linter-in-CI pre-filer
+below rather than the LLM-only checks above.
+
+**Trigger.** The repo uses AWS: an `aws-sdk`/`@aws-sdk/*` dependency in
+`package.json`, `aws-config`/`aws-sdk-*` in `Cargo.toml`,
+`software.amazon.awssdk`/`com.amazonaws` in `pom.xml`,
+`boto3`/`botocore`/`aiobotocore` in `requirements*.txt`, a
+CloudFormation template, or any `.tf` file.
+
+**Pass condition.** Any GitHub Actions workflow runs the `floci/floci`
+image — as a service container, a job container, a `docker://` step,
+or a `docker run` step.
+
+**No finding is filed** when the repo does not use AWS, when no
+workflow loaded (status unknown — the same fail-safe reasoning as the
+[zero-workflows rule](#fail-safe--zero-workflows-loaded) for
+`BP-LINTER-<bucket>`), when Floci already runs in CI, or when a valid
+waiver exists; each skip is logged with its reason.
+
+**Otherwise** the template files **one** issue with the fixed id
+`BP-AWS-EMULATOR-MISSING` at `severity:medium`, labelled
+`best-practices` + the drawn bucket's `lang:` label + `severity:medium`,
+through the same open-issue finding-id dedup (`fileFindingOnce`) that
+`BP-LINTER-<bucket>` uses, so an already-open issue is not filed again.
+The id joins the known-open list passed to Claude so the LLM does not
+re-file it.
+
+The issue body lists the evidence files the walk collected and a
+Suggested fix spelling out the per-repo CI contract: run
+`floci/floci@sha256:<digest>` as a CI service container (mounting
+`/var/run/docker.sock` for Docker-backed services) or via `docker run`;
+a CloudFormation repo deploys every template to Floci and fails unless
+each stack reaches `CREATE_COMPLETE`, with stubbed resource types (via
+`FLOCI_SERVICES_CLOUDFORMATION_ALLOW_STUB_UNSUPPORTED_RESOURCE_TYPES`)
+passing with one `::warning::` per stubbed type; an SDK repo has at
+least one Floci test per AWS service called (the audit checks
+presence only); test scripts start `floci` on demand, printing
+`SKIPPED (needs Docker): <name>` for Docker-backed items in the
+worker, and CI fails when no Docker socket is present. The fix is each
+repo's own workflow — never a shared reusable Action.
+
+**Waiver.** A
+`best-practice-ignore: BP-AWS-EMULATOR-MISSING — author=<login> expires=<YYYY-MM-DD> <reason>`
+marker in a `#`, `//` or `/* */` comment in any workflow file or any
+of the evidence files is parsed by
+[`worker/deno/lib/suppression_comments.ts`](../worker/deno/lib/suppression_comments.ts)
+under the same governance as every other marker (see
+[Suppression-comment syntax](#suppression-comment-syntax)). An expired
+or malformed marker does not suppress. Unlike line-scoped findings,
+the marker can sit anywhere in those files. JSON files (`package.json`,
+JSON templates) carry no comments, so when the evidence is only JSON
+the waiver goes in a workflow file instead — a finding only files when
+at least one workflow loaded (the fail-safe above), so a workflow file
+always exists to carry it.
+
+A throw from the detector **fails the scan run** — it is never read as
+"no finding".
+
+```mermaid
+flowchart TD
+    A[Every best-practices scan] --> B{Repo uses AWS?}
+    B -- no --> Z[No finding]
+    B -- yes --> C{Workflows loaded?}
+    C -- zero loaded --> Z
+    C -- loaded --> D{Floci runs in CI?}
+    D -- yes --> Z
+    D -- no --> E{Valid waiver?}
+    E -- yes --> Z
+    E -- no --> F[File once:<br/>BP-AWS-EMULATOR-MISSING,<br/>severity:medium]
+```
+
 ## Idle trigger
 
 ```mermaid
@@ -252,7 +329,11 @@ sequenceDiagram
             Template->>GH: file missing-CI-gate issue<br/>(`severity:high`, counts toward 6-cap)
         end
     end
-    Template->>Claude: invoke with prompt + bucket guide<br/>(known-open ids include any pre-filed linter id)
+    Template->>Template: checkAwsEmulatorInCI(repo)<br/>(every bucket, before Claude)
+    opt uses AWS AND Floci not in CI AND no waiver
+        Template->>GH: file BP-AWS-EMULATOR-MISSING issue<br/>(`severity:medium`, counts toward 6-cap)
+    end
+    Template->>Claude: invoke with prompt + bucket guide<br/>(known-open ids include any pre-filed linter<br/>or AWS-emulator id)
     Claude->>GH: gh issue create — one per surviving finding (cap 6)
     Claude-->>Template: clean exit (no JSON, no summary)
     Template->>GH: list open `best-practices` issues (AFTER snapshot)
@@ -277,12 +358,15 @@ flowchart TD
     FileWrapper --> Claim[Next iteration<br/>claims the idle-task issue]
     Claim --> Before[Snapshot 1 — list open<br/>`best-practices` issues BEFORE]:::phase
     Before --> Lang{bucket is a language?}
-    class Pick,Lang,CIGate gate;
-    Lang -- general / design --> Run[Invoke Claude<br/>read-only static review]:::phase
+    class Pick,Lang,CIGate,AwsCheck gate;
+    Lang -- general / design --> AwsCheck{AWS emulator check:<br/>uses AWS AND Floci<br/>not in CI AND no waiver?<br/>runs every bucket}
     Lang -- language --> CIGate{CI-gate check:<br/>linter AND compile gates<br/>both invoked in CI?}
-    CIGate -- both present --> Run
+    CIGate -- both present --> AwsCheck
     CIGate -- either missing --> FileLinter[File missing-CI-gate issue<br/>severity:high — names which gate(s)<br/>missing — counts to 6-cap]:::output
-    FileLinter --> Run
+    FileLinter --> AwsCheck
+    AwsCheck -- yes --> FileAws[File BP-AWS-EMULATOR-MISSING issue<br/>severity:medium — counts to 6-cap]:::output
+    FileAws --> Run[Invoke Claude<br/>read-only static review]:::phase
+    AwsCheck -- no --> Run
     Run --> Cap[Triage — drop unbacked,<br/>dedup, suppress, cap at 6<br/>missing-linter > high > medium > low]:::phase
     Cap --> FileFindings[Phase 4 — gh issue create<br/>labels: best-practices, lang:&lt;bucket&gt;, severity:&lt;level&gt;]:::phase
     FileFindings --> After[Snapshot 2 — list open<br/>`best-practices` issues AFTER]:::phase
@@ -642,9 +726,13 @@ through the finding's `costSpeedReliability` flag.
 A language-targeted run with no linter-in-CI gate gives the
 missing-linter finding the first slot and leaves five slots for the
 LLM. A `general` or `design` run skips the linter check entirely and the
-LLM has all six slots — though the `design` guide caps its own runs at
+LLM has all six slots, less any pre-filed `BP-AWS-EMULATOR-MISSING`
+finding — though the `design` guide caps its own runs at
 three findings, none above `severity:medium`, because named smells
-over-report on any real codebase.
+over-report on any real codebase. A pre-filed `BP-AWS-EMULATOR-MISSING`
+id likewise reaches Claude in the known-open list — on every bucket,
+not just language-targeted runs — so the LLM never re-files it and it
+still counts toward the 6-cap.
 
 **No overflow tracker.** Unlike the security-scan template, the
 best-practices scan does **not** file an overflow tracker when more
@@ -888,7 +976,8 @@ The only artefacts a best-practices run produces are:
 
 1. **New finding issues** filed by Claude itself via `gh issue
    create` from Phase 4 of the prompt, capped at six per run
-   (one slot may be consumed by the missing-linter pre-finding).
+   (one or more slots may be consumed by a pre-filed finding — the
+   missing-linter check or the AWS-emulator-in-CI check).
 2. **A closing comment** on the wrapper idle-task issue — either
    `no findings` or `Best-practices scan complete (bucket: <b>).
    Filed N issues: #A, #B, …`.

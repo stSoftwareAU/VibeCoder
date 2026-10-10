@@ -45,6 +45,7 @@ import {
 import type { OpenIssueTitle } from "../lib/idle_task_snapshot.ts";
 import type { Logger, Result } from "../types.ts";
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
+import type { AwsEmulatorCheckResult } from "../lib/aws_emulator_in_ci_check.ts";
 import type { RepoVisibility } from "../lib/repo_visibility.ts";
 
 import {
@@ -267,6 +268,14 @@ const linterOk = (): Promise<LinterCheckResult> =>
     linter: "actionlint",
     details: "actionlint configured.",
   });
+/** No-AWS stub for the best-practices harness's AWS-emulator pre-check (Issue #3368). */
+const noAws = (): Promise<AwsEmulatorCheckResult> =>
+  Promise.resolve({
+    usesAws: false,
+    awsEvidence: [],
+    emulatorConfigured: false,
+    workflowsLoaded: true,
+  });
 const publicRepo = (): Promise<Result<RepoVisibility, string>> =>
   Promise.resolve({ ok: true, value: "public" });
 
@@ -288,6 +297,7 @@ const HARNESSES: ScanHarness[] = [
         ghCommandFn: gh,
         loadPromptFn: okPrompt,
         checkLinterInCIFn: linterOk,
+        checkAwsEmulatorFn: noAws,
         runScanFn: (opts) => {
           capture(opts);
           return scanOk();

@@ -26,15 +26,42 @@
  *   - runTask refuses without a bucket line
  *   - assembleBestPracticesPrompt substitutes placeholders and inlines
  *     the bucket guide
+ *   - AWS-emulator pre-check (Issue #3368): files BP-AWS-EMULATOR-MISSING
+ *     at severity:medium when AWS usage is detected and no workflow runs
+ *     Floci; skips filing when there is no AWS usage, the emulator is
+ *     configured, no workflow loaded, an existing open issue already
+ *     carries the finding id, or a valid `best-practice-ignore` waiver
+ *     covers it; a detector throw fails the run without invoking the
+ *     scan; BP-LINTER findings remain severity:high; the default
+ *     `checkAwsEmulatorFn` runs the real detector against the repo
+ *     checkout.
+ *   - hasAwsEmulatorWaiver: rejects an evidence path escaping the repo
+ *     root or an absolute evidence path, rejects an evidence path that
+ *     resolves outside the repo root via a symlink, skips (without
+ *     throwing) an evidence path that does not exist on disk, and throws
+ *     naming the path when a read fails for a reason other than
+ *     NotFound; binds a waiver committed before the tip of a `--depth=1`
+ *     clone to its real author via the default `git blame`.
+ *   - buildAwsEmulatorFinding: lists at most 50 evidence paths, then a
+ *     `… and N more` line.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 
 import {
   assembleBestPracticesPrompt,
+  AWS_EMULATOR_FINDING_ID,
   BEST_PRACTICES_ISSUE_TITLE,
+  type BlameFileFn,
   bucketSlug,
+  buildAwsEmulatorFinding,
   createBestPracticesTemplate,
+  hasAwsEmulatorWaiver,
   isLanguageBucket,
   parseBucketFromBody,
   renderBestPracticesSummary,
@@ -47,7 +74,14 @@ import type {
 } from "../lib/best_practices_bucket_picker.ts";
 import type { LinterCheckResult } from "../lib/linter_in_ci_check.ts";
 import type { RepoLanguages } from "../lib/language_detector.ts";
-import type { Result } from "../types.ts";
+import type { AwsEmulatorCheckResult } from "../lib/aws_emulator_in_ci_check.ts";
+import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
+import {
+  _resetSuppressionAuthorAllowlist,
+  findSuppressions,
+  setSuppressionAuthorAllowlist,
+} from "../lib/suppression_comments.ts";
+import type { Logger, Result } from "../types.ts";
 
 /**
  * The fleet identity the finding-id dedup verifies against (Issue #1243).
@@ -178,6 +212,36 @@ function makeGhStub(scenario: {
     return Promise.resolve("[]");
   };
   return { gh, calls };
+}
+
+/** No-AWS stub — the default `checkAwsEmulatorFn` for tests not exercising the AWS pre-check. */
+function stubNoAws(): Promise<AwsEmulatorCheckResult> {
+  return Promise.resolve({
+    usesAws: false,
+    awsEvidence: [],
+    emulatorConfigured: false,
+    workflowsLoaded: true,
+  });
+}
+
+/** Spy logger collecting `info()` messages in call order. */
+function spyLogger(): { logger: Logger; infoMessages: string[] } {
+  const infoMessages: string[] = [];
+  const noop = () => {};
+  const logger: Logger = {
+    info: (message: string) => {
+      infoMessages.push(message);
+    },
+    warn: noop,
+    error: noop,
+    debug: noop,
+    security: noop,
+    skipReason: noop,
+    timing: noop,
+    scanSummary: noop,
+    workerSummary: noop,
+  };
+  return { logger, infoMessages };
 }
 
 function stubLinterConfigured(): Promise<LinterCheckResult> {
@@ -516,6 +580,7 @@ Deno.test(
       | { bucket: string; knownOpen: string[] }
       | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
@@ -573,6 +638,7 @@ Deno.test(
 
     let receivedPath: string | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: (repoPath: string) => {
@@ -610,6 +676,7 @@ Deno.test(
 
     let linterInvoked = false;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: () => {
@@ -656,6 +723,7 @@ Deno.test(
       | { bucket: string; knownOpen: string[] }
       | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLintMissingCompilePresent,
@@ -723,6 +791,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubCompileMissingLintPresent,
@@ -775,6 +844,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
@@ -834,6 +904,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubZeroWorkflowsLoaded,
@@ -873,6 +944,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
@@ -905,6 +977,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: () =>
@@ -943,6 +1016,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       // stubLinterMissing returns no `gates` field — mirrors the HTML
@@ -990,6 +1064,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
@@ -1029,6 +1104,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubBothGatesMissing,
@@ -1072,6 +1148,7 @@ Deno.test(
 
     let scanReceived: { knownOpen: string[] } | undefined;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
@@ -1114,6 +1191,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
@@ -1145,6 +1223,7 @@ Deno.test(
 
     let scanInvoked = false;
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
@@ -1181,6 +1260,7 @@ Deno.test(
     });
 
     const tpl = createBestPracticesTemplate({
+      checkAwsEmulatorFn: stubNoAws,
       dedupAuthors: DEDUP_AUTHORS,
       ghCommandFn: gh,
       checkLinterInCIFn: stubLinterConfigured,
@@ -1289,6 +1369,7 @@ Deno.test("assembleBestPracticesPrompt - an empty open-issue list renders (none)
 Deno.test("runTask - repo-wide open issue titles reach the scan runner", async () => {
   const seen: OpenIssueTitle[][] = [];
   const tpl = createBestPracticesTemplate({
+    checkAwsEmulatorFn: stubNoAws,
     dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([
       { number: 37, title: "Add a CODEOWNERS file" },
@@ -1313,6 +1394,7 @@ Deno.test("runTask - repo-wide open issue titles reach the scan runner", async (
 Deno.test("runTask - a gh failure listing titles degrades to an empty list", async () => {
   const seen: OpenIssueTitle[][] = [];
   const tpl = createBestPracticesTemplate({
+    checkAwsEmulatorFn: stubNoAws,
     dedupAuthors: DEDUP_AUTHORS,
     ghCommandFn: makeTitleGhStub([], true),
     checkLinterInCIFn: stubLinterConfigured,
@@ -1382,6 +1464,7 @@ for (
       const scannedPaths: string[] = [];
       let received: readonly string[] | undefined;
       const tpl = createBestPracticesTemplate({
+        checkAwsEmulatorFn: stubNoAws,
         dedupAuthors: DEDUP_AUTHORS,
         ghCommandFn: gh,
         checkLinterInCIFn: stubLinterConfigured,
@@ -1405,3 +1488,894 @@ for (
     },
   );
 }
+
+// ---------------------------------------------------------------------------
+// AWS-emulator pre-check (Issue #3368)
+// ---------------------------------------------------------------------------
+
+function stubAwsNoFloci(
+  evidence: readonly string[] = ["infra/template.yaml", "Cargo.toml"],
+): Promise<AwsEmulatorCheckResult> {
+  return Promise.resolve({
+    usesAws: true,
+    awsEvidence: [...evidence],
+    emulatorConfigured: false,
+    workflowsLoaded: true,
+  });
+}
+
+Deno.test(
+  "runTask - AWS repo with no Floci files BP-AWS-EMULATOR-MISSING at severity:medium",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+      const { gh, calls } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [900],
+        knownOpen: [],
+        issueView: { number: 50, body: wrapperBody },
+        fileMissingLinterReturnsNumber: 900,
+      });
+
+      let scanReceived: { knownOpen: string[] } | undefined;
+      const tpl = createBestPracticesTemplate({
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        checkLinterInCIFn: stubLinterConfigured,
+        checkAwsEmulatorFn: () =>
+          stubAwsNoFloci(["infra/template.yaml", "Cargo.toml"]),
+        runScanFn: (opts) => {
+          scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+          return Promise.resolve({ ok: true, value: true });
+        },
+      });
+
+      const result = await tpl.runTask({
+        repo: "org/repo",
+        workDir,
+        idleTaskIssueNumber: 50,
+      });
+
+      assert(result.ok);
+      const createCalls = calls.filter((c) =>
+        c.args[0] === "issue" && c.args[1] === "create"
+      );
+      assertEquals(createCalls.length, 1);
+
+      const created = readIssueCreate(calls);
+      assert(created !== null);
+      assert(created!.labels.includes("best-practices"));
+      assert(created!.labels.includes("lang:general"));
+      assert(created!.labels.includes("severity:medium"));
+      assertEquals(created!.labels.includes("severity:high"), false);
+
+      assertStringIncludes(
+        created!.body,
+        `<!-- finding-id: ${AWS_EMULATOR_FINDING_ID} -->`,
+      );
+      assertStringIncludes(created!.body, "**Severity:** medium");
+      assertStringIncludes(created!.body, "## Why this matters");
+      assertStringIncludes(created!.body, "## Suggested fix");
+      assertStringIncludes(created!.body, "infra/template.yaml");
+      assertStringIncludes(created!.body, "Cargo.toml");
+      assertStringIncludes(created!.body, "CREATE_COMPLETE");
+      assertStringIncludes(created!.body, "::warning::");
+      assertStringIncludes(created!.body, "SKIPPED (needs Docker):");
+      assert(/floci\/floci@sha256:/.test(created!.body));
+
+      assert(scanReceived !== undefined);
+      assert(scanReceived!.knownOpen.includes(AWS_EMULATOR_FINDING_ID));
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "runTask - AWS finding already open under its finding-id is not re-filed",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+      const { gh, calls } = makeGhStub({
+        beforeSnapshot: [55],
+        afterSnapshot: [55],
+        knownOpen: [
+          {
+            number: 55,
+            body: `<!-- finding-id: ${AWS_EMULATOR_FINDING_ID} -->`,
+          },
+        ],
+        issueView: { number: 50, body: wrapperBody },
+        // No fileMissingLinterReturnsNumber: a create attempt would throw,
+        // proving the pre-filer never reaches `gh issue create`.
+      });
+
+      let scanReceived: { knownOpen: string[] } | undefined;
+      const tpl = createBestPracticesTemplate({
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        checkLinterInCIFn: stubLinterConfigured,
+        checkAwsEmulatorFn: () => stubAwsNoFloci(),
+        runScanFn: (opts) => {
+          scanReceived = { knownOpen: [...opts.knownOpenFindingIds] };
+          return Promise.resolve({ ok: true, value: true });
+        },
+      });
+
+      const result = await tpl.runTask({
+        repo: "org/repo",
+        workDir,
+        idleTaskIssueNumber: 50,
+      });
+
+      assert(result.ok);
+      assertEquals(readIssueCreate(calls), null);
+      assert(scanReceived !== undefined);
+      assertEquals(scanReceived!.knownOpen, [AWS_EMULATOR_FINDING_ID]);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "runTask - AWS-emulator pre-check skips filing and logs why (floci configured / no AWS / no workflow)",
+  async () => {
+    const scenarios: Array<
+      [string, () => Promise<AwsEmulatorCheckResult>, string]
+    > = [
+      [
+        "floci configured",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["Cargo.toml"],
+            emulatorConfigured: true,
+            workflowsLoaded: true,
+          }),
+        "floci",
+      ],
+      ["no AWS usage", stubNoAws, "no AWS"],
+      [
+        "no workflow loaded",
+        () =>
+          Promise.resolve({
+            usesAws: true,
+            awsEvidence: ["Cargo.toml"],
+            emulatorConfigured: false,
+            workflowsLoaded: false,
+          }),
+        "no workflow",
+      ],
+    ];
+
+    for (const [_label, checkFn, expectedSubstring] of scenarios) {
+      const workDir = await Deno.makeTempDir();
+      try {
+        const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+        const { gh, calls } = makeGhStub({
+          beforeSnapshot: [],
+          afterSnapshot: [],
+          knownOpen: [],
+          issueView: { number: 50, body: wrapperBody },
+        });
+        const { logger, infoMessages } = spyLogger();
+
+        const tpl = createBestPracticesTemplate({
+          dedupAuthors: DEDUP_AUTHORS,
+          ghCommandFn: gh,
+          checkLinterInCIFn: stubLinterConfigured,
+          checkAwsEmulatorFn: checkFn,
+          logger,
+          runScanFn: () => Promise.resolve({ ok: true, value: true }),
+        });
+
+        const result = await tpl.runTask({
+          repo: "org/repo",
+          workDir,
+          idleTaskIssueNumber: 50,
+        });
+
+        assert(result.ok);
+        assertEquals(readIssueCreate(calls), null);
+        assert(
+          infoMessages.some((m) => m.includes(expectedSubstring)),
+          `expected an info message containing "${expectedSubstring}", got: ${
+            infoMessages.join(" | ")
+          }`,
+        );
+      } finally {
+        await Deno.remove(workDir, { recursive: true });
+      }
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// AWS-emulator waiver (Issue #3368)
+// ---------------------------------------------------------------------------
+
+async function withAwsWaiverGovernance<T>(fn: () => Promise<T>): Promise<T> {
+  setSuppressionAuthorAllowlist(["nigel"]);
+  try {
+    return await fn();
+  } finally {
+    _resetSuppressionAuthorAllowlist();
+  }
+}
+
+/**
+ * Stub {@link BlameFileFn} binding a marker's commit identity without a
+ * real git checkout (Issue #269) — mirrors how production blames each
+ * waiver candidate file. Only `file` blames as `login`; every other
+ * candidate blames empty, so a waiver on the wrong file still fails
+ * closed (no process-wide commit-author fallback is configured in these
+ * tests any more).
+ */
+function stubBlame(file: string, line: number, login: string): BlameFileFn {
+  return (_repoPath, candidateFile) =>
+    Promise.resolve(candidateFile === file ? { [line]: login } : {});
+}
+
+/**
+ * The governance rejection reason recorded for the AWS-emulator marker in
+ * `text`, bound to the same blamed identity the template run used — so a
+ * test can pin *which* gate rejected it, not merely that it was rejected.
+ */
+async function awsMarkerRejection(
+  text: string,
+  file: string,
+  blameFileFn: BlameFileFn,
+): Promise<string | undefined> {
+  const lineAuthors = await blameFileFn("unused", file);
+  const marker = findSuppressions(text, "sh", { file, lineAuthors }).find(
+    (s) => s.id === AWS_EMULATOR_FINDING_ID,
+  );
+  assert(marker, "expected an AWS-emulator marker to be parsed");
+  assertEquals(marker.valid, false);
+  return marker.invalidReason;
+}
+
+Deno.test(
+  "runTask - a valid unexpired waiver marker in a workflow suppresses the AWS finding",
+  async () => {
+    await withAwsWaiverGovernance(async () => {
+      const workDir = await Deno.makeTempDir();
+      try {
+        await Deno.mkdir(`${workDir}/repo/.github/workflows`, {
+          recursive: true,
+        });
+        await Deno.writeTextFile(
+          `${workDir}/repo/.github/workflows/ci.yml`,
+          [
+            "name: ci",
+            "on: pull_request",
+            "jobs: {}",
+            "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+            "author=nigel expires=2099-12-31 emulator runs in a separate repo",
+            "",
+          ].join("\n"),
+        );
+
+        const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+        const { gh, calls } = makeGhStub({
+          beforeSnapshot: [],
+          afterSnapshot: [],
+          knownOpen: [],
+          issueView: { number: 50, body: wrapperBody },
+        });
+        const { logger, infoMessages } = spyLogger();
+
+        const tpl = createBestPracticesTemplate({
+          dedupAuthors: DEDUP_AUTHORS,
+          ghCommandFn: gh,
+          checkLinterInCIFn: stubLinterConfigured,
+          checkAwsEmulatorFn: () => stubAwsNoFloci(["Cargo.toml"]),
+          blameFileFn: stubBlame(
+            ".github/workflows/ci.yml",
+            4,
+            "nigel",
+          ),
+          logger,
+          runScanFn: () => Promise.resolve({ ok: true, value: true }),
+        });
+
+        const result = await tpl.runTask({
+          repo: "org/repo",
+          workDir,
+          idleTaskIssueNumber: 50,
+        });
+
+        assert(result.ok);
+        assertEquals(readIssueCreate(calls), null);
+        assert(infoMessages.some((m) => m.includes("waived")));
+      } finally {
+        await Deno.remove(workDir, { recursive: true });
+      }
+    });
+  },
+);
+
+Deno.test(
+  "runTask - an expired waiver marker does not suppress: exactly one issue is filed",
+  async () => {
+    await withAwsWaiverGovernance(async () => {
+      const workDir = await Deno.makeTempDir();
+      try {
+        await Deno.mkdir(`${workDir}/repo/.github/workflows`, {
+          recursive: true,
+        });
+        const ciText = [
+          "name: ci",
+          "on: pull_request",
+          "jobs: {}",
+          "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+          "author=nigel expires=2020-01-01 emulator runs in a separate repo",
+          "",
+        ].join("\n");
+        await Deno.writeTextFile(
+          `${workDir}/repo/.github/workflows/ci.yml`,
+          ciText,
+        );
+        // Bind a valid identity so the gate under test is the only one
+        // that can reject the marker.
+        const blame = stubBlame(".github/workflows/ci.yml", 4, "nigel");
+
+        const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+        const { gh, calls } = makeGhStub({
+          beforeSnapshot: [],
+          afterSnapshot: [901],
+          knownOpen: [],
+          issueView: { number: 50, body: wrapperBody },
+          fileMissingLinterReturnsNumber: 901,
+        });
+
+        const tpl = createBestPracticesTemplate({
+          dedupAuthors: DEDUP_AUTHORS,
+          ghCommandFn: gh,
+          checkLinterInCIFn: stubLinterConfigured,
+          checkAwsEmulatorFn: () => stubAwsNoFloci(["Cargo.toml"]),
+          blameFileFn: blame,
+          runScanFn: () => Promise.resolve({ ok: true, value: true }),
+        });
+
+        const result = await tpl.runTask({
+          repo: "org/repo",
+          workDir,
+          idleTaskIssueNumber: 50,
+        });
+
+        assert(result.ok);
+        const createCalls = calls.filter((c) =>
+          c.args[0] === "issue" && c.args[1] === "create"
+        );
+        assertEquals(createCalls.length, 1);
+        assert(
+          (await awsMarkerRejection(ciText, ".github/workflows/ci.yml", blame))
+            ?.startsWith("expired on"),
+          "the marker must be rejected for its expiry, not its identity",
+        );
+      } finally {
+        await Deno.remove(workDir, { recursive: true });
+      }
+    });
+  },
+);
+
+Deno.test(
+  "runTask - a waiver marker missing author= does not suppress: one issue is filed",
+  async () => {
+    await withAwsWaiverGovernance(async () => {
+      const workDir = await Deno.makeTempDir();
+      try {
+        await Deno.mkdir(`${workDir}/repo/.github/workflows`, {
+          recursive: true,
+        });
+        const ciText = [
+          "name: ci",
+          "on: pull_request",
+          "jobs: {}",
+          "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+          "expires=2099-12-31 emulator runs in a separate repo",
+          "",
+        ].join("\n");
+        await Deno.writeTextFile(
+          `${workDir}/repo/.github/workflows/ci.yml`,
+          ciText,
+        );
+        // Bind a valid identity so the gate under test is the only one
+        // that can reject the marker.
+        const blame = stubBlame(".github/workflows/ci.yml", 4, "nigel");
+
+        const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+        const { gh, calls } = makeGhStub({
+          beforeSnapshot: [],
+          afterSnapshot: [902],
+          knownOpen: [],
+          issueView: { number: 50, body: wrapperBody },
+          fileMissingLinterReturnsNumber: 902,
+        });
+
+        const tpl = createBestPracticesTemplate({
+          dedupAuthors: DEDUP_AUTHORS,
+          ghCommandFn: gh,
+          checkLinterInCIFn: stubLinterConfigured,
+          checkAwsEmulatorFn: () => stubAwsNoFloci(["Cargo.toml"]),
+          blameFileFn: blame,
+          runScanFn: () => Promise.resolve({ ok: true, value: true }),
+        });
+
+        const result = await tpl.runTask({
+          repo: "org/repo",
+          workDir,
+          idleTaskIssueNumber: 50,
+        });
+
+        assert(result.ok);
+        const createCalls = calls.filter((c) =>
+          c.args[0] === "issue" && c.args[1] === "create"
+        );
+        assertEquals(createCalls.length, 1);
+        assert(
+          (await awsMarkerRejection(ciText, ".github/workflows/ci.yml", blame))
+            ?.startsWith("missing author"),
+          "the marker must be rejected for its missing author",
+        );
+      } finally {
+        await Deno.remove(workDir, { recursive: true });
+      }
+    });
+  },
+);
+
+Deno.test(
+  "runTask - a valid waiver marker in an evidence file suppresses the AWS finding",
+  async () => {
+    await withAwsWaiverGovernance(async () => {
+      const workDir = await Deno.makeTempDir();
+      try {
+        await Deno.mkdir(`${workDir}/repo`, { recursive: true });
+        await Deno.writeTextFile(
+          `${workDir}/repo/main.tf`,
+          [
+            'resource "aws_s3_bucket" "example" {}',
+            "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+            "author=nigel expires=2099-12-31 emulator runs in a separate repo",
+            "",
+          ].join("\n"),
+        );
+
+        const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+        const { gh, calls } = makeGhStub({
+          beforeSnapshot: [],
+          afterSnapshot: [],
+          knownOpen: [],
+          issueView: { number: 50, body: wrapperBody },
+        });
+
+        const tpl = createBestPracticesTemplate({
+          dedupAuthors: DEDUP_AUTHORS,
+          ghCommandFn: gh,
+          checkLinterInCIFn: stubLinterConfigured,
+          checkAwsEmulatorFn: () => stubAwsNoFloci(["main.tf"]),
+          blameFileFn: stubBlame("main.tf", 2, "nigel"),
+          runScanFn: () => Promise.resolve({ ok: true, value: true }),
+        });
+
+        const result = await tpl.runTask({
+          repo: "org/repo",
+          workDir,
+          idleTaskIssueNumber: 50,
+        });
+
+        assert(result.ok);
+        assertEquals(readIssueCreate(calls), null);
+      } finally {
+        await Deno.remove(workDir, { recursive: true });
+      }
+    });
+  },
+);
+
+Deno.test(
+  "runTask - a detector throw fails the run without invoking the scan",
+  async () => {
+    const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+    const { gh, calls } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+      knownOpen: [],
+      issueView: { number: 50, body: wrapperBody },
+    });
+
+    let scanInvoked = false;
+    const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: gh,
+      checkLinterInCIFn: stubLinterConfigured,
+      checkAwsEmulatorFn: () => Promise.reject(new Error("boom")),
+      runScanFn: () => {
+        scanInvoked = true;
+        return Promise.resolve({ ok: true, value: true });
+      },
+    });
+
+    const result = await tpl.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(!result.ok);
+    assertStringIncludes(result.summary, "boom");
+    assertEquals(scanInvoked, false);
+    assertEquals(
+      calls.some((c) => c.args[0] === "issue" && c.args[1] === "create"),
+      false,
+    );
+  },
+);
+
+Deno.test(
+  "runTask - BP-LINTER missing-linter finding remains severity:high, not severity:medium",
+  async () => {
+    const wrapperBody = "**Bucket:** `typescript`\n\n# Best-Practices Review";
+    const { gh, calls } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [600],
+      knownOpen: [],
+      issueView: { number: 50, body: wrapperBody },
+      fileMissingLinterReturnsNumber: 600,
+    });
+
+    const tpl = createBestPracticesTemplate({
+      dedupAuthors: DEDUP_AUTHORS,
+      ghCommandFn: gh,
+      checkLinterInCIFn: stubLinterMissing,
+      checkAwsEmulatorFn: stubNoAws,
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+    });
+
+    const result = await tpl.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    const created = readIssueCreate(calls);
+    assert(created !== null);
+    assert(created!.labels.includes("severity:high"));
+    assertEquals(created!.labels.includes("severity:medium"), false);
+    assertStringIncludes(
+      created!.body,
+      "<!-- finding-id: BP-LINTER-typescript -->",
+    );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// hasAwsEmulatorWaiver (Issue #3368)
+// ---------------------------------------------------------------------------
+
+async function gitAs(
+  cwd: string,
+  args: string[],
+  login: string,
+): Promise<void> {
+  const email = `${login}@users.noreply.github.com`;
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+    env: {
+      GIT_AUTHOR_NAME: login,
+      GIT_AUTHOR_EMAIL: email,
+      GIT_COMMITTER_NAME: login,
+      GIT_COMMITTER_EMAIL: email,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    },
+  }).output();
+  assertEquals(
+    out.code,
+    0,
+    `git ${args.join(" ")} failed: ${new TextDecoder().decode(out.stderr)}`,
+  );
+}
+
+Deno.test(
+  "hasAwsEmulatorWaiver - a waiver committed before the tip of a --depth=1 clone is bound to its real author",
+  async () => {
+    await withAwsWaiverGovernance(async () => {
+      const tmp = await Deno.makeTempDir();
+      try {
+        const origin = `${tmp}/origin`;
+        const clone = `${tmp}/clone`;
+        const ci = ".github/workflows/ci.yml";
+        await Deno.mkdir(`${origin}/.github/workflows`, { recursive: true });
+        await gitAs(origin, ["init", "-q", "-b", "main"], "nigel");
+        const marker = "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+          "author=nigel expires=2099-12-31 emulator runs in a separate repo";
+        await Deno.writeTextFile(
+          `${origin}/${ci}`,
+          ["name: ci", "on: pull_request", "jobs: {}", marker, ""].join("\n"),
+        );
+        await gitAs(origin, ["add", ci], "nigel");
+        await gitAs(origin, ["commit", "-q", "-m", "waiver"], "nigel");
+        // A later commit by someone else makes it the shallow boundary.
+        await Deno.writeTextFile(`${origin}/README.md`, "hello\n");
+        await gitAs(origin, ["add", "README.md"], "mallory");
+        await gitAs(origin, ["commit", "-q", "-m", "readme"], "mallory");
+        await gitAs(
+          tmp,
+          ["clone", "-q", "--depth=1", `file://${origin}`, clone],
+          "nigel",
+        );
+
+        // Default blameFileFn — real `git blame` on the shallow clone.
+        assertEquals(await hasAwsEmulatorWaiver(clone, []), true);
+      } finally {
+        await Deno.remove(tmp, { recursive: true });
+      }
+    });
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an evidence path escaping the repo root rejects",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(workDir, ["../outside.tf"]),
+        Error,
+        "../outside.tf",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - a non-existent evidence path is skipped, not thrown",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      const result = await hasAwsEmulatorWaiver(workDir, ["nope.tf"]);
+      assertEquals(result, false);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an absolute evidence path rejects",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(workDir, ["/etc/passwd"]),
+        Error,
+        "is absolute",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an unreadable evidence path other than NotFound throws naming the path",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/infra.tf`);
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(workDir, ["infra.tf"]),
+        Error,
+        "cannot read AWS-evidence file infra.tf",
+      );
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an evidence symlink pointing outside the repo rejects",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      const outsidePath = `${tmp}/outside`;
+      await Deno.mkdir(repoPath);
+      await Deno.mkdir(outsidePath);
+      await Deno.writeTextFile(
+        `${outsidePath}/secret.tf`,
+        "# best-practice-ignore: BP-AWS-EMULATOR-MISSING\n",
+      );
+      await Deno.symlink(
+        "../outside/secret.tf",
+        `${repoPath}/infra.tf`,
+      );
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(repoPath, ["infra.tf"]),
+        Error,
+        "resolves outside the repo root",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - an evidence path through a symlinked directory pointing outside rejects",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      const outsidePath = `${tmp}/outside`;
+      await Deno.mkdir(repoPath);
+      await Deno.mkdir(outsidePath);
+      await Deno.writeTextFile(`${outsidePath}/main.tf`, "");
+      await Deno.symlink("../outside", `${repoPath}/link`, {
+        type: "dir",
+      });
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(repoPath, ["link/main.tf"]),
+        Error,
+        "resolves outside the repo root",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - '..' after a missing component landing on an outward symlink rejects",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      const outsidePath = `${tmp}/outside`;
+      await Deno.mkdir(repoPath);
+      await Deno.mkdir(outsidePath);
+      await Deno.writeTextFile(`${outsidePath}/main.tf`, "");
+      await Deno.symlink("../outside", `${repoPath}/link`, {
+        type: "dir",
+      });
+      await assertRejects(
+        () => hasAwsEmulatorWaiver(repoPath, ["missing/../link/main.tf"]),
+        Error,
+        "escapes the repo root",
+      );
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "hasAwsEmulatorWaiver - a symlink to a file inside the repo is read",
+  async () => {
+    const tmp = await Deno.makeTempDir();
+    try {
+      const repoPath = `${tmp}/repo`;
+      await Deno.mkdir(repoPath);
+      await Deno.writeTextFile(`${repoPath}/real.tf`, "");
+      await Deno.symlink("real.tf", `${repoPath}/alias.tf`);
+      const result = await hasAwsEmulatorWaiver(repoPath, ["alias.tf"]);
+      assertEquals(result, false);
+    } finally {
+      await Deno.remove(tmp, { recursive: true });
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// buildAwsEmulatorFinding (Issue #3368)
+// ---------------------------------------------------------------------------
+
+Deno.test(
+  "buildAwsEmulatorFinding - lists 50 evidence paths then '… and N more'",
+  () => {
+    const awsEvidence = Array.from(
+      { length: 52 },
+      (_, i) => `a${i}.tf`,
+    );
+    const finding = buildAwsEmulatorFinding({
+      usesAws: true,
+      awsEvidence,
+      emulatorConfigured: false,
+      workflowsLoaded: true,
+    });
+    assertStringIncludes(finding.body, "`a49.tf`");
+    assert(!finding.body.includes("`a50.tf`"));
+    assertStringIncludes(finding.body, "- … and 2 more");
+  },
+);
+
+Deno.test(
+  "buildAwsEmulatorFinding - exactly 50 evidence paths has no '… and more' line",
+  () => {
+    const awsEvidence = Array.from(
+      { length: 50 },
+      (_, i) => `a${i}.tf`,
+    );
+    const finding = buildAwsEmulatorFinding({
+      usesAws: true,
+      awsEvidence,
+      emulatorConfigured: false,
+      workflowsLoaded: true,
+    });
+    assert(!/- … and \d+ more/.test(finding.body));
+  },
+);
+
+Deno.test(
+  "runTask - the default checkAwsEmulatorFn runs the real detector against the repo checkout",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      const repo = "org/repo";
+      const repoPath = repoCheckoutPath(workDir, repo);
+      await Deno.mkdir(`${repoPath}/.github/workflows`, { recursive: true });
+      await Deno.writeTextFile(
+        `${repoPath}/Cargo.toml`,
+        '[dependencies]\naws-sdk-s3 = "1"\n',
+      );
+      await Deno.writeTextFile(
+        `${repoPath}/.github/workflows/ci.yml`,
+        "name: CI\non: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n" +
+          "    steps:\n      - run: echo hi\n",
+      );
+
+      const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
+      const { gh, calls } = makeGhStub({
+        beforeSnapshot: [],
+        afterSnapshot: [900],
+        knownOpen: [],
+        issueView: { number: 50, body: wrapperBody },
+        fileMissingLinterReturnsNumber: 900,
+      });
+
+      const tpl = createBestPracticesTemplate({
+        dedupAuthors: DEDUP_AUTHORS,
+        ghCommandFn: gh,
+        checkLinterInCIFn: stubLinterConfigured,
+        runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      });
+
+      const result = await tpl.runTask({
+        repo,
+        workDir,
+        idleTaskIssueNumber: 50,
+      });
+
+      assert(result.ok);
+      const createCalls = calls.filter((c) =>
+        c.args[0] === "issue" && c.args[1] === "create"
+      );
+      assertEquals(createCalls.length, 1);
+
+      const created = readIssueCreate(calls);
+      assert(created !== null);
+      assert(created!.labels.includes("severity:medium"));
+      assertStringIncludes(
+        created!.body,
+        `<!-- finding-id: ${AWS_EMULATOR_FINDING_ID} -->`,
+      );
+      assertStringIncludes(created!.body, "Cargo.toml");
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
