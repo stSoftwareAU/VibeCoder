@@ -32,7 +32,9 @@ text was deleted from its own section only, and the test went red. Closes #3309.
     `prompt_docs_sweep_3172` already read every pin through `section()`.
   - `timing_assertion_policy` already scopes its presence pins. Its whole-file
     reads are its two absence checks.
-  - `security_tree_sweep_test.ts` pins scanner and report output, not a doc.
+  - The `security_tree_sweep` tests pin scanner and report output, and
+    `security_tree_sweep_workflow_test.ts` reads the workflow YAML. None of
+    them pins a Markdown doc.
 - In `test_audit_unit_suite_checks_943`, the "every surface counting the
   catalogue says thirteen" pin stays whole-file. Its three claims sit in three
   places: the overview above the first `##`, the `## Phase 2` heading line
