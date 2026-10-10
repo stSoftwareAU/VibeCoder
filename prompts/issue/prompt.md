@@ -1258,7 +1258,12 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. A `Branch outcomes:` entry that admits it —
+   blocking self-review finding. Each operand of a compound condition
+   (`a || b`, `a && b`, a chained `?:`) is its own outcome: its flip deletes
+   that operand alone, or forces it to the value that lets the other operands
+   decide, and its `Branch outcomes:` line names the operand — reverting the
+   whole change or deleting the whole condition does not show which operand a
+   test reaches. A `Branch outcomes:` entry that admits it —
    `no test reaches it`, or a flip that left the suite green — is work still
    to do before the summary, not reporting: add the test, or remove the
    branch; the worker blocks PR creation on it, and only an entry written

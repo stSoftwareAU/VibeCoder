@@ -70,7 +70,13 @@ untested branch means adding the test the finding names *and* re-running the
 branch-outcome enumeration (see **Every outcome of a branch you add needs a
 test that reaches it** in the guidelines) over every branch the fix commit
 itself adds — a new refusal arm, a parse-failure path, an unreadable-file
-path — not only the one the finding named. Refresh the summary's
+path — not only the one the finding named.
+When the fix adds or changes a compound condition (`a || b`, `a && b`, a
+chained `?:`), each operand is its own outcome: flip each one on its own and
+name the operand in its `Branch outcomes:` line, as that rule requires. A
+finding that one operand is untested is fixed by a test that goes red with
+that operand alone deleted, not by one that goes red when the whole condition
+is reverted. Refresh the summary's
 `Branch outcomes:` list to the head rather than leaving the first round's
 entries standing; every test it names must exist at the head, as a path
 relative to the repository root — not to the directory a test command runs
