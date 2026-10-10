@@ -678,6 +678,31 @@ function classifyGhGraphql(
 }
 
 /**
+ * The last `--hostname` value among the tokens before the `api` root, or
+ * undefined when there is none. `gh --hostname=evil.invalid api …` sends the
+ * request to that host exactly as the after-`api` spelling does. A bare
+ * `--hostname` with no value yields "" so it fails closed.
+ */
+function hostnameBeforeRoot(
+  args: readonly string[],
+  rootIdx: number,
+): string | undefined {
+  let host: string | undefined;
+  for (let i = 0; i < rootIdx; i++) {
+    const token = args[i] ?? "";
+    if (token === "--hostname") {
+      host = args[i + 1] ?? "";
+      i++;
+    } else if (token.startsWith("--hostname=")) {
+      host = token.slice("--hostname=".length);
+    } else if (GH_VALUE_FLAGS.has(token)) {
+      i++;
+    }
+  }
+  return host;
+}
+
+/**
  * Classify a `gh api` invocation. Mutating when the effective HTTP method
  * is POST/PATCH/PUT/DELETE — explicit via `-X`/`--method`, or implied by a
  * request body: `gh` defaults to POST whenever fields (`-f`/`-F`) or an
@@ -696,8 +721,12 @@ function classifyGhApi(
   let hasBody = false;
   let endpoint: string | undefined;
   let skipNext = false;
-  /** Last `--hostname` value; `gh` sends the request to that host (Issue #1420). */
-  let hostname: string | undefined;
+  /**
+   * Last `--hostname` value; `gh` sends the request to that host (Issue #1420).
+   * Seeded from the tokens before the `api` root: `gh` honours the flag there
+   * too, and the tokens after it still win (pflag's last-occurrence rule).
+   */
+  let hostname: string | undefined = hostnameBeforeRoot(args, start - 1);
   /** A body component the argv cannot show: `--input`, or a `@file` value. */
   let unreadableBody = false;
   /** Path of a readable `--input <file>` body (Issue #91); `-` stays absent. */

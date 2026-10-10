@@ -164,3 +164,74 @@ Deno.test("#3540/#1420: foreign host on a sanctioned graphql mutation fails clos
   assert(info);
   assertEquals(info.scope, "unknown");
 });
+
+// PR #3556 review: `gh` honours `--hostname` before the `api` root too
+// (`gh --hostname=evil.invalid api …` requests https://evil.invalid/api/v3/…).
+const GQL = [
+  "graphql",
+  "-f",
+  "query=mutation { changeUserStatus(input: {}) { clientMutationId } }",
+];
+const BEFORE_ROOT_CASES: ReadonlyArray<[string, string[]]> = [
+  ["explicit-repo REST write", WRITE],
+  ["placeholder repo write", [
+    "-X",
+    "POST",
+    "repos/{owner}/{repo}/issues",
+    "-f",
+    "title=x",
+  ]],
+  ["sanctioned graphql mutation", GQL],
+];
+
+for (const [label, rest] of BEFORE_ROOT_CASES) {
+  Deno.test(`#3556: inline --hostname=<foreign> before api is unknown (${label})`, () => {
+    const argv = ["--hostname=evil.invalid", "api", ...rest];
+    const info = classifyGhMutation(argv);
+    assert(info);
+    assertEquals(info.scope, "unknown");
+    assertEquals(info.repo, undefined);
+    const d = evaluateGhCommand(argv, ACTIVE);
+    assertEquals(d.allowed, false);
+    assertEquals(d.marker, "WRITE_TARGET_UNDETERMINABLE");
+  });
+
+  Deno.test(`#3556: two-token --hostname <foreign> before api is unknown (${label})`, () => {
+    const info = classifyGhMutation([
+      "--hostname",
+      "evil.invalid",
+      "api",
+      ...rest,
+    ]);
+    assert(info);
+    assertEquals(info.scope, "unknown");
+    assertEquals(info.repo, undefined);
+  });
+}
+
+Deno.test("#3556: --hostname=github.com before api still resolves the repo", () => {
+  const argv = ["--hostname=github.com", "api", ...WRITE];
+  const info = classifyGhMutation(argv);
+  assert(info);
+  assertEquals(info.repo, "o/r");
+  assertEquals(info.scope, "explicit");
+  assertEquals(evaluateGhCommand(argv, ACTIVE).allowed, true);
+});
+
+Deno.test("#3556: last --hostname wins across the api root", () => {
+  const foreignLast = classifyGhMutation([
+    "--hostname=github.com",
+    "api",
+    "--hostname=evil.invalid",
+    ...WRITE,
+  ]);
+  assertEquals(foreignLast?.scope, "unknown");
+  const githubLast = classifyGhMutation([
+    "--hostname=evil.invalid",
+    "api",
+    "--hostname=github.com",
+    ...WRITE,
+  ]);
+  assertEquals(githubLast?.scope, "explicit");
+  assertEquals(githubLast?.repo, "o/r");
+});
