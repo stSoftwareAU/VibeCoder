@@ -226,6 +226,23 @@ have. This complements the worker's own final-mile push verification described
 in **The final mile** below, which re-checks the push at the git level after
 the agent runs.
 
+#### Answer every ask in a finding (Issue #3348)
+
+A change-request finding often carries several asks: lettered parts, "also",
+"as well as", "the same way", a second input or path, or a request to record
+observed output in the PR summary alongside a code change. The pr_feedback
+prompt has the agent break each finding into its asks before changing
+anything, and list them under the finding in `.pr_response_message`, each with
+the commit, test or line that settles it or a rebuttal with evidence. Before
+replying, the agent counts the asks it listed against the sentences in the
+finding's **Fix** that request something. An ask with neither a fix nor a
+rebuttal leaves the finding partly fixed, so it does not count as **fixed**
+under **Every finding ends fixed or rebutted** above. Fixing the main ask and
+skipping the rest sent VibeCoder#3312, VibeCoder#3318 and GRQ-AutoTrader#2699
+back for another round ("one part of the earlier review is still not done").
+This complements **Fix the defect everywhere it lives** below, which finds
+instances the finding did not name; this rule covers the parts it did name.
+
 #### A request-changes review is never answered with "no change" (Issue #3246)
 
 A claimed `CHANGES_REQUESTED` review (`commentType: "pr_review"`) is dismissed
