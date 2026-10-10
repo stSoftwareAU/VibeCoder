@@ -327,6 +327,16 @@ plans while Sonnet executors implement at `medium` and Sonnet reviewers check
 the diff, because the 2× price gap makes those tokens the cheapest to move. Set
 either key `false` to revert it on the same before/after evidence.
 
+**`issue` sub-agents on Haiku 5.5 (Issue #3385).** Haiku 5.5 costs a quarter of
+Sonnet 5.5's rates above 100k prompt tokens and a twentieth below, which
+reopened the question of moving the `issue`-phase executors and Standards
+reviewer down a tier. Decision: **Sonnet stays the default**. Haiku is an opt-in
+trial behind `issue_sub_agent_tier: "haiku"` — executors on `haiku` at `high`,
+the Standards reviewer on `haiku` at `medium`, plus a read-only explorer, with
+the Spec reviewer kept on `sonnet` — and it becomes the default only if it
+passes the [trial decision rule](#haiku-sub-agent-tier-trial). The advisor and
+every other phase are unchanged.
+
 #### Fable 5 for top-tier phases
 
 Once Fable 5 (`claude-fable-5`, the tier above Opus —) and its
@@ -821,16 +831,108 @@ unchanged. The standalone `execute-claude-phase` command does not apply this
 policy.
 
 **Opt-in trial, not a default change.** Unlike the executor split and
-reviewer sub-agents above, `issue_sub_agent_tier` is not on a before/after
-check of its own and `"sonnet"` is not expected to change. Per the owner's
-direction on Issue #3385, `"haiku"` is a trial a deployer opts a part of
-their fleet into — host-wide or per repository via the `repo_config`
-override — to compare code-review rejections and CI failures against the
-cost saved before any decision to widen it. No fleet figure is claimed yet.
+reviewer sub-agents above, `issue_sub_agent_tier` is not judged by the
+before/after check. Haiku as the default is **not adopted**: `"sonnet"` stays
+the default unless the [trial below](#haiku-sub-agent-tier-trial) graduates.
+Per the owner's direction on Issue #3385, `"haiku"` is a trial a deployer opts
+part of their fleet into — host-wide or per repository via the `repo_config`
+override — to compare code-review rejections and CI failures against the cost
+saved. No fleet figure is claimed yet.
 
 | Change | Phase measured | Revert with |
 | --- | --- | --- |
 | Haiku sub-agent tier | `issue` | `issue_sub_agent_tier: "sonnet"`, host-wide or per repository |
+
+#### Haiku sub-agent tier trial
+
+**What the trial changes.** Setting `issue_sub_agent_tier: "haiku"` changes
+only the `issue`-phase sub-agents in the table above: the `executor` moves to
+`haiku` at `high` effort, the `standards-reviewer` to `haiku` at `medium`, and a
+read-only `explorer` (`haiku` at `medium`) joins the run; the `spec-reviewer`
+stays on `sonnet` at `medium`, and the advisor keeps the phase's own model and
+effort. The tier being measured is Haiku 5.5 (`claude-haiku-5-5`). Opt a whole
+host in with the host-wide `issue_sub_agent_tier` key, or single repositories
+with `repo_config.<repo>.issue_sub_agent_tier`. The repository's value wins over
+the host-wide one in both directions, so a haiku host can also keep one
+repository on `"sonnet"`:
+
+```json
+{
+  "issue_sub_agent_tier": "sonnet",
+  "repo_config": {
+    "owner/trial-repo": {
+      "issue_sub_agent_tier": "haiku"
+    }
+  }
+}
+```
+
+**Decision rule.** Compare the two tiers on the per-tier
+[fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)
+— `issue_tier_runs`, `pr_tier_rejections`, `ci_fix_tier_runs` and
+`cost_per_merged_pr` — summed across the hosts in the trial. Read nothing until
+both minimums hold:
+
+- the trial has run for **at least 7 days**, and
+- **each tier** has recorded **at least 30 `issue` runs** (`issue_tier_runs`) in
+  that window.
+
+Then the Haiku tier graduates only if **all three** of these hold:
+
+| # | Signal (haiku against sonnet) | Graduates when |
+| --- | --- | --- |
+| 1 | Cost per merged PR (`cost_per_merged_pr`) | haiku is **at least 25% cheaper** |
+| 2 | `CHANGES_REQUESTED` rate — `pr_tier_rejections` per `issue` run | haiku is **no more than 5 percentage points** worse |
+| 3 | CI-failure rate — `ci_fix_tier_runs` per `issue` run | haiku is **no more than 5 percentage points** worse |
+
+For example, sonnet at 0.10 rejections per run and haiku at 0.14 is 4 points
+worse and passes signal 2; haiku at 0.16 is 6 points worse and fails it. If any
+signal fails, haiku does not graduate and the fleet stays on Sonnet — set
+`issue_sub_agent_tier: "sonnet"` (or drop the key) on the trial hosts and
+repositories. Graduating is itself a separate change to the shipped default
+(`OPERATIONAL_DEFAULTS.issueSubAgentTier` in
+[`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts));
+Haiku-as-default is **not yet adopted**.
+
+```mermaid
+flowchart TD
+    W{"At least 7 days AND<br/>at least 30 issue runs per tier?"} -->|no| C["⏳ Keep collecting<br/>(Sonnet stays the default)"]
+    W -->|yes| X{"Haiku at least 25% cheaper per merged PR<br/>AND rejection rate at most 5 pp worse<br/>AND CI-failure rate at most 5 pp worse?"}
+    X -->|all yes| G["✅ Graduate: change the default to haiku"]
+    X -->|any no| S["↩️ Stay on Sonnet"]
+    style G fill:#2d6a4f,stroke:#1b4332,color:#fff
+    style S fill:#9d0208,stroke:#6a040f,color:#fff
+    style C fill:#adb5bd,stroke:#6c757d,color:#000
+```
+
+**Refusals and the served-model check.** Two Haiku-specific outcomes show up
+during the trial, both described above. A Haiku safety refusal re-runs the
+execute phase once on `sonnet`, and a refusal on that retry fails the run; each
+is named on the run-stats comment's `- **Safety refusal:** …` line. A run served
+a previous-generation Haiku labels its issue `degraded-model`. Before reading
+the figures, check the trial repositories for issues labelled `degraded-model`:
+those runs measured an older Haiku, not Haiku 5.5.
+
+**Optional: `quality_fix` on Haiku.** The tier key covers the `issue` phase
+only. `quality_fix` — the quality-gate fix phase, Sonnet at `high` by default —
+is a separate, manual lever outside the trial. An operator who wants it on Haiku
+sets the phase overrides of the
+[precedence chain](#%EF%B8%8F-modeleffort-precedence-chain), host-wide or inside
+a `repo_config.<repo>` entry:
+
+```json
+{
+  "phase_model_overrides": {
+    "quality_fix": "haiku"
+  },
+  "phase_effort_overrides": {
+    "quality_fix": "high"
+  }
+}
+```
+
+The trial's figures count `issue` runs, so they do not measure this override;
+remove both entries to put `quality_fix` back on its default.
 
 ### 🤖 Codex per-phase routing
 
@@ -2587,6 +2689,8 @@ Approximate list prices (USD per million tokens, as of September 2026):
 | Claude Sonnet 5.5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 5 | $2.00 | $10.00 | $2.50 | $0.20 |
 | Claude Sonnet 4.6 | $3.00 | $15.00 | $3.75 | $0.30 |
+| Claude Haiku 5.5 (≤100k prompt tokens) | $0.10 | $0.50 | $0.125 | $0.01 |
+| Claude Haiku 5.5 (>100k prompt tokens) | $0.50 | $2.50 | $0.625 | $0.05 |
 | Claude Haiku 4.5 | $1.00 | $5.00 | $1.25 | $0.10 |
 
 The non-Claude rows below are **API-equivalent list prices** (USD per million
@@ -2672,6 +2776,22 @@ Sonnet is the default for the reactive phases (`ci_fix`, `pr_feedback`,
 `quality_fix`) since Issue #2812, for the `issue`-phase executors and reviewer
 sub-agents, and the third rung of the `fable → opus → sonnet → haiku`
 rate-limit ladder.
+
+**Haiku 5.5** (model id `claude-haiku-5-5`, and what the alias `haiku` now
+resolves to — Issue #3400) is priced in two bands by prompt size (Issue #3399).
+The band is chosen **per request**: a request whose prompt — input plus
+cache-write plus cache-read tokens — is at most 100,000 tokens bills at
+$0.10 / $0.50, cache $0.125 / $0.01; a larger one bills at $0.50 / $2.50, cache
+$0.625 / $0.05. The `claude-haiku-5-5` row of `MODEL_PRICING` carries the
+>100k rates and a `lowerBand` with the ≤100k ones. A run total sums many
+requests and cannot tell which band each was billed in, so **run-total
+estimates use the >100k rate**: the ≤100k band applies only when a caller marks
+the usage as one request (`singleRequest: true` in the cost-estimate options),
+and no worker cost path does so today. Haiku 4.5 keeps its flat row, and the
+bare `haiku` alias — what the credit log records when a phase requested the
+alias — is priced at that flat Haiku 4.5 rate, at or above Haiku 5.5's upper
+band on every component. Either way a Haiku estimate over-states what was
+billed rather than under-stating it.
 
 #### Fable 5.1 — the current top tier (Issue #747)
 
@@ -2781,8 +2901,10 @@ generation is never flagged — they were served the model they asked for.
 
 `CURRENT_TIER_MODELS` also gained a `haiku` row (`claude-haiku-5-5`, Issue #3400),
 so `previousGenerationOf()` now reports a served Haiku 4.x id (e.g.
-`claude-haiku-4-5`) as a previous generation too. The `degraded-model` label
-is not yet wired up for haiku-tier issue runs — that is open Issue #3405.
+`claude-haiku-4-5`) as a previous generation too. A haiku-tier `issue` run
+served such an id with no current Haiku labels the issue `degraded-model`
+(Issue #3405) — see
+[Haiku sub-agent tier](#haiku-sub-agent-tier-issue-phase).
 
 Fable 5.1's three breaking Messages-API changes — forced `tool_choice` rejected,
 thinking blocks bound to the model and to an unedited conversation prefix — do
