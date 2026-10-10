@@ -10,6 +10,9 @@
 # Except .markdownlint-cli2.jsonc (markdownlint quality gate config — Issue #1685)
 !.markdownlint-cli2.jsonc
 
+# Except .oss-scanner/ (OSS Scanner build image and threat-model brief)
+!.oss-scanner
+
 # Except the checked-in Claude Code skills and agent definitions
 # (Issues #2675, #2976); the rest of .claude/ (local settings, agent
 # worktrees) stays ignored.
