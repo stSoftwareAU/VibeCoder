@@ -601,12 +601,26 @@ Deno.test("runDenoCheck - a FAILED result is never cached: the next run re-check
       `${tmpDir}/standalone.ts`,
       'const broken: number = "not a number";\nexport { broken };\n',
     );
+    // The key includes the working tree, so without a repo it is null and
+    // caching is off — the test could then never see a cached FAIL.
+    const init = await new Deno.Command("git", {
+      args: ["init", "-q"],
+      cwd: tmpDir,
+      stdin: "null",
+      stdout: "null",
+      stderr: "null",
+    }).output();
+    assert(init.success, "git init failed");
     const config: QualityGateConfig = {
       scriptDir: tmpDir,
       denoDir: tmpDir,
       options: { strict: false, sequential: true, validatePrompts: false },
       cacheDir,
     };
+    assert(
+      (await denoCheckDigest(config)) !== null,
+      "the test must reach the cache: the key must not be null",
+    );
     const first = await runDenoCheck(config, "deno");
     assertEquals(first.status, "FAILED");
     const second = await runDenoCheck(config, "deno");

@@ -140,8 +140,13 @@ with `Deno.makeTempDir` and removed in `finally`.
   - `denoCheckDigest - null when no cache dir is set, a tree+sources key when one is`
   - `runDenoCheck - editing a .ts outside worker/deno that a test imports busts the cached PASS (PR #3522 review)`
 - Changed in `worker/deno/tests/quality_gate_test.ts`: the existing
-  `runDenoCheck` cached-PASS test now runs in a `git init` directory, because
-  the key includes the working tree; its assertions are unchanged.
+  `runDenoCheck` cached-PASS test and the `runDenoCheck - a FAILED result is
+  never cached` test now run in a `git init` directory, because the key
+  includes the working tree (without a repo the key is null and caching is
+  off, so the FAIL test could never fail). The FAIL test also asserts
+  `denoCheckDigest(config) !== null`. Red check: recording a PASS regardless
+  of exit code (and dropping `invalidate`) in `runDenoCheck` turned that test
+  red; restored afterwards.
 - No assertions were removed from existing tests.
 - Targeted run: `deno task test:unit tests/quality_gate_cache_test.ts tests/quality_gate_test.ts`
   passed (60 tests) on the head.
