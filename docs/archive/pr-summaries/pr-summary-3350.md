@@ -55,15 +55,14 @@ flowchart TD
 
 Issues cited as provenance: #3350: PR body sync carries a stale 'Degraded run' banner forward that no fix run can remove; #2562: bug: a degraded (fallback-model) run can close an issue with only partial scope delivered; #3486: Degraded-run guard reads a '## Done when' list as 'the issue states no acceptance criteria'.
 
-**Docs sweep**
-- grep: "Degraded run", "degraded-run section", `carr\w* forward`, `extractDegradedRunSection`.
-- section: `docs/workflows/issue-processing.md` (the degraded-run guard section, "A degraded run never closes an issue as complete").
-- updated: `docs/workflows/issue-processing.md` (new bullet "A re-sync re-derives the section"), `docs/USAGE.md` (the `syncPrBodyFromSummary` paragraph), and the module and function docs in `worker/deno/lib/pr_body_sync.ts` and `worker/deno/lib/degraded_delivery.ts`.
-- Hits left in place:
-  - `docs/workflows/issue-processing.md:2133` and `:2137` are still true: they describe PR creation, which is unchanged.
-  - `docs/workflows/issue-processing.md:2157` is still true for the same reason.
-  - `worker/deno/lib/degraded_delivery.ts:25` and `:27` (the creation flowchart) are still true for the same reason.
-  - The other "carried forward" hits (`docs/CALLBACKS.md:391`, `docs/MODEL-AND-CACHING.md:1822`, `docs/workflows/issue-processing.md:1980`, `docs/workflows/issue-processing.md:2010`, `worker/deno/lib/conflict_milestone_rebuild.ts:19`, `worker/deno/lib/milestone_branch_sync.ts:1290`) are about other subjects.
+**Docs sweep** — grep: "Degraded run", "degraded-run section", `carr\w* forward`, `extractDegradedRunSection`, `syncPrBodyFromSummary`; section: `docs/workflows/issue-processing.md#️-a-degraded-run-never-closes-an-issue-as-complete`; updated: `docs/workflows/issue-processing.md` (new bullet "A re-sync re-derives the section"), `docs/USAGE.md` (the `syncPrBodyFromSummary` paragraph), plus the module and function docs in `worker/deno/lib/pr_body_sync.ts` and `worker/deno/lib/degraded_delivery.ts`
+
+Hits read and left in place:
+
+- `docs/workflows/issue-processing.md:2133` and `:2137` are still true: they describe PR creation, which is unchanged.
+- `docs/workflows/issue-processing.md:2157` is still true for the same reason.
+- `worker/deno/lib/degraded_delivery.ts:25` and `:27` (the creation flowchart) are still true for the same reason.
+- The `carr\w* forward` hits in `docs/CALLBACKS.md:391` (hook work), `docs/MODEL-AND-CACHING.md:1924` (session context), `docs/workflows/issue-processing.md:1980` and `:2010` (summary-claim findings), and in `worker/deno/lib/` outside the two changed files (for example `conflict_milestone_rebuild.ts:19`, `milestone_branch_sync.ts:1290`) are about other subjects, not the PR body's degraded-run section.
 
 ## Reproduction
 
