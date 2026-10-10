@@ -550,3 +550,99 @@ Deno.test("Issue #3549 - look-alike: a normal directive on a mutation field stay
   assertEquals(info?.scope, "non-repo");
   assertEquals(info?.target, "graphql:changeUserStatus");
 });
+
+// ---------------------------------------------------------------------------
+// GraphQL scanner — look-alikes and malformed shapes (Issue #3549)
+// ---------------------------------------------------------------------------
+
+Deno.test("Issue #3549 - look-alike: a comment between @ and the directive name stays non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    "mutation{changeUserStatus(input:{}) @ # note\ninclude(if:true){clientMutationId}}",
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - fail closed: each malformed shape is refused while its legal twin is allowed", () => {
+  const pairs = [
+    // a digit directly after @ is not a directive name
+    {
+      bad: "mutation{changeUserStatus(input:{}) @1x {clientMutationId}}",
+      legal: "mutation{changeUserStatus(input:{}) @x {clientMutationId}}",
+    },
+    // @ with nothing after it
+    { bad: `${SANCTIONED_DOC} @`, legal: SANCTIONED_DOC },
+    // capitalised operation keyword
+    {
+      bad: "Mutation{changeUserStatus(input:{}){clientMutationId}}",
+      legal: SANCTIONED_DOC,
+    },
+    // a stray name at depth 0
+    { bad: `bogus ${SANCTIONED_DOC}`, legal: SANCTIONED_DOC },
+    // a raw newline inside a string
+    {
+      bad:
+        'mutation{changeUserStatus(input:{message:"a\nb"}){clientMutationId}}',
+      legal:
+        'mutation{changeUserStatus(input:{message:"a\\nb"}){clientMutationId}}',
+    },
+    // an unexpected character
+    { bad: `${SANCTIONED_DOC};`, legal: `${SANCTIONED_DOC},` },
+    // an operation keyword with no selection set
+    {
+      bad: `${SANCTIONED_DOC} query`,
+      legal: `${SANCTIONED_DOC} query{viewer{login}}`,
+    },
+  ];
+  for (const { bad, legal } of pairs) {
+    const refused = classifyGhMutation(graphqlArgs(bad));
+    assertEquals(refused?.verb, "api-graphql-mutation", bad);
+    assertEquals(refused?.scope, "unknown", bad);
+
+    const allowed = classifyGhMutation(graphqlArgs(legal));
+    assertEquals(allowed?.scope, "non-repo", legal);
+    assertEquals(allowed?.target, "graphql:changeUserStatus", legal);
+  }
+});
+
+Deno.test("Issue #3549 - look-alike: an escaped triple quote inside a block string stays non-repo", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    'mutation{changeUserStatus(input:{message:""" \\""" """}){clientMutationId}}',
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - look-alike: the anonymous query shorthand is a read", () => {
+  const doc = "{viewer{login}}";
+  assertEquals(graphqlMutationFields(doc), null);
+  assertEquals(classifyGhMutation(graphqlArgs(doc)), null);
+  // The shorthand's fields are never collected as mutation fields.
+  assertEquals(
+    graphqlMutationFields(`{viewer{login}} ${SANCTIONED_DOC}`),
+    ["changeUserStatus"],
+  );
+});
+
+Deno.test("Issue #3549 - look-alike: a later operation's variable definitions are not mutation fields", () => {
+  const info = classifyGhMutation(graphqlArgs(
+    `${SANCTIONED_DOC} query Q($n:Int){viewer{login}}`,
+  ));
+  assertEquals(info?.scope, "non-repo");
+  assertEquals(info?.target, "graphql:changeUserStatus");
+});
+
+Deno.test("Issue #3549 - a stray closer does not hide later fields from the audit target", () => {
+  const doc =
+    `mutation{changeUserStatus(input:{}){clientMutationId}) ${HIDDEN}}`;
+  assertEquals(graphqlMutationFields(doc), [
+    "changeUserStatus",
+    "markPullRequestReadyForReview",
+  ]);
+  const info = classifyGhMutation(graphqlArgs(doc));
+  assertEquals(info?.scope, "unknown");
+  assertEquals(
+    info?.target,
+    "graphql:changeUserStatus,markPullRequestReadyForReview",
+  );
+});

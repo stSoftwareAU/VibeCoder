@@ -562,7 +562,6 @@ export function scanGraphqlMutations(document: string): GraphqlScan {
       if (ch === "{") sawSelectionSet = true;
       if (ch === "{" && stack.length === 0) {
         openKind = pendingKind ?? "query";
-        if (openKind === "mutation") hasMutation = true;
         pendingKind = undefined;
       }
       stack.push(ch);
