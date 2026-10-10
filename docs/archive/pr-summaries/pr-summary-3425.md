@@ -29,30 +29,22 @@ fix. Closes #3425.
   consistent with "Judge the environment, never the author" and "Absent
   evidence is not evidence".
 
-### Reviews
+### Undiscoverable Facts
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-- Spec reviewer: all criteria are met. Minor notes: the optional pointer runs to
-  four lines rather than one, the table has Cause/Fix columns and no Error
-  column, and the drift test was not requested.
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-- Standards reviewer: no material departures. Australian English, the
-  model-agnostic rule and `section()`-scoped pins are all satisfied. It offered
-  an optional rewording of the Effort row, which I declined because the row
-  matches the issue's own solution text.
+- The issue was filed from #3301 (part of #3265). The four causes come from
+  "The Complete Guide to Building Skills for Claude", which lives outside this
+  repository, so the repo holds no other copy of the table.
 
 ## Acceptance Criteria
 
-- [x] Category 3 of `prompts/retro/prompt.md` has a cause→fix table with rows
-  for too verbose, buried, ambiguous (script or check, category 2) and effort.
-- [x] The prompt states that the candidate names the diagnosed cause and its
-  matching fix.
-- [x] The prompt states that a new rule beside an ignored one is the last
-  option.
-- [x] The five category headings are unchanged.
-- [x] Optional `CODING-STANDARDS.md` pointer added under Prompt Engineering
-  Guidance.
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+- **met** — Category 3 has a cause→fix table: too verbose, buried, ambiguous (script or check, category 2), effort — evidence: `prompts/retro/prompt.md` — reviewer: met
+- **met** — The candidate names the diagnosed cause and its matching fix — evidence: `prompts/retro/prompt.md` — reviewer: met
+- **met** — A new rule beside an ignored one is the last option — evidence: `prompts/retro/prompt.md` — reviewer: met
+- **met** — The five category headings are unchanged — evidence: `prompts/retro/prompt.md` — reviewer: met
+- **met** — Optional pointer in CODING-STANDARDS Prompt Engineering Guidance — evidence: `CODING-STANDARDS.md` — reviewer: met
+- **unrequested** — Drift test pinning the new phrases — evidence: `worker/deno/tests/retro_ignored_rule_diagnosis_3425_test.ts` — reviewer: unrequested — reason: guards the table and both rules against silent removal
+- **unrequested** — Coding standards row in the retro scan manual — evidence: `docs/RETRO-SCAN.md` — reviewer: unrequested — reason: docs sweep; the row described category 3 and would otherwise omit the diagnose-first fix
 
 ## Evidence
 
@@ -79,7 +71,8 @@ flowchart LR
 
 ## Standards Review
 
-No departures found.
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+- **clean** — Australian English, model-agnostic wording, `section()`-scoped drift pins, no hidden files staged; an optional Effort-row rewording was declined because the row matches the issue's own solution text
 
 ## Test Plan
 
