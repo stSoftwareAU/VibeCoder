@@ -94,7 +94,7 @@ flowchart LR
     F -->|describe-stacks| S
     S -->|CREATE_COMPLETE| P["PASS"]
     S -->|stubbed type| WN["::warning::"]
-    D["container/tools.json digest"] -.agrees with.-> W
+    D["container/tools.json tag + digest"] -.agrees with.-> W
 ```
 
 ## Test Plan
@@ -116,7 +116,8 @@ flowchart LR
   the validator" rule was applied to this PR's own diff: the tag invariant has a
   positive test (`accepts a new tag when tools.json moves with it`) and a
   negative one.
-- Callers/entry points: the script is called only from `floci.yml`; the check
+- Callers/entry points: the script is called from `floci.yml` and, under stub
+  binaries in a temp tree, from `issue_3369_floci_script_test.ts`; the check
   module only from `issue_3369_floci_workflow_test.ts` (its one production
   caller; `checkFlociWorkflow`'s new required `expectedTag` is passed there).
 - Full `./quality.sh` was not re-run this turn; CI runs it on the PR.
@@ -218,9 +219,9 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Shell is for orchestration only; new logic belongs in Deno TypeScript (awk YAML parse of SSM parameters, deploy/skip decision, stubbed-resource parsing). — evidence: `infra/cloudformation/test-floci.sh:120` — reason: open — on lines this diff adds and not fixed; this turn may not change code, so neither 'fixed in this diff' nor 'pre-existing, filed' would be true
-- **violation** — Writing a gate over text: a loosened invocation ( test-floci.sh true ) is accepted, and step-level continue-on-error: true and if: false are ignored. — evidence: `worker/deno/lib/floci workflow check.ts:82` — reason: open — on lines this diff adds and not fixed; this turn may not change code
-- **violation** — A workflow validator must pin the load-bearing invariant: the check accepts the script being run from any job, not specifically the job that has the Floci service. — evidence: `worker/deno/lib/floci workflow check.ts:175` — reason: open — on lines this diff adds and not fixed; this turn may not change code
-- **violation** — DRY: re-implements in-repo workflow policy (checkout-persist-credentials in checkout persist credentials scanner.ts, milestone-branch-filters with a literal match stricter than GitHub's, workflow-permissions in workflow file checks.ts). — evidence: `worker/deno/lib/floci workflow check.ts:159` — reason: open — on lines this diff adds and not fixed; this turn may not change code
-- **violation** — Avoid over-engineering: handles a YAML 1.1 true key for on that the only caller never produces, and the workflow repeats the script's aws CLI check. — evidence: `worker/deno/lib/floci workflow check.ts:183` — reason: open — on lines this diff adds and not fixed; this turn may not change code
+- **violation** — Shell is for orchestration only; new logic belongs in Deno TypeScript (awk YAML parse of SSM parameters, deploy/skip decision, stubbed-resource parsing). — evidence: `infra/cloudformation/test-floci.sh:120` — reason: open — on lines this diff adds and not fixed in this diff
+- **violation** — Writing a gate over text: a loosened invocation ( test-floci.sh true ) is accepted, and step-level continue-on-error: true and if: false are ignored. — evidence: `worker/deno/lib/floci_workflow_check.ts:98` (`runsScript`) and `:196-200` (`invokesScript`) — reason: open — on lines this diff adds and not fixed in this diff
+- **violation** — A workflow validator must pin the load-bearing invariant: the check accepts the script being run from any job, not specifically the job that has the Floci service. — evidence: `worker/deno/lib/floci_workflow_check.ts:196-200` — reason: open — on lines this diff adds and not fixed in this diff
+- **violation** — DRY: re-implements in-repo workflow policy (checkout-persist-credentials in checkout persist credentials scanner.ts, milestone-branch-filters with a literal match stricter than GitHub's, workflow-permissions in workflow file checks.ts). — evidence: `worker/deno/lib/floci_workflow_check.ts:180-190` — reason: open — on lines this diff adds and not fixed in this diff
+- **violation** — Avoid over-engineering: handles a YAML 1.1 true key for on that the only caller never produces, and the workflow repeats the script's aws CLI check. — evidence: `worker/deno/lib/floci_workflow_check.ts:204-208` — reason: open — on lines this diff adds and not fixed in this diff
 - **clean** — Australian English spelling; fail-loud shell (set -euo pipefail, counted failures, commented true ); SIMPLE-ON-PURPOSE marker format; workflow hygiene (SHA-pinned actions, persist-credentials: false, contents: read, tag plus digest); unit-test classification and manifest entry; positive and negative
