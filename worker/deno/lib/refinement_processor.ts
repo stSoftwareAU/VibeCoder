@@ -757,6 +757,7 @@ async function _processRefinementWithHeartbeat(
       timeoutSeconds: config.refinementTimeout,
       killAfterSeconds: config.refinementKillAfter,
       phase: "refinement",
+      repo,
       logger,
       // The MCP config is written under `cwd`.
       cwd: config.workDir,

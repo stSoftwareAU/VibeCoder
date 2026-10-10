@@ -3915,6 +3915,7 @@ export async function createProductionRunCoreDeps(
                   timeoutSeconds: reactivePhaseTimeout(config, "pr-feedback"),
                   noOutputTimeout: config.claudeNoOutputTimeout,
                   phase: "pr_feedback",
+                  repo: candidate.repo,
                   cwd: prRunWorkDir ?? workDir,
                   logger,
                 },
