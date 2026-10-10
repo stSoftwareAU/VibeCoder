@@ -36,6 +36,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  markdownLogicalUnits,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
 import { codeChangingFiles } from "./docs_sweep_gate.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import type { Result } from "../types.ts";
@@ -66,13 +70,6 @@ const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
-
-/**
- * A markdown table row. Each one is kept as its own paragraph group (PR
- * #3312 review) — merging table rows into one joined unit would let a test
- * citation in one row clear a weak admission in another.
- */
-const TABLE_ROW_RE = /^\s*\|/;
 
 /** A markdown heading, capturing its `#` run so the level can be read off. */
 const HEADING_RE = /^\s{0,3}(#{1,6})\s/;
@@ -243,7 +240,7 @@ export function parseBranchOutcomes(
   prSummaryContent: string,
 ): BranchOutcomesRecord {
   const raw = (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS);
-  const lines = raw.split(LINE_TERMINATOR_RE);
+  const lines = splitMarkdownLines(raw);
   const entries: string[] = [];
   const entryLineIndices: number[][] = [];
   const bodyParts: string[] = [];
@@ -637,7 +634,7 @@ function isBarePlaceholder(body: string): boolean {
 
 /**
  * Blank test/command citations across one unit's own raw lines (an entry,
- * one body contribution, or one grouped run of uncaptured lines — see
+ * one body contribution, or one logical unit of uncaptured lines — see
  * `groupUncapturedIndices`), then decoration-strip the result. The raw lines
  * are joined with `\n` and passed through `blankLineCitationNames` as ONE
  * string before being split back apart (PR #3312 review, round 4): a span
@@ -683,41 +680,40 @@ function blankedUnitText(
 }
 
 /**
- * Group consecutive uncaptured line indices into paragraphs, so
- * `blankedUnitLines` can pair a backtick span across a wrapped line within
- * one paragraph while never reaching into a different one (Issue #3288, PR
- * #3312 review round 4). Each `Branch outcomes:` header's uncaptured lines
- * are otherwise one flat list with no grouping at all — blanking each raw
- * line on its own (the previous shape) mis-pairs a span that opens on one
- * line and closes on the next, which can blank away the entry's OWN prose
- * between the close and the next span and hide a real admission.
+ * Group consecutive uncaptured line indices into the shared Markdown logical
+ * units (`markdownLogicalUnits`), so `blankedUnitLines` can pair a backtick
+ * span across a wrapped line within one paragraph or list item while never
+ * reaching into a different one (Issue #3288, PR #3312 review round 4;
+ * re-based on the shared helper by Issue #3356).
  *
- * A gap in the index sequence (a blank line, a captured line, or the end of
- * a header's scanned region) always starts a new paragraph, and so does
- * every list-marker line (`` `- ` ``, `` `* ` ``, `1. `, …) — the same
- * cross-item isolation the removed `blankTestCitationNames` used to provide
- * by resetting at every list-marker line, now applied before blanking
- * rather than during it: a stray backtick in one bullet can never reach a
- * later, unrelated bullet's text. A non-list, non-blank line that
- * immediately follows (whether indented or not — a "lazy" unindented
- * continuation is still one Markdown paragraph) stays in the current
- * paragraph, so a span wrapped across that line break still pairs.
+ * A new group starts when the index is not `prev + 1` (a blank line, a
+ * captured line or the end of a header's scanned region) OR when its logical
+ * unit differs from the previous index's unit. A hard-wrapped paragraph or
+ * list item is therefore one group, while a new list item, table row, heading,
+ * HTML comment, thematic break or quote-depth change always starts a new one.
+ * Each fenced line is its own `code` unit, so it is its own group: still
+ * checked, but never joined to the prose beside it, so a test citation in a
+ * fence or deeper heading cannot clear a weak admission in the neighbouring
+ * prose (Issue #3356). A line belonging to no unit also gets its own group.
  */
 function groupUncapturedIndices(
   lines: readonly string[],
   indices: readonly number[],
 ): number[][] {
+  const unitOf = new Map<number, number>();
+  markdownLogicalUnits(lines).forEach((unit, unitId) => {
+    for (const lineIdx of unit.lines) unitOf.set(lineIdx, unitId);
+  });
   const groups: number[][] = [];
   let current: number[] = [];
   let prevIndex = Number.NaN;
-  let prevWasTableRow = false;
+  let prevUnit: number | undefined;
   for (const idx of indices) {
-    const isTableRow = TABLE_ROW_RE.test(lines[idx]!);
+    const unit = unitOf.get(idx);
     const startsNewGroup = current.length === 0 ||
       idx !== prevIndex + 1 ||
-      LIST_MARKER_RE.test(lines[idx]!) ||
-      isTableRow ||
-      prevWasTableRow;
+      unit === undefined ||
+      unit !== prevUnit;
     if (startsNewGroup) {
       if (current.length > 0) groups.push(current);
       current = [idx];
@@ -725,7 +721,7 @@ function groupUncapturedIndices(
       current.push(idx);
     }
     prevIndex = idx;
-    prevWasTableRow = isTableRow;
+    prevUnit = unit;
   }
   if (current.length > 0) groups.push(current);
   return groups;
@@ -1098,9 +1094,9 @@ export function validateBranchOutcomes(
   input: ValidateBranchOutcomesInput,
 ): BranchOutcomesGateResult {
   const record = parseBranchOutcomes(input.prSummaryContent ?? "");
-  const lines = (input.prSummaryContent ?? "")
-    .slice(0, MAX_SCAN_CHARS)
-    .split(LINE_TERMINATOR_RE);
+  const lines = splitMarkdownLines(
+    (input.prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS),
+  );
 
   if (input.changedFiles === null) {
     return evaluateApplicable(record, lines, [], false, input.testsAtHead);
@@ -1180,11 +1176,12 @@ function evaluateApplicable(
     // boundaries than the real parse and block an honest summary on a
     // shape mismatch that was never a real line merge (PR #3312 review,
     // round 3; see `blankedUnitLines`). Uncaptured lines are grouped into
-    // paragraphs first (`groupUncapturedIndices` — each table row its own
-    // group) and each paragraph is checked as ONE joined unit, so an
-    // admission a hard wrap splits across two lines still matches (PR
-    // #3312 review, round 6); a table row stays its own unit so one row's
-    // test citation cannot clear another row's weak admission. Each
+    // logical units first (`groupUncapturedIndices` over the shared
+    // `markdownLogicalUnits` — Issue #3356) and each wrapped paragraph or
+    // list item is checked as ONE joined unit, so an admission a hard wrap
+    // splits across two lines still matches (PR #3312 review, round 6); a
+    // table row, heading, HTML comment or fenced line stays its own unit so
+    // its test citation cannot clear a weak admission in neighbouring prose. Each
     // header's own `bodyLineIndexGroups` entry is likewise kept as its own
     // unit rather than joined across headers, so a citation in one header
     // cannot clear a weak admission in another (PR #3312 review, round 6).

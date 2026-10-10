@@ -2025,7 +2025,7 @@ Deno.test("validateBranchOutcomes - an admission on a lazy unindented continuati
   assert(result.problems.some((p) => p.includes("admits no test reaches")));
 });
 
-// `groupUncapturedIndices` must reset at a GAP in the index sequence (a
+// The shared-unit grouping (`groupUncapturedIndices`, Issue #3356) must reset at a GAP in the index sequence (a
 // blank line between two uncaptured regions) even when neither side is a
 // list-marker line: an unclosed backtick in the first uncaptured paragraph
 // must not flip parity for the second. Without the gap reset, the two
@@ -2047,7 +2047,7 @@ Deno.test("validateBranchOutcomes - a stray backtick in one uncaptured paragraph
   assert(result.problems.some((p) => p.includes("admits no test reaches")));
 });
 
-// `groupUncapturedIndices` must also reset at a list-marker line even when
+// The shared-unit grouping (`groupUncapturedIndices`, Issue #3356) must also reset at a list-marker line even when
 // it is index-consecutive with the previous uncaptured line: the same
 // unclosed-backtick parity flip, but via adjacency rather than a blank-line
 // gap, so the two reset conditions are each independently exercised.

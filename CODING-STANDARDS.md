@@ -703,6 +703,13 @@ stale. Before calling a gate done (Issue #3149):
    `maskMarkdownCode` or `stripMarkdownCode`); it never pairs backticks with
    a per-line regex, because a hard-wrapped span continues onto the next line
    (VibeCoder#3132, Issue #3313).
+   A gate over Markdown prose matches per logical unit from the shared helper
+   (`markdownLogicalUnits` in the same module), never per physical line: PR
+   summaries are hard-wrapped, so a phrase or claim often sits on two lines
+   (VibeCoder#3085, #3157, #3312; Issue #3356). The "re-wrapped" evasion test
+   splits the matched phrase or claim itself across a line break, not only a
+   nearby code span, and uses a real wrapped shape from the corpus, not an
+   invented fixture.
 2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
    recent PR diffs, closure-verdict logs, the PR's own test files — run the
    matcher across it and report the false-positive and false-negative counts
