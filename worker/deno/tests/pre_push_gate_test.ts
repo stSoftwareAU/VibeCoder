@@ -6,6 +6,7 @@
 
 import { assert, assertEquals, assertInstanceOf } from "@std/assert";
 import {
+  defaultPrePushGit,
   listPushedFiles,
   parsePrePushRefs,
   planChangedFileChecks,
@@ -271,4 +272,50 @@ Deno.test("runPrePushGate: malformed hook input is an error", async () => {
     preFlightCommands: [],
   });
   assert(!result.ok);
+});
+
+Deno.test("runPrePushGate: git ls-files failure is an error", async () => {
+  const calls: string[] = [];
+  const makeGit = (lsFilesCode: number): PrePushGit => (args) => {
+    calls.push(args[0]!);
+    if (args[0] === "ls-files") {
+      return Promise.resolve({
+        code: lsFilesCode,
+        stdout: "",
+        stderr: lsFilesCode === 0 ? "" : "fatal: index corrupt",
+      });
+    }
+    return Promise.resolve({ code: 0, stdout: "", stderr: "" });
+  };
+  const input = {
+    cwd: "/nonexistent",
+    stdin: `refs/heads/main ${SHA_A} refs/heads/main ${SHA_B}\n`,
+    preFlightCommands: [],
+  };
+  const failed = await runPrePushGate({ ...input, git: makeGit(128) });
+  assert(!failed.ok);
+  assert(failed.error.message.includes("ls-files"));
+  assert(failed.error.message.includes("index corrupt"));
+  assertEquals(calls, ["log", "ls-files"]);
+
+  const accepted = await runPrePushGate({ ...input, git: makeGit(0) });
+  assert(accepted.ok);
+});
+
+Deno.test("defaultPrePushGit: a nonexistent working directory fails closed", async () => {
+  const result = await defaultPrePushGit(
+    ["status"],
+    "/nonexistent/vibe-pre-push-dir",
+  );
+  assert(result.code !== 0);
+  assert(result.stderr.trim().length > 0);
+
+  const dir = await Deno.makeTempDir({ prefix: "pre_push_default_git_" });
+  try {
+    const ok = await defaultPrePushGit(["--version"], dir);
+    assertEquals(ok.code, 0);
+    assert(ok.stdout.startsWith("git version"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });

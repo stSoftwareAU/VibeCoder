@@ -151,3 +151,53 @@ Deno.test({
     }
   },
 });
+
+Deno.test({
+  name:
+    "agent start - refused when the pre-push hook cannot be installed (Issue #3394)",
+  permissions: PERMS,
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const root = await Deno.makeTempDir({ prefix: "pre_push_3394_refuse_" });
+    try {
+      const marker = `${root}/agent-ran.txt`;
+      const script = [
+        `echo ran > "${marker}"`,
+        `printf '{"type":"result","result":"done"}\\n'`,
+        "exit 0",
+      ].join("\n");
+      const run = (parentEnv: Record<string, string>) =>
+        withAgentStub(script, (stub) =>
+          runClaudeWithTimeout({
+            clock: fakeClock(),
+            prompt: "test",
+            timeoutSeconds: 60,
+            killAfterSeconds: 2,
+            agentBinaryPath: stub.path,
+            cwd: root,
+            preFlightCommands: [],
+            parentEnv,
+          }));
+
+      const refused = await run({
+        PATH: Deno.env.get("PATH") ?? "",
+        GIT_CONFIG_COUNT: "abc",
+      });
+      assert(!refused.ok);
+      assertStringIncludes(
+        refused.error.message,
+        "pre-push gate hook could not be installed",
+      );
+      assertEquals(await exists(marker), false, "agent must not have run");
+
+      const accepted = await run({
+        PATH: Deno.env.get("PATH") ?? "",
+        GIT_CONFIG_COUNT: "0",
+      });
+      assert(accepted.ok, `expected ok, got ${!accepted.ok && accepted.error}`);
+      assertEquals(await exists(marker), true, "agent must have run");
+    } finally {
+      await Deno.remove(root, { recursive: true }).catch(() => undefined);
+    }
+  },
+});
