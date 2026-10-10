@@ -461,6 +461,19 @@ Deno.test("batch_api - estimateBatchSavings costs a banded row at its upper band
   );
 });
 
+Deno.test("batch_api - estimateBatchSavings reports zeros for a model id lookupModelPricing cannot price (Issue #3436)", () => {
+  // `lookupModelPricing` returns null for an id with no row, so no rate is invented.
+  const savings = estimateBatchSavings({
+    model: "not-a-priced-model",
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+  assertEquals(savings.standardCost, 0);
+  assertEquals(savings.batchCost, 0);
+  assertEquals(savings.savings, 0);
+  assertEquals(savings.discountPercentage, 50);
+});
+
 Deno.test("batch_api - estimateBatchSavings handles zero tokens", () => {
   const savings = estimateBatchSavings({
     inputTokens: 0,
