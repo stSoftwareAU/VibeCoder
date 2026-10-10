@@ -23,12 +23,17 @@ import { extractAcceptedScope } from "../lib/acceptance_criteria_gate.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
 import {
   assessDegradedDelivery,
+  assessScopeShortfalls,
   buildDegradedFollowUpIssue,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  buildDegradedUnfiledGapSection,
   degradedFollowUpFindingId,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
+  parseDegradedSection,
+  rederiveDegradedSection,
+  UNSTATED_SCOPE_ITEM,
 } from "../lib/degraded_delivery.ts";
 
 const ISSUE_WITH_CRITERIA = `## Problem
@@ -769,4 +774,169 @@ Deno.test("buildDegradedPrSection - (c) lists unassessed items alongside the par
   assertStringIncludes(section, "#77");
   assertStringIncludes(section, "**partial** — The router sends planning");
   assertStringIncludes(section, "**unassessed** — The release floor is 1.9.0.");
+});
+
+// --- Issue #3350: re-deriving a live degraded-run section -----------------
+
+const PAREN_REASON =
+  "no served model matches expected `opus` (served: `a`, `b`)";
+const PARTIAL_SHORTFALL = [{
+  criterion: "the export",
+  status: "partial",
+}] as const;
+const UNASSESSED_SHORTFALL = [
+  { criterion: "the export", status: "unassessed" },
+] as const;
+const MET_SUMMARY = `## Acceptance Criteria
+
+- **met** — the export works — evidence: \`x_test.ts\` — reviewer: met
+`;
+const PARTIAL_SUMMARY = MET_SUMMARY.replace("**met**", "**partial**").replace(
+  "reviewer: met",
+  "reviewer: partial",
+);
+const EXPORT_ISSUE = "## Acceptance Criteria\n\n- the export works\n";
+
+Deno.test("assessScopeShortfalls - matches scope against the closure block", () => {
+  assertEquals(assessScopeShortfalls(EXPORT_ISSUE, MET_SUMMARY), {
+    delivered: ["the export works"],
+    shortfalls: [],
+  });
+  assertEquals(assessScopeShortfalls(EXPORT_ISSUE, PARTIAL_SUMMARY), {
+    delivered: [],
+    shortfalls: [{ criterion: "the export works", status: "partial" }],
+  });
+});
+
+Deno.test("parseDegradedSection - round-trips a reason with parentheses from each builder", () => {
+  const noFollowUp = buildDegradedNoFollowUpSection({
+    degraded: true,
+    reason: PAREN_REASON,
+    delivered: [],
+    shortfalls: [...UNASSESSED_SHORTFALL],
+  });
+  assertEquals(parseDegradedSection(noFollowUp), { reason: PAREN_REASON });
+
+  const verdict = {
+    degraded: true,
+    reason: PAREN_REASON,
+    delivered: [],
+    shortfalls: [...PARTIAL_SHORTFALL],
+  };
+  assertEquals(parseDegradedSection(buildDegradedUnfiledGapSection(verdict)), {
+    reason: PAREN_REASON,
+  });
+  assertEquals(parseDegradedSection(buildDegradedPrSection(verdict, 77)), {
+    reason: PAREN_REASON,
+    followUpNumber: 77,
+  });
+});
+
+Deno.test("parseDegradedSection - shortfall bullets never supply a follow-up number", () => {
+  const section = buildDegradedNoFollowUpSection({
+    degraded: true,
+    reason: "served by a fallback model",
+    delivered: [],
+    shortfalls: [{
+      criterion: "see continue in #9: here",
+      status: "unassessed",
+    }],
+  });
+  assertStringIncludes(section, "continue in #9:");
+  assertEquals(parseDegradedSection(section).followUpNumber, undefined);
+});
+
+Deno.test("parseDegradedSection - a section without the opening line yields nothing", () => {
+  assertEquals(parseDegradedSection("## ⚠️ Degraded run — x\n\n- a\n"), {});
+});
+
+Deno.test("buildDegradedUnfiledGapSection - throws on an all-unassessed verdict", () => {
+  assertThrows(() =>
+    buildDegradedUnfiledGapSection({
+      degraded: true,
+      delivered: [],
+      shortfalls: [...UNASSESSED_SHORTFALL],
+    })
+  );
+});
+
+Deno.test("rederiveDegradedSection - empty when every item is now met", () => {
+  const liveSection = buildDegradedPrSection({
+    degraded: true,
+    delivered: [],
+    shortfalls: [...PARTIAL_SHORTFALL],
+  }, 77);
+  assertEquals(
+    rederiveDegradedSection({
+      liveSection,
+      issueBody: EXPORT_ISSUE,
+      prBody: MET_SUMMARY,
+    }),
+    "",
+  );
+});
+
+Deno.test("rederiveDegradedSection - keeps the follow-up number and reason", () => {
+  const liveSection = buildDegradedPrSection({
+    degraded: true,
+    reason: PAREN_REASON,
+    delivered: [],
+    shortfalls: [...PARTIAL_SHORTFALL],
+  }, 77);
+  const out = rederiveDegradedSection({
+    liveSection,
+    issueBody: EXPORT_ISSUE,
+    prBody: PARTIAL_SUMMARY,
+  });
+  assertStringIncludes(out, "continue in #77:");
+  assertStringIncludes(out, PAREN_REASON);
+  assertStringIncludes(out, "**partial** — the export works");
+});
+
+Deno.test("rederiveDegradedSection - a gap with no follow-up gets the unfiled-gap section", () => {
+  const liveSection = buildDegradedNoFollowUpSection({
+    degraded: true,
+    reason: PAREN_REASON,
+    delivered: [],
+    shortfalls: [...UNASSESSED_SHORTFALL],
+  });
+  const out = rederiveDegradedSection({
+    liveSection,
+    issueBody: EXPORT_ISSUE,
+    prBody: PARTIAL_SUMMARY,
+  });
+  assertStringIncludes(out, "The worker filed no follow-up for these items");
+  assertStringIncludes(out, PAREN_REASON);
+});
+
+Deno.test("rederiveDegradedSection - re-derives the no-follow-up reason from the current issue", () => {
+  const liveSection = buildDegradedNoFollowUpSection({
+    degraded: true,
+    reason: "served by a fallback model",
+    delivered: [],
+    shortfalls: [{ criterion: UNSTATED_SCOPE_ITEM, status: "unassessed" }],
+  });
+  assertStringIncludes(liveSection, "the issue states no acceptance criteria");
+
+  const nowStated = rederiveDegradedSection({
+    liveSection,
+    issueBody: EXPORT_ISSUE,
+    prBody: "## Summary\n\nNothing assessed.\n",
+  });
+  assertStringIncludes(nowStated, "no acceptance criterion was assessed");
+  assertEquals(nowStated.includes("states no acceptance criteria"), false);
+
+  const stillNone = rederiveDegradedSection({
+    liveSection,
+    issueBody: "Just prose.",
+    prBody: "## Summary\n\nNothing assessed.\n",
+  });
+  assertStringIncludes(stillNone, "the issue states no acceptance criteria");
+});
+
+Deno.test("parseDegradedSection - hostile follow-up digits are not read as a number (Issue #3350)", () => {
+  const section = "This run was degraded (x) and did not show every item " +
+    "as met. The outstanding items continue in #" + "1".repeat(100_000) +
+    "x";
+  assertEquals(parseDegradedSection(section), { reason: "x" });
 });
