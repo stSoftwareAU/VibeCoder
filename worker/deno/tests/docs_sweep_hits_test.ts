@@ -27,6 +27,7 @@ import {
   extractNamedLines,
   extractSiblingTerms,
   extractSweepTerms,
+  isSiblingsNegative,
   isSourceCommentLine,
   MAX_REPORTED_HITS,
   MAX_TERMS,
@@ -758,6 +759,17 @@ Deno.test("extractSiblingTerms - reads the singular sibling: label", () => {
 
 Deno.test("extractSiblingTerms - a line with no siblings: field yields no terms", () => {
   assertEquals(extractSiblingTerms("grep: `Foo`; section: `docs/a.md`"), []);
+});
+
+Deno.test("isSiblingsNegative - reads the none negative with or without backticks or quotes, and not a longer word", () => {
+  for (
+    const value of ["none — x", '"none" — x', "“none” — x", "`none` — x"]
+  ) {
+    assert(isSiblingsNegative(value), value);
+  }
+  for (const value of ["nonesuch", "`max_buy_price`"]) {
+    assertEquals(isSiblingsNegative(value), false, value);
+  }
 });
 
 Deno.test("extractSweepTerms - merges grep then sibling terms, deduplicated case-insensitively", () => {

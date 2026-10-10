@@ -29,7 +29,7 @@
  */
 
 import { isTestFilePath } from "./security_fix_gate.ts";
-import { extractSiblingTerms } from "./docs_sweep_hits.ts";
+import { extractSiblingTerms, isSiblingsNegative } from "./docs_sweep_hits.ts";
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
@@ -218,7 +218,8 @@ function isBarePlaceholder(section: string): boolean {
   const normalised = section
     .trim()
     .slice(0, MAX_PLACEHOLDER_SCAN_CHARS)
-    .replace(/[.!\s]+$/g, "")
+    .replace(/^["“”]+/, "")
+    .replace(/[.!\s"“”]+$/, "")
     .toLowerCase();
   return SECTION_PLACEHOLDER_VALUES.has(normalised);
 }
@@ -238,9 +239,6 @@ export interface DocsSweepGateResult {
   /** One line per rule broken — empty when the gate passes. */
   problems: string[];
 }
-
-/** The `none` negative a `siblings:` value opens with (Issue #3371). */
-const SIBLINGS_NONE_RE = /^none\b/i;
 
 /** Up to how many code files are named in a "no Docs sweep line" problem. */
 const MAX_NAMED_CODE_FILES = 5;
@@ -339,7 +337,7 @@ function evaluateApplicable(
         "the `Docs sweep` line's `siblings:` is a bare placeholder — name the existing sibling members you grepped, or write `siblings: none — <why no existing set gained a member>`",
       );
     } else if (
-      !SIBLINGS_NONE_RE.test(line.siblings) &&
+      !/^none\b/i.test(line.siblings) &&
       extractSiblingTerms(line.rawBody).length === 0
     ) {
       problems.push(

@@ -250,7 +250,9 @@ guessing — the analysis-only hand-off then routes it to a human.
    reworded so it no longer reads as complete. Name those siblings in the
    Docs sweep line's `siblings:` part, backticked or double-quoted, so the
    worker re-runs them as it re-runs the grep terms; or write
-   `siblings: none — <why no existing set gained a member>`.
+   `siblings: none — <why no existing set gained a member>`. Fleet PRs that
+   grepped only the new name left a list one short
+   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
    Record the sweep as the **Docs sweep** line in
    the PR summary, naming that section (e.g.
    `section: docs/reporting-pwa.md#broker-balance`, or

@@ -191,6 +191,16 @@ const SIBLINGS_NONE_RE = /^none\b/i;
 const LEADING_QUOTE_RE = /^[\s`"“”]+/;
 
 /**
+ * Whether a `siblings:` value (the text after its label) is the honest
+ * `none — <why>` negative (Issue #3371). Leading whitespace, backticks and
+ * straight or curly double quotes are skipped first, so `"none" — x` and
+ * `“none” — x` are the negative too.
+ */
+export function isSiblingsNegative(value: string): boolean {
+  return SIBLINGS_NONE_RE.test(value.replace(LEADING_QUOTE_RE, ""));
+}
+
+/**
  * The quoted terms after a field label: each backticked or double-quoted
  * span, up to the first `;` outside a span (the next field). Deduplicated
  * case-insensitively, first spelling kept, capped at `MAX_TERMS`; an empty
@@ -237,11 +247,7 @@ export function extractSiblingTerms(rawBody: string): string[] {
   const text = rawBody ?? "";
   const label = text.match(SIBLINGS_LABEL_RE);
   if (!label || label.index === undefined) return [];
-  const value = text.slice(label.index + label[0].length).replace(
-    LEADING_QUOTE_RE,
-    "",
-  );
-  if (SIBLINGS_NONE_RE.test(value)) return [];
+  if (isSiblingsNegative(text.slice(label.index + label[0].length))) return [];
   return quotedTermsAfter(text, SIBLINGS_LABEL_RE);
 }
 
@@ -582,7 +588,7 @@ function renderHitText(text: string): string {
 export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
   const named = hits.slice(0, 5).map((h) => `${h.path}:${h.line}`).join(", ");
   const extra = hits.length - 5;
-  return `the Docs sweep's own grep terms still hit ${hits.length} doc ` +
+  return `the Docs sweep's own grep and sibling terms still hit ${hits.length} doc ` +
     `or source-comment line(s) outside the diff and not named as still true: ${named}${
       extra > 0 ? ` and ${extra} more` : ""
     }`;

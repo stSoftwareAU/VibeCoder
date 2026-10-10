@@ -349,6 +349,41 @@ Deno.test("validateDocsSweep - a bare siblings: placeholder is refused, with onl
   }
 });
 
+Deno.test("validateDocsSweep - a none negative for siblings: is accepted with backticks, straight or curly quotes", () => {
+  for (
+    const negative of [
+      "`none` — no existing set gained a member",
+      '"none" — no existing set gained a member',
+      "“none” — no existing set gained a member",
+    ]
+  ) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: ${negative}`,
+    });
+    assertEquals(
+      result.valid,
+      true,
+      `${negative}: ${result.problems.join("; ")}`,
+    );
+  }
+});
+
+Deno.test("validateDocsSweep - a quote-wrapped bare none for siblings: is refused as a bare placeholder", () => {
+  for (const placeholder of ['"none"', "“none”"]) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: ${placeholder}`,
+    });
+    assertEquals(result.valid, false, placeholder);
+    assertEquals(result.problems.length, 1, placeholder);
+    assertStringIncludes(
+      result.problems[0]!,
+      "`siblings:` is a bare placeholder",
+    );
+  }
+});
+
 Deno.test("validateDocsSweep - a siblings: value that quotes no term is refused, and accepted once terms are quoted", () => {
   const refused = validateDocsSweep({
     changedFiles: CODE_FILES,
