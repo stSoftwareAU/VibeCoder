@@ -253,6 +253,8 @@ const GH_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--cache",
   "-R",
   "--repo",
+  // `gh api --hostname <host>`: the host is a value, not the endpoint (Issue #3540).
+  "--hostname",
 ]);
 
 /**
@@ -350,6 +352,9 @@ export function ghSubVerb(args: readonly string[]): string | undefined {
  * fail-closed, and the relative form every normal call uses is unaffected.
  */
 export const GITHUB_API_HOST = "api.github.com";
+
+/** The only `gh api --hostname` value classified from its path (Issue #1420). */
+const GITHUB_HOST = "github.com";
 
 /** Does this endpoint carry a `scheme://` origin at all? */
 const ABSOLUTE_ENDPOINT = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -673,6 +678,31 @@ function classifyGhGraphql(
 }
 
 /**
+ * The last `--hostname` value among the tokens before the `api` root, or
+ * undefined when there is none. `gh --hostname=evil.invalid api …` sends the
+ * request to that host exactly as the after-`api` spelling does. A bare
+ * `--hostname` with no value yields "" so it fails closed.
+ */
+function hostnameBeforeRoot(
+  args: readonly string[],
+  rootIdx: number,
+): string | undefined {
+  let host: string | undefined;
+  for (let i = 0; i < rootIdx; i++) {
+    const token = args[i] ?? "";
+    if (token === "--hostname") {
+      host = args[i + 1] ?? "";
+      i++;
+    } else if (token.startsWith("--hostname=")) {
+      host = token.slice("--hostname=".length);
+    } else if (GH_VALUE_FLAGS.has(token)) {
+      i++;
+    }
+  }
+  return host;
+}
+
+/**
  * Classify a `gh api` invocation. Mutating when the effective HTTP method
  * is POST/PATCH/PUT/DELETE — explicit via `-X`/`--method`, or implied by a
  * request body: `gh` defaults to POST whenever fields (`-f`/`-F`) or an
@@ -691,6 +721,12 @@ function classifyGhApi(
   let hasBody = false;
   let endpoint: string | undefined;
   let skipNext = false;
+  /**
+   * Last `--hostname` value; `gh` sends the request to that host (Issue #1420).
+   * Seeded from the tokens before the `api` root: `gh` honours the flag there
+   * too, and the tokens after it still win (pflag's last-occurrence rule).
+   */
+  let hostname: string | undefined = hostnameBeforeRoot(args, start - 1);
   /** A body component the argv cannot show: `--input`, or a `@file` value. */
   let unreadableBody = false;
   /** Path of a readable `--input <file>` body (Issue #91); `-` stays absent. */
@@ -775,6 +811,16 @@ function classifyGhApi(
       if (path !== "-") bodyFilePath = path;
       continue;
     }
+    // pflag: a repeated string flag resolves to its last occurrence.
+    if (token === "--hostname") {
+      hostname = args[i + 1] ?? "";
+      skipNext = true;
+      continue;
+    }
+    if (token.startsWith("--hostname=")) {
+      hostname = token.slice("--hostname=".length);
+      continue;
+    }
     if (GH_VALUE_FLAGS.has(token)) {
       skipNext = true;
       continue;
@@ -783,15 +829,25 @@ function classifyGhApi(
     if (endpoint === undefined) endpoint = token;
   }
 
+  // Issue #1420: a request bound for a host other than github.com carries its
+  // field and body data there, so the path's repo says nothing about where the
+  // write lands. Derive no repo and fail closed, as for an absolute endpoint
+  // on another host. A `--hostname` with no value is unusable and fails closed.
+  const foreignHost = hostname !== undefined &&
+    hostname.toLowerCase() !== GITHUB_HOST;
+
   if (endpoint === "graphql") {
-    return classifyGhGraphql(queryDocuments, unreadableBody);
+    const info = classifyGhGraphql(queryDocuments, unreadableBody);
+    return info && foreignHost ? { ...info, scope: "unknown" } : info;
   }
 
   const effectiveMethod = (method ?? (hasBody ? "POST" : "GET")).toUpperCase();
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(effectiveMethod)) {
     return null;
   }
-  const repo = endpoint ? repoFromEndpoint(endpoint) : undefined;
+  const repo = endpoint && !foreignHost
+    ? repoFromEndpoint(endpoint)
+    : undefined;
   // Issue #3703: an endpoint that names no repo (`gists`, `orgs/…`, `user/…`)
   // cannot be checked against the allowlist, so it fails closed. The
   // `repos/{owner}/{repo}/…` placeholder form is resolved by `gh` from the
@@ -804,7 +860,7 @@ function classifyGhApi(
   const path = endpoint ? endpointPath(endpoint) : undefined;
   const scope: MutationScope = repo
     ? "explicit"
-    : (path !== undefined && isPlaceholderRepoEndpoint(path))
+    : (!foreignHost && path !== undefined && isPlaceholderRepoEndpoint(path))
     ? "cwd"
     : "unknown";
   return {
