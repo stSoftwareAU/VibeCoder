@@ -46,9 +46,13 @@ export const DEFAULT_WIP_CHECKPOINT_INTERVAL_MS = 10 * 60_000;
 /** Default milliseconds between memory-pressure probes (Issue #4301). */
 export const DEFAULT_PRESSURE_PROBE_INTERVAL_MS = 60_000;
 
-/** Commit message for automatic checkpoints (squashed on PR merge). */
+/**
+ * Commit message for automatic checkpoints (squashed on PR merge). Carries no
+ * `#<n>` issue reference: it lands in every repo the worker touches, where a
+ * fixed number links to whatever unrelated issue holds it (Issue #3345).
+ */
 export const WIP_CHECKPOINT_COMMIT_MESSAGE =
-  `${WIP_CHECKPOINT_COMMIT_PREFIX} periodic agent progress snapshot (Issue #4170)`;
+  `${WIP_CHECKPOINT_COMMIT_PREFIX} periodic agent progress snapshot`;
 
 /**
  * What actually stopped the execute run whose work is being preserved
