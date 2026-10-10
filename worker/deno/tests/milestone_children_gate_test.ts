@@ -8,6 +8,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   decideSummaryPrMerge,
   fetchOpenMilestoneChildren,
+  holdOrphanBoundPr,
   isMilestoneBranch,
   OPEN_CHILDREN_BLOCK_MARKER,
   postOpenChildrenBlockComment,
@@ -498,7 +499,7 @@ Deno.test("decideMilestoneBaseMerge - a closed milestone blocks even with no rol
 
 Deno.test("decideMilestoneBaseMerge - a milestone base that cannot be verified DEFERS, it does not block (Issue #477)", async () => {
   // Business-logic change from Issue #4396, which blocked here. A `block`
-  // retargets the PR at the default branch, so an unreadable route — a
+  // then retargeted the PR at the default branch, so an unreadable route — a
   // GitHub rate limit, certain across an unattended weekend — refused every
   // milestone child and moved the ones it could onto the review-gated
   // default branch, to wait for a human who was not there. "I could not
@@ -858,4 +859,44 @@ Deno.test("decideMilestoneBaseMerge - an ordinary child resolves its own head wh
   });
   assertEquals(d.decision, "defer");
   if (d.decision === "defer") assertEquals(d.reason, "milestone-behind");
+});
+
+Deno.test("holdOrphanBoundPr - a failed hold comment is logged, does not throw, and the disarm is still issued (Issue #3433)", async () => {
+  const calls: string[][] = [];
+  const logs: string[] = [];
+  const ghCommandFn = (args: string[]): Promise<string> => {
+    calls.push(args);
+    if (args[0] === "pr" && args[1] === "comment") {
+      return Promise.reject(new Error("comment refused"));
+    }
+    return Promise.resolve(args[0] === "api" ? "[]" : "");
+  };
+  await holdOrphanBoundPr({
+    repo: "o/r",
+    prNumber: 9,
+    gate: {
+      decision: "block",
+      reason: "milestone-closed",
+      milestoneBranch: "milestone/x",
+      detail: "milestone closed",
+    } as never,
+    ghCommandFn,
+    log: (m) => logs.push(m),
+    authorOptions: { fleetAuthors: ["bot"] },
+  });
+  assertEquals(
+    calls.filter((c) => c.includes("--disable-auto")).length,
+    1,
+  );
+  assertEquals(
+    calls.filter((c) => c[0] === "pr" && c[1] === "comment").length,
+    1,
+  );
+  assertEquals(
+    logs.some((l) =>
+      l.includes("could not post the hold comment on o/r#9") &&
+      l.includes("comment refused")
+    ),
+    true,
+  );
 });

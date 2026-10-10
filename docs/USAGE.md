@@ -103,7 +103,11 @@ commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
 file. So the description never drifts from a summary rewritten after
-creation, for as long as that run's conditions are met.
+creation, for as long as that run's conditions are met. A re-sync
+re-derives a leading `Degraded run` section from the issue's current body and
+the rebuilt summary rather than copying it, keeping only the original run's
+reason and follow-up number (Issue #3350); see the degraded-run section of
+[issue-processing.md](workflows/issue-processing.md).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale
@@ -737,7 +741,9 @@ For other reviewers:
 3. Write your feedback and select "Request changes"
 
 The worker will process the feedback, push fixes, and dismiss the review once
-it has addressed it — not at the moment it claims the review. A run that dies
+it has settled it — not at the moment it claims the review. The dismissal
+message says how it was settled (addressed, rebutted, escalated, handed off or
+permanently failed), so only a fixed review reads as addressed. A run that dies
 mid-flight leaves the review undismissed rather than silently answered, so it
 is picked up again (by this host or another) once its claim lapses.
 

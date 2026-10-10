@@ -308,6 +308,14 @@ charged as a failed attempt instead:
 - The **second** failure (the marker found, fleet-authored) dismisses the
   review with a "Permanently Failed" reply.
 
+The dismissal message GitHub shows on the review states the outcome, so a
+dismissed review is never mislabelled as addressed (Issue #3409). Only a
+verified pushed fix says "Changes have been addressed by the automated
+worker."; a rebuttal says no code change was made, an escalation says it was
+escalated to `needs-human`, a hand-off says it was handed off to a follow-up
+issue, a pushed fix whose fix PR still needs opening says so, and the second
+failure says it was not addressed after two automated attempts.
+
 No reaction is ever made for a review — a review has no reactions endpoint
 of its own; the old code reacted on `issues/comments/<reviewId>`, the wrong
 resource. A branch the host could not check out (held by another worktree,

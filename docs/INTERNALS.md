@@ -611,7 +611,7 @@ work that raises PRs, so it can never see a PR its own cycle created; the
 post-scan pass does, and lists live rather than from the cache 1.65 filled.
 It is skipped, with a logged reason, on a cycle that did no work — see
 [Merge Enforcement — hands-off landing](MERGE.md#hands-off-landing--precedence-and-loud-failure)
-(Issue #1136).
+(Issue #1136). Every swept PR passes the base check before any arming or branch update (the GraphQL read is skipped only for an unarmed, non-fix PR on a milestone base), and a mistargeted or retargeted PR is disarmed and held ([Milestones](workflows/milestones.md), Issue #3433).
 
 #### 🚦 Primary GraphQL quota exhaustion
 
@@ -2691,7 +2691,8 @@ the run retires the review (Issue #3383):
    `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker; the review is left
    undismissed, so it is retried once its claim lease lapses.
 2. **Second failure** (the marker found, fleet-authored) — dismisses the
-   review; posts "Permanently Failed". No further retries.
+   review (with a "Not addressed after two automated attempts" message, not
+   "addressed"); posts "Permanently Failed". No further retries.
 
 No reaction is ever posted for a review — the old code reacted on
 `issues/comments/<reviewId>`, the wrong resource for a review id. Any other

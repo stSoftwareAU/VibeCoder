@@ -385,7 +385,10 @@ Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
     ctx,
   );
   assertEquals(decision.allowed, false);
-  assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE");
+  // PR #3514 review: with no reader the document may hold an
+  // `updatePullRequest`, so the PR base rule (which runs ahead of the
+  // allowlist and applies with it inactive too) refuses it first.
+  assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED");
 });
 
 // Coverage boundary (Issue #94): this case proves only that an argv-VISIBLE
