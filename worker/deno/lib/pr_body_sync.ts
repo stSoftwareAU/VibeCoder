@@ -4,10 +4,11 @@
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
  * sections — evidence, milestone, the leading degraded-run section, bump
- * note, footer). A review-fix run that
- * rewrites that summary file and pushes new commits never touched the PR
- * body again, so a reviewer reading the description kept seeing the
- * original summary while the diff underneath it changed.
+ * note, footer). The degraded-run section is re-derived at sync time from the
+ * current issue and summary, never copied forward (Issue #3350). A
+ * review-fix run that rewrites that summary file and pushes new commits never
+ * touched the PR body again, so a reviewer reading the description kept
+ * seeing the original summary while the diff underneath it changed.
  *
  * This module gives the completion phase's body-assembly logic a second
  * caller: a fix run that pushed only new commits (no PR yet created on this
@@ -57,6 +58,7 @@ import {
 } from "./pr_evidence.ts";
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
+import { rederiveDegradedSection } from "./degraded_delivery.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
@@ -310,9 +312,9 @@ function extractBumpSkipNote(body: string): string {
  * The leading degraded-run section PR creation prepends (Issue #2562).
  *
  * It exists only on the live body — the summary file does not carry it — so
- * a rebuild that starts from the summary would otherwise drop it. Only a
- * block that opens the body counts; a later mention is the summary quoting
- * the phrase.
+ * this only locates it; the caller re-derives its content from current state
+ * rather than copying it forward (Issue #3350). Only a block that opens the
+ * body counts; a later mention is the summary quoting the phrase.
  */
 function extractDegradedRunSection(body: string): string {
   const heading = "## ⚠️ Degraded run —";
@@ -569,7 +571,53 @@ export async function syncPrBodyFromSummary(
     { repoPath: input.repoPath, githubRepo: input.repo, headSha },
     logger,
   );
-  body = extractDegradedRunSection(view.body ?? "") + body;
+
+  // Issue #3350: re-derive the degraded-run section from the current issue and
+  // summary. Copying the live one forward left a banner that had become false
+  // (for example "states no acceptance criteria") uncorrectable.
+  const liveDegraded = extractDegradedRunSection(view.body ?? "");
+  if (liveDegraded) {
+    let issueBody: string;
+    try {
+      const raw = await deps.runGhCommand([
+        "issue",
+        "view",
+        String(issueNumber),
+        "--repo",
+        input.repo,
+        "--json",
+        "body",
+      ]);
+      const parsed = JSON.parse(raw) as { body?: unknown };
+      if (typeof parsed.body !== "string") {
+        throw new Error("issue body missing from gh output");
+      }
+      issueBody = parsed.body;
+    } catch (err) {
+      return {
+        ok: false,
+        error: new Error(
+          `Failed to read issue #${issueNumber} to re-derive the degraded-run section of PR #${input.prNumber}: ${
+            (err as Error).message
+          }`,
+        ),
+      };
+    }
+    const rederived = rederiveDegradedSection({
+      liveSection: liveDegraded,
+      issueBody,
+      prBody: body,
+    });
+    if (rederived !== liveDegraded) {
+      logger.info("Re-derived the degraded-run section (Issue #3350)", {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        issueNumber,
+        dropped: rederived === "",
+      });
+    }
+    body = rederived + body;
+  }
 
   if (body.trim() === (view.body ?? "").trim()) {
     return {

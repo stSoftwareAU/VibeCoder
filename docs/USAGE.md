@@ -103,7 +103,11 @@ commits left unpushed, so a feedback run that only answers a finding still
 refreshes a stale body. A body raised before this digest marker existed keeps
 the older rule: rebuilt only when this run's own push changed the summary
 file. So the description never drifts from a summary rewritten after
-creation, for as long as that run's conditions are met.
+creation, for as long as that run's conditions are met. A re-sync
+re-derives a leading `Degraded run` section from the issue's current body and
+the rebuilt summary rather than copying it, keeping only the original run's
+reason and follow-up number (Issue #3350); see the degraded-run section of
+[issue-processing.md](workflows/issue-processing.md).
 
 The summary must describe the **final** state of the branch: it is rewritten,
 not appended to, whenever a later commit changes what the PR does, so a stale

@@ -2183,6 +2183,27 @@ flowchart TD
   that marks a criterion `missing`: that PR is raised as `Part of #N` and its
   merge hands the issue to a human (Issue #3177, see
   [A `missing` criterion does not close the issue](#a-missing-criterion-does-not-close-the-issue)).
+- **A re-sync re-derives the section** (Issue #3350). A later re-sync of the
+  PR body (`syncPrBodyFromSummary`) used to copy a leading `Degraded run`
+  section forward verbatim, so a banner that had turned false could not be
+  removed by a fix run. Now, when the live body opens with a
+  `## ⚠️ Degraded run —` section, the re-sync reads the issue's current body
+  (`gh issue view`) and re-derives the section from it and the rebuilt
+  summary with `rederiveDegradedSection`, using the same scope matching PR
+  creation uses. It keeps only what cannot be re-judged after the run: the
+  original run's degradation reason and the follow-up number the section
+  named. With no shortfall left the section is dropped. If the section named
+  a follow-up, it becomes a `Degraded run — partial delivery` section linking
+  that follow-up and listing the current shortfalls. If a `partial` or
+  `missing` shortfall remains but no follow-up was filed at PR creation, it
+  becomes a `Degraded run — partial delivery` section saying the worker filed
+  no follow-up for these items and to check them against the diff; the
+  re-sync files no follow-up itself. If only `unassessed` shortfalls remain,
+  it becomes the `Degraded run — no follow-up filed` section with its reason
+  re-derived, so "the issue states no acceptance criteria" disappears once
+  the issue states criteria. If the issue cannot be read, the re-sync fails
+  (logged by the caller) rather than copying the old section. It still runs
+  only when the summary changed, so an issue edit alone does not trigger it.
 - **A healthy run is untouched**, whatever its summary says. A degraded run
   that showed every scope item `met` is left alone only when it reported no
   unmatched `partial` or `missing` entry. An unmatched entry like that is

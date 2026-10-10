@@ -57,6 +57,11 @@
  * another — and rewrites its body to that later run's shortfalls and
  * delivered items, so the follow-up never goes stale (Issue #3145).
  *
+ * A PR-body re-sync (Issue #3350) re-derives this section from the current
+ * issue body and summary via {@link rederiveDegradedSection}, keeping only the
+ * original run's reason and follow-up number, because model routing cannot be
+ * re-judged after the run.
+ *
  * The verdict and the rendering are pure; {@link fileDegradedFollowUp} is the
  * one I/O step, with `gh` injected.
  *
@@ -117,6 +122,46 @@ export const UNSTATED_SCOPE_ITEM =
   "so the whole body needs checking against what this PR delivered";
 
 /**
+ * Match the issue's accepted scope against the PR body's closure block: which
+ * items are delivered (`met`) and which are shortfalls. Pure, and independent
+ * of how the run was routed, so a PR-body re-sync can re-run it (Issue #3350).
+ */
+export function assessScopeShortfalls(
+  issueBody: string,
+  prBody: string,
+): { delivered: string[]; shortfalls: DegradedShortfall[] } {
+  const stated = extractAcceptedScope(issueBody);
+  const scope = stated.length > 0 ? stated : [UNSTATED_SCOPE_ITEM];
+  // Closure entries are matched to criteria by their words, not by list
+  // position (Issue #3128): an entry that matches no criterion, or more than
+  // one equally well, assesses nothing, so its criterion is `unassessed`; a
+  // criterion split across several entries takes their worst status. A
+  // `partial` or `missing` entry left unassigned is still a shortfall, named
+  // by its own subject, so a paraphrased gap is not dropped.
+  const match = stated.length > 0
+    ? matchClosureEntries(stated, parseClosureEntries(prBody))
+    : { statuses: [], unassignedGaps: [] };
+
+  const delivered: string[] = [];
+  const shortfalls: DegradedShortfall[] = [];
+  scope.forEach((criterion, index) => {
+    const status = stated.length > 0 ? match.statuses[index] : undefined;
+    if (status === "met") {
+      delivered.push(criterion);
+    } else if (status === "partial" || status === "missing") {
+      shortfalls.push({ criterion, status });
+    } else {
+      shortfalls.push({ criterion, status: "unassessed" });
+    }
+  });
+  for (const gap of match.unassignedGaps) {
+    shortfalls.push({ criterion: gap.subject, status: gap.status });
+  }
+
+  return { delivered, shortfalls };
+}
+
+/**
  * Judge whether a run was degraded and, if so, which accepted scope it did
  * not show as delivered.
  *
@@ -152,33 +197,10 @@ export function assessDegradedDelivery(args: {
     return { degraded: false, delivered: [], shortfalls: [] };
   }
 
-  const stated = extractAcceptedScope(args.issueBody);
-  const scope = stated.length > 0 ? stated : [UNSTATED_SCOPE_ITEM];
-  // Closure entries are matched to criteria by their words, not by list
-  // position (Issue #3128): an entry that matches no criterion, or more than
-  // one equally well, assesses nothing, so its criterion is `unassessed`; a
-  // criterion split across several entries takes their worst status. A
-  // `partial` or `missing` entry left unassigned is still a shortfall, named
-  // by its own subject, so a paraphrased gap is not dropped.
-  const match = stated.length > 0
-    ? matchClosureEntries(stated, parseClosureEntries(args.prBody))
-    : { statuses: [], unassignedGaps: [] };
-
-  const delivered: string[] = [];
-  const shortfalls: DegradedShortfall[] = [];
-  scope.forEach((criterion, index) => {
-    const status = stated.length > 0 ? match.statuses[index] : undefined;
-    if (status === "met") {
-      delivered.push(criterion);
-    } else if (status === "partial" || status === "missing") {
-      shortfalls.push({ criterion, status });
-    } else {
-      shortfalls.push({ criterion, status: "unassessed" });
-    }
-  });
-  for (const gap of match.unassignedGaps) {
-    shortfalls.push({ criterion: gap.subject, status: gap.status });
-  }
+  const { delivered, shortfalls } = assessScopeShortfalls(
+    args.issueBody,
+    args.prBody,
+  );
 
   return {
     degraded: true,
@@ -335,6 +357,94 @@ export function buildDegradedPrSection(
     "",
     "",
   ].join("\n");
+}
+
+/**
+ * Read the original run's reason and follow-up number back from a degraded-run
+ * section (Issue #3350). Only the single `This run was degraded (` line is
+ * read: the shortfall bullets are untrusted text and must never supply a
+ * follow-up number. Reasons contain parentheses themselves, so the reason ends
+ * at the earliest known suffix, not the first `)`.
+ */
+export function parseDegradedSection(
+  section: string,
+): { reason?: string; followUpNumber?: number } {
+  const prefix = "This run was degraded (";
+  const line = section.split("\n").find((l) => l.startsWith(prefix));
+  if (line === undefined) return {};
+  const ends = [") and did not show", "). No follow-up was filed"]
+    .map((suffix) => line.indexOf(suffix, prefix.length))
+    .filter((i) => i !== -1);
+  const out: { reason?: string; followUpNumber?: number } = {};
+  if (ends.length > 0) {
+    out.reason = line.slice(prefix.length, Math.min(...ends));
+  }
+  const match = line.match(/continue in #(\d{1,9}):/);
+  if (match) {
+    const n = Number(match[1]);
+    if (Number.isSafeInteger(n) && n > 0) out.followUpNumber = n;
+  }
+  return out;
+}
+
+/**
+ * Build the PR-body section for a degraded run with a `partial`/`missing`
+ * shortfall but no worker follow-up (Issue #3350), e.g. a re-sync after the
+ * summary gained a gap the original no-follow-up banner did not know of.
+ * Throws when the verdict does not warrant a follow-up.
+ */
+export function buildDegradedUnfiledGapSection(
+  verdict: DegradedDeliveryVerdict,
+): string {
+  if (!degradedNeedsFollowUp(verdict)) {
+    throw new Error(
+      "buildDegradedUnfiledGapSection: needs a partial or missing shortfall",
+    );
+  }
+  return [
+    "## ⚠️ Degraded run — partial delivery",
+    "",
+    `This run was degraded (${
+      verdict.reason ?? "served by a fallback model"
+    }) and did not show every accepted scope item as met, or reported a ` +
+    `gap of its own. The worker filed no follow-up for these items when the ` +
+    `PR was raised — check them against the diff before merging:`,
+    "",
+    ...shortfallLines(verdict.shortfalls),
+    "",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Re-derive a live degraded-run section from the current issue body and PR
+ * summary (Issue #3350). Only the original run's reason and follow-up number
+ * are kept from the live section. Returns "" when nothing is outstanding, as
+ * PR creation does.
+ */
+export function rederiveDegradedSection(args: {
+  liveSection: string;
+  issueBody: string;
+  prBody: string;
+}): string {
+  const { reason, followUpNumber } = parseDegradedSection(args.liveSection);
+  const { delivered, shortfalls } = assessScopeShortfalls(
+    args.issueBody,
+    args.prBody,
+  );
+  if (shortfalls.length === 0) return "";
+  const verdict: DegradedDeliveryVerdict = {
+    degraded: true,
+    ...(reason ? { reason } : {}),
+    delivered,
+    shortfalls,
+  };
+  if (followUpNumber !== undefined) {
+    return buildDegradedPrSection(verdict, followUpNumber);
+  }
+  return degradedNeedsFollowUp(verdict)
+    ? buildDegradedUnfiledGapSection(verdict)
+    : buildDegradedNoFollowUpSection(verdict);
 }
 
 /**
