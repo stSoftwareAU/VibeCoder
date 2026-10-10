@@ -10,6 +10,7 @@ import {
   isAdminOnlyRepoSettingsIssue,
   parseRepoSettingsFindingId,
 } from "../lib/admin_only_finding.ts";
+import { REPO_ADMIN_ACTION } from "../lib/repo_settings_scanner.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 Deno.test("isAdminOnlyRepoSettingsIssue - a BP-REPO finding-id marker matches", () => {
@@ -131,6 +132,64 @@ Deno.test("isAdminOnlyRepoSettingsIssue - hostile backtick and fence runs scale 
   ) {
     const result = assertLinearGrowth(
       "isAdminOnlyRepoSettingsIssue, hostile backtick/fence runs",
+      build,
+      isAdminOnlyRepoSettingsIssue,
+      { baseChars: 10_000 },
+    );
+    assertEquals(result, false);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the fragment without the scanner's lead-in is NOT admin-only (Issue #3360)", () => {
+  for (
+    const body of [
+      "The scanner's fix says the worker cannot change repository settings, so it hands off.",
+      '- [ ] A body quoting "the worker cannot change repository settings" is not admin-only.',
+      "- [ ] A body quoting \u201cthe worker cannot change repository settings\u201d is not admin-only.",
+      'Repository admin action and "the worker cannot change repository settings" are both quoted here.',
+    ]
+  ) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), false, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - the scanner's full sentence is admin-only, marker or not, even line-wrapped (Issue #3360)", () => {
+  for (
+    const body of [
+      "<!-- finding-id: BP-REPO-DEFAULT-TOKEN-WRITE -->\n\n## Suggested fix\n\n" +
+      "Repository admin action \u2014 the worker cannot change repository settings. " +
+      "Settings \u2192 Actions \u2192 General \u2192 Workflow permissions.",
+      "## Suggested fix\n\nRepository admin action \u2014 the worker cannot change repository settings.",
+      "Repository admin action \u2014 the worker cannot change\nrepository settings.",
+    ]
+  ) {
+    assertEquals(isAdminOnlyRepoSettingsIssue(body), true, body);
+  }
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - matches the scanner's REPO_ADMIN_ACTION constant (Issue #3360)", () => {
+  assertEquals(isAdminOnlyRepoSettingsIssue(REPO_ADMIN_ACTION), true);
+  assertEquals(
+    isAdminOnlyRepoSettingsIssue(
+      "## Suggested fix\n\n" + REPO_ADMIN_ACTION +
+        " Settings \u2192 Code security.",
+    ),
+    true,
+  );
+});
+
+Deno.test("isAdminOnlyRepoSettingsIssue - hostile whitespace and partial-sentence runs scale linearly (Issue #3360)", () => {
+  for (
+    const build of [
+      (chars: number) =>
+        "Repository admin action \u2014" + " ".repeat(chars) + "x",
+      (chars: number) =>
+        "Repository admin action \u2014 the worker cannot change repository"
+          .repeat(Math.max(1, Math.floor(chars / 64))),
+    ]
+  ) {
+    const result = assertLinearGrowth(
+      "isAdminOnlyRepoSettingsIssue, hostile admin-action runs",
       build,
       isAdminOnlyRepoSettingsIssue,
       { baseChars: 10_000 },

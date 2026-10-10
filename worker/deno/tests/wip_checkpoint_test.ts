@@ -13,6 +13,7 @@ import {
 } from "../lib/wip_checkpoint.ts";
 import type { Result } from "../types.ts";
 import type { CommitAndPushPendingResult } from "../lib/git_push.ts";
+import { isWipCommitSubject } from "../lib/wip_markers.ts";
 
 function okPush(
   committed: boolean,
@@ -359,5 +360,19 @@ Deno.test("preserveTimedOutWip #47 - a failed push is reported, not thrown", asy
   assertEquals(outcome.kind, "failed");
   assert(
     outcome.kind === "failed" && outcome.reason.includes("remote hung up"),
+  );
+});
+
+Deno.test("wip_checkpoint - checkpoint message cites no issue number, old-shape subjects still read as WIP (Issue #3345)", () => {
+  // A fixed `#<n>` in a message written to every repo links to whatever
+  // unrelated issue later takes that number.
+  assertEquals(/#\d+/.test(WIP_CHECKPOINT_COMMIT_MESSAGE), false);
+  assert(isWipCommitSubject(WIP_CHECKPOINT_COMMIT_MESSAGE));
+  // Checkpoints already pushed carry the old suffix; they must still be
+  // recognised as WIP so the WIP-only PR gate keeps refusing them.
+  assert(
+    isWipCommitSubject(
+      "WIP checkpoint: periodic agent progress snapshot (Issue #4170)",
+    ),
   );
 });
