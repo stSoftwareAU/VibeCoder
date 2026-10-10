@@ -1083,8 +1083,13 @@ Deno.test("gh-guard #3433 - a GraphQL updatePullRequest document off the command
       .allowed,
     true,
   );
+  // An `--input` body is JSON, so the harmless one must be too.
+  const harmlessJson = {
+    ...INACTIVE,
+    readBodyFile: () => JSON.stringify({ query: "{ viewer { login } }" }),
+  };
   assertEquals(
-    evaluateGhCommand(["api", "graphql", "--input", "b.json"], harmless)
+    evaluateGhCommand(["api", "graphql", "--input", "b.json"], harmlessJson)
       .allowed,
     true,
   );
@@ -1115,6 +1120,87 @@ Deno.test("gh-guard #3433 - updatePullRequest hidden by operationName or a # com
     const decision = evaluateGhCommand(args, INACTIVE);
     assertEquals(decision.allowed, false, `${args}`);
     assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+});
+
+Deno.test("gh-guard #3433 - an --input JSON body that escapes the mutation name is refused with the allowlist inactive", () => {
+  // `\u0070` is `p`: GitHub decodes the JSON, so this is `updatePullRequest`.
+  const escaped = JSON.stringify({ query: UPDATE_PR_DOC }).replace(
+    "updatePullRequest",
+    "update\\u0050ullRequest",
+  );
+  assertEquals(escaped.includes("updatePullRequest"), false);
+  assertEquals(escaped.includes("\\u0050"), true);
+  const readsEscaped = { ...INACTIVE, readBodyFile: () => escaped };
+  for (
+    const args of [
+      ["api", "graphql", "--input", "b.json"],
+      ["api", "graphql", "--input=b.json"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, readsEscaped);
+    assertEquals(decision.allowed, false, `${args}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+  // A body that is not valid JSON cannot be read as the request GitHub sees.
+  const notJson = { ...INACTIVE, readBodyFile: () => "{ not json" };
+  assertEquals(
+    evaluateGhCommand(["api", "graphql", "--input", "b.json"], notJson).marker,
+    "PR_BASE_CHANGE_REFUSED",
+  );
+  // The same shape of body with an unrelated query stays allowed.
+  const benign = {
+    ...INACTIVE,
+    readBodyFile: () => JSON.stringify({ query: "{ viewer { login } }" }),
+  };
+  assertEquals(
+    evaluateGhCommand(["api", "graphql", "--input", "b.json"], benign).allowed,
+    true,
+  );
+});
+
+Deno.test("gh-guard #3433 - /graphql, absolute-URL and repositories/<id> spellings are refused with the allowlist inactive", () => {
+  const refused: readonly (readonly string[])[] = [
+    ["api", "/graphql", "-f", `query=${UPDATE_PR_DOC}`],
+    ["api", "graphql/", "-f", `query=${UPDATE_PR_DOC}`],
+    ["api", "graphql?x=1", "-f", `query=${UPDATE_PR_DOC}`],
+    ["api", "https://api.github.com/graphql", "-f", `query=${UPDATE_PR_DOC}`],
+    ["api", "/graphql", "-F", "query=@q.graphql"],
+    ["api", "/graphql", "--input", "b.json"],
+    ["api", "-X", "PATCH", "repositories/123/pulls/12", "-f", "base=main"],
+    ["api", "repositories/123/pulls/12", "-f", "base=main"],
+    [
+      "api",
+      "https://api.github.com/repositories/123/pulls/12",
+      "-f",
+      "base=main",
+    ],
+  ];
+  const ctx = { ...INACTIVE, readBodyFile: () => UPDATE_PR_DOC };
+  for (const args of refused) {
+    const decision = evaluateGhCommand(args, ctx);
+    assertEquals(decision.allowed, false, `${args}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+  // Reads through the same spellings, and a repositories/<id> PR edit that
+  // sets no base, are not base changes.
+  for (
+    const args of [
+      ["api", "/graphql", "-f", "query={ viewer { login } }"],
+      [
+        "api",
+        "https://api.github.com/graphql",
+        "-f",
+        "query={ viewer { login } }",
+      ],
+      ["api", "repositories/123/pulls/12", "-f", "title=x"],
+    ]
+  ) {
+    assertEquals(
+      evaluateGhCommand(args, INACTIVE).marker === "PR_BASE_CHANGE_REFUSED",
+      false,
+      `${args}`,
+    );
   }
 });
 

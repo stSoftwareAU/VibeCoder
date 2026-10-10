@@ -540,9 +540,12 @@ still to do, not a record: add the test that goes red, or remove the
 branch. Only an outcome the issue puts out of scope, or one no test can
 reach, may stand, written `exempt (out of scope): <reason>` or `exempt
 (untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
-creation on any other admission (Issue #3288). A fix to an existing PR
-re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the list to the head.
+creation on any other admission (Issue #3288). The diff-scoped mutation check
+(Issue #3393, `docs/mutation-check.md`) blocks the PR on any added line whose
+mutation the tests do not catch, exempt only by the same `exempt (untestable):
+<reason>` record naming `path:line`. A fix to an existing PR re-enumerates every
+branch its own commits add, not only those a review finding named, and refreshes
+the list to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1678,6 +1681,13 @@ gate if a model-generation name reappears in this document.
   honoured only when the run leaves no commit, while
   `worker/deno/lib/pr_feedback_processor.ts` runs `detectEscapeHatch` on
   `.pr_response_message` whatever the branch holds (#3095).
+- **Diagnose why a rule was ignored before adding another.** When a run
+  missed a rule that already exists, find out why — too verbose, buried,
+  ambiguous, or the prompt never asked for the effort — and fix that cause; a
+  new rule beside the ignored one fails the same way. The category 3 table in
+  `prompts/retro/prompt.md` maps each cause to its fix; a cause the artefacts
+  do not evidence (including effort, when neither the phase prompt nor the
+  repository's agent instructions show it) counts as ruled out (#3425).
 
 ## Configuration
 

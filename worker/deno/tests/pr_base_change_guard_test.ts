@@ -361,3 +361,85 @@ Deno.test("classifyPrBaseChange - GraphQL updatePullRequest is an unreadable bas
     "12",
   );
 });
+
+Deno.test("classifyPrBaseChange - /graphql, absolute-URL and escaped --input spellings are unreadable base changes (PR #3514 review)", () => {
+  const doc =
+    'mutation { updatePullRequest(input: {pullRequestId: "X", baseRefName: "main"}) { clientMutationId } }';
+  for (
+    const endpoint of [
+      "/graphql",
+      "graphql/",
+      "graphql?x=1",
+      "https://api.github.com/graphql",
+    ]
+  ) {
+    assertEquals(
+      classifyPrBaseChange(["api", endpoint, "-f", `query=${doc}`]),
+      { newBase: null },
+      endpoint,
+    );
+  }
+  const escaped = JSON.stringify({ query: doc }).replace(
+    "updatePullRequest",
+    "update\\u0050ullRequest",
+  );
+  assertEquals(escaped.includes("updatePullRequest"), false);
+  for (
+    const args of [
+      ["api", "graphql", "--input", "b.json"],
+      ["api", "graphql", "--input=b.json"],
+      ["api", "/graphql", "--input", "b.json"],
+    ]
+  ) {
+    assertEquals(
+      classifyPrBaseChange(args, () => escaped),
+      { newBase: null },
+      `${args}`,
+    );
+  }
+  // Valid JSON without the mutation, and a read, are not base changes.
+  assertEquals(
+    classifyPrBaseChange(
+      ["api", "graphql", "--input", "b.json"],
+      () => JSON.stringify({ query: "{ viewer { login } }" }),
+    ),
+    undefined,
+  );
+  assertEquals(
+    classifyPrBaseChange(["api", "/graphql", "-f", "query={ viewer { id } }"]),
+    undefined,
+  );
+  // A body that is not JSON cannot be read as GitHub reads it: fail closed.
+  assertEquals(
+    classifyPrBaseChange(
+      ["api", "graphql", "--input", "b.json"],
+      () => "{ viewer { login } }",
+    ),
+    { newBase: null },
+  );
+});
+
+Deno.test("classifyPrBaseChange - repositories/<id>/pulls/N with a base fails closed (PR #3514 review)", () => {
+  for (
+    const args of [
+      ["api", "-X", "PATCH", "repositories/123/pulls/12", "-f", "base=main"],
+      ["api", "repositories/123/pulls/12", "-f", "base=main"],
+      [
+        "api",
+        "https://api.github.com/repositories/123/pulls/12",
+        "-f",
+        "base=main",
+      ],
+    ]
+  ) {
+    assertEquals(
+      classifyPrBaseChange(args),
+      { newBase: null, prSelector: "12" },
+      `${args}`,
+    );
+  }
+  assertEquals(
+    classifyPrBaseChange(["api", "repositories/123/pulls/12", "-f", "title=x"]),
+    undefined,
+  );
+});

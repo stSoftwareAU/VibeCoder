@@ -275,7 +275,7 @@ RUN set -eu; \
 # distribution into /usr/local, rustfmt and clippy as separate packages).
 RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
-      bash /tmp/install-toolchains.sh rust; \
+      bash /tmp/install-toolchains.sh rust,cargo-mutants; \
     rm -rf /tmp/toolchains /tmp/install-toolchains.sh /tmp/toolchain-manifest.json
 
 # semgrep backs the gate's SAST stage (worker/deno/lib/semgrep_check.ts):
