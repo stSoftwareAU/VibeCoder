@@ -13,9 +13,7 @@
  * Uses Australian English throughout.
  */
 
-import { isPrSummaryPath } from "./change_request_quotes.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
-import { isWorkerStatePath } from "./worker_state_paths.ts";
 
 /**
  * Cap on manual/prompt files one first-run claim question is asked about.
@@ -38,7 +36,7 @@ function hasUnsafeCharacter(path: string): boolean {
 /**
  * Manual or prompt prose: Markdown outside `docs/archive/pr-summaries/`
  * (manuals, `SECURITY.md`, `CODING-STANDARDS.md`, `prompts/**\/prompt.md`),
- * never a PR summary, a test fixture or a worker state file. The shape check
+ * never a PR summary or a test fixture. The shape check
  * matters because the path is interpolated into a model prompt and read from
  * disk.
  */
@@ -54,10 +52,8 @@ export function isManualProsePath(path: string): boolean {
   }
   if (!path.toLowerCase().endsWith(".md")) return false;
   if (path.startsWith("docs/archive/pr-summaries/")) return false;
-  if (isPrSummaryPath(path)) return false;
   if (LEGACY_SUMMARY_PATH.test(path)) return false;
   if (isTestFilePath(path)) return false;
-  if (isWorkerStatePath(path)) return false;
   return true;
 }
 

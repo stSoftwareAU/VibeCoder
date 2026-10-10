@@ -44,6 +44,7 @@ Deno.test("isManualProsePath rejects unsafe path shapes", () => {
   assertFalse(isManualProsePath("docs//x.md"));
   assertFalse(isManualProsePath("docs/./x.md"));
   assertFalse(isManualProsePath("docs/x.md "));
+  assertFalse(isManualProsePath(" docs/x.md"));
   assertFalse(isManualProsePath("docs/a`b.md"));
   assertFalse(isManualProsePath("docs/a\\b.md"));
   assertFalse(isManualProsePath("docs/a\nb.md"));
