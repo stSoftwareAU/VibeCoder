@@ -563,11 +563,22 @@ must exist**). A `Branch outcomes:` line for a compound condition names the
 operand it covers, and its flip is that operand's flip (Issue #3376). An entry
 that admits no test reaches its outcome is work still to do, not a record: add
 the test that goes red, or remove the branch. Only an outcome the issue puts
-out of scope, or one no test can reach, may stand, written `exempt (out of
-scope): <reason>` or `exempt (untestable): <reason>`; an issue run's
-branch-outcomes gate blocks PR creation on any other admission (Issue #3288).
-A fix to an existing PR re-enumerates every branch its own commits add, not
-only those a review finding named, and refreshes the list to the head.
+out of scope, or one production can reach but a test cannot stage, may stand,
+written `exempt (out of scope): <reason>` or `exempt (untestable): <reason>`;
+an issue run's branch-outcomes gate blocks PR creation on any other admission
+(Issue #3288). An outcome no input can reach is dead code: remove it, never
+exempt it. `exempt (untestable)` is for an outcome production can reach but a
+test cannot stage, such as a permission or I/O fault the suite cannot stage
+portably; its reason names what blocks staging and the harness search — the
+test files that already call the enclosing function or script (a grep of the
+test tree for its name), each with why it cannot reach the outcome. "No
+existing harness" with no search named is not a reason. An outcome the linked
+issue asks a test for, in its acceptance criteria or Definition of done,
+cannot be `exempt (untestable)`. The gate checks only that an exemption gives
+a reason of three or more words, so the search must be named for a reviewer to
+check it (Issue #3428). A fix to an existing PR re-enumerates every branch its
+own commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that

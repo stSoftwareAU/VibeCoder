@@ -1279,7 +1279,16 @@ The file MUST contain:
    to do before the summary, not reporting: add the test, or remove the
    branch; the worker blocks PR creation on it, and only an entry written
    `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` may
-   stand. The Test Plan carries this enumeration as a
+   stand. An outcome no input can reach is dead code: remove it, never
+   exempt it. `exempt (untestable)` is for an outcome production can reach
+   but a test cannot stage, such as a permission or I/O fault the suite
+   cannot stage portably; its reason names what blocks staging and the
+   harness search — the test files that already call the enclosing function
+   or script (a grep of the test tree for its name), each with why it cannot
+   reach the outcome. "No existing harness" with no search named is not a
+   reason. An outcome the linked issue asks a test for, in its acceptance
+   criteria or Definition of done, cannot be `exempt (untestable)`. The Test
+   Plan carries this enumeration as a
    `Branch outcomes:` list — one line per outcome naming `path:line`, the
    outcome, the test that reaches it, and that flipping it went red — or
    `Branch outcomes: none added` when the diff adds no branch. When the diff

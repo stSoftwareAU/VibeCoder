@@ -26,7 +26,8 @@
  * parser itself skipped, so an admission cannot dodge the check merely by
  * sitting in a table row or after a sibling bullet) that admits its own
  * outcome is unreached, with a single narrow exemption for an outcome the
- * issue genuinely puts out of scope, or one no test can reach at all.
+ * issue genuinely puts out of scope, or one production can reach but a test
+ * cannot stage (Issue #3428).
  *
  * Modelled on `docs_sweep_gate.ts`: pure functions, hardcoded regexes (no
  * `new RegExp()` built from input), and a bounded scan of the PR summary —
@@ -889,9 +890,13 @@ function admitsUnreached(unit: string): boolean {
 
 /**
  * The one allowed exception: an outcome the issue puts out of scope, or one
- * no test can reach, written `exempt (out of scope): <reason>` or
- * `exempt (untestable): <reason>` with a real reason (at least 3 words
- * containing a letter). Any other parenthesised word is not an exemption.
+ * production can reach but a test cannot stage, written
+ * `exempt (out of scope): <reason>` or `exempt (untestable): <reason>` with a
+ * real reason (at least 3 words containing a letter). Only the word count is
+ * checked here; what an `exempt (untestable)` reason must name — what blocks
+ * staging and the existing tests searched — is the CODING-STANDARDS.md rule a
+ * reviewer checks (Issue #3428). Any other parenthesised word is not an
+ * exemption.
  */
 const EXEMPT_RE =
   /\bexempt\s*\(\s*(?:out\s+of\s+scope|untestable)\s*\)\s*:([^\n]*)/i;
@@ -995,15 +1000,18 @@ function evaluateUnreachedAdmissions(
       problems.push(
         `the \`Branch outcomes:\` entry for \`${label}\` is marked exempt ` +
           "but gives no reason — say why the issue puts the outcome out of " +
-          "scope, or why no test can reach it",
+          "scope, or what blocks a test from staging it and which existing " +
+          "tests of its function you searched",
       );
     } else {
       unreachedEntries.push(label);
       problems.push(
         `the \`Branch outcomes:\` entry for \`${label}\` admits no test ` +
           "reaches its outcome — add a test that goes red when the outcome " +
-          "is flipped, or remove the branch; only an outcome the issue puts " +
-          "out of scope, or one no test can reach, may stand, written " +
+          "is flipped, or remove the branch; an outcome no input can reach " +
+          "is dead code to remove; only an outcome the issue puts out of " +
+          "scope, or one production can reach but a test cannot stage, may " +
+          "stand, written " +
           "`exempt (out of scope): <reason>` or `exempt (untestable): " +
           "<reason>`",
       );
@@ -1255,10 +1263,14 @@ export function buildBranchOutcomesGateComment(
     "wrongly-relative citation blocks the PR.",
     "6. An entry that admits its outcome is unreached — `no test reaches " +
     "it`, a flip that never went red or left the suite green — is work " +
-    "still to do: add the test that goes red, or remove the branch; only " +
-    "an outcome the issue puts out of scope, or one no test can reach, may " +
-    "stand, written `exempt (out of scope): <reason>` or " +
-    "`exempt (untestable): <reason>`.",
+    "still to do: add the test that goes red, or remove the branch; an " +
+    "outcome no input can reach is dead code to remove, never exempt; only " +
+    "an outcome the issue puts out of scope, or one production can reach " +
+    "but a test cannot stage, may stand, written " +
+    "`exempt (out of scope): <reason>` or " +
+    "`exempt (untestable): <reason>`, and an `exempt (untestable)` reason " +
+    "names what blocks staging and the existing tests of its function that " +
+    "were searched.",
     "",
     "Add a `Branch outcomes` list to " +
     "`docs/archive/pr-summaries/pr-summary-<issue>.md` in this shape:",
