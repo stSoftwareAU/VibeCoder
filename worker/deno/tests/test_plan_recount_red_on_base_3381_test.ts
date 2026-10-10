@@ -4,6 +4,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   describeTestPlanMismatch,
   findTestPlanMismatches,
+  findUncheckedRunResults,
   type TestDeclarationCounts,
 } from "../lib/test_plan_recount.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
@@ -21,7 +22,7 @@ function counts(
 
 // Real stale Test Plan from VibeCoder PR #3372 at head 79ac8590. The head
 // file has 80 runnable tests, so "77 passed, 2 failed" (79) is stale.
-const STALE_3340 = `## Test Plan
+const STALE_PR_3372 = `## Test Plan
 
 All tests are in \`worker/deno/tests/branch_outcomes_gate_test.ts\`.
 
@@ -47,7 +48,7 @@ const HEAD_80 = counts({ [GATE_TEST]: 80 });
 
 Deno.test("paired run result - the stale PR #3372 plan is flagged once", () => {
   const found = findTestPlanMismatches({
-    summary: STALE_3340,
+    summary: STALE_PR_3372,
     headCounts: HEAD_80,
   });
   assertEquals(found.length, 1);
@@ -58,7 +59,7 @@ Deno.test("paired run result - the stale PR #3372 plan is flagged once", () => {
 });
 
 Deno.test("paired run result - a correct red-on-base total is not flagged", () => {
-  const fixed = STALE_3340.replace(
+  const fixed = STALE_PR_3372.replace(
     "77 passed, 2 failed",
     "76 passed, 4 failed",
   );
@@ -203,7 +204,16 @@ Deno.test("describeTestPlanMismatch - a run names total, passed, failed, file an
     actual: 80,
     run: { passed: 77, failed: 2 },
   });
-  for (const part of ["79", "77 passed", "2 failed", FOO_TEST, "80"]) {
+  for (
+    const part of [
+      "79",
+      "77 passed",
+      "2 failed",
+      FOO_TEST,
+      "80",
+      "re-run it on the head test file (against the base branch's production code for a red-on-base run)",
+    ]
+  ) {
     assert(text.includes(part), `${part} missing from: ${text}`);
   }
 });
@@ -224,6 +234,74 @@ Deno.test("paired run result - a quality.sh full-gate line naming a failing test
     "## Test Plan\n\n- `./quality.sh < /dev/null`: `deno test` 26066 passed, 1 failed — `issue_cache - returns null for expired entry` (`worker/deno/tests/issue_cache_test.ts`).\n";
   assertEquals(
     findTestPlanMismatches({ summary, headCounts: counts({ [file]: 7 }) }),
+    [],
+  );
+});
+
+Deno.test("paired run result - a result inside a code span is the deno output and is checked", () => {
+  const headCounts = counts({ [FOO_TEST]: 80 });
+  const plan = (text: string) =>
+    `## Test Plan\n\n- \`tests/foo_test.ts\` against base: \`${text}\`\n`;
+  const found = findTestPlanMismatches({
+    summary: plan("FAILED | 77 passed | 2 failed (1s)"),
+    headCounts,
+  });
+  assertEquals(found.length, 1);
+  assertEquals(found[0]!.claimed, 79);
+  assertEquals(
+    findTestPlanMismatches({
+      summary: plan("FAILED | 76 passed | 4 failed (1s)"),
+      headCounts,
+    }),
+    [],
+  );
+});
+
+const HEAD_FOO = counts({ [FOO_TEST]: 80 });
+
+Deno.test("unchecked run results - (a) a block naming an unchanged test file is reported", () => {
+  const summary =
+    "## Test Plan\n\n`tests/other_test.ts`: 77 passed, 2 failed.\n";
+  const found = findUncheckedRunResults({ summary, headCounts: HEAD_FOO });
+  assertEquals(found.length, 1);
+  assert(found[0]!.reason.includes("not one of the PR's changed test files"));
+  assert(found[0]!.line.includes("77 passed"));
+  assertEquals(
+    findTestPlanMismatches({ summary, headCounts: HEAD_FOO }),
+    [],
+  );
+});
+
+Deno.test("unchecked run results - (b) several files whose runs differ are reported", () => {
+  const headCounts = counts({
+    "worker/deno/tests/a_test.ts": 10,
+    "worker/deno/tests/b_test.ts": 20,
+  });
+  const summary =
+    "## Test Plan\n\n`a_test.ts` 5 passed, 1 failed; `b_test.ts` 3 passed, 0 failed.\n";
+  const found = findUncheckedRunResults({ summary, headCounts });
+  assertEquals(found.length, 1);
+  assert(found[0]!.reason.includes("several test files and its runs differ"));
+});
+
+Deno.test("unchecked run results - (c) a red result with no file and no sole changed test file is reported", () => {
+  const headCounts = counts({
+    "worker/deno/tests/a_test.ts": 40,
+    "worker/deno/tests/b_test.ts": 40,
+  });
+  const summary =
+    "## Test Plan\n\nChanged `tests/a_test.ts` and `tests/b_test.ts`.\n\nRed on base: 1 passed, 2 failed.\n";
+  const found = findUncheckedRunResults({ summary, headCounts });
+  assertEquals(found.length, 1);
+  assert(found[0]!.reason.includes("no sole changed test file"));
+});
+
+Deno.test("unchecked run results - quality.sh and file-less green blocks are not reported", () => {
+  const summary = "## Test Plan\n\nChanged `tests/foo_test.ts`.\n\n" +
+    "- `./quality.sh < /dev/null`: `deno test` 26066 passed, 1 failed (`worker/deno/tests/issue_cache_test.ts`).\n\n" +
+    "- `deno task test:unit`: 4000 passed, 0 failed.\n";
+  assertEquals(
+    findUncheckedRunResults({ summary, headCounts: HEAD_FOO }),
     [],
   );
 });

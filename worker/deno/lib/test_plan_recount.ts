@@ -477,16 +477,53 @@ export function logicalBlocks(section: string): string[] {
  * and a paired "N passed, M failed" run result is compared by N + M with the
  * runnable count of the test file it ran (Issue #3381).
  */
-export function findTestPlanMismatches(opts: {
+export function findTestPlanMismatches(
+  opts: TestPlanScanOptions,
+): TestPlanMismatch[] {
+  return scanTestPlan(opts).mismatches;
+}
+
+/**
+ * A paired run result the recount could not check, so it was neither
+ * compared nor passed as correct (Issue #3381). The worker logs these rather
+ * than letting an unchecked figure pass silently.
+ */
+export interface UncheckedRunResult {
+  /** The Test Plan line, trimmed (truncated to 300 chars). */
+  line: string;
+  /** Why the result could not be compared with the head. */
+  reason: string;
+}
+
+/**
+ * The paired run results `findTestPlanMismatches` could not check: a block
+ * naming a test file that is not one of the PR's changed test files, a block
+ * naming several files whose runs differ, or a red result naming no test file
+ * when the section has no sole changed test file. A `quality.sh` block and a
+ * file-less green run are out of scope by design and are not reported. Comes
+ * from the same scan as `findTestPlanMismatches`.
+ */
+export function findUncheckedRunResults(
+  opts: TestPlanScanOptions,
+): UncheckedRunResult[] {
+  return scanTestPlan(opts).unchecked;
+}
+
+interface TestPlanScanOptions {
   summary: string;
   /**
    * Repo-relative path → declaration counts at the head, for the PR's
    * changed test files only (total > 0).
    */
   headCounts: ReadonlyMap<string, TestDeclarationCounts>;
-}): TestPlanMismatch[] {
+}
+
+function scanTestPlan(
+  opts: TestPlanScanOptions,
+): { mismatches: TestPlanMismatch[]; unchecked: UncheckedRunResult[] } {
   const section = extractTestPlanSection(opts.summary);
   const results: TestPlanMismatch[] = [];
+  const unchecked: UncheckedRunResult[] = [];
 
   // The section's sole changed test file, for a red run that names none. A
   // run with failures against base must have run a test file the PR changed
@@ -517,13 +554,19 @@ export function findTestPlanMismatches(opts: {
       );
     }
     if (runs.length > 0) {
-      const mismatch = checkRunResults(
+      const outcome = checkRunResults(
         rawLine,
         runs,
         opts.headCounts,
         soleFile,
       );
-      if (mismatch) results.push(mismatch);
+      if (outcome.kind === "mismatch") results.push(outcome.mismatch);
+      else if (outcome.kind === "unchecked") {
+        unchecked.push({
+          line: rawLine.trim().slice(0, 300),
+          reason: outcome.reason,
+        });
+      }
       continue;
     }
 
@@ -576,19 +619,28 @@ export function findTestPlanMismatches(opts: {
     }
   }
 
-  return results;
+  return { mismatches: results, unchecked };
 }
 
-/** Compare a block's paired run results with the head; null when fine or unsure. */
+type RunCheckOutcome =
+  | { kind: "ok" }
+  | { kind: "mismatch"; mismatch: TestPlanMismatch }
+  | { kind: "unchecked"; reason: string };
+
+/**
+ * Compare a block's paired run results with the head: ok (matches, or out of
+ * scope by design), a mismatch, or unchecked with the reason it could not be
+ * compared.
+ */
 function checkRunResults(
   rawLine: string,
   runs: { passed: number; failed: number }[],
   headCounts: ReadonlyMap<string, TestDeclarationCounts>,
   soleFile: string | undefined,
-): TestPlanMismatch | null {
+): RunCheckOutcome {
   // A full-gate result covers the whole suite, so a failing test file it names
   // is not the file the figures count (corpus: pr-summary-3255.md, pr-summary-3292.md).
-  if (/\bquality\.sh\b/.test(rawLine)) return null;
+  if (/\bquality\.sh\b/.test(rawLine)) return { kind: "ok" };
   const tokens = [...rawLine.matchAll(TOKEN_RE)].map((m) => m[0]);
   let files: Set<string>;
   let candidates = runs;
@@ -596,18 +648,36 @@ function checkRunResults(
     files = new Set<string>();
     for (const token of tokens) {
       const resolved = resolveToken(token, headCounts);
-      if (resolved === undefined) return null;
+      if (resolved === undefined) {
+        return {
+          kind: "unchecked",
+          reason:
+            `the block names ${token}, which is not one of the PR's changed test files`,
+        };
+      }
       files.add(resolved);
     }
     // Two runs of different file sets cannot be told apart.
     if (
       files.size > 1 &&
       new Set(candidates.map((r) => r.passed + r.failed)).size > 1
-    ) return null;
+    ) {
+      return {
+        kind: "unchecked",
+        reason: "the block names several test files and its runs differ",
+      };
+    }
   } else {
     // A green full-suite line must never be compared; only a red run is.
     candidates = runs.filter((r) => r.failed > 0);
-    if (candidates.length === 0 || soleFile === undefined) return null;
+    if (candidates.length === 0) return { kind: "ok" };
+    if (soleFile === undefined) {
+      return {
+        kind: "unchecked",
+        reason:
+          "a red result names no test file and the section has no sole changed test file",
+      };
+    }
     files = new Set([soleFile]);
   }
   let actual = 0;
@@ -616,15 +686,18 @@ function checkRunResults(
     const claimed = run.passed + run.failed;
     if (claimed !== actual) {
       return {
-        line: rawLine.trim().slice(0, 300),
-        files: [...files],
-        claimed,
-        actual,
-        run,
+        kind: "mismatch",
+        mismatch: {
+          line: rawLine.trim().slice(0, 300),
+          files: [...files],
+          claimed,
+          actual,
+          run,
+        },
       };
     }
   }
-  return null;
+  return { kind: "ok" };
 }
 
 /** One line describing a mismatch, for a recovery prompt or a PR reply. */
@@ -632,7 +705,7 @@ export function describeTestPlanMismatch(m: TestPlanMismatch): string {
   if (m.run) {
     return `the Test Plan line "${m.line}" reports a run of ${m.claimed} tests (${m.run.passed} passed, ${m.run.failed} failed) for ${
       m.files.join(", ")
-    }, but the head has ${m.actual} runnable — re-run the head test file against the base branch's production code and replace the figures`;
+    }, but the head has ${m.actual} runnable — re-run it on the head test file (against the base branch's production code for a red-on-base run) and replace the figures`;
   }
   if (m.files.length === 1) {
     return `the Test Plan line "${m.line}" quotes ${m.claimed} tests for ${

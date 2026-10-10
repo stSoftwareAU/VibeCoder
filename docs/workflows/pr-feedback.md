@@ -450,9 +450,11 @@ Five checks run, each only when it applies:
    were added to or extended an existing file (`added to`, `extended`,
    `with N tests`) is not compared with that file's whole count. Lines it
    cannot total (an uncounted file, `--filter`, two different numbers, "N
-   new tests", a paired result in a block naming several files whose runs
-   differ, a paired result in a block citing `./quality.sh`, whose figures
-   cover the whole suite) are skipped.
+   new tests", a paired result in a block citing `./quality.sh`, whose
+   figures cover the whole suite) are skipped. A paired result naming an
+   unchanged test file, several files whose runs differ, or a red result
+   with no file and no sole changed test file is logged by the worker as not
+   checked rather than compared.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.

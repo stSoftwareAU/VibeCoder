@@ -1103,3 +1103,46 @@ Deno.test("runPrFeedbackDriftCheck - a finding naming a path outside the checkou
     await Deno.remove(outsideDir, { recursive: true });
   }
 });
+
+Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check is warned about (Issue #3381)", async () => {
+  const { dir, beforeSha } = await setupBaseline();
+  try {
+    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    // No test file is named anywhere in the Test Plan, so a red result has no
+    // sole changed test file to be compared with.
+    await writeFile(
+      dir,
+      SUMMARY_PATH,
+      SUMMARY_V1.replace(
+        /- Added .*\n/,
+        "- Red on base: 5 passed, 2 failed.\n",
+      ),
+    );
+
+    const warnings: string[] = [];
+    const calls: AgentCall[] = [];
+    await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runAgent: makeRunAgent([{ ok: true, output: verdictBlock([]) }], calls),
+        logger: {
+          ...noopLogger(),
+          warn: (message: string) => {
+            warnings.push(message);
+          },
+        },
+      },
+    );
+
+    const hit = warnings.filter((w) =>
+      w.startsWith("Test Plan recount could not check 1 run result(s)")
+    );
+    assertEquals(hit.length, 1);
+    assertStringIncludes(hit[0]!, SUMMARY_PATH);
+    assertStringIncludes(hit[0]!, "Red on base: 5 passed, 2 failed.");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
