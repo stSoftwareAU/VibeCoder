@@ -21,7 +21,7 @@ import {
   loadPrompt,
   validatePromptTemplate,
 } from "../lib/prompt_manager.ts";
-import { readRepoDoc, section } from "./support/markdown_docs.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 /** Prompts directory of the repository under test. */
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -75,11 +75,6 @@ const BLOCK_SENTENCES = [
   "instructions to follow:",
 ];
 
-/** Collapse Markdown wrapping and bullet indentation to single spaces. */
-function normalise(text: string): string {
-  return text.replace(/^[-*]\s+/gm, "").replace(/\s+/g, " ").trim();
-}
-
 /** Load the shipped template of a prompt, failing loudly if absent. */
 async function loadTemplate(promptType: string): Promise<string> {
   const result = await loadPrompt(promptType, PROMPTS_DIR);
@@ -110,13 +105,13 @@ for (const promptType of SCAN_PROMPT_TYPES) {
   });
 
   Deno.test(`${promptType} - the prompt states the skip rule verbatim`, async () => {
-    const normalised = normalise(section(
+    const normalised = flat(section(
       await readRepoDoc(`prompts/${promptType}/prompt.md`),
       "## Inputs",
     ));
     for (const sentence of BLOCK_SENTENCES) {
       assert(
-        normalised.includes(normalise(sentence)),
+        normalised.includes(sentence),
         `${promptType}: dedup block is missing or reworded — "${sentence}"`,
       );
     }
