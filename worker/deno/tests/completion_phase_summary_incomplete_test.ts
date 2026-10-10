@@ -28,6 +28,7 @@ import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { deriveRunOutcome, describeRunOutcome } from "../lib/run_outcome.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 
 const SHA = "3c2b1a0908f7e6d5c4b3a29180716253440fedcb";
 const PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/1107";
@@ -418,6 +419,13 @@ Deno.test(
       prNumber: observed.prNumber,
     });
     assertEquals(derived.kind, "no_pr");
+    // This failure leaves the phase as a `no_pr` run, so it feeds the failure
+    // ladder and the run-failure auto-filer: it must carry the gate marker or
+    // the quoted agent text could be read as a worker crash (PR #3440 review).
+    assertEquals(
+      detectFailureCategory(observed.reason ?? ""),
+      "summary_incomplete",
+    );
   },
 );
 
