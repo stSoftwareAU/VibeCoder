@@ -1,0 +1,12 @@
+{
+  "issue": 3324,
+  "chunk": "top-up-3324",
+  "title": "top-up: the one summary-only claim-correction turn",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3324",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: summary_claim_correction.ts (#3324)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/summary_claim_correction.ts"
+  ],
+  "sweptAt": "b1f6c7e16013e4a102e7ac85db26bc81dfa5d398"
+}

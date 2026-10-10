@@ -191,6 +191,11 @@ import {
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
+  carryForwardCorrectedClaims,
+  correctSummaryClaimsInRun,
+  shouldOfferClaimCorrection,
+} from "../summary_claim_correction.ts";
+import {
   applyScreenshotGateFailure,
   recoverFromScreenshotGateBlock,
   SCREENSHOT_EVIDENCE_MISSING_REASON,
@@ -471,6 +476,24 @@ async function lookupBlockedGatePr(
 }
 
 /**
+ * One summary-rule gate's block, as passed to {@link reportSummaryRuleBlock}
+ * (Issue #3324).
+ */
+interface SummaryRuleBlock {
+  /** The phase-failure reason the gate would have reported. */
+  reason: string;
+  /** The gate's remediation comment, posted to the issue thread. */
+  comment: string;
+  /**
+   * The folded sections `comment` carries, one per blocked gate, in fold
+   * order — the base gate's own comment first, then each later gate's
+   * comment `foldInLateSummaryVerdicts` appended. A standalone gate with
+   * nothing folded in passes `[comment]`.
+   */
+  sections: readonly string[];
+}
+
+/**
  * Report a PR-summary document rule the run broke (Issue #1140).
  *
  * The three summary gates — acceptance-criteria closure, independent review,
@@ -534,8 +557,11 @@ async function lookupBlockedGatePr(
  * `summary_incomplete` rather than a crash misread off the gates' quoted agent
  * text. The recorded `summaryRuleBlocks[].reason` stays the raw gate reason.
  *
- * @param reason - The phase-failure reason the gate would have reported.
- * @param comment - The gate's remediation comment for the issue thread.
+ * @param block - The gate's block reason, remediation comment (for the issue
+ *   thread) and the folded sections that comment carries (Issue #3324), one
+ *   per gate, in fold order — used to give the in-run recovery turn a
+ *   numbered "REQUIRED ITEM" per gate rather than one undifferentiated
+ *   notice.
  * @returns `failure` on the run's first block (PR or no PR, both recovered
  *   in-run by `workOnIssueCompletion`), or on a later block whose follow-up
  *   could not be filed, or whose PR URL cannot be numbered; `early_exit`
@@ -543,8 +569,7 @@ async function lookupBlockedGatePr(
  *   and finalised an existing PR.
  */
 async function reportSummaryRuleBlock(
-  reason: string,
-  comment: string,
+  block: SummaryRuleBlock,
   ctx: IssueContext,
   state: PhaseState,
   prBody: string,
@@ -553,6 +578,7 @@ async function reportSummaryRuleBlock(
   // comment; the existing-PR finalise below is a path that posts it too.
   docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
+  const { reason, comment, sections } = block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
@@ -577,6 +603,7 @@ async function reportSummaryRuleBlock(
       {
         reason,
         comment,
+        sections,
         ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
       },
     ];
@@ -995,8 +1022,10 @@ export async function workOnIssueCompletion(
 
   // In-run recovery from the first PR-summary rule block (Issue #2189): a
   // documentation shortfall on a pushed, quality-gated branch used to cost the
-  // whole run. Entered once per run — a block on the re-run is the second, and
-  // fails as before.
+  // whole run. Entered once per run — a block on the re-run is the second. A
+  // second block the standalone claim-check gate alone raised instead defers
+  // to the one summary-only correction turn below (Issue #3324); any other
+  // second block fails as before.
   if (
     result.status === "failure" && (state.summaryRuleBlocks?.length ?? 0) === 1
   ) {
@@ -1005,6 +1034,22 @@ export async function workOnIssueCompletion(
       state,
       deps,
       result,
+      () => runCompletionAttempt(ctx, state, deps),
+    );
+  }
+
+  // Summary-only claim correction turn (Issue #3324): the recovery turn above
+  // has already been spent, and the completion attempt deferred a
+  // claim-check-only later block here rather than failing or finalising the
+  // PR immediately — see `shouldOfferClaimCorrection`.
+  if (
+    result.status === "failure" &&
+    state.summaryClaimCorrection?.status === "pending"
+  ) {
+    result = await correctSummaryClaimsInRun(
+      ctx,
+      state,
+      deps,
       () => runCompletionAttempt(ctx, state, deps),
     );
   }
@@ -1027,13 +1072,21 @@ export async function workOnIssueCompletion(
  * A security-fix, summary-rule or screenshot gate block is a verdict, not an
  * infrastructure blip: re-running the same body against the same branch
  * reproduces it, so the retry is skipped and the in-run recovery (Issues
- * #1575, #2189 and #2960) handles it instead.
+ * #1575, #2189, #2960 and #3324) handles it instead.
+ *
+ * A `summaryClaimCorrection` left `pending` from a previous attempt only
+ * survives to be read by the attempt that set it (Issue #3324): it is
+ * cleared here, at the top, before the body runs, so a `pending` left over
+ * from this attempt alone is what `workOnIssueCompletion` sees afterwards.
  */
 async function runCompletionAttempt(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
+  if (state.summaryClaimCorrection?.status === "pending") {
+    state.summaryClaimCorrection = undefined;
+  }
   const blocksBefore = state.securityGateBlocks?.length ?? 0;
   const summaryBlocksBefore = state.summaryRuleBlocks?.length ?? 0;
   const result = await completionBody(ctx, state, deps);
@@ -1052,8 +1105,18 @@ async function runCompletionAttempt(
   const gateBlocked = (state.securityGateBlocks?.length ?? 0) > blocksBefore;
   const summaryRuleBlocked =
     (state.summaryRuleBlocks?.length ?? 0) > summaryBlocksBefore;
+  // Issue #3324: a claim-check-only later block defers to the correction
+  // turn rather than appending to `summaryRuleBlocks` immediately, so it
+  // must be treated the same as `summaryRuleBlocked` here — otherwise the
+  // #1550 infrastructure retry would re-run `completionBody` a second time
+  // before `workOnIssueCompletion` ever reaches the correction turn.
+  const claimCorrectionPending =
+    state.summaryClaimCorrection?.status === "pending";
 
-  if (result.status !== "failure" || gateBlocked || summaryRuleBlocked) {
+  if (
+    result.status !== "failure" || gateBlocked || summaryRuleBlocked ||
+    claimCorrectionPending
+  ) {
     return result;
   }
 
@@ -2508,43 +2571,58 @@ async function completionBody(
   // Skipped entirely when no summary file with content was loaded — with no
   // summary there are no claims about named code to check.
   // ---------------------------------------------------------------------
-  const claimCheck = summarySource === null ? null : await runSummaryClaimCheck(
-    {
-      repo,
-      issueNumber,
-      repoPath: state.repoPath,
-      baseRef: comparableBase.ok ? comparableBase.value : null,
-      summaryPath: summarySource,
-      summaryContent,
-    },
-    {
-      runGit: async (args) => {
-        const r = await deps.git.runGitCommand(args, { cwd: state.repoPath });
-        return r.ok ? r.value : null;
+  const rawClaimCheck = summarySource === null
+    ? null
+    : await runSummaryClaimCheck(
+      {
+        repo,
+        issueNumber,
+        repoPath: state.repoPath,
+        baseRef: comparableBase.ok ? comparableBase.value : null,
+        summaryPath: summarySource,
+        summaryContent,
       },
-      askQuestion: async (prompt) => {
-        const r = await deps.claude.runSummaryClaimQuestion(
-          {
-            prompt,
-            phase: "issue",
-            repo,
-            issueNumber,
-            timeoutSeconds: config.claudeTimeout,
-            killAfterSeconds: config.claudeKillAfter,
-            model: config.claudeModel || undefined,
+      {
+        runGit: async (args) => {
+          const r = await deps.git.runGitCommand(args, {
             cwd: state.repoPath,
-            logger,
-            disallowedTools: [...DRIFT_CHECK_DISALLOWED_TOOLS],
-          },
-          { maxRetries: config.maxRateLimitRetries },
-        );
-        if (!r.ok) return r;
-        recordClaudeRunStats(state, r.value);
-        return { ok: true, value: r.value.output ?? "" };
+          });
+          return r.ok ? r.value : null;
+        },
+        askQuestion: async (prompt) => {
+          const r = await deps.claude.runSummaryClaimQuestion(
+            {
+              prompt,
+              phase: "issue",
+              repo,
+              issueNumber,
+              timeoutSeconds: config.claudeTimeout,
+              killAfterSeconds: config.claudeKillAfter,
+              model: config.claudeModel || undefined,
+              cwd: state.repoPath,
+              logger,
+              disallowedTools: [...DRIFT_CHECK_DISALLOWED_TOOLS],
+            },
+            { maxRetries: config.maxRateLimitRetries },
+          );
+          if (!r.ok) return r;
+          recordClaudeRunStats(state, r.value);
+          return { ok: true, value: r.value.output ?? "" };
+        },
+        logger,
       },
-      logger,
-    },
-  );
+    );
+  // Issue #3324: a sentence the correction turn already confirmed wrong, and
+  // which is still present in the current summary text, is carried forward
+  // into this attempt's result even when this attempt's own model pass
+  // misses it — the gate is never loosened by a flaky re-run.
+  const claimCheck = rawClaimCheck === null
+    ? null
+    : carryForwardCorrectedClaims(
+      rawClaimCheck,
+      state.summaryClaimCorrection,
+      summaryContent,
+    );
   if (claimCheck === null) {
     logger.info(
       "Summary claim check skipped: no PR summary file loaded (Issue #3257)",
@@ -2610,15 +2688,18 @@ async function completionBody(
     reason: string,
     comment: string,
     skip: readonly LateSummaryVerdict[] = [],
-  ): { reason: string; comment: string } {
+  ): { reason: string; comment: string; sections: readonly string[] } {
     let foldedReason = reason;
     let foldedComment = comment;
+    const sections = [comment];
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
-      foldedComment = `${foldedComment}\n\n---\n\n${verdict.comment()}`;
+      const verdictComment = verdict.comment();
+      foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
+      sections.push(verdictComment);
     }
-    return { reason: foldedReason, comment: foldedComment };
+    return { reason: foldedReason, comment: foldedComment, sections };
   }
 
   // ---------------------------------------------------------------------
@@ -2646,8 +2727,7 @@ async function completionBody(
       buildClosureGateComment(closure),
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2685,8 +2765,7 @@ async function completionBody(
       buildIndependentReviewComment(review),
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2723,8 +2802,7 @@ async function completionBody(
       buildReproductionGateComment(reproduction),
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2777,8 +2855,7 @@ async function completionBody(
       [docsSweepVerdict],
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2815,8 +2892,7 @@ async function completionBody(
       [docsSweepVerdict, removedAssertionsVerdict],
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2847,8 +2923,7 @@ async function completionBody(
       [docsSweepVerdict, removedAssertionsVerdict, placeholderVerdict],
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2885,8 +2960,7 @@ async function completionBody(
       ],
     );
     return await reportSummaryRuleBlock(
-      folded.reason,
-      folded.comment,
+      folded,
       ctx,
       state,
       prBody,
@@ -2909,9 +2983,36 @@ async function completionBody(
       testPlanProblems: claimCheck.testPlanProblems.length,
       notChecked: claimCheck.notChecked.length,
     });
+    // This gate is reached only when every earlier summary-rule gate has
+    // passed, so the claim check is the only verdict blocking here — never a
+    // fold-in target. A later block of this same gate (the recovery turn
+    // already spent) gets one summary-only correction turn
+    // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
+    // immediately: the state is recorded as `pending` and no comment is
+    // posted yet, because the correction turn may yet clear the finding
+    // before anything reaches the thread. The re-run posts the comment via
+    // this same gate if the sentence survives.
+    if (summarySource !== null && shouldOfferClaimCorrection(state)) {
+      state.summaryClaimCorrection = {
+        status: "pending",
+        reason: claimCheckVerdict.reason,
+        comment: claimCheckVerdict.comment(),
+        summaryPath: summarySource,
+        findings: claimCheck.findings,
+      };
+      logger.warn(
+        "PR-summary claim check blocked a later attempt — deferring to the " +
+          "one summary-only correction turn (Issue #3324)",
+        { repo, issueNumber, reason: claimCheckVerdict.reason },
+      );
+      return { status: "failure", reason: claimCheckVerdict.reason };
+    }
     return await reportSummaryRuleBlock(
-      claimCheckVerdict.reason,
-      claimCheckVerdict.comment(),
+      {
+        reason: claimCheckVerdict.reason,
+        comment: claimCheckVerdict.comment(),
+        sections: [claimCheckVerdict.comment()],
+      },
       ctx,
       state,
       prBody,

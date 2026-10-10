@@ -1962,10 +1962,33 @@ Either kind of hit is a summary-rule block, folded into whichever summary
 gate blocks first — it is last in the late-summary chain, after docs sweep,
 removed assertions, the result placeholder and branch outcomes — and goes
 through the existing [in-run
-recovery](#-the-in-run-recovery-from-a-summary-rule-block) path: one recovery
-turn, then the second block fails the run (or finalises an existing PR as
-`summary_incomplete`). The claim check runs again on the re-run after
-recovery.
+recovery](#-the-in-run-recovery-from-a-summary-rule-block) path when it is
+not alone: the run's first block, or a later block folded with another gate,
+takes the one recovery turn, then a further block fails the run (or
+finalises an existing PR as `summary_incomplete`). The claim check runs again
+on the re-run after that turn either way.
+
+**Issue #3324.** A later block where the claim check is the only gate still
+failing — reached only once every earlier summary gate has passed — instead
+gets one summary-only correction turn before the ordinary recovery path even
+applies: the claim gate's comment and the current summary, fenced as
+untrusted data, go to a fresh agent invocation with file-writing tools and
+`Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
+corrected summary between `<!-- vibe-corrected-summary -->` markers. The
+worker writes only the summary file from that reply, commits it, re-runs the
+quality gate, then re-runs completion; every sentence the claim check had
+confirmed wrong that is still in the summary is carried forward as a finding,
+so a re-run model pass that misses it, or cannot run at all, does not wave it
+through — it blocks exactly as before. A launch failure, an unreadable reply
+or an unchanged summary writes nothing and re-runs completion, which then
+blocks on the carried-forward finding. Two incidents motivated it:
+VibeCoder#3310, where the one in-run recovery turn received several
+`---`-separated gate notices folded together and fixed only one of them, and
+VibeCoder#3322, where the claim check found its wrong sentence only on the re-run
+after recovery — the run's second block, spent with no correction turn left.
+A claim-check block folded with another gate on a later attempt is not this
+case and gets no correction turn — the ordinary recovery (or its absence)
+applies.
 
 ```mermaid
 flowchart TD
@@ -1977,8 +2000,19 @@ flowchart TD
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
     D --> G
-    G -- yes --> H["Summary-rule block —<br/>one recovery turn, then fail/finalise"]
+    G -- yes --> H{"First summary-rule<br/>block this run?"}
     G -- no --> I["PR raised"]
+    H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
+    RT --> A
+    H -- no --> J{"Claim check the only<br/>gate still blocking?"}
+    J -- no --> K["Fail / finalise<br/>summary_incomplete"]
+    J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
+    L --> M["Re-run: wrong sentences<br/>still present carried forward"]
+    M --> N{"Gate satisfied?"}
+    N -- yes --> I
+    N -- no --> K
+    style I fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
+    style K fill:#c45858,stroke:#6b2020,color:#fff
 ```
 
 ## 🔧 Changed workflow files are checked before the PR
@@ -2191,7 +2225,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block, and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2200,7 +2234,10 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 [the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) below.
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
-existing-PR branch finalises as `summary_incomplete`. Either way the gate's
+existing-PR branch finalises as `summary_incomplete` — except that when the
+claim check alone is still blocking on that second attempt, it first gets
+one summary-only correction turn (Issue #3324), and only a block that
+survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
 
@@ -2296,7 +2333,10 @@ flowchart TD
     G -->|no| R{"First summary-rule block<br/>of this run?"}
     R -->|yes| RT["One agent invocation carrying<br/>the gate comment, worker-rendered<br/>closure block, commit, quality gate,<br/>completion again (Issues #2189, #2242, #3163)"]
     RT --> G
-    R -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
+    R -->|no| CC{"Claim check the only gate<br/>still blocking, correction<br/>turn unused this run?"}
+    CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
+    CT --> G
+    CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
     Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
     Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -2305,6 +2345,8 @@ flowchart TD
     style Q fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style R fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style RT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
+    style CC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
+    style CT fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style PR fill:#5ab078,stroke:#1d5a35,color:#1a1a1a
     style S fill:#d4bc7a,stroke:#6b5510,color:#1a1a1a
     style F fill:#c45858,stroke:#6b2020,color:#fff
@@ -2335,7 +2377,13 @@ now recover the way the security-fix gate does
    and remediation comment fenced as untrusted data under a per-render nonce,
    a boundary-integrity rule naming that fence's nonce, and the genuine
    review-block markers printed outside it (Issue #3152); told to edit the
-   summary file and commit, and nothing else;
+   summary file and commit, and nothing else. When several gates folded their
+   verdicts into one notice, each folded section is rendered as its own
+   fenced `REQUIRED ITEM k of n`, the agent is told every item must be fixed
+   before it finishes, and it must name each item by number with what it
+   changed in its final message (Issue #3324) — a single combined notice
+   used to let the agent fix only one of several folded sections and still
+   conclude the work was done;
 3. the worker renders the closure block itself when that summary still fails
    either criteria gate (Issue #2242, below);
 4. whatever the recovery produced is committed on the issue branch;
@@ -2344,7 +2392,11 @@ now recover the way the security-fix gate does
 A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
-recovered again: with no PR it fails exactly as a block did before, with the
+recovered again, with one exception: when the claim check alone is still
+blocking — every earlier summary gate having passed — the run instead gets
+one summary-only correction turn before it is treated as a second block
+(Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
+Any other second block fails exactly as a block did before, with the
 comment already on the thread; on an existing-PR branch that PR is finalised
 as `summary_incomplete` (Issue #1140). The same verdict is never posted
 twice, so the thread records the shortfall rather than the number of attempts
@@ -2363,8 +2415,10 @@ this way: the gate comment landed on the issue seconds after the agent's own
 PR, with no chance to fix the summary, and #3159 went out still describing
 the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
-survives that turn is handled as before: finalised as `summary_incomplete`
-when a PR exists, failed when none does.
+survives that turn is handled as before — finalised as `summary_incomplete`
+when a PR exists, failed when none does — unless it is the claim check
+alone still blocking, in which case it gets the one summary-only correction
+turn first (Issue #3324).
 
 All eight summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
