@@ -17,7 +17,8 @@
  *   - enable-auto-merge: Enable auto squash merge on a PR
  *   - finalise-pr: Resolve conflicts then enable auto-merge
  *   - claim-pr-comment: Atomically claim a PR comment before processing
- *   - mark-comment-processed: Mark a comment as processed
+ *   - mark-comment-processed: Mark a comment as processed (--outcome required
+ *     for pr_review: selects the dismissal message)
  *   - reply-to-comment: Post a reply comment on a PR
  *   - handle-pr-comment-failure: Unified failure handler for PR comments
  *   - check-pr-comment-failed-once: Check if comment has failed once
@@ -73,6 +74,8 @@ import {
   handlePrCommentFailure,
   markCommentProcessed,
   replyToComment,
+  REVIEW_DISMISSAL_MESSAGES,
+  type ReviewDismissalOutcome,
 } from "../lib/pr_comments.ts";
 import { claimPrComment } from "../lib/claim_pr_comment.ts";
 import { getWorkerUniqueId } from "../lib/worker_identity.ts";
@@ -381,11 +384,38 @@ export const prManagerCommand: Command = {
             message: "Missing required arguments: --repo, --comment-id",
           };
         }
+        const outcomeArg = args["outcome"];
+        const validOutcomes = Object.keys(REVIEW_DISMISSAL_MESSAGES);
+        if (
+          outcomeArg !== undefined &&
+          !validOutcomes.includes(String(outcomeArg))
+        ) {
+          return {
+            success: false,
+            message: `Invalid --outcome: ${String(outcomeArg)}. Valid: ${
+              validOutcomes.join(", ")
+            }`,
+          };
+        }
+        if (commentType === "pr_review" && outcomeArg === undefined) {
+          return {
+            success: false,
+            message: `--outcome is required for a pr_review (it selects the ` +
+              `dismissal message). Valid: ${validOutcomes.join(", ")}`,
+          };
+        }
+        // Only a pr_review dismissal reads the outcome; other types get an
+        // eyes reaction, so the default is unused for them.
+        const outcome =
+          (outcomeArg === undefined
+            ? "addressed"
+            : String(outcomeArg)) as ReviewDismissalOutcome;
         const result = await markCommentProcessed(
           repo,
           commentType,
           commentId,
           prNumber,
+          outcome,
           runGhCommand,
         );
         return {

@@ -246,6 +246,37 @@ Deno.test("prManagerCommand - mark-comment-processed requires repo and comment-i
   assertStringIncludes(result.message, "Missing required arguments");
 });
 
+Deno.test("prManagerCommand - mark-comment-processed refuses a pr_review without --outcome (Issue #3409)", async () => {
+  const result = await prManagerCommand.execute(
+    {
+      operation: "mark-comment-processed",
+      repo: "owner/repo",
+      "comment-id": "789",
+      "comment-type": "pr_review",
+      "pr-number": "42",
+    },
+    config,
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "--outcome is required");
+});
+
+Deno.test("prManagerCommand - mark-comment-processed refuses an unknown --outcome (Issue #3409)", async () => {
+  const result = await prManagerCommand.execute(
+    {
+      operation: "mark-comment-processed",
+      repo: "owner/repo",
+      "comment-id": "789",
+      "comment-type": "pr_review",
+      "pr-number": "42",
+      outcome: "bogus",
+    },
+    config,
+  );
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Invalid --outcome: bogus");
+});
+
 Deno.test("prManagerCommand - reply-to-comment requires repo, pr-number, message", async () => {
   const result = await prManagerCommand.execute(
     { operation: "reply-to-comment" },
