@@ -28,7 +28,7 @@ manual. A drift test pins it. Closes #3430.
 
 Documentation and prompt change only (no UI, no runtime code). Both surfaces carry the rule identically, and `worker/deno/tests/failure_record_clear_3430_test.ts` pins it.
 
-**Docs sweep** — grep: "set/clear", "never cleared", "nothing clears", `first_seen`, "cleared on the path that recovers", "Code that deletes or replaces state"; section: `CODING-STANDARDS.md#test-coverage-expectations` (sibling of the #3107 destructive-state rule); updated: `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`, `docs/workflows/issue-processing.md`; every hit on the head is in lines this diff adds, so no hit is left in place.
+**Docs sweep** — grep: "set/clear", "never cleared", "nothing clears", `first_seen`, "cleared on the path that recovers", "Code that deletes or replaces state"; section: `CODING-STANDARDS.md#test-coverage-expectations` (sibling of the #3107 destructive-state rule); updated: `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`, `docs/workflows/issue-processing.md`; every hit for "set/clear", "never cleared", `first_seen` and "cleared on the path that recovers" on the head is in lines this diff adds, and "nothing clears" has no hit; "Code that deletes or replaces state" matches only lines this diff does not add — the existing #3107 rule and references to it at `CODING-STANDARDS.md:593`, `docs/workflows/issue-processing.md:1371`, `prompts/coding_guidelines/prompt.md:1148` and `:1365`, and `prompts/issue/prompt.md:1277` — which are correct as they stand and left in place, since the new rule sits beside that rule rather than replacing it.
 
 Related existing rules checked:
 
