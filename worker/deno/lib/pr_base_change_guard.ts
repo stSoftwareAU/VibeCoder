@@ -208,7 +208,9 @@ const UPDATE_PULL_REQUEST = /updatepullrequest/i;
  * multi-operation document picked by `operationName` and a `#` comment holding
  * a brace. Instead the raw argv is searched for the name anywhere, and every
  * document `gh` reads off the command line (`-F query=@file`, `-F k=@-`,
- * `--input <file>`, `--input -`) is read and searched too. A source that cannot
+ * `--input <file>`, `--input -`) is read and searched too; an `--input` JSON
+ * body is searched decoded as well, since GitHub decodes `\uXXXX` escapes
+ * before parsing the GraphQL. A source that cannot
  * be read — stdin, no reader, a read error — counts as a match: failing closed
  * is the only safe answer for a document nobody can see.
  */
@@ -218,12 +220,15 @@ function graphqlMayUpdatePullRequest(
 ): boolean {
   if (args.some((a) => UPDATE_PULL_REQUEST.test(a))) return true;
 
-  const sources: string[] = [];
+  // `fieldFiles` hold raw GraphQL text; `inputFiles` are JSON bodies that GitHub
+  // decodes (so `\uXXXX` escapes can spell the mutation name) before parsing.
+  const fieldFiles: string[] = [];
+  const inputFiles: string[] = [];
   const fromFieldValue = (value: string | undefined): void => {
     const eq = value?.indexOf("=") ?? -1;
     if (value === undefined || eq < 0) return;
     const fieldValue = value.slice(eq + 1);
-    if (fieldValue.startsWith("@")) sources.push(fieldValue.slice(1));
+    if (fieldValue.startsWith("@")) fieldFiles.push(fieldValue.slice(1));
   };
   for (let i = 0; i < args.length; i++) {
     const token = args[i]!;
@@ -234,22 +239,63 @@ function graphqlMayUpdatePullRequest(
     } else if (token.startsWith("--field=")) {
       fromFieldValue(token.slice("--field=".length));
     } else if (token === "--input") {
-      sources.push(args[i + 1] ?? "-");
+      inputFiles.push(args[i + 1] ?? "-");
       i++;
     } else if (token.startsWith("--input=")) {
-      sources.push(token.slice("--input=".length));
+      inputFiles.push(token.slice("--input=".length));
     } else if (token === "-f" || token === "--raw-field") {
       i++; // a static string: `@` is not a file here
     }
   }
-  return sources.some((path) => {
-    if (path === "-" || !readBodyFile) return true;
+  const unseen = (path: string): boolean => path === "-" || !readBodyFile;
+  const fieldHit = fieldFiles.some((path) => {
+    if (unseen(path)) return true;
     try {
-      return UPDATE_PULL_REQUEST.test(readBodyFile(path));
+      return UPDATE_PULL_REQUEST.test(readBodyFile!(path));
     } catch {
       return true;
     }
   });
+  return fieldHit || inputFiles.some((path) => {
+    if (unseen(path)) return true;
+    try {
+      return inputBodyMayUpdatePullRequest(readBodyFile!(path));
+    } catch {
+      return true;
+    }
+  });
+}
+
+/** Every key and string value in a decoded JSON document. */
+function jsonStrings(value: unknown, out: string[]): string[] {
+  if (typeof value === "string") out.push(value);
+  else if (Array.isArray(value)) value.forEach((v) => jsonStrings(v, out));
+  else if (value !== null && typeof value === "object") {
+    for (const [key, v] of Object.entries(value)) {
+      out.push(key);
+      jsonStrings(v, out);
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether an `--input` JSON body names `updatePullRequest` once decoded.
+ *
+ * GitHub JSON-decodes the body before it parses the GraphQL, so a `\uXXXX`
+ * escape in the mutation name hides it from a search of the raw text. The raw
+ * text and every decoded key and value are searched; a body that is not valid
+ * JSON counts as a match.
+ */
+function inputBodyMayUpdatePullRequest(text: string): boolean {
+  if (UPDATE_PULL_REQUEST.test(text)) return true;
+  let doc: unknown;
+  try {
+    doc = JSON.parse(text);
+  } catch {
+    return true;
+  }
+  return jsonStrings(doc, []).some((s) => UPDATE_PULL_REQUEST.test(s));
 }
 
 /**
@@ -258,7 +304,8 @@ function graphqlMayUpdatePullRequest(
  * Covers `gh pr edit --base|-B`, `gh api repos/o/r/pulls/N` with a `base`
  * field (inline, or in an `--input` file) sent as PATCH or POST — POST being
  * what `gh api` uses when a field is given and `-X` is not — and any
- * `gh api graphql` request that may carry an `updatePullRequest` mutation,
+ * `gh api graphql` (or `/graphql`, or the absolute `api.github.com/graphql`
+ * URL) request that may carry an `updatePullRequest` mutation,
  * including one read from a file or stdin (`newBase: null`, so callers fail
  * closed).
  *
@@ -301,8 +348,9 @@ export function classifyPrBaseChange(
   // GitHub routes POST on `pulls/N` to the same update handler as PATCH, and
   // `gh api` sends POST whenever a field is given without `-X` (PR #3514 review).
   if (info.verb !== "api-patch" && info.verb !== "api-post") return undefined;
+  // `repositories/<id>/pulls/N` is the same route addressed by repository id.
   const match = endpointPath(info.target ?? "").match(
-    /^repos\/([^/]+)\/([^/]+)\/pulls\/(\d+)$/,
+    /^(?:repos\/([^/]+)\/([^/]+)|repositories\/(\d+))\/pulls\/(\d+)$/,
   );
   if (!match) return undefined;
 
@@ -312,6 +360,11 @@ export function classifyPrBaseChange(
   }
   if (base === undefined) return undefined;
 
+  // A repository id names no `owner/repo` the lookup could pass to `--repo`,
+  // so the PR cannot be read: report the base as unreadable (fail closed).
+  if (match[3] !== undefined) {
+    return { newBase: null, prSelector: match[4]! };
+  }
   const owner = match[1]!;
   const name = match[2]!;
   const placeholder = owner === "{owner}" || name === "{repo}";
@@ -319,7 +372,7 @@ export function classifyPrBaseChange(
   return {
     newBase: base,
     ...(repo ? { repo } : {}),
-    prSelector: match[3]!,
+    prSelector: match[4]!,
   };
 }
 

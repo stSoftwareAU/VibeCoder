@@ -407,6 +407,27 @@ function endpointPath(endpoint: string): string | undefined {
   return slash < 0 ? "" : afterScheme.slice(slash + 1);
 }
 
+/**
+ * Whether a `gh api` endpoint addresses GitHub's GraphQL endpoint.
+ *
+ * `gh` itself special-cases only the bare word `graphql`, but `/graphql`,
+ * `graphql?x=1` and `https://api.github.com/graphql` all POST a `{"query": …}`
+ * body to the same endpoint, and GitHub runs it (PR #3514 review). An absolute
+ * URL counts only when {@link endpointPath} vouches for its host.
+ */
+function isGraphqlEndpoint(endpoint: string): boolean {
+  const path = endpointPath(endpoint);
+  if (path === undefined) return false;
+  const cut = path.search(/[?#]/);
+  const bare = cut < 0 ? path : path.slice(0, cut);
+  // Slice rather than `/\/+$/`, which is quadratic on a long run of slashes.
+  let start = 0;
+  let end = bare.length;
+  while (start < end && bare[start] === "/") start++;
+  while (end > start && bare[end - 1] === "/") end--;
+  return bare.slice(start, end) === "graphql";
+}
+
 /** Whether an endpoint path is repo-scoped via `{owner}/{repo}` placeholders. */
 function isPlaceholderRepoEndpoint(endpoint: string): boolean {
   return /^\/?repos\/\{owner\}\/\{repo\}(\/|$)/.test(endpoint);
@@ -662,7 +683,7 @@ function classifyGhApi(
   const offGitHub = hostname !== undefined &&
     hostname.toLowerCase() !== GITHUB_HOSTNAME;
 
-  if (endpoint === "graphql") {
+  if (endpoint !== undefined && isGraphqlEndpoint(endpoint)) {
     const graphql = classifyGhGraphql(queryDocuments, unreadableBody);
     return graphql && offGitHub ? { ...graphql, scope: "unknown" } : graphql;
   }
