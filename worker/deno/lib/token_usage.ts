@@ -390,23 +390,19 @@ export const TIER_CURRENT_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
  * Source: https://docs.anthropic.com/en/docs/about-claude/pricing
  */
 export const MODEL_PRICING: ReadonlyMap<string, ModelPricing> = new Map([
-  // Claude Fable 5.1 — current top tier (Issue #747). Must precede the
-  // `claude-fable-5` row: `lookupModelPricing` classifies every `claude-fable-…`
-  // id by version before it reaches this map, but `lookupPricing` in
-  // `batch_api.ts` (reached from the exported `estimateBatchSavings`) walks
-  // these rows in insertion order and takes the first whose key the model id
-  // contains — and `"claude-fable-5-1".includes("claude-fable-5")` is true.
-  // Every released Fable 5 snapshot id carries a `2026…` date suffix, so no
-  // Fable 5 id is captured by the 5.1 key. Pinned by
+  // Claude Fable 5.1 — current top tier (Issue #747). Listed before the
+  // broader `claude-fable-5` key per the more-specific-first rule above.
+  // `lookupModelPricing` classifies every `claude-fable-…` id by version
+  // before it reaches this map, so only a prefix walk over the rows sees the
+  // order. Every released Fable 5 snapshot id carries a `2026…` date suffix,
+  // so no Fable 5 id is captured by the 5.1 key. Pinned by
   // `batch_api_fable_pricing_test.ts`.
   ["claude-fable-5-1", FABLE_5_1_PRICING],
   // Claude Fable 5 — the previous top tier (Issue #2619)
   ["claude-fable-5", FABLE_5_PRICING],
   // Claude Opus 5.5 — current top tier, cheaper than Opus 5.0-5.4 (Issue
-  // #2543). Must precede the broader `claude-opus-5` key: `lookupPricing` in
-  // `batch_api.ts` walks these rows in insertion order and takes the first
-  // whose key the model id contains, and `"claude-opus-5-5".includes(
-  // "claude-opus-5")` is true.
+  // #2543). Listed before the broader `claude-opus-5` key per the
+  // more-specific-first rule above.
   ["claude-opus-5-5", OPUS_5_5_PRICING],
   // Claude Opus 5.0-5.4 — same reduced price point as Opus 4.8 (Issue #3559)
   ["claude-opus-5", OPUS_PRICING_MODERN],
