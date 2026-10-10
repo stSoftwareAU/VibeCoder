@@ -14,6 +14,7 @@
 # - anything under a .secrets/ directory, at any depth (Issue #3957)
 # - nested credential-store paths, at any depth (Issue #3336):
 #   .aws/, .ssh/, .gnupg/, .netrc
+# - dotenv files .env / .env.*, at any depth (Issue #3390)
 #
 # Staged paths are read NUL-separated (`git diff --cached --name-only -z`)
 # so a path git would otherwise C-quote (a non-ASCII byte, a quote or a
@@ -77,6 +78,12 @@ while IFS= read -r -d '' file; do
     # whole path segment so a look-alike (e.g. src/aws/client.ts, deploy/.sshrc)
     # is not caught — mirrors FORBIDDEN_STAGED_PATTERNS in pre_commit_safety.ts.
     if [[ "$file" =~ (^|/)\.(aws|ssh|gnupg|netrc)(/|$) ]]; then
+        blocked_files="${blocked_files}${file}"$'\n'
+    fi
+    # Dotenv files (Issue #3390), matched as a whole path segment so a look-alike
+    # (e.g. src/env.ts, .envrc) is not caught — mirrors FORBIDDEN_STAGED_PATTERNS
+    # in pre_commit_safety.ts.
+    if [[ "$file" =~ (^|/)\.env(\.[^/]*)?(/|$) ]]; then
         blocked_files="${blocked_files}${file}"$'\n'
     fi
 done < "$staged_list"

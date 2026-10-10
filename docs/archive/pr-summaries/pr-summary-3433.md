@@ -107,9 +107,9 @@ flowchart TD
 
 **Branch outcomes:**
 
-- `worker/deno/lib/pr_base_change_guard.ts:261` — unreadable new base refused — `worker/deno/tests/pr_base_change_guard_test.ts::decidePrBaseChange - rules` — forcing allow went red
-- `worker/deno/lib/pr_base_change_guard.ts:267` — milestone-fix head off its own milestone refused / onto it allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a milestone-fix PR off its milestone branch` — forcing allow went red
-- `worker/deno/lib/pr_base_change_guard.ts:285` — milestone base → non-milestone refused, others allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a PR off a milestone base`, `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - allows retargeting an ordinary PR onto a milestone branch` — forcing allow went red
+- `worker/deno/lib/pr_base_change_guard.ts:266` — unreadable new base refused — `worker/deno/tests/pr_base_change_guard_test.ts::decidePrBaseChange - rules` — forcing allow went red
+- `worker/deno/lib/pr_base_change_guard.ts:272` — milestone-fix head off its own milestone refused / onto it allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a milestone-fix PR off its milestone branch` — forcing allow went red
+- `worker/deno/lib/pr_base_change_guard.ts:290` — milestone base → non-milestone refused, others allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a PR off a milestone base`, `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - allows retargeting an ordinary PR onto a milestone branch` — forcing allow went red
 - `worker/deno/lib/gh_spawn.ts:416` — lookup failure fails closed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - a failed head/base lookup fails closed` — classifier returning undefined went red
 - `worker/deno/lib/gh_guard_decision.ts:919` — agent base change refused / non-base edits allowed — `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - every agent PR base change is refused with PR_BASE_CHANGE_REFUSED`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - non-base PR edits and pr create --base stay allowed` — classifier returning undefined went red
 - `worker/deno/lib/pr_auto_merge.ts:894` — closed route held, never retargeted — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - a base whose rollup already merged: comment once, disarm, no retarget, no merge (Issue #3433)` — re-adding `pr edit --base` went red
