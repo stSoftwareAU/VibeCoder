@@ -283,7 +283,11 @@ not after a reviewer finds it weeks later.
   or two **existing sibling members**, not the new one — the new name is in no
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete.
+  the same change, or is reworded so it no longer reads as complete. Name the
+  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
+  double-quoted, or write `siblings: none — <why no existing set gained a
+  member>`; fleet PRs that grepped only the new name left a list one short
+  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,

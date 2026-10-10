@@ -1336,7 +1336,11 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   or two **existing sibling members**, not the new one — the new name is in no
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete.
+  the same change, or is reworded so it no longer reads as complete. Name the
+  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
+  double-quoted, or write `siblings: none — <why no existing set gained a
+  member>`; fleet PRs that grepped only the new name left a list one short
+  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -1415,10 +1419,13 @@ for every PR summary — containing:
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
    Always add a one-line **Docs sweep** — the grep terms searched, the doc
-   files updated, and the manual `section:` read for the changed surface, or
-   `no hits` (see
+   files updated, the manual `section:` read for the changed surface, and the
+   `siblings:` part (the existing sibling members grepped for each set the
+   change adds a member to, or `siblings: none — <why>`), or `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
-   worker refuses to raise a PR whose diff changes code with no such line.
+   worker refuses to raise a PR whose diff changes code with no such line, or
+   whose line has no real `section:` or `siblings:` part. It re-runs the quoted
+   sibling terms as it re-runs the grep terms.
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
    check it: the worker re-runs the line's quoted terms over the head's docs

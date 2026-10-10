@@ -25,8 +25,12 @@ import {
   type DocsSweepGitRunner,
   extractGrepTerms,
   extractNamedLines,
+  extractSiblingTerms,
+  extractSweepTerms,
+  isSiblingsNegative,
   isSourceCommentLine,
   MAX_REPORTED_HITS,
+  MAX_TERMS,
   MAX_UNTOUCHED_HITS_PER_TERM,
   parseChangedLines,
   parseGitGrepOutput,
@@ -35,6 +39,7 @@ import {
 } from "../lib/docs_sweep_hits.ts";
 import { parseDocsSweepLine } from "../lib/docs_sweep_gate.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // ---------------------------------------------------------------------------
 // extractGrepTerms
@@ -721,6 +726,170 @@ Deno.test("buildDocsSweepHitsComment - a sentence with backticks cannot break ou
     { path: "docs/a.md", line: 1, text: "use `Foo` here", term: "Foo" },
   ]);
   assertStringIncludes(comment, "use Foo here");
+});
+
+// ---------------------------------------------------------------------------
+// siblings: terms (Issue #3371)
+// ---------------------------------------------------------------------------
+
+Deno.test("extractSiblingTerms - reads backticked and double-quoted terms after siblings:", () => {
+  const raw = "section: `docs/a.md`; siblings: `ProposalStore::get`, " +
+    '"one session"; updated: `docs/a.md`';
+  assertEquals(extractSiblingTerms(raw), [
+    "ProposalStore::get",
+    "one session",
+  ]);
+});
+
+Deno.test("extractSiblingTerms - stops at the first field separator outside a term", () => {
+  assertEquals(extractSiblingTerms("siblings: `A`; `B`"), ["A"]);
+});
+
+Deno.test("extractSiblingTerms - the none — negative returns no terms, even with a quoted span in the reason", () => {
+  assertEquals(
+    extractSiblingTerms(
+      "section: `docs/a.md`; siblings: none — `Foo` is a new set",
+    ),
+    [],
+  );
+});
+
+Deno.test("extractSiblingTerms - reads the singular sibling: label", () => {
+  assertEquals(extractSiblingTerms("sibling: `Foo::get`"), ["Foo::get"]);
+});
+
+Deno.test("extractSiblingTerms - a line with no siblings: field yields no terms", () => {
+  assertEquals(extractSiblingTerms("grep: `Foo`; section: `docs/a.md`"), []);
+});
+
+Deno.test("isSiblingsNegative - reads the none negative with or without backticks or quotes, and not a longer word", () => {
+  for (
+    const value of ["none — x", '"none" — x', "“none” — x", "`none` — x"]
+  ) {
+    assert(isSiblingsNegative(value), value);
+  }
+  for (const value of ["nonesuch", "`max_buy_price`"]) {
+    assertEquals(isSiblingsNegative(value), false, value);
+  }
+});
+
+Deno.test("extractSweepTerms - merges grep then sibling terms, deduplicated case-insensitively", () => {
+  assertEquals(
+    extractSweepTerms(
+      'grep: `Foo`, `bar`; section: `docs/a.md`; siblings: `Baz`, `foo`, "BAR"',
+    ),
+    ["Foo", "bar", "Baz"],
+  );
+});
+
+Deno.test("extractSweepTerms - twenty grep terms do not crowd out the sibling terms", () => {
+  const grep = Array.from({ length: MAX_TERMS }, (_, i) => `\`term${i}\``)
+    .join(", ");
+  const raw =
+    `grep: ${grep}; section: \`docs/a.md\`; siblings: \`Sibling::get\``;
+  assertEquals(extractGrepTerms(raw).length, MAX_TERMS);
+  const terms = extractSweepTerms(raw);
+  assertEquals(terms.length, MAX_TERMS + 1);
+  assertEquals(terms[terms.length - 1], "Sibling::get");
+});
+
+Deno.test("checkDocsSweepTerms - a sibling-only line is checked, not skipped", async () => {
+  const calls: StubCall[] = [];
+  const check = await checkDocsSweepTerms({
+    rawBody: "section: `docs/a.md`; siblings: `Bar::get`",
+    base: "main",
+    runGit: stubGit({ calls }),
+  });
+  assertEquals(check.status, "checked");
+  assertEquals(check.status === "checked" && check.terms, ["Bar::get"]);
+  assertEquals(calls.some((c) => c.args.includes("grep")), true);
+});
+
+Deno.test("checkDocsSweepTerms - a line quoting no grep or sibling term is skipped with the combined reason", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody:
+      "section: `docs/a.md`; siblings: none — no existing set gained a member",
+    base: "main",
+    runGit: stubGit({}),
+  });
+  assertEquals(check.status, "skipped");
+  assertStringIncludes(
+    check.status === "skipped" ? check.reason : "",
+    "no grep or sibling term",
+  );
+});
+
+Deno.test("checkDocsSweepTerms - a sibling term's untouched, unnamed hit is reported with the sibling term", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`; siblings: `Bar::get`",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        "Bar::get": "HEAD:docs/other.md\u000012\u0000Bar::get is cached\n",
+      },
+      diff: "",
+    }),
+  });
+  assertEquals(check.status, "checked");
+  if (check.status !== "checked") return;
+  assertEquals(check.terms, ["Foo", "Bar::get"]);
+  assertEquals(
+    check.staleHits.map((h) => [`${h.path}:${h.line}`, h.term]),
+    [["docs/other.md:12", "Bar::get"]],
+  );
+});
+
+Deno.test("checkDocsSweepTerms - the same sibling hit named as file:line in the line is not reported", async () => {
+  const check = await checkDocsSweepTerms({
+    rawBody: "grep: `Foo`; section: `docs/a.md`; siblings: `Bar::get`; " +
+      "docs/other.md:12 still true because Bar::get stays",
+    base: "main",
+    runGit: stubGit({
+      grep: {
+        "Bar::get": "HEAD:docs/other.md\u000012\u0000Bar::get is cached\n",
+      },
+      diff: "",
+    }),
+  });
+  assertEquals(check.status === "checked" && check.staleHits, []);
+});
+
+// ---------------------------------------------------------------------------
+// Hostile siblings: text (CODING-STANDARDS "Vet every regex on untrusted text")
+// ---------------------------------------------------------------------------
+
+Deno.test("extractSiblingTerms - a siblings label with no colon and a long space run scales linearly", () => {
+  // `\bsiblings?\s*:` gives back the space run one character at a time when
+  // no colon follows, so the label scan must stay linear in the run length.
+  const result = assertLinearGrowth(
+    "siblings: label scan (no colon)",
+    (chars) => "siblings" + " ".repeat(chars) + "x",
+    extractSiblingTerms,
+    { baseChars: 20_000 },
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("isSiblingsNegative - a long quote and space run before a rejected tail scales linearly and is not a negative", () => {
+  // LEADING_QUOTE_RE skips the run once; SIBLINGS_NONE_RE then rejects
+  // "nonex" because no word boundary follows "none".
+  const result = assertLinearGrowth(
+    "siblings: negative check (quote run, rejected tail)",
+    (chars) => '`"“ '.repeat(chars) + "nonex",
+    isSiblingsNegative,
+    { baseChars: 20_000 },
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("isSiblingsNegative - a long whitespace run before none — scales linearly and is the negative", () => {
+  const result = assertLinearGrowth(
+    "siblings: negative check (whitespace run, none)",
+    (chars) => " ".repeat(chars) + "none —",
+    isSiblingsNegative,
+    { baseChars: 20_000 },
+  );
+  assertEquals(result, true);
 });
 
 // ---------------------------------------------------------------------------

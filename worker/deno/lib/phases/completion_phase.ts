@@ -2443,9 +2443,9 @@ async function completionBody(
   // blocks — this is the comment body for that advisory post, built below.
   let docsSweepHitsComment = "";
 
-  // Issue #3172: once the line itself passes, re-run the grep terms it
-  // quotes over the head's docs, and over the comment lines of its source
-  // files (Issue #3219). A hit outside every line the diff changed,
+  // Issue #3172: once the line itself passes, re-run the grep and sibling
+  // terms it quotes (Issue #3371) over the head's docs, and over the comment
+  // lines of its source files (Issue #3219). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
   // and left — Issue #3237 made this advisory only: it is named in a PR
   // comment, not blocked, and costs no recovery turn. A grep or diff that
@@ -2843,11 +2843,11 @@ async function completionBody(
   // went unaccounted for, and fleet PRs shipped a new branch with no test
   // reaching it (or named a test that did not exist), and a first-run
   // summary described named code wrongly. When the diff changes a
-  // non-test, non-doc file, the summary must name the manual `section:`
-  // that documents the surface, account for every removed assertion, carry
-  // no unfilled result placeholder, carry a `Branch outcomes:` list whose
-  // every named test exists at the head, and get its claims about named
-  // code right.
+  // non-test, non-doc file, the summary must name the manual `section:` that
+  // documents the surface and the `siblings:` it grepped (Issue #3371),
+  // account for every removed assertion, carry no unfilled result placeholder,
+  // carry a `Branch outcomes:` list whose every named test exists at the head,
+  // and get its claims about named code right.
   //
   // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
   // delivery guard itself, against the existing PR, before it recovers and

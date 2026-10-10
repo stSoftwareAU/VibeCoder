@@ -34,7 +34,7 @@ Nothing checks the PR summary for a \`Branch outcomes:\` list.
 `;
 
 const DOCS_SWEEP_LINE =
-  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits";
+  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits; siblings: none — no existing set gained a member";
 
 function summaryWith(branchOutcomesBlock: string): string {
   return `## Summary

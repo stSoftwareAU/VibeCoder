@@ -54,7 +54,7 @@ const SUMMARY_WITH_LINE = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -488,7 +488,7 @@ const SUMMARY_3159_WITH_SECTION = SUMMARY_3159_WITHOUT_SECTION.replace(
   '- **Docs sweep.** Grepped for "filed during" / "this run filed" / ' +
     '"After a\n  commit, a". Updated:',
   "**Docs sweep** — grep: `filed during` / `this run filed` / " +
-    "`After a commit, a`; section: `DESIGN-PRINCIPLES.md`; updated:",
+    "`After a commit, a`; section: `DESIGN-PRINCIPLES.md`; siblings: none — no existing set gained a member; updated:",
 ).replace(
   "## Test Plan",
   "**Branch outcomes:**\n\n" +

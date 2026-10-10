@@ -252,13 +252,19 @@ guessing — the analysis-only hand-off then routes it to a human.
    When the change adds a member to an existing set — a field, enum variant,
    kind, flag or column — also grep for one or two of its existing sibling
    members: every list of the set those hits find names the new member, or is
-   reworded so it no longer reads as complete.
+   reworded so it no longer reads as complete. Name those siblings in the
+   Docs sweep line's `siblings:` part, backticked or double-quoted, so the
+   worker re-runs them as it re-runs the grep terms; or write
+   `siblings: none — <why no existing set gained a member>`. Fleet PRs that
+   grepped only the new name left a list one short
+   (GRQ-AutoTrader#2460, #2481, #2682, #2792).
    Record the sweep as the **Docs sweep** line in
    the PR summary, naming that section (e.g.
    `section: docs/reporting-pwa.md#broker-balance`, or
-   `section: none — <why no manual documents it>`) (see **PR Summary File**
-   below). When the diff changes non-test, non-doc files, the worker will not
-   raise the PR without that line: it asks for it once more, and a second
+   `section: none — <why no manual documents it>`) and the siblings grepped
+   (see **PR Summary File** below). When the diff changes non-test, non-doc
+   files, the worker will not raise the PR without that line, or without its
+   `section:` and `siblings:` parts: it asks for it once more, and a second
    miss fails the run.
    Before new prompt or doc text states how another component behaves —
    above all an exclusive or negative claim ("the only …", "never …", "the
@@ -1138,8 +1144,9 @@ The file MUST contain:
      cannot be provided
    - For bug fixes/CLI changes: Reference the tests that verify the fix
    - Always: a one-line **Docs sweep** — the grep terms you searched, the
-     manual section you found and checked, and the doc files you updated, or
-     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
+     manual section you found and checked, the doc files you updated, and the
+     existing sibling members you grepped (or `siblings: none — <why>`), or
+     `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; siblings: none — no existing set gained a member; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
@@ -1338,7 +1345,7 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 ![Screenshot of fixed buttons](docs/evidence/button-fix.png)
 
-**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; section: `docs/ui.md#action-buttons`; no hits
+**Docs sweep** — grep: `flex-wrap`, "stacked buttons"; section: `docs/ui.md#action-buttons`; siblings: none — no existing set gained a member; no hits
 
 ## Reproduction
 

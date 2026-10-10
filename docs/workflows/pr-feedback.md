@@ -439,7 +439,8 @@ Five checks run, each only when it applies:
    new tests") are skipped.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
-   files.
+   files. That gate also requires the Docs sweep line's `siblings:` part
+   (Issue #3371), so a feedback push's summary needs it too.
 4. **Deterministic quoted-sentence check (Issue #3244)** — on every
    non-skipped push, the change request this push answers is parsed for its
    findings in the review-fleet-prs shape (`**\`<file>[:<line>]\`**:

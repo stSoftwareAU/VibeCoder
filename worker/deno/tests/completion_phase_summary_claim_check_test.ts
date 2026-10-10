@@ -42,7 +42,7 @@ A first-run PR summary has repeatedly described named code wrongly.
 `;
 
 const DOCS_SWEEP_LINE =
-  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits";
+  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits; siblings: none — no existing set gained a member";
 
 const WRONG_CLAIM_SENTENCE =
   "`phraseAnywhere()` escapes the phrase and joins its words with `\\s+`.";
