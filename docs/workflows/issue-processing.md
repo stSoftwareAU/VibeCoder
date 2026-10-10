@@ -1169,8 +1169,9 @@ neither sees the PR summary the gates read. Issue #3395 adds a third check the
 **worker** runs itself, the pre-PR verifier
 ([`pre_pr_verifier.ts`](../../worker/deno/lib/pre_pr_verifier.ts), wired into the
 completion phase, [`completion_phase.ts`](../../worker/deno/lib/phases/completion_phase.ts)).
-On every issue run's completion attempt that has a PR summary file loaded,
-whether or not the issue carries acceptance criteria, the worker makes one extra
+On every completion attempt that has a PR summary file loaded and a resolvable
+comparable base ref, whether or not the issue carries acceptance criteria (a
+missing summary skips it; an unresolvable base logs it as not checked), the worker makes one extra
 model pass after the summary is written and committed and before the PR is
 raised. The agent dispatches nothing for it.
 
@@ -1188,16 +1189,18 @@ raised. The agent dispatches nothing for it.
   text the gates read. The verifier may run commands there: tests, flipping a
   line and rerunning, timing a regex, building. `gh`, `git push`, `curl`,
   `wget`, WebFetch, WebSearch and sub-agents are denied through the CLI's
-  `disallowedTools`, the checkout has no push destination, and the agent-side
-  `gh` guard still applies. The issue checkout's `git status` and HEAD are
+  `disallowedTools` denylist, and the checkout has no push destination. This is
+  not a network sandbox: another program the verifier runs through Bash could
+  still reach the network, and the agent-side `gh` guard is the backstop for
+  `gh`. The issue checkout's `git status` and HEAD are
   compared before and after, and a change made outside the disposable copy
   becomes a blocking finding. The disposable directory is deleted afterwards.
 
 | | Spec / Standards reviewers | Pre-PR verifier |
 | --- | --- | --- |
-| Runs when | Before the summary is written, dispatched by the agent, only when the issue states criteria | After the summary is committed, dispatched by the worker, on every issue run |
+| Runs when | Before the summary is written, dispatched by the agent, only when the issue states criteria | After the summary is committed, dispatched by the worker, on every completion attempt with a PR summary file and a resolvable base ref, criteria or not |
 | Sees | The diff plus the issue body or `CODING-STANDARDS.md` | A shared clone of the head commit, with the exact PR summary text |
-| Can execute | No (read-only tools) | Yes, in the disposable clone; network, push and sub-agents denied |
+| Can execute | No (read-only tools) | Yes, in the disposable clone; `gh`, `git push`, `curl`, `wget`, WebFetch/WebSearch and sub-agents denied by a `disallowedTools` denylist (not a network sandbox) |
 | Reads the PR summary | No | Yes |
 
 **What blocks.** Any `findings` entry is a blocking finding, a late
@@ -1212,15 +1215,17 @@ existing PR, with the comment on the issue thread. `testChanges: meaningful`
 is not a finding and does not block.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
-launch error, timeout, unparseable reply) is logged at error as "not checked",
-never read as clean, and does not block. `unrelatedIssues` are logged, not
+launch error, timeout, unparseable reply) is logged as a warning as "not checked",
+never read as clean, and does not block. A verifier which changed the issue
+checkout, or after which the checkout cannot be re-read, produces a blocking
+finding. `unrelatedIssues` are logged, not
 filed.
 
-**Cost.** One extra agent session per completion attempt: normally one per run,
-and each re-run of completion (the in-run recoveries and the #1550
-infrastructure retry) runs it again. It runs even when an earlier summary gate
-blocks, because its verdict is folded into that block. Its tokens are recorded in the
-run's stats like the claim check's. See
+**Cost.** One extra agent session per completion attempt: normally one per
+run, and each re-run of completion (the in-run recoveries and the
+infrastructure retry in `runCompletionAttempt`) runs it again. It runs even
+when an earlier summary gate blocks, because its verdict is folded into that
+block. Its tokens are recorded in the run's stats like the claim check's. See
 [MODEL-AND-CACHING.md](../MODEL-AND-CACHING.md#pre-pr-verifier-issue-phase).
 
 ```mermaid

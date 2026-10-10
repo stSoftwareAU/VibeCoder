@@ -2670,7 +2670,7 @@ async function completionBody(
       "Pre-PR verifier skipped: no PR summary file loaded (Issue #3395)",
     );
   } else if (!comparableBase.ok) {
-    logger.error(
+    logger.warn(
       "Pre-PR verifier not checked — no comparable base ref (Issue #3395)",
       { baseBranch, error: comparableBase.error.message },
     );
@@ -2693,7 +2693,7 @@ async function completionBody(
     });
     if (prePrVerifier.run) recordClaudeRunStats(state, prePrVerifier.run);
     if (prePrVerifier.status === "not_checked") {
-      logger.error(
+      logger.warn(
         "Pre-PR verifier not checked — not read as clean, does not block (Issue #3395)",
         { reason: prePrVerifier.reason },
       );

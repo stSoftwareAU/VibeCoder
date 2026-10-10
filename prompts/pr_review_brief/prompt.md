@@ -6,6 +6,8 @@ cannot drift: change the review rules here, never in a copy. Each caller fills
 the four {{FIELDS}}; the fleet's values are listed in SKILL.md and the
 verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 -->
+## Review Mode — one change against its linked issue
+
 {{REVIEW_CONTEXT}}
 
 1. Read the linked issue and the repo's `AGENTS.md` / `CODING-STANDARDS.md`

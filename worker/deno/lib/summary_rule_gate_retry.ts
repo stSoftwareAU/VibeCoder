@@ -5,7 +5,9 @@
  * acceptance-criteria closure (#518), independent two-axis review (#663), bug
  * reproduction status (#521), the docs-sweep line (#3073), the
  * result-placeholder gate (#3124), the branch-outcomes list (#3147), the
- * first-run summary claim check (#3257) and the pre-PR verifier (#3395) — check a *document*, not the code.
+ * first-run summary claim check (#3257) and the pre-PR verifier (#3395) —
+ * check the summary document; the pre-PR verifier also checks the code the
+ * summary describes.
  * A run that had already raised its own PR
  * from inside the execute phase used to skip this module's recovery
  * entirely: `reportSummaryRuleBlock` (#1140) finalised that PR straight off

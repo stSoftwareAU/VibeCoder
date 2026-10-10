@@ -44,7 +44,7 @@ Deno.test("renderReviewBrief fills all four fields and strips the leading commen
   for (const v of Object.values(FIELDS)) assertStringIncludes(out, v);
   assert(!out.includes("<!--"));
   assert(!out.includes("{{"));
-  assert(out.startsWith("CTX-VALUE"));
+  assert(out.indexOf("CTX-VALUE") < out.indexOf("TESTS-VALUE"));
 });
 
 Deno.test("renderReviewBrief never re-expands a value that contains a placeholder", () => {
@@ -284,6 +284,64 @@ Deno.test("runPrePrVerifier: a timeout is not_checked even with a parseable repl
       ),
     );
     assertEquals(result.status, "not_checked");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("parseReviewReply rejects a malformed finding and normalises line and fix", () => {
+  const wrap = (findings: string) =>
+    `{"summary":"s","findings":${findings},"testChanges":"none"}`;
+  assertThrows(() => parseReviewReply(wrap('["oops"]')));
+  assertThrows(() => parseReviewReply(wrap("[null]")));
+  assertThrows(() => parseReviewReply(wrap('[{"file":"a.ts","line":1}]')));
+  assertThrows(() =>
+    parseReviewReply(wrap('[{"file":"","line":1,"problem":"p"}]'))
+  );
+  assertThrows(() => parseReviewReply(wrap('[{"line":1,"problem":"p"}]')));
+  assertEquals(
+    parseReviewReply(wrap('[{"file":"a.ts","line":"12","problem":"p"}]'))
+      .findings,
+    [{ file: "a.ts", line: 12, problem: "p" }],
+  );
+  assertEquals(
+    parseReviewReply(wrap('[{"file":"a.ts","line":"x","problem":"p","fix":3}]'))
+      .findings,
+    [{ file: "a.ts", line: 0, problem: "p" }],
+  );
+  const valid = { file: "a.ts", line: 4, problem: "p", fix: "f" };
+  assertEquals(parseReviewReply(wrap(JSON.stringify([valid]))).findings, [
+    valid,
+  ]);
+});
+
+Deno.test("runPrePrVerifier: an issue checkout that cannot be re-read after the run is a blocking finding", async () => {
+  const f = await makeRepo();
+  try {
+    let snapshots = 0;
+    const deps: PrePrVerifierDeps = {
+      ...makeDeps(
+        () => Promise.resolve(okRun({ output: REPLY_CLEAN })),
+        [],
+      ),
+      runGit: async (args, cwd) => {
+        if (cwd === f.repo && args[0] === "status" && ++snapshots === 2) {
+          return null;
+        }
+        return await defaultPrePrVerifierDeps.runGit(args, cwd);
+      },
+    };
+    const result = await runPrePrVerifier(inputFor(f), deps);
+    assertEquals(snapshots, 2);
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status === "checked") {
+      assertEquals(result.review.findings[0]?.file, "(issue checkout)");
+      assertStringIncludes(
+        result.review.findings[0]!.problem,
+        "Could not re-read the issue checkout",
+      );
+    }
   } finally {
     await f.cleanup();
   }

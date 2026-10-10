@@ -1,0 +1,13 @@
+{
+  "issue": 3395,
+  "chunk": "top-up-3395",
+  "title": "top-up: pre-PR verifier and the shared review brief",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3395",
+  "definition": "modules added after 12a-12af recorded their coverage: worker/deno/lib/pre_pr_verifier.ts and the shared review brief prompts/pr_review_brief/prompt.md (#3395)",
+  "status": "claimed",
+  "paths": [
+    "prompts/pr_review_brief/prompt.md",
+    "worker/deno/lib/pre_pr_verifier.ts"
+  ],
+  "sweptAt": "315649331ebce1a99fc5b0ddd31c45d1ab7ac85f"
+}

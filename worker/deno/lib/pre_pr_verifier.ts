@@ -18,6 +18,9 @@
  *   `origin` removed, so it has no push destination.
  * - The model's `gh`, `git push`, `curl`, `wget`, web and sub-agent tools are
  *   denied through `disallowedTools`.
+ * - `disallowedTools` is a denylist, not a network sandbox: another program
+ *   run through `Bash` could still reach the network. The gh guard below is
+ *   the backstop for `gh`.
  * - The agent-side gh guard the runner installs still applies.
  * - The issue checkout is compared before and after, so a change the
  *   verifier made outside its copy surfaces as a finding instead of being
@@ -125,9 +128,35 @@ export function parseReviewReply(text: string): ReviewReply {
     throw new Error(`review JSON has testChanges=${r.testChanges}`);
   }
   return {
-    ...r,
+    summary: r.summary,
+    findings: r.findings.map(parseFinding),
+    testChanges: r.testChanges,
     testChangeNotes: r.testChangeNotes ?? [],
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
+  };
+}
+
+// A finding without a file or a problem is a malformed reply, never a blank line.
+function parseFinding(raw: unknown): ReviewFinding {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    throw new Error("review JSON has a finding that is not an object");
+  }
+  const f = raw as Record<string, unknown>;
+  if (typeof f.file !== "string" || f.file.trim() === "") {
+    throw new Error("review JSON has a finding without a file");
+  }
+  if (typeof f.problem !== "string" || f.problem.trim() === "") {
+    throw new Error("review JSON has a finding without a problem");
+  }
+  const n = typeof f.line === "string" && f.line.trim() !== ""
+    ? Number(f.line)
+    : f.line;
+  const line = typeof n === "number" && Number.isFinite(n) ? n : 0;
+  return {
+    file: f.file,
+    line,
+    problem: f.problem,
+    ...(typeof f.fix === "string" ? { fix: f.fix } : {}),
   };
 }
 
@@ -369,13 +398,11 @@ export async function runPrePrVerifier(
   deps: PrePrVerifierDeps = makeDeps(input.maxRetries),
 ): Promise<PrePrVerifierResult> {
   const { logger } = input;
+  // Builds the result only; the caller logs the one line.
   const notChecked = (
     reason: string,
     run?: ClaudeRunResult,
   ): PrePrVerifierResult => {
-    logger.error(`Pre-PR verifier not run: ${reason}`, {
-      issue: input.issueNumber,
-    });
     return run ? { status: "not_checked", reason, run } : {
       status: "not_checked",
       reason,
@@ -444,7 +471,7 @@ export async function runPrePrVerifier(
     try {
       await deps.removeDir(tmp);
     } catch (error) {
-      logger.error("Pre-PR verifier could not remove its disposable checkout", {
+      logger.warn("Pre-PR verifier could not remove its disposable checkout", {
         path: tmp,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -452,12 +479,18 @@ export async function runPrePrVerifier(
   }
 
   const after = await snapshotCheckout(deps, input.repoPath);
+  let finding: ReviewFinding | null = null;
   if (!after) {
-    logger.error("Pre-PR verifier could not re-read the issue checkout", {
-      issue: input.issueNumber,
-    });
+    finding = {
+      file: "(issue checkout)",
+      line: 0,
+      problem:
+        "Could not re-read the issue checkout after the verifier ran, so a change it made there cannot be ruled out",
+      fix:
+        "Check `git status` in the issue checkout and revert any change the verifier made there",
+    };
   } else if (after.status !== before.status || after.head !== before.head) {
-    const finding: ReviewFinding = {
+    finding = {
       file: "(issue checkout)",
       line: 0,
       problem:
@@ -467,6 +500,8 @@ export async function runPrePrVerifier(
       fix:
         "Inspect `git status` in the issue checkout and revert any change the verifier made there",
     };
+  }
+  if (finding) {
     if (outcome.status === "checked") {
       outcome = {
         ...outcome,

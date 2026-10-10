@@ -756,8 +756,9 @@ the worker makes itself.
 - **Timeout.** Capped at 1800 seconds, or the run's `claude_timeout` when that
   is lower.
 - **Frequency.** One session per completion attempt that has a PR summary
-  file loaded, on every issue run whether or not the issue carries acceptance
-  criteria. That is normally one per run; each re-run of completion (the in-run
+  file loaded and a resolvable comparable base ref (a missing summary skips it;
+  an unresolvable base logs it as not checked), whether or not the issue carries
+  acceptance criteria. That is normally one per run; each re-run of completion (the in-run
   recoveries — summary-rule, security-fix, screenshot and the summary-only
   claim correction turn — and the infrastructure retry) runs it again. It
   runs even when an earlier summary gate blocks, because its verdict is
