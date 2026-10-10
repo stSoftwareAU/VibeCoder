@@ -25,8 +25,9 @@ text was deleted from its own section only, and the test went red. Closes #3309.
 - **Audited and left as they are:**
   - `github_actions_audit_cost_group` already slices each numbered check and
     `### Cost and speed` with its own helpers.
-  - `merge_conflict_prompt_v2` and `unfenced_untrusted_text` pin rendered
-    prompts (`buildMergeConflictPrompt`, `assembleOrphanDepsPrompt`).
+  - `unfenced_untrusted_text` pins the rendered orphan-deps prompt:
+    `renderOrphanDepsPrompt()` passes the template through
+    `assembleOrphanDepsPrompt`, and its other pins read builder output.
   - `pr_body_matches_final_diff_3015`, `pr_claims_verified_3058`,
     `prompt_docs_sweep_2952`, `prompt_docs_sweep_3073` and
     `prompt_docs_sweep_3172` already read every pin through `section()`.
@@ -35,6 +36,16 @@ text was deleted from its own section only, and the test went red. Closes #3309.
   - The `security_tree_sweep` tests pin scanner and report output, and
     `security_tree_sweep_workflow_test.ts` reads the workflow YAML. None of
     them pins a Markdown doc.
+- **Not converted, still outstanding:** `merge_conflict_prompt_v2` is
+  unchanged by this PR. Only five of its tests call
+  `buildMergeConflictPrompt`. Most read the raw template through
+  `loadMergeConflict()`, which returns `loadPrompt("merge_conflict")`
+  unrendered. A few of those already slice `## The Contract — Both Sides
+  Survive` or `### The Issue-Intent Carve-Out` with `indexOf`. The rest pin
+  presence over the whole template: "one line per conflicted file", "Never
+  side-pick", "git merge -X ours", the manifest and lock-file names, "total
+  order" and `{{ISSUE_CONTEXT}}`. Those whole-file presence pins are not
+  scoped yet.
 - In `test_audit_unit_suite_checks_943`, the "every surface counting the
   catalogue says thirteen" pin stays whole-file. Its three claims sit in three
   places: the overview above the first `##`, the `## Phase 2` heading line
@@ -92,7 +103,7 @@ flowchart LR
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- **met** — it is scoped to its rule's section, per #3307 — evidence: the per-pin "Moved check" lines in the Test Plan; `worker/deno/tests/overflow_tracker_scope_drift_test.ts` — reviewer: partial — reason: the reviewer flagged two things. `overflow_tracker_scope_test.ts` dropped out of the `check:manifests` family, which is fixed in 9551475d (its pins moved to the drift file, and the family is identical on base and head). The unchanged candidates are accounted for, with reasons, in the Summary's "Audited and left as they are" list.
+- **partial** — it is scoped to its rule's section, per #3307 — evidence: the per-pin "Moved check" lines in the Test Plan; `worker/deno/tests/overflow_tracker_scope_drift_test.ts` — reviewer: partial — reason: the reviewer flagged two things. `overflow_tracker_scope_test.ts` dropped out of the `check:manifests` family, which is fixed in 9551475d (its pins moved to the drift file, and the family is identical on base and head). The unchanged candidates are listed in the Summary. `merge_conflict_prompt_v2` is still outstanding: its whole-file presence pins over the raw template are not scoped yet.
 - **met** — absence checks stay on `flatWholeFile` — evidence: `worker/deno/tests/idle_task_live_recheck_dedup_3045_test.ts`, `worker/deno/tests/documentation_audit_prompt_v9_test.ts`, `worker/deno/tests/severity_emoji_scale_test.ts`, `worker/deno/tests/suppression_governance_drift_test.ts` and `worker/deno/tests/overflow_tracker_scope_test.ts` keep their absence checks on the whole template — reviewer: partial — reason: the reviewer found "no case where an absence check was wrongly narrowed". It marked this partial only because these checks keep their original raw or whole-file collapse rather than calling `flatWholeFile`. The rule they answer to ("Absence checks keep their reach") is about reach, and that is unchanged.
 - **met** — there is one Test Plan line per moved pin, recording its section and red-check result — evidence: the "Moved check" lines below — reviewer: missing — reason: the reviewer saw only the diff and said the Test Plan, which lives in this summary, was "not assessable from the diff"
 - **unrequested** — `test_audit_unit_suite_checks_943_test.ts` passes the check number through `escapeRegExp` and carries a `nosemgrep` note — reviewer: unrequested — reason: the comment names semgrep's `detect-non-literal-regexp` rule for the `RegExp` built in a file this PR touches; no assertion changes
