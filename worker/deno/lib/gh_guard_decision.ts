@@ -14,7 +14,7 @@
  * is pure — the caller supplies the run's allowlist state — so it can be
  * evaluated in a short-lived child process with no permissions at all.
  *
- * Five checks, in order:
+ * Six checks, in order:
  *   1. **Reserved workflow labels.** A *mutation* that adds `top-priority`,
  *      `work-on`, `question`, … is refused. The check is a denylist of the
  *      reserved names (`WORKER_FORBIDDEN_LABEL_LITERALS`), not the worker's
@@ -38,7 +38,11 @@
  *      reads — but they print the run's GitHub token, and an agent holding
  *      it can call the REST API directly, where none of the above applies.
  *      Refused unconditionally — see `gh_credential_disclosure_guard.ts`.
- *   5. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
+ *   5. **PR base change** (Issue #3433). `gh pr edit --base` and the REST
+ *      `PATCH …/pulls/N` with `base` are refused unconditionally (alongside
+ *      the PR-lifecycle refusal): moving a milestone PR to the default branch
+ *      skips the milestone's final review.
+ *   6. **Write-repo allowlist.** Mirrors `enforceGhWriteAllowlist`: inert
  *      until the run seeds an allowlist, a no-op for reads and for cwd-repo
  *      writes with no explicit repo, and a refusal for a mutation that
  *      explicitly names an off-allowlist repo.
@@ -58,6 +62,7 @@ import {
   ISSUE_LIFECYCLE_VERBS,
 } from "./gh_issue_lifecycle.ts";
 import { classifyPrLifecycle, PR_LIFECYCLE_VERBS } from "./gh_pr_lifecycle.ts";
+import { classifyPrBaseChange } from "./pr_base_change_guard.ts";
 import { classifyGhCredentialDisclosure } from "./gh_credential_disclosure_guard.ts";
 import { classifyGhLocalStateChange } from "./gh_local_state_guard.ts";
 import type { ClaimedIssue } from "./claimed_issue_guard.ts";
@@ -97,7 +102,8 @@ export type GhGuardMarker =
   | "GH_LOCAL_STATE_REFUSED"
   | "GH_CREDENTIAL_DISCLOSURE_REFUSED"
   | "ISSUE_LIFECYCLE_REFUSED"
-  | "PR_LIFECYCLE_REFUSED";
+  | "PR_LIFECYCLE_REFUSED"
+  | "PR_BASE_CHANGE_REFUSED";
 
 /** The guard's verdict for one `gh` argument vector. */
 export interface GhGuardDecision {
@@ -837,7 +843,8 @@ function refuseClaimedPrLifecycle(
       `its own path, which re-checks CI status, branch freshness and the ` +
       `default-branch approval gate; a merge issued here has none of them. ` +
       `Raise the PR with 'gh pr create' and stop there — 'gh pr view', ` +
-      `'gh pr list', 'gh pr comment' and 'gh pr edit' are unaffected. If the ` +
+      `'gh pr list', 'gh pr comment' and 'gh pr edit' (other than ` +
+      `--base) are unaffected. If the ` +
       `PR should not land, say so in a comment rather than closing it.`,
   };
 }
@@ -901,6 +908,23 @@ export function evaluateGhCommand(
     // `direct_merge.ts` applies.
     const prRefusal = refuseClaimedPrLifecycle(args, info, ctx);
     if (prRefusal) return prRefusal;
+
+    // Issue #3433: retargeting a PR is the worker's call. Moving a
+    // milestone-fix or milestone child PR to the default branch bypasses the
+    // milestone's final review. Pure guard, so it cannot read the PR's
+    // head/base: every base change from the agent is refused.
+    if (classifyPrBaseChange(args, ctx.readBodyFile)) {
+      return {
+        allowed: false,
+        marker: "PR_BASE_CHANGE_REFUSED",
+        reason: `Refused 'gh ${info.verb}' from the agent subprocess — ` +
+          `changing a pull request's base branch is the worker's call: ` +
+          `moving a milestone-fix or milestone child PR to the default ` +
+          `branch bypasses the milestone's final review (Issue #3433). ` +
+          `'gh pr edit' for the title, body or labels is unaffected. If a ` +
+          `PR's base looks wrong, say so in a comment.`,
+      };
+    }
 
     // Issue #11/#90/#91: a REST mutation whose body is supplied by `--input`
     // (or an `@file`-sourced query) is argv-invisible, so `extractLabelValues`

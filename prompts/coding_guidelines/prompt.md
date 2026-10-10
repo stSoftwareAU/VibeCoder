@@ -750,8 +750,9 @@ line, and so are the REST spellings (`gh api -X PUT …/pulls/N/merge`,
 `gh api -X POST …/pulls/N/reviews`). The worker merges through its own path,
 which re-checks CI status, branch freshness and the default-branch approval
 gate; a merge you issue directly has none of them. `gh pr create`, `gh pr view`,
-`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected — finish by
-creating the PR and leave it open. If it should not land, say so in a comment
+`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected (except that
+changing a PR's base with `--base` is refused too) — finish by creating the PR
+and leave it open. If it should not land, say so in a comment
 rather than closing it.
 
 ### Blocked on another issue → say so; the worker defers

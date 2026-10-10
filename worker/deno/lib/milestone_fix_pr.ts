@@ -25,18 +25,21 @@
 
 import type { Result } from "../types.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
+import {
+  isMilestoneFixBranch,
+  milestoneFixPrefixFor,
+  sanitiseSegment,
+} from "./milestone_branch_names.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 
 /** `owner/repo` with the character set GitHub actually allows. */
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
-/** Prefix for the branch a milestone fix PR is raised from. */
-export const MILESTONE_FIX_BRANCH_PREFIX = "milestone-fix";
-
-/** Sanitise a path segment to the character set a git ref allows. */
-function sanitiseSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, "-");
-}
+export {
+  isMilestoneFixBranch,
+  MILESTONE_FIX_BRANCH_PREFIX,
+  milestoneFixPrefixFor,
+} from "./milestone_branch_names.ts";
 
 /**
  * The branch a fix PR is raised from for a given milestone PR and pass.
@@ -70,36 +73,6 @@ export function milestoneFixBranchFor(
     );
   }
   return `${milestoneFixPrefixFor(milestoneBranch, prNumber)}${disc}`;
-}
-
-/** Whether a PR head branch is one this module raised. */
-export function isMilestoneFixBranch(head: string): boolean {
-  return head.startsWith(`${MILESTONE_FIX_BRANCH_PREFIX}/`);
-}
-
-/**
- * The head prefix every fix branch for this milestone PR shares:
- * `milestone-fix/<leaf>/pr-<N>-`.
- *
- * Used both to build a fresh branch name and to recognise an already-open
- * fix PR raised by an earlier pass, regardless of that pass's discriminator.
- */
-export function milestoneFixPrefixFor(
-  milestoneBranch: string,
-  prNumber: number,
-): string {
-  if (!Number.isInteger(prNumber) || prNumber <= 0) {
-    throw new Error(
-      `milestoneFixPrefixFor: prNumber must be a positive integer, got ${prNumber}`,
-    );
-  }
-  const leaf = sanitiseSegment(milestoneBranch.replace(/^milestone\//, ""));
-  if (!leaf) {
-    throw new Error(
-      `milestoneFixPrefixFor: milestoneBranch '${milestoneBranch}' sanitised to an empty leaf`,
-    );
-  }
-  return `${MILESTONE_FIX_BRANCH_PREFIX}/${leaf}/pr-${prNumber}-`;
 }
 
 /** Injected seams so the whole path is testable without GitHub. */
@@ -248,20 +221,90 @@ export interface RaiseMilestoneFixPrOptions {
   pass: string;
 }
 
+/** Warn and comment why a fix PR was not armed; never throws. */
+async function reportFixPrNotArmed(
+  repo: string,
+  prNumber: number,
+  reason: string,
+  deps: MilestoneFixPrDeps,
+): Promise<void> {
+  const warn = deps.warn ?? deps.log;
+  warn?.(
+    `WARNING: the milestone fix PR ${repo}#${prNumber} was not armed for ` +
+      `auto-merge: ${reason}`,
+  );
+  try {
+    await deps.gh([
+      "pr",
+      "comment",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      `Auto-merge was not armed on this fix PR: ${reason}\n\n` +
+      "The Auto-Merge sweep re-checks it.",
+    ]);
+  } catch (commentError) {
+    // Fail loud: the refusal must never become silent because the comment
+    // could not be posted either.
+    warn?.(
+      `WARNING: could not post the auto-merge reason comment on ` +
+        `${repo}#${prNumber}: ${
+          commentError instanceof Error
+            ? commentError.message
+            : String(commentError)
+        }`,
+    );
+  }
+}
+
 /**
- * Arm auto-merge on a freshly-raised fix PR.
+ * Arm auto-merge on a freshly-raised fix PR, only once its base reads back as
+ * the milestone branch (Issue #3433; fail closed on an unreadable base).
  *
- * Best-effort: a PR that cannot be armed still lands through the fleet's own
- * Auto-Merge sweep, so a failure here does not fail the fix. It is never
- * silent — the failure is both logged and posted as a PR comment (Issue
- * #2457), naming the reason and that the sweep retries.
+ * Best-effort: a PR that is not armed does not fail the fix, but it is never
+ * silent — the reason is logged and posted as a PR comment (Issue #2457), and
+ * the Auto-Merge sweep re-checks the base on every later pass (Issue #3433).
  */
 async function armMilestoneFixPrAutoMerge(
   repo: string,
   prNumber: number,
+  milestoneBranch: string,
   deps: MilestoneFixPrDeps,
 ): Promise<void> {
-  const warn = deps.warn ?? deps.log;
+  let base: unknown;
+  try {
+    const raw = await deps.gh([
+      "pr",
+      "view",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--json",
+      "baseRefName,headRefName",
+    ]);
+    base = (JSON.parse(raw) as { baseRefName?: unknown } | null)?.baseRefName;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await reportFixPrNotArmed(
+      repo,
+      prNumber,
+      `its base could not be read (${message.trim()}) (Issue #3433)`,
+      deps,
+    );
+    return;
+  }
+  if (base !== milestoneBranch) {
+    await reportFixPrNotArmed(
+      repo,
+      prNumber,
+      `its base is '${
+        typeof base === "string" ? base : "unknown"
+      }', not its milestone branch '${milestoneBranch}' (Issue #3433)`,
+      deps,
+    );
+    return;
+  }
   try {
     await deps.gh([
       "pr",
@@ -274,33 +317,7 @@ async function armMilestoneFixPrAutoMerge(
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    warn?.(
-      `WARNING: the milestone fix PR ${repo}#${prNumber} was not armed for ` +
-        `auto-merge: ${message.trim()}`,
-    );
-    try {
-      await deps.gh([
-        "pr",
-        "comment",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--body",
-        `Auto-merge was not armed on this fix PR: ${message.trim()}\n\n` +
-        "The Auto-Merge sweep retries.",
-      ]);
-    } catch (commentError) {
-      // Fail loud: the refusal must never become silent because the comment
-      // could not be posted either.
-      warn?.(
-        `WARNING: could not post the auto-merge reason comment on ` +
-          `${repo}#${prNumber}: ${
-            commentError instanceof Error
-              ? commentError.message
-              : String(commentError)
-          }`,
-      );
-    }
+    await reportFixPrNotArmed(repo, prNumber, message.trim(), deps);
   }
 }
 
@@ -414,7 +431,7 @@ export async function raiseMilestoneFixPr(
       };
     }
 
-    await armMilestoneFixPrAutoMerge(repo, number, deps);
+    await armMilestoneFixPrAutoMerge(repo, number, milestoneBranch, deps);
     await clearMilestoneReviewRequests({
       repo,
       prNumber: number,

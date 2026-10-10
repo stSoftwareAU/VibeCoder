@@ -33,6 +33,8 @@ import {
   parseAuthoredCommentRows,
   selectFleetAuthoredComments,
 } from "./alert_dedup_authors.ts";
+import { disarmAutoMerge } from "./auto_merge_disarm.ts";
+import { isMilestoneBranch } from "./milestone_branch_names.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import {
   type MilestoneTrackerVerification,
@@ -75,20 +77,13 @@ export interface OpenMilestoneChild {
 export const OPEN_CHILDREN_BLOCK_MARKER =
   "<!-- milestone-open-children-merge-block -->";
 
-/** Branch prefix shared by every milestone branch. */
-const MILESTONE_BRANCH_PREFIX = "milestone/";
-
 /** Repo must be exactly `owner/repo` before it reaches an API path. */
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
 
 /** Conservative branch-name allowlist for values interpolated into gh args. */
 const BRANCH_PATTERN = /^[A-Za-z0-9._/-]+$/;
 
-/** Return true when `branch` is a milestone branch. */
-export function isMilestoneBranch(branch: string): boolean {
-  return branch.startsWith(MILESTONE_BRANCH_PREFIX) &&
-    branch.length > MILESTONE_BRANCH_PREFIX.length;
-}
+export { isMilestoneBranch };
 
 // ---------------------------------------------------------------------------
 // Authoritative open-children read
@@ -567,7 +562,7 @@ export interface BlockCommentOptions {
  *
  * @returns true when a fleet-authored comment already carries the marker.
  */
-async function hasFleetAuthoredMarker(
+export async function hasFleetAuthoredMarker(
   repo: string,
   prNumber: number,
   marker: string,
@@ -1221,29 +1216,30 @@ export async function decideMilestoneBaseMerge(
 }
 
 // ---------------------------------------------------------------------------
-// Retarget an orphan-bound PR at the default branch (Issue #4396)
+// Hold an orphan-bound PR where it is (Issue #4396 gate, Issue #3433 hold)
 // ---------------------------------------------------------------------------
 
-/** Marker so the retarget comment is posted once per PR. */
-export const ROLLUP_MERGED_RETARGET_MARKER =
-  "<!-- milestone-rollup-merged-retarget -->";
+/**
+ * Marker so the hold comment is posted once per PR. A new marker on purpose:
+ * the retired retarget comment claimed the PR had been moved to the default
+ * branch, which the fleet no longer does (Issue #3433).
+ */
+export const ROUTE_CLOSED_HOLD_MARKER = "<!-- milestone-route-closed-hold -->";
 
-/** Options for {@link retargetOrphanBoundPr}. */
-export interface RetargetOrphanBoundPrOptions {
+/** Options for {@link holdOrphanBoundPr}. */
+export interface HoldOrphanBoundPrOptions {
   repo: string;
   prNumber: number;
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>;
-  defaultBranch: string;
   ghCommandFn: GhCommandFn;
   log: (message: string) => void;
   /** Fleet identity inputs for the marker author check (Issue #1249). */
   authorOptions?: AlertDedupAuthorOptions;
 }
 
-/** The comment left on the PR when its base is retargeted. */
-export function renderRetargetComment(
+/** The comment left on the PR when it is held. */
+export function renderRouteClosedHoldComment(
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>,
-  defaultBranch: string,
 ): string {
   const why = gate.reason === "rollup-merged"
     ? `its rollup PR #${gate.rollupPrNumber} has already merged`
@@ -1253,35 +1249,37 @@ export function renderRetargetComment(
     } is closed`
     : `its state could not be verified (${gate.detail})`;
   return [
-    ROLLUP_MERGED_RETARGET_MARKER,
-    `⚠️ **Not merged into \`${gate.milestoneBranch}\`** — ${why}, so that branch has no route to \`${defaultBranch}\` any more. ` +
-    "Merging there would orphan this work while the issue closed as completed (Issue #4396 — exactly how #3366/#3369/#3371 were lost).",
+    ROUTE_CLOSED_HOLD_MARKER,
+    `⚠️ **Not merged into \`${gate.milestoneBranch}\`** — ${why}, so that branch has no route to the default branch any more. ` +
+    "Merging there would orphan this work while the issue closed as completed (Issue #4396).",
     "",
-    `The PR base has been retargeted to \`${defaultBranch}\`; the normal merge path applies from here.`,
+    "The fleet does not move this PR to the default branch: a PR off a milestone branch carries the milestone's work onto the default branch without the milestone's final review (Issue #3433). " +
+    "Auto-merge has been disarmed. A human decides — retarget it by hand or close it.",
   ].join("\n");
 }
 
 /**
- * Refuse the milestone-branch merge loudly and move the PR onto the
- * default branch. Comment once (marker-deduplicated), retarget, log.
- * Returns whether the retarget succeeded. Only a gate carrying positive
- * evidence — a merged rollup, or a closed milestone — reaches here. An
- * unreadable route defers instead and never retargets (Issue #477).
+ * Refuse the milestone-branch merge loudly and leave the PR on its base:
+ * log, disarm auto-merge (best effort), and comment once
+ * (marker-deduplicated). Never retargets and never throws. Only a gate
+ * carrying positive evidence — a merged rollup, or a closed milestone —
+ * reaches here. An unreadable route defers instead (Issue #477).
  */
-export async function retargetOrphanBoundPr(
-  options: RetargetOrphanBoundPrOptions,
-): Promise<boolean> {
-  const { repo, prNumber, gate, defaultBranch, ghCommandFn, log } = options;
+export async function holdOrphanBoundPr(
+  options: HoldOrphanBoundPrOptions,
+): Promise<void> {
+  const { repo, prNumber, gate, ghCommandFn, log } = options;
   log(
     `WARNING: refusing to merge ${repo}#${prNumber} into ${gate.milestoneBranch}: ${gate.detail} ` +
-      `(Issue #4396) — retargeting at ${defaultBranch}`,
+      "(Issue #3433) — holding it on its base, not retargeting; auto-merge disarmed",
   );
+  await disarmAutoMerge(repo, prNumber, ghCommandFn, log);
   let alreadyExplained = false;
   try {
     alreadyExplained = await hasFleetAuthoredMarker(
       repo,
       prNumber,
-      ROLLUP_MERGED_RETARGET_MARKER,
+      ROUTE_CLOSED_HOLD_MARKER,
       ghCommandFn,
       options.authorOptions ?? {},
       log,
@@ -1289,42 +1287,22 @@ export async function retargetOrphanBoundPr(
   } catch {
     alreadyExplained = false;
   }
-  if (!alreadyExplained) {
-    try {
-      await ghCommandFn([
-        "pr",
-        "comment",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--body",
-        renderRetargetComment(gate, defaultBranch),
-      ]);
-    } catch (err) {
-      log(
-        `WARNING: could not post the retarget comment on ${repo}#${prNumber}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-  }
+  if (alreadyExplained) return;
   try {
     await ghCommandFn([
       "pr",
-      "edit",
+      "comment",
       String(prNumber),
       "--repo",
       repo,
-      "--base",
-      defaultBranch,
+      "--body",
+      renderRouteClosedHoldComment(gate),
     ]);
-    return true;
   } catch (err) {
     log(
-      `WARNING: could not retarget ${repo}#${prNumber} at ${defaultBranch}: ${
+      `WARNING: could not post the hold comment on ${repo}#${prNumber}: ${
         err instanceof Error ? err.message : String(err)
-      } (Issue #4396)`,
+      }`,
     );
-    return false;
   }
 }

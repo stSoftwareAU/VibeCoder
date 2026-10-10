@@ -622,6 +622,18 @@ A branch named `issue-<n>-…` is not evidence — people use that shape too —
 
 A fleet PR is also **not** retargeted when merging its head onto the milestone branch would conflict. The worker dry-runs the merge in its clone (`git merge-tree --write-tree`) first; a conflicting result leaves the PR where it is, and a dry run that cannot answer allows the retarget as before and says so. The pass exists to stop work landing outside the milestone, not to manufacture conflicts for the merge-conflict lane to spend an hour on.
 
+### Milestone-fix PRs only target their milestone branch (Issue #3433)
+
+A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch.
+
+- **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head off its own milestone branch or any PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH …/pulls/N` with `base`).
+- **A closed route holds the PR.** A PR whose milestone route has closed (rollup merged or milestone closed) is held on its milestone branch instead of being retargeted: not merged, auto-merge disarmed, one comment. A human retargets or closes it (result `held_route_closed`).
+- **Auto-merge follows the base.** The fix PR's auto-merge is armed only after its base is re-read as the milestone branch. On every Auto-Merge sweep pass:
+  - a fleet PR whose head is `milestone-fix/**` and whose base is not a `milestone/**` branch is disarmed, never armed, and flagged with a comment on it and on the milestone's final PR #N;
+  - a fleet PR moved onto the default branch after it was opened is disarmed and left for a human;
+  - an armed fleet PR whose base changed after arming is disarmed and re-evaluated (result `held_base_retargeted`).
+- **Human retargets are untouched.** A human's retarget of a PR the fleet did not raise is left alone; the Issue #2022 rule above still applies to the self-heal.
+
 ## 🏷️ Issue ordering within milestones
 
 By default, issues within a milestone are processed oldest-first (by creation date). You can override this order using **priority labels** to control which milestone issue the worker picks next.
