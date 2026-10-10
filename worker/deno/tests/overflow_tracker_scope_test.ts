@@ -15,13 +15,16 @@
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  *
- * Every pin here is a filesystem-derived invariant checked by looping over
- * every prompt directory's `prompt.md` on disk, so it stays whole-file
- * rather than scoped to a doc section (CODING-STANDARDS.md §
- * Documentation-drift tests, condition 4; Issue #3309).
+ * The scoping invariant loops over every prompt directory's `prompt.md` on
+ * disk and reads each whole file, because it is an absence check (no
+ * unscoped overflow-tracker prohibition anywhere in a template); the two
+ * presence pins (security_scan's mandate, the six templates' own scoping)
+ * are scoped to the section that holds each rule (CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 1; Issue #3309).
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -77,25 +80,35 @@ Deno.test("overflow tracker - security_scan still mandates one (Issue #790)", as
   const security = prompts.find(([name]) => name === "security_scan");
   assert(security, "security_scan template is missing");
   assert(
-    security[2].includes("security-scan-overflow"),
+    section(
+      security[2],
+      "### For each surviving finding (skip silently if its id is in the suppressed or known-open list)",
+    ).includes("security-scan-overflow"),
     "security_scan must keep the overflow tracker this issue scoped to it",
   );
 });
 
 Deno.test("overflow tracker - the six rescoped templates name their own scan (Issue #790)", async () => {
-  const expected: Record<string, string> = {
-    github_actions_audit: "github-actions-audit",
-    dead_code: "dead-code",
-    deprecated_api: "deprecated-api",
-    documentation_audit: "documentation-audit",
-    duplicated_knowledge: "duplicated-knowledge",
-    private_repo_reference_audit: "private-repo-reference-audit",
+  // The "## Suggested fix" the prohibition sits beside is inside the fenced
+  // issue-body template, so the heading section() sees is the per-finding step.
+  const FOR_EACH =
+    "### For each surviving finding (skip silently if its id is in the suppressed or known-open list)";
+  const expected: Record<string, [scan: string, heading: string]> = {
+    github_actions_audit: ["github-actions-audit", FOR_EACH],
+    dead_code: ["dead-code", FOR_EACH],
+    deprecated_api: ["deprecated-api", FOR_EACH],
+    documentation_audit: ["documentation-audit", "## Phase 3 — Triage"],
+    duplicated_knowledge: ["duplicated-knowledge", "## Phase 3 — Triage"],
+    private_repo_reference_audit: [
+      "private-repo-reference-audit",
+      "## Phase 3 — Triage",
+    ],
   };
   const prompts = await allPrompts();
-  for (const [name, scan] of Object.entries(expected)) {
+  for (const [name, [scan, heading]] of Object.entries(expected)) {
     const found = prompts.find(([n]) => n === name);
     assert(found, `${name} template is missing`);
-    const sentences = overflowSentences(found[2]);
+    const sentences = overflowSentences(section(found[2], heading));
     assert(
       sentences.length > 0,
       `${name}/${found[1]} no longer mentions an overflow tracker`,

@@ -21,6 +21,7 @@ import {
   loadPrompt,
   validatePromptTemplate,
 } from "../lib/prompt_manager.ts";
+import { readRepoDoc, section } from "./support/markdown_docs.ts";
 
 /** Prompts directory of the repository under test. */
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -55,11 +56,8 @@ const SCAN_PROMPT_TYPES = [
  * heading style (bulleted or bold) and the line wrapping differ per prompt,
  * both of which whitespace normalisation removes.
  *
- * Pinned whole-file rather than section-scoped: this loops over every
- * prompts/<type>/prompt.md in `SCAN_PROMPT_TYPES`, and the block sits under a
- * different parent heading in each one (CODING-STANDARDS.md §
- * Documentation-drift tests, condition 1 exemption for a filesystem-derived,
- * cross-file invariant).
+ * Pinned against each prompt's `## Inputs` section, where the block sits in
+ * every prompt in `SCAN_PROMPT_TYPES`.
  */
 const BLOCK_SENTENCES = [
   "**Open issues already in this repository** — every open issue in this " +
@@ -96,7 +94,10 @@ async function loadTemplate(promptType: string): Promise<string> {
 
 for (const promptType of SCAN_PROMPT_TYPES) {
   Deno.test(`${promptType} - the prompt carries the open-issue title list`, async () => {
-    const template = await loadTemplate(promptType);
+    const template = section(
+      await readRepoDoc(`prompts/${promptType}/prompt.md`),
+      "## Inputs",
+    );
     assert(
       template.includes("{{OPEN_ISSUE_TITLES}}"),
       `${promptType}: the template is missing {{OPEN_ISSUE_TITLES}}`,
@@ -109,7 +110,10 @@ for (const promptType of SCAN_PROMPT_TYPES) {
   });
 
   Deno.test(`${promptType} - the prompt states the skip rule verbatim`, async () => {
-    const normalised = normalise(await loadTemplate(promptType));
+    const normalised = normalise(section(
+      await readRepoDoc(`prompts/${promptType}/prompt.md`),
+      "## Inputs",
+    ));
     for (const sentence of BLOCK_SENTENCES) {
       assert(
         normalised.includes(normalise(sentence)),
