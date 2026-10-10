@@ -79,9 +79,9 @@ clean build and baseline test run, so a run killed at the budget before then
 leaves none; that is reported as budget exhausted (nothing tried, a warning),
 as a Deno baseline timeout is, not as an error. A normal exit that leaves no
 parseable `outcomes.json`, or exit code 3 (some mutants timed out) with none,
-is still an error. When the diff touches no mutant at all, cargo-mutants logs
-"No mutants to filter" on stderr and exits 0 without writing `outcomes.json`;
-that is "Not applicable".
+is an error, except in one case: when the diff touches no mutant at all,
+cargo-mutants logs "No mutants to filter" on stderr and exits 0 without writing
+`outcomes.json`, and that is "Not applicable".
 
 At the budget the runner sends `SIGTERM` to cargo-mutants and `SIGKILL` only
 after a 5 second grace period, so cargo-mutants can stop its cargo process
@@ -149,13 +149,14 @@ after the agent has written tests. Every child process therefore starts from the
 allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
 never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not inherited by it (Issue #572, the same control as the quality
-gate). The only additions are the declared credentials described below.
+gate). The only additions are the declared credentials described below and, for
+`cargo mutants`, `TMPDIR` (the run's `--output` directory, see above).
 
 The credentials the repository declared in `quality_credentials` (Issues #573
 and #574) are resolved once in the completion phase and added to each child's
 environment, the same way the quality gate does, so tests that need them (for
-example minted AWS credentials) pass their baseline here too. Only the declared
-variables are added. If the mint fails, the check is reported as not applicable
+example minted AWS credentials) pass their baseline here too. Apart from `TMPDIR` for
+`cargo mutants`, only the declared variables are added. If the mint fails, the check is reported as not applicable
 with a warning instead of running without them.
 
 ## Exemptions
@@ -194,7 +195,7 @@ Both keys are per-repo options, set operator-side under
 
 | Outcome                | Meaning                                                | Blocks the PR?            |
 | ---------------------- | ------------------------------------------------------ | ------------------------- |
-| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, check disabled, or the repository's `quality_credentials` could not be resolved | No                        |
+| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, check disabled, the repository's `quality_credentials` could not be resolved, or cargo-mutants finds no mutants on the changed lines ("No mutants to filter") | No                        |
 | Completed, no survivor | Every mutant was killed, or the survivor is exempted   | No                        |
 | Completed, survivors   | At least one unexempted survivor                       | Yes                       |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
