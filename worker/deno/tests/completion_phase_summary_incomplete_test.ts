@@ -140,6 +140,10 @@ interface Scenario {
   prUrl?: string;
   /** Output of `git diff --unified=0 <base>...HEAD`, when a scenario needs it. */
   diffUnified0?: string;
+  /** Make `ensureLabelExists` report failure. */
+  ensureLabelFails?: boolean;
+  /** Make `updatePrLabels` report failure. */
+  labelFails?: boolean;
 }
 
 interface Observed {
@@ -154,6 +158,9 @@ interface Observed {
   finaliseCalls: number;
   /** Label sets passed to `updatePrLabels`, in call order. */
   labelCalls: string[][];
+  /** Messages passed to `logger.warn` / `logger.error`, in call order. */
+  warnings: string[];
+  errors: string[];
   comments: string[];
   prUrl?: string;
   prNumber?: number;
@@ -176,6 +183,8 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
   let recoverCalls = 0;
   let finaliseCalls = 0;
   const labelCalls: string[][] = [];
+  const warnings: string[] = [];
+  const errors: string[] = [];
 
   const config = buildDefaultWorkerConfig();
   // Never inherit the host's work directory: the security-fix gate persists
@@ -205,7 +214,21 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      warn: (message: string) => {
+        warnings.push(message);
+      },
+      error: (message: string) => {
+        errors.push(message);
+      },
+    },
     github: {
+      ensureLabelExists: () =>
+        Promise.resolve(
+          scenario.ensureLabelFails
+            ? { ok: false as const, error: new Error("label create failed") }
+            : { ok: true as const, value: undefined },
+        ),
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
@@ -237,6 +260,12 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
     pr: {
       updatePrLabels: (_repo: string, _pr: number, labels: string[]) => {
         labelCalls.push([...labels]);
+        if (scenario.labelFails) {
+          return Promise.resolve({
+            ok: false as const,
+            error: new Error("label apply failed"),
+          });
+        }
         return Promise.resolve({ ok: true as const, value: undefined });
       },
       findExistingPrForIssue: () =>
@@ -290,6 +319,8 @@ async function runCompletion(scenario: Scenario): Promise<Observed> {
     recoverCalls,
     finaliseCalls,
     labelCalls,
+    warnings,
+    errors,
     comments,
     prUrl: state.prUrl,
     prNumber: state.prNumber,
@@ -499,6 +530,59 @@ Deno.test(
       observed.labelCalls.some((l) => l.includes("standing-violation")),
       true,
       "the PR must be labelled standing-violation",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a failed standing-violation label creation still labels the PR and holds auto-merge (Issue #3382)",
+  async () => {
+    const observed = await runCompletion({
+      issueBody: ISSUE_WITH_CRITERIA,
+      summary: SUMMARY_STANDING_VIOLATION,
+      labels: ["enhancement"],
+      prExistsForBranch: true,
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+      ensureLabelFails: true,
+    });
+
+    assertEquals(observed.outcomeKind, "summary_incomplete");
+    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
+    assertEquals(
+      observed.labelCalls.some((l) => l.includes("standing-violation")),
+      true,
+      "the label is still applied after ensureLabelExists fails",
+    );
+    assertEquals(
+      observed.warnings.some((w) =>
+        w.includes("Could not ensure the standing-violation label exists")
+      ),
+      true,
+      "the ensure failure must be logged as a warning",
+    );
+  },
+);
+
+Deno.test(
+  "completion - a failed standing-violation PR labelling is logged and auto-merge stays held (Issue #3382)",
+  async () => {
+    const observed = await runCompletion({
+      issueBody: ISSUE_WITH_CRITERIA,
+      summary: SUMMARY_STANDING_VIOLATION,
+      labels: ["enhancement"],
+      prExistsForBranch: true,
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+      labelFails: true,
+    });
+
+    assertEquals(observed.outcomeKind, "summary_incomplete");
+    assertEquals(observed.finaliseCalls, 0, "auto-merge must not be armed");
+    assertEquals(
+      observed.errors.some((e) =>
+        e.includes("the auto-merge hold is not visible on the PR")
+      ),
+      true,
+      "the labelling failure must be logged as an error",
     );
   },
 );
