@@ -212,8 +212,8 @@ holds it, otherwise the repository's agent instructions, `AGENTS.md` or
 
 The candidate names the diagnosed cause and its matching fix. A cause counts
 only when the artefacts you read show it; a cause whose evidence is not in them
-— including the effort cause in a repository that holds no phase prompt — counts
-as ruled out. A new rule beside an ignored one is the last option: propose it
+— including the effort cause when neither the phase prompt nor the repository's
+agent instructions show it — counts as ruled out. A new rule beside an ignored one is the last option: propose it
 only when the artefacts rule out all four causes, and say so.
 
 ### 4. Steering-file size — has the instruction file outgrown its job?

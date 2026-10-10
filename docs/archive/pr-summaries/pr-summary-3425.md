@@ -30,8 +30,9 @@ fix. Closes #3425.
   "the phase prompt when this repository holds it, otherwise the repository's
   agent instructions (`AGENTS.md` or `CLAUDE.md`)" for both the evidence and
   the effort fix. A cause whose evidence is not in the artefacts counts as
-  ruled out, so the new-rule last option stays reachable in a repository with
-  no phase prompt. A guess about the run does not count. This keeps the table
+  ruled out, including effort when neither the phase prompt nor the
+  repository's agent instructions show it, so the new-rule last option stays
+  reachable. A guess about the run does not count. This keeps the table
   consistent with "Judge the environment, never the author" and "Absent
   evidence is not evidence".
 
@@ -88,7 +89,8 @@ flowchart LR
     the diagnosed cause and its matching fix", "A new rule beside an ignored
     one is the last option", the "phase prompt when this repository holds it,
     otherwise the repository's agent instructions" scoping and "counts as ruled
-    out". The pins are scoped to `section(prompt,
+    out" and "neither the phase prompt nor the repository's agent instructions
+    show it". The pins are scoped to `section(prompt,
     "3. Coding standards")`.
   - **Standards test:** pins the new bullet and its `prompts/retro/prompt.md`
     pointer in the Prompt Engineering Guidance section.
@@ -108,7 +110,8 @@ flowchart LR
 - **Own diff:** I applied the new rule to this PR's own diff. It adds no rule
   beside an ignored one, so I found nothing.
 - **Red run (PR #3550 review):** with the prompt edit stashed, the prompt test
-  failed on the two new scoping pins; with it restored, the new test file plus
+  failed on the two scoping pins ('phase prompt when this repository holds
+  it' and 'neither the phase prompt nor … show it'); with it restored, the new test file plus
   the retro template tests gave 21 passed and 0 failed. `markdownlint-cli2 docs/RETRO-SCAN.md` reported 0 issues.
 - **Formatting:** `deno fmt --check` already fails on `prompts/retro/prompt.md`
   and `CODING-STANDARDS.md` on base. I left both unformatted so the diff does

@@ -21,6 +21,7 @@ Deno.test("retro prompt category 3 maps each ignored-rule cause to a fix", async
       "A new rule beside an ignored one is the last option",
       "the phase prompt when this repository holds it, otherwise the repository's agent instructions",
       "counts as ruled out",
+      "neither the phase prompt nor the repository's agent instructions show it",
     ]
   ) {
     assert(
