@@ -48,18 +48,34 @@ Deno.test("wrapped paragraph with a wrong count flags both files", () => {
   ]);
 });
 
-Deno.test("a claim phrase split across the line break is still read", () => {
-  const found = findTestPlanMismatches({
-    summary:
-      "## Test Plan\n\n- `worker/deno/tests/a_test.ts` and `worker/deno/tests/b_test.ts` ran 9\npassed\n",
-    headCounts: counts({
-      "worker/deno/tests/a_test.ts": 3,
-      "worker/deno/tests/b_test.ts": 2,
+const AUDIT_PATH =
+  "worker/deno/tests/workflow_template_audit_conformance_test.ts";
+// Real wrap: docs/archive/pr-summaries/pr-summary-1639.md:107-108 (count and "tests" on different lines).
+const PLAN_1639 = "## Test Plan\n\n" +
+  "Added `" + AUDIT_PATH + "` — 12\n" +
+  "tests, all looping over the whole `WORKFLOW_SPECS` catalogue:\n";
+
+// Real wrap: docs/archive/pr-summaries/pr-summary-1639.md:107-108.
+Deno.test("a count split from its noun by the line break matches the head count (1639 shape)", () => {
+  assertEquals(
+    findTestPlanMismatches({
+      summary: PLAN_1639,
+      headCounts: counts({ [AUDIT_PATH]: 12 }),
     }),
+    [],
+  );
+});
+
+// Real wrap: docs/archive/pr-summaries/pr-summary-1639.md:107-108.
+Deno.test("a count split from its noun by the line break is still compared (1639 shape)", () => {
+  const found = findTestPlanMismatches({
+    summary: PLAN_1639,
+    headCounts: counts({ [AUDIT_PATH]: 11 }),
   });
   assertEquals(found.length, 1);
-  assertEquals(found[0]!.claimed, 9);
-  assertEquals(found[0]!.actual, 5);
+  assertEquals(found[0]!.claimed, 12);
+  assertEquals(found[0]!.actual, 11);
+  assertEquals(found[0]!.files, [AUDIT_PATH]);
 });
 
 Deno.test("fenced shell continuation joins into one command (1021 shape)", () => {
