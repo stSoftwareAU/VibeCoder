@@ -776,8 +776,8 @@ export function renderPendingDependenciesWarning(
  * closed; the work evaporated with the branch, and every issue auto-closed
  * as COMPLETED because a PR really had merged. Merging into a milestone
  * branch whose rollup has merged, or whose milestone is closed, is refused
- * here — loud, naming the rollup PR — so the caller can retarget the PR at
- * the default branch instead.
+ * here — loud, naming the rollup PR — so the caller holds the PR on its base
+ * for a human (Issue #3433).
  *
  * Failure policy mirrors {@link decideSummaryPrMerge}: a base that is not
  * a milestone branch is allowed without a lookup; a milestone base that
@@ -795,7 +795,7 @@ export type MilestoneBaseMergeDecision =
      * The route could not be *read* (Issue #477). Not evidence of
      * anything: leave the PR exactly as it is and look again next scan.
      *
-     * This used to be a `block`, which retargets the PR at the default
+     * This used to be a `block`, which then retargeted the PR at the default
      * branch. A GitHub rate limit — certain to happen across an
      * unattended weekend — therefore refused every milestone child, and
      * any whose retarget succeeded was moved onto the review-gated

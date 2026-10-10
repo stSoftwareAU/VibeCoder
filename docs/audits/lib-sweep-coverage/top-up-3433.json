@@ -1,0 +1,15 @@
+{
+  "issue": 3433,
+  "chunk": "top-up-3433",
+  "title": "top-up: PR base-change guard and auto-merge base integrity",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3433",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: auto_merge_disarm.ts, milestone_branch_names.ts, pr_base_change_guard.ts, pr_base_integrity.ts (#3433)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/auto_merge_disarm.ts",
+    "worker/deno/lib/milestone_branch_names.ts",
+    "worker/deno/lib/pr_base_change_guard.ts",
+    "worker/deno/lib/pr_base_integrity.ts"
+  ],
+  "sweptAt": "4675510a24f4b8787b8a51edad80fa65858a122e"
+}

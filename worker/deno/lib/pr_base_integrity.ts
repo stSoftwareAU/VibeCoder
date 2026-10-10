@@ -344,6 +344,16 @@ export async function checkPrBaseIntegrity(
       log(
         `WARNING: ${repo}#${pr.number} base changed after auto-merge was armed — disarmed for re-evaluation (Issue #3433)`,
       );
+      if (!disarmed) {
+        return {
+          action: "hold",
+          outcome: {
+            result: AutoMergeResult.Deferred,
+            message:
+              `PR #${pr.number} base changed after auto-merge was armed, but disarming failed — not re-evaluated this pass, will retry next pass (Issue #3433)`,
+          },
+        };
+      }
       return { action: "proceed", disarmed };
     }
     case "ok":

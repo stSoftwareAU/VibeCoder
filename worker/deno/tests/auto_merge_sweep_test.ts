@@ -20,6 +20,7 @@ import {
   AutoMergeResult,
   type EnableAutoMergeResult,
 } from "../lib/pr_auto_merge.ts";
+import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -801,4 +802,92 @@ Deno.test("only the PRs the fleet listing returns are base-checked", async () =>
   assert(result.ok);
   assertEquals(state.baseChecks.map((c) => c.prNumber), [42]);
   assertEquals(state.listed[0]!.authors, FLEET);
+});
+
+/**
+ * Issue #3433 spec: a human retarget of a non-fleet PR is untouched (the
+ * Issue #2022 rule). Wires the real `checkPrBaseIntegrity` into the sweep.
+ */
+Deno.test("a human PR moved onto the default branch is never read or touched, while a fleet milestone-fix PR on main is disarmed and held", async () => {
+  const FIX_HEAD = "milestone-fix/m1/pr-77-abc";
+  const FIX = 9;
+  const HUMAN = 4242;
+  const all = [
+    {
+      author: "VibeCoderST",
+      pr: { number: FIX, headRefName: FIX_HEAD, baseRefName: "main" },
+    },
+    {
+      author: "a-human",
+      pr: { number: HUMAN, headRefName: "feature-x", baseRefName: "main" },
+    },
+  ];
+  const ghCalls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    ghCalls.push(args);
+    if (args[0] === "api" && args[1] === "graphql") {
+      return Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            defaultBranchRef: { name: "main" },
+            pullRequest: {
+              headRefName: FIX_HEAD,
+              baseRefName: "main",
+              autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" },
+              timelineItems: { nodes: [] },
+            },
+          },
+        },
+      }));
+    }
+    if (args[0] === "api") return Promise.resolve("[]");
+    return Promise.resolve("");
+  };
+  const { state, options } = harness({}, {
+    // Honours the authors argument rather than hard-coding the exclusion.
+    listOpenPrs: (_repo, authors) =>
+      Promise.resolve(
+        all.filter((e) => authors.includes(e.author)).map((e) => e.pr),
+      ),
+    prLiveState: () =>
+      Promise.resolve(
+        {
+          open: true,
+          mergeable: "MERGEABLE",
+          armed: true,
+        } as PrLiveStateReading,
+      ),
+  });
+  const result = await sweepAutoMerge({
+    ...options,
+    repos: ["stSoftwareAU/VibeCoder"],
+    checkBaseIntegrity: (repo, pr, armed) =>
+      checkPrBaseIntegrity({
+        repo,
+        pr,
+        armed,
+        gh,
+        log: () => {},
+        authorOptions: { fleetAuthors: FLEET },
+      }),
+  });
+
+  assert(result.ok);
+  // The human PR is never named by any gh call, nor listed, checked or recorded.
+  assert(
+    !ghCalls.some((c) => c.some((a) => a.includes(String(HUMAN)))),
+    JSON.stringify(ghCalls),
+  );
+  assertEquals(state.stateReads.map((r) => r.prNumber), [FIX]);
+  assertEquals(state.recorded.map((r) => r.prNumber), [FIX]);
+  // The fleet milestone-fix PR on main is disarmed and held, not merge-attempted.
+  assertEquals(state.recorded[0]!.result, AutoMergeResult.HeldBaseRetargeted);
+  assertEquals(state.attempted, []);
+  assertEquals(
+    ghCalls.filter((c) =>
+      c[0] === "pr" && c[1] === "merge" && c.includes("--disable-auto") &&
+      c[2] === String(FIX)
+    ).length,
+    1,
+  );
 });

@@ -13,7 +13,7 @@ import { runGhOrThrow } from "./gh_spawn.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
-import { isMilestoneFixBranch } from "./milestone_fix_pr.ts";
+import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
 import {
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,

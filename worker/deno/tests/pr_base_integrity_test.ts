@@ -296,3 +296,78 @@ Deno.test("check: an unarmed non-fix PR on a milestone base makes no gh call", a
   assertEquals(out, { action: "proceed", disarmed: false });
   assertEquals(calls, []);
 });
+
+Deno.test("check: a base change since arming holds as deferred when the disarm fails (Issue #3433)", async () => {
+  const inner = fakeGh(reading({
+    baseRefName: "milestone/b",
+    armedAt: "2026-01-01T00:00:00Z",
+    lastBaseChange: {
+      at: "2026-01-02T00:00:00Z",
+      from: "milestone/a",
+      to: "milestone/b",
+    },
+  }));
+  const gh = (args: string[]): Promise<string> =>
+    args.includes("--disable-auto")
+      ? Promise.reject(new Error("boom"))
+      : inner.gh(args);
+  const out = await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: "issue-5-x", baseRefName: "milestone/b" },
+    armed: true,
+    gh,
+    log: () => {},
+    authorOptions: AUTHORS,
+  });
+  assert(out.action === "hold");
+  assertEquals(out.outcome.result, AutoMergeResult.Deferred);
+  assert(out.outcome.message.includes("disarming failed"));
+  assert(out.outcome.message.includes("#3433"));
+});
+
+Deno.test("check: a failed comment is logged and the PR is still held", async () => {
+  const inner = fakeGh(reading({ headRefName: FIX_HEAD }));
+  const logs: string[] = [];
+  const gh = (args: string[]): Promise<string> =>
+    args[0] === "pr" && args[1] === "comment"
+      ? Promise.reject(new Error("comment refused"))
+      : inner.gh(args);
+  const out = await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: FIX_HEAD, baseRefName: "main" },
+    armed: true,
+    gh,
+    log: (m) => logs.push(m),
+    authorOptions: AUTHORS,
+  });
+  assert(
+    out.action === "hold" &&
+      out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
+  );
+  assertEquals(disarms(inner.calls).length, 1);
+  assert(
+    logs.some((l) =>
+      l.includes("could not comment on o/r#9") &&
+      l.includes("comment refused")
+    ),
+  );
+});
+
+Deno.test("check: an unparsable milestone-fix head is held on its own PR and comments nowhere else", async () => {
+  const head = "milestone-fix/oops";
+  const { gh, calls } = fakeGh(reading({ headRefName: head }));
+  const out = await checkPrBaseIntegrity({
+    repo: "o/r",
+    pr: { number: 9, headRefName: head, baseRefName: "main" },
+    armed: true,
+    gh,
+    log: () => {},
+    authorOptions: AUTHORS,
+  });
+  assert(
+    out.action === "hold" &&
+      out.outcome.result === AutoMergeResult.HeldBaseRetargeted,
+  );
+  assertEquals(disarms(calls).length, 1);
+  assertEquals(comments(calls).map((c) => c[2]), ["9"]);
+});

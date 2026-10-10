@@ -386,3 +386,26 @@ Deno.test("raiseMilestoneFixPr - an unreadable base fails closed and warns (Issu
   assert(!calls.some((a) => a[1] === "merge"), JSON.stringify(calls));
   assert(warnings.some((m) => m.includes("HTTP 502")), warnings.join("\n"));
 });
+
+Deno.test("raiseMilestoneFixPr - a base the view does not return as a string is 'unknown' and not armed (Issue #3433)", async () => {
+  const fixBranch = milestoneFixBranchFor(MILESTONE, 42, "ci fix");
+  const warnings: string[] = [];
+  const { gh, calls } = fakeGh({ view: () => "{}" });
+  const result = await raiseMilestoneFixPr({
+    repo: REPO,
+    milestoneBranch: MILESTONE,
+    milestonePrNumber: 42,
+    fixBranch,
+    pass: "CI fix",
+  }, { gh, warn: (m) => warnings.push(m) });
+
+  assert(result.ok);
+  assert(!calls.some((a) => a[1] === "merge"), JSON.stringify(calls));
+  assert(
+    warnings.some((m) => m.includes("its base is 'unknown'")),
+    warnings.join("\n"),
+  );
+  const comment = calls.find((a) => a[1] === "comment");
+  assert(comment, JSON.stringify(calls));
+  assertStringIncludes(comment.join(" "), "its base is 'unknown'");
+});

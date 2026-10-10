@@ -19,9 +19,10 @@
  *    permanent. This property was already true of the code this module
  *    replaces; it is now covered by a test, so it cannot quietly stop being
  *    true.
- * 3. **Auto-merge follows the base** (Issue #3433) — before any arming or
- *    branch update, each PR's base is re-read; a milestone-fix PR off its
- *    milestone branch, or a PR moved onto the default branch, is disarmed and
+ * 3. **Auto-merge follows the base** (Issue #3433) — every swept PR
+ *    passes the base check before any arming or branch update (the GraphQL
+ *    read is skipped only for an unarmed, non-fix PR on a milestone base); a
+ *    milestone-fix PR off its milestone branch, or a PR moved onto the default branch, is disarmed and
  *    held, so a retarget cannot land a milestone's work unreviewed.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
