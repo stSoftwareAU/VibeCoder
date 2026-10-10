@@ -922,8 +922,9 @@ export function evaluateGhCommand(
           `moving a milestone-fix or milestone child PR to the default ` +
           `branch bypasses the milestone's final review (Issue #3433). ` +
           `'gh pr edit' for the title, body or labels is unaffected; a ` +
-          `GraphQL 'updatePullRequest' mutation is refused whole, since its ` +
-          `variables can carry the base. If a ` +
+          `GraphQL request that may carry an 'updatePullRequest' mutation, or ` +
+          `whose document cannot be read, is refused whole, since the ` +
+          `mutation can carry the base. If a ` +
           `PR's base looks wrong, say so in a comment.`,
       };
     }

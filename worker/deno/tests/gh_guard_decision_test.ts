@@ -1032,3 +1032,182 @@ Deno.test("gh-guard #3433 - non-base PR edits and pr create --base stay allowed"
     assertEquals(decision.allowed, true, `expected allowed: ${args}`);
   }
 });
+
+const UPDATE_PR_DOC =
+  'mutation { updatePullRequest(input: {pullRequestId: "X", baseRefName: "main"}) { clientMutationId } }';
+
+Deno.test("gh-guard #3433 - a GraphQL updatePullRequest document off the command line is refused with the allowlist inactive", () => {
+  const readsUpdate = { ...INACTIVE, readBodyFile: () => UPDATE_PR_DOC };
+  const readsJsonBody = {
+    ...INACTIVE,
+    readBodyFile: () => JSON.stringify({ query: UPDATE_PR_DOC }),
+  };
+  const cases: [string, readonly string[], typeof readsUpdate][] = [
+    [
+      "-F query=@file",
+      ["api", "graphql", "-F", "query=@q.graphql"],
+      readsUpdate,
+    ],
+    ["--input <file>", ["api", "graphql", "--input", "b.json"], readsJsonBody],
+    ["--input=<file>", ["api", "graphql", "--input=b.json"], readsJsonBody],
+    ["--input -", ["api", "graphql", "--input", "-"], readsUpdate],
+    ["-F query=@-", ["api", "graphql", "-F", "query=@-"], readsUpdate],
+  ];
+  for (const [name, args, ctx] of cases) {
+    const decision = evaluateGhCommand(args, ctx);
+    assertEquals(decision.allowed, false, name);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", name);
+  }
+  // No reader at all, or a read error: an unseeable document fails closed.
+  for (
+    const ctx of [INACTIVE, {
+      ...INACTIVE,
+      readBodyFile: () => {
+        throw new Error("nope");
+      },
+    }]
+  ) {
+    const decision = evaluateGhCommand(
+      ["api", "graphql", "-F", "query=@q.graphql"],
+      ctx,
+    );
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED");
+  }
+  // A readable file that holds an unrelated query is not a base change.
+  const harmless = {
+    ...INACTIVE,
+    readBodyFile: () => "{ viewer { login } }",
+  };
+  assertEquals(
+    evaluateGhCommand(["api", "graphql", "-F", "query=@q.graphql"], harmless)
+      .allowed,
+    true,
+  );
+  assertEquals(
+    evaluateGhCommand(["api", "graphql", "--input", "b.json"], harmless)
+      .allowed,
+    true,
+  );
+});
+
+Deno.test("gh-guard #3433 - updatePullRequest hidden by operationName or a # comment is refused with the allowlist inactive", () => {
+  const multiOperation =
+    'mutation A { changeUserStatus(input: {}) { clientMutationId } } mutation B { updatePullRequest(input: {pullRequestId: "X", baseRefName: "main"}) { clientMutationId } }';
+  const commented =
+    `# {\nmutation { updatePullRequest(input: {pullRequestId: "X", baseRefName: "main"}) { clientMutationId } }`;
+  const cased =
+    'mutation { UPDATEPULLREQUEST(input: {pullRequestId: "X", baseRefName: "main"}) { clientMutationId } }';
+  for (
+    const args of [
+      [
+        "api",
+        "graphql",
+        "-f",
+        `query=${multiOperation}`,
+        "-f",
+        "operationName=B",
+      ],
+      ["api", "graphql", "-f", `query=${commented}`],
+      ["api", "graphql", "-f", `query=${cased}`],
+      ["api", "graphql", `--raw-field=query=${commented}`],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, INACTIVE);
+    assertEquals(decision.allowed, false, `${args}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+});
+
+Deno.test("gh-guard #1420 - gh api --hostname naming a non-GitHub host is not an allowed write to the named repo", () => {
+  for (
+    const args of [
+      [
+        "api",
+        "--hostname",
+        "evil.example",
+        "repos/o/r/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      [
+        "api",
+        "--hostname=evil.example",
+        "repos/o/r/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      [
+        "api",
+        "--hostname",
+        "evil.example",
+        "repos/{owner}/{repo}/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      [
+        "api",
+        "--hostname=evil.example",
+        "repos/{owner}/{repo}/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      [
+        "api",
+        "--hostname",
+        "evil.example",
+        "graphql",
+        "-f",
+        "query=mutation { changeUserStatus(input: {}) { clientMutationId } }",
+      ],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, OR_ACTIVE);
+    assertEquals(decision.allowed, false, `${args}`);
+    assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE", `${args}`);
+  }
+  // The same writes against github.com (any case) still resolve the repo.
+  for (
+    const args of [
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "repos/o/r/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      [
+        "api",
+        "--hostname=GitHub.com",
+        "repos/o/r/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "repos/{owner}/{repo}/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+    ]
+  ) {
+    assertEquals(evaluateGhCommand(args, OR_ACTIVE).allowed, true, `${args}`);
+  }
+  // github.com still enforces the allowlist on a repo that is not allowed.
+  assertEquals(
+    evaluateGhCommand(
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "repos/x/y/issues/1/comments",
+        "-f",
+        "body=x",
+      ],
+      OR_ACTIVE,
+    ).marker,
+    "WRITE_REPO_BLOCKED",
+  );
+});

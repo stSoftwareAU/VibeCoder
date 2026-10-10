@@ -255,6 +255,7 @@ const GH_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--repo",
   // `gh api --hostname <host>`: without it the host was read as the endpoint,
   // so endpoint-based refusals never saw the real one (Issue #3540).
+  // `classifyGhApi` reads the value itself and distrusts a non-GitHub host.
   "--hostname",
 ]);
 
@@ -353,6 +354,9 @@ export function ghSubVerb(args: readonly string[]): string | undefined {
  * fail-closed, and the relative form every normal call uses is unaffected.
  */
 export const GITHUB_API_HOST = "api.github.com";
+
+/** The only `gh api --hostname` value whose endpoint path can be trusted. */
+const GITHUB_HOSTNAME = "github.com";
 
 /** Does this endpoint carry a `scheme://` origin at all? */
 const ABSOLUTE_ENDPOINT = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -553,6 +557,8 @@ function classifyGhApi(
   /** Path of a readable `--input <file>` body (Issue #91); `-` stays absent. */
   let bodyFilePath: string | undefined;
   const queryDocuments: string[] = [];
+  /** Last `--hostname` value (either spelling); `gh` sends the request there. */
+  let hostname: string | undefined;
 
   /**
    * Record a `key=value` field.
@@ -632,6 +638,15 @@ function classifyGhApi(
       if (path !== "-") bodyFilePath = path;
       continue;
     }
+    if (token === "--hostname") {
+      hostname = args[i + 1];
+      skipNext = true;
+      continue;
+    }
+    if (token.startsWith("--hostname=")) {
+      hostname = token.slice("--hostname=".length);
+      continue;
+    }
     if (GH_VALUE_FLAGS.has(token)) {
       skipNext = true;
       continue;
@@ -640,15 +655,23 @@ function classifyGhApi(
     if (endpoint === undefined) endpoint = token;
   }
 
+  // Issue #1420: `--hostname` points the whole request at another host, so a
+  // path naming an allowed repo vouches for nothing. Only `github.com` keeps
+  // the endpoint trusted; any other host (or a missing value) makes the target
+  // undeterminable, like an absolute endpoint URL on a foreign host.
+  const offGitHub = hostname !== undefined &&
+    hostname.toLowerCase() !== GITHUB_HOSTNAME;
+
   if (endpoint === "graphql") {
-    return classifyGhGraphql(queryDocuments, unreadableBody);
+    const graphql = classifyGhGraphql(queryDocuments, unreadableBody);
+    return graphql && offGitHub ? { ...graphql, scope: "unknown" } : graphql;
   }
 
   const effectiveMethod = (method ?? (hasBody ? "POST" : "GET")).toUpperCase();
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(effectiveMethod)) {
     return null;
   }
-  const repo = endpoint ? repoFromEndpoint(endpoint) : undefined;
+  const repo = endpoint && !offGitHub ? repoFromEndpoint(endpoint) : undefined;
   // Issue #3703: an endpoint that names no repo (`gists`, `orgs/…`, `user/…`)
   // cannot be checked against the allowlist, so it fails closed. The
   // `repos/{owner}/{repo}/…` placeholder form is resolved by `gh` from the
@@ -658,7 +681,7 @@ function classifyGhApi(
   // cwd-scoped and needs no allowlist comparison — but that reasoning holds
   // only for a request actually bound for GitHub's API. Pointed elsewhere,
   // the same path is a write to somebody else's host.
-  const path = endpoint ? endpointPath(endpoint) : undefined;
+  const path = endpoint && !offGitHub ? endpointPath(endpoint) : undefined;
   const scope: MutationScope = repo
     ? "explicit"
     : (path !== undefined && isPlaceholderRepoEndpoint(path))

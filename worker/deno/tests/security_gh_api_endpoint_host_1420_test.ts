@@ -210,3 +210,45 @@ Deno.test("SEC-27c19f48454a - an absolute api.github.com write to another repo i
     cleanup();
   }
 });
+
+Deno.test("classifyGhMutation - --hostname on a non-GitHub host yields no repo and unknown scope (PR #3514 review)", () => {
+  for (
+    const args of [
+      ["api", "--hostname", "evil.example", "repos/o/r/issues", "-f", "a=b"],
+      ["api", "--hostname=evil.example", "repos/o/r/issues", "-f", "a=b"],
+      [
+        "api",
+        "--hostname",
+        "evil.example",
+        "repos/{owner}/{repo}/issues",
+        "-f",
+        "a=b",
+      ],
+    ]
+  ) {
+    const info = classifyGhMutation(args);
+    assertEquals(info?.repo, undefined, `${args}`);
+    assertEquals(info?.scope, "unknown", `${args}`);
+  }
+  for (
+    const args of [
+      ["api", "--hostname", "github.com", "repos/o/r/issues", "-f", "a=b"],
+      ["api", "--hostname=GITHUB.COM", "repos/o/r/issues", "-f", "a=b"],
+    ]
+  ) {
+    const info = classifyGhMutation(args);
+    assertEquals(info?.repo, "o/r", `${args}`);
+    assertEquals(info?.scope, "explicit", `${args}`);
+  }
+  assertEquals(
+    classifyGhMutation([
+      "api",
+      "--hostname",
+      "github.com",
+      "repos/{owner}/{repo}/issues",
+      "-f",
+      "a=b",
+    ])?.scope,
+    "cwd",
+  );
+});
