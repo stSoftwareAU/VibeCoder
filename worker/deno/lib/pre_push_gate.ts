@@ -153,10 +153,7 @@ export interface ChangedFileCheck {
   command: string;
 }
 
-// SIMPLE-ON-PURPOSE: a fixed extension allow-list mirroring what `deno fmt`
-// and `deno lint` handle by default. Ceiling: a repo that configures extra
-// file types in deno.json is not checked for them here (they still reach
-// the repo's own pre-flight commands). Upgrade when a repo needs more types.
+// SIMPLE-ON-PURPOSE: fixed deno fmt/lint extension allow-list, extra types a repo configures are left to its pre-flight — upgrade when a repo needs another type checked on push
 const DENO_FORMAT_EXTENSIONS = [
   ".ts",
   ".tsx",
