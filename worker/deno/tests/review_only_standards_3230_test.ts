@@ -76,7 +76,9 @@ Deno.test("Issue #3230 - issue prompt's Instructions step 1 tells the agent to e
 });
 
 Deno.test("Issue #3230 - the standards-reviewer sub-agent prompt names a review-enforced rule as always a violation", () => {
-  const reviewer = buildIssueReviewerAgents()[STANDARDS_REVIEWER_AGENT_NAME]!;
+  const reviewer = buildIssueReviewerAgents(
+    "sonnet",
+  )[STANDARDS_REVIEWER_AGENT_NAME]!;
   // Text a module holds, not a section of a page: `flatWholeFile` is the
   // named exception (CODING-STANDARDS § Documentation-drift tests, cond. 1).
   const text = flatWholeFile(reviewer.prompt);

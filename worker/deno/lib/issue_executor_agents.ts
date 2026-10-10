@@ -1,23 +1,26 @@
 /**
- * The Sonnet executor sub-agents an `issue`-phase run delegates to when
- * `issue_executor_split` is on (Issue #2342, part of #2320).
+ * The executor sub-agents an `issue`-phase run delegates to when
+ * `issue_executor_split` is on (Issue #2342, part of #2320), on the tier
+ * `resolveIssueSubAgentTier` resolved for the run (Issue #3401/#3402).
  *
  * A sub-agent with no definition inherits the phase's model — the expensive
  * advisor tier doing work an executor tier does just as well. These
  * definitions are what change that: the **advisor** stays the main session on
  * the phase's model and effort, and hands mechanical edit-and-test work to
- * executors pinned to Sonnet.
+ * executors pinned to the run's sub-agent tier (Sonnet or Haiku).
  *
  * A run whose `issue_reviewer_agents` key is on also carries the two
  * independent reviewers (Issue #2575), pinned to a cheaper tier and effort,
  * read-only, and unable to spawn further sub-agents — see
  * {@link buildIssueRunAgents}. The executor is only on a run whose split key
- * resolved on.
+ * resolved on. A Haiku-tier run additionally carries a read-only explorer
+ * (Issue #3402), whatever the split and reviewer switches resolved to.
  *
  * Nothing here touches phase routing.
  */
 
 import type { AgentDefinition } from "./agent_provider.ts";
+import type { IssueSubAgentTier } from "../types.ts";
 
 /** The sub-agent name the CLI routes executor work to. */
 export const ISSUE_EXECUTOR_AGENT_NAME = "executor";
@@ -41,6 +44,54 @@ export const ISSUE_EXECUTOR_MODEL = "sonnet";
  * depth the advisor needs would be spent on work that does not use it.
  */
 export const ISSUE_EXECUTOR_EFFORT = "medium";
+
+/**
+ * The Haiku-tier executor's model (Issue #3402).
+ *
+ * `haiku`, against the Sonnet tier's own alias: a Haiku-tier run hands the
+ * same mechanical edit-and-test work to the cheapest tier.
+ */
+export const HAIKU_ISSUE_EXECUTOR_MODEL = "haiku";
+
+/**
+ * The Haiku-tier executor's effort (Issue #3402).
+ *
+ * `high`, against the Sonnet tier's `medium`: the higher effort compensates
+ * for the smaller tier's weaker reasoning on the same task.
+ */
+export const HAIKU_ISSUE_EXECUTOR_EFFORT = "high";
+
+/**
+ * The Haiku-tier Standards reviewer's model (Issue #3402).
+ *
+ * `haiku`, against the Sonnet tier's own alias.
+ */
+export const HAIKU_STANDARDS_REVIEWER_MODEL = "haiku";
+
+/**
+ * The Haiku-tier Standards reviewer's effort (Issue #3402).
+ *
+ * `medium`, against the Sonnet tier's `low`: the higher effort compensates
+ * for the smaller tier's weaker reasoning on the same task.
+ */
+export const HAIKU_STANDARDS_REVIEWER_EFFORT = "medium";
+
+/**
+ * Guidance appended to every Haiku-tier sub-agent's prompt (Issue #3402).
+ *
+ * Haiku 5.5 needs an explicit scope and stop condition and benefits from
+ * being told to report findings rather than file dumps — Sonnet-tier
+ * sub-agents need neither, so this is never appended to their prompts.
+ */
+export const HAIKU_SUB_AGENT_GUIDANCE = [
+  "Haiku guidance:",
+  "- Work to an explicit scope and stop condition: do only what the task " +
+  "names, and stop once it is done. If the task left either unstated, " +
+  "write the scope and stop condition you are working to at the top of " +
+  "your reply.",
+  "- Return findings, not file dumps: name each `file:line` and quote only " +
+  "the lines that matter.",
+].join("\n");
 
 /** Exactly the tools an executor needs to edit files and run the tests. */
 export const ISSUE_EXECUTOR_TOOLS: readonly string[] = [
@@ -78,6 +129,10 @@ const ISSUE_EXECUTOR_PROMPT = [
   "- You cannot spawn further sub-agents. Work the task yourself.",
 ].join("\n");
 
+/** The executor's prompt on the Haiku tier — the Sonnet prompt plus guidance. */
+const HAIKU_ISSUE_EXECUTOR_PROMPT = ISSUE_EXECUTOR_PROMPT + "\n\n" +
+  HAIKU_SUB_AGENT_GUIDANCE;
+
 /**
  * Build the `--agents` definitions for a split `issue`-phase run.
  *
@@ -85,20 +140,27 @@ const ISSUE_EXECUTOR_PROMPT = [
  * true; the caller passes the result as `agents` on the invocation, and an
  * invocation without it emits no `--agents` argument at all.
  *
+ * @param tier - The run's resolved sub-agent tier.
  * @returns The executor definition, keyed by sub-agent name.
  */
-export function buildIssueExecutorAgents(): Readonly<
-  Record<string, AgentDefinition>
-> {
+export function buildIssueExecutorAgents(
+  tier: IssueSubAgentTier,
+): Readonly<Record<string, AgentDefinition>> {
   return {
     [ISSUE_EXECUTOR_AGENT_NAME]: {
       description:
         "Applies a given set of code edits and runs the tests covering the " +
         "files it edited. Use for mechanical implementation work once the " +
         "change is decided.",
-      prompt: ISSUE_EXECUTOR_PROMPT,
-      model: ISSUE_EXECUTOR_MODEL,
-      effort: ISSUE_EXECUTOR_EFFORT,
+      prompt: tier === "haiku"
+        ? HAIKU_ISSUE_EXECUTOR_PROMPT
+        : ISSUE_EXECUTOR_PROMPT,
+      model: tier === "haiku"
+        ? HAIKU_ISSUE_EXECUTOR_MODEL
+        : ISSUE_EXECUTOR_MODEL,
+      effort: tier === "haiku"
+        ? HAIKU_ISSUE_EXECUTOR_EFFORT
+        : ISSUE_EXECUTOR_EFFORT,
       tools: ISSUE_EXECUTOR_TOOLS,
       disallowedTools: ISSUE_EXECUTOR_DISALLOWED_TOOLS,
     },
@@ -214,13 +276,26 @@ const STANDARDS_REVIEWER_PROMPT = [
 ].join("\n");
 
 /**
+ * The Standards reviewer's prompt on the Haiku tier — the Sonnet prompt plus
+ * guidance.
+ */
+const HAIKU_STANDARDS_REVIEWER_PROMPT = STANDARDS_REVIEWER_PROMPT + "\n\n" +
+  HAIKU_SUB_AGENT_GUIDANCE;
+
+/**
  * Build the two reviewer definitions (Issue #2575).
  *
+ * The Spec reviewer stays on Sonnet at every tier: judging whether each
+ * criterion is met is still judgement, which the smaller tier is not asked
+ * to carry (Issue #3402). The Standards reviewer, which checks a diff
+ * against one written document, moves to the run's resolved tier.
+ *
+ * @param tier - The run's resolved sub-agent tier.
  * @returns The Spec and Standards reviewer definitions, keyed by name.
  */
-export function buildIssueReviewerAgents(): Readonly<
-  Record<string, AgentDefinition>
-> {
+export function buildIssueReviewerAgents(
+  tier: IssueSubAgentTier,
+): Readonly<Record<string, AgentDefinition>> {
   return {
     [SPEC_REVIEWER_AGENT_NAME]: {
       description:
@@ -236,41 +311,126 @@ export function buildIssueReviewerAgents(): Readonly<
       description:
         "Independent Standards reviewer: checks a finished diff against " +
         "CODING-STANDARDS.md and reports material departures.",
-      prompt: STANDARDS_REVIEWER_PROMPT,
-      model: STANDARDS_REVIEWER_MODEL,
-      effort: STANDARDS_REVIEWER_EFFORT,
+      prompt: tier === "haiku"
+        ? HAIKU_STANDARDS_REVIEWER_PROMPT
+        : STANDARDS_REVIEWER_PROMPT,
+      model: tier === "haiku"
+        ? HAIKU_STANDARDS_REVIEWER_MODEL
+        : STANDARDS_REVIEWER_MODEL,
+      effort: tier === "haiku"
+        ? HAIKU_STANDARDS_REVIEWER_EFFORT
+        : STANDARDS_REVIEWER_EFFORT,
       tools: ISSUE_REVIEWER_TOOLS,
       disallowedTools: ISSUE_REVIEWER_DISALLOWED_TOOLS,
     },
   };
 }
 
-/** The two switches that decide which definitions an `issue` run carries. */
+// ---------------------------------------------------------------------------
+// The read-only explorer (Issue #3402, Haiku tier only)
+// ---------------------------------------------------------------------------
+
+/** The sub-agent name the CLI routes read-only lookups to. */
+export const EXPLORER_AGENT_NAME = "explorer";
+
+/** The explorer's model — always Haiku; it only ever rides a Haiku-tier run. */
+export const EXPLORER_MODEL = "haiku";
+
+/** The explorer's effort. */
+export const EXPLORER_EFFORT = "medium";
+
+/** Exactly the tools an explorer needs to look things up, nothing else. */
+export const EXPLORER_TOOLS: readonly string[] = ["Read", "Grep", "Glob"];
+
+/**
+ * Tools the explorer must not use, whatever {@link EXPLORER_TOOLS} grants.
+ * `Agent` is denied so it cannot spawn further sub-agents.
+ */
+export const EXPLORER_DISALLOWED_TOOLS: readonly string[] = ["Agent"];
+
+/** The explorer's own system prompt. */
+const EXPLORER_PROMPT = [
+  "You are a read-only explorer sub-agent on an issue-work run. You are " +
+  "given a lookup to answer — where code lives, who calls what, what a " +
+  "function does — and answer exactly that lookup.",
+  "",
+  "- Report `file:line` for each thing you found, and quote only the few " +
+  "lines that matter.",
+  "- You change nothing: no edits, no commands.",
+  "- You cannot spawn further sub-agents. Do the lookup yourself.",
+  "",
+  HAIKU_SUB_AGENT_GUIDANCE,
+].join("\n");
+
+/**
+ * Build the explorer definition (Issue #3402).
+ *
+ * Carried by every Haiku-tier `issue` run, whatever the executor-split and
+ * reviewer switches resolved to: the advisor hands it read-only lookups
+ * instead of spending its own context reading code.
+ *
+ * @returns The explorer definition, keyed by sub-agent name.
+ */
+export function buildIssueExplorerAgents(): Readonly<
+  Record<string, AgentDefinition>
+> {
+  return {
+    [EXPLORER_AGENT_NAME]: {
+      description:
+        "Read-only codebase lookups: finds where code lives and what it " +
+        "does, and returns findings with file:line, not file dumps. Cannot " +
+        "edit files or run commands.",
+      prompt: EXPLORER_PROMPT,
+      model: EXPLORER_MODEL,
+      effort: EXPLORER_EFFORT,
+      tools: EXPLORER_TOOLS,
+      disallowedTools: EXPLORER_DISALLOWED_TOOLS,
+    },
+  };
+}
+
+/** The switches that decide which definitions an `issue` run carries. */
 export interface IssueRunAgentSwitches {
   /** Whether {@link isIssueExecutorSplitEnabled} resolved true. */
   executorSplit: boolean;
   /** Whether the host's `issue_reviewer_agents` key is on (Issue #2575). */
   reviewerAgents: boolean;
+  /**
+   * The tier `resolveIssueSubAgentTier` resolved for this run (Issue #3402).
+   * Decides the executor's and Standards reviewer's model and effort, and
+   * whether the run carries the read-only explorer.
+   */
+  subAgentTier: IssueSubAgentTier;
 }
 
 /**
  * Build every `--agents` definition an `issue`-phase run carries.
  *
  * The reviewers ride a run whose `issue_reviewer_agents` key is on; the
- * executor rides a run whose split is on. The two are independent, so either
- * can be piloted without the other.
+ * executor rides a run whose split is on; the explorer rides every Haiku-tier
+ * run, whatever the other two resolved to. The switches are independent of
+ * each other.
  *
  * @param switches - The run's resolved switches.
  * @returns The definitions keyed by sub-agent name, or `undefined` when both
- *   switches are off — so such a run emits no `--agents` argument at all and
- *   is byte-for-byte the argv it always was.
+ *   the split and reviewer switches are off and the tier is `sonnet` — so
+ *   such a run emits no `--agents` argument at all and is byte-for-byte the
+ *   argv it always was.
  */
 export function buildIssueRunAgents(
   switches: IssueRunAgentSwitches,
 ): Readonly<Record<string, AgentDefinition>> | undefined {
-  if (!switches.executorSplit && !switches.reviewerAgents) return undefined;
+  const isHaiku = switches.subAgentTier === "haiku";
+  if (!switches.executorSplit && !switches.reviewerAgents && !isHaiku) {
+    return undefined;
+  }
   return {
-    ...(switches.reviewerAgents ? buildIssueReviewerAgents() : {}),
-    ...(switches.executorSplit ? buildIssueExecutorAgents() : {}),
+    ...(switches.reviewerAgents
+      ? buildIssueReviewerAgents(switches.subAgentTier)
+      : {}),
+    ...(switches.executorSplit
+      ? buildIssueExecutorAgents(switches.subAgentTier)
+      : {}),
+    ...(isHaiku ? buildIssueExplorerAgents() : {}),
   };
 }
