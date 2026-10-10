@@ -13,7 +13,14 @@ Deno.test("disarmAutoMerge issues --disable-auto and returns true", async () => 
     () => {},
   );
   assertEquals(ok, true);
-  assertEquals(calls, [["pr", "merge", "7", "--repo", "o/r", "--disable-auto"]]);
+  assertEquals(calls, [[
+    "pr",
+    "merge",
+    "7",
+    "--repo",
+    "o/r",
+    "--disable-auto",
+  ]]);
 });
 
 Deno.test("disarmAutoMerge logs a warning and returns false on failure", async () => {
