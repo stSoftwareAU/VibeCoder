@@ -144,6 +144,12 @@ import {
   matchedTestDeclarations,
   referencesFindingId,
 } from "../security_fix_gate.ts";
+import {
+  buildMutationGateComment,
+  DEFAULT_MUTATION_BUDGET_SECONDS,
+  evaluateMutationGate,
+  type MutationCheckResult,
+} from "../mutation_gate.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
@@ -292,6 +298,35 @@ async function runGitOrThrow(
     );
   }
   return result.value.stdout;
+}
+
+/** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
+export const MAX_MUTATION_BUDGET_SECONDS = 3600;
+
+/**
+ * Resolve the mutation gate's wall-clock budget from the per-repo
+ * `mutation_check_budget_seconds` value (Issue #3393). A missing value is the
+ * default; a value that is not a positive integer no greater than
+ * {@link MAX_MUTATION_BUDGET_SECONDS} is refused loudly through `warn` and
+ * the default applies, as the other untrusted per-repo numbers do.
+ */
+export function resolveMutationBudgetSeconds(
+  raw: string,
+  warn: (message: string, context?: Record<string, unknown>) => void,
+): number {
+  if (raw === "") return DEFAULT_MUTATION_BUDGET_SECONDS;
+  const parsed = Number(raw);
+  if (
+    !Number.isInteger(parsed) || parsed <= 0 ||
+    parsed > MAX_MUTATION_BUDGET_SECONDS
+  ) {
+    warn(
+      "Ignoring invalid mutation_check_budget_seconds — using the default",
+      { value: raw, default: DEFAULT_MUTATION_BUDGET_SECONDS },
+    );
+    return DEFAULT_MUTATION_BUDGET_SECONDS;
+  }
+  return parsed;
 }
 
 /**
@@ -2684,6 +2719,92 @@ async function completionBody(
     reason: branchOutcomesReason,
     comment: () => buildBranchOutcomesGateComment(branchOutcomes),
   };
+  // ---------------------------------------------------------------------
+  // Diff-scoped mutation verdict (Issue #3393), computed once alongside the
+  // other late-summary verdicts so a summary that fails an earlier gate AND
+  // leaves a changed line's mutant surviving is told about both in the one
+  // recovery turn. Mutants are generated only for the lines this PR changed;
+  // a survivor is a changed line no test notices, and blocks unless the
+  // summary exempts it. A diff or runner that cannot answer fails closed
+  // (`error`); a runner that is not wired, or a repo that opts out, never
+  // blocks.
+  // ---------------------------------------------------------------------
+  let mutationVerdict: LateSummaryVerdict;
+  {
+    let mutationResult: MutationCheckResult | null = null;
+    if (
+      getRepoConfig(config.repoConfig, repo, "skipMutationCheck") === "true"
+    ) {
+      logger.info("mutation check skipped by skip_mutation_check", { repo });
+      mutationResult = {
+        kind: "not_applicable",
+        reason: "skipped by skip_mutation_check",
+      };
+    } else if (!deps.quality.runMutationCheck) {
+      logger.warn("Mutation runner not wired — mutation check not applicable");
+      mutationResult = {
+        kind: "not_applicable",
+        reason: "mutation runner not wired",
+      };
+    } else {
+      const budgetSeconds = resolveMutationBudgetSeconds(
+        getRepoConfig(config.repoConfig, repo, "mutationCheckBudgetSeconds"),
+        (message, context) => logger.warn(message, context),
+      );
+      let mutationDiff: string | null = null;
+      if (comparableBase.ok) {
+        try {
+          mutationDiff = await runGitOrThrow(
+            ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+            state.repoPath,
+            deps,
+          );
+        } catch (error) {
+          logger.warn("Could not collect the PR diff for the mutation check", {
+            base: comparableBase.value,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (mutationDiff === null) {
+        mutationResult = {
+          kind: "error",
+          reason: `could not collect the PR diff against ${baseBranch}`,
+        };
+      } else {
+        try {
+          mutationResult = await deps.quality.runMutationCheck({
+            repoPath: state.repoPath,
+            diff: mutationDiff,
+            budgetSeconds,
+          });
+        } catch (error) {
+          mutationResult = {
+            kind: "error",
+            reason: `mutation runner failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          };
+        }
+      }
+    }
+    const gate = evaluateMutationGate(mutationResult, prBody);
+    if (gate.budgetExhausted) {
+      logger.warn(gate.note, { repo, issueNumber });
+    }
+    if (gate.survivors.length > 0 || gate.blocked) {
+      logger.warn("Mutation check found changed lines no test notices", {
+        survivors: gate.survivors.map((m) => `${m.file}:${m.line}`),
+        exempted: gate.exempted.map((m) => `${m.file}:${m.line}`),
+        reason: gate.reason,
+      });
+    }
+    mutationVerdict = {
+      blocked: gate.blocked,
+      reason: gate.reason,
+      comment: () => buildMutationGateComment(gate),
+    };
+  }
   const claimCheckVerdict: LateSummaryVerdict = {
     blocked: claimCheck !== null && summaryClaimCheckBlocked(claimCheck),
     reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
@@ -2695,6 +2816,7 @@ async function completionBody(
     removedAssertionsVerdict,
     placeholderVerdict,
     branchOutcomesVerdict,
+    mutationVerdict,
     claimCheckVerdict,
   ];
 
@@ -2976,6 +3098,40 @@ async function completionBody(
         removedAssertionsVerdict,
         placeholderVerdict,
         branchOutcomesVerdict,
+      ],
+    );
+    return await reportSummaryRuleBlock(
+      folded,
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Mutation gate (Issue #3393).
+  //
+  // A changed line whose mutant survives the repository's own tests is a
+  // change nothing checks. Blocked like the other summary-rule gates so the
+  // single recovery turn is told the `file:line` and the mutation and either
+  // adds a test that kills it or records an exemption in the summary. Folds
+  // in the summary claim check, the one late verdict still named below it.
+  // ---------------------------------------------------------------------
+  if (mutationVerdict.blocked) {
+    logger.warn("Mutation gate blocked PR creation", {
+      reason: mutationVerdict.reason,
+    });
+    const folded = foldInLateSummaryVerdicts(
+      mutationVerdict.reason,
+      mutationVerdict.comment(),
+      [
+        docsSweepVerdict,
+        removedAssertionsVerdict,
+        placeholderVerdict,
+        branchOutcomesVerdict,
+        mutationVerdict,
       ],
     );
     return await reportSummaryRuleBlock(
