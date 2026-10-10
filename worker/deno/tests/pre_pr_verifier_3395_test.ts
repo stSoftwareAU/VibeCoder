@@ -493,3 +493,156 @@ Deno.test("buildPrePrVerifierPrompt rejects a non-positive issue number", () => 
     );
   }
 });
+
+// ---- runPrePrVerifier: every "could not run" branch is not_checked ---------
+
+function askCounter(tmps: string[] = []) {
+  const state = { calls: 0 };
+  const deps = makeDeps(() => {
+    state.calls++;
+    return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+  }, tmps);
+  return { state, deps };
+}
+
+function notCheckedReason(
+  result: Awaited<ReturnType<typeof runPrePrVerifier>>,
+): string {
+  assertEquals(result.status, "not_checked");
+  return result.status === "not_checked" ? result.reason : "";
+}
+
+Deno.test("runPrePrVerifier: an unavailable review brief is not_checked and nothing is asked", async () => {
+  const f = await makeRepo();
+  try {
+    const { state, deps } = askCounter();
+    const result = await runPrePrVerifier(inputFor(f), {
+      ...deps,
+      loadBrief: () =>
+        Promise.resolve({ ok: false as const, error: new Error("no brief") }),
+    });
+    assertStringIncludes(notCheckedReason(result), "review brief unavailable");
+    assertEquals(state.calls, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: an unresolvable HEAD is not_checked and nothing is asked", async () => {
+  const f = await makeRepo();
+  const plain = await Deno.makeTempDir({ prefix: "pre-pr-3395-plain-" });
+  try {
+    const { state, deps } = askCounter();
+    const result = await runPrePrVerifier(
+      inputFor(f, { repoPath: plain }),
+      deps,
+    );
+    assertStringIncludes(notCheckedReason(result), "cannot resolve HEAD");
+    assertEquals(state.calls, 0);
+  } finally {
+    await Deno.remove(plain, { recursive: true });
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: a checkout that cannot be snapshotted beforehand is not_checked", async () => {
+  const f = await makeRepo();
+  try {
+    const { state, deps } = askCounter();
+    let statuses = 0;
+    const result = await runPrePrVerifier(inputFor(f), {
+      ...deps,
+      runGit: (args, cwd) =>
+        args[0] === "status" && ++statuses === 1
+          ? Promise.resolve(null)
+          : defaultPrePrVerifierDeps.runGit(args, cwd),
+    });
+    assertStringIncludes(notCheckedReason(result), "cannot snapshot");
+    assertEquals(state.calls, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: a disposable directory that cannot be created is not_checked", async () => {
+  const f = await makeRepo();
+  try {
+    const { state, deps } = askCounter();
+    const result = await runPrePrVerifier(inputFor(f), {
+      ...deps,
+      makeTempDir: () => Promise.reject(new Error("disk full")),
+    });
+    const reason = notCheckedReason(result);
+    assertStringIncludes(reason, "disposable directory");
+    assertStringIncludes(reason, "disk full");
+    assertEquals(state.calls, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: a failed preparation git step is not_checked and the directory is removed", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const { state, deps } = askCounter(tmps);
+    const removed: string[] = [];
+    const result = await runPrePrVerifier(inputFor(f), {
+      ...deps,
+      runGit: (args, cwd) =>
+        args[0] === "clone"
+          ? Promise.resolve({ code: 1, stdout: "", stderr: "boom" })
+          : defaultPrePrVerifierDeps.runGit(args, cwd),
+      removeDir: async (p) => {
+        removed.push(p);
+        await defaultPrePrVerifierDeps.removeDir(p);
+      },
+    });
+    const reason = notCheckedReason(result);
+    assertStringIncludes(reason, "git clone");
+    assertStringIncludes(reason, "boom");
+    assertEquals(state.calls, 0);
+    assertEquals(tmps.length, 1);
+    assertEquals(removed, tmps);
+    assert(!(await exists(tmps[0]!)));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: a throw during setup is not_checked and the directory is removed", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const deps = makeDeps(() => {
+      throw new Error("ask exploded");
+    }, tmps);
+    const result = await runPrePrVerifier(inputFor(f), deps);
+    const reason = notCheckedReason(result);
+    assertStringIncludes(reason, "verifier setup failed");
+    assertStringIncludes(reason, "ask exploded");
+    assertEquals(tmps.length, 1);
+    assert(!(await exists(tmps[0]!)));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runPrePrVerifier: a removeDir failure does not lose the result", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const { deps } = askCounter(tmps);
+    const result = await runPrePrVerifier(inputFor(f), {
+      ...deps,
+      removeDir: async (p) => {
+        await defaultPrePrVerifierDeps.removeDir(p);
+        throw new Error("cannot remove");
+      },
+    });
+    assertEquals(result.status, "checked");
+    assert(!prePrVerifierBlocked(result));
+  } finally {
+    await f.cleanup();
+  }
+});
