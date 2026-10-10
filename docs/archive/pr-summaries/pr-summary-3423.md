@@ -34,8 +34,13 @@ tell the agent to run it and fix what it reports, but only where
 
 ### Undiscoverable Facts
 
-- The task grants only `--allow-read --allow-run=git`. `runGitCommand` reads
-  the environment, so the CLI has its own minimal `spawnGit`.
+- The CLI runs git through the `runGitCommand` chokepoint. The task grants
+  `--allow-read --allow-run=git` plus `--allow-env` for
+  `GIT_COMMAND_TIMEOUT`, `GIT_MERGE_TIMEOUT` and `HOME` (read by
+  `git_timeout.ts`) and `VIBE_AUDIT_DISABLED` and `WORK_DIR` (read by
+  `audit_hook.ts`). `GH_CONFIG_DIR` is read only on a guarded auth-repair
+  path, so it is not granted. The env list was verified on the happy path
+  only.
 - The prompt rule depends on the task existing, so other repositories still
   follow the prompts' existing rules.
 
@@ -46,7 +51,10 @@ tell the agent to run it and fix what it reports, but only where
 - `worker/deno/lib/pr_summary_check_cli.ts` contains `parseArgs` and `main`.
   `main` takes its effects as injected dependencies, so the tests run it in
   process.
-- `worker/deno/deno.json` defines the `pr-summary-check` task.
+- `worker/deno/deno.json` defines the `pr-summary-check` task with the
+  scoped `--allow-env` list above.
+- `docs/audits/lib-sweep-coverage/top-up-3423.json` claims both new modules
+  for the lib-sweep ledger.
 - Prompt changes:
   - `prompts/issue/prompt.md:1110` adds "Run the summary gates before you
     finish."
@@ -73,7 +81,7 @@ flowchart LR
     X -- no --> E0["exit 0"]
 ```
 
-**Docs sweep** — grep: `pr-summary-check`, `pr_summary_check`, "summary gates", "not checked", `runGitCommand`, "PR Summary and Evidence"; section: `CODING-STANDARDS.md#pr-summary-and-evidence`; updated: `prompts/issue/prompt.md:1110`, `prompts/pr_feedback/prompt.md:66`, `prompts/ci_fix/prompt.md:98`, `CODING-STANDARDS.md:1417`; `docs/workflows/issue-processing.md` — still true because it describes each gate's rules as the worker applies them when it raises a PR, and this task reuses those validators without changing a rule; `docs/EXTENDING.md` — still true because it lists how to add commands and run tests, and does not enumerate `deno.json` tasks.
+**Docs sweep** — grep: `pr-summary-check`, `pr_summary_check`, "summary gates", "not checked", `runGitCommand`, "PR Summary and Evidence"; section: `CODING-STANDARDS.md#pr-summary-and-evidence`; updated: `docs/audits/lib-sweep-coverage/top-up-3423.json`, `prompts/issue/prompt.md:1110`, `prompts/pr_feedback/prompt.md:66`, `prompts/ci_fix/prompt.md:98`, `CODING-STANDARDS.md:1417`; `docs/workflows/issue-processing.md` — still true because it describes each gate's rules as the worker applies them when it raises a PR, and this task reuses those validators without changing a rule; `docs/EXTENDING.md` — still true because it lists how to add commands and run tests, and does not enumerate `deno.json` tasks.
 
 ## Test Plan
 
@@ -129,14 +137,14 @@ Branch outcomes:
 - `worker/deno/lib/pr_summary_check.ts:176` — named test absent at HEAD → branch outcomes blocked — `worker/deno/tests/pr_summary_check_test.ts::runPrSummaryCheck - a named test absent at HEAD blocks branch outcomes` — flip went red
 - `worker/deno/lib/pr_summary_check.ts:188` — claim check always not checked — `worker/deno/tests/pr_summary_check_test.ts::runPrSummaryCheck - claim check is not checked even with all inputs` — flip went red
 - `worker/deno/lib/pr_summary_check.ts:199` — any blocked → hasBlock true — `worker/deno/tests/pr_summary_check_test.ts::runPrSummaryCheck - missing Docs sweep line blocks and main exits 1` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:44` — flag without value → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:52` — each flag assigned to its own field — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - accepts all flags and one summary file` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:54` — unknown flag → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:61` — missing `--base` → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:64` — not exactly one summary file → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:95` — bad args → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::main - bad args and an unreadable summary exit 2` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:107` — unreadable input → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::main - bad args and an unreadable summary exit 2` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:117` — repository root failure → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::main - a repository root failure exits 2 and names the repository root` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:130` — check error → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::runPrSummaryCheck - git diff failure is an error, and main exits 2` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:136` — a block → exit 1, none → exit 0 — `worker/deno/tests/pr_summary_check_test.ts::main - well-formed summary exits 0` — flip went red
-- `worker/deno/lib/pr_summary_check_cli.ts:174` — `git rev-parse` non-zero in the process entry — exempt (untestable): runs only inside the `import.meta.main` process entry, which the tests cannot load in process
+- `worker/deno/lib/pr_summary_check_cli.ts:45` — flag without value → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:53` — each flag assigned to its own field — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - accepts all flags and one summary file` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:55` — unknown flag → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:62` — missing `--base` → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:65` — not exactly one summary file → error — `worker/deno/tests/pr_summary_check_test.ts::parseArgs - rejects missing base, missing or extra file, unknown flag, valueless flag` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:98` — bad args → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::main - bad args and an unreadable summary exit 2` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:114` — unreadable input → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::main - bad args and an unreadable summary exit 2` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:120` — repository root failure → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::main - a repository root failure exits 2 and names the repository root` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:133` — check error → exit 2 — `worker/deno/tests/pr_summary_check_test.ts::runPrSummaryCheck - git diff failure is an error, and main exits 2` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:137` — a block → exit 1, none → exit 0 — `worker/deno/tests/pr_summary_check_test.ts::main - well-formed summary exits 0` — flip went red
+- `worker/deno/lib/pr_summary_check_cli.ts:148` — `git rev-parse` non-zero in the process entry — exempt (untestable): runs only inside the `import.meta.main` process entry, which the tests cannot load in process
