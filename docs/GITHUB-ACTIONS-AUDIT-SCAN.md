@@ -1123,11 +1123,12 @@ three files `BP-REPO-SECURITY-POLICY-MISSING`; any other read error is a
 lookup failure and yields no finding, never a pass. A private or internal
 repository is not read: the skip is named in the audit summary as `security
 policy` and logged at `INFO`, since nobody can act on it. Unlike every
-other `BP-REPO-*` finding, the fix text carries no admin-action prose and
+other `BP-REPO-*` finding, the fix text omits the scanner's full admin-action
+sentence (`REPO_ADMIN_ACTION`) and
 `isAdminOnlyRepoSettingsIssue` (`admin_only_finding.ts`) lets this id
 through its `WORKER_FIXABLE_REPO_FINDINGS` allowlist, so the worker raises a
 normal pull request adding the file instead of handing the issue to a human;
-a body that did carry the admin-action prose would be admin-only again. Setup
+a body that did carry that full sentence would be admin-only again. Setup
 has no harden step and no write path for `SECURITY.md`, and the audit closer
 has no mapping for this id: the pull request that adds the file resolves the
 finding.
