@@ -25,7 +25,13 @@ fix. Closes #3425.
   candidate. The table says so, so a mechanical fix is routed to the gate
   rather than restated as prose.
 - The cause is read from the artefacts: the rule's text, where it sits, and the
-  phase prompt. A guess about the run does not count. This keeps the table
+  instructions that drove the run. The retro runs on every monitored
+  repository, and a phase prompt exists only in VibeCoder, so the text names
+  "the phase prompt when this repository holds it, otherwise the repository's
+  agent instructions (`AGENTS.md` or `CLAUDE.md`)" for both the evidence and
+  the effort fix. A cause whose evidence is not in the artefacts counts as
+  ruled out, so the new-rule last option stays reachable in a repository with
+  no phase prompt. A guess about the run does not count. This keeps the table
   consistent with "Judge the environment, never the author" and "Absent
   evidence is not evidence".
 
@@ -65,7 +71,7 @@ flowchart LR
     D -->|Too verbose| V["Shorten; move<br/>detail to a reference"]
     D -->|Buried| B["Move or restate<br/>at the top"]
     D -->|Ambiguous| A["Reword, or a script/check<br/>(category 2)"]
-    D -->|Effort| E["Encourage it in<br/>the phase prompt"]
+    D -->|Effort| E["Encourage it in the phase prompt<br/>or the repo agent instructions"]
     D -->|None of the four| N["New rule —<br/>last option"]
 ```
 
@@ -79,8 +85,10 @@ flowchart LR
 - Added `worker/deno/tests/retro_ignored_rule_diagnosis_3425_test.ts`, which
   has two tests:
   - **Prompt test:** pins the four table rows, "a category 2 candidate", "names
-    the diagnosed cause and its matching fix" and "A new rule beside an ignored
-    one is the last option". The pins are scoped to `section(prompt,
+    the diagnosed cause and its matching fix", "A new rule beside an ignored
+    one is the last option", the "phase prompt when this repository holds it,
+    otherwise the repository's agent instructions" scoping and "counts as ruled
+    out". The pins are scoped to `section(prompt,
     "3. Coding standards")`.
   - **Standards test:** pins the new bullet and its `prompts/retro/prompt.md`
     pointer in the Prompt Engineering Guidance section.
@@ -99,17 +107,15 @@ flowchart LR
   "Absent evidence is not evidence". None of them conflicts with the new rule.
 - **Own diff:** I applied the new rule to this PR's own diff. It adds no rule
   beside an ignored one, so I found nothing.
-- **Targeted tests:** 46 passed. They cover the new test, the retro template
-  tests and the coding-standards drift tests. After the `docs/RETRO-SCAN.md`
-  edit, the new test plus `worker/deno/tests/retro_template_test.ts` gave 21
-  passed and 0 failed. `markdownlint-cli2 docs/RETRO-SCAN.md` reported 0 issues.
+- **Red run (PR #3550 review):** with the prompt edit stashed, the prompt test
+  failed on the two new scoping pins; with it restored, the new test file plus
+  the retro template tests gave 21 passed and 0 failed. `markdownlint-cli2 docs/RETRO-SCAN.md` reported 0 issues.
 - **Formatting:** `deno fmt --check` already fails on `prompts/retro/prompt.md`
   and `CODING-STANDARDS.md` on base. I left both unformatted so the diff does
   not reflow unrelated text.
-- **Quality gate:** `./quality.sh < /dev/null` at 7aabe376 gave
-  `Result: PASSED (with skipped checks)`. The only skip was config integration.
-  All other checks passed: deno tests, lint, type check, fmt, markdownlint,
-  mermaid and semgrep.
+- **Quality gate:** `./quality.sh < /dev/null` after the PR #3550 review fix
+  gave `Result: PASSED (with skipped checks)`. The only skip was config
+  integration.
 
 Branch outcomes: none added
 

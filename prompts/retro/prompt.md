@@ -199,18 +199,22 @@ the target behaviour rather than as a prohibition.
 **When the rule already existed, diagnose before you add.** A rule that was
 present and still missed failed for a reason, and a new rule beside it fails the
 same way. Read the cause from the artefacts — the rule's own text, where it sits,
-and the phase prompt that drove the run — not from a guess about the run:
+and the instructions that drove the run (the phase prompt when this repository
+holds it, otherwise the repository's agent instructions, `AGENTS.md` or
+`CLAUDE.md`) — not from a guess about the run:
 
 | Cause | Fix |
 |---|---|
 | Too verbose | Shorten it to the target behaviour in a bullet; move the detail to a linked reference |
 | Buried | Put the critical instruction at the top of the file or the step it governs, or restate it there |
 | Ambiguous | Reword it to one reading, or replace it with a script or check — a category 2 candidate |
-| Effort | Add explicit encouragement to the phase prompt to do that step thoroughly |
+| Effort | Add explicit encouragement to do that step thoroughly, in the phase prompt when this repository holds it, otherwise in its agent instructions (`AGENTS.md` or `CLAUDE.md`) |
 
-The candidate names the diagnosed cause and its matching fix. A new rule beside
-an ignored one is the last option: propose it only when the artefacts rule out
-all four causes, and say so.
+The candidate names the diagnosed cause and its matching fix. A cause counts
+only when the artefacts you read show it; a cause whose evidence is not in them
+— including the effort cause in a repository that holds no phase prompt — counts
+as ruled out. A new rule beside an ignored one is the last option: propose it
+only when the artefacts rule out all four causes, and say so.
 
 ### 4. Steering-file size — has the instruction file outgrown its job?
 

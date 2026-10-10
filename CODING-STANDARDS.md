@@ -1682,7 +1682,9 @@ gate if a model-generation name reappears in this document.
   missed a rule that already exists, find out why — too verbose, buried,
   ambiguous, or the prompt never asked for the effort — and fix that cause; a
   new rule beside the ignored one fails the same way. The category 3 table in
-  `prompts/retro/prompt.md` maps each cause to its fix (#3425).
+  `prompts/retro/prompt.md` maps each cause to its fix; a cause the artefacts
+  do not evidence (such as effort, in a repository with no phase prompt)
+  counts as ruled out (#3425).
 
 ## Configuration
 
