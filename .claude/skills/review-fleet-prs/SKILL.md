@@ -1,15 +1,15 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner (unless the repo opts in to auto-release of issue-required test changes). Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
 
 Reviews the open PRs that Dependabot and the fleet accounts raise across the
-repos in this checkout's `.config.json`, as the signed-in `gh` user. The aim
-is that most PRs are approved without the owner: CI is clean, new
-functionality is tested where appropriate, no existing test is meaningfully
-changed, and the review is happy.
+repos in this checkout's `.config.json`, as the signed-in `gh` user. The aim is
+that most PRs are approved without the owner: CI is clean, new functionality is
+tested where appropriate, no existing test is meaningfully changed, and the
+review is happy.
 
 Start it once, in a Claude Code session opened in the VibeCoder checkout, and
 leave the session running:
@@ -20,81 +20,86 @@ leave the session running:
 
 Optional argument: `owner/name` to review one repo only.
 
-Read [references/running-unattended.md](references/running-unattended.md)
-before running the loop without an open session through `scripts/run.sh`:
-installing it, where a round runs and on which Claude subscription,
-reviewing as a GitHub App, and persistent failure escalation.
+Read [references/running-unattended.md](references/running-unattended.md) before
+running the loop without an open session through `scripts/run.sh`: installing
+it, where a round runs and on which Claude subscription, reviewing as a GitHub
+App, and persistent failure escalation.
 
 ## Rules
 
 1. **Only PRs into the default branch are reviewed.** A PR into a milestone
-   branch needs no approval; the milestone's own PR into the default branch
-   gets the review.
+   branch needs no approval; the milestone's own PR into the default branch gets
+   the review.
 2. **Nothing is reviewed until CI is green.** Pending checks wait; failing
-   checks, merge conflicts and drafts belong to the fleet, so leave them
-   alone and post nothing. A PR whose only red checks are cancelled runs is
-   infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it
-   once per head, and it is left alone exactly like `ci-failed`. **One
-   exception:** a red dependency-audit check (`audit` in its name) that
-   CI-fix has already replied to at the current head, with a fleet
-   `vibe-ci-fix-attempt` marker for that check, is sent back once with a
-   request for changes saying it must be fixed in this PR (an ignore entry
-   or a workflow edit does not count). Before CI-fix replies it is left
-   alone like any other `ci-failed`. A red audit is never approved.
+   checks, merge conflicts and drafts belong to the fleet, so leave them alone
+   and post nothing. A PR whose only red checks are cancelled runs is
+   infrastructure too (`ci-cancelled`): the fleet's CI-fix scan re-runs it once
+   per head, and it is left alone exactly like `ci-failed`. **One exception:** a
+   red dependency-audit check (`audit` in its name) that CI-fix has already
+   replied to at the current head, with a fleet `vibe-ci-fix-attempt` marker for
+   that check, is sent back once with a request for changes saying it must be
+   fixed in this PR (an ignore entry or a workflow edit does not count). Before
+   CI-fix replies it is left alone like any other `ci-failed`. A red audit is
+   never approved.
 3. **Judge the safety net, not test count.** Read the target repository's
-   canonical testing standard. New behaviour or a real bug fix usually needs
-   a test that would fail on the regression, unless existing tests already
-   cover it. A refactor, docs, config, workflow or presentation change may not
-   need one. Do not reward assertions that pin incidental CSS, DOM or internals.
-4. **A test is never removed or loosened to make the quality gate pass.** A
-   test removed, skipped, weakened or loosened without the linked issue
-   requiring it is a blocking finding: the PR goes back to the fleet to
-   restore it. A deliberate change the issue does require (an expected value
-   or behaviour the issue changes, or deleting a test that only pinned the
-   old implementation) is the owner's call: the PR is held with a
-   comment-only review, neither approved nor sent back, and labelled
-   `needs-human`; the skill removes that label on a later approve or
-   send-back only when it was the one that added it. Trivial edits
-   (formatting, renames, imports, added cases, fixture paths) are not, and
-   neither are edits that only **tighten** a meaningful behavioural or
-   contractual test (it now asserts more or allows less, as the issue asks):
-   those are approved. An added brittle assertion is a finding, not a benefit.
+   canonical testing standard. New behaviour or a real bug fix usually needs a
+   test that would fail on the regression, unless existing tests already cover
+   it. A refactor, docs, config, workflow or presentation change may not need
+   one. Do not reward assertions that pin incidental CSS, DOM or internals.
+4. **A test is never removed or loosened to make the quality gate pass.** A test
+   removed, skipped, weakened or loosened without the linked issue requiring it
+   is a blocking finding: the PR goes back to the fleet to restore it. A
+   deliberate change the issue does require (an expected value or behaviour the
+   issue changes, or deleting a test that only pinned the old implementation) is
+   the owner's call: the PR is held with a comment-only review, neither approved
+   nor sent back, and labelled `needs-human`; the skill removes that label on a
+   later approve or send-back only when it was the one that added it. **Opt-in
+   exception:** a repo listed in `.config.json` `pr_reviewer_auto_release` (an
+   array of `owner/repo`; absent or empty is off) has such a hold approved
+   instead (auto-released) only when there are no findings, no test file was
+   removed, the PR has a linked issue (`closingIssuesReferences`) whose title or
+   body could be read, and every note is kind `expected-value` with a
+   `criterionQuote` of at least 5 words found verbatim in a linked issue's title
+   or body (comments never count) and a positive `failsWithoutChange`. A removed
+   case, added skip, weakened or deleted assertion, removed test file or any
+   fetch failure keeps the hold. Trivial edits (formatting, renames, imports,
+   added cases, fixture paths) are not, and neither are edits that only
+   **tighten** a meaningful behavioural or contractual test (it now asserts more
+   or allows less, as the issue asks): those are approved. An added brittle
+   assertion is a finding, not a benefit.
 5. **Blocking problems go back to the fleet** as a request for changes. The
    worker acts on change requests from the reviewers in `pr_reviewers`.
 6. **Otherwise approve.** Never approve on doubt.
-7. **A pre-existing problem the PR did not cause gets its own issue.** If
-   a dark-theme PR passes by a cross-site scripting bug that was already on
-   the default branch, it would be unfair to hold the PR up over it, but
-   now that it has been found it must not be forgotten: the reviewer
-   reports it separately, and it is filed as a new issue in the PR's repo (linked from
-   the review) without affecting the outcome. **If the PR caused the
-   problem, it is never an unrelated issue:** had the dark-theme change
-   itself introduced the cross-site scripting bug, it is a blocking finding
-   and this PR must fix it. Only a problem that is already present on the
-   base branch, unchanged by the PR, is filed separately; when in doubt, it
-   is a finding.
-8. **Review each head commit once, across every host.** A new push that
-   changes the PR's own diff gets a fresh review. When the fleet pushes a fix
-   to a PR that was sent back, the re-review checks the earlier findings were
-   fixed, and approves once they are. When a PR was sent back and the only
-   commits since are merges from the base branch that leave its own diff
-   unchanged, the gate skips it as `awaiting-fix` until the fleet pushes its
-   fix, so the review is not repeated. The skill runs on more than one host
-   (a laptop as the `gh` user, an always-on host as the reviewer App), so a
-   review carrying the skill's marker counts as this skill's review whichever login
-   posted it, and a PR anyone has approved at its head commit is skipped as
-   `approved`: there is nothing left to review, and it merges once it is up
-   to date.
-9. **Approve first, then bring the branch up to date.** Every fleet PR is
-   armed with auto-merge on three conditions: CI green, approved, and branch
-   up to date. The review is of the diff as it stands; when the outcome is an
-   approval and the PR is behind its base, `post.ts` then asks GitHub to merge
-   the base in (`update-branch`, at the reviewed head), so CI re-runs on the
-   merge commit and the PR merges with no further round. The gate does the
-   same once per head for a fleet PR already approved at its head but still
-   behind. A PR is never brought up to date before its review: the approval
-   would then be of a head nobody read. Dependabot branches are never pushed
-   to (see
+7. **A pre-existing problem the PR did not cause gets its own issue.** If a
+   dark-theme PR passes by a cross-site scripting bug that was already on the
+   default branch, it would be unfair to hold the PR up over it, but now that it
+   has been found it must not be forgotten: the reviewer reports it separately,
+   and it is filed as a new issue in the PR's repo (linked from the review)
+   without affecting the outcome. **If the PR caused the problem, it is never an
+   unrelated issue:** had the dark-theme change itself introduced the cross-site
+   scripting bug, it is a blocking finding and this PR must fix it. Only a
+   problem that is already present on the base branch, unchanged by the PR, is
+   filed separately; when in doubt, it is a finding.
+8. **Review each head commit once, across every host.** A new push that changes
+   the PR's own diff gets a fresh review. When the fleet pushes a fix to a PR
+   that was sent back, the re-review checks the earlier findings were fixed, and
+   approves once they are. When a PR was sent back and the only commits since
+   are merges from the base branch that leave its own diff unchanged, the gate
+   skips it as `awaiting-fix` until the fleet pushes its fix, so the review is
+   not repeated. The skill runs on more than one host (a laptop as the `gh`
+   user, an always-on host as the reviewer App), so a review carrying the
+   skill's marker counts as this skill's review whichever login posted it, and a
+   PR anyone has approved at its head commit is skipped as `approved`: there is
+   nothing left to review, and it merges once it is up to date.
+9. **Approve first, then bring the branch up to date.** Every fleet PR is armed
+   with auto-merge on three conditions: CI green, approved, and branch up to
+   date. The review is of the diff as it stands; when the outcome is an approval
+   and the PR is behind its base, `post.ts` then asks GitHub to merge the base
+   in (`update-branch`, at the reviewed head), so CI re-runs on the merge commit
+   and the PR merges with no further round. The gate does the same once per head
+   for a fleet PR already approved at its head but still behind. A PR is never
+   brought up to date before its review: the approval would then be of a head
+   nobody read. Dependabot branches are never pushed to (see
    [Dependabot PRs](references/edge-cases.md#dependabot-prs)).
 10. **Repeated findings improve the VibeCoder.** Review findings are also
     feedback about the worker itself. After each round, compare blocking
@@ -102,48 +107,49 @@ reviewing as a GitHub App, and persistent failure escalation.
     recurred across independent PRs and clearer VibeCoder prompt, skill,
     coding-standard or other guidance could reasonably prevent it, file a
     deduplicated improvement issue in `stSoftwareAU/VibeCoder`. Do not turn a
-    one-off bug into guidance, and do not weaken the review rule just because
-    a finding is common. Many fleet repos are private and VibeCoder is
-    public, so the issue never references a private repo directly (see
+    one-off bug into guidance, and do not weaken the review rule just because a
+    finding is common. Many fleet repos are private and VibeCoder is public, so
+    the issue never references a private repo directly (see
     [Keeping private repos private](#keeping-private-repos-private)).
 
 ## Keeping private repos private
 
 Reviews, held-PR comments and unrelated issues land in the PR's own repo, so
-they may name its files, code and PRs freely. An improvement issue (or a
-runner escalation) lands in the public `stSoftwareAU/VibeCoder`: it may
-reference a public repo's issues, PRs and Actions runs directly, but never a
-private repo's. For a private repo, every part of the issue (title, body,
-evidence table and the closing "found by" line) leaves out:
+they may name its files, code and PRs freely. An improvement issue (or a runner
+escalation) lands in the public `stSoftwareAU/VibeCoder`: it may reference a
+public repo's issues, PRs and Actions runs directly, but never a private repo's.
+For a private repo, every part of the issue (title, body, evidence table and the
+closing "found by" line) leaves out:
 
 - the repo's name or slug, and its issue, PR, review, commit or Actions run
   numbers and links;
-- its branch names, file paths, code, test names, error text and log
-  excerpts;
+- its branch names, file paths, code, test names, error text and log excerpts;
 - what the product does: its domain, features, customers or data.
 
-Describe the example at concept level instead, keeping what shows the
-pattern: dates, times, the sequence of events and the VibeCoder code at
-fault. A title cites only public examples, so `... (VibeCoder#3308, #3355,
-private-app#2699)` becomes `... (VibeCoder#3308, #3355 and a private fleet
-PR)`; in the evidence table that row reads "a PR in a private fleet repo",
-its default branch is "the default branch", and the round is "found by the
-review-fleet-prs round of 2026-10-08 06:16". Check a repo's visibility with
+Describe the example at concept level instead, keeping what shows the pattern:
+dates, times, the sequence of events and the VibeCoder code at fault. A title
+cites only public examples, so `... (VibeCoder#3308, #3355,
+private-app#2699)`
+becomes `... (VibeCoder#3308, #3355 and a private fleet
+PR)`; in the evidence
+table that row reads "a PR in a private fleet repo", its default branch is "the
+default branch", and the round is "found by the review-fleet-prs round of
+2026-10-08 06:16". Check a repo's visibility with
 `gh api repos/{repo} --jq .visibility` before linking it, and treat any answer
-other than `public` (including an error) as private. The private evidence
-stays on the host, in `log.jsonl` and `summary.md`, where the owner can see it.
+other than `public` (including an error) as private. The private evidence stays
+on the host, in `log.jsonl` and `summary.md`, where the owner can see it.
 
 ## Which repos
 
-This host's `.config.json` lists only the repos this host's worker looks
-after; other fleet hosts look after others. The gate therefore reviews fleet
-PRs in any repo, and Dependabot PRs in this host's repos plus any repo where
-a fleet account has had a PR in the last 30 days.
+This host's `.config.json` lists only the repos this host's worker looks after;
+other fleet hosts look after others. The gate therefore reviews fleet PRs in any
+repo, and Dependabot PRs in this host's repos plus any repo where a fleet
+account has had a PR in the last 30 days.
 
 Read
 [references/edge-cases.md#dependabot-prs](references/edge-cases.md#dependabot-prs)
-when a gate pass reports Dependabot upkeep (rebase requests, auto-merge
-arming or their failures).
+when a gate pass reports Dependabot upkeep (rebase requests, auto-merge arming
+or their failures).
 
 Read
 [references/edge-cases.md#approved-fleet-prs-that-are-behind](references/edge-cases.md#approved-fleet-prs-that-are-behind)
@@ -168,166 +174,179 @@ ones behind it.
    deno run --allow-run=gh --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME gate.ts --watch=300 [--repo=owner/name] [--limit=5]
    ```
 
-2. Do nothing until it finishes: you are re-invoked when it exits. Do not
-   poll it, sleep, or schedule wake-ups.
+2. Do nothing until it finishes: you are re-invoked when it exits. Do not poll
+   it, sleep, or schedule wake-ups.
 3. When it exits 0, read its one line of JSON,
    `{ ready: [...], auditBlocked: [...], skipped: {...} }`. Post each
-   `auditBlocked` entry with no model run: write `{"pr": <the entry>,
-   "review": <its review>}` to a file in the scratchpad and run `post.ts`
-   on it (see [2. Post](#2-post)); its one finding makes `post.ts` request
-   changes, write the log record and notify. Then review every `ready` PR
-   (steps below). `run.sh` posts them the same way before its round.
+   `auditBlocked` entry with no model run: write
+   `{"pr": <the entry>,
+   "review": <its review>}` to a file in the scratchpad
+   and run `post.ts` on it (see [2. Post](#2-post)); its one finding makes
+   `post.ts` request changes, write the log record and notify. Then review every
+   `ready` PR (steps below). `run.sh` posts them the same way before its round.
 4. Start step 1 again, adding `--sleep-first`. The PRs just reviewed are now
    `already-reviewed` at their head commit, so the gate does not report them
-   again; one whose review failed, or that was `over-limit`, is reported
-   after the next interval rather than straight away.
+   again; one whose review failed, or that was `over-limit`, is reported after
+   the next interval rather than straight away.
 
 If the gate exits non-zero it could not reach GitHub for an hour; report its
 error and stop.
 
-For a single pass instead of the loop, run it without `--watch`: it prints
-the ready PRs (possibly none) and exits.
+For a single pass instead of the loop, run it without `--watch`: it prints the
+ready PRs (possibly none) and exits.
 
 ## Reviewing the ready PRs
 
 ### 1. Review
 
-Review every PR in `ready`: the gate has already capped the round at 5 (or
-its `--limit`), so a backlog cannot burn a night's quota in one go, and the
-rest come back on the next gate run. Do not pick among them, re-check their
-CI or look at other PRs. Launch one Agent per PR in a single message so they
-run in parallel, each with
-`subagent_type: "fleet-pr-reviewer"` — the agent definition in
-`.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
+Review every PR in `ready`: the gate has already capped the round at 5 (or its
+`--limit`), so a backlog cannot burn a night's quota in one go, and the rest
+come back on the next gate run. Do not pick among them, re-check their CI or
+look at other PRs. Launch one Agent per PR in a single message so they run in
+parallel, each with `subagent_type: "fleet-pr-reviewer"` — the agent definition
+in `.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
 at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 
 > You are reviewing PR #{number} in {repo} ("{title}"), authored by {author}
 > ({kind}), head commit {headSha}, base {baseRef}. CI has passed. You are a
 > read-only reviewer: do not comment, review, push, edit files or change any
-> state on GitHub. Read with `gh pr view`, `gh pr diff {number} -R {repo}`
-> and `gh api repos/{repo}/contents/<path>?ref={headSha}`.
+> state on GitHub. Read with `gh pr view`, `gh pr diff {number} -R {repo}` and
+> `gh api repos/{repo}/contents/<path>?ref={headSha}`.
 >
 > 1. Read the linked issue (from the PR body or title) and the repo's
 >    `AGENTS.md` / `CODING-STANDARDS.md` if they exist.
 > 2. Check that the change does what the issue asks and nothing unrelated.
 > 3. Look for correctness bugs, unhandled edge cases, security problems
->    (injection, secrets, unsafe permissions in workflows), race conditions
->    and regressions for existing callers.
-> 4. Check the tests against the repository's canonical testing guidance.
->    New behaviour and real bug fixes usually need a test that would fail on
->    the externally meaningful regression; existing coverage may suffice.
->    Refactors and UI restyles may need no new test. {noTestAdded: "The PR
->    changes code but adds no test: decide whether existing tests cover the
->    supported behaviour or a new one is warranted."} A missing safety net
->    that matters is a finding. Flag new assertions on incidental CSS values,
->    DOM shape, component/private function names or version strings unless
->    the linked issue makes these an explicit contract. Prefer user-visible
->    browser behaviour and semantic locators for UI, positive and negative
->    contracts for APIs; visual baselines are appropriate when appearance is
->    an explicit requirement and the baseline is reviewable.
-> 5. Judge every change to an existing test: {testChanges}, plus any inline
->    test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change is
->    **meaningful** if it removes a test case, weakens or deletes an
->    assertion, changes an expected value or expected behaviour, or skips or
->    loosens a test. It is **trivial** if it only reformats, renames,
->    updates imports or fixture paths, or adds cases or assertions. It is
->    **tightened** if an expected value or behaviour changes only to make
->    a supported contract test stricter, as the issue asks: it now asserts
->    more, allows less
->    (e.g. no longer tolerates a permission or a call it used to allow), or
->    pins a stricter count, and nothing it used to check is dropped. A change
->    that tightens one thing and loosens another is **meaningful**.
->    If a test is removed, skipped, weakened or loosened and the linked
->    issue does not require it (for example it looks like it was changed to
->    make the build pass), report it as a blocking **finding** asking for the
->    test to be restored, not only under `testChanges`. Report it under
->    `testChanges` as **meaningful** only when the issue requires the change.
-> 6. {previousFindings, if not empty: "An earlier review of this PR asked
->    for these fixes: {previousFindings}. Check each one is fixed; one that
->    is not is still a finding."}
+>    (injection, secrets, unsafe permissions in workflows), race conditions and
+>    regressions for existing callers.
+> 4. Check the tests against the repository's canonical testing guidance. New
+>    behaviour and real bug fixes usually need a test that would fail on the
+>    externally meaningful regression; existing coverage may suffice. Refactors
+>    and UI restyles may need no new test. {noTestAdded: "The PR changes code
+>    but adds no test: decide whether existing tests cover the supported
+>    behaviour or a new one is warranted."} A missing safety net that matters is
+>    a finding. Flag new assertions on incidental CSS values, DOM shape,
+>    component/private function names or version strings unless the linked issue
+>    makes these an explicit contract. Prefer user-visible browser behaviour and
+>    semantic locators for UI, positive and negative contracts for APIs; visual
+>    baselines are appropriate when appearance is an explicit requirement and
+>    the baseline is reviewable.
+> 5. Judge every change to an existing test: {testChanges}, plus any inline test
+>    module (e.g. Rust `#[cfg(test)]`) the diff touches. A change is
+>    **meaningful** if it removes a test case, weakens or deletes an assertion,
+>    changes an expected value or expected behaviour, or skips or loosens a
+>    test. It is **trivial** if it only reformats, renames, updates imports or
+>    fixture paths, or adds cases or assertions. It is **tightened** if an
+>    expected value or behaviour changes only to make a supported contract test
+>    stricter, as the issue asks: it now asserts more, allows less (e.g. no
+>    longer tolerates a permission or a call it used to allow), or pins a
+>    stricter count, and nothing it used to check is dropped. A change that
+>    tightens one thing and loosens another is **meaningful**. If a test is
+>    removed, skipped, weakened or loosened and the linked issue does not
+>    require it (for example it looks like it was changed to make the build
+>    pass), report it as a blocking **finding** asking for the test to be
+>    restored, not only under `testChanges`. Report it under `testChanges` as
+>    **meaningful** only when the issue requires the change. For each
+>    `testChangeNotes` entry give `kind` (`expected-value` for a changed
+>    expected value or behaviour, `removed-case`, `added-skip`,
+>    `weakened-assertion`, `removed-file` or `other`); `criterionQuote`, the
+>    acceptance criterion from a linked issue that requires the change, quoted
+>    verbatim from the issue's title or body (not comments), or omitted if there
+>    is none; and `failsWithoutChange`, `true` or a short statement that the
+>    edited test still fails without the code it guards.
+> 6. {previousFindings, if not empty: "An earlier review of this PR asked for
+>    these fixes: {previousFindings}. Check each one is fixed; one that is not
+>    is still a finding."}
 > 7. For Dependabot: check the changelog or release notes for breaking changes
 >    that affect how this repo uses the dependency, and that a major bump is
 >    reflected in the code where needed.
-> 8. If, while reading, you notice an important **pre-existing** problem
->    the PR did not cause and is not meant to fix (a bug, a security gap,
->    data loss, a broken workflow in code it passes by), report it under
->    `unrelatedIssues`, not as a finding: it is filed as a separate issue
->    and does not block this PR. First confirm it is pre-existing: the same
->    problem must be present on the base branch
->    (`gh api repos/{repo}/contents/<path>?ref={baseRef}`) and not
->    introduced, widened or newly exposed by this PR's changes. Anything
->    this PR causes, even in a file it only touches in passing, is a
->    blocking **finding** this PR must fix; when in doubt, it is a
->    finding. Only real, verified problems with a file
->    and line, at most 3; not style, polish or wishes. Skip any that
->    `gh issue list -R {repo} --search "<words> in:title"` shows is already
->    open. Write each as a standalone issue: a title that names the defect,
->    and a body saying what is wrong, the failure scenario and a suggested
->    fix. Describe a security gap by class and location only (for example
->    "the query is written into the page unescaped"), never with a working
->    exploit or payload: some repos are public.
+> 8. If, while reading, you notice an important **pre-existing** problem the PR
+>    did not cause and is not meant to fix (a bug, a security gap, data loss, a
+>    broken workflow in code it passes by), report it under `unrelatedIssues`,
+>    not as a finding: it is filed as a separate issue and does not block this
+>    PR. First confirm it is pre-existing: the same problem must be present on
+>    the base branch (`gh api repos/{repo}/contents/<path>?ref={baseRef}`) and
+>    not introduced, widened or newly exposed by this PR's changes. Anything
+>    this PR causes, even in a file it only touches in passing, is a blocking
+>    **finding** this PR must fix; when in doubt, it is a finding. Only real,
+>    verified problems with a file and line, at most 3; not style, polish or
+>    wishes. Skip any that `gh issue list -R {repo} --search "<words> in:title"`
+>    shows is already open. Write each as a standalone issue: a title that names
+>    the defect, and a body saying what is wrong, the failure scenario and a
+>    suggested fix. Describe a security gap by class and location only (for
+>    example "the query is written into the page unescaped"), never with a
+>    working exploit or payload: some repos are public.
 >
-> Only report **blocking** findings: things that are wrong, unsafe or
-> untested. Style preferences and optional polish are not blocking. A
-> meaningful test change the issue requires is not a finding; report it under
-> `testChanges`. Do
+> Only report **blocking** findings: things that are wrong, unsafe or untested.
+> Style preferences and optional polish are not blocking. A meaningful test
+> change the issue requires is not a finding; report it under `testChanges`. Do
 > not guess: every finding needs a file and line from the diff and a concrete
 > failure scenario. A problem the PR introduces, widens or newly exposes is
 > always a finding, never an unrelated issue.
 >
 > Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
+> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
 
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.
 
 ### 2. Post
 
-For each reply, write `{"pr": <the gate's ready entry>, "review": <the
-reviewer's reply>}` to a file in the scratchpad and run, from this skill's
-`scripts/` directory:
+For each reply, write
+`{"pr": <the gate's ready entry>, "review": <the
+reviewer's reply>}` to a file
+in the scratchpad and run, from this skill's `scripts/` directory:
 
 ```bash
 deno run --allow-run=gh,osascript --allow-read --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
 ```
 
-When the round's prompt names a `--state-dir`, add it to that command: a
-round in the worker container keeps its state under the worker's log mount.
+When the round's prompt names a `--state-dir`, add it to that command: a round
+in the worker container keeps its state under the worker's log mount.
 
 The script does the rest, so do not post anything yourself:
 
 - It files each of the reviewer's `unrelatedIssues` first: they are already on
-  the base branch, so they are filed even if the PR has since moved or
-  merged.
-- It re-checks the head commit and posts no review if it moved or the PR
-  closed; the next gate pass picks up the new commit.
-- It decides the outcome: reviewer findings mean **request changes** (the
-  worker acts on those); otherwise a meaningful test change or a removed
-  test file means **held for the owner**, as a comment-only review the
-  worker ignores; otherwise **approve**.
+  the base branch, so they are filed even if the PR has since moved or merged.
+- It re-checks the head commit and posts no review if it moved or the PR closed;
+  the next gate pass picks up the new commit.
+- It decides the outcome: reviewer findings mean **request changes** (the worker
+  acts on those); otherwise a meaningful test change or a removed test file
+  means **held for the owner**, as a comment-only review the worker ignores;
+  otherwise **approve**. **Auto-release:** for a repo in
+  `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
+  makes `post.ts` fail loud), a hold is instead an approval when rule 4's
+  conditions all hold. The body opens "Auto-released: …" and lists each change
+  with its quoted criterion; there is no held comment and no `needs-human`
+  label.
 - After an approval, when the PR is behind its base (and is not a Dependabot
-  PR), it asks GitHub to bring the branch up to date at the reviewed head
-  (rule 9), so the armed auto-merge can complete once CI re-runs. The result
-  is `branchUpdated: true` or `branchUpdateError: <first line>`; a refusal
-  leaves the approval posted and the next gate pass retries the update.
-- After a held review posts, it labels the PR `needs-human`. When it later
-  posts an approved or sent-back review for a PR whose latest `log.jsonl`
-  record shows this skill added that label, it removes it; it never
-  removes a label it did not add. A failed add or remove leaves the
-  review posted and is not retried.
-- It links an open issue with the same title instead of filing an
-  unrelated issue twice. A failure to file one never stops the review.
-- It writes and posts the review body (listing any issues filed), appends
-  the result to `<logs>/review-fleet-prs/log.jsonl`, refreshes
+  PR), it asks GitHub to bring the branch up to date at the reviewed head (rule
+  9), so the armed auto-merge can complete once CI re-runs. The result is
+  `branchUpdated: true` or `branchUpdateError: <first line>`; a refusal leaves
+  the approval posted and the next gate pass retries the update.
+- After a held review posts, it labels the PR `needs-human`. When it later posts
+  an approved or sent-back review for a PR whose latest `log.jsonl` record shows
+  this skill added that label, it removes it; it never removes a label it did
+  not add. A failed add or remove leaves the review posted and is not retried.
+- It links an open issue with the same title instead of filing an unrelated
+  issue twice. A failure to file one never stops the review.
+- It writes and posts the review body (listing any issues filed), appends the
+  result to `<logs>/review-fleet-prs/log.jsonl`, refreshes
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, filedIssues?, labelError?, branchUpdated?,
-branchUpdateError?, reason? }`.
-`labelError` names the label action (`add` or `remove`) and the `gh` error
-when the label call failed; the exit code is unchanged either way. Exit
-code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
-comes back on the next gate pass.
+It prints
+`{ posted, outcome?, autoReleased?, autoReleaseHeld?,
+filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
+`autoReleased: true` is also in the `log.jsonl` record, and `summary.md`
+prefixes that PR's "Approved, last 7 days" line with
+`(auto-released: issue-required test change)` as an audit trail.
+`autoReleaseHeld` lists the reasons an opted-in repo's hold was kept; it is
+printed and logged only for a held PR in an opted-in repo. `labelError` names
+the label action (`add` or `remove`) and the `gh` error when the label call
+failed; the exit code is unchanged either way. Exit code 2 means the reviewer's
+reply was malformed: nothing was posted, and the PR comes back on the next gate
+pass.
 
 ### 3. Learn from recurring findings
 
@@ -341,51 +360,52 @@ VibeCoder's own guidance:
    on one PR or one head commit count once.
 2. Ask whether a concrete change to VibeCoder's prompt, a skill,
    `CODING-STANDARDS.md`, templates, or similar worker guidance would likely
-   prevent or materially reduce that mistake. If the answer is no, do
-   nothing. Product bugs, repository-specific design decisions and random
-   implementation mistakes are not automatically prompt problems.
+   prevent or materially reduce that mistake. If the answer is no, do nothing.
+   Product bugs, repository-specific design decisions and random implementation
+   mistakes are not automatically prompt problems.
 3. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
-   mistake and the proposed guidance area. If an issue already covers it,
-   do not create another one.
+   mistake and the proposed guidance area. If an issue already covers it, do not
+   create another one.
 4. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
    - the recurring failure pattern and why it is preventable;
    - at least two independent PR/review examples: a link for each one in a
-     public repo, and a concept-level description, with no name, number or
-     link, for each one in a private repo (see
+     public repo, and a concept-level description, with no name, number or link,
+     for each one in a private repo (see
      [Keeping private repos private](#keeping-private-repos-private));
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
    - the proposed guidance or guardrail and how future reviews can verify it
-     worked.
-   Apply `idle-task` to the issue filed, and no reserved label (never
-   `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer
-   App is in `authorized_commenters`, so the worker trusts only its
-   `idle-task` add, and reserved labels are for humans to set. Otherwise
-   leave assignment/triage unchanged.
-5. Keep the threshold evidence-based. Similar symptoms with different causes
-   are not a recurrence. Never create an issue solely to make a review pass,
-   and never relax safety, testing or correctness guidance as the cure.
+     worked. Apply `idle-task` to the issue filed, and no reserved label (never
+     `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer App
+     is in `authorized_commenters`, so the worker trusts only its `idle-task`
+     add, and reserved labels are for humans to set. Otherwise leave
+     assignment/triage unchanged.
+5. Keep the threshold evidence-based. Similar symptoms with different causes are
+   not a recurrence. Never create an issue solely to make a review pass, and
+   never relax safety, testing or correctness guidance as the cure.
 
 Include any self-improvement issue created in the round report. Failure to
 search or file an improvement issue must not change the PR review outcome.
 
 ### 4. Report
 
-One short line per round: approved, sent back, and held for the owner, each
-with PR links, plus any issues filed. When post.ts printed a `labelError` or
-a `branchUpdateError` for a PR, name that PR and the failure. Then go back to
-the loop.
+One short line per round: approved, sent back, and held for the owner, each with
+PR links, plus any issues filed. When post.ts printed a `labelError` or a
+`branchUpdateError` for a PR, name that PR and the failure. Then go back to the
+loop.
 
-When the round held a PR for the owner or sent one back to the fleet, also
-send one PushNotification (status `proactive`) naming those PRs and why,
-under 200 characters, e.g. `example-app#152 held for you: 2 page tests
+When the round held a PR for the owner or sent one back to the fleet, also send
+one PushNotification (status `proactive`) naming those PRs and why, under 200
+characters, e.g.
+`example-app#152 held for you: 2 page tests
 moved to the server; example-api#503 sent back: fresh-path test never seeds
-the fixture`. It reaches the owner's phone when this session has Remote Control
-connected (`/remote-control` and the Claude app). Send nothing for rounds
-that only approved or had nothing ready.
+the fixture`.
+It reaches the owner's phone when this session has Remote Control connected
+(`/remote-control` and the Claude app). Send nothing for rounds that only
+approved or had nothing ready.
 
 The owner's running view is `<logs>/review-fleet-prs/summary.md`: what is
-waiting for them, what was sent back to the fleet, and what was approved in
-the last 7 days. Every gate pass rewrites it at no token cost.
+waiting for them, what was sent back to the fleet, and what was approved in the
+last 7 days. Every gate pass rewrites it at no token cost.
 
 Read [references/notes.md](references/notes.md) for why approval counts, the
 idle cost, and where `<logs>` (used throughout this file) lives.
