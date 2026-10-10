@@ -13,6 +13,7 @@
 import type { Result } from "../types.ts";
 import type { GitRunner } from "./git_base_ref.ts";
 import { installConsoleRedaction } from "./console_redaction.ts";
+import { runGitCommand } from "./git_timeout.ts";
 import {
   formatReport,
   hasBlock,
@@ -136,40 +137,13 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
   return hasBlock(checked.value) ? 1 : 0;
 }
 
-/** Minimal git runner: the task grants `--allow-run=git` and no env access. */
-const spawnGit: GitRunner = async (args, options) => {
-  try {
-    const out = await new Deno.Command("git", {
-      args,
-      cwd: options?.cwd,
-      stdin: "null",
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
-    const decoder = new TextDecoder();
-    return {
-      ok: true,
-      value: {
-        code: out.code,
-        stdout: decoder.decode(out.stdout),
-        stderr: decoder.decode(out.stderr),
-      },
-    };
-  } catch (error: unknown) {
-    return {
-      ok: false,
-      error: error instanceof Error ? error : new Error(String(error)),
-    };
-  }
-};
-
 if (import.meta.main) {
   installConsoleRedaction();
   const code = await main(Deno.args, {
     readTextFile: (path) => Deno.readTextFile(path),
-    runGit: spawnGit,
+    runGit: runGitCommand,
     repoRoot: async () => {
-      const r = await spawnGit(["rev-parse", "--show-toplevel"]);
+      const r = await runGitCommand(["rev-parse", "--show-toplevel"]);
       if (!r.ok) return r;
       if (r.value.code !== 0) {
         return { ok: false, error: new Error(r.value.stderr.trim()) };
