@@ -1589,8 +1589,8 @@ of its reader: a code comment said "Issue #3240 makes `flat()` refuse
 whole-file input" while #3240 was still an open PR and `flat()` refused
 nothing (VibeCoder#3252); two `docs/CONFIGURATION.md` rows and a
 `config_defaults.ts` comment described what the new `issue_sub_agent_tier`
-key selects when nothing at the head read it, so an operator who set
-`"haiku"` still got Sonnet (VibeCoder#3434) (Issue #3437).
+key selects when nothing at the head read it, so an operator who changed
+the tier still got the hard-coded one (VibeCoder#3434) (Issue #3437).
 
 **An issue number cited as provenance is one you looked up.** Every issue
 number the diff adds as the reason a change exists — `Issue #N` or
