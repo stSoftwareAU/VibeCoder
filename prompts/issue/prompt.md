@@ -212,6 +212,11 @@ guessing — the analysis-only hand-off then routes it to a human.
    summary with no `## Test Plan` heading when the diff touches a test, or a
    Test Plan that does not name each removed assertion as it appears in the
    diff, blocks the PR.
+   An issue requirement shows a new expected value is right, not that the
+   edited test still guards anything: break the code the test's name says
+   it guards, confirm the edited test goes red, then restore it (see **An
+   edited expectation must still go red without its guard** in the
+   guidelines).
 3. Update the documentation in the same change. A change that **adds, changes
    or removes** behaviour, a field, a UI element or a setting owes a docs
    change — see **A Code Change Owes a Docs Change** in `CODING-STANDARDS.md`
@@ -724,6 +729,10 @@ reviewer its path.
   and say, for each, whether an issue requirement makes it untrue — returning
   a `violation` (with the `file:line` it saw) for any removed assertion that
   has none.
+  Ask it too, for each expected value or behaviour the diff changes in an
+  existing test, whether that test still fails without the code it is named
+  for — returning a `violation` (with the `file:line` it saw) when the new
+  expectation would hold with that code broken (Issue #3374).
 
 **Never merge or rerank the two.** The Spec verdicts populate the
 `## Acceptance Criteria` block; the Standards findings go under their own
@@ -1182,7 +1191,14 @@ The file MUST contain:
    the diff touches a test; it is required. The worker counts as removed a
    multi-line assertion with any line changed, and an assertion re-added under
    a new condition, loop or callback, into a skipped or ignored test, or after
-   a new early `return`. Every new test added to guard a
+   a new early `return`. Every expectation the diff changes in an existing
+   test counts only once you have seen that test go red with the code its
+   name says it guards broken on purpose (see **An edited expectation must
+   still go red without its guard** in the guidelines); record one red-check
+   line per edited expectation, and an edited test that stays green without
+   its guard is a blocking self-review finding — add an assertion that goes
+   red, or move the lost check to a test that still covers it and name that
+   test. Every new test added to guard a
    change (a fix, a new guard, a new rule) counts only once you have seen it go
    red with only its change removed (see **A new test must go red without its
    change** in the

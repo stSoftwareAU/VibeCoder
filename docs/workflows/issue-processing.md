@@ -1418,6 +1418,21 @@ occurs only in the rule being added. When a review asks for the red run,
 the pr_feedback rule requires the failing line to be quoted in
 `.pr_response_message`.
 
+**An edited expectation must still go red without its guard (Issue #3374).**
+Fleet PRs changed an expected value in an existing test because the issue
+required it, and the test then passed whether or not the code its name says it
+guards still worked: VibeCoder#3372 (a `branch_outcomes_gate_test.ts` test
+whose new expected list came back the same whether or not the test-path scan
+stopped at a later Branch outcomes header) and GRQ-AutoTrader#2408. The
+removed-assertion rule asks only for the issue requirement that justifies the
+new value, and the new-test rule covers only tests a PR adds. The guidelines
+and `CODING-STANDARDS.md` now require each edited expectation to go red with
+that code broken on purpose — otherwise the PR adds an assertion that does, or
+names the test the lost check moved to — and the issue prompt's Test Plan step
+asks for one red-check line per edited expectation. The issue prompt also asks
+the Standards reviewer whether each such test still fails without the code it
+is named for.
+
 **Re-scoping an existing drift test keeps every check's reach
 (Issue #3307).** Fleet PRs converting whole-file drift tests to `section()`
 kept every pinned string and still lost a check, and were sent back for it:
