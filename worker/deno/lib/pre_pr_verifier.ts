@@ -22,9 +22,9 @@
  *   run through `Bash` could still reach the network. The gh guard below is
  *   the backstop for `gh`.
  * - The agent-side gh guard the runner installs still applies.
- * - The issue checkout is compared before and after, so a change the
- *   verifier made outside its copy surfaces as a finding instead of being
- *   committed silently.
+ * - The issue checkout is compared before and after, so a change that
+ *   `git status` (untracked files included, ignored files not) or HEAD shows
+ *   surfaces as a finding instead of being committed silently.
  *
  * A pass that cannot run is "not checked", never clean.
  *
@@ -34,6 +34,7 @@
 import type { Logger, Result } from "../types.ts";
 import {
   type ClaudeRunResult,
+  type RetryOptions,
   type RunClaudeOptions,
   runClaudeWithRetry,
 } from "./claude_runner.ts";
@@ -222,30 +223,25 @@ export interface PrePrVerifierDeps {
     args: string[],
     cwd: string,
   ) => Promise<{ code: number; stdout: string; stderr: string } | null>;
-  ask: (options: RunClaudeOptions) => Promise<Result<ClaudeRunResult>>;
+  ask: (
+    options: RunClaudeOptions,
+    retryOptions?: RetryOptions,
+  ) => Promise<Result<ClaudeRunResult>>;
   loadBrief: () => Promise<Result<string>>;
   makeTempDir: () => Promise<string>;
   removeDir: (path: string) => Promise<void>;
 }
 
-function makeDeps(maxRetries?: number): PrePrVerifierDeps {
-  return {
-    runGit: async (args, cwd) => {
-      const r = await runGitCommand(args, { cwd });
-      return r.ok ? r.value : null;
-    },
-    ask: (options) =>
-      runClaudeWithRetry(
-        options,
-        maxRetries === undefined ? {} : { maxRetries },
-      ),
-    loadBrief: () => loadPrompt(REVIEW_BRIEF_PROMPT_NAME),
-    makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-pre-pr-verifier-" }),
-    removeDir: (path) => Deno.remove(path, { recursive: true }),
-  };
-}
-
-export const defaultPrePrVerifierDeps: PrePrVerifierDeps = makeDeps();
+export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
+  runGit: async (args, cwd) => {
+    const r = await runGitCommand(args, { cwd });
+    return r.ok ? r.value : null;
+  },
+  ask: runClaudeWithRetry,
+  loadBrief: () => loadPrompt(REVIEW_BRIEF_PROMPT_NAME),
+  makeTempDir: () => Deno.makeTempDir({ prefix: "vibe-pre-pr-verifier-" }),
+  removeDir: (path) => Deno.remove(path, { recursive: true }),
+};
 
 const isDocPath = (p: string) => p.startsWith("docs/") || p.endsWith(".md");
 
@@ -395,7 +391,7 @@ function summaryPathProblem(path: string): string | null {
  */
 export async function runPrePrVerifier(
   input: PrePrVerifierInput,
-  deps: PrePrVerifierDeps = makeDeps(input.maxRetries),
+  deps: PrePrVerifierDeps = defaultPrePrVerifierDeps,
 ): Promise<PrePrVerifierResult> {
   const { logger } = input;
   // Builds the result only; the caller logs the one line.
@@ -536,6 +532,37 @@ export async function runPrePrVerifier(
   return outcome;
 }
 
+/**
+ * True when the summary file would land outside the canonical checkout: the
+ * longest existing ancestor of its directory, with symlinks followed, must be
+ * the checkout or lie under it, and the file itself must not be a symlink.
+ */
+async function summaryEscapesCheckout(
+  checkout: string,
+  summaryFile: string,
+): Promise<boolean> {
+  const root = await Deno.realPath(checkout);
+  let dir = summaryFile.slice(0, summaryFile.lastIndexOf("/"));
+  let canon: string | null = null;
+  while (canon === null) {
+    try {
+      canon = await Deno.realPath(dir);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      const cut = dir.lastIndexOf("/");
+      if (cut <= 0) return true;
+      dir = dir.slice(0, cut);
+    }
+  }
+  if (canon !== root && !canon.startsWith(root + "/")) return true;
+  try {
+    if ((await Deno.lstat(summaryFile)).isSymlink) return true;
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+  return false;
+}
+
 async function verifyInCheckout(
   input: PrePrVerifierInput,
   deps: PrePrVerifierDeps,
@@ -569,7 +596,15 @@ async function verifyInCheckout(
     }
   }
 
+  // Resolve fully, then check, then act on the checked path: the head commit
+  // may track a symlink that leads out of the checkout.
   const summaryFile = `${checkout}/${input.summaryPath}`;
+  const escapes = await summaryEscapesCheckout(checkout, summaryFile);
+  if (escapes) {
+    return notChecked(
+      `the PR summary path leaves the disposable checkout: ${input.summaryPath}`,
+    );
+  }
   await Deno.mkdir(summaryFile.slice(0, summaryFile.lastIndexOf("/")), {
     recursive: true,
   });
@@ -602,7 +637,7 @@ async function verifyInCheckout(
     cwd: checkout,
     logger: input.logger,
     disallowedTools: [...PRE_PR_VERIFIER_DISALLOWED_TOOLS],
-  });
+  }, input.maxRetries === undefined ? {} : { maxRetries: input.maxRetries });
   if (!asked.ok) {
     return notChecked(`verifier run failed: ${asked.error.message}`);
   }

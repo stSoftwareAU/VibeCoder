@@ -146,6 +146,8 @@ interface Scenario {
   baseUnresolvable?: boolean;
   /** Scripted claim-check question reply (default: no findings). */
   claimReply?: string;
+  /** Model configured for the run (default: the config default). */
+  claudeModel?: string;
 }
 
 interface Outcome {
@@ -157,6 +159,8 @@ interface Outcome {
   prCreateCalls: number;
   comments: string[];
   summaryText: string;
+  claudeRunStats: PhaseState["claudeRunStats"];
+  config: ReturnType<typeof buildDefaultWorkerConfig>;
 }
 
 async function runCompletion(scenario: Scenario): Promise<Outcome> {
@@ -177,6 +181,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
+  if (scenario.claudeModel !== undefined) {
+    config.claudeModel = scenario.claudeModel;
+  }
 
   const ctx: IssueContext = {
     repo: REPO,
@@ -321,6 +328,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     prCreateCalls,
     comments,
     summaryText,
+    claudeRunStats: state.claudeRunStats,
+    config,
   };
 }
 
@@ -404,6 +413,7 @@ Deno.test(
     const outcome = await runCompletion({
       summary: SUMMARY_CLEAN,
       verifier: [checked([])],
+      claudeModel: "some-model",
     });
 
     assertEquals(outcome.status, "continue");
@@ -416,6 +426,40 @@ Deno.test(
     assertEquals(input.repo, REPO);
     assertStringIncludes(input.baseRef, "main");
     assertEquals(input.changedFiles, ["docs/notes.md"]);
+    assertEquals(input.timeoutSeconds, outcome.config.claudeTimeout);
+    assertEquals(input.killAfterSeconds, outcome.config.claudeKillAfter);
+    assertEquals(input.maxRetries, outcome.config.maxRateLimitRetries);
+    assertEquals(input.model, "some-model");
+  },
+);
+
+// (j)
+Deno.test(
+  "completion - the verifier run's stats are recorded on the phase state",
+  async () => {
+    const run = {
+      exitCode: 0,
+      output: "",
+      stderr: "",
+      timedOut: false,
+      fallbackModel: "verifier-fallback-model",
+      runStats: {
+        servedModels: ["verifier-served-model"],
+        requestedModel: "verifier-requested-model",
+        wallClockMs: 4321,
+      },
+    } as unknown as NonNullable<PrePrVerifierResult["run"]>;
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [{ ...checked([]), run } as PrePrVerifierResult],
+    });
+
+    assertEquals(outcome.status, "continue");
+    const recorded = (outcome.claudeRunStats ?? []).filter((e) =>
+      e.fallbackModel === "verifier-fallback-model"
+    );
+    assertEquals(recorded.length, 1);
+    assertEquals(recorded[0]!.runStats?.wallClockMs, 4321);
   },
 );
 

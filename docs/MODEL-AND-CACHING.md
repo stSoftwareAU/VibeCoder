@@ -758,13 +758,18 @@ the worker makes itself.
 - **Frequency.** One session per completion attempt that has a PR summary
   file loaded and a resolvable comparable base ref (a missing summary skips it;
   an unresolvable base logs it as not checked), whether or not the issue carries
-  acceptance criteria. That is normally one per run; each re-run of completion (the in-run
-  recoveries — summary-rule, security-fix, screenshot and the summary-only
-  claim correction turn — and the infrastructure retry) runs it again. It
-  runs even when an earlier summary gate blocks, because its verdict is
-  folded into that block.
+  acceptance criteria. That is normally one per run; each re-run of completion
+  (the in-run recoveries — summary-rule, security-fix, screenshot and the
+  summary-only claim correction turn — and the infrastructure retry) runs it
+  again. It runs even when an earlier summary gate blocks, because its verdict
+  is folded into that block.
 - **Cost.** Its tokens are recorded in the run's stats, like the summary claim
   check's.
+- **Tamper check.** A change the issue checkout's `git status` (untracked files
+  included, ignored files not) or HEAD shows after the pass becomes a blocking
+  finding. The summary is written into the disposable clone only at a path
+  confirmed, after resolving symlinks, to lie inside the clone; a path that
+  leaves it makes the pass not checked.
 
 How it works, what it may run and how its findings block is in
 [issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).

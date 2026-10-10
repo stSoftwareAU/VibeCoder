@@ -1180,8 +1180,8 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
         }),
     ),
     // Not scripted by default (Issue #3395): a test that says nothing about
-    // the verifier gets a clean, non-blocking verdict and no error log (a
-    // "not checked" result is logged at error). A test that exercises the
+    // the verifier gets a clean, non-blocking verdict and no warning (a
+    // "not checked" result is logged at warn). A test that exercises the
     // verifier scripts this seam.
     runPrePrVerifier: mockFn<ClaudeDeps["runPrePrVerifier"]>(() =>
       Promise.resolve({

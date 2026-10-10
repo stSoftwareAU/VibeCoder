@@ -1192,9 +1192,12 @@ raised. The agent dispatches nothing for it.
   `disallowedTools` denylist, and the checkout has no push destination. This is
   not a network sandbox: another program the verifier runs through Bash could
   still reach the network, and the agent-side `gh` guard is the backstop for
-  `gh`. The issue checkout's `git status` and HEAD are
-  compared before and after, and a change made outside the disposable copy
-  becomes a blocking finding. The disposable directory is deleted afterwards.
+  `gh`. The issue checkout's `git status` (untracked files included, ignored
+  files not) and HEAD are compared before and after, and a change either shows
+  becomes a blocking finding. The summary is written into the clone only at a
+  path confirmed, after resolving symlinks, to lie inside the clone; a path
+  that leaves it makes the pass not checked. The disposable directory is
+  deleted afterwards.
 
 | | Spec / Standards reviewers | Pre-PR verifier |
 | --- | --- | --- |
@@ -1216,9 +1219,10 @@ is not a finding and does not block.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
 launch error, timeout, unparseable reply) is logged as a warning as "not checked",
-never read as clean, and does not block. A verifier which changed the issue
-checkout, or after which the checkout cannot be re-read, produces a blocking
-finding. `unrelatedIssues` are logged, not
+never read as clean, and does not block, as is a summary path that leaves the
+clone. A verifier after which the issue checkout's `git status` (untracked
+files included, ignored files not) or HEAD shows a change, or after which the
+checkout cannot be re-read, produces a blocking finding. `unrelatedIssues` are logged, not
 filed.
 
 **Cost.** One extra agent session per completion attempt: normally one per

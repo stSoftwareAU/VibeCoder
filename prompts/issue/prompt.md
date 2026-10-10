@@ -807,8 +807,9 @@ links the follow-up issue you filed for it (`pre-existing, filed #<n>`); one
 the issue itself requires names that issue (`required by #<n>`).
 
 Once the summary is written and committed, the worker itself runs a **pre-PR
-verifier** in a disposable checkout with the fleet reviewer's brief, on every
-issue run, criteria or not. You dispatch nothing for it. Its blocking findings
+verifier** in a disposable checkout with the fleet reviewer's brief, on each
+completion attempt that has a PR summary to read, whether or not the issue
+carries acceptance criteria. You dispatch nothing for it. Its blocking findings
 come back as a REQUIRED ITEM in the one recovery turn and, unlike the other
 items, may need a code change: fix the code and its tests, then make the
 summary match.

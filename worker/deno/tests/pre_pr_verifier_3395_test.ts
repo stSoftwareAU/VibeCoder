@@ -25,6 +25,9 @@ import {
   type ReviewBriefFields,
   runPrePrVerifier,
 } from "../lib/pre_pr_verifier.ts";
+import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import { auditSendBack } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
+import { parseFableReview } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import { git, gitOk } from "./support/git_repo_fixture.ts";
 import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
 
@@ -644,5 +647,195 @@ Deno.test("runPrePrVerifier: a removeDir failure does not lose the result", asyn
     assert(!prePrVerifierBlocked(result));
   } finally {
     await f.cleanup();
+  }
+});
+
+// ---- summary path confinement (symlinks in the head commit) ---------------
+
+/** Commit a symlink at `linkPath` pointing to `target` on top of the fixture head. */
+async function commitSymlink(
+  f: Fixture,
+  linkPath: string,
+  target: string,
+): Promise<string> {
+  const parent = linkPath.slice(0, Math.max(0, linkPath.lastIndexOf("/")));
+  if (parent) await Deno.mkdir(`${f.repo}/${parent}`, { recursive: true });
+  await Deno.symlink(target, `${f.repo}/${linkPath}`);
+  await gitOk(["add", "-A"], f.repo);
+  await gitOk(["commit", "--quiet", "-m", "symlink"], f.repo);
+  return (await gitOk(["rev-parse", "HEAD"], f.repo)).trim();
+}
+
+async function listDir(path: string): Promise<string[]> {
+  const names: string[] = [];
+  for await (const e of Deno.readDir(path)) names.push(e.name);
+  return names.sort();
+}
+
+Deno.test("runPrePrVerifier: a tracked symlinked parent directory cannot redirect the summary write", async () => {
+  const f = await makeRepo();
+  const outside = await Deno.makeTempDir({ prefix: "pre-pr-3395-outside-" });
+  try {
+    await commitSymlink(f, "docs", outside);
+    let asked = false;
+    const deps = makeDeps(() => {
+      asked = true;
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, []);
+    const result = await runPrePrVerifier(
+      inputFor(f, { summaryPath: "docs/archive/pr-summaries/pr-summary-1.md" }),
+      deps,
+    );
+    assertEquals(result.status, "not_checked");
+    if (result.status === "not_checked") {
+      assertStringIncludes(result.reason, "leaves the disposable checkout");
+    }
+    assert(!asked);
+    assertEquals(await listDir(outside), []);
+  } finally {
+    await f.cleanup();
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("runPrePrVerifier: a tracked symlink at the summary file itself is not written through", async () => {
+  const f = await makeRepo();
+  const outside = await Deno.makeTempDir({ prefix: "pre-pr-3395-outside-" });
+  try {
+    const victim = `${outside}/victim.md`;
+    await Deno.writeTextFile(victim, "original\n");
+    await commitSymlink(f, "docs/archive/pr-summaries/pr-summary-1.md", victim);
+    let asked = false;
+    const deps = makeDeps(() => {
+      asked = true;
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, []);
+    const result = await runPrePrVerifier(
+      inputFor(f, { summaryPath: "docs/archive/pr-summaries/pr-summary-1.md" }),
+      deps,
+    );
+    assertEquals(result.status, "not_checked");
+    assert(!asked);
+    assertEquals(await Deno.readTextFile(victim), "original\n");
+  } finally {
+    await f.cleanup();
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+Deno.test("runPrePrVerifier: a dot-dot segment that would hide a symlink hop is rejected before any checkout", async () => {
+  const f = await makeRepo();
+  const outside = await Deno.makeTempDir({ prefix: "pre-pr-3395-outside-" });
+  try {
+    await commitSymlink(f, "docs/link", outside);
+    let asked = false;
+    const deps = makeDeps(() => {
+      asked = true;
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, []);
+    const result = await runPrePrVerifier(
+      inputFor(f, { summaryPath: "docs/missing/../link/pr-summary.md" }),
+      deps,
+    );
+    assertEquals(result.status, "not_checked");
+    if (result.status === "not_checked") {
+      assertStringIncludes(result.reason, '".."');
+    }
+    assert(!asked);
+    assertEquals(await listDir(outside), []);
+  } finally {
+    await f.cleanup();
+    await Deno.remove(outside, { recursive: true });
+  }
+});
+
+// ---- the model call: retries and options ----------------------------------
+
+Deno.test("runPrePrVerifier passes maxRetries to ask and caps the timeout at 1800 seconds", async () => {
+  const f = await makeRepo();
+  try {
+    for (
+      const [requested, expected] of [[99999, 1800], [60, 60]] as const
+    ) {
+      const calls: Array<[Parameters<PrePrVerifierDeps["ask"]>[0], unknown]> =
+        [];
+      const deps = makeDeps((options, retryOptions) => {
+        calls.push([options, retryOptions]);
+        return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+      }, []);
+      const result = await runPrePrVerifier(
+        inputFor(f, {
+          timeoutSeconds: requested,
+          killAfterSeconds: 45,
+          model: "model-x",
+          maxRetries: 7,
+        }),
+        deps,
+      );
+      assertEquals(result.status, "checked");
+      assertEquals(calls.length, 1);
+      const [options, retryOptions] = calls[0]!;
+      assertEquals(retryOptions, { maxRetries: 7 });
+      assertEquals(options.timeoutSeconds, expected);
+      assertEquals(options.killAfterSeconds, 45);
+      assertEquals(options.model, "model-x");
+      assertEquals(options.phase, "issue");
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- shared parser: every caller still parses what it used to -------------
+
+Deno.test("the fleet reviewer's parser and audit send-back survive the shared parser", () => {
+  const audit = auditSendBack("dependency audit");
+  assertEquals(parseFableReview(JSON.stringify(audit)), audit);
+
+  const reply = {
+    summary: "The summary claims a retry that the head does not do.",
+    findings: [{
+      file: "worker/deno/lib/x.ts",
+      line: 42,
+      problem: "The retry loop never runs.",
+      fix: "Call the helper inside the loop.",
+    }],
+    testChanges: "trivial" as const,
+    testChangeNotes: [{
+      file: "worker/deno/tests/x_test.ts",
+      line: 10,
+      change: "Renamed a variable.",
+    }],
+    unrelatedIssues: [{
+      title: "Stale comment in y.ts",
+      body: "The comment on line 3 describes a removed flag.",
+      file: "worker/deno/lib/y.ts",
+      line: 3,
+    }],
+  };
+  assertEquals(parseFableReview(JSON.stringify(reply)), reply);
+  assertEquals(parseFableReview(`Review:\n${JSON.stringify(reply)}\n`), reply);
+});
+
+// ---- production wiring ----------------------------------------------------
+
+Deno.test("createDefaultDeps wires the real pre-PR verifier (an absolute summary path is refused with no git or model)", async () => {
+  const deps = createDefaultDeps({ logger: makeRecordingLogger().logger });
+  const result = await deps.claude.runPrePrVerifier({
+    repo: "owner/repo",
+    issueNumber: 3395,
+    issueTitle: "Title",
+    issueBody: "Body",
+    repoPath: "/nonexistent",
+    baseRef: "origin/main",
+    summaryPath: "/etc/passwd",
+    summaryContent: "x",
+    changedFiles: null,
+    timeoutSeconds: 60,
+    logger: makeRecordingLogger().logger,
+  });
+  assertEquals(result.status, "not_checked");
+  if (result.status === "not_checked") {
+    assertStringIncludes(result.reason, "absolute");
   }
 });
