@@ -896,6 +896,24 @@ Deno.test("gh-guard #3433 - every agent PR base change is refused with PR_BASE_C
   }
 });
 
+Deno.test("gh-guard #3433 - query-suffixed and absolute-URL PR PATCH spellings are refused", () => {
+  for (
+    const endpoint of [
+      "repos/o/r/pulls/12?x=1",
+      "/repos/o/r/pulls/12?x=1#frag",
+      "https://api.github.com/repos/o/r/pulls/12?x=1",
+      "https://api.github.com/repos/o/r/pulls/12",
+    ]
+  ) {
+    const decision = evaluateGhCommand(
+      ["api", "-X", "PATCH", endpoint, "-f", "base=main"],
+      OR_ACTIVE,
+    );
+    assertEquals(decision.allowed, false, `expected refusal: ${endpoint}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", endpoint);
+  }
+});
+
 Deno.test("gh-guard #3433 - an unreadable --input body on a PR PATCH is refused by the base rule", () => {
   const decision = evaluateGhCommand(
     ["api", "-X", "PATCH", "repos/o/r/pulls/12", "--input", "body.json"],

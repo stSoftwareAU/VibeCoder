@@ -134,9 +134,14 @@ function repoFromPrUrl(target: string | undefined): string | undefined {
   return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
-/** REST endpoint path with any origin and leading/trailing slashes removed. */
+/**
+ * REST endpoint path with any `?query`/`#fragment`, origin and leading/trailing
+ * slashes removed. GitHub ignores unknown query parameters, so a suffix must
+ * not stop the anchored endpoint match (PR #3514 review).
+ */
 function endpointPath(endpoint: string): string {
   return endpoint
+    .replace(/[?#].*$/s, "")
     .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, "")
     .replace(/^\/+/, "")
     .replace(/\/+$/, "");

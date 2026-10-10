@@ -104,6 +104,37 @@ Deno.test("classifyPrBaseChange - REST spellings", () => {
   );
 });
 
+Deno.test("classifyPrBaseChange - query, fragment and absolute-URL spellings", () => {
+  for (
+    const endpoint of [
+      "repos/o/r/pulls/12?x=1",
+      "/repos/o/r/pulls/12?x=1#frag",
+      "repos/o/r/pulls/12/?x=1",
+      "repos/o/r/pulls/12#frag",
+      "https://api.github.com/repos/o/r/pulls/12?x=1",
+      "https://api.github.com/repos/o/r/pulls/12",
+    ]
+  ) {
+    assertEquals(
+      classifyPrBaseChange(["api", "-X", "PATCH", endpoint, "-f", "base=main"]),
+      { newBase: "main", repo: "o/r", prSelector: "12" },
+      endpoint,
+    );
+  }
+  // A query on a different endpoint stays unclassified.
+  assertEquals(
+    classifyPrBaseChange([
+      "api",
+      "-X",
+      "PATCH",
+      "repos/o/r/pulls/12/comments?x=1",
+      "-f",
+      "base=x",
+    ]),
+    undefined,
+  );
+});
+
 Deno.test("classifyPrBaseChange - --input bodies", () => {
   const args = [
     "api",
