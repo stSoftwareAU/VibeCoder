@@ -73,7 +73,7 @@ streamed progress and says nothing about the check cache or its key, so no
 sentence in it is made false; updated: module doc and
 doc comments in `worker/deno/lib/quality_gate_cache.ts`, the `runDenoTests`
 doc comment and skip comment in `worker/deno/lib/quality_gate.ts`;
-`worker/deno/lib/quality_gate_cache.ts:21-26` — still true because the module
+`worker/deno/lib/quality_gate_cache.ts:25-30` — still true because the module
 doc now names what the key misses (ignored or excluded files, environment,
 network, files outside the repo) and no longer claims a false skip is
 impossible; the module doc bullet for `deno check` and the
@@ -95,7 +95,7 @@ with `Deno.makeTempDir` and removed in `finally`.
 - **met** — "A tree with no changes since the last PASS still reuses the cache." — evidence: `worker/deno/tests/quality_gate_cache_test.ts::computeWorkingTreeDigest - unchanged tree is stable and a recorded PASS is reused`; the first call in the `runDenoTests` wiring test returns the cached PASS — reviewer: met
 - **met** — "A test goes red if the digest is reverted to the `.ts`-only walk." — evidence: swapping `denoTestsDigest` back to `computeQualityInputDigest` turned `runDenoTests - reuses a cached PASS until a .md edit changes the working tree` and `denoTestsDigest - keys the whole working tree, so a docs-only edit busts the cache` red — reviewer: met
 - **met** — "`deno check` also needs a wider key (review question)." — evidence: `worker/deno/tests/quality_gate_test.ts::runDenoCheck - editing a .ts outside worker/deno that a test imports busts the cached PASS (PR #3522 review)` — reviewer: met
-- **met** — "The module doc no longer claims false skips are impossible unless the new key makes that true." — evidence: `worker/deno/lib/quality_gate_cache.ts:21-26` — reviewer: met
+- **met** — "The module doc no longer claims false skips are impossible unless the new key makes that true." — evidence: `worker/deno/lib/quality_gate_cache.ts:25-30` — reviewer: met
 - **unrequested** — `runDenoTests` exported for tests — reviewer: unrequested — reason: the call-site rule requires a test through the production caller, not only through the helper
 
 ## Standards Review
@@ -157,10 +157,10 @@ matches a git-tree digest` seeds the old shape and asserts this.
 **Callers and entry points checked:**
 
 - `runDenoTests` has one production caller, the `mainChecks.push` in
-  `worker/deno/lib/quality_gate.ts:1762`. The wiring test goes through
+  `worker/deno/lib/quality_gate.ts:1778`. The wiring test goes through
   `runDenoTests` itself.
 - `denoTestsDigest` is called only from `runDenoTests`.
-- `computeWorkingTreeDigest` is called only from `denoTestsDigest`.
+- `computeWorkingTreeDigest` is called only from `denoTestsDigest` and `denoCheckDigest`.
 - `runDenoCheck` has one production caller, the `mainChecks.push` in
   `worker/deno/lib/quality_gate.ts:1780`, and calls `denoCheckDigest`
   (`quality_gate.ts:1496`); `denoCheckDigest` is called only from there. The
