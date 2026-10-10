@@ -50,7 +50,7 @@
  */
 
 import type { Result } from "../types.ts";
-import { MODEL_PRICING, type ModelPricing } from "./token_usage.ts";
+import { lookupModelPricing } from "./token_usage.ts";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -481,40 +481,16 @@ export function getBatchEligiblePhases(): BatchPhaseEligibility[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Look up pricing for a model identifier.
- *
- * Matches against known model pricing prefixes from token_usage.ts.
- *
- * API-equivalent rows are skipped (Issue #1937): the 50% discount this module
- * models is Anthropic's Batch API, so applying it to an OpenAI, Google or
- * DeepSeek list price would report a saving no vendor offers. A non-Claude id
- * therefore finds no row — the same `undefined` it returned before those rows
- * existed — and `estimateBatchSavings` reports zeros rather than a fabricated
- * figure.
- */
-function lookupPricing(model: string): ModelPricing | undefined {
-  const anthropicRows = [...MODEL_PRICING].filter(
-    ([, pricing]) => pricing.apiEquivalent !== true,
-  );
-  for (const [prefix, pricing] of anthropicRows) {
-    if (model.includes(prefix) || model.startsWith(prefix)) {
-      return pricing;
-    }
-  }
-  // Fallback: try matching tier name within model string
-  for (const [prefix, pricing] of anthropicRows) {
-    const tier = prefix.replace("claude-", "").split("-")[0];
-    if (tier && model.includes(tier)) {
-      return pricing;
-    }
-  }
-  return undefined;
-}
-
-/**
  * Estimate cost savings from using the Batch API vs standard API.
  *
  * The Batch API offers a flat 50% discount on all token costs.
+ *
+ * Pricing comes from `lookupModelPricing` in token_usage.ts (Issue #3436), so
+ * an alias or Claude 4/5 id costs at the same row as every other cost
+ * estimate. A non-Claude (API-equivalent) or unknown id reports zeros. A
+ * banded row (`lowerBand`, Issue #3399) is costed at its own top-level
+ * (upper-band) rates, because the estimate has no per-request prompt size;
+ * `estimateCost` makes the same choice for run totals.
  *
  * @param options - Token counts and model for pricing
  * @returns Cost comparison with savings
@@ -522,8 +498,11 @@ function lookupPricing(model: string): ModelPricing | undefined {
 export function estimateBatchSavings(
   options: EstimateBatchSavingsOptions,
 ): BatchSavingsEstimate {
-  const pricing = lookupPricing(options.model);
-  if (!pricing) {
+  const pricing = lookupModelPricing(options.model);
+  // API-equivalent (non-Claude) rows are skipped (Issue #1937): the 50%
+  // discount is Anthropic's Batch API, so a saving on another vendor's list
+  // price would be fabricated.
+  if (!pricing || pricing.apiEquivalent === true) {
     return {
       standardCost: 0,
       batchCost: 0,

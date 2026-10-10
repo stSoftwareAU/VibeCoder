@@ -1,17 +1,17 @@
 /**
- * `MODEL_PRICING` row order as the Batch API consumes it (Issue #747).
+ * `MODEL_PRICING` row order and the batch figures built on it (Issue #747).
  *
- * `lookupModelPricing` classifies a `claude-fable-…` id by version before it
- * ever reaches `MODEL_PRICING`, so the map's row *order* is invisible there.
- * `batch_api.ts` has no such parser: its private `lookupPricing` walks
- * `MODEL_PRICING` in insertion order and takes the first row whose key the
- * model id **contains**. Because `"claude-fable-5-1".includes("claude-fable-5")`
- * is true, a `claude-fable-5` row placed above `claude-fable-5-1` would swallow
- * every 5.1 id there while every `token_usage.ts` test stayed green.
+ * `estimateBatchSavings` now resolves through `lookupModelPricing`
+ * (Issue #3436), which classifies a `claude-fable-…` id by version before it
+ * ever reaches the `MODEL_PRICING` walk. The map's documented rule still
+ * stands for any prefix walk over the rows: more specific prefixes must appear
+ * before broader ones. Because `"claude-fable-5-1".includes("claude-fable-5")`
+ * is true, a `claude-fable-5` row placed above `claude-fable-5-1` would
+ * swallow every 5.1 id in such a walk.
  *
- * These tests pin that invariant from both ends: the ordering rule itself, and
- * the observable cost `estimateBatchSavings` reports for ids whose rows carry
- * genuinely different rates.
+ * The ordering tests pin that rule, using a first-contained-key walk as the
+ * stand-in; the `estimateBatchSavings` tests pin the observable batch figures
+ * for ids whose rows carry genuinely different rates.
  *
  * Uses Australian English throughout (behaviour, organisation).
  */
@@ -21,11 +21,11 @@ import { estimateBatchSavings } from "../lib/batch_api.ts";
 import { MODEL_PRICING } from "../lib/token_usage.ts";
 
 /**
- * The row `batch_api.ts`'s `lookupPricing` would select for `model`.
+ * The row a first-contained-key prefix walk would select for `model`.
  *
- * Mirrors its matching rule — first key in insertion order that the id
- * contains — so a reordering of `MODEL_PRICING` fails here rather than
- * silently mispricing a batch estimate.
+ * A stand-in for any consumer that walks `MODEL_PRICING` in insertion order
+ * and takes the first key the id contains, so a reordering of the map fails
+ * here rather than silently mispricing an estimate.
  */
 function firstContainedKey(model: string): string | null {
   for (const key of MODEL_PRICING.keys()) {
@@ -51,8 +51,8 @@ Deno.test("batch pricing - a dated Fable 5 id still selects the Fable 5 row (Iss
 
 Deno.test("batch pricing - the Fable rows agree on the rates a batch estimate uses (Issue #747)", () => {
   // Fable 5 and 5.1 differ only in cache reads, which `estimateBatchSavings`
-  // does not price — so both must report the same figures. This is what makes
-  // the ordering test above the load-bearing guard rather than this one.
+  // does not price, and both Fable rows share the input/output rates. This
+  // pins the batch figures rather than distinguishing the rows.
   const fable51 = estimateBatchSavings({
     inputTokens: 1_000_000,
     outputTokens: 1_000_000,
