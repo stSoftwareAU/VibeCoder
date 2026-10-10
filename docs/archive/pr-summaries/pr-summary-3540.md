@@ -106,8 +106,8 @@ Closes #3540
   tests/gh_pflag_spellings_test.ts tests/gh_mutation_fail_closed_test.ts
   tests/gh_api_body_classification_test.ts
   tests/security_gh_api_endpoint_host_1420_test.ts` — 141 passed, 0 failed.
-- Red check (host rule): with `foreignHost` forced to `false`, 10 of the new
-  tests went red (every foreign-host case); restored.
+- Red check (host rule): with `foreignHost` forced to `false`, 17 of the 25
+  tests in `gh_api_hostname_flag_3540_test.ts` went red; restored.
 - Red check (first fix, before the dedicated `--hostname` branch): with
   `"--hostname"` removed from `GH_VALUE_FLAGS`, the classifier test, the
   reserved DELETE refusal and the reserved PATCH rename refusal went red. The
