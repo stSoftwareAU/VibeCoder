@@ -123,7 +123,7 @@ Existing tests:
 Callers checked:
 
 - `logicalBlocks` is called by `findTestPlanMismatches` and `summary_claim_check.ts::findTestPlanClaimProblems`, and their suites pass.
-- `parseDocsSweepLine` is called by `validateDocsSweep` and `docs_sweep_hits.ts` (`worker/deno/tests/docs_sweep_hits_test.ts` passes).
+- `parseDocsSweepLine` has one non-test caller, `validateDocsSweep` in `docs_sweep_gate.ts`. `docs_sweep_hits.ts` does not call it; it takes the parsed `rawBody` as a parameter. The tests that call it directly, `worker/deno/tests/docs_sweep_gate_test.ts` and `worker/deno/tests/docs_sweep_hits_test.ts`, pass.
 - `groupUncapturedIndices` is called only by `evaluateApplicable`.
 
 Branch outcomes:
