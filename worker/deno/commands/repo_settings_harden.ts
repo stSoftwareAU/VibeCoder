@@ -30,6 +30,7 @@ import {
   hardenRepo,
   type HardenResult,
   isValidActionCoordinate,
+  outcomeSkipNotes,
 } from "../lib/repo_settings_harden.ts";
 
 /** What the command reports. */
@@ -118,8 +119,7 @@ export const repoSettingsHardenCommand: Command = {
       (r.detail ? ` — ${r.detail}` : "")
     );
     // The exempted step is stated in the output, never silently absent.
-    const skipNote = [outcome.skipNote, outcome.codeqlSkipNote]
-      .filter((note) => note !== undefined)
+    const skipNote = outcomeSkipNotes(outcome)
       .map((note) => `\n${note}`)
       .join("");
     const message =
