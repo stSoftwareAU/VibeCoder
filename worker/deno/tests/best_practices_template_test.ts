@@ -40,7 +40,8 @@
  *     resolves outside the repo root via a symlink, skips (without
  *     throwing) an evidence path that does not exist on disk, and throws
  *     naming the path when a read fails for a reason other than
- *     NotFound.
+ *     NotFound; binds a waiver committed before the tip of a `--depth=1`
+ *     clone to its real author via the default `git blame`.
  *   - buildAwsEmulatorFinding: lists at most 50 evidence paths, then a
  *     `… and N more` line.
  */
@@ -77,6 +78,7 @@ import type { AwsEmulatorCheckResult } from "../lib/aws_emulator_in_ci_check.ts"
 import { repoCheckoutPath } from "../lib/repo_checkout_path.ts";
 import {
   _resetSuppressionAuthorAllowlist,
+  findSuppressions,
   setSuppressionAuthorAllowlist,
 } from "../lib/suppression_comments.ts";
 import type { Logger, Result } from "../types.ts";
@@ -1717,6 +1719,25 @@ function stubBlame(file: string, line: number, login: string): BlameFileFn {
     Promise.resolve(candidateFile === file ? { [line]: login } : {});
 }
 
+/**
+ * The governance rejection reason recorded for the AWS-emulator marker in
+ * `text`, bound to the same blamed identity the template run used — so a
+ * test can pin *which* gate rejected it, not merely that it was rejected.
+ */
+async function awsMarkerRejection(
+  text: string,
+  file: string,
+  blameFileFn: BlameFileFn,
+): Promise<string | undefined> {
+  const lineAuthors = await blameFileFn("unused", file);
+  const marker = findSuppressions(text, "sh", { file, lineAuthors }).find(
+    (s) => s.id === AWS_EMULATOR_FINDING_ID,
+  );
+  assert(marker, "expected an AWS-emulator marker to be parsed");
+  assertEquals(marker.valid, false);
+  return marker.invalidReason;
+}
+
 Deno.test(
   "runTask - a valid unexpired waiver marker in a workflow suppresses the AWS finding",
   async () => {
@@ -1786,17 +1807,21 @@ Deno.test(
         await Deno.mkdir(`${workDir}/repo/.github/workflows`, {
           recursive: true,
         });
+        const ciText = [
+          "name: ci",
+          "on: pull_request",
+          "jobs: {}",
+          "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+          "author=nigel expires=2020-01-01 emulator runs in a separate repo",
+          "",
+        ].join("\n");
         await Deno.writeTextFile(
           `${workDir}/repo/.github/workflows/ci.yml`,
-          [
-            "name: ci",
-            "on: pull_request",
-            "jobs: {}",
-            "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
-            "author=nigel expires=2020-01-01 emulator runs in a separate repo",
-            "",
-          ].join("\n"),
+          ciText,
         );
+        // Bind a valid identity so the gate under test is the only one
+        // that can reject the marker.
+        const blame = stubBlame(".github/workflows/ci.yml", 4, "nigel");
 
         const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
         const { gh, calls } = makeGhStub({
@@ -1812,6 +1837,7 @@ Deno.test(
           ghCommandFn: gh,
           checkLinterInCIFn: stubLinterConfigured,
           checkAwsEmulatorFn: () => stubAwsNoFloci(["Cargo.toml"]),
+          blameFileFn: blame,
           runScanFn: () => Promise.resolve({ ok: true, value: true }),
         });
 
@@ -1826,6 +1852,11 @@ Deno.test(
           c.args[0] === "issue" && c.args[1] === "create"
         );
         assertEquals(createCalls.length, 1);
+        assert(
+          (await awsMarkerRejection(ciText, ".github/workflows/ci.yml", blame))
+            ?.startsWith("expired on"),
+          "the marker must be rejected for its expiry, not its identity",
+        );
       } finally {
         await Deno.remove(workDir, { recursive: true });
       }
@@ -1842,17 +1873,21 @@ Deno.test(
         await Deno.mkdir(`${workDir}/repo/.github/workflows`, {
           recursive: true,
         });
+        const ciText = [
+          "name: ci",
+          "on: pull_request",
+          "jobs: {}",
+          "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+          "expires=2099-12-31 emulator runs in a separate repo",
+          "",
+        ].join("\n");
         await Deno.writeTextFile(
           `${workDir}/repo/.github/workflows/ci.yml`,
-          [
-            "name: ci",
-            "on: pull_request",
-            "jobs: {}",
-            "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
-            "expires=2099-12-31 emulator runs in a separate repo",
-            "",
-          ].join("\n"),
+          ciText,
         );
+        // Bind a valid identity so the gate under test is the only one
+        // that can reject the marker.
+        const blame = stubBlame(".github/workflows/ci.yml", 4, "nigel");
 
         const wrapperBody = "**Bucket:** `general`\n\n# Best-Practices Review";
         const { gh, calls } = makeGhStub({
@@ -1868,6 +1903,7 @@ Deno.test(
           ghCommandFn: gh,
           checkLinterInCIFn: stubLinterConfigured,
           checkAwsEmulatorFn: () => stubAwsNoFloci(["Cargo.toml"]),
+          blameFileFn: blame,
           runScanFn: () => Promise.resolve({ ok: true, value: true }),
         });
 
@@ -1882,6 +1918,11 @@ Deno.test(
           c.args[0] === "issue" && c.args[1] === "create"
         );
         assertEquals(createCalls.length, 1);
+        assert(
+          (await awsMarkerRejection(ciText, ".github/workflows/ci.yml", blame))
+            ?.startsWith("missing author"),
+          "the marker must be rejected for its missing author",
+        );
       } finally {
         await Deno.remove(workDir, { recursive: true });
       }
@@ -2018,6 +2059,71 @@ Deno.test(
 // ---------------------------------------------------------------------------
 // hasAwsEmulatorWaiver (Issue #3368)
 // ---------------------------------------------------------------------------
+
+async function gitAs(
+  cwd: string,
+  args: string[],
+  login: string,
+): Promise<void> {
+  const email = `${login}@users.noreply.github.com`;
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    stdout: "piped",
+    stderr: "piped",
+    env: {
+      GIT_AUTHOR_NAME: login,
+      GIT_AUTHOR_EMAIL: email,
+      GIT_COMMITTER_NAME: login,
+      GIT_COMMITTER_EMAIL: email,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+    },
+  }).output();
+  assertEquals(
+    out.code,
+    0,
+    `git ${args.join(" ")} failed: ${new TextDecoder().decode(out.stderr)}`,
+  );
+}
+
+Deno.test(
+  "hasAwsEmulatorWaiver - a waiver committed before the tip of a --depth=1 clone is bound to its real author",
+  async () => {
+    await withAwsWaiverGovernance(async () => {
+      const tmp = await Deno.makeTempDir();
+      try {
+        const origin = `${tmp}/origin`;
+        const clone = `${tmp}/clone`;
+        const ci = ".github/workflows/ci.yml";
+        await Deno.mkdir(`${origin}/.github/workflows`, { recursive: true });
+        await gitAs(origin, ["init", "-q", "-b", "main"], "nigel");
+        const marker = "# best-practice-ignore: BP-AWS-EMULATOR-MISSING — " +
+          "author=nigel expires=2099-12-31 emulator runs in a separate repo";
+        await Deno.writeTextFile(
+          `${origin}/${ci}`,
+          ["name: ci", "on: pull_request", "jobs: {}", marker, ""].join("\n"),
+        );
+        await gitAs(origin, ["add", ci], "nigel");
+        await gitAs(origin, ["commit", "-q", "-m", "waiver"], "nigel");
+        // A later commit by someone else makes it the shallow boundary.
+        await Deno.writeTextFile(`${origin}/README.md`, "hello\n");
+        await gitAs(origin, ["add", "README.md"], "mallory");
+        await gitAs(origin, ["commit", "-q", "-m", "readme"], "mallory");
+        await gitAs(
+          tmp,
+          ["clone", "-q", "--depth=1", `file://${origin}`, clone],
+          "nigel",
+        );
+
+        // Default blameFileFn — real `git blame` on the shallow clone.
+        assertEquals(await hasAwsEmulatorWaiver(clone, []), true);
+      } finally {
+        await Deno.remove(tmp, { recursive: true });
+      }
+    });
+  },
+);
 
 Deno.test(
   "hasAwsEmulatorWaiver - an evidence path escaping the repo root rejects",

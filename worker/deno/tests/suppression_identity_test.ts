@@ -16,7 +16,11 @@ import {
   isSuppressed,
   loginFromGitIdentity,
 } from "../lib/suppression_comments.ts";
-import { blameLineAuthorLogin } from "../lib/suppression_identity.ts";
+import {
+  blameFileLineLogins,
+  blameLineAuthorLogin,
+  parseBlamePorcelain,
+} from "../lib/suppression_identity.ts";
 
 const TODAY = "2026-08-02";
 const TRAILER = "author=nigel expires=2026-12-31 mitigated by the WAF";
@@ -154,4 +158,94 @@ Deno.test("findSuppressions - a marker whose author= matches blame still suppres
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+const NIGEL = { name: "nigel", email: "nigel@users.noreply.github.com" };
+const MALLORY = { name: "mallory", email: "mallory@users.noreply.github.com" };
+
+/**
+ * Two-commit origin: `nigel` commits the marker on line 1, then `mallory`
+ * appends line 2. A `--depth=1` clone of it sees only mallory's commit,
+ * which `git blame` reports as the `boundary` for every older line.
+ */
+async function shallowCloneOfTwoCommits(): Promise<
+  { tmp: string; clone: string; file: string }
+> {
+  const tmp = await Deno.makeTempDir({ prefix: "vibe-suppression-shallow-" });
+  const origin = `${tmp}/origin`;
+  const clone = `${tmp}/clone`;
+  const file = "src.ts";
+  await Deno.mkdir(origin);
+  await runGit(origin, ["init", "-q", "-b", "main"], NIGEL);
+  await Deno.writeTextFile(`${origin}/${file}`, `${markerLine()}\n`);
+  await runGit(origin, ["add", file], NIGEL);
+  await runGit(origin, ["commit", "-q", "-m", "add marker"], NIGEL);
+  await Deno.writeTextFile(
+    `${origin}/${file}`,
+    `${markerLine()}\nmore();\n`,
+  );
+  await runGit(origin, ["commit", "-q", "-am", "append"], MALLORY);
+  await runGit(
+    tmp,
+    ["clone", "-q", "--depth=1", `file://${origin}`, clone],
+    NIGEL,
+  );
+  return { tmp, clone, file };
+}
+
+Deno.test("blameFileLineLogins - a --depth=1 clone blames old lines on their real author, not the shallow boundary", async () => {
+  const { tmp, clone, file } = await shallowCloneOfTwoCommits();
+  try {
+    const blamed = await blameFileLineLogins(clone, file);
+    assertEquals(blamed[1], "nigel");
+    assertEquals(blamed[2], "mallory");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("blameFileLineLogins - a shallow clone that cannot be deepened leaves boundary lines unknown", async () => {
+  const { tmp, clone, file } = await shallowCloneOfTwoCommits();
+  try {
+    // No origin to deepen from: the boundary author must not be trusted.
+    await Deno.remove(`${tmp}/origin`, { recursive: true });
+    const blamed = await blameFileLineLogins(clone, file);
+    assertEquals(blamed[1], undefined);
+    assertEquals(blamed[2], undefined);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("blameFileLineLogins - a full history still attributes root-commit lines", async () => {
+  const { dir, file } = await repoWithMarker(NIGEL);
+  try {
+    assertEquals(await blameFileLineLogins(dir, file), { 1: "nigel" });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("parseBlamePorcelain - a boundary hunk is unknown identity", () => {
+  const sha = "a".repeat(40);
+  const other = "b".repeat(40);
+  const stdout = [
+    `${sha} 1 1 1`,
+    "author nigel",
+    "author-mail <nigel@users.noreply.github.com>",
+    "summary old",
+    "boundary",
+    "filename src.ts",
+    "\tline one",
+    `${other} 2 2 1`,
+    "author mallory",
+    "author-mail <mallory@users.noreply.github.com>",
+    "summary new",
+    "filename src.ts",
+    "\tline two",
+    `${sha} 3 3`,
+    "\tline three",
+    "",
+  ].join("\n");
+  assertEquals(parseBlamePorcelain(stdout), { 2: "mallory" });
 });
