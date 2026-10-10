@@ -147,7 +147,7 @@ Deno.test("validateBranchOutcomes - a deeper heading-form header after a prose m
   const result = validateBranchOutcomes({
     changedFiles: ["web/src/Foo.tsx"],
     prSummaryContent: "## Test Plan\n" +
-      "`Branch outcomes:` is mentioned here, with no list yet.\n" +
+      "Branch outcomes: are mentioned here, with no list yet.\n" +
       "\n" +
       "### Branch outcomes\n" +
       "\n" +

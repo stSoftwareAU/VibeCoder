@@ -119,7 +119,11 @@ function sectionBoundaryLevel(enclosingHeadingLevel: number): number {
     : FALLBACK_SECTION_HEADING_LEVEL;
 }
 
-/** The `Branch outcomes` prefix once markdown decoration is stripped. */
+/**
+ * The `Branch outcomes` prefix once markdown decoration is stripped. Only
+ * ever tested via `matchHeader`, which first rules out a line that opens with
+ * a code span (Issue #3377).
+ */
 const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
 
 /**
@@ -132,7 +136,9 @@ const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
 const BRANCH_OUTCOMES_HEADING_RE = /^#{1,6}\s*branch\s+outcomes\s*:?$/i;
 
 /**
- * Strip list marker and `*`/backtick decoration from a line.
+ * Strip list marker and `*`/backtick decoration from a line. Because this
+ * drops every backtick, header detection must not rely on it alone: see
+ * `opensWithCodeSpan` (Issue #3377).
  *
  * Underscore is deliberately NOT stripped here, unlike `docs_sweep_gate.ts`'s
  * decoration strip: a Branch-outcomes entry routinely cites a test path such
@@ -144,6 +150,55 @@ function stripDecoration(line: string): string {
     .replace(LIST_MARKER_RE, "")
     .replace(/[*`]/g, "")
     .trim();
+}
+
+/**
+ * True when the raw line, past its list marker and any `*` bold/italic
+ * markers, opens with a backtick: a candidate code-span mention of the header
+ * such as `` `Branch outcomes:`, "example" `` (Issue #3377). A real ATX
+ * heading can never start with a backtick, so the heading form is never a
+ * header here. Whether an inline form is still a header is `matchHeader`'s
+ * call.
+ */
+function opensWithCodeSpan(rawLine: string): boolean {
+  return rawLine
+    .replace(LIST_MARKER_RE, "")
+    .replace(/\*/g, "")
+    .trimStart()
+    .startsWith("`");
+}
+
+/**
+ * The single place the header regexes are applied to a raw line. A line that
+ * opens with a code span is a mention, not a header (Issue #3377), with one
+ * exception: an inline header whose body after the separator is empty or an
+ * honest `none` (`` `Branch outcomes:` `` alone, `` `Branch outcomes: none
+ * added` ``) stays a header, since PR #3312 review supported a bare
+ * backticked header. Any other text after the separator, and the
+ * heading form (`` `### Branch outcomes` ``), is a mention. Otherwise the
+ * decoration-stripped line is tested against both header forms.
+ */
+function matchHeader(
+  rawLine: string,
+): {
+  stripped: string;
+  inlineMatch: RegExpMatchArray | null;
+  heading: boolean;
+} {
+  const stripped = stripDecoration(rawLine);
+  if (opensWithCodeSpan(rawLine)) {
+    const inline = stripped.match(BRANCH_OUTCOMES_PREFIX_RE);
+    const body = inline ? stripped.slice(inline[0].length).trim() : null;
+    if (inline && (body === "" || isNoneBody(body!))) {
+      return { stripped, inlineMatch: inline, heading: false };
+    }
+    return { stripped, inlineMatch: null, heading: false };
+  }
+  return {
+    stripped,
+    inlineMatch: stripped.match(BRANCH_OUTCOMES_PREFIX_RE),
+    heading: BRANCH_OUTCOMES_HEADING_RE.test(stripped),
+  };
 }
 
 /** Leading-space indent of a raw (undecorated) line. */
@@ -254,9 +309,7 @@ export function parseBranchOutcomes(
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i]!;
-    const stripped = stripDecoration(rawLine);
-    const inlineMatch = stripped.match(BRANCH_OUTCOMES_PREFIX_RE);
-    const heading = BRANCH_OUTCOMES_HEADING_RE.test(stripped);
+    const { stripped, inlineMatch, heading } = matchHeader(rawLine);
     if (!inlineMatch && !heading) {
       const lvl = headingLevel(rawLine);
       if (lvl > 0) lastHeadingLevel = lvl;
@@ -356,16 +409,17 @@ export function parseBranchOutcomes(
 /**
  * Every line from `startIndex` to the next section-boundary heading (level
  * at or above `boundaryLevel`, see `sectionBoundaryLevel`), the next `Branch
- * outcomes` header, or the end of the document — scanned (decoration
- * stripped) for `namedTestPaths` only. Deliberately independent of
- * `collectEntries`: that function's list-shaped parsing legitimately stops
- * on a sibling bullet, a table row, or prose after a blank line, any of
- * which can still name a test the header logically covers (PR #3160
- * review). A deeper grouping heading (e.g. a `#### path/to/file.ts` label
- * nested under a `**Branch outcomes:**` paragraph) does not end the scan
- * (PR #3160 review, sixth round). Stopping at the next header, or a
- * section-boundary heading, keeps every header's scan disjoint, so the
- * combined cost across a whole PR summary stays linear.
+ * outcomes` header (a code-span mention is not one, Issue #3377), or the
+ * end of the document — scanned (decoration stripped) for `namedTestPaths`
+ * only. Deliberately independent of `collectEntries`: that function's
+ * list-shaped parsing legitimately stops on a sibling bullet, a table row,
+ * or prose after a blank line, any of which can still name a test the
+ * header logically covers (PR #3160 review). A deeper grouping heading
+ * (e.g. a `#### path/to/file.ts` label nested under a `**Branch outcomes:**`
+ * paragraph) does not end the scan (PR #3160 review, sixth round). Stopping
+ * at the next header, or a section-boundary heading, keeps every header's
+ * scan disjoint, so the combined cost across a whole PR summary stays
+ * linear.
  *
  * Also returns the raw line indices behind `text`, so `parseBranchOutcomes`
  * can tell which of this header's scanned lines were never folded into a
@@ -383,13 +437,8 @@ function scanRegion(
     const line = lines[j]!;
     const lvl = headingLevel(line);
     if (lvl > 0 && lvl <= boundaryLevel) break;
-    const stripped = stripDecoration(line);
-    if (
-      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
-      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
-    ) {
-      break;
-    }
+    const { stripped, inlineMatch, heading } = matchHeader(line);
+    if (inlineMatch || heading) break;
     if (stripped) {
       parts.push(stripped);
       indices.push(j);
@@ -406,10 +455,11 @@ function scanRegion(
  * from `entries` (PR #3160 review, sixth round) — but only once it has been
  * checked against the header forms below and found not to be a real
  * `Branch outcomes` header. The scan stops at the next `Branch outcomes`
- * header, inline or heading-form, however deep, same as `scanRegionText`, so
- * the outer loop in `parseBranchOutcomes` is the one to parse that header
- * (Issue #3340; the heading-form case was still missed on the first fix —
- * PR #3372 review).
+ * header, inline or heading-form, however deep (a code-span mention such as
+ * `` `Branch outcomes:`, "x" `` is not a header, Issue #3377), same as
+ * `scanRegion`, so the outer loop in `parseBranchOutcomes` is the one to
+ * parse that header (Issue #3340; the heading-form case was still missed on
+ * the first fix — PR #3372 review).
  *
  * Also reports, per entry, which line indices actually contributed to its
  * final (possibly `capEntry`-truncated) text, and which lines made up
@@ -450,7 +500,7 @@ function collectEntries(
     const lvl = headingLevel(line);
     if (lvl > 0 && lvl <= boundaryLevel) break;
 
-    const stripped = stripDecoration(line);
+    const { stripped, inlineMatch, heading } = matchHeader(line);
     // A real `Branch outcomes` header reached mid-scan ends this call here
     // rather than being swallowed into `wrap` or pushed as an entry; the
     // outer loop in `parseBranchOutcomes` parses it on the next iteration
@@ -459,12 +509,7 @@ function collectEntries(
     // Branch outcomes`) deeper than `boundaryLevel` is still a real header,
     // not a grouping sub-heading, so it must not fall into that skip
     // unexamined (PR #3372 review).
-    if (
-      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
-      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
-    ) {
-      break;
-    }
+    if (inlineMatch || heading) break;
     if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
     const indent = leadingIndent(line);
