@@ -75,6 +75,9 @@ covers drift-test constants, not settings documentation.
   § Instructions has four: the same set without "VibeCoder#3434" and with
   "grep the head for its reader" in lower case.
 - No existing test was edited, and no assertion was removed.
-- `./quality.sh`: GATE_RESULT
+- `./quality.sh`: passed on the final head (`config integration` skipped: no
+  `.config.json` on this host). The first run failed
+  `coding_standards_model_agnostic_test.ts` because the #3434 example named
+  model generations; the example now says "the hard-coded one".
 
 **Branch outcomes:** none added
