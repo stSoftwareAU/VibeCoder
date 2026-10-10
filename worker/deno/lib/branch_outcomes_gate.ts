@@ -694,7 +694,7 @@ function blankedUnitText(
  * Each fenced line is its own `code` unit, so it is its own group: still
  * checked, but never joined to the prose beside it, so a test citation in a
  * fence or deeper heading cannot clear a weak admission in the neighbouring
- * prose (Issue #3356). A line belonging to no unit also gets its own group.
+ * prose (Issue #3356).
  */
 function groupUncapturedIndices(
   lines: readonly string[],
@@ -712,7 +712,6 @@ function groupUncapturedIndices(
     const unit = unitOf.get(idx);
     const startsNewGroup = current.length === 0 ||
       idx !== prevIndex + 1 ||
-      unit === undefined ||
       unit !== prevUnit;
     if (startsNewGroup) {
       if (current.length > 0) groups.push(current);
@@ -1181,8 +1180,8 @@ function evaluateApplicable(
     // list item is checked as ONE joined unit, so an admission a hard wrap
     // splits across two lines still matches (PR #3312 review, round 6); a
     // table row, heading, HTML comment or fenced line stays its own unit so
-    // its test citation cannot clear a weak admission in neighbouring prose. Each
-    // header's own `bodyLineIndexGroups` entry is likewise kept as its own
+    // its test citation cannot clear a weak admission in neighbouring prose.
+    // Each header's own `bodyLineIndexGroups` entry is likewise kept as its own
     // unit rather than joined across headers, so a citation in one header
     // cannot clear a weak admission in another (PR #3312 review, round 6).
     const blanked: BlankedUnits = {

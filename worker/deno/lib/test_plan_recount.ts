@@ -17,7 +17,6 @@
 
 import {
   markdownLogicalUnits,
-  parseFenceLine,
   splitMarkdownLines,
 } from "./markdown_code_spans.ts";
 
@@ -445,14 +444,13 @@ export function logicalBlocks(section: string): string[] {
       continue;
     }
     const idx = unit.lines[0]!;
-    const isFence = parseFenceLine(lines[idx]!) !== null;
-    if (codeOpen && idx === codeEnd + 1 && !isFence) {
+    if (codeOpen && idx === codeEnd + 1) {
       blocks[blocks.length - 1] = `${blocks[blocks.length - 1]} ${text}`;
     } else {
       blocks.push(text);
     }
     codeEnd = idx;
-    codeOpen = !isFence && /[/\\]$/.test(lines[idx]!.trimEnd());
+    codeOpen = /[/\\]$/.test(lines[idx]!.trimEnd());
   }
   return blocks.filter((b) => b !== "");
 }
