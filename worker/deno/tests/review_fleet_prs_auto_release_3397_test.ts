@@ -273,6 +273,10 @@ Deno.test("failsWithoutChange: only a positive statement releases", () => {
   assertFalse(releases(""));
   assertFalse(releases("No — passes without the change"));
   assertFalse(releases("unknown"));
+  assertFalse(releases("no"));
+  assertFalse(releases("No, it passes"));
+  assertFalse(releases("false"));
+  assert(releases("notably, it fails without the change"));
   assert(releases(true));
   assert(releases("Yes: fails on the base branch"));
 });

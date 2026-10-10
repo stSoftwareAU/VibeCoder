@@ -85,8 +85,8 @@ export interface LogRecord {
   removedTests: string[];
   filedIssues?: FiledIssue[];
   addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
-  autoReleased?: true;
-  autoReleaseHeld?: string[]; // set only when an issue-required test-change hold was auto-released (Issue #3397)
+  autoReleased?: true; // set only when an issue-required test-change hold was auto-released (Issue #3397)
+  autoReleaseHeld?: string[]; // reasons an opted-in repo's hold was kept; set only on a held PR (Issue #3397)
 }
 
 export const LOG_FILE = "log.jsonl";

@@ -38,7 +38,7 @@ export function quoteFound(
   );
 }
 
-const NEGATIVE_EQUALS_OR_STARTS = ["no", "false"];
+const NEGATIVE_LEADING_WORD = /^(?:no|false)\b/;
 const NEGATIVE_CONTAINS = [
   "does not fail",
   "doesn't fail",
@@ -53,7 +53,7 @@ function failsWithout(v: TestChangeNote["failsWithoutChange"]): boolean {
   if (typeof v !== "string") return false;
   const s = v.trim().toLowerCase();
   if (s === "") return false;
-  if (NEGATIVE_EQUALS_OR_STARTS.some((n) => s.startsWith(n))) return false;
+  if (NEGATIVE_LEADING_WORD.test(s)) return false;
   return !NEGATIVE_CONTAINS.some((n) => s.includes(n));
 }
 
