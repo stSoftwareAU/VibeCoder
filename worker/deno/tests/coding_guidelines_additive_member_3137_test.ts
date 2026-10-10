@@ -31,7 +31,9 @@ function additiveMemberBullet(text: DocSection, what: string): string {
     found,
     `could not locate the additive-member bullet in ${what}: ${text}`,
   );
-  return flat(excerpt(text, found.index ?? 0, (found.index ?? 0) + found[0].length));
+  return flat(
+    excerpt(text, found.index ?? 0, (found.index ?? 0) + found[0].length),
+  );
 }
 
 Deno.test("both surfaces carry the additive-member bullet, word for word (Issue #3137)", async () => {

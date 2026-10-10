@@ -22,11 +22,8 @@
  * Positive pins are scoped to the heading whose section holds them with
  * `section()`/`readRepoDoc()` from `support/markdown_docs.ts` (Issue #3309) —
  * a whole-file `includes` still passes on a page that moved the rule into an
- * unrelated section. The "keeps the dedup and attribution placeholders" test
- * stays whole-file: each placeholder must be substituted wherever the
- * template is rendered, and all four already live together under the one
- * "Inputs" heading, so scoping buys nothing there but a second lookup; see
- * CODING-STANDARDS.md § Documentation-drift tests, condition 1.
+ * unrelated section. Absence checks (stale check counts and ranges) stay
+ * whole-file, as they were before the conversion.
  *
  * Australian English is used throughout (behaviour, colour, organisation).
  */
@@ -70,7 +67,7 @@ async function catalogueSection(n: number): Promise<string> {
 }
 
 Deno.test("documentation_audit - keeps the dedup and attribution placeholders", async () => {
-  // All four placeholders live together under "## Inputs"; see file header.
+  // All four placeholders live together under "## Inputs".
   const inputs = flat(
     section(await loadDocumentationAudit(), "Inputs"),
   );
@@ -436,11 +433,13 @@ Deno.test("documentation_audit - the read-before-you-assert rule extends to chec
 });
 
 Deno.test("documentation_audit - severity guidance covers a contradicting comment", async () => {
-  const severitySection = section(
-    await loadDocumentationAudit(),
-    "Severity guidance",
+  const severitySection = flat(
+    section(await loadDocumentationAudit(), "Severity guidance"),
   );
-  assertStringIncludes(severitySection, "comment");
+  assertStringIncludes(
+    severitySection,
+    "a comment the adjacent code refutes and that should simply be removed (check 13)",
+  );
 });
 
 Deno.test("documentation_audit - the suggested-fix guidance tells the filer what to write", async () => {
@@ -485,12 +484,9 @@ Deno.test("operator manual - documents the fourteen-check catalogue including ch
 
 Deno.test("operator manual - the sibling table keeps the doc-coverage boundary", async () => {
   const manual = await readDoc("docs/DOCUMENTATION-AUDIT-SCAN.md");
-  const designIntent = section(
-    manual,
-    "Design intent — docs converge on one source of truth",
-  );
+  const siblings = section(manual, "Relationship to sibling scans");
   assertStringIncludes(
-    designIntent,
+    siblings,
     "Comments that contradict the code they sit beside",
   );
 });

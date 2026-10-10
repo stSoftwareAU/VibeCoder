@@ -46,7 +46,7 @@ Deno.test("both surfaces carry the state-meaning-change bullet (Issue #2904)", a
       ],
     ] as const
   ) {
-    const flattened = flat(text);
+    const flattened = meaningBullet(text, surface);
     for (
       const phrase of [
         "renders or explains",
@@ -57,7 +57,7 @@ Deno.test("both surfaces carry the state-meaning-change bullet (Issue #2904)", a
     ) {
       assert(
         flattened.includes(phrase),
-        `${surface} is missing "${phrase}" from the docs-change section: ${text}`,
+        `${surface} is missing "${phrase}" from the meaning-change bullet: ${flattened}`,
       );
     }
   }

@@ -32,7 +32,6 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { INTEGRATION_TEST_FILES } from "../lib/integration_test_manifest.ts";
 import { escapeRegExp } from "../lib/regexp_escape.ts";
-import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 const TESTS_DIR = new URL(".", import.meta.url).pathname;
@@ -93,18 +92,6 @@ function exampleBody(prompt: string, name: string): string {
   const end = prompt.indexOf("</example>", start);
   assert(end > start, `example ${name} is not closed`);
   return collapse(prompt.slice(start, end));
-}
-
-/** The Phase 3 triage rules, collapsed, read from the repo's own heading. */
-async function phase3Section(): Promise<string> {
-  const doc = await readRepoDoc("prompts/test_audit/prompt.md");
-  return flat(section(doc, "Phase 3 — Triage"));
-}
-
-/** The stable finding-ID recipe, collapsed, read from the repo's own heading. */
-async function stableIdSection(): Promise<string> {
-  const doc = await readRepoDoc("prompts/test_audit/prompt.md");
-  return flat(section(doc, "Stable finding ID recipe"));
 }
 
 // --- The catalogue stays contiguous ---
