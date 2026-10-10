@@ -90,8 +90,17 @@ from (see **A named test must exist** in the guidelines). An entry in that
 list that admits no test reaches its outcome — `no test reaches it`, or a
 flip that left the suite green — is work still to do in this push, not
 reporting: add the test that goes red, or remove the branch. Only an
-outcome the issue puts out of scope, or one no test can reach, may stand,
-written `exempt (out of scope): <reason>` or `exempt (untestable): <reason>`.
+outcome the issue puts out of scope, or one production can reach but a test
+cannot stage, may stand, written `exempt (out of scope): <reason>` or
+`exempt (untestable): <reason>`. An outcome no input can reach is dead code:
+remove it, never exempt it. `exempt (untestable)` is for an outcome
+production can reach but a test cannot stage, such as a permission or I/O
+fault the suite cannot stage portably; its reason names what blocks staging
+and the harness search — the test files that already call the enclosing
+function or script (a grep of the test tree for its name), each with why it
+cannot reach the outcome. "No existing harness" with no search named is not
+a reason. An outcome the linked issue asks a test for, in its acceptance
+criteria or Definition of done, cannot be `exempt (untestable)`.
 
 **Verify a claim about another component before you write it.** When a finding says prompt, doc or PR-summary text misdescribes how another component behaves, open the code that implements that behaviour before you write the replacement, and cite the file and the function or line in `.pr_response_message` — and in the PR summary when it repeats the claim. A replacement written from the finding's wording alone is a new unverified claim, and the next review sends it back. The same applies to any new statement your fix adds about how another component behaves, above all an exclusive or negative claim ("the only …", "any …", "never …", "the worker does not …"). A claim about a security control (redaction, guards, sandboxing, dedup) must agree with `SECURITY.md` and `docs/THREAT-MODEL.md`; if they disagree, fix the claim or raise the discrepancy. When the text does not need the claim, drop it: state the rule and the risk it addresses (see **Prompt Engineering Guidance** in `CODING-STANDARDS.md`).
 
