@@ -257,25 +257,12 @@ Deno.test("computeWorkingTreeDigest - never touches the real index", async () =>
 });
 
 Deno.test("computeWorkingTreeDigest - a non-git directory is null (caching off)", async () => {
+  // Temp dirs sit outside any repository.
   const dir = await Deno.makeTempDir({ prefix: "qgc_nogit_" });
   try {
-    // Make sure no enclosing repo is discovered from the temp dir.
-    const prev = Deno.env.get("GIT_CEILING_DIRECTORIES");
-    Deno.env.set(
-      "GIT_CEILING_DIRECTORIES",
-      dir.slice(0, dir.lastIndexOf("/")) || "/",
-    );
-    try {
-      const digest = await computeWorkingTreeDigest(dir);
-      assertEquals(digest, null);
-      assertEquals(
-        await cachedPassAt("/tmp/unused", "deno tests", digest),
-        null,
-      );
-    } finally {
-      if (prev === undefined) Deno.env.delete("GIT_CEILING_DIRECTORIES");
-      else Deno.env.set("GIT_CEILING_DIRECTORIES", prev);
-    }
+    const digest = await computeWorkingTreeDigest(dir);
+    assertEquals(digest, null);
+    assertEquals(await cachedPassAt("/tmp/unused", "deno tests", digest), null);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -328,23 +315,28 @@ Deno.test("computeWorkingTreeDigest - a failing git add (corrupt index) is null,
   });
 });
 
+/** True when mode 000 does not stop this process reading (e.g. running as root). */
+const readsThroughMode000 = await (async () => {
+  if (Deno.build.os === "windows") return true;
+  const probe = await Deno.makeTempFile({ prefix: "qgc_probe_" });
+  try {
+    await Deno.chmod(probe, 0o000);
+    return await Deno.readFile(probe).then(() => true, () => false);
+  } finally {
+    await Deno.remove(probe);
+  }
+})();
+
 Deno.test({
   name:
     "computeWorkingTreeDigest - an unreadable untracked file makes git add fail, so null",
-  ignore: Deno.build.os === "windows",
+  ignore: readsThroughMode000,
   fn: async () => {
     await withRepo(async (root) => {
       const path = `${root}/docs/unreadable.md`;
       await put(root, "docs/unreadable.md", "secret\n");
       await Deno.chmod(path, 0o000);
       try {
-        // Root reads through mode 000 (and Deno.uid() needs --allow-sys), so
-        // probe instead: skip when the file is still readable.
-        const readable = await Deno.readFile(path).then(
-          () => true,
-          () => false,
-        );
-        if (readable) return;
         assertEquals(await computeWorkingTreeDigest(root), null);
       } finally {
         await Deno.chmod(path, 0o644);
@@ -386,4 +378,36 @@ Deno.test("computeWorkingTreeDigest - a fresh repo with no index yet still diges
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("computeWorkingTreeDigest - a linked worktree uses its absolute index path and keeps force-tracked ignored files", async () => {
+  await withRepo(async (root) => {
+    await put(root, "ignored.txt", "tracked despite ignore\n");
+    await git(root, "add", "-f", "ignored.txt");
+    await put(root, ".gitignore", "ignored.log\nignored.txt\n");
+    await git(root, "add", ".gitignore");
+    await git(root, "commit", "-q", "-m", "force-track an ignored file");
+    const parent = await Deno.makeTempDir({ prefix: "qgc_wt_" });
+    const wt = `${parent}/wt`;
+    try {
+      await git(root, "worktree", "add", "-q", wt);
+      const expected = (await git(wt, "write-tree")).trim();
+      assertEquals(
+        await computeWorkingTreeDigest(wt),
+        `git-tree:${expected}`,
+      );
+    } finally {
+      await Deno.remove(parent, { recursive: true });
+      await git(root, "worktree", "prune");
+    }
+  });
+});
+
+Deno.test("computeWorkingTreeDigest - a non-NotFound index copy error is null, not an empty index", async () => {
+  await withRepo(async (root) => {
+    await Deno.remove(`${root}/.git/index`);
+    await Deno.mkdir(`${root}/.git/index`);
+    await Deno.writeTextFile(`${root}/.git/index/f`, "x\n");
+    assertEquals(await computeWorkingTreeDigest(root), null);
+  });
 });

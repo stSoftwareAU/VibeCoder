@@ -33,6 +33,8 @@
  * Australian English spelling throughout (behaviour, colour, etc.).
  */
 
+import { runGitCommand } from "./git_timeout.ts";
+
 /** One cached dimension outcome. */
 interface CachedDimension {
   /** The input digest that produced this outcome. */
@@ -114,20 +116,16 @@ export async function computeQualityInputDigest(
   }
 }
 
+/** Run git via the spawn chokepoint; trimmed stdout on exit 0, else null. */
 async function runGit(
   args: string[],
   cwd: string,
   env?: Record<string, string>,
 ): Promise<string | null> {
-  const out = await new Deno.Command("git", {
-    args,
-    cwd,
-    env,
-    stdin: "null",
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  return out.success ? new TextDecoder().decode(out.stdout).trim() : null;
+  const result = await runGitCommand(args, { cwd, env });
+  return result.ok && result.value.code === 0
+    ? result.value.stdout.trim()
+    : null;
 }
 
 /**
@@ -167,7 +165,10 @@ export async function computeWorkingTreeDigest(
     const oid = await runGit(["write-tree"], repoRoot, env);
     if (oid === null) return null;
     return `git-tree:${oid}`;
-  } catch {
+  } catch (error) {
+    console.warn(
+      `Deno tests cache is off for this run (could not digest the working tree): ${error}`,
+    );
     return null;
   } finally {
     if (tmp) {

@@ -13,7 +13,11 @@ import {
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
-import { cachedPassAt, recordPass } from "../lib/quality_gate_cache.ts";
+import {
+  cachedPassAt,
+  computeWorkingTreeDigest,
+  recordPass,
+} from "../lib/quality_gate_cache.ts";
 import {
   type CheckExecutionResult,
   denoTestsDigest,
@@ -23,6 +27,7 @@ import {
   runChecksSequential,
   runDenoCheck,
   runDenoFmtCheck,
+  runDenoTests,
   runQualityGate,
   runReleaseTagRulesetQualityCheck,
 } from "../lib/quality_gate.ts";
@@ -989,6 +994,57 @@ Deno.test("denoTestsDigest - keys the whole working tree, so a docs-only edit bu
     const edited = await denoTestsDigest(config);
     assertNotEquals(edited, digest);
     assertEquals(await cachedPassAt(cacheDir, "deno tests", edited), null);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(cacheDir, { recursive: true });
+  }
+});
+
+Deno.test("runDenoTests - reuses a cached PASS until a .md edit changes the working tree", async () => {
+  const root = await Deno.makeTempDir({ prefix: "qg_wiring_repo_" });
+  const cacheDir = await Deno.makeTempDir({ prefix: "qg_wiring_cache_" });
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", {
+      args,
+      cwd: root,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(out.success, `git ${args.join(" ")} failed`);
+  };
+  try {
+    await git("init", "-q");
+    await git("config", "user.email", "t@example.com");
+    await git("config", "user.name", "T");
+    await Deno.mkdir(`${root}/worker/deno`, { recursive: true });
+    await Deno.mkdir(`${root}/docs`, { recursive: true });
+    await Deno.writeTextFile(`${root}/worker/deno/a.ts`, "export {};\n");
+    await Deno.writeTextFile(`${root}/docs/x.md`, "one\n");
+    await git("add", "-A");
+    await git("commit", "-q", "-m", "init");
+
+    const config = createTestConfig({
+      scriptDir: root,
+      denoDir: `${root}/worker/deno`,
+      cacheDir,
+    });
+    await recordPass(
+      cacheDir,
+      "deno tests",
+      await computeWorkingTreeDigest(root),
+      "2026-01-01T00:00:00Z",
+    );
+
+    // "false" exits non-zero at once, so a cache miss fails fast rather than
+    // running a real suite.
+    const hit = await runDenoTests(config, "false");
+    assertEquals(hit.status, "PASSED");
+    assertStringIncludes(hit.output, "cached");
+
+    await Deno.writeTextFile(`${root}/docs/x.md`, "two\n");
+    const miss = await runDenoTests(config, "false");
+    assert(!miss.output.includes("cached"), miss.output);
   } finally {
     await Deno.remove(root, { recursive: true });
     await Deno.remove(cacheDir, { recursive: true });

@@ -1262,8 +1262,10 @@ export async function denoTestsDigest(
  * stops the pair, so the common red is reported in minutes rather than after
  * the slow pass has also finished — and the pass that never ran says so,
  * rather than looking like a pass that passed.
+ *
+ * Exported for tests.
  */
-async function runDenoTests(
+export async function runDenoTests(
   config: QualityGateConfig,
   denoCmd: string,
 ): Promise<CheckExecutionResult> {
