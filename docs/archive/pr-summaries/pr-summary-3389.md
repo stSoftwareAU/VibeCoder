@@ -116,7 +116,36 @@ still true because it documents the marker grammar, which did not change.
   `mallory` (rejected).
 - Modified: the existing `isFindingSuppressed` calls in
   `workflow_scan_common_test.ts` now pass `{ rawText: text }` and similar
-  objects, to match the new signature. No assertion was removed.
+  objects, to match the new signature. #3389 changes `isFindingSuppressed` to
+  take the file object (so it can carry `lineAuthors`), so the old
+  string-argument calls no longer type-check. Each one was rewritten in place in
+  the same test with the same fixture, line and expected result; only the first
+  argument is wrapped:
+  - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
+    `assert(isFindingSuppressed(text, 2, id));` — #3389 changes the first
+    parameter to a file object, so the string form is untrue; replaced in
+    `isFindingSuppressed - true for a matching best-practice-ignore marker…` by
+    `assert(isFindingSuppressed({ rawText: text }, 2, id));`
+  - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
+    `assert(isFindingSuppressed(text, 1, id));` — #3389 changes the first
+    parameter to a file object, so the string form is untrue; replaced in
+    `isFindingSuppressed - true on the same line` by
+    `assert(isFindingSuppressed({ rawText: text }, 1, id));`
+  - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
+    `assertEquals(isFindingSuppressed(plain, 1, id), false);` — #3389 changes
+    the first parameter to a file object, so the string form is untrue;
+    replaced in `isFindingSuppressed - false when no marker, wrong id, or wrong line`
+    by `assertEquals(isFindingSuppressed({ rawText: plain }, 1, id), false);`
+  - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
+    `assertEquals(isFindingSuppressed(wrongId, 2, id), false);` — #3389
+    changes the first parameter to a file object, so the string form is untrue;
+    replaced in the same test by
+    `assertEquals(isFindingSuppressed({ rawText: wrongId }, 2, id), false);`
+  - Removed from `worker/deno/tests/workflow_scan_common_test.ts`:
+    `assertEquals(isFindingSuppressed(farAway, 4, id), false);` — #3389
+    changes the first parameter to a file object, so the string form is untrue;
+    replaced in the same test by
+    `assertEquals(isFindingSuppressed({ rawText: farAway }, 4, id), false);`
 - The negative assertions (the `mallory` cases) exercise the existing Issue
   #269 mismatch guard in `suppression_comments.ts`, which this diff does not
   change. That guard was not flipped in this run. Each negative assertion sits
