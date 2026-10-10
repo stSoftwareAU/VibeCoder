@@ -39,6 +39,7 @@ import {
 } from "../lib/docs_sweep_hits.ts";
 import { parseDocsSweepLine } from "../lib/docs_sweep_gate.ts";
 import { runGitCommand } from "../lib/git_timeout.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 
 // ---------------------------------------------------------------------------
 // extractGrepTerms
@@ -851,6 +852,44 @@ Deno.test("checkDocsSweepTerms - the same sibling hit named as file:line in the 
     }),
   });
   assertEquals(check.status === "checked" && check.staleHits, []);
+});
+
+// ---------------------------------------------------------------------------
+// Hostile siblings: text (CODING-STANDARDS "Vet every regex on untrusted text")
+// ---------------------------------------------------------------------------
+
+Deno.test("extractSiblingTerms - a siblings label with no colon and a long space run scales linearly", () => {
+  // `\bsiblings?\s*:` gives back the space run one character at a time when
+  // no colon follows, so the label scan must stay linear in the run length.
+  const result = assertLinearGrowth(
+    "siblings: label scan (no colon)",
+    (chars) => "siblings" + " ".repeat(chars) + "x",
+    extractSiblingTerms,
+    { baseChars: 20_000 },
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("isSiblingsNegative - a long quote and space run before a rejected tail scales linearly and is not a negative", () => {
+  // LEADING_QUOTE_RE skips the run once; SIBLINGS_NONE_RE then rejects
+  // "nonex" because no word boundary follows "none".
+  const result = assertLinearGrowth(
+    "siblings: negative check (quote run, rejected tail)",
+    (chars) => '`"“ '.repeat(chars) + "nonex",
+    isSiblingsNegative,
+    { baseChars: 20_000 },
+  );
+  assertEquals(result, false);
+});
+
+Deno.test("isSiblingsNegative - a long whitespace run before none — scales linearly and is the negative", () => {
+  const result = assertLinearGrowth(
+    "siblings: negative check (whitespace run, none)",
+    (chars) => " ".repeat(chars) + "none —",
+    isSiblingsNegative,
+    { baseChars: 20_000 },
+  );
+  assertEquals(result, true);
 });
 
 // ---------------------------------------------------------------------------

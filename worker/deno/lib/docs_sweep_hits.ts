@@ -25,7 +25,7 @@
  * yet, and left lists of the set one short (GRQ-AutoTrader#2460, #2481,
  * #2682, #2792). They reach the same hit rules as the grep terms.
  *
- * The same terms are also re-run over source files outside `docs/`
+ * The grep and sibling terms are also re-run over source files outside `docs/`
  * (`SOURCE_COMMENT_PATHSPECS`), keeping only hits on a whole comment line
  * (Issue #3219). Fleet PRs fixed the manuals and the comment above the code
  * they edited, but left doc comments on a shared constant, a reader or a

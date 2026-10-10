@@ -494,6 +494,68 @@ Deno.test(
 );
 
 Deno.test(
+  "validateDocsSweep - a long quote run in siblings: with a letter after it scales linearly and quotes no term",
+  () => {
+    // `/^["“”]+/` is anchored, so the run is skipped once. The entry is also
+    // capped at MAX_DOCS_SWEEP_ENTRY_CHARS, so the trailing `x` is cut away at
+    // these sizes; the result is the one the gate gives the capped entry.
+    const result = assertLinearGrowth(
+      "docs-sweep siblings: leading-quote scan",
+      (chars) => SIBLINGS_LINE + `; siblings: ${'"'.repeat(chars)}x`,
+      (input) =>
+        validateDocsSweep({
+          changedFiles: CODE_FILES,
+          prSummaryContent: input,
+        }),
+      { baseChars: 20_000 },
+    );
+
+    assertEquals(result.problems.length, 1, result.problems.join("; "));
+    assertStringIncludes(result.problems[0]!, "`siblings:` quotes no term");
+  },
+);
+
+Deno.test(
+  'validateDocsSweep - a siblings: value of x, a long ` ."` run and y scales linearly and is not a placeholder',
+  () => {
+    // `/[.!\s"“”]+$/` is unanchored, and the run of ` ."` characters is one
+    // class run ending before `y`, the shape that backtracks quadratically if
+    // the value is not capped. isBarePlaceholder caps it at 64 characters, so
+    // the value is read as `x …` and no placeholder problem fires.
+    const result = assertLinearGrowth(
+      "docs-sweep siblings: trailing-decoration scan",
+      (chars) => SIBLINGS_LINE + `; siblings: x${' ."'.repeat(chars)}y`,
+      (input) =>
+        validateDocsSweep({
+          changedFiles: CODE_FILES,
+          prSummaryContent: input,
+        }),
+      { baseChars: 20_000 },
+    );
+
+    assertEquals(result.problems, []);
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a quoted none with a trailing dot run is a bare siblings: placeholder",
+  () => {
+    // The trailing `."."` run is stripped by `/[.!\s"“”]+$/`, which leaves
+    // `none`, so the value is a placeholder even with the quotes and dots.
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: "none" ."."`,
+    });
+    assertEquals(result.valid, false);
+    assertEquals(result.problems.length, 1, result.problems.join("; "));
+    assertStringIncludes(
+      result.problems[0]!,
+      "`siblings:` is a bare placeholder",
+    );
+  },
+);
+
+Deno.test(
   "validateDocsSweep - a Docs sweep line with a long space run before a lone CR scales linearly",
   () => {
     // `"Docs sweep:" + spaces + "\\rX\\rY"` used to be one line, because the
