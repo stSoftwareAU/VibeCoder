@@ -79,7 +79,15 @@ clean build and baseline test run, so a run killed at the budget before then
 leaves none; that is reported as budget exhausted (nothing tried, a warning),
 as a Deno baseline timeout is, not as an error. A normal exit that leaves no
 parseable `outcomes.json`, or exit code 3 (some mutants timed out) with none,
-is still an error.
+is still an error. When the diff touches no mutant at all, cargo-mutants logs
+"No mutants to filter" on stderr and exits 0 without writing `outcomes.json`;
+that is "Not applicable".
+
+At the budget the runner sends `SIGTERM` to cargo-mutants and `SIGKILL` only
+after a 5 second grace period, so cargo-mutants can stop its cargo process
+groups and delete its scratch copy of the tree. That scratch copy is created
+under `TMPDIR`, which the runner sets to the run's own `--output` directory, so
+removing that directory clears any copy a killed run leaves behind.
 
 Every path the runner writes (mutated Deno files, the Rust diff under
 `target/`) is resolved through symlinks and must stay inside the repository;
@@ -111,7 +119,7 @@ must pass; if it does not, the gate reports an error. The file is restored
 after every mutant, even when the run fails. A changed module that no test
 imports has its mutants counted as survivors. A mutant that does not parse
 (`deno test` fails with `error: SyntaxError:` on stderr, before any test
-runs) ran no test, so it is counted as neither killed nor survived. A run is capped at 40 mutants.
+runs; the colour codes Deno adds to `error` are stripped first) ran no test, so it is counted as neither killed nor survived. A run is capped at 40 mutants.
 Candidates past the cap, and added lines over 400 characters (never mutated),
 are counted as untested: the run is reported as capped, with the number
 untested, never as a clean pass.

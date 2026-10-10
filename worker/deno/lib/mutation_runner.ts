@@ -279,10 +279,17 @@ function denoTestArgs(tests: readonly string[]): string[] {
  * than because a test went red? A parse error aborts the module graph load, so
  * deno prints `error: SyntaxError: ...` on stderr before any test runs. A
  * `SyntaxError` thrown inside a test is printed on stdout, leaving stderr at
- * `error: Test failed`.
+ * `error: Test failed`. The `error` prefix is colour-coded even on a pipe, so
+ * the escape sequences are stripped before matching.
  */
 export function isParseFailure(run: ProcessResult): boolean {
-  return /^error: SyntaxError:/m.test(run.stderr);
+  return /^error: SyntaxError:/m.test(stripAnsi(run.stderr));
+}
+
+/** Deno colours its `error` prefix even when stderr is a pipe; drop the SGR codes. */
+function stripAnsi(text: string): string {
+  // deno-lint-ignore no-control-regex
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
 async function runDeno(
@@ -653,9 +660,10 @@ async function runCargoMutants(
     {
       cwd: repoPath,
       timeoutMs: budgetSeconds * 1000,
-      ...(input.credentialEnv === undefined
-        ? {}
-        : { env: input.credentialEnv }),
+      // cargo-mutants copies the tree into a `cargo-mutants-*.tmp` under
+      // $TMPDIR. Pointing that at the run's own output directory means the
+      // caller's removeDir clears any copy a killed run leaves behind.
+      env: { ...input.credentialEnv, TMPDIR: outDir },
     },
   );
 
@@ -712,7 +720,12 @@ async function runCargoMutants(
     };
   }
   if (parsed === null) {
-    if (text === null && proc.code === 0 && /no mutants/i.test(proc.stdout)) {
+    // cargo-mutants logs "No mutants to filter" through its tracing layer,
+    // which writes to stderr, then exits 0 before creating any output.
+    if (
+      text === null && proc.code === 0 &&
+      /no mutants/i.test(`${proc.stdout}\n${proc.stderr}`)
+    ) {
       return {
         kind: "not_applicable",
         reason: "cargo-mutants found no mutants on the changed lines",
@@ -738,6 +751,7 @@ async function runCargoMutants(
 // Real seams
 // ---------------------------------------------------------------------------
 
+const DEFAULT_KILL_GRACE_MS = 5_000;
 const SKIP_DIRS = new Set(["node_modules", ".git", "target"]);
 const TEST_FILE = /(?:_test|\.test)\.(?:ts|tsx|js|mjs)$/;
 
@@ -772,6 +786,8 @@ async function walkTests(
 export function defaultMutationRunnerSeams(
   /** Environment the allowlist is applied to; tests only. Default: the worker's. */
   envSource?: Record<string, string>,
+  /** Milliseconds between SIGTERM at the budget and SIGKILL; tests only. */
+  killGraceMs: number = DEFAULT_KILL_GRACE_MS,
 ): MutationRunnerSeams {
   return {
     async runProcess(cmd, args, opts) {
@@ -801,11 +817,20 @@ export function defaultMutationRunnerSeams(
         throw err;
       }
       let timedOut = false;
+      let killTimer: ReturnType<typeof setTimeout> | undefined;
+      // SIGTERM first: cargo-mutants catches it, stops its cargo process
+      // groups and removes its scratch copy of the tree, none of which
+      // SIGKILL lets it do. SIGKILL follows only if it has not exited.
       const timer = setTimeout(() => {
         timedOut = true;
         try {
-          child.kill("SIGKILL");
+          child.kill("SIGTERM");
         } catch { /* already exited */ }
+        killTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch { /* already exited */ }
+        }, killGraceMs);
       }, Math.max(1, opts.timeoutMs));
       try {
         const out = await child.output();
@@ -818,6 +843,7 @@ export function defaultMutationRunnerSeams(
         };
       } finally {
         clearTimeout(timer);
+        if (killTimer !== undefined) clearTimeout(killTimer);
       }
     },
     now: () => Date.now(),

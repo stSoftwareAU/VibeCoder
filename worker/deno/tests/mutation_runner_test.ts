@@ -240,8 +240,10 @@ Deno.test("runMutationCheck deno - a timed-out mutant run counts as budget exhau
   assertEquals(f.files.get(`${REPO}/${MODULE}`), SOURCE);
 });
 
+// Captured from `deno test --no-check -A` 2.9.6 spawned with a piped stderr and
+// a cleared environment, as the runner does: the `error` prefix is colour-coded.
 const PARSE_ERROR_STDERR =
-  "error: SyntaxError: Expression expected\n  |\n1 | !(if (c) return a) ? 1 : 2;\n    at file:///repo/lib/m.ts:1:3\n";
+  "\u001b[0m\u001b[1m\u001b[31merror\u001b[0m: SyntaxError: Expression expected\n  |\n3 |     ;\n  |     ~\n    at file:///repo/lib/m.ts:3:5\n";
 
 Deno.test("runMutationCheck deno - a mutant the parser rejects is unviable, not killed", async () => {
   const f = fake(
@@ -638,10 +640,50 @@ Deno.test("runMutationCheck rust - the declared credentials reach cargo", async 
     { ...rsInput, credentialEnv: { AWS_ACCESS_KEY_ID: "declared" } },
     f.seams,
   );
-  assertEquals(f.calls[0]?.env, { AWS_ACCESS_KEY_ID: "declared" });
+  const out = outputDirOf(f.calls[0]?.args ?? []);
+  assertEquals(f.calls[0]?.env, { AWS_ACCESS_KEY_ID: "declared", TMPDIR: out });
   const none = rustFake(outcomesJson([]), ok(0));
   await runMutationCheck(rsInput, none.seams);
-  assertEquals(none.calls[0]?.env, undefined);
+  assertEquals(none.calls[0]?.env, {
+    TMPDIR: outputDirOf(none.calls[0]?.args ?? []),
+  });
+});
+
+function outputDirOf(args: string[]): string {
+  return args[args.indexOf("--output") + 1] ?? "";
+}
+
+Deno.test("runMutationCheck rust - cargo-mutants' scratch copy lives under the removed output directory", async () => {
+  // A killed run can leave its `cargo-mutants-*.tmp` behind; with TMPDIR inside
+  // --output, removing --output removes it. A caller-declared TMPDIR cannot win.
+  const f = rustFake(outcomesJson([]), ok(0));
+  await runMutationCheck(
+    { ...rsInput, credentialEnv: { TMPDIR: "/elsewhere" } },
+    f.seams,
+  );
+  const out = outputDirOf(f.calls[0]?.args ?? []);
+  assert(out !== "");
+  assertEquals(f.calls[0]?.env?.TMPDIR, out);
+});
+
+Deno.test("runMutationCheck rust - no mutants on the changed lines (logged on stderr, exit 0) is not applicable", async () => {
+  // cargo-mutants 27.1.0 logs "No mutants to filter" via tracing to stderr and
+  // exits 0 before creating any output directory.
+  for (
+    const proc of [
+      { ...ok(0), stderr: " INFO No mutants to filter\n" },
+      { ...ok(0), stdout: "No mutants to filter\n" },
+    ]
+  ) {
+    const r = await runMutationCheck(rsInput, rustFake(null, proc).seams);
+    assert(r.kind === "not_applicable", JSON.stringify(r));
+  }
+});
+
+Deno.test("runMutationCheck rust - exit 0 with no outcomes and no no-mutants message is still an error", async () => {
+  const r = await runMutationCheck(rsInput, rustFake(null, ok(0)).seams);
+  assert(r.kind === "error", JSON.stringify(r));
+  assertStringIncludes(r.reason, "no outcomes.json");
 });
 
 Deno.test("runMutationCheck rust - a stale outcomes.json in the repo is neither read nor deleted", async () => {
@@ -973,4 +1015,36 @@ Deno.test("defaultMutationRunnerSeams runProcess - a declared credential reaches
     lines.includes("DECLARED_API_TOKEN=declared_mutation_runner_test_value"),
   );
   assertEquals(r.stdout.includes("UNDECLARED_API_TOKEN"), false);
+});
+
+// ---------------------------------------------------------------------------
+// Budget expiry: SIGTERM first, SIGKILL only after a grace period
+// ---------------------------------------------------------------------------
+
+const SH_ENV = { PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin" };
+
+Deno.test("defaultMutationRunnerSeams runProcess - a timeout sends SIGTERM first so the child can clean up", async () => {
+  // The child traps SIGTERM and writes its marker, as cargo-mutants stops its
+  // process groups and removes its scratch copy; SIGKILL would not let it.
+  const r = await defaultMutationRunnerSeams(SH_ENV, 20_000).runProcess(
+    "sh",
+    [
+      "-c",
+      'trap "echo cleaned-up; exit 0" TERM; echo ready; while :; do :; done',
+    ],
+    { cwd: Deno.cwd(), timeoutMs: 500 },
+  );
+  assertEquals(r.timedOut, true);
+  assertStringIncludes(r.stdout, "cleaned-up");
+  assertEquals(r.code, 0);
+});
+
+Deno.test("defaultMutationRunnerSeams runProcess - a child that ignores SIGTERM is SIGKILLed after the grace period", async () => {
+  const r = await defaultMutationRunnerSeams(SH_ENV, 100).runProcess(
+    "sh",
+    ["-c", 'trap "" TERM; echo ready; while :; do :; done'],
+    { cwd: Deno.cwd(), timeoutMs: 500 },
+  );
+  assertEquals(r.timedOut, true);
+  assertEquals(r.code, 137);
 });
