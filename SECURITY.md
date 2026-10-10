@@ -678,6 +678,8 @@ VibeCoder implements defence-in-depth to prevent accidental commits of configura
 - `.config*.json` - Any config variant (e.g., `.config-backup.json`, `.config.local.json`)
 - `*.secret.json` - Files explicitly marked as containing secrets
 - `.secrets/` - Directory for sensitive files
+- `.env`, `.env.*` - Dotenv files, refused at any depth (e.g.
+  `services/api/.env.production`), not only at the repo root (Issue #3390)
 - `.aws/`, `.ssh/`, `.gnupg/`, `.netrc` - Credential store directories/files,
   refused at any depth (e.g. `deploy/.ssh/`), not only at the repo root
   (Issue #3336)
