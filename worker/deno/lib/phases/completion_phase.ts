@@ -134,6 +134,9 @@ import {
 } from "../issue_run_stats_comment.ts";
 import { recordIssuePhaseRun } from "../fleet_telemetry.ts";
 import {
+  reportIssueSubAgentDegradation,
+} from "../issue_sub_agent_degradation.ts";
+import {
   buildSecurityFixGateMessage,
   evaluateSecurityFixGate,
   hasSecurityLabel,
@@ -1012,7 +1015,7 @@ export async function workOnIssueCompletion(
   // comment here, once the PR exists. Non-fatal and deduplicated: it never
   // affects the phase result.
   if (result.status !== "failure") {
-    await postWorkOnRunStats(ctx, state, deps);
+    await postWorkOnRunStats(ctx, state, deps, { recordFigures: true });
   }
 
   return result;
@@ -1088,16 +1091,37 @@ function fleetAuthorsFor(ctx: IssueContext): string[] {
  * Reports only the invocations the execute phase recorded on this run — the
  * comment body states that limit explicitly. Skipped entirely when Claude never
  * ran (nothing to report) or when the issue already carries a stats comment.
+ * Also called by the execute phase when it fails a run on a safety refusal
+ * (Issue #3406), so the refusal is on the issue even though no PR is raised.
+ *
+ * @param options.recordFigures - Record the fleet-telemetry figures for the
+ *   run. False for a refused, failed run: it is not a completed
+ *   implementation run and must not count towards the pilot's pass rate.
  */
-async function postWorkOnRunStats(
+export async function postWorkOnRunStats(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
+  options: { recordFigures: boolean },
 ): Promise<void> {
   const claudeResults = state.claudeRunStats ?? [];
   if (claudeResults.length === 0) return;
 
   const client = deps.github.createClient(deps.logger);
+  // Issue #3405: a haiku-tier run served a previous-generation Haiku is
+  // labelled `degraded-model` and the comment below names both models.
+  const subAgentDegradation = await reportIssueSubAgentDegradation({
+    repo: ctx.repo,
+    issueNumber: ctx.issueNumber,
+    tier: resolveIssueSubAgentTier(
+      { issueSubAgentTier: ctx.config.issueSubAgentTier },
+      ctx.config.repoConfig?.[ctx.repo],
+      (m) => deps.logger.warn(m),
+    ),
+    claudeResults,
+    ghCommandFn: deps.github.runGhCommand,
+    logger: deps.logger,
+  });
   const posted = await postIssueRunStatsComment({
     repo: ctx.repo,
     issueNumber: ctx.issueNumber,
@@ -1126,6 +1150,8 @@ async function postWorkOnRunStats(
       : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
+    ...(subAgentDegradation ? { subAgentDegradation } : {}),
+    ...(state.agentRefusal ? { agentRefusal: state.agentRefusal } : {}),
   });
 
   // Issue #2347: the same figures the comment above renders, recorded once per
@@ -1139,7 +1165,7 @@ async function postWorkOnRunStats(
   // comment that did not post would understate the host. `no_stats` needs no
   // guard here: a run no invocation produced stats for renders no comment, and
   // `measureIssuePhaseRun` measures nothing for it either.
-  if (posted.reason !== "already_posted") {
+  if (options.recordFigures && posted.reason !== "already_posted") {
     // Issue #3403: the tier this run resolved rides the same figures the
     // comment above renders, so the fleet's per-tier counters agree with
     // what the run actually used.

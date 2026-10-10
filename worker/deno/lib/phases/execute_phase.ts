@@ -12,6 +12,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import type { IssueSubAgentTier, Logger } from "../../types.ts";
 import { browserGranted } from "../browser_grant.ts";
 import {
   type IssueContext,
@@ -33,8 +34,17 @@ import { isGraftContextEnabled } from "../graft_context_config.ts";
 import { isIssueExecutorSplitEnabled } from "../issue_executor_split.ts";
 import {
   buildIssueRunAgents,
+  HAIKU_ISSUE_EXECUTOR_MODEL,
   ISSUE_EXECUTOR_MODEL,
 } from "../issue_executor_agents.ts";
+import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
+import {
+  buildRefusalFailureReason,
+  decideRefusalAction,
+  REFUSAL_RETRY_TIER,
+  refusalsRecordedSince,
+} from "../haiku_refusal_retry.ts";
+import { postWorkOnRunStats } from "./completion_phase.ts";
 import {
   buildQualityInstructions,
   getCustomInstructions,
@@ -284,7 +294,7 @@ export async function workOnIssueExecuteClaude(
   state: PhaseState,
   deps: WorkerDeps,
 ): Promise<PhaseResult> {
-  const result = await executeWithFreshSessionFallback(ctx, state, deps);
+  const result = await executeWithRefusalRetry(ctx, state, deps);
   if (result.status !== "failure") return result;
 
   // Issue #4374: a SIGKILL under memory pressure that is still high at the
@@ -351,7 +361,82 @@ export async function workOnIssueExecuteClaude(
   );
   if (!shouldRetry) return result;
 
-  return await executeWithFreshSessionFallback(ctx, state, deps);
+  return await executeWithRefusalRetry(ctx, state, deps);
+}
+
+/** The sub-agent tier this attempt runs on: sonnet once a refusal was seen. */
+function runSubAgentTier(
+  config: IssueContext["config"],
+  repo: string,
+  state: PhaseState,
+  logger: Logger,
+): IssueSubAgentTier {
+  if (state.agentRefusal) return REFUSAL_RETRY_TIER;
+  return resolveIssueSubAgentTier(
+    config,
+    config.repoConfig?.[repo],
+    (m) => logger.warn(m),
+  );
+}
+
+/**
+ * One execute attempt, with the safety-refusal policy on top (Issue #3406).
+ *
+ * A refusal can hide behind a clean outcome (`continue` or `no_changes`), so a
+ * clean attempt that recorded one never passes as success: a Haiku refusal on
+ * the haiku tier re-runs the phase once on sonnet, anything else fails the run.
+ */
+async function executeWithRefusalRetry(
+  ctx: IssueContext,
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<PhaseResult> {
+  const { repo, issueNumber } = ctx;
+  const recordedBefore = state.claudeRunStats?.length ?? 0;
+  const tier = runSubAgentTier(ctx.config, repo, state, deps.logger);
+  const result = await executeWithFreshSessionFallback(ctx, state, deps);
+  // Only the two clean outcomes can hide a refusal; a failed attempt already
+  // fails loud on its own path.
+  const clean = result.status === "continue" ||
+    (result.status === "early_exit" && result.reason === "no_changes");
+  if (!clean) return result;
+
+  const refusals = refusalsRecordedSince(state.claudeRunStats, recordedBefore);
+  const action = decideRefusalAction({
+    tier,
+    refusals,
+    alreadyRetried: state.agentRefusal !== undefined,
+  });
+  if (action === "none") {
+    if (state.agentRefusal?.retry === "ran") {
+      state.agentRefusal.retry = "succeeded";
+    }
+    return result;
+  }
+
+  const categories = refusals.map((r) => r.category).join(", ");
+  if (action === "retry-on-sonnet") {
+    state.agentRefusal = { tier, refusals, retry: "ran" };
+    deps.logger.error(
+      `Haiku safety refusal (${categories}) on the haiku sub-agent tier — ` +
+        "re-running the execute phase once on the sonnet tier (Issue #3406)",
+      { repo, issueNumber, refusals },
+    );
+    return await executeWithRefusalRetry(ctx, state, deps);
+  }
+
+  state.agentRefusal = state.agentRefusal
+    ? { ...state.agentRefusal, retry: "refused", retryRefusals: refusals }
+    : { tier, refusals, retry: "not-retried" };
+  deps.logger.error(
+    `Agent safety refusal (${categories}) — failing the run (Issue #3406)`,
+    { repo, issueNumber, refusals },
+  );
+  await postWorkOnRunStats(ctx, state, deps, { recordFigures: false });
+  return {
+    status: "failure",
+    reason: buildRefusalFailureReason(state.agentRefusal),
+  };
 }
 
 /**
@@ -565,8 +650,10 @@ async function executeClaudeBody(
 
   // The issue-executor split (Issue #2342): on, the invocation carries
   // `--agents` definitions so the advisor delegates mechanical edit work to
-  // Sonnet executors, and the prompt carries the advisor/executor block that
-  // tells it to (Issue #2343). Off — the default — `agents` stays absent, no
+  // executors on the run's sub-agent tier — Sonnet by default, Haiku under
+  // `issue_sub_agent_tier: "haiku"` (Issue #3402) — and the prompt carries
+  // the advisor/executor block that tells it to (Issue #2343). Off — the
+  // default — `agents` stays absent, no
   // argument is emitted, the block renders as nothing, and every sub-agent
   // inherits the phase's model as before. Resolved once, before the prompt is
   // built, so the prompt and the argv cannot disagree. Wired here as well as
@@ -577,18 +664,30 @@ async function executeClaudeBody(
     config.repoConfig?.[repo],
     config,
   );
-  if (issueExecutorSplit) {
-    logger.info(
-      `Issue-executor split is on for ${repo}: the invocation carries ` +
-        `${ISSUE_EXECUTOR_MODEL} executor sub-agent definitions (Issue #2342)`,
-    );
-  }
+  // The sub-agent tier (Issue #3402): host-wide `config.issueSubAgentTier`,
+  // with the repository's own `repo_config` override layered over it.
+  // Resolved and logged unconditionally, every issue run.
+  const issueSubAgentTier = runSubAgentTier(config, repo, state, logger);
+  logger.info(
+    `Issue sub-agent tier resolved to '${issueSubAgentTier}' for ${repo} ` +
+      `(Issue #3402)`,
+  );
   // The reviewer sub-agents (Issue #2575): host-wide, off by default until
   // the pilot in docs/MODEL-AND-CACHING.md clears it.
   const issueRunAgents = buildIssueRunAgents({
     executorSplit: issueExecutorSplit,
     reviewerAgents: config.issueReviewerAgents === true,
+    subAgentTier: issueSubAgentTier,
   });
+  if (issueExecutorSplit) {
+    const executorModel = issueSubAgentTier === "haiku"
+      ? HAIKU_ISSUE_EXECUTOR_MODEL
+      : ISSUE_EXECUTOR_MODEL;
+    logger.info(
+      `Issue-executor split is on for ${repo}: the invocation carries ` +
+        `${executorModel} executor sub-agent definitions (Issue #2342)`,
+    );
+  }
 
   const promptResult = await deps.infrastructure.buildPrompt({
     repo,

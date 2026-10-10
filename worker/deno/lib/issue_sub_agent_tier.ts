@@ -3,9 +3,12 @@
  *
  * The key is host-wide, with a same-named per-repository override under
  * `repo_config`. It selects the model tier — `"sonnet"` or `"haiku"` — of
- * the `issue`-phase executor sub-agents. Default `"sonnet"`; an invalid
- * value (wrong type, or a string outside the allowed set) is warned about
- * and replaced by the default, rather than failing `loadConfig`.
+ * the `issue`-phase executor and Standards-reviewer sub-agents, and whether
+ * the run carries the read-only explorer sub-agent (Issue #3402); the
+ * resolved tier is consumed by `buildIssueRunAgents` in
+ * `issue_executor_agents.ts`. Default `"sonnet"`; an invalid value (wrong
+ * type, or a string outside the allowed set) is warned about and replaced
+ * by the default, rather than failing `loadConfig`.
  */
 
 import type { IssueSubAgentTier, RepoConfig, WorkerConfig } from "../types.ts";
