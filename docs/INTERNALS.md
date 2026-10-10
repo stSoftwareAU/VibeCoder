@@ -4871,6 +4871,40 @@ repairing the host's clone for the issue to become claimable again. See
 [docs/workflows/README.md](workflows/README.md#per-lane-worktrees-issue-394)
 for the sweep-then-re-clone repair ladder that produces this category.
 
+#### `summary_incomplete` is its own failure category (Issue #3431)
+
+When the completion phase's PR-summary gates refuse a run, the refusal text
+quotes the agent's own summary. That quotation once held a Rust path,
+`AppError::EvaluationSummaryUnavailable`, which the catch-all `Error:` rule of
+`detectFailureCategory` read as an error line: the run came out
+`internal_error`, was classified a `worker-crash`, and a false diagnostic issue
+was auto-filed. Two changes close this. `reportSummaryRuleBlock` now opens the
+failure reason with the worker-authored `SUMMARY_RULE_GATE_MARKER` ("the PR
+summary did not pass the worker's completion gates"), which the detector
+maps to `summary_incomplete` (display `summary-incomplete`) with
+`startsWith`, as the first rule (ahead of the scheduled-release, killed,
+timeout, rate-limit and interrupted rules), so a quoted "Released on
+schedule:", "timeout", "SIGTERM", "rate limit" or `TypeError:` in the agent's
+summary cannot give the refusal a worse category; `classifyRunFailure` likewise answers
+`summary_incomplete` first, so a quoted `ENOSPC` is not read as `disk-full`. A
+timeout or kill message that merely quotes the marker later does not start with
+it and keeps its own category. The catch-all is also now `/Error:(?!:)/`, so a `::` path such as
+`AppError::X` is not an `Error:` line. `summary_incomplete` is `not_code_fixable`
+(class `agent-outcome`), is not infrastructure, and follows the normal retry and
+`failed-once` rules: `classifyCodingFailure` returns a `ladder` decision with
+cooldown kind `non_transient` for it before any free-text check, and
+`detectHostFault` returns `null` for a marked reason, so in the run itself a
+quoted "at the cycle deadline", "timeout", `ENOSPC` or `Failed to clone` does
+not count the run as a timeout or a host fault. The label-release sweeps read
+the posted comment instead, which buries the marker, so they need the check
+below. The posted failure comment embeds
+the reason under a heading, so the marker no longer opens the body; the
+host-fault and milestone-refusal label-release sweeps, which re-classify posted
+bodies, therefore skip a record whose worker-written `**Category:**` line at the
+head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
+`failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
+rejection in a refused summary cannot strip `failed-once` or `failed`.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a

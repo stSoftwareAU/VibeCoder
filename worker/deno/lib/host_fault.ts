@@ -16,6 +16,7 @@
  * host fault silently swallows a label a human genuinely needed to see.
  */
 
+import { SUMMARY_RULE_GATE_MARKER } from "./failure_diagnosis.ts";
 import { brokenRefsIn } from "./broken_ref_repair.ts";
 import { isObjectStoreCorruption } from "./object_store_repair.ts";
 
@@ -87,6 +88,10 @@ const CLONE_CORRUPT_PATTERNS: readonly RegExp[] = [
  * guessed at.
  */
 export function detectHostFault(message: string): HostFaultKind | null {
+  // A PR-summary gate refusal is the worker's own words plus a quotation of
+  // the agent's summary (Issue #3431; PR #3440 review): a quoted `ENOSPC` or
+  // `Failed to clone` there is not host output, so it is never a host fault.
+  if (message.startsWith(SUMMARY_RULE_GATE_MARKER)) return null;
   if (
     brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message) ||
     CLONE_CORRUPT_PATTERNS.some((re) => re.test(message))

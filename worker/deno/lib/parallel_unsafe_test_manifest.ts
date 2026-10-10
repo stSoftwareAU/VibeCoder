@@ -198,6 +198,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // commenter chooses the length of; only a growth measurement separates the
   // linear walk from the quadratic regex it replaced (#2183).
   "tests/grill_me_stall_guard_bounds_2183_test.ts",
+  // The failure-category catch-all scans an untrusted run failure message (it
+  // can quote agent-written PR-summary text); only a growth measurement
+  // separates the linear `Error:(?!:)` test from a backtracking one
+  // (Issue #3431).
+  "tests/failure_diagnosis_bounds_3431_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
   // The pre-commit safety gate's dotenv/config/secrets patterns scan a staged
