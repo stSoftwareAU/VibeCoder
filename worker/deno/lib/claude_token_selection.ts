@@ -497,7 +497,10 @@ function describeWindow(
 function describeCandidate(candidate: RankedClaudeToken): string {
   const { budget } = candidate;
   if (!budget.known) {
-    return `remaining=unknown reason=${budget.reason}`;
+    const detail = budget.detail === undefined
+      ? ""
+      : ` detail=${JSON.stringify(budget.detail)}`;
+    return `remaining=unknown reason=${budget.reason}${detail}`;
   }
   const sevenDay = candidate.rateWindow?.window === "seven_day"
     ? candidate.rateWindow
