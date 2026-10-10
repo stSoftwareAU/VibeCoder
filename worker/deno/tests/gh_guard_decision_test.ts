@@ -870,3 +870,55 @@ Deno.test("gh-guard #1371 - the health-check reads the worker depends on stay al
     assertEquals(decision.allowed, true, `expected read allowed: ${args}`);
   }
 });
+
+/** Active allowlist naming the repo the #3433 cases target. */
+const OR_ACTIVE = { active: true, allowedRepos: ["o/r"] } as const;
+
+Deno.test("gh-guard #3433 - every agent PR base change is refused with PR_BASE_CHANGE_REFUSED", () => {
+  const ctx = {
+    ...OR_ACTIVE,
+    readBodyFile: (_path: string) => JSON.stringify({ base: "main" }),
+  };
+  for (
+    const args of [
+      ["pr", "edit", "12", "--base", "main"],
+      ["pr", "edit", "12", "-B", "main"],
+      ["pr", "edit", "12", "-Bmain"],
+      ["pr", "edit", "12", "--base=main"],
+      ["pr", "edit", "https://github.com/o/r/pull/12", "--base", "main"],
+      ["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f", "base=main"],
+      ["api", "-X", "PATCH", "repos/o/r/pulls/12", "--input", "body.json"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, ctx);
+    assertEquals(decision.allowed, false, `expected refusal: ${args}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+});
+
+Deno.test("gh-guard #3433 - an unreadable --input body on a PR PATCH is refused by the base rule", () => {
+  const decision = evaluateGhCommand(
+    ["api", "-X", "PATCH", "repos/o/r/pulls/12", "--input", "body.json"],
+    {
+      ...OR_ACTIVE,
+      readBodyFile: () => {
+        throw new Error("nope");
+      },
+    },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED");
+});
+
+Deno.test("gh-guard #3433 - non-base PR edits and pr create --base stay allowed", () => {
+  for (
+    const args of [
+      ["pr", "edit", "12", "--title", "x"],
+      ["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f", "title=x"],
+      ["pr", "create", "--base", "main"],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, OR_ACTIVE);
+    assertEquals(decision.allowed, true, `expected allowed: ${args}`);
+  }
+});

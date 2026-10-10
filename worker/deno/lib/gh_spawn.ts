@@ -10,11 +10,13 @@
  *
  *   1. enforces the per-run write-repo allowlist (`enforceGhWriteAllowlist`)
  *      *before* the process starts,
- *   2. redacts secrets from the published body arguments
+ *   2. refuses retargeting a milestone PR's base branch
+ *      (`enforcePrBaseChangeGuard`, Issue #3433), then
+ *   3. redacts secrets from the published body arguments
  *      (`redactGhBodyArgs`, Issue #3707), then
- *   3. journals the mutation to the tamper-evident audit log
+ *   4. journals the mutation to the tamper-evident audit log
  *      (`auditGhMutation`) once the exit code is known, and
- *   4. notes an issue close/reopen (`noteGhIssueClose`, Issue #181) so the
+ *   5. notes an issue close/reopen (`noteGhIssueClose`, Issue #181) so the
  *      stale scan-cache entries are dropped and the run never re-claims an
  *      issue it just closed.
  *
@@ -26,7 +28,9 @@
  * flowchart LR
  *     C["~20 caller modules"] --> S["spawnGh()"]
  *     S --> A["enforceGhWriteAllowlist<br/>(allowlist, fail closed)"]
- *     A -->|allowed| R["redactGhBodyArgs<br/>(public body args)"]
+ *     A -->|allowed| B["enforcePrBaseChangeGuard<br/>(milestone base, fail closed)"]
+ *     B -->|allowed| R["redactGhBodyArgs<br/>(public body args)"]
+ *     B -->|refused| E
  *     R --> P["gh subprocess"]
  *     A -->|refused| E["throw — no subprocess"]
  *     P --> J["auditGhMutation<br/>(audit journal)"]
@@ -48,6 +52,10 @@ import {
   enforceGhWriteAllowlist,
   installationTokenRepoScope,
 } from "./write_repo_allowlist.ts";
+import {
+  enforcePrBaseChangeGuard,
+  type PrBaseChange,
+} from "./pr_base_change_guard.ts";
 import { auditGhMutation } from "./audit_hook.ts";
 import {
   type BodyFileWriter,
@@ -352,6 +360,39 @@ function withStagedGhConfigDir(
   return { ...options, env: { ...options.env, GH_CONFIG_DIR: staged } };
 }
 
+/** Read the PR's head and base for the base-change guard; throws on failure. */
+async function lookupPrHeadAndBase(
+  change: PrBaseChange,
+  options: GhSpawnOptions,
+): Promise<{ headRefName: string; baseRefName: string }> {
+  const result = await spawnGh([
+    "pr",
+    "view",
+    ...(change.prSelector ? [change.prSelector] : []),
+    ...(change.repo ? ["--repo", change.repo] : []),
+    "--json",
+    "headRefName,baseRefName",
+  ], {
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+    ...(options.env ? { env: options.env } : {}),
+    ...(options.hostEnv ? { hostEnv: options.hostEnv } : {}),
+    ...(options.bypassQuotaLatch ? { bypassQuotaLatch: true } : {}),
+  });
+  if (!result.success) {
+    throw new Error(`gh pr view failed (exit ${result.code})`);
+  }
+  const doc = JSON.parse(result.stdout) as {
+    headRefName?: unknown;
+    baseRefName?: unknown;
+  };
+  if (
+    typeof doc.headRefName !== "string" || typeof doc.baseRefName !== "string"
+  ) {
+    throw new Error("gh pr view returned no head/base");
+  }
+  return { headRefName: doc.headRefName, baseRefName: doc.baseRefName };
+}
+
 /**
  * Run `gh` through the worker's chokepoint.
  *
@@ -363,12 +404,20 @@ function withStagedGhConfigDir(
  * @param options - Subprocess options.
  * @throws WriteRepoBlockedError | WriteTargetUndeterminableError when the
  *   write is refused by the allowlist.
+ * @throws PrBaseChangeRefusedError when a PR base change is refused.
  */
 export async function spawnGh(
   args: readonly string[],
   options: GhSpawnOptions = {},
 ): Promise<GhSpawnResult> {
   await enforceGhWriteAllowlist(args);
+  // Issue #3433: a base change must not move a milestone PR off its milestone
+  // branch. The lookup is a `pr view` read, so it cannot recurse into the guard.
+  await enforcePrBaseChangeGuard(args, {
+    lookup: (change) => lookupPrHeadAndBase(change, options),
+    readBodyFile: denoBodyFileReader,
+    log: (line) => console.error(line),
+  });
   // Issue #42 / #1485: once the primary GraphQL quota is exhausted, every
   // further GraphQL-backed call in the window is guaranteed to fail. The
   // short-circuit used to live in `runGhCommandRaw` alone, so the thirty-odd

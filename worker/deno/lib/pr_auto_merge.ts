@@ -12,9 +12,12 @@ import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
+import { disarmAutoMerge } from "./auto_merge_disarm.ts";
+import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
 import {
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
+  holdOrphanBoundPr,
   invalidateMilestoneBehindMemoForBranch,
   isMilestoneBranch,
   postOpenChildrenBlockComment,
@@ -22,7 +25,6 @@ import {
   postPendingDependenciesBlockComment,
   renderBlockWarning,
   renderPendingDependenciesWarning,
-  retargetOrphanBoundPr,
   type SummaryPrMergeDecision,
 } from "./milestone_children_gate.ts";
 import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
@@ -86,12 +88,19 @@ export enum AutoMergeResult {
    */
   MergedDirectly = "merged_directly",
   /**
-   * The PR's base was a milestone branch whose rollup had already merged
-   * (or whose milestone is closed), so merging there would have orphaned
-   * the work (Issue #4396). The PR was retargeted at the default branch
-   * instead and is picked up by the normal merge path next scan.
+   * Refused to merge into a milestone branch whose route closed (rollup PR
+   * merged, or milestone closed). The PR is left on its base, auto-merge is
+   * disarmed, a comment is posted and a human decides (Issue #4396 gate,
+   * Issue #3433 hold).
    */
-  RetargetedToDefault = "retargeted_to_default",
+  HeldRouteClosed = "held_route_closed",
+  /**
+   * The PR's base no longer matches where the fleet opened it — a
+   * `milestone-fix/**` head on a non-milestone base, or a PR moved onto the
+   * default branch after it was opened — so it is never armed or merged
+   * there and its auto-merge is disarmed; a human decides (Issue #3433).
+   */
+  HeldBaseRetargeted = "held_base_retargeted",
   /**
    * The PR's head is a `sync/milestone-*` branch and its base is the
    * **default** branch, so GitHub retargeted it there when its milestone
@@ -306,7 +315,8 @@ async function postBehindSyncReason(
  * either the worker doing what it set out to do (`Enabled`, `Skipped`,
  * `MergedDirectly`) or already explained on the PR by the path that produced
  * it — `Draft` (author's choice), `NotEnabledOnRepo` (its own note),
- * `BlockedOpenChildren` (#3909), `BlockedPendingDependencies` (#3014), a
+ * `BlockedOpenChildren` (#3909), `HeldRouteClosed` and `HeldBaseRetargeted`
+ * (#3433, each posts its own hold comment), `BlockedPendingDependencies` (#3014), a
  * `milestone-behind` outcome (the #2005 `postBehindSyncReason` already
  * explains it on the PR), and the #4375/#1082 gated direct-merge hold (the
  * deliberate "never `--auto`" path).
@@ -758,7 +768,8 @@ export async function enableAutoMerge(
   // Issue #4396: the mirror image — never merge INTO a milestone branch
   // whose route to the default branch has closed (rollup PR merged, or
   // milestone closed). Seven fixes were lost that way with their issues
-  // reading COMPLETED. Refuse loud and retarget the PR at the default branch.
+  // reading COMPLETED. Refuse loud and hold the PR where it is: the fleet never
+  // moves it to the default branch (Issue #3433).
   // Issue #1779: `requireSyncedBase` adds the second half — it reports a
   // milestone tip that is behind the default branch, which drives the
   // in-cycle sync below. Issue #2460: being behind no longer withholds
@@ -869,36 +880,40 @@ export async function enableAutoMerge(
     };
   }
   if (routeGate.decision === "block") {
-    const defaultBranch = await (options.getDefaultBranchFn ??
-      ((r: string) => getRepoDefaultBranch(r, ghCommandFn)))(repo);
-    const target = defaultBranch.ok ? defaultBranch.value : "";
-    const retargeted = target.length > 0 &&
-      await retargetOrphanBoundPr({
-        repo,
-        prNumber,
-        gate: routeGate,
-        defaultBranch: target,
-        ghCommandFn,
-        log,
-        ...(options.authorOptions
-          ? { authorOptions: options.authorOptions }
-          : {}),
-      });
-    const message = retargeted
-      ? `PR #${prNumber} retargeted from ${routeGate.milestoneBranch} to ${target}: ${routeGate.detail} (Issue #4396)`
-      : `PR #${prNumber} not merged into ${routeGate.milestoneBranch}: ${routeGate.detail} — retarget ${
-        target ? "failed" : "impossible (default branch unknown)"
-      } (Issue #4396)`;
+    await holdOrphanBoundPr({
+      repo,
+      prNumber,
+      gate: routeGate,
+      ghCommandFn,
+      log,
+      ...(options.authorOptions
+        ? { authorOptions: options.authorOptions }
+        : {}),
+    });
     return {
-      result: retargeted
-        ? AutoMergeResult.RetargetedToDefault
-        : AutoMergeResult.Failed,
-      message,
+      result: AutoMergeResult.HeldRouteClosed,
+      message:
+        `PR #${prNumber} held on ${routeGate.milestoneBranch}: ${routeGate.detail} — not merged, not retargeted, auto-merge disarmed (Issue #3433)`,
     };
   }
 
   const baseRefName = options.baseRefName ??
     (await fetchBaseRefName(repo, prNumber, ghCommandFn));
+
+  // Issue #3433: a `milestone-fix/**` PR is raised into a milestone branch.
+  // On any other base it has been moved (carrying the milestone's diff), so
+  // it is never armed or merged there.
+  if (
+    isMilestoneFixBranch(options.headRefName ?? "") && baseRefName &&
+    !isMilestoneBranch(baseRefName)
+  ) {
+    await disarmAutoMerge(repo, prNumber, ghCommandFn, log);
+    return {
+      result: AutoMergeResult.HeldBaseRetargeted,
+      message:
+        `PR #${prNumber} has a milestone-fix head '${options.headRefName}' on base '${baseRefName}', not a milestone branch — not armed, not merged, auto-merge disarmed (Issue #3433)`,
+    };
+  }
 
   // Issue #1967: a milestone sync PR merges the default branch *into* a
   // milestone branch, so one whose base IS the default branch has had its

@@ -19,6 +19,11 @@
  *    permanent. This property was already true of the code this module
  *    replaces; it is now covered by a test, so it cannot quietly stop being
  *    true.
+ * 3. **Auto-merge follows the base** (Issue #3433) — every swept PR
+ *    passes the base check before any arming or branch update (the GraphQL
+ *    read is skipped only for an unarmed, non-fix PR on a milestone base); a
+ *    milestone-fix PR off its milestone branch, or a PR moved onto the default branch, is disarmed and
+ *    held, so a retarget cannot land a milestone's work unreviewed.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
@@ -95,6 +100,19 @@ export interface SweepAutoMergeOptions {
    * is armed and behind; a failed update is recorded and the sweep moves on.
    */
   updateBranchFn: (repo: string, prNumber: number) => Promise<Result<void>>;
+  /**
+   * Re-check the PR's base before any arming or branch update (Issue #3433).
+   * `hold` records the outcome and skips the PR; `proceed` with `disarmed`
+   * means auto-merge was just disarmed, so the PR is treated as unarmed.
+   */
+  checkBaseIntegrity: (
+    repo: string,
+    pr: SweepablePr,
+    armed: boolean,
+  ) => Promise<
+    | { action: "hold"; outcome: EnableAutoMergeResult }
+    | { action: "proceed"; disarmed: boolean }
+  >;
   /** Attempt the merge for one PR. */
   attemptMerge: (
     repo: string,
@@ -150,6 +168,7 @@ export async function sweepAutoMerge(
     listOpenPrs,
     prLiveState,
     updateBranchFn,
+    checkBaseIntegrity,
     attemptMerge,
     recordOutcome,
     invalidateOpenPrCache,
@@ -243,6 +262,25 @@ export async function sweepAutoMerge(
           continue;
         }
 
+        // Issue #3433: auto-merge follows the base. This runs before the
+        // armed+behind path below, which skips `attemptMerge` entirely.
+        let armedNow = reading.armed === true;
+        try {
+          const check = await checkBaseIntegrity(repo, pr, armedNow);
+          if (check.action === "hold") {
+            recordOutcome(repo, pr.number, check.outcome);
+            continue;
+          }
+          if (check.disarmed) armedNow = false;
+        } catch (err) {
+          logger.warn("Auto-merge sweep base check threw — not arming", {
+            repo,
+            prNumber: pr.number,
+            error: errorMessage(err),
+          });
+          continue;
+        }
+
         // Issue #2462: an armed PR whose head falls behind its base stays
         // open forever under the strict up-to-date policy — GitHub never
         // updates the branch itself, and re-arming does not either. Ask
@@ -258,7 +296,7 @@ export async function sweepAutoMerge(
         // on GRQ#5032 it moved the head underneath the owner's review. The
         // merge attempt is skipped too: auto-merge is already armed.
         if (
-          reading.armed === true && reading.behind === true &&
+          armedNow && reading.behind === true &&
           reading.changesRequested === true
         ) {
           logger.info(
@@ -270,7 +308,7 @@ export async function sweepAutoMerge(
           continue;
         }
         if (
-          reading.armed === true && reading.behind === true &&
+          armedNow && reading.behind === true &&
           reading.mergeable !== "CONFLICTING"
         ) {
           try {

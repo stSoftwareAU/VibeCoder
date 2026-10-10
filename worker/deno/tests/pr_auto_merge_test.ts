@@ -810,11 +810,11 @@ Deno.test("pr_auto_merge - isBaseProtected reads the effective branch rules: req
 });
 
 // ---------------------------------------------------------------------------
-// Issue #4396: a PR bound for a rolled-up milestone branch is retargeted at
-// the default branch, never merged into the orphan branch
+// Issue #4396 / #3433: a PR bound for a rolled-up milestone branch is held
+// where it is (auto-merge disarmed), never merged or moved to the default branch
 // ---------------------------------------------------------------------------
 
-Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, retarget at the default branch, no merge (Issue #4396)", async () => {
+Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, disarm, no retarget, no merge (Issue #3433)", async () => {
   const calls: string[][] = [];
   const result = await enableAutoMerge({
     repo: "owner/repo",
@@ -840,20 +840,30 @@ Deno.test("pr_auto_merge - a base whose rollup already merged: comment once, ret
     },
     authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
-  assertEquals(result.result, AutoMergeResult.RetargetedToDefault);
+  assertEquals(result.result, AutoMergeResult.HeldRouteClosed);
   assert(result.message.includes("#3125"), result.message);
   const comment = calls.find((c) => c[0] === "pr" && c[1] === "comment");
   assert(comment, "an explanatory comment is posted");
   assert(comment.join(" ").includes("rollup PR #3125"));
-  const edit = calls.find((c) => c[0] === "pr" && c[1] === "edit");
-  assertEquals(edit?.slice(-2), ["--base", "Develop"]);
   assert(
-    !calls.some((c) => c[0] === "pr" && c[1] === "merge"),
+    !calls.some((c) => c[0] === "pr" && c[1] === "edit"),
+    "the PR is never retargeted",
+  );
+  assert(
+    calls.some((c) =>
+      c.join(" ") === "pr merge 3371 --repo owner/repo --disable-auto"
+    ),
+    "auto-merge is disarmed",
+  );
+  assert(
+    !calls.some((c) =>
+      c[0] === "pr" && c[1] === "merge" && c.includes("--auto")
+    ),
     "no --auto merge issued",
   );
 });
 
-Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (Issue #4396)", async () => {
+Deno.test("pr_auto_merge - the hold comment is posted once (marker de-dup) (Issue #3433)", async () => {
   const calls: string[][] = [];
   const result = await enableAutoMerge({
     repo: "owner/repo",
@@ -875,7 +885,7 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
           { author: "vibe-bot", body: "earlier" },
           {
             author: "vibe-bot",
-            body: "<!-- milestone-rollup-merged-retarget -->\nalready said",
+            body: "<!-- milestone-route-closed-hold -->\nalready said",
           },
         ]);
       }
@@ -883,15 +893,75 @@ Deno.test("pr_auto_merge - the retarget comment is posted once (marker de-dup) (
     },
     authorOptions: { fleetAuthors: ["vibe-bot"] },
   });
-  assertEquals(result.result, AutoMergeResult.RetargetedToDefault);
+  assertEquals(result.result, AutoMergeResult.HeldRouteClosed);
   assert(
     !calls.some((c) => c[0] === "pr" && c[1] === "comment"),
     "no second comment",
   );
   assert(
-    calls.some((c) => c[0] === "pr" && c[1] === "edit"),
-    "still retargeted",
+    !calls.some((c) => c[0] === "pr" && c[1] === "edit"),
+    "never retargeted",
   );
+  assert(
+    calls.some((c) => c.includes("--disable-auto")),
+    "still disarmed",
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3433: a milestone-fix head must sit on a milestone base
+// ---------------------------------------------------------------------------
+
+function fixRuleRun(head: string, base: string) {
+  const calls: string[][] = [];
+  let direct = 0;
+  const promise = enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 41,
+    baseRefName: base,
+    headRefName: head,
+    isBaseProtectedFn: async () => true,
+    directMergeFn: async () => {
+      direct++;
+      return { merged: true } as never;
+    },
+    decideMilestoneBaseFn: async () => ({
+      decision: "allow",
+      milestoneBranch: base,
+    } as never),
+    ghCommandFn: async (args) => {
+      calls.push(args);
+      return "";
+    },
+  });
+  return { calls, promise, direct: () => direct };
+}
+
+Deno.test("pr_auto_merge - milestone-fix head on the default branch is held, never armed (Issue #3433)", async () => {
+  const r = fixRuleRun("milestone-fix/clean-up/pr-40-ci", "main");
+  const result = await r.promise;
+  assertEquals(result.result, AutoMergeResult.HeldBaseRetargeted);
+  assert(r.calls.some((c) => c.includes("--disable-auto")), "disarmed");
+  assert(
+    !r.calls.some((c) => c.includes("--auto")),
+    "no --auto issued",
+  );
+  assertEquals(r.direct(), 0);
+});
+
+Deno.test("pr_auto_merge - milestone-fix head on a milestone base is not held (Issue #3433)", async () => {
+  const r = fixRuleRun("milestone-fix/clean-up/pr-40-ci", "milestone/clean-up");
+  const result = await r.promise;
+  assert(result.result !== AutoMergeResult.HeldBaseRetargeted, result.message);
+  assert(!r.calls.some((c) => c.includes("--disable-auto")));
+  assert(r.calls.some((c) => c.includes("--auto")), "armed as normal");
+});
+
+Deno.test("pr_auto_merge - a non-fix head on the default branch is not held by the fix rule (Issue #3433)", async () => {
+  const r = fixRuleRun("issue-9-x", "main");
+  const result = await r.promise;
+  assert(result.result !== AutoMergeResult.HeldBaseRetargeted, result.message);
+  assert(!r.calls.some((c) => c.includes("--disable-auto")));
 });
 
 // ---------------------------------------------------------------------------
@@ -1641,7 +1711,8 @@ Deno.test("pr_auto_merge - autoMergeOutcomeNeedsComment covers Failed, NotAllowe
     AutoMergeResult.Draft,
     AutoMergeResult.NotEnabledOnRepo,
     AutoMergeResult.BlockedOpenChildren,
-    AutoMergeResult.RetargetedToDefault,
+    AutoMergeResult.HeldRouteClosed,
+    AutoMergeResult.HeldBaseRetargeted,
     AutoMergeResult.ClosedRetargetedSync,
   ];
   for (const code of quiet) {
