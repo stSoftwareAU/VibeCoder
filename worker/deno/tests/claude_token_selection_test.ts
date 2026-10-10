@@ -515,6 +515,25 @@ Deno.test("the decision log names every candidate then the winner and its reason
   );
 });
 
+Deno.test("an unknown candidate's line carries the probe's detail", () => {
+  const lines = formatClaudeTokenSelectionLog(
+    rankClaudeTokenBudgets([
+      {
+        known: false,
+        label: "provider",
+        reason: "http-429",
+        detail: "rate_limit_error: Error",
+      },
+    ], NOW),
+  );
+
+  assertEquals(
+    lines[0],
+    "[SECURITY] claude token candidate provider (#1): remaining=unknown " +
+      'reason=http-429 detail="rate_limit_error: Error"',
+  );
+});
+
 Deno.test("the decision log prints both windows and the rate for a token reporting both (Issue #1623)", () => {
   const lines = formatClaudeTokenSelectionLog(
     rankClaudeTokenBudgets([
