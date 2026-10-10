@@ -1556,6 +1556,17 @@ example "written by hand, see Step 1"), not the plan; when #N was closed as
 not planned, the forward reference goes. When the issue's plan says a sibling
 will do X, grep the docs the diff touches for that sibling's `#N`, and make
 each present-tense hit either backed by head code or reworded as planned.
+A setting, flag, field, hook or API the diff adds is held to the same rule
+until something reads it, even when this issue owns the setting itself. Grep
+the head for its **reader**: code outside its own definition, config loading
+and validation, types and tests that acts on its value. When there is none,
+because another issue will add the reader, every doc row, prompt line and
+code comment that describes its effect says it is accepted but not read yet
+and names the open issue that will read it — for example "Accepted and
+validated, but not read yet: #N will use it to …; today X stays Y whatever
+it is set to." The issue that adds the reader switches that text to the
+present tense. Those sentences rarely name #N, so the sibling `#N` grep
+above does not find them; the reader grep does.
 This adds to the rule that every doc assertion must match the head code; it
 does not relax it. Milestone sub-PRs merge into the milestone branch on green
 CI without review, so a sibling dropped later leaves its forward references
@@ -1573,7 +1584,13 @@ by sibling GRQ-AutoTrader#2301 that were not on the branch
 writes the policy after #2303 was closed as not planned
 (GRQ-AutoTrader#2506); two docs called a red dependency audit "never
 deferred" while the refusal that makes it true was still-open sibling #3141
-(VibeCoder#3156) (Issue #3223).
+(VibeCoder#3156) (Issue #3223). Sent back for a setting documented ahead
+of its reader: a code comment said "Issue #3240 makes `flat()` refuse
+whole-file input" while #3240 was still an open PR and `flat()` refused
+nothing (VibeCoder#3252); two `docs/CONFIGURATION.md` rows and a
+`config_defaults.ts` comment described what the new `issue_sub_agent_tier`
+key selects when nothing at the head read it, so an operator who set
+`"haiku"` still got Sonnet (VibeCoder#3434) (Issue #3437).
 
 **An issue number cited as provenance is one you looked up.** Every issue
 number the diff adds as the reason a change exists — `Issue #N` or
