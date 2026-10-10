@@ -142,7 +142,8 @@ async function runGit(
  * covered.
  *
  * It stages into a private copy of the index (`GIT_INDEX_FILE`), so the real
- * index is only read, never written. It does write blob objects into the
+ * index is only read, never written (the copy keeps the real index's mtime so
+ * git's racy-clean check still works). It does write blob objects into the
  * object store, which is additive only. The `git-tree:` prefix means a bare
  * sha-256 key from the older `.ts`-only scheme can never match.
  *
@@ -168,6 +169,11 @@ export async function computeWorkingTreeDigest(
     const tmpIndex = `${tmp}/index`;
     try {
       await Deno.copyFile(realIndex, tmpIndex);
+      // copyFile stamps the copy "now"; carry the real index's timestamps over
+      // so git's racy-clean check still re-hashes an entry edited in the same
+      // second as the index write (same size, in place). PR #3522 review.
+      const st = await Deno.stat(realIndex);
+      if (st.mtime) await Deno.utime(tmpIndex, st.atime ?? st.mtime, st.mtime);
     } catch (error) {
       // A fresh repo has no index yet: start empty.
       if (!(error instanceof Deno.errors.NotFound)) throw error;

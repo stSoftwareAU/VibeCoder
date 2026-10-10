@@ -35,7 +35,10 @@ flowchart LR
 ### Essential Design Decisions
 
 - Staging goes into a private copy of the index (`GIT_INDEX_FILE` in a
-  `vibe_gate_index_` temp dir), so the real index is only read. The temp dir
+  `vibe_gate_index_` temp dir), so the real index is only read. The copy keeps
+  the real index's mtime (`Deno.utime`), because `copyFile` stamps "now" and
+  that switches off git's racy-clean check, so a same-size in-place edit in
+  the index's own second would reuse a stale tree (PR #3522 review). The temp dir
   is removed in `finally`.
 - The key fails closed. Any git failure, a missing `rev-parse` result, or an
   index copy error other than NotFound gives `null`, and caching is then off
@@ -118,6 +121,7 @@ with `Deno.makeTempDir` and removed in `finally`.
 
 - Added to `worker/deno/tests/quality_gate_cache_test.ts`:
   - `computeWorkingTreeDigest - unchanged tree is stable and a recorded PASS is reused`
+  - `computeWorkingTreeDigest - a same-size in-place edit in the index's own second still changes it (racy-clean)`
   - `computeWorkingTreeDigest - editing only a .md busts a recorded PASS`
   - `computeWorkingTreeDigest - editing only a .yml, .sh or Dockerfile changes it`
   - `computeWorkingTreeDigest - untracked files count; ignored and excluded files do not`
@@ -149,7 +153,7 @@ with `Deno.makeTempDir` and removed in `finally`.
   red; restored afterwards.
 - No assertions were removed from existing tests.
 - Targeted run: `deno task test:unit tests/quality_gate_cache_test.ts tests/quality_gate_test.ts`
-  passed (60 tests) on the head.
+  passed (61 tests) on the head.
 - `./quality.sh < /dev/null` passed on the head with exit 0. Its result line
   was "PASSED (with skipped checks)", and the only skips were the ones the
   gate always makes in this environment.
@@ -197,37 +201,42 @@ matches a git-tree digest` seeds the old shape and asserts this.
   `denoCheckDigest - null when no cache dir is set, a tree+sources key when one is`
   (which also asserts the `git-tree:<oid>+<sha-256>` shape); removing the
   guard went red.
-- `worker/deno/lib/quality_gate_cache.ts:164-167` — the optional `tempRoot` is
+- `worker/deno/lib/quality_gate_cache.ts:167` — the optional `tempRoot` is
   honoured. Reached by
   `computeWorkingTreeDigest - the temp root is honoured: an unusable one is null, not a silent fallback`;
   dropping the spread went red.
-- `worker/deno/lib/quality_gate_cache.ts:162` — an empty `rev-parse` result,
+- `worker/deno/lib/quality_gate_cache.ts:163` — an empty `rev-parse` result,
   or not a git repo, gives `null`. Reached by
   `computeWorkingTreeDigest - a non-git directory is quietly null (caching off, no warning)`,
   which also asserts no warning; deleting the guard went red (the fall-through
   throws and warns).
-- `worker/deno/lib/quality_gate_cache.ts:163` — an absolute index path is
+- `worker/deno/lib/quality_gate_cache.ts:164` — an absolute index path is
   used as is, and a relative one is joined to `repoRoot`. Reached by
   `computeWorkingTreeDigest - a linked worktree uses its absolute index path and keeps force-tracked ignored files`
   and the unchanged-tree test; always prefixing `repoRoot` went red.
-- `worker/deno/lib/quality_gate_cache.ts:173` — NotFound starts an empty
+- `worker/deno/lib/quality_gate_cache.ts:176` — the copy takes the real
+  index's mtime. Reached by `computeWorkingTreeDigest - a same-size in-place edit in the index's own second still changes it (racy-clean)`;
+  removing the `Deno.utime` line went red (digest unchanged). `exempt
+  (untestable)`: the `st.mtime` null arm, since local filesystems always
+  report an mtime.
+- `worker/deno/lib/quality_gate_cache.ts:179` — NotFound starts an empty
   index, and any other copy error is rethrown, which gives `null`. Reached by
   `computeWorkingTreeDigest - a fresh repo with no index yet still digests its files`
   and `computeWorkingTreeDigest - a non-NotFound index copy error is null, not an empty index`;
   swallowing every error went red.
-- `worker/deno/lib/quality_gate_cache.ts:176` — a failing `git add -A` gives
+- `worker/deno/lib/quality_gate_cache.ts:182` — a failing `git add -A` gives
   `null`. Reached by
   `computeWorkingTreeDigest - an unreadable untracked file makes git add fail, so null`;
   ignoring the failure went red. The corrupt-index test is extra coverage
   only: it stays green under that flip, because `write-tree` fails too.
-- `worker/deno/lib/quality_gate_cache.ts:178` — a failing `git write-tree`
+- `worker/deno/lib/quality_gate_cache.ts:183` — a failing `git write-tree`
   gives `null`. Reached by
   `computeWorkingTreeDigest - a failing git write-tree (missing blob) is null, not a digest`;
   ignoring the failure went red.
-- `worker/deno/lib/quality_gate_cache.ts:180-184` — the catch warns and gives
+- `worker/deno/lib/quality_gate_cache.ts:186-190` — the catch warns and gives
   `null`. Reached by the non-NotFound copy-error test; going through the
   rethrow, it asserts `null`.
-- `worker/deno/lib/quality_gate_cache.ts:185-191` — the `finally` removes the
+- `worker/deno/lib/quality_gate_cache.ts:191-197` — the `finally` removes the
   temp dir. Reached by `computeWorkingTreeDigest - leaves nothing behind in the temp root it is given`
   (a private temp root, on both the success and failure paths); dropping the
   remove went red.

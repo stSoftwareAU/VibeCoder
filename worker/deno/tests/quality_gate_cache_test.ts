@@ -193,6 +193,25 @@ Deno.test("computeWorkingTreeDigest - unchanged tree is stable and a recorded PA
   });
 });
 
+Deno.test("computeWorkingTreeDigest - a same-size in-place edit in the index's own second still changes it (racy-clean)", async () => {
+  await withRepo(async (root) => {
+    await git(root, "config", "core.trustctime", "false");
+    const file = `${root}/racy.md`;
+    const past = new Date(Date.now() - 3_600_000);
+    past.setMilliseconds(0);
+    await Deno.writeTextFile(file, "issue 3392\n");
+    await Deno.utime(file, past, past);
+    await git(root, "add", "racy.md");
+    await git(root, "commit", "-q", "-m", "racy");
+    const old = await computeWorkingTreeDigest(root);
+    // Same size, same inode, same mtime as the index entry; index mtime equal.
+    await Deno.writeTextFile(file, "issue 3393\n");
+    await Deno.utime(file, past, past);
+    await Deno.utime(`${root}/.git/index`, past, past);
+    assertNotEquals(await computeWorkingTreeDigest(root), old);
+  });
+});
+
 Deno.test("computeWorkingTreeDigest - editing only a .md busts a recorded PASS", async () => {
   for (
     const rel of [
