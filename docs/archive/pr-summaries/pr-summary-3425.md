@@ -78,7 +78,7 @@ flowchart LR
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-- **clean** — Australian English, model-agnostic wording, `section()`-scoped drift pins, no hidden files staged; an optional Effort-row rewording was declined because the row matches the issue's own solution text
+- **clean** — Australian English, model-agnostic wording, `section()`-scoped drift pins, no hidden files staged; the Effort row was reworded in a later review-fix push (PR #3550) to name where the encouragement belongs: the phase prompt when this repository holds it, otherwise its agent instructions (`AGENTS.md` or `CLAUDE.md`)
 
 ## Test Plan
 
