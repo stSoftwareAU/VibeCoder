@@ -74,8 +74,12 @@ The run is limited to the packages the diff touches: for each changed `.rs`
 file the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
 `--package <name>` argument (names failing `^[A-Za-z0-9_-]+$` are skipped; none
 found means no package arguments). A `mutants.out` already in the repository is
-neither read nor touched, and a timeout (exit code 3 or a killed run) that leaves no
-parseable `outcomes.json` is an error, not budget exhaustion.
+neither read nor touched. cargo-mutants writes `outcomes.json` only after its
+clean build and baseline test run, so a run killed at the budget before then
+leaves none; that is reported as budget exhausted (nothing tried, a warning),
+as a Deno baseline timeout is, not as an error. A normal exit that leaves no
+parseable `outcomes.json`, or exit code 3 (some mutants timed out) with none,
+is still an error.
 
 Every path the runner writes (mutated Deno files, the Rust diff under
 `target/`) is resolved through symlinks and must stay inside the repository;
@@ -105,7 +109,9 @@ such as `return undefined;` in a `: boolean` function fails type-checking, and
 that exit code would otherwise count as a test going red. Before any mutant, the unmutated baseline run
 must pass; if it does not, the gate reports an error. The file is restored
 after every mutant, even when the run fails. A changed module that no test
-imports has its mutants counted as survivors. A run is capped at 40 mutants.
+imports has its mutants counted as survivors. A mutant that does not parse
+(`deno test` fails with `error: SyntaxError:` on stderr, before any test
+runs) ran no test, so it is counted as neither killed nor survived. A run is capped at 40 mutants.
 Candidates past the cap, and added lines over 400 characters (never mutated),
 are counted as untested: the run is reported as capped, with the number
 untested, never as a clean pass.
@@ -136,6 +142,13 @@ allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
 never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
 credentials are not visible to it (Issue #572, the same control as the quality
 gate).
+
+The credentials the repository declared in `quality_credentials` (Issues #573,
+#574) are resolved once in the completion phase and added to each child's
+environment, the same way the quality gate does, so tests that need them (for
+example minted AWS credentials) pass their baseline here too. Only the declared
+variables are added. If the mint fails, the check is reported as not applicable
+with a warning instead of running without them.
 
 ## Exemptions
 
@@ -173,11 +186,14 @@ Both keys are per-repo options, set operator-side under
 
 | Outcome                | Meaning                                                | Blocks the PR?            |
 | ---------------------- | ------------------------------------------------------ | ------------------------- |
-| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, or check disabled | No                        |
+| Not applicable         | No Deno config above a changed file and no root `Cargo.toml`, check disabled, or the repository's `quality_credentials` could not be resolved | No                        |
 | Completed, no survivor | Every mutant was killed, or the survivor is exempted   | No                        |
 | Completed, survivors   | At least one unexempted survivor                       | Yes                       |
 | Budget exhausted or capped | Remaining mutants untested (time budget or mutant cap); warning, not a pass | Only if a survivor found  |
 | Error                  | Runner failed (for example `cargo-mutants` missing, baseline tests fail), or diff unavailable | Yes, with a remedy |
+
+A Rust run killed at the budget before cargo-mutants finishes its baseline is
+"Budget exhausted", not "Error".
 
 ## Troubleshooting
 

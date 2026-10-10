@@ -49,7 +49,12 @@ export interface MutationRunnerSeams {
   runProcess(
     cmd: string,
     args: string[],
-    opts: { cwd: string; timeoutMs: number },
+    opts: {
+      cwd: string;
+      timeoutMs: number;
+      /** Extra variables for the child, set after the allowlist is applied. */
+      env?: Record<string, string>;
+    },
   ): Promise<ProcessResult>;
   /** Milliseconds. */
   now(): number;
@@ -72,6 +77,13 @@ export interface MutationRunInput {
   budgetSeconds: number;
   mutantCap?: number;
   jobs?: number;
+  /**
+   * The credentials this repository declared in `quality_credentials`
+   * (Issues #573, #574), already resolved. They reach every child the runner
+   * spawns, so tests that need them pass here as they do in the quality gate;
+   * nothing else beyond the allowlist does.
+   */
+  credentialEnv?: Record<string, string>;
 }
 
 const DENO_MARKERS = ["deno.json", "deno.jsonc", "deno.lock"];
@@ -262,6 +274,17 @@ function denoTestArgs(tests: readonly string[]): string[] {
   return ["test", "--no-check", "-A", ...tests];
 }
 
+/**
+ * Did this `deno test` run fail because a module could not be parsed, rather
+ * than because a test went red? A parse error aborts the module graph load, so
+ * deno prints `error: SyntaxError: ...` on stderr before any test runs. A
+ * `SyntaxError` thrown inside a test is printed on stdout, leaving stderr at
+ * `error: Test failed`.
+ */
+export function isParseFailure(run: ProcessResult): boolean {
+  return /^error: SyntaxError:/m.test(run.stderr);
+}
+
 async function runDeno(
   input: MutationRunInput,
   seams: MutationRunnerSeams,
@@ -373,6 +396,10 @@ async function runDeno(
     } else runnable.push(m);
   }
 
+  const childEnv = input.credentialEnv === undefined
+    ? {}
+    : { env: input.credentialEnv };
+
   // Baseline: the importing tests must pass unmutated.
   const baselined = new Set<string>();
   for (const m of runnable) {
@@ -384,6 +411,7 @@ async function runDeno(
     const base = await seams.runProcess("deno", denoTestArgs(tests), {
       cwd: cwdFor(m.file),
       timeoutMs: remaining(),
+      ...childEnv,
     });
     if (base.timedOut) return exhausted();
     if (base.code !== 0) {
@@ -408,12 +436,16 @@ async function runDeno(
       result = await seams.runProcess("deno", denoTestArgs(tests), {
         cwd: cwdFor(m.file),
         timeoutMs: remaining(),
+        ...childEnv,
       });
     } finally {
       await seams.writeTextFile(path, original);
     }
     if (result.timedOut) return exhausted();
     tested++;
+    // A mutant the parser rejects is unviable: no test ran, so it is neither
+    // killed nor a survivor.
+    if (result.code !== 0 && isParseFailure(result)) continue;
     if (result.code !== 0) killed++;
     else {
       survivors.push({
@@ -618,7 +650,13 @@ async function runCargoMutants(
       "--jobs",
       String(jobs),
     ],
-    { cwd: repoPath, timeoutMs: budgetSeconds * 1000 },
+    {
+      cwd: repoPath,
+      timeoutMs: budgetSeconds * 1000,
+      ...(input.credentialEnv === undefined
+        ? {}
+        : { env: input.credentialEnv }),
+    },
   );
 
   if (
@@ -642,11 +680,24 @@ async function runCargoMutants(
   const parsed = text === null ? null : parseOutcomes(text);
 
   if (proc.timedOut || (proc.code === 3 && parsed === null)) {
-    // Fail closed: a timeout with no parseable outcomes proves nothing.
     if (parsed === null) {
+      if (proc.timedOut) {
+        // Out of budget before the clean build and baseline test run finished,
+        // so no outcomes were written: report it honestly as an untried run
+        // (a warning), as the Deno baseline timeout is, not as an error.
+        return {
+          kind: "budget_exhausted",
+          language: "rust",
+          survivors: [],
+          killed: 0,
+          tested: 0,
+          total: 0,
+          budgetSeconds,
+        };
+      }
       return {
         kind: "error",
-        reason: "cargo mutants timed out and wrote no parseable " +
+        reason: "cargo mutants exited with timeouts and wrote no parseable " +
           "mutants.out/outcomes.json; cannot judge mutants",
       };
     }
@@ -714,7 +765,9 @@ async function walkTests(
  * build scripts and tests) after the agent has written tests, so a child never
  * inherits the worker's environment: it gets
  * {@link buildUntrustedCommandEnv}'s allowlist with `clearEnv`, the same
- * control every other repository-controlled spawn uses (Issue #572).
+ * control every other repository-controlled spawn uses (Issue #572). The
+ * credentials the repository declared come in as `opts.env` and are applied as
+ * `overrides`, as the quality gate does (Issues #573, #574).
  */
 export function defaultMutationRunnerSeams(
   /** Environment the allowlist is applied to; tests only. Default: the worker's. */
@@ -727,9 +780,10 @@ export function defaultMutationRunnerSeams(
         child = new Deno.Command(cmd, {
           args,
           cwd: opts.cwd,
-          env: buildUntrustedCommandEnv(
-            envSource === undefined ? {} : { source: envSource },
-          ),
+          env: buildUntrustedCommandEnv({
+            ...(envSource === undefined ? {} : { source: envSource }),
+            ...(opts.env === undefined ? {} : { overrides: opts.env }),
+          }),
           clearEnv: true,
           stdin: "null",
           stdout: "piped",

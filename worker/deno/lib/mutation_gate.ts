@@ -276,6 +276,36 @@ function ternaryConditionStart(line: string, q: number): number {
   return 0;
 }
 
+const STATEMENT_KEYWORD =
+  /(?:^|[^\w$.])(?:if|else|return|throw|yield|case|export|default|const|let|var|for|while|do|switch|try)(?![\w$])/;
+
+/**
+ * Whether `cond` can stand alone inside `!(...)`: brackets balance and no
+ * statement keyword sits outside a bracket. The backwards scan for a ternary's
+ * condition runs to the start of the line, so `if (c) return a ? b : c;`
+ * yields `if (c) return a`, and negating that would not parse.
+ */
+function isSingleExpression(cond: string): boolean {
+  let depth = 0;
+  let quote = "";
+  let topLevel = "";
+  for (let i = 0; i < cond.length; i++) {
+    const c = cond.charAt(i);
+    if (quote) {
+      if (c === "\\") i++;
+      else if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === "(" || c === "[" || c === "{") depth++;
+    else if (c === ")" || c === "]" || c === "}") {
+      depth--;
+      if (depth < 0) return false;
+    } else if (depth === 0) topLevel += c;
+  }
+  return depth === 0 && quote === "" && !STATEMENT_KEYWORD.test(topLevel);
+}
+
 function negateTernary(line: string): string | null {
   let q = line.indexOf(" ? ");
   while (q > 0 && !isCodeAt(line, q)) q = line.indexOf(" ? ", q + 1);
@@ -294,7 +324,9 @@ function negateTernary(line: string): string | null {
     }
   }
   const cond = line.slice(start, q).trimEnd();
-  if (cond === "" || !isCodeAt(line, start)) return null;
+  if (cond === "" || !isCodeAt(line, start) || !isSingleExpression(cond)) {
+    return null;
+  }
   return `${line.slice(0, start)}!(${cond})${line.slice(q)}`;
 }
 

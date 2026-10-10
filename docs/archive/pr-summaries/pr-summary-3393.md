@@ -57,8 +57,11 @@ flowchart LR
 - **Diff-scoped.** `parseAddedLines` reads the unified diff. Only added lines
   are mutated, and test files are skipped.
 - **Fail closed.** A runner error, a thrown exception, a failing baseline, an
-  uncollectable diff or an unparseable `outcomes.json` all block the PR with a
-  remedy. A runner that is not wired (no seam) is the only quiet pass.
+  uncollectable diff or an unparseable `outcomes.json` after a normal exit all
+  block the PR with a remedy. A Rust run killed at the budget before
+  cargo-mutants wrote any outcomes (its clean build and baseline test run
+  come first) is `budget_exhausted` with nothing tried, a warning, as a
+  Deno baseline timeout is. A runner that is not wired (no seam) is the only quiet pass.
 - **Budget and cap.** The default is 300 s (`DEFAULT_MUTATION_BUDGET_SECONDS`).
   The built-in Deno mutator also stops at 40 mutants per run
   (`DEFAULT_MUTANT_CAP`); candidates past the cap and added lines over 400
@@ -81,12 +84,21 @@ flowchart LR
 - **Child environment.** `defaultMutationRunnerSeams().runProcess` spawns with
   `buildUntrustedCommandEnv()` and `clearEnv: true` (Issue #572, the control
   every other repository-code spawn uses), so tests and cargo build scripts
-  cannot read `GH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN`.
+  cannot read `GH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN`. The credentials the
+  repository declared in `quality_credentials` (Issues #573, #574) are
+  resolved once in the completion phase with `resolveRepoCredentials`, passed
+  as `credentialEnv` and applied as `overrides`, as the quality gate does. A
+  failed mint makes the check `not_applicable` with a warning rather than
+  running the tests without them.
 - **Nested projects.** `findDenoConfigDir` walks from a changed file up to the
   root for a Deno marker; tests inside that directory run with it as `cwd`.
 - **No type-check in mutants.** `deno test --no-check`: a mutant that fails
   type-checking (`return undefined;` in a `: boolean` function) no longer
-  reads as a killed mutant.
+  reads as a killed mutant. A mutant the parser rejects (`error: SyntaxError:`
+  on stderr, `isParseFailure`) is
+  unviable: neither killed nor a survivor. `negateTernary` also declines a
+  condition holding a statement keyword or an unbalanced bracket
+  (`if (c) return a ? b : c;`).
 - **`mutants.out` stays out of the tree.** `cargo mutants --output <temp dir>`;
   the directory is removed in a `finally`, so the recovery commit's
   `git add -A` cannot stage it.
@@ -144,7 +156,7 @@ Backend-only change: no UI files are touched.
   These are the `confinement` tests in
   `worker/deno/tests/mutation_runner_test.ts`.
 
-**Docs sweep** — grep: `mutation`, `skip_mutation_check`, `exempt \(untestable\)`, `lateSummaryVerdicts`; section: `docs/mutation-check.md`, `docs/CONFIGURATION.md`; updated: `README.md`, `docs/CONFIGURATION.md`, `docs/CONTAINER.md`, `docs/mutation-check.md`, `docs/audits/dependency-inventory.md`, `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`
+**Docs sweep** — grep: `mutation`, `skip_mutation_check`, `exempt \(untestable\)`, `lateSummaryVerdicts`; section: `docs/mutation-check.md`, `docs/CONFIGURATION.md`; updated: `README.md`, `docs/CONFIGURATION.md` (the `quality_credentials` section now names the mutation check), `docs/CONTAINER.md`, `docs/mutation-check.md`, `docs/audits/dependency-inventory.md`, `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`
 
 **Related rules I checked:**
 
@@ -201,9 +213,10 @@ Node mutation tool (Stryker) or `package.json` was introduced.
 ## Test Plan
 
 - On the final head I ran `deno fmt --check`, `deno lint` and `deno check`
-  (whole project), and `deno task test:unit` over the mutation suites, the
-  summary-rule retry suites and every `completion_phase_*` suite: 757 passed
-  in the parallel pass and 129 in the serial pass, none failed.
+  on the changed files and `deno task test:unit` over the mutation suites, the
+  summary-rule retry suite, the untrusted-environment suite and every
+  `completion_phase_*` suite: 317 passed in the parallel pass and 48 in the
+  serial pass, none failed.
 - Each new test was shown red with only its change reverted (see Branch
   outcomes).
 - `./quality.sh` was not run on this head: the gate takes about 15 minutes and
@@ -213,37 +226,46 @@ Node mutation tool (Stryker) or `package.json` was introduced.
 
 Branch outcomes:
 
-- `worker/deno/lib/mutation_gate.ts:478` not applicable → pass and explain → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - not applicable passes and explains`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:488` error → fail closed → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - error fails closed with a remedy`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:503` exempt vs blocking split → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - surviving mutant blocks`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:508` budget exhausted → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - budget exhausted with a survivor blocks`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:510` mutant cap note with the untested count → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - a capped run is flagged with its untested count, never described as passed`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:516` survivors > 0 → block → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - surviving mutant blocks`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:384` over-long added line counted as dropped → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutantsDetailed - counts the candidates the cap and the line limit drop`; flipped → red
-- `worker/deno/lib/mutation_gate.ts:410` candidate past the cap counted as dropped → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutantsDetailed - counts the candidates the cap and the line limit drop`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:510` not applicable → pass and explain → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - not applicable passes and explains`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:520` error → fail closed → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - error fails closed with a remedy`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:535` exempt vs blocking split → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - surviving mutant blocks`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:540` budget exhausted → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - budget exhausted with a survivor blocks`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:542` mutant cap note with the untested count → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - a capped run is flagged with its untested count, never described as passed`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:548` survivors > 0 → block → `worker/deno/tests/mutation_gate_test.ts::evaluateMutationGate - surviving mutant blocks`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:416` over-long added line counted as dropped → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutantsDetailed - counts the candidates the cap and the line limit drop`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:442` candidate past the cap counted as dropped → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutantsDetailed - counts the candidates the cap and the line limit drop`; flipped → red
 - `worker/deno/lib/mutation_gate.ts:262` ternary condition spans the whole expression, stopping at an unmatched bracket → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutants - a ternary mutant negates the whole condition, not its last operand`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:286` no Deno config above a changed file → module skipped → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - a changed file with no deno config above it is skipped, one with a config is mutated`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:320` no mutants and nothing dropped → not applicable → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - added lines with nothing to mutate are not applicable`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:389` failing baseline → error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - failing baseline is an error and nothing is mutated`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:415` deno budget exhausted → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - a timed-out mutant run counts as budget exhausted`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:417` red tests → killed, green → survived → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that leave tests green survive`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:427` candidates dropped → capped, not completed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - the mutant cap is global and a capped run is not a pass`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:593` temporary `--output` directory removed on every path → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - mutants.out lands outside the repo and is removed`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:482` Timeout/CaughtMutant → killed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - caught and timed-out mutants are killed`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:487` MissedMutant → survivor → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a missed mutant is a survivor`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:626` cargo-mutants missing → error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing cargo-mutants is an error`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:630` unexpected exit code → error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - baseline failure and usage errors are errors`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:644` timeout with no outcomes → fail closed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a timeout with no outcomes fails closed`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:730` child gets only the allowlisted environment → `worker/deno/tests/mutation_runner_test.ts::defaultMutationRunnerSeams runProcess - the child gets the allowlisted environment, not the worker's`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:309` no Deno config above a changed file → module skipped → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - a changed file with no deno config above it is skipped, one with a config is mutated`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:343` no mutants and nothing dropped → not applicable → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - added lines with nothing to mutate are not applicable`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:417` failing baseline → error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - failing baseline is an error and nothing is mutated`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:444` deno budget exhausted → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - a timed-out mutant run counts as budget exhausted`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:449` red tests → killed, green → survived → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - mutants that leave tests green survive`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:459` candidates dropped → capped, not completed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - the mutant cap is global and a capped run is not a pass`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:625` temporary `--output` directory removed on every path → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - mutants.out lands outside the repo and is removed`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:514` Timeout/CaughtMutant → killed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - caught and timed-out mutants are killed`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:519` MissedMutant → survivor → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a missed mutant is a survivor`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:664` cargo-mutants missing → error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - missing cargo-mutants is an error`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:668` unexpected exit code → error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - baseline failure and usage errors are errors`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:682` exit 3 with no parseable outcomes → error (still fail closed) → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - exit 3 (mutant timeouts) with no outcomes still fails closed`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:684` killed at the budget with no outcomes → budget exhausted, not an error → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - a timeout before any outcomes is budget exhausted, not an error`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:448` a mutant the parser rejects → unviable, not killed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - a mutant the parser rejects is unviable, not killed`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:449` a SyntaxError thrown inside a running test → still killed → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - a SyntaxError thrown inside a test still kills the mutant`; flipped (`isParseFailure` made to match `SyntaxError` anywhere in stdout or stderr) → red
+- `worker/deno/lib/mutation_runner.ts:401` declared credentials passed to every deno child → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - the declared credentials reach every deno child`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:656` declared credentials passed to cargo → `worker/deno/tests/mutation_runner_test.ts::runMutationCheck rust - the declared credentials reach cargo`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:783` declared credentials applied as overrides, undeclared absent → `worker/deno/tests/mutation_runner_test.ts::defaultMutationRunnerSeams runProcess - a declared credential reaches the child and an undeclared one does not`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2809` resolved credentials handed to the runner → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a declared quality credential reaches the mutation runner and an undeclared one does not`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2793` failed credential mint → not applicable with a warning, runner not called → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a failed credential mint is not applicable with a warning, never a run without them`; flipped → red
+- `worker/deno/lib/mutation_gate.ts:327` ternary condition holding a statement keyword or unbalanced bracket → no ternary mutant → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutants - a ternary after a statement keyword is not negated into unparseable code`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:783` child gets only the allowlisted environment → `worker/deno/tests/mutation_runner_test.ts::defaultMutationRunnerSeams runProcess - the child gets the allowlisted environment, not the worker's`; flipped → red
 - `worker/deno/lib/summary_rule_gate_retry.ts:202` `allowsTestChanges` → test-allowing step 2, else documentation-only → `worker/deno/tests/summary_rule_gate_retry_test.ts::summary-rule retry - a mutation-check item allows test changes; other items stay documentation-only`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2857` a folded mutation verdict sets `allowsTestChanges` → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor folded into another gate's block still lets the recovery turn change tests`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2803` non-exhausted note (not applicable, N of M killed) logged → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a not-applicable mutation check is logged with its reason`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2745` skip_mutation_check → runner not called → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - skip_mutation_check never calls the runner`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2752` unwired runner → no block → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - an unwired runner does not block`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2778` null diff → block → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - an uncollectable PR diff blocks the PR and the runner is not called`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2793` runner throws → block → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a throwing runner blocks the PR (fail closed)`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2801` budget exhausted or capped, no survivor → warn and raise → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a capped mutation run warns that mutants were left untested`; flipped → red
-- `worker/deno/lib/phases/completion_phase.ts:2833` mutation verdict in lateSummaryVerdicts → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a mutation survivor is folded into an earlier gate's block`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2879` a folded mutation verdict sets `allowsTestChanges` → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor folded into another gate's block still lets the recovery turn change tests`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2825` non-exhausted note (not applicable, N of M killed) logged → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a not-applicable mutation check is logged with its reason`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2746` skip_mutation_check → runner not called → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - skip_mutation_check never calls the runner`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2753` unwired runner → no block → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - an unwired runner does not block`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2779` null diff → block → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - an uncollectable PR diff blocks the PR and the runner is not called`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2814` runner throws → block → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a throwing runner blocks the PR (fail closed)`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2823` budget exhausted or capped, no survivor → warn and raise → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a capped mutation run warns that mutants were left untested`; flipped → red
+- `worker/deno/lib/phases/completion_phase.ts:2855` mutation verdict in lateSummaryVerdicts → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a mutation survivor is folded into an earlier gate's block`; flipped → red
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 

@@ -111,6 +111,11 @@ A failed `mint` fails the phase loudly rather than running the checks without
 the credential they declared — a check that runs unauthenticated fails later
 and further from the cause. Values are never logged; only names are.
 
+The same credentials reach the diff-scoped mutation check, which reruns the
+repository's tests; there a failed `mint` makes the check not applicable, with
+a warning, instead of failing the phase (see
+[Diff-scoped mutation check](mutation-check.md)).
+
 
 ## Two axes of trust
 

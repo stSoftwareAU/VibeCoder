@@ -42,6 +42,7 @@ import {
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
@@ -2781,19 +2782,40 @@ async function completionBody(
           reason: `could not collect the PR diff against ${baseBranch}`,
         };
       } else {
-        try {
-          mutationResult = await deps.quality.runMutationCheck({
-            repoPath: state.repoPath,
-            diff: mutationDiff,
-            budgetSeconds,
-          });
-        } catch (error) {
+        // The quality gate's child gets the credentials this repository
+        // declared, and its tests need them here too or the baseline fails
+        // before mutation. A failed mint is not run without them: that would
+        // block the PR on a fault that is not its code.
+        const credentials = await resolveRepoCredentials(
+          repo,
+          config.repoConfig?.[repo]?.qualityCredentials,
+        );
+        if (!credentials.ok) {
+          logger.warn(
+            "Could not resolve quality_credentials for the mutation check",
+            { repo, error: credentials.error.message },
+          );
           mutationResult = {
-            kind: "error",
-            reason: `mutation runner failed: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+            kind: "not_applicable",
+            reason:
+              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
           };
+        } else {
+          try {
+            mutationResult = await deps.quality.runMutationCheck({
+              repoPath: state.repoPath,
+              diff: mutationDiff,
+              budgetSeconds,
+              credentialEnv: credentials.value.env,
+            });
+          } catch (error) {
+            mutationResult = {
+              kind: "error",
+              reason: `mutation runner failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
         }
       }
     }

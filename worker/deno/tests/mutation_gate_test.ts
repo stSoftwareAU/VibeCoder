@@ -141,6 +141,31 @@ Deno.test("generateDenoMutants - a ternary mutant negates the whole condition, n
   }
 });
 
+Deno.test("generateDenoMutants - a ternary after a statement keyword is not negated into unparseable code", () => {
+  // The condition scan runs to the start of the line; negating what it finds
+  // there (`if (cached) return fresh`) would not parse.
+  for (
+    const line of [
+      "  if (cached) return fresh ? value : stale;",
+      "} else return a ? 1 : 2;",
+      "export default a ? b : c;",
+    ]
+  ) {
+    const ternary = mutate(`${line}\n`, [1]).filter((x) =>
+      x.description === "negated ternary condition"
+    );
+    assertEquals(ternary, [], line);
+  }
+  // A keyword inside brackets, or a plain `return`, still mutates.
+  const kept = mutate("const x = items.some((i) => { return i; }) ? 1 : 2;\n", [
+    1,
+  ]).find((x) => x.description === "negated ternary condition");
+  assertEquals(
+    kept?.mutatedSource,
+    "const x = !(items.some((i) => { return i; })) ? 1 : 2;\n",
+  );
+});
+
 Deno.test("generateDenoMutants - swaps true and false outside strings", () => {
   const [m] = mutate('const s = "true"; const f = true;\n', [1]);
   assertEquals(m?.description, "swapped true -> false");

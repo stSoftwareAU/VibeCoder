@@ -38,7 +38,13 @@ const DIFF =
 interface Fake {
   seams: MutationRunnerSeams;
   files: Map<string, string>;
-  calls: Array<{ cmd: string; args: string[]; timeoutMs: number; cwd: string }>;
+  calls: Array<{
+    cmd: string;
+    args: string[];
+    timeoutMs: number;
+    cwd: string;
+    env?: Record<string, string>;
+  }>;
   clock: { t: number };
 }
 
@@ -57,7 +63,13 @@ function fake(
   let tempDirs = 0;
   const seams: MutationRunnerSeams = {
     runProcess: async (cmd, args, opts) => {
-      calls.push({ cmd, args, timeoutMs: opts.timeoutMs, cwd: opts.cwd });
+      calls.push({
+        cmd,
+        args,
+        timeoutMs: opts.timeoutMs,
+        cwd: opts.cwd,
+        ...(opts.env === undefined ? {} : { env: opts.env }),
+      });
       const r = await run(cmd, args, fs);
       clock.t += tick;
       return r;
@@ -226,6 +238,60 @@ Deno.test("runMutationCheck deno - a timed-out mutant run counts as budget exhau
   assert(r.kind === "budget_exhausted");
   assertEquals(r.tested, 0);
   assertEquals(f.files.get(`${REPO}/${MODULE}`), SOURCE);
+});
+
+const PARSE_ERROR_STDERR =
+  "error: SyntaxError: Expression expected\n  |\n1 | !(if (c) return a) ? 1 : 2;\n    at file:///repo/lib/m.ts:1:3\n";
+
+Deno.test("runMutationCheck deno - a mutant the parser rejects is unviable, not killed", async () => {
+  const f = fake(
+    denoFiles(),
+    (_c, _a, fs) =>
+      fs.get(`${REPO}/${MODULE}`) === SOURCE ? ok() : {
+        code: 1,
+        stdout: "\nok | 0 passed | 0 failed (0ms)\n",
+        stderr: PARSE_ERROR_STDERR,
+        timedOut: false,
+      },
+  );
+  const r = await runMutationCheck(input(), f.seams);
+  assert(r.kind === "completed", JSON.stringify(r));
+  assertEquals(r.killed, 0);
+  assertEquals(r.survivors, []);
+  assert(r.total > 0);
+});
+
+Deno.test("runMutationCheck deno - a SyntaxError thrown inside a test still kills the mutant", async () => {
+  // The same `error: SyntaxError:` text, but on stdout under a failed test
+  // (stderr is `error: Test failed`): the tests ran and one went red.
+  const f = fake(
+    denoFiles(),
+    (_c, _a, fs) =>
+      fs.get(`${REPO}/${MODULE}`) === SOURCE ? ok() : {
+        code: 1,
+        stdout:
+          "running 1 test from ./tests/m_test.ts\nt ... FAILED (1ms)\n\n ERRORS \n\nt => ./tests/m_test.ts:2:1\nerror: SyntaxError: Unexpected token\n",
+        stderr: "error: Test failed\n",
+        timedOut: false,
+      },
+  );
+  const r = await runMutationCheck(input(), f.seams);
+  assert(r.kind === "completed", JSON.stringify(r));
+  assertEquals(r.killed, r.total);
+  assert(r.total > 0);
+});
+
+Deno.test("runMutationCheck deno - the declared credentials reach every deno child", async () => {
+  const f = fake(denoFiles(), scripted(1));
+  const r = await runMutationCheck(
+    { ...input(), credentialEnv: { AWS_ACCESS_KEY_ID: "declared" } },
+    f.seams,
+  );
+  assert(r.kind === "completed");
+  assert(f.calls.length > 1);
+  for (const c of f.calls) {
+    assertEquals(c.env, { AWS_ACCESS_KEY_ID: "declared" });
+  }
 });
 
 Deno.test("runMutationCheck deno - failing baseline is an error and nothing is mutated", async () => {
@@ -543,22 +609,39 @@ Deno.test("runMutationCheck rust - a timed-out run is budget exhausted with part
   ], [1, 1, 2, 9, 60]);
 });
 
-Deno.test("runMutationCheck rust - a timeout with no outcomes fails closed", async () => {
-  for (
-    const proc of [
-      { code: 137, stdout: "", stderr: "", timedOut: true },
-      { code: 3, stdout: "", stderr: "", timedOut: false },
-    ]
-  ) {
-    const none = await runMutationCheck(rsInput, rustFake(null, proc).seams);
-    assert(none.kind === "error", JSON.stringify(none));
-    assertStringIncludes(none.reason, "timed out");
-    const bad = await runMutationCheck(
-      rsInput,
-      rustFake("not json", proc).seams,
-    );
-    assertEquals(bad.kind, "error");
+Deno.test("runMutationCheck rust - a timeout before any outcomes is budget exhausted, not an error", async () => {
+  // cargo-mutants writes outcomes.json only after its clean build and baseline
+  // test run, so a run killed before then leaves none. That is an untried run
+  // (a warning), like the Deno baseline timeout, never a blocking error.
+  const proc = { code: 137, stdout: "", stderr: "", timedOut: true };
+  for (const outcomes of [null, "not json"]) {
+    const r = await runMutationCheck(rsInput, rustFake(outcomes, proc).seams);
+    assert(r.kind === "budget_exhausted", JSON.stringify(r));
+    assertEquals(r.language, "rust");
+    assertEquals(r.survivors, []);
+    assertEquals([r.killed, r.tested, r.budgetSeconds], [0, 0, 60]);
   }
+});
+
+Deno.test("runMutationCheck rust - exit 3 (mutant timeouts) with no outcomes still fails closed", async () => {
+  const proc = { code: 3, stdout: "", stderr: "", timedOut: false };
+  for (const outcomes of [null, "not json"]) {
+    const r = await runMutationCheck(rsInput, rustFake(outcomes, proc).seams);
+    assert(r.kind === "error", JSON.stringify(r));
+    assertStringIncludes(r.reason, "no parseable");
+  }
+});
+
+Deno.test("runMutationCheck rust - the declared credentials reach cargo", async () => {
+  const f = rustFake(outcomesJson([]), ok(0));
+  await runMutationCheck(
+    { ...rsInput, credentialEnv: { AWS_ACCESS_KEY_ID: "declared" } },
+    f.seams,
+  );
+  assertEquals(f.calls[0]?.env, { AWS_ACCESS_KEY_ID: "declared" });
+  const none = rustFake(outcomesJson([]), ok(0));
+  await runMutationCheck(rsInput, none.seams);
+  assertEquals(none.calls[0]?.env, undefined);
 });
 
 Deno.test("runMutationCheck rust - a stale outcomes.json in the repo is neither read nor deleted", async () => {
@@ -872,4 +955,22 @@ Deno.test("defaultMutationRunnerSeams runProcess - the child gets the allowliste
   // this test process itself inherited (clearEnv).
   const allowed = new Set(ALLOWED_ENV_NAMES);
   assertEquals(names.filter((n) => !allowed.has(n)), []);
+});
+
+Deno.test("defaultMutationRunnerSeams runProcess - a declared credential reaches the child and an undeclared one does not", async () => {
+  const source: Record<string, string> = {
+    PATH: Deno.env.get("PATH") ?? "/usr/bin:/bin",
+    UNDECLARED_API_TOKEN: "undeclared_mutation_runner_test_secret",
+  };
+  const r = await defaultMutationRunnerSeams(source).runProcess("env", [], {
+    cwd: Deno.cwd(),
+    timeoutMs: 20_000,
+    env: { DECLARED_API_TOKEN: "declared_mutation_runner_test_value" },
+  });
+  assertEquals(r.code, 0, r.stderr);
+  const lines = r.stdout.split("\n");
+  assert(
+    lines.includes("DECLARED_API_TOKEN=declared_mutation_runner_test_value"),
+  );
+  assertEquals(r.stdout.includes("UNDECLARED_API_TOKEN"), false);
 });

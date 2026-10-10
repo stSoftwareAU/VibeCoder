@@ -497,3 +497,38 @@ Deno.test("resolveMutationBudgetSeconds - default, valid and invalid values", ()
     MAX_MUTATION_BUDGET_SECONDS,
   );
 });
+
+Deno.test("completion - a declared quality credential reaches the mutation runner and an undeclared one does not", async () => {
+  const declared = await runCompletion({
+    mutation: completed([]),
+    repoConfig: {
+      qualityCredentials: { mint: "printf 'DECLARED_KEY=minted\\n'" },
+    },
+  });
+  assertEquals(declared.runnerInputs.length, 1);
+  assertEquals(declared.runnerInputs[0]!.credentialEnv, {
+    DECLARED_KEY: "minted",
+  });
+
+  const undeclared = await runCompletion({ mutation: completed([]) });
+  assertEquals(undeclared.runnerInputs[0]!.credentialEnv, {});
+});
+
+Deno.test("completion - a failed credential mint is not applicable with a warning, never a run without them", async () => {
+  const outcome = await runCompletion({
+    mutation: completed([SURVIVOR]),
+    repoConfig: { qualityCredentials: { mint: "exit 7" } },
+  });
+
+  assertEquals(outcome.runnerInputs.length, 0, "runner must not run");
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(
+    outcome.warnings.some((w) => w.includes("quality_credentials")),
+    true,
+  );
+  assertEquals(
+    outcome.infos.some((i) => i.includes("quality_credentials")),
+    true,
+  );
+});
