@@ -38,12 +38,12 @@ Backend and prompt-only change; no UI file touched. Behaviour is pinned by `work
 
 ```mermaid
 flowchart LR
-    S[PR summary Docs sweep line] --> P[parseDocsSweepLine: section, siblings]
-    P --> G{validateDocsSweep}
-    G -- no siblings / placeholder / no quoted term --> B[block + one recovery turn]
-    G -- valid --> T[extractSweepTerms: grep + sibling terms]
-    T --> R[checkDocsSweepTerms: git grep at HEAD]
-    R -- unnamed hit outside diff --> C[advisory PR comment]
+    S[PR summary Docs sweep line] --․> P[parseDocsSweepLine: section, siblings]
+    P --․> G{validateDocsSweep}
+    G -- no siblings / placeholder / no quoted term --․> B[block + one recovery turn]
+    G -- valid --․> T[extractSweepTerms: grep + sibling terms]
+    T --․> R[checkDocsSweepTerms: git grep at HEAD]
+    R -- unnamed hit outside diff --․> C[advisory PR comment]
 ```
 
 Issue numbers the diff cites: #3371: Sibling-member grep for an added set member is prose only: fleet PRs still leave the list one short after #3137 (GRQ-AutoTrader#2460, #2481, #2682, #2792). GRQ-AutoTrader#2460: Evaluation run reads the whole decision-log partition for purchase ratings on every run (Issue #2377). GRQ-AutoTrader#2481: Report the loan, interest charged and margin settings; performance nets interest (#2129). GRQ-AutoTrader#2682: Policy: minimum hold days, so a name bought today isn't sold tomorrow (Issue #2589). GRQ-AutoTrader#2792: Live policy: switch on rebalancing trims (position and industry tolerances) (Issue #2749). I looked each one up with `gh` in this run.
@@ -54,7 +54,7 @@ Related existing rules checked for agreement: CODING-STANDARDS.md *Adding a memb
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+<․!-- vibe-spec-review inputs="diff+issue-body" --․>
 
 - **met** — Add a required `siblings:` part to the **Docs sweep** line, modelled on `section:` … A bare placeholder is refused, as `section:` refuses one — evidence: `worker/deno/tests/docs_sweep_gate_test.ts::validateDocsSweep - a line with no siblings: is refused, and accepted once an explained none is added` — reviewer: met
 - **met** — In `docs_sweep_gate.ts`, parse and validate `siblings:` alongside `section:`, and include the sibling terms in the term re-run — evidence: `worker/deno/tests/docs_sweep_hits_test.ts::checkDocsSweepTerms - a sibling term's untouched, unnamed hit is reported with the sibling term` — reviewer: met
@@ -67,7 +67,7 @@ Related existing rules checked for agreement: CODING-STANDARDS.md *Adding a memb
 
 ## Standards Review
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+<․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
 - **violation** — Writing a gate over text: the gate and `extractSiblingTerms` normalised a quoted `none` differently, so `siblings: "none" — why` was refused — evidence: `worker/deno/lib/docs_sweep_gate.ts:340` — reason: fixed in this diff (shared `isSiblingsNegative`, plus tests for the backticked, straight- and curly-quoted variants)
 - **violation** — Check where you insert: "The same terms are also re-run over source files" now followed the new siblings paragraph — evidence: `worker/deno/lib/docs_sweep_hits.ts:28` — reason: fixed in this diff (reworded to "The grep and sibling terms")
@@ -78,7 +78,7 @@ Related existing rules checked for agreement: CODING-STANDARDS.md *Adding a memb
 
 - `worker/deno/tests/docs_sweep_gate_test.ts`: new siblings tests (refused when missing, a bare placeholder, or quoting no term; a quoted `none` negative accepted; both problems reported, section first; wrapped continuation; the gate comment's examples pass; hostile linear-growth cases). `siblings:` appended to existing fixtures.
 - `worker/deno/tests/docs_sweep_hits_test.ts`: `extractSiblingTerms`, `isSiblingsNegative`, `extractSweepTerms`, sibling re-run through `checkDocsSweepTerms` (reported, cleared when named, sibling-only line checked), hostile linear-growth cases.
-- `worker/deno/tests/prompt_docs_sweep_siblings_3371_test.ts` (new): pins `siblings:` and `siblings: none —` per section. `deno task drift-pins-on-base origin/milestone/fleet-guidance-issue-and-feedback-prompts …` reported every pinned phrase absent from its base section: issue Instructions, issue PR Summary File, both *A Code Change Owes a Docs Change* sections, pr_feedback *Making Changes*. It also runs every Docs sweep example in the issue prompt through `validateDocsSweep`. Removing `siblings:` from the skeleton example turned it red.
+- `worker/deno/tests/prompt_docs_sweep_siblings_3371_test.ts` (new): pins `siblings:` in each section, and also `siblings: none —` in the issue prompt's Instructions and PR Summary File sections; the CODING-STANDARDS.md and coding_guidelines *A Code Change Owes a Docs Change* sections and the pr_feedback *Making Changes* section are pinned on `siblings:` alone. `deno task drift-pins-on-base origin/milestone/fleet-guidance-issue-and-feedback-prompts …` reported every pinned phrase absent from its base section: issue Instructions, issue PR Summary File, both *A Code Change Owes a Docs Change* sections, pr_feedback *Making Changes*. It also runs every Docs sweep example in the issue prompt through `validateDocsSweep`. Removing `siblings:` from the skeleton example turned it red.
 - About 25 other test files gained `; siblings: none — no existing set gained a member` on their Docs sweep fixtures. No assertion was removed from any existing test.
 - Red checks: removing the siblings checks from `evaluateApplicable` turned the refusal tests red. Using `extractGrepTerms` alone in `checkDocsSweepTerms` turned the sibling re-run tests red. Dropping the `none` negative from `extractSiblingTerms` turned its test red. A local `/^none\b/i` in the gate turned the quoted-negative test red. Inverting `isSiblingsNegative` or `isBarePlaceholder` turned the hostile cases red.
 - `deno task test:unit tests/docs_sweep_gate_test.ts tests/docs_sweep_hits_test.ts tests/completion_phase_docs_sweep_test.ts tests/prompt_docs_sweep_siblings_3371_test.ts tests/coding_guidelines_additive_member_3137_test.ts`: passed on the final head.
