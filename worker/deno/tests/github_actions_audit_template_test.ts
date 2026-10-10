@@ -31,6 +31,7 @@ import { parse as parseYaml } from "@std/yaml/parse";
 
 import {
   ACTIONS_POLICY_PERMISSION,
+  ADMINISTRATION_READ_PERMISSION,
   assembleGitHubActionsAuditPrompt,
   createGitHubActionsAuditTemplate,
   GITHUB_ACTIONS_AUDIT_BODY_FINGERPRINT,
@@ -39,6 +40,7 @@ import {
   githubActionsAuditTemplate,
   type GitHubActionsAuditTemplateDeps,
   isNotPermittedLookup,
+  permissionNeededFor,
   renderGitHubActionsAuditSummary,
   runGitHubActionsAuditScan,
 } from "../lib/idle_task_templates/github_actions_audit_template.ts";
@@ -231,6 +233,9 @@ function makeGhStub(scenario: {
       }
       if (/\/contents\/action\.ya?ml/.test(endpoint)) {
         return Promise.reject(new Error("HTTP 404: Not Found"));
+      }
+      if (endpoint.endsWith("/private-vulnerability-reporting")) {
+        return Promise.resolve(JSON.stringify({ enabled: true }));
       }
       if (endpoint.includes("/rules/branches/")) {
         return Promise.resolve(JSON.stringify([{
@@ -3528,6 +3533,7 @@ Deno.test(
         options.onCheckSkipped(
           "secret scanning / push protection",
           "private repository — needs paid GitHub Secret Protection",
+          true,
         );
         return Promise.resolve([]);
       },
@@ -3557,6 +3563,138 @@ Deno.test(
       result.summary,
       "secret scanning / push protection (private repository — needs paid " +
         "GitHub Secret Protection)",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - private vulnerability reporting skipped on a private repository is logged at INFO, never WARN or ERROR (Issue #3268)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+    });
+    const { logger, records } = makeLogger();
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanRepoSettingsFn: (_repo, _gh, options) => {
+        options.onCheckSkipped(
+          "private vulnerability reporting",
+          "private repository — GitHub offers it on public repositories only",
+          false,
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assertEquals(records.filter((r) => r.startsWith("error:")), []);
+    assertEquals(
+      records.filter((r) =>
+        r.startsWith("warn:") && r.includes("private vulnerability reporting")
+      ),
+      [],
+    );
+    assert(
+      records.some((r) =>
+        r.startsWith("info:") &&
+        r.includes("private vulnerability reporting") &&
+        r.includes("skipped")
+      ),
+      JSON.stringify(records),
+    );
+    assertStringIncludes(result.summary, "NOT covered by this audit");
+    assertStringIncludes(
+      result.summary,
+      "private vulnerability reporting (private repository — GitHub " +
+        "offers it on public repositories only)",
+    );
+  },
+);
+
+Deno.test(
+  "runTask - a 403 on the private-vulnerability-reporting read names the Administration permission, not Actions policies (Issue #3268)",
+  async () => {
+    const { gh, creates } = makeGhStub({
+      beforeSnapshot: [],
+      afterSnapshot: [],
+    });
+    const { logger, records } = makeLogger();
+    const t = makeAuditTemplate({
+      ghCommandFn: gh,
+      loadPromptFn: okPrompt,
+      ensureLabelFn: () => Promise.resolve({ ok: true, value: undefined }),
+      checkLinterInCIFn: linterOk,
+      scanRunnerDeprecationsFn: () => Promise.resolve([]),
+      readWorkflowFilesFn: () => Promise.resolve([]),
+      scanActionAdvisoriesFn: () => Promise.resolve([]),
+      getDefaultBranchFn: () => Promise.resolve({ ok: true, value: "Develop" }),
+      scanRepoSettingsFn: (_repo, _gh, options) => {
+        options.onLookupFailure(
+          "private-vulnerability-reporting",
+          "gh command failed (exit 1): (HTTP 403)",
+        );
+        return Promise.resolve([]);
+      },
+      runScanFn: () => Promise.resolve({ ok: true, value: true }),
+      logger,
+    });
+
+    const result = await t.runTask({
+      repo: "org/repo",
+      workDir: "/tmp/repo",
+      idleTaskIssueNumber: 50,
+    });
+
+    assert(result.ok);
+    assertEquals(creates.length, 0);
+    assertEquals(records.filter((r) => r.startsWith("error:")), []);
+    const warnings = records.filter((r) =>
+      r.startsWith("warn:") && r.includes("private-vulnerability-reporting")
+    );
+    assertEquals(warnings.length, 1, JSON.stringify(warnings));
+    assert(
+      warnings[0]!.includes(ADMINISTRATION_READ_PERMISSION),
+      warnings[0],
+    );
+    assert(
+      !warnings[0]!.includes(ACTIONS_POLICY_PERMISSION),
+      warnings[0],
+    );
+    assertStringIncludes(result.summary, ADMINISTRATION_READ_PERMISSION);
+    assert(
+      !result.summary.includes(ACTIONS_POLICY_PERMISSION),
+      result.summary,
+    );
+  },
+);
+
+Deno.test(
+  "permissionNeededFor - names Administration for private-vulnerability-reporting, Actions policies for everything else (Issue #3268)",
+  () => {
+    assertEquals(
+      permissionNeededFor("private-vulnerability-reporting"),
+      ADMINISTRATION_READ_PERMISSION,
+    );
+    assertEquals(
+      permissionNeededFor("actions/permissions/workflow"),
+      ACTIONS_POLICY_PERMISSION,
     );
   },
 );
