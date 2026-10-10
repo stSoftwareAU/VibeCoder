@@ -20,14 +20,18 @@ import {
   CODE_SECURITY_SKIP_NOTE,
   COPILOT_RULESET_NAME,
   findCodeownersOnDefaultBranch,
+  findFileOnDefaultBranch,
   hardenRepo,
   isSecretScanningSkipped,
   MILESTONE_REF_PATTERN,
   needsPaidSecretProtection,
+  outcomeSkipNotes,
   planRepoSettingsHardening,
+  PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE,
   type RepoSettingsSnapshot,
   resolveTransitiveActionCoordinates,
   SECRET_PROTECTION_SKIP_NOTE,
+  SECURITY_POLICY_PATHS,
 } from "../lib/repo_settings_harden.ts";
 
 const OPEN = {
@@ -806,6 +810,7 @@ function hardenedRoutes(repo: string): Record<string, unknown> {
       state: "configured",
       query_suite: "default",
     },
+    [`repos/${repo}/private-vulnerability-reporting`]: { enabled: true },
   };
 }
 
@@ -1209,6 +1214,56 @@ Deno.test("findCodeownersOnDefaultBranch - an invalid repo is an error without a
   const result = await findCodeownersOnDefaultBranch("not a repo", gh);
   assertEquals(result.state, "error");
   assertEquals(reads, []);
+});
+
+// findFileOnDefaultBranch + SECURITY_POLICY_PATHS (Issue #3269)
+Deno.test("SECURITY_POLICY_PATHS - lists GitHub's three recognised locations (Issue #3269)", () => {
+  assertEquals([...SECURITY_POLICY_PATHS], [
+    "SECURITY.md",
+    ".github/SECURITY.md",
+    "docs/SECURITY.md",
+  ]);
+});
+
+for (const path of SECURITY_POLICY_PATHS) {
+  Deno.test(`findFileOnDefaultBranch - SECURITY.md present at ${path} (Issue #3269)`, async () => {
+    const repo = "harden-test/policy";
+    const { gh } = makeGh({
+      [`repos/${repo}/contents/${path}`]: { path, type: "file" },
+    });
+    assertEquals(
+      await findFileOnDefaultBranch(repo, gh, SECURITY_POLICY_PATHS),
+      { state: "present", path },
+    );
+  });
+}
+
+Deno.test("findFileOnDefaultBranch - absent only when every path is a 404; a non-404 is an error (Issue #3269)", async () => {
+  const repo = "harden-test/policy";
+  const missing = makeGh({});
+  assertEquals(
+    await findFileOnDefaultBranch(repo, missing.gh, SECURITY_POLICY_PATHS),
+    { state: "absent" },
+  );
+  assertEquals(missing.reads.length, 3);
+  const flaky = makeGh({
+    [`repos/${repo}/contents/.github/SECURITY.md`]: SERVER_ERROR(),
+  });
+  const result = await findFileOnDefaultBranch(
+    repo,
+    flaky.gh,
+    SECURITY_POLICY_PATHS,
+  );
+  assert(
+    result.state === "error" && result.message.includes("HTTP 500"),
+    JSON.stringify(result),
+  );
+  const invalid = makeGh({});
+  assertEquals(
+    (await findFileOnDefaultBranch("not a repo", invalid.gh, ["X"])).state,
+    "error",
+  );
+  assertEquals(invalid.reads, []);
 });
 
 Deno.test("hardenRepo - an invalid repo is one failed result and no gh call (Issue #2626)", async () => {
@@ -2397,5 +2452,278 @@ Deno.test("hardenRepo - an unreadable workflow tree holds CodeQL rather than ris
     report.results.filter((r) => r.step.kind === "codeql-default-setup")
       .map((r) => r.status),
     ["skipped"],
+  );
+});
+
+// =============================================================================
+// Issue #3267 — private vulnerability reporting kept on for public
+// repositories only
+// =============================================================================
+
+function pvrPlan(snapshot: RepoSettingsSnapshot) {
+  return planRepoSettingsHardening(snapshot, {
+    thirdPartyPatterns: [],
+    defaultBranch: "main",
+  }).filter((s) => s.kind === "private-vulnerability-reporting");
+}
+
+Deno.test("planRepoSettingsHardening - a repo reporting private vulnerability reporting off plans a bare PUT (Issue #3267)", () => {
+  const plan = pvrPlan({
+    privateVulnerabilityReporting: { enabled: false },
+  });
+  assertEquals(plan.length, 1);
+  assertEquals(plan[0]?.method, "PUT");
+  assertEquals(plan[0]?.endpoint, "private-vulnerability-reporting");
+  assertEquals(plan[0]?.body, undefined);
+  assertEquals(plan[0]?.held, undefined);
+});
+
+Deno.test("planRepoSettingsHardening - private vulnerability reporting already on, or absent, plans nothing (Issue #3267)", () => {
+  assertEquals(
+    pvrPlan({ privateVulnerabilityReporting: { enabled: true } }),
+    [],
+  );
+  assertEquals(pvrPlan({}), []);
+});
+
+Deno.test("hardenRepo - a public repo with private vulnerability reporting off gets a bare PUT (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = { enabled: false };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, [{
+    method: "PUT",
+    endpoint: `repos/${repo}/private-vulnerability-reporting`,
+    body: undefined,
+  }]);
+  assertEquals(
+    report.results.map((r) => `${r.step.kind} ${r.status}`),
+    ["private-vulnerability-reporting applied"],
+  );
+  assertEquals(report.pvrSkipNote, undefined);
+});
+
+Deno.test("hardenRepo - private vulnerability reporting already on makes no write (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.results, []);
+});
+
+Deno.test("hardenRepo - a dry run plans private vulnerability reporting without writing (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = { enabled: false };
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: false,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(
+    report.results.map((r) => `${r.step.kind} ${r.status}`),
+    ["private-vulnerability-reporting planned"],
+  );
+});
+
+for (
+  const [label, repoInfo] of [
+    ["private", { visibility: "private", private: true }],
+    ["internal", { visibility: "internal", private: true }],
+  ] as const
+) {
+  Deno.test(`hardenRepo - a ${label} repo makes no private-vulnerability-reporting call and says why (Issue #3267)`, async () => {
+    const repo = uniqueRepo();
+    const routes = hardenedRoutes(repo);
+    routes[`repos/${repo}`] = {
+      ...repoInfo,
+      security_and_analysis: {
+        secret_scanning: { status: "enabled" },
+        secret_scanning_push_protection: { status: "enabled" },
+      },
+    };
+    routes[`repos/${repo}/private-vulnerability-reporting`] = {
+      enabled: false,
+    };
+    const { gh, writes, reads } = makeGh(routes);
+    const report = await hardenRepo(repo, {
+      apply: true,
+      ghCommandFn: gh,
+      defaultBranchCachePath: BRANCH_CACHE,
+    });
+    assertEquals(
+      reads.filter((r) => r.includes("private-vulnerability-reporting")),
+      [],
+    );
+    assertEquals(writes, []);
+    assertEquals(report.results, []);
+    assertEquals(
+      report.pvrSkipNote,
+      PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE,
+    );
+  });
+}
+
+Deno.test("hardenRepo - an unreadable visibility still reads and writes private vulnerability reporting, never a silent skip (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = {
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  };
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh, writes, reads } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assert(reads.includes(`repos/${repo}/private-vulnerability-reporting`));
+  assertEquals(writes, [{
+    method: "PUT",
+    endpoint: `repos/${repo}/private-vulnerability-reporting`,
+    body: undefined,
+  }]);
+  assertEquals(report.pvrSkipNote, undefined);
+});
+
+Deno.test("hardenRepo - a failed repos/{repo} read fails rather than silently skipping private vulnerability reporting (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = SERVER_ERROR();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assert(
+    report.results.some((r) =>
+      r.status === "failed" && r.step.endpoint === `repos/${repo}`
+    ),
+  );
+  assertEquals(
+    writes.filter((w) =>
+      w.endpoint === `repos/${repo}/private-vulnerability-reporting`
+    ),
+    [],
+  );
+  assertEquals(report.pvrSkipNote, undefined);
+});
+
+Deno.test("hardenRepo - a refused private-vulnerability-reporting PUT is a failed result, never a throw (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh: inner } = makeGh(routes);
+  const gh = (args: string[]) =>
+    args.includes("--method")
+      ? Promise.reject(new Error("HTTP 403: Resource not accessible"))
+      : inner(args);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  const pvr = report.results.filter((r) =>
+    r.step.kind === "private-vulnerability-reporting"
+  );
+  assertEquals(pvr.map((r) => r.status), ["failed"]);
+  assert(pvr[0]?.detail?.includes("HTTP 403"), pvr[0]?.detail);
+});
+
+Deno.test("hardenRepo - a non-404 private-vulnerability-reporting read failure plans nothing about it (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = SERVER_ERROR();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  const pvr = report.results.filter((r) =>
+    r.step.kind === "private-vulnerability-reporting"
+  );
+  assertEquals(pvr.length, 1);
+  assertEquals(pvr[0]?.status, "failed");
+  assert(
+    pvr[0]?.detail?.includes("private-vulnerability-reporting"),
+    pvr[0]?.detail,
+  );
+});
+
+Deno.test("hardenRepo - a 404 on private vulnerability reporting plans nothing (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}/private-vulnerability-reporting`] = NOT_FOUND();
+  const { gh, writes } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assertEquals(writes, []);
+  assertEquals(report.results, []);
+});
+
+Deno.test("outcomeSkipNotes - returns the three notes in order when all are set (Issue #3267)", () => {
+  assertEquals(
+    outcomeSkipNotes({
+      skipNote: "secret",
+      codeqlSkipNote: "codeql",
+      pvrSkipNote: "pvr",
+    }),
+    ["secret", "codeql", "pvr"],
+  );
+});
+
+Deno.test("outcomeSkipNotes - returns an empty array when none are set (Issue #3267)", () => {
+  assertEquals(outcomeSkipNotes({}), []);
+});
+
+Deno.test("outcomeSkipNotes - a private repo's hardenRepo outcome includes the PVR skip note (Issue #3267)", async () => {
+  const repo = uniqueRepo();
+  const routes = hardenedRoutes(repo);
+  routes[`repos/${repo}`] = {
+    visibility: "private",
+    private: true,
+    security_and_analysis: {
+      secret_scanning: { status: "enabled" },
+      secret_scanning_push_protection: { status: "enabled" },
+    },
+  };
+  routes[`repos/${repo}/private-vulnerability-reporting`] = {
+    enabled: false,
+  };
+  const { gh } = makeGh(routes);
+  const report = await hardenRepo(repo, {
+    apply: true,
+    ghCommandFn: gh,
+    defaultBranchCachePath: BRANCH_CACHE,
+  });
+  assert(
+    outcomeSkipNotes(report).includes(
+      PRIVATE_VULNERABILITY_REPORTING_SKIP_NOTE,
+    ),
   );
 });
