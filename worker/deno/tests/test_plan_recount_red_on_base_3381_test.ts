@@ -305,3 +305,14 @@ Deno.test("unchecked run results - quality.sh and file-less green blocks are not
     [],
   );
 });
+
+Deno.test("paired run result - two passed figures are not read as a pass/fail pair", () => {
+  const summary =
+    "## Test Plan\n- `tests/foo_test.ts`: 5 passed, 5 passed after a re-run.\n";
+  const headCounts = new Map([["tests/foo_test.ts", {
+    total: 5,
+    runnable: 5,
+  }]]);
+  assertEquals(findTestPlanMismatches({ summary, headCounts }), []);
+  assertEquals(findUncheckedRunResults({ summary, headCounts }), []);
+});
