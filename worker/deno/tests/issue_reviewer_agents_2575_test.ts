@@ -18,6 +18,10 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildIssueRunAgents,
+  EXPLORER_AGENT_NAME,
+  HAIKU_STANDARDS_REVIEWER_EFFORT,
+  HAIKU_STANDARDS_REVIEWER_MODEL,
+  HAIKU_SUB_AGENT_GUIDANCE,
   ISSUE_EXECUTOR_AGENT_NAME,
   ISSUE_REVIEWER_DISALLOWED_TOOLS,
   ISSUE_REVIEWER_TOOLS,
@@ -55,6 +59,7 @@ function reviewersOnly() {
   const agents = buildIssueRunAgents({
     executorSplit: false,
     reviewerAgents: true,
+    subAgentTier: "sonnet",
   });
   assert(agents, "the reviewer key on must build definitions");
   return agents;
@@ -62,7 +67,11 @@ function reviewersOnly() {
 
 Deno.test("issue reviewers - both reviewers are defined whether or not the split is on", () => {
   for (const executorSplit of [false, true]) {
-    const agents = buildIssueRunAgents({ executorSplit, reviewerAgents: true });
+    const agents = buildIssueRunAgents({
+      executorSplit,
+      reviewerAgents: true,
+      subAgentTier: "sonnet",
+    });
     for (const name of REVIEWERS) {
       assert(agents?.[name], `${name} missing with split=${executorSplit}`);
     }
@@ -71,21 +80,32 @@ Deno.test("issue reviewers - both reviewers are defined whether or not the split
 
 Deno.test("issue reviewers - each switch adds exactly its own definitions", () => {
   assertEquals(
-    buildIssueRunAgents({ executorSplit: false, reviewerAgents: false }),
+    buildIssueRunAgents({
+      executorSplit: false,
+      reviewerAgents: false,
+      subAgentTier: "sonnet",
+    }),
     undefined,
     "both off emits no --agents at all",
   );
   assertEquals(Object.keys(reviewersOnly()).sort(), [...REVIEWERS].sort());
   assertEquals(
     Object.keys(
-      buildIssueRunAgents({ executorSplit: true, reviewerAgents: false }) ??
-        {},
+      buildIssueRunAgents({
+        executorSplit: true,
+        reviewerAgents: false,
+        subAgentTier: "sonnet",
+      }) ?? {},
     ),
     [ISSUE_EXECUTOR_AGENT_NAME],
   );
   assertEquals(
     Object.keys(
-      buildIssueRunAgents({ executorSplit: true, reviewerAgents: true }) ?? {},
+      buildIssueRunAgents({
+        executorSplit: true,
+        reviewerAgents: true,
+        subAgentTier: "sonnet",
+      }) ?? {},
     ).sort(),
     [...REVIEWERS, ISSUE_EXECUTOR_AGENT_NAME].sort(),
   );
@@ -234,4 +254,120 @@ Deno.test("issue reviewers - the prompt's Standards brief limits violation to do
     section,
     "correctness, security or the stated requirements",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Issue #3402 — tier-aware --agents
+// ---------------------------------------------------------------------------
+
+const SONNET_FIXTURE: Record<string, string> = JSON.parse(
+  await Deno.readTextFile(
+    new URL(
+      "./fixtures/issue_run_agents/sonnet_tier_3402.json",
+      import.meta.url,
+    ),
+  ),
+);
+
+Deno.test("issue reviewers - the sonnet tier is byte-identical to the pre-#3402 output", () => {
+  assertEquals(
+    JSON.stringify(
+      buildIssueRunAgents({
+        executorSplit: true,
+        reviewerAgents: false,
+        subAgentTier: "sonnet",
+      }),
+    ),
+    SONNET_FIXTURE["executorSplit"],
+  );
+  assertEquals(
+    JSON.stringify(
+      buildIssueRunAgents({
+        executorSplit: false,
+        reviewerAgents: true,
+        subAgentTier: "sonnet",
+      }),
+    ),
+    SONNET_FIXTURE["reviewerAgents"],
+  );
+  assertEquals(
+    JSON.stringify(
+      buildIssueRunAgents({
+        executorSplit: true,
+        reviewerAgents: true,
+        subAgentTier: "sonnet",
+      }),
+    ),
+    SONNET_FIXTURE["executorSplit+reviewerAgents"],
+  );
+  assertEquals(
+    buildIssueRunAgents({
+      executorSplit: false,
+      reviewerAgents: false,
+      subAgentTier: "sonnet",
+    }),
+    undefined,
+    "a sonnet-tier run with both switches off still emits no --agents",
+  );
+});
+
+Deno.test("issue reviewers - the haiku tier with both switches on carries the executor, both reviewers and the explorer", () => {
+  const agents = buildIssueRunAgents({
+    executorSplit: true,
+    reviewerAgents: true,
+    subAgentTier: "haiku",
+  });
+  assert(agents, "expected definitions");
+
+  const executor = agents[ISSUE_EXECUTOR_AGENT_NAME]!;
+  assertEquals(executor.model, "haiku");
+  assertEquals(executor.effort, "high");
+
+  const standards = agents[STANDARDS_REVIEWER_AGENT_NAME]!;
+  assertEquals(standards.model, "haiku");
+  assertEquals(standards.model, HAIKU_STANDARDS_REVIEWER_MODEL);
+  assertEquals(standards.effort, "medium");
+  assertEquals(standards.effort, HAIKU_STANDARDS_REVIEWER_EFFORT);
+  assertStringIncludes(standards.prompt, HAIKU_SUB_AGENT_GUIDANCE);
+
+  const spec = agents[SPEC_REVIEWER_AGENT_NAME]!;
+  assertEquals(spec.model, "sonnet");
+  assertEquals(spec.effort, "medium");
+  assert(
+    !spec.prompt.includes("Haiku guidance"),
+    "the Spec reviewer stays on Sonnet and must not carry Haiku guidance",
+  );
+
+  assert(
+    agents[EXPLORER_AGENT_NAME],
+    "the explorer must ride a haiku-tier run",
+  );
+});
+
+Deno.test("issue reviewers - the haiku tier with both switches off returns exactly the explorer", () => {
+  const agents = buildIssueRunAgents({
+    executorSplit: false,
+    reviewerAgents: false,
+    subAgentTier: "haiku",
+  });
+  assert(agents, "a haiku-tier run must still build the explorer");
+  assertEquals(Object.keys(agents), [EXPLORER_AGENT_NAME]);
+});
+
+Deno.test("issue reviewers - the sonnet tier never carries the explorer, whatever the other switches resolve to", () => {
+  for (const executorSplit of [false, true]) {
+    for (const reviewerAgents of [false, true]) {
+      const agents = buildIssueRunAgents({
+        executorSplit,
+        reviewerAgents,
+        subAgentTier: "sonnet",
+      });
+      assertEquals(
+        agents?.[EXPLORER_AGENT_NAME],
+        undefined,
+        `sonnet tier must not carry the explorer (split=${executorSplit}, ` +
+          `reviewers=${reviewerAgents})`,
+      );
+    }
+  }
 });

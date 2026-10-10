@@ -1765,3 +1765,27 @@ Deno.test("measureIssuePhaseRun - only a gate that passed carries its attempt", 
     undefined,
   );
 });
+
+Deno.test("buildIssueRunStatsComment - renders the safety-refusal line after the stats and leaves other comments byte-identical (Issue #3406)", () => {
+  const base = {
+    phase: "issue",
+    claudeResults: [claudeResult(["claude-opus-5-5"])],
+    runId: "r1",
+  };
+  const plain = buildIssueRunStatsComment(base);
+  const withRefusal = buildIssueRunStatsComment({
+    ...base,
+    agentRefusal: {
+      tier: "sonnet",
+      refusals: [{ model: "claude-sonnet-5-5", category: "frontier_llm" }],
+      retry: "not-retried",
+    },
+  });
+
+  assertStringIncludes(
+    withRefusal,
+    "- **Safety refusal:** `frontier_llm` from `claude-sonnet-5-5` on the `sonnet` sub-agent tier — not retried; the run failed",
+  );
+  assert(!plain.includes("Safety refusal"));
+  assertEquals(buildIssueRunStatsComment({ ...base }), plain);
+});

@@ -718,7 +718,7 @@ Deno.test("agent provider - Claude emits --agents carrying the Sonnet executor w
     prompt: "PROMPT",
     model: "claude-opus-4-1",
     effort: "high",
-    agents: buildIssueExecutorAgents(),
+    agents: buildIssueExecutorAgents("sonnet"),
   });
 
   const idx = args.indexOf("--agents");
@@ -748,7 +748,7 @@ Deno.test("agent provider - Codex and Gemini emit no --agents from the same requ
   const request = {
     prompt: "PROMPT",
     phase: "issue",
-    agents: buildIssueExecutorAgents(),
+    agents: buildIssueExecutorAgents("sonnet"),
   };
 
   for (const id of [CODEX_PROVIDER_ID, GEMINI_PROVIDER_ID]) {
