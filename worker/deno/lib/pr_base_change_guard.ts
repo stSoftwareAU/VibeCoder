@@ -197,10 +197,59 @@ function inputBodyBase(
   }
 }
 
-/** Whether a classified GraphQL mutation includes `updatePullRequest`. */
-function mentionsUpdatePullRequest(info: { target?: string }): boolean {
-  const fields = (info.target ?? "").replace(/^graphql:?/, "").split(",");
-  return fields.some((f) => f.toLowerCase() === "updatepullrequest");
+/** Matches the GraphQL mutation that can set `baseRefName`, case-insensitively. */
+const UPDATE_PULL_REQUEST = /updatepullrequest/i;
+
+/**
+ * Whether a `gh api graphql` request may carry an `updatePullRequest`
+ * mutation (PR #3514 review).
+ *
+ * Does not rely on the classifier's parsed depth-1 fields, which misread a
+ * multi-operation document picked by `operationName` and a `#` comment holding
+ * a brace. Instead the raw argv is searched for the name anywhere, and every
+ * document `gh` reads off the command line (`-F query=@file`, `-F k=@-`,
+ * `--input <file>`, `--input -`) is read and searched too. A source that cannot
+ * be read — stdin, no reader, a read error — counts as a match: failing closed
+ * is the only safe answer for a document nobody can see.
+ */
+function graphqlMayUpdatePullRequest(
+  args: readonly string[],
+  readBodyFile: PrBaseBodyReader | undefined,
+): boolean {
+  if (args.some((a) => UPDATE_PULL_REQUEST.test(a))) return true;
+
+  const sources: string[] = [];
+  const fromFieldValue = (value: string | undefined): void => {
+    const eq = value?.indexOf("=") ?? -1;
+    if (value === undefined || eq < 0) return;
+    const fieldValue = value.slice(eq + 1);
+    if (fieldValue.startsWith("@")) sources.push(fieldValue.slice(1));
+  };
+  for (let i = 0; i < args.length; i++) {
+    const token = args[i]!;
+    if (token === "--") break;
+    if (token === "-F" || token === "--field") {
+      fromFieldValue(args[i + 1]);
+      i++;
+    } else if (token.startsWith("--field=")) {
+      fromFieldValue(token.slice("--field=".length));
+    } else if (token === "--input") {
+      sources.push(args[i + 1] ?? "-");
+      i++;
+    } else if (token.startsWith("--input=")) {
+      sources.push(token.slice("--input=".length));
+    } else if (token === "-f" || token === "--raw-field") {
+      i++; // a static string: `@` is not a file here
+    }
+  }
+  return sources.some((path) => {
+    if (path === "-" || !readBodyFile) return true;
+    try {
+      return UPDATE_PULL_REQUEST.test(readBodyFile(path));
+    } catch {
+      return true;
+    }
+  });
 }
 
 /**
@@ -209,8 +258,9 @@ function mentionsUpdatePullRequest(info: { target?: string }): boolean {
  * Covers `gh pr edit --base|-B`, `gh api repos/o/r/pulls/N` with a `base`
  * field (inline, or in an `--input` file) sent as PATCH or POST — POST being
  * what `gh api` uses when a field is given and `-X` is not — and any
- * `gh api graphql` `updatePullRequest` mutation (`newBase: null`, so callers
- * fail closed).
+ * `gh api graphql` request that may carry an `updatePullRequest` mutation,
+ * including one read from a file or stdin (`newBase: null`, so callers fail
+ * closed).
  *
  * @returns undefined when the command changes no PR's base.
  */
@@ -236,9 +286,15 @@ export function classifyPrBaseChange(
 
   // GraphQL `updatePullRequest` sets `baseRefName`; the document's variables
   // can hide it, so every such mutation is treated as an unreadable base change
-  // (PR #3514 review). The worker never sends one, so failing closed costs it
-  // nothing, and `gh pr edit` still covers the title and body.
-  if (info.verb === "api-graphql-mutation" && mentionsUpdatePullRequest(info)) {
+  // (PR #3514 review). That covers a document read from a file or stdin, which
+  // the classifier reports as `api-graphql-unknown`. The worker's own GraphQL
+  // calls pass the document inline, so failing closed costs it nothing, and
+  // `gh pr edit` still covers the title and body.
+  if (
+    (info.verb === "api-graphql-mutation" ||
+      info.verb === "api-graphql-unknown") &&
+    graphqlMayUpdatePullRequest(args, readBodyFile)
+  ) {
     return { newBase: null };
   }
 
