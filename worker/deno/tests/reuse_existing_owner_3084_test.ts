@@ -120,6 +120,7 @@ Deno.test("spec-reviewer agent - a named reuse is a stated requirement", () => {
   const agents = buildIssueRunAgents({
     executorSplit: false,
     reviewerAgents: true,
+    subAgentTier: "sonnet",
   });
   assert(agents, "the reviewer key on must build definitions");
   const prompt = flatWholeFile(agents[SPEC_REVIEWER_AGENT_NAME]!.prompt)

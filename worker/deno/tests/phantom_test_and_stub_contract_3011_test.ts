@@ -74,7 +74,9 @@ Deno.test("Issue #3011 - issue prompt requires a named test to exist and a stub 
 });
 
 Deno.test("Issue #3011 - the standards-reviewer sub-agent prompt flags named-but-absent tests and permissive stubs", () => {
-  const reviewer = buildIssueReviewerAgents()[STANDARDS_REVIEWER_AGENT_NAME]!;
+  const reviewer = buildIssueReviewerAgents(
+    "sonnet",
+  )[STANDARDS_REVIEWER_AGENT_NAME]!;
 
   for (
     const required of [
