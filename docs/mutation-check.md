@@ -57,6 +57,17 @@ For Cargo the outcomes are read from `mutants.out/outcomes.json`. The worker
 image ships `cargo-mutants` 27.1.0 (amd64 from the release tarball,
 checksum-verified; arm64 built with `cargo install --locked`).
 
+The run is limited to the packages the diff touches: for each changed `.rs`
+file the nearest ancestor `Cargo.toml` with a `[package]` section supplies a
+`--package <name>` argument (names failing `^[A-Za-z0-9_-]+$` are skipped; none
+found means no package arguments). Any stale `mutants.out` directory is removed
+before the run, and a timeout (exit code 3 or a killed run) that leaves no
+parseable `outcomes.json` is an error, not budget exhaustion.
+
+Every path the runner writes (mutated Deno files, the Rust diff under
+`target/`) is resolved through symlinks and must stay inside the repository;
+a file that escapes is skipped, and an escaping `target/` is an error.
+
 ## The diff
 
 The diff is `origin/<base>...HEAD`, falling back to `<base>...HEAD`. Only

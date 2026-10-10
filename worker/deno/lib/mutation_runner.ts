@@ -6,6 +6,12 @@
  * Deno repositories are mutated by this module (see `generateDenoMutants`);
  * Rust repositories are delegated to `cargo mutants --in-diff`.
  *
+ * Every path the runner writes is confined to the repository: the relative
+ * path is normalised, its longest existing prefix is canonicalised through
+ * `realPath` (so symlinks are resolved), and only a canonical path inside the
+ * canonical repository root is read, written or restored (see
+ * {@link confinePath}). A file that fails the check is skipped, never written.
+ *
  * Known limit: a Deno module counts as covered only by tests that import it
  * directly, so a module exercised solely through another module's tests is
  * reported as having no importing test.
@@ -41,6 +47,10 @@ export interface MutationRunnerSeams {
   readTextFile(path: string): Promise<string>;
   writeTextFile(path: string, data: string): Promise<void>;
   exists(path: string): Promise<boolean>;
+  /** Canonical path with symlinks resolved; rejects when the path is absent. */
+  realPath(path: string): Promise<string>;
+  /** Recursively remove a directory; absent is not an error. */
+  removeDir(path: string): Promise<void>;
   /** Repo-relative `*_test.ts` / `*.test.ts` paths. */
   listTestFiles(repoPath: string): Promise<string[]>;
 }
@@ -114,6 +124,48 @@ function dirOf(p: string): string {
   return i < 0 ? "" : p.slice(0, i);
 }
 
+/**
+ * Resolve `rel` under `repoPath` to a canonical path that is guaranteed to sit
+ * inside the canonical repository root, or null when it does not.
+ *
+ * 1. Join and lexically normalise; a `..` that climbs above the root rejects.
+ * 2. Canonicalise the longest existing prefix (resolving any symlink in it)
+ *    and re-attach the not-yet-existing tail.
+ * 3. Require the result to be inside the canonical repository root.
+ */
+export async function confinePath(
+  repoPath: string,
+  rel: string,
+  seams: MutationRunnerSeams,
+): Promise<string | null> {
+  if (rel.startsWith("/")) return null;
+  const parts: string[] = [];
+  for (const part of rel.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (parts.pop() === undefined) return null;
+    } else parts.push(part);
+  }
+  const root = await seams.realPath(repoPath);
+  const tail: string[] = [];
+  let prefix = `${repoPath.replace(/\/+$/, "")}/${parts.join("/")}`
+    .replace(/\/+$/, "");
+  let canonical: string | null = null;
+  while (prefix !== "") {
+    try {
+      canonical = await seams.realPath(prefix);
+      break;
+    } catch {
+      tail.unshift(prefix.slice(prefix.lastIndexOf("/") + 1));
+      prefix = dirOf(prefix);
+    }
+  }
+  if (canonical === null) return null;
+  const full = tail.length === 0 ? canonical : `${canonical}/${tail.join("/")}`;
+  const rootDir = root.endsWith("/") ? root : `${root}/`;
+  return full === root || full.startsWith(rootDir) ? full : null;
+}
+
 async function findImportingTests(
   module: string,
   testFiles: readonly string[],
@@ -123,21 +175,23 @@ async function findImportingTests(
   const found: string[] = [];
   for (const test of testFiles) {
     const text = await seams.readTextFile(`${repoPath}/${test}`);
-    const dir = dirOf(test);
-    for (const m of text.matchAll(RELATIVE_SPECIFIER)) {
-      const spec = m[1];
-      if (spec === undefined) continue;
-      if (normalisePath(`${dir}/${spec}`) === module) {
-        found.push(test);
-        break;
-      }
-    }
+    if (importsModule(text, dirOf(test), module)) found.push(test);
   }
   return found;
 }
 
-function safeRelativePath(p: string): boolean {
-  return !p.startsWith("/") && !p.split("/").includes("..");
+/** Does `text` (in directory `dir`) import the repo-relative `module`? */
+export function importsModule(
+  text: string,
+  dir: string,
+  module: string,
+): boolean {
+  for (const m of text.matchAll(RELATIVE_SPECIFIER)) {
+    const spec = m[1];
+    if (spec === undefined) continue;
+    if (normalisePath(`${dir}/${spec}`) === module) return true;
+  }
+  return false;
 }
 
 async function runDeno(
@@ -150,14 +204,15 @@ async function runDeno(
   const remaining = () => budgetMs - (seams.now() - start);
 
   const added = parseAddedLines(input.diff);
-  const modules: Array<{ file: string; lines: number[] }> = [];
+  const modules: Array<{ file: string; lines: number[]; abs: string }> = [];
   for (const [file, lines] of added) {
     if (
       !SOURCE_FILE.test(file) || file.endsWith(".d.ts") ||
-      isDenoTestFile(file) || !safeRelativePath(file)
+      isDenoTestFile(file)
     ) continue;
-    if (!(await seams.exists(`${repoPath}/${file}`))) continue;
-    modules.push({ file, lines });
+    const abs = await confinePath(repoPath, file, seams);
+    if (abs === null || !(await seams.exists(abs))) continue;
+    modules.push({ file: normalisePath(file), lines, abs });
   }
   if (modules.length === 0) {
     return {
@@ -168,12 +223,14 @@ async function runDeno(
 
   const cap = input.mutantCap ?? DEFAULT_MUTANT_CAP;
   const originals = new Map<string, string>();
+  const absFor = new Map<string, string>();
   const mutants: Array<ReturnType<typeof generateDenoMutants>[number]> = [];
   for (const mod of modules) {
     const room = cap - mutants.length;
     if (room <= 0) break;
-    const source = await seams.readTextFile(`${repoPath}/${mod.file}`);
+    const source = await seams.readTextFile(mod.abs);
     originals.set(mod.file, source);
+    absFor.set(mod.file, mod.abs);
     mutants.push(...generateDenoMutants(mod.file, source, mod.lines, room));
   }
   if (mutants.length === 0) {
@@ -245,7 +302,8 @@ async function runDeno(
   for (const m of runnable) {
     if (remaining() <= 0) return exhausted();
     const tests = testsFor.get(m.file) ?? [];
-    const path = `${repoPath}/${m.file}`;
+    const path = absFor.get(m.file);
+    if (path === undefined) continue;
     const original = originals.get(m.file) ?? "";
     let result: ProcessResult;
     try {
@@ -351,6 +409,55 @@ function describeRustMutant(m: Record<string, unknown>): string {
   return parts.filter((p) => p !== "").join(" ");
 }
 
+/** Cargo package names are restricted to this allow-list before use in argv. */
+const PACKAGE_NAME = /^[A-Za-z0-9_-]+$/;
+
+/** The `name = "..."` under `[package]` in a Cargo.toml, or null. */
+function packageNameOf(toml: string): string | null {
+  let section = "";
+  for (const line of toml.split("\n")) {
+    const header = /^\s*\[([^\]]*)\]\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      section = (header[1] ?? "").trim();
+      continue;
+    }
+    if (section !== "package") continue;
+    const name = /^\s*name\s*=\s*"([^"]*)"/.exec(line);
+    if (name) return name[1] ?? null;
+  }
+  return null;
+}
+
+/**
+ * Distinct, allow-listed package names owning the changed `.rs` files: for
+ * each file the nearest ancestor `Cargo.toml` with a `[package]` section.
+ */
+async function touchedPackages(
+  repoPath: string,
+  files: Iterable<string>,
+  seams: MutationRunnerSeams,
+): Promise<string[]> {
+  const names = new Set<string>();
+  for (const file of files) {
+    if (!file.endsWith(".rs")) continue;
+    let dir = dirOf(file);
+    for (;;) {
+      const manifest = dir === "" ? "Cargo.toml" : `${dir}/Cargo.toml`;
+      const abs = await confinePath(repoPath, manifest, seams);
+      if (abs !== null && await seams.exists(abs)) {
+        const name = packageNameOf(await seams.readTextFile(abs));
+        if (name !== null) {
+          if (PACKAGE_NAME.test(name)) names.add(name);
+          break;
+        }
+      }
+      if (dir === "") break;
+      dir = dirOf(dir);
+    }
+  }
+  return [...names];
+}
+
 async function runRust(
   input: MutationRunInput,
   seams: MutationRunnerSeams,
@@ -363,7 +470,21 @@ async function runRust(
       reason: "the diff adds no lines to Rust source files",
     };
   }
-  const diffPath = `${repoPath}/target/vibe-mutation-check.diff`;
+  const diffPath = await confinePath(
+    repoPath,
+    "target/vibe-mutation-check.diff",
+    seams,
+  );
+  if (diffPath === null) {
+    return {
+      kind: "error",
+      reason: "target/vibe-mutation-check.diff resolves outside the " +
+        "repository (is target a symlink?); refusing to write it",
+    };
+  }
+  const packages = await touchedPackages(repoPath, added.keys(), seams);
+  // Our own output directory: a stale one must never be read as this run's.
+  await seams.removeDir(`${repoPath}/mutants.out`);
   await seams.writeTextFile(diffPath, input.diff);
   const jobs = input.jobs ??
     Math.max(1, Math.min(4, globalThis.navigator?.hardwareConcurrency ?? 2));
@@ -371,6 +492,7 @@ async function runRust(
     "cargo",
     [
       "mutants",
+      ...packages.flatMap((p) => ["--package", p]),
       "--in-diff",
       diffPath,
       "--no-shuffle",
@@ -400,14 +522,22 @@ async function runRust(
   }
   const parsed = text === null ? null : parseOutcomes(text);
 
-  if (proc.timedOut) {
+  if (proc.timedOut || (proc.code === 3 && parsed === null)) {
+    // Fail closed: a timeout with no parseable outcomes proves nothing.
+    if (parsed === null) {
+      return {
+        kind: "error",
+        reason: "cargo mutants timed out and wrote no parseable " +
+          "mutants.out/outcomes.json; cannot judge mutants",
+      };
+    }
     return {
       kind: "budget_exhausted",
       language: "rust",
-      survivors: parsed?.survivors ?? [],
-      killed: parsed?.killed ?? 0,
-      tested: parsed?.tested ?? 0,
-      total: parsed?.total ?? 0,
+      survivors: parsed.survivors,
+      killed: parsed.killed,
+      tested: parsed.tested,
+      total: parsed.total,
       budgetSeconds,
     };
   }
@@ -518,6 +648,14 @@ export function defaultMutationRunnerSeams(): MutationRunnerSeams {
       } catch (err) {
         if (err instanceof Deno.errors.NotFound) return false;
         throw err;
+      }
+    },
+    realPath: (path) => Deno.realPath(path),
+    async removeDir(path) {
+      try {
+        await Deno.remove(path, { recursive: true });
+      } catch (err) {
+        if (!(err instanceof Deno.errors.NotFound)) throw err;
       }
     },
     async listTestFiles(repoPath) {

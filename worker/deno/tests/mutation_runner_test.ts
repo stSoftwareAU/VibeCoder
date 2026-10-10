@@ -12,8 +12,12 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assertLinearGrowth } from "./support/growth.ts";
 import {
+  confinePath,
+  defaultMutationRunnerSeams,
   detectMutationLanguage,
+  importsModule,
   type MutationRunnerSeams,
   type ProcessResult,
   runMutationCheck,
@@ -68,6 +72,13 @@ function fake(
       return Promise.resolve();
     },
     exists: (p) => Promise.resolve(fs.has(p)),
+    realPath: (p) => Promise.resolve(p),
+    removeDir: (p) => {
+      for (const k of [...fs.keys()]) {
+        if (k.startsWith(`${p}/`)) fs.delete(k);
+      }
+      return Promise.resolve();
+    },
     listTestFiles: () =>
       Promise.resolve(
         [...fs.keys()].filter((k) => k.endsWith("_test.ts")).map((k) =>
@@ -316,10 +327,14 @@ function outcomesJson(summaries: Array<[string, number]>): string {
   });
 }
 
+/** `outcomes` is written by the fake cargo run itself, as the real one does. */
 function rustFake(outcomes: string | null, proc: ProcessResult) {
-  const files: Record<string, string> = { [`${REPO}/Cargo.toml`]: "" };
-  if (outcomes !== null) files[`${REPO}/mutants.out/outcomes.json`] = outcomes;
-  return fake(files, () => proc);
+  return fake({ [`${REPO}/Cargo.toml`]: "" }, (_c, _a, fs) => {
+    if (outcomes !== null) {
+      fs.set(`${REPO}/mutants.out/outcomes.json`, outcomes);
+    }
+    return proc;
+  });
 }
 
 const rsInput = { repoPath: REPO, diff: RS_DIFF, budgetSeconds: 60, jobs: 2 };
@@ -408,9 +423,63 @@ Deno.test("runMutationCheck rust - a timed-out run is budget exhausted with part
     r.total,
     r.budgetSeconds,
   ], [1, 1, 2, 9, 60]);
-  const none = await runMutationCheck(rsInput, rustFake(null, proc).seams);
-  assert(none.kind === "budget_exhausted");
-  assertEquals(none.tested, 0);
+});
+
+Deno.test("runMutationCheck rust - a timeout with no outcomes fails closed", async () => {
+  for (
+    const proc of [
+      { code: 137, stdout: "", stderr: "", timedOut: true },
+      { code: 3, stdout: "", stderr: "", timedOut: false },
+    ]
+  ) {
+    const none = await runMutationCheck(rsInput, rustFake(null, proc).seams);
+    assert(none.kind === "error", JSON.stringify(none));
+    assertStringIncludes(none.reason, "timed out");
+    const bad = await runMutationCheck(
+      rsInput,
+      rustFake("not json", proc).seams,
+    );
+    assertEquals(bad.kind, "error");
+  }
+});
+
+Deno.test("runMutationCheck rust - a stale outcomes.json from a previous run is not reported", async () => {
+  const stale = outcomesJson([["MissedMutant", 2]]);
+  const f = rustFake(null, ok(0)); // cargo writes nothing this time
+  f.files.set(`${REPO}/mutants.out/outcomes.json`, stale);
+  const r = await runMutationCheck(rsInput, f.seams);
+  assert(r.kind === "error", JSON.stringify(r));
+  assertEquals(f.files.has(`${REPO}/mutants.out/outcomes.json`), false);
+});
+
+Deno.test("runMutationCheck rust - only packages the diff touches are passed via --package", async () => {
+  const f = fake({
+    [`${REPO}/Cargo.toml`]:
+      '[workspace]\nmembers = ["crates/a", "crates/b", "crates/evil"]\n',
+    [`${REPO}/crates/a/Cargo.toml`]:
+      '[package] # a\nname = "crate-a"\nversion = "0.1.0"\n\n[dependencies]\nname = "x"\n',
+    [`${REPO}/crates/b/Cargo.toml`]: '[package]\nname = "crate_b"\n',
+    [`${REPO}/crates/evil/Cargo.toml`]: '[package]\nname = "x; rm -rf /"\n',
+  }, (_c, _a, fs) => {
+    // Cargo "writes" fresh outcomes during the run.
+    fs.set(`${REPO}/mutants.out/outcomes.json`, outcomesJson([]));
+    return ok(0);
+  });
+  const diff = "--- a/crates/a/src/lib.rs\n+++ b/crates/a/src/lib.rs\n" +
+    "@@ -0,0 +1 @@\n+pub fn f() {}\n" +
+    "--- a/crates/evil/src/lib.rs\n+++ b/crates/evil/src/lib.rs\n" +
+    "@@ -0,0 +1 @@\n+pub fn g() {}\n";
+  await runMutationCheck({ ...rsInput, diff }, f.seams);
+  const argv = f.calls[0]?.args ?? [];
+  const pkgs = argv.flatMap((a, i) => a === "--package" ? [argv[i + 1]] : []);
+  assertEquals(pkgs, ["crate-a"]);
+  assertEquals(argv.includes("crate_b"), false);
+});
+
+Deno.test("runMutationCheck rust - no package manifest means no --package argument", async () => {
+  const f = rustFake(null, ok(0));
+  await runMutationCheck(rsInput, f.seams);
+  assertEquals(f.calls[0]?.args.includes("--package"), false);
 });
 
 Deno.test("runMutationCheck rust - unparseable outcomes.json fails closed", async () => {
@@ -435,4 +504,200 @@ Deno.test("runMutationCheck - never throws, even when a seam rejects", async () 
   const r = await runMutationCheck(input(), f.seams);
   assert(r.kind === "error");
   assertStringIncludes(r.reason, "disk gone");
+});
+
+// ---------------------------------------------------------------------------
+// Path confinement (real temp dirs and real symlinks)
+// ---------------------------------------------------------------------------
+
+async function realRepo(
+  run: (repo: string, outside: string) => Promise<void>,
+): Promise<void> {
+  const repo = await Deno.makeTempDir({ prefix: "mut-repo-" });
+  const outside = await Deno.makeTempDir({ prefix: "mut-outside-" });
+  try {
+    await run(repo, outside);
+  } finally {
+    await Deno.remove(repo, { recursive: true });
+    await Deno.remove(outside, { recursive: true });
+  }
+}
+
+/** Real seams that record every write path and never run a process. */
+function realSeams(writes: string[]): MutationRunnerSeams {
+  const real = defaultMutationRunnerSeams();
+  return {
+    ...real,
+    writeTextFile: (p, d) => {
+      writes.push(p);
+      return real.writeTextFile(p, d);
+    },
+    runProcess: () => Promise.resolve(ok(0)),
+  };
+}
+
+const diffFor = (file: string) =>
+  `--- a/${file}\n+++ b/${file}\n@@ -0,0 +1,6 @@\n` +
+  SOURCE.split("\n").slice(0, 6).map((l) => "+" + l).join("\n") + "\n";
+
+async function denoEscape(
+  file: string,
+  setup: (repo: string, outside: string) => Promise<void>,
+): Promise<void> {
+  await realRepo(async (repo, outside) => {
+    await Deno.writeTextFile(`${repo}/deno.json`, "{}");
+    await Deno.writeTextFile(`${outside}/file.ts`, SOURCE);
+    // A test that imports the module, so a mutant would be written if allowed.
+    await Deno.mkdir(`${repo}/tests`);
+    await Deno.writeTextFile(
+      `${repo}/tests/m_test.ts`,
+      `import { f } from "../${file.replace(/^.*\.\.\//, "")}";\nf(true);\n`,
+    );
+    await setup(repo, outside);
+    const writes: string[] = [];
+    const r = await runMutationCheck({
+      repoPath: repo,
+      diff: diffFor(file),
+      budgetSeconds: 60,
+    }, realSeams(writes));
+    assertEquals(r.kind, "not_applicable", JSON.stringify(r));
+    assertEquals(writes, []);
+    assertEquals(await Deno.readTextFile(`${outside}/file.ts`), SOURCE);
+  });
+}
+
+Deno.test("confinePath - rejects a climb out of the repo, accepts one that stays in", async () => {
+  await realRepo(async (repo, outside) => {
+    const seams = defaultMutationRunnerSeams();
+    const real = await Deno.realPath(repo);
+    await Deno.symlink(outside, `${repo}/link`);
+    assertEquals(await confinePath(repo, "../x.ts", seams), null);
+    assertEquals(await confinePath(repo, "a/../../x.ts", seams), null);
+    assertEquals(await confinePath(repo, "/etc/passwd", seams), null);
+    assertEquals(await confinePath(repo, "link/x.ts", seams), null);
+    assertEquals(
+      await confinePath(repo, "a/../b/x.ts", seams),
+      `${real}/b/x.ts`,
+    );
+  });
+});
+
+Deno.test("confinement - a ../ diff path is never written", async () => {
+  const parent = await Deno.makeTempDir({ prefix: "mut-parent-" });
+  try {
+    const repo = `${parent}/repo`;
+    await Deno.mkdir(repo);
+    await Deno.writeTextFile(`${repo}/deno.json`, "{}");
+    await Deno.writeTextFile(`${parent}/outside.ts`, "ORIGINAL");
+    const writes: string[] = [];
+    const r = await runMutationCheck({
+      repoPath: repo,
+      diff: diffFor("../outside.ts"),
+      budgetSeconds: 60,
+    }, realSeams(writes));
+    assertEquals(r.kind, "not_applicable", JSON.stringify(r));
+    assertEquals(writes, []);
+    assertEquals(await Deno.readTextFile(`${parent}/outside.ts`), "ORIGINAL");
+  } finally {
+    await Deno.remove(parent, { recursive: true });
+  }
+});
+
+Deno.test("confinement - missing/../link/file.ts through an escaping symlink is never written", async () => {
+  await denoEscape("missing/../link/file.ts", async (repo, outside) => {
+    await Deno.symlink(outside, `${repo}/link`);
+  });
+});
+
+Deno.test("confinement - a direct symlinked directory path is never written", async () => {
+  await denoEscape("link/file.ts", async (repo, outside) => {
+    await Deno.symlink(outside, `${repo}/link`);
+  });
+});
+
+Deno.test("confinement - a symlinked file escaping the repo is never written", async () => {
+  await denoEscape("file.ts", async (repo, outside) => {
+    await Deno.symlink(`${outside}/file.ts`, `${repo}/file.ts`);
+  });
+});
+
+Deno.test("confinement - a normal in-repo path is still mutated", async () => {
+  await realRepo(async (repo) => {
+    await Deno.writeTextFile(`${repo}/deno.json`, "{}");
+    await Deno.mkdir(`${repo}/lib`);
+    await Deno.mkdir(`${repo}/tests`);
+    await Deno.writeTextFile(`${repo}/lib/m.ts`, SOURCE);
+    await Deno.writeTextFile(`${repo}/tests/m_test.ts`, TEST_SRC);
+    const writes: string[] = [];
+    const real = await Deno.realPath(repo);
+    const r = await runMutationCheck({
+      repoPath: repo,
+      diff: DIFF,
+      budgetSeconds: 60,
+    }, realSeams(writes));
+    assertEquals(r.kind, "completed", JSON.stringify(r));
+    assert(writes.length > 0);
+    assert(writes.every((w) => w === `${real}/lib/m.ts`), writes.join(","));
+    assertEquals(await Deno.readTextFile(`${repo}/lib/m.ts`), SOURCE);
+  });
+});
+
+Deno.test("confinement rust - a target symlink to outside writes nothing there and errors", async () => {
+  await realRepo(async (repo, outside) => {
+    await Deno.writeTextFile(`${repo}/Cargo.toml`, "");
+    await Deno.symlink(outside, `${repo}/target`);
+    const writes: string[] = [];
+    const r = await runMutationCheck({
+      repoPath: repo,
+      diff: RS_DIFF,
+      budgetSeconds: 60,
+      jobs: 1,
+    }, realSeams(writes));
+    assert(r.kind === "error", JSON.stringify(r));
+    assertStringIncludes(r.reason, "outside the");
+    assertEquals(writes, []);
+    assertEquals([...Deno.readDirSync(outside)].length, 0);
+  });
+});
+
+Deno.test("confinement rust - a normal target directory receives the diff", async () => {
+  await realRepo(async (repo) => {
+    await Deno.writeTextFile(`${repo}/Cargo.toml`, "");
+    const writes: string[] = [];
+    await runMutationCheck({
+      repoPath: repo,
+      diff: RS_DIFF,
+      budgetSeconds: 60,
+      jobs: 1,
+    }, realSeams(writes));
+    assertEquals(writes.length, 1);
+    assertEquals(
+      await Deno.readTextFile(`${repo}/target/vibe-mutation-check.diff`),
+      RS_DIFF,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Hostile input to the specifier scan
+// ---------------------------------------------------------------------------
+
+Deno.test("importsModule - hostile unclosed-specifier text scans in linear time", () => {
+  const shapes: Array<[string, (chars: number) => string]> = [
+    ["repeated './", (n) => "'./".repeat(Math.ceil(n / 3))],
+    ["quote then unclosed ./", (n) => '"' + "./".repeat(Math.ceil(n / 2))],
+  ];
+  for (const [label, build] of shapes) {
+    const found = assertLinearGrowth(
+      label,
+      build,
+      (text) => importsModule(text, "tests", "lib/m.ts"),
+      { baseChars: 12_500, sizeFactor: 4 },
+    );
+    assertEquals(found, false);
+  }
+  assertEquals(
+    importsModule("import '../lib/m.ts'", "tests", "lib/m.ts"),
+    true,
+  );
 });
