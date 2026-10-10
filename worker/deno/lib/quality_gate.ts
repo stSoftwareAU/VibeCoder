@@ -44,6 +44,7 @@ import { scanDirectoriesForGitRefArgv } from "./git_ref_argv_check.ts";
 import {
   cachedPassAt,
   computeQualityInputDigest,
+  computeWorkingTreeDigest,
   invalidate,
   recordPass,
 } from "./quality_gate_cache.ts";
@@ -150,7 +151,10 @@ export interface QualityGateResult {
 
 /** Configuration for running the quality gate. */
 export interface QualityGateConfig {
-  /** Root directory of the project (defaults to cwd). */
+  /**
+   * Root directory of the project (defaults to cwd). Must be the repository
+   * root: the `deno tests` cache key is the git working tree under it.
+   */
   scriptDir: string;
   /** Deno worker directory. When omitted, Deno-specific checks are skipped. */
   denoDir?: string;
@@ -1233,6 +1237,19 @@ export async function runReleaseTagRulesetQualityCheck(
 }
 
 /**
+ * The `deno tests` cache key (Issue #3392): the whole working tree, not just
+ * `.ts`. Null (caching off) when no cache dir is set, so a host dev run pays
+ * nothing.
+ */
+export async function denoTestsDigest(
+  config: QualityGateConfig,
+): Promise<string | null> {
+  return config.cacheDir
+    ? await computeWorkingTreeDigest(config.scriptDir)
+    : null;
+}
+
+/**
  * Run the unit suite as two `deno test` passes (Issue #940).
  *
  * One sequential invocation took 42+ minutes on a 10-core host against a
@@ -1252,13 +1269,12 @@ async function runDenoTests(
 ): Promise<CheckExecutionResult> {
   const name = "deno tests";
   // Content-addressed skip (Issue #86): reuse a cached PASS only when the
-  // whole .ts input set is byte-identical to the last passing run. The digest
-  // walk is skipped entirely when caching is off, so a host dev run pays
+  // working tree as git sees it is identical to the last passing run (Issue
+  // #3392: the tests read docs, prompts and workflows, not just .ts). The
+  // digest is skipped entirely when caching is off, so a host dev run pays
   // nothing for it. It wraps the pair, not each pass — a cached PASS still
   // means "both passes passed on this input set".
-  const digest = config.cacheDir
-    ? await computeQualityInputDigest(config.denoDir ?? ".")
-    : null;
+  const digest = await denoTestsDigest(config);
   const cachedAt = await cachedPassAt(config.cacheDir, name, digest);
   if (cachedAt) {
     return {

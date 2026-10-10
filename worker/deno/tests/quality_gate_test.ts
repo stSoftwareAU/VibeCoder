@@ -7,9 +7,16 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
+import { cachedPassAt, recordPass } from "../lib/quality_gate_cache.ts";
 import {
   type CheckExecutionResult,
+  denoTestsDigest,
   formatCheckProgress,
   type QualityGateConfig,
   runChecksParallel,
@@ -935,4 +942,59 @@ Deno.test("runReleaseTagRulesetQualityCheck - an unexpected error is FAILED, nev
   } finally {
     Deno.removeSync(config.scriptDir, { recursive: true });
   }
+});
+
+// =============================================================================
+// denoTestsDigest (Issue #3392)
+// =============================================================================
+
+Deno.test("denoTestsDigest - keys the whole working tree, so a docs-only edit busts the cache", async () => {
+  const root = await Deno.makeTempDir({ prefix: "qg_digest_repo_" });
+  const cacheDir = await Deno.makeTempDir({ prefix: "qg_digest_cache_" });
+  const git = async (...args: string[]) => {
+    const out = await new Deno.Command("git", {
+      args,
+      cwd: root,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assert(out.success, `git ${args.join(" ")} failed`);
+  };
+  try {
+    await git("init", "-q");
+    await git("config", "user.email", "t@example.com");
+    await git("config", "user.name", "T");
+    await Deno.mkdir(`${root}/worker/deno`, { recursive: true });
+    await Deno.mkdir(`${root}/docs`, { recursive: true });
+    await Deno.writeTextFile(`${root}/worker/deno/a.ts`, "export {};\n");
+    await Deno.writeTextFile(`${root}/docs/x.md`, "one\n");
+    await git("add", "-A");
+    await git("commit", "-q", "-m", "init");
+
+    const config = createTestConfig({
+      scriptDir: root,
+      denoDir: `${root}/worker/deno`,
+      cacheDir,
+    });
+    const digest = await denoTestsDigest(config);
+    assert(digest !== null);
+    await recordPass(cacheDir, "deno tests", digest, "T0");
+    assertEquals(
+      await cachedPassAt(cacheDir, "deno tests", await denoTestsDigest(config)),
+      "T0",
+    );
+
+    await Deno.writeTextFile(`${root}/docs/x.md`, "two\n");
+    const edited = await denoTestsDigest(config);
+    assertNotEquals(edited, digest);
+    assertEquals(await cachedPassAt(cacheDir, "deno tests", edited), null);
+  } finally {
+    await Deno.remove(root, { recursive: true });
+    await Deno.remove(cacheDir, { recursive: true });
+  }
+});
+
+Deno.test("denoTestsDigest - null when no cache dir is set", async () => {
+  assertEquals(await denoTestsDigest(createTestConfig()), null);
 });

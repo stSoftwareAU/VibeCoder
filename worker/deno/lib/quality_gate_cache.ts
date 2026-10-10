@@ -8,13 +8,22 @@
  * session with little changed between runs. Those two dimensions dominate the
  * ~6-minute cost.
  *
- * The cache keys each dimension on a **content digest** of its entire input
- * set (every `.ts` file under `worker/deno`, plus `deno.json`,
- * `deno.lock` and the pinned `.deno-version`). A cached PASS is reused only
- * when the current digest is byte-for-byte identical to the one that last
- * passed — so a false skip is impossible by construction: identical inputs,
- * identical toolchain ⟹ identical result. A FAIL is never cached, so a
- * broken tree is re-checked every time until it is fixed.
+ * The cache keys each dimension on a **content digest** of its input set:
+ *
+ * - `deno tests` is keyed on the whole working tree as git sees it
+ *   ({@link computeWorkingTreeDigest}, Issue #3392), because the tests read
+ *   non-TS inputs too (CODING-STANDARDS.md, docs, prompts, workflows and
+ *   container files). A `.ts`-only key reused a stale PASS after such an edit.
+ * - `deno check` is keyed on {@link computeQualityInputDigest} (every `.ts`
+ *   file under `worker/deno`, plus `deno.json`, `deno.lock` and the pinned
+ *   `.deno-version`), because it reads only those.
+ *
+ * A cached PASS is reused only when the current digest is byte-for-byte
+ * identical to the one that last passed. A FAIL is never cached, so a broken
+ * tree is re-checked every time until it is fixed. A skip is only as sound as
+ * its key, though: an input outside the key (an ignored or excluded file,
+ * environment variables, the network, files outside the repository) can still
+ * change a result without busting the cache.
  *
  * The cache lives in the worker's cache directory on the work volume, so it
  * survives between the agent's repeated in-session runs but is disposable.
@@ -65,7 +74,7 @@ async function* walkTs(dir: string): AsyncGenerator<string> {
 }
 
 /**
- * Compute the input digest shared by `deno test` and `deno check`: every
+ * Compute the `deno check` input digest: every
  * `.ts` file under `denoDir`, plus the dependency/config/toolchain pins. Path is
  * folded in with content so a rename changes the digest.
  *
@@ -102,6 +111,71 @@ export async function computeQualityInputDigest(
     return await sha256Hex(new TextEncoder().encode(parts.join("\n")));
   } catch {
     return null;
+  }
+}
+
+async function runGit(
+  args: string[],
+  cwd: string,
+  env?: Record<string, string>,
+): Promise<string | null> {
+  const out = await new Deno.Command("git", {
+    args,
+    cwd,
+    env,
+    stdin: "null",
+    stdout: "piped",
+    stderr: "piped",
+  }).output();
+  return out.success ? new TextDecoder().decode(out.stdout).trim() : null;
+}
+
+/**
+ * Compute the `deno tests` input digest (Issue #3392): the git tree object id
+ * of the whole working tree, so an edit to any file git would track (tracked
+ * plus untracked non-ignored, including `deno.lock` and `.deno-version`)
+ * changes it. Files ignored by `.gitignore` or `.git/info/exclude` are not
+ * covered.
+ *
+ * It stages into a private copy of the index (`GIT_INDEX_FILE`), so the real
+ * index is only read, never written. It does write blob objects into the
+ * object store, which is additive only. The `git-tree:` prefix means a bare
+ * sha-256 key from the older `.ts`-only scheme can never match.
+ *
+ * @param repoRoot - The repository root (working tree top level).
+ * @returns `git-tree:<oid>`, or null when it cannot be computed (not a git
+ *   repo, git failure): caching is then off.
+ */
+export async function computeWorkingTreeDigest(
+  repoRoot: string,
+): Promise<string | null> {
+  let tmp: string | undefined;
+  try {
+    const rel = await runGit(["rev-parse", "--git-path", "index"], repoRoot);
+    if (!rel) return null;
+    const realIndex = rel.startsWith("/") ? rel : `${repoRoot}/${rel}`;
+    tmp = await Deno.makeTempDir({ prefix: "vibe_gate_index_" });
+    const tmpIndex = `${tmp}/index`;
+    try {
+      await Deno.copyFile(realIndex, tmpIndex);
+    } catch (error) {
+      // A fresh repo has no index yet: start empty.
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+    const env = { GIT_INDEX_FILE: tmpIndex };
+    if (await runGit(["add", "-A"], repoRoot, env) === null) return null;
+    const oid = await runGit(["write-tree"], repoRoot, env);
+    if (oid === null) return null;
+    return `git-tree:${oid}`;
+  } catch {
+    return null;
+  } finally {
+    if (tmp) {
+      const dir = tmp;
+      await Deno.remove(dir, { recursive: true }).catch((error) =>
+        console.warn(`Could not remove ${dir}: ${error}`)
+      );
+    }
   }
 }
 
