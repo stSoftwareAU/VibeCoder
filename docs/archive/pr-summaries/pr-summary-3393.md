@@ -101,9 +101,11 @@ flowchart LR
 
 ### Reviews
 
-- Spec reviewer: AC1 to AC5 are all met (see Acceptance Criteria).
-- Standards reviewer: reported departures that this diff has not fixed. They
-  are listed under Standards Review below.
+- Spec reviewer: AC1, AC2 and AC4 are met. AC3 and AC5 carry a `partial`
+  verdict that predates this push; the gaps it named are closed at this head
+  (see Acceptance Criteria).
+- Standards reviewer: reported departures, some fixed in this diff and some
+  still open. Each item under Standards Review below states which.
 
 ## Evidence
 
@@ -153,9 +155,10 @@ Backend-only change: no UI files are touched.
 The new sentence on the diff-scoped mutation check is written to agree with
 both, and it reuses the same exemption syntax.
 
-**Rule applied to this PR's own diff:** each new branch in this diff was
-flipped and went red (see Branch outcomes below). No surviving untested
-branch was found.
+**Rule applied to this PR's own diff:** each new branch the Branch outcomes
+below names was flipped and went red. Two branches are still unreached by a
+test (the cargo 'no mutants' arm and the unknown-summary `continue`); they
+are recorded as open under Standards Review.
 
 **Deno regression avoided:** the built-in mutator runs on `deno test`. No
 Node mutation tool (Stryker) or `package.json` was introduced.
@@ -249,7 +252,7 @@ Branch outcomes:
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - **met** — A PR whose changed condition can be flipped without any test going red is blocked before the PR is raised, and the recovery turn is told which line and mutation survived. — evidence: `worker/deno/tests/completion phase mutation gate test.ts::completion - a surviving mutant blocks the PR and names file:line and the mutation` — reviewer: met
-- **met** — Rust target repos use cargo mutants --in-diff . Deno target repos use the built-in mutator. — evidence: `worker/deno/lib/mutation runner.ts:496; worker/deno/tests/mutation runner test.ts::runMutationCheck rust - a missed mutant is a survivor; worker/deno/tests/mutation runner test.ts::runMutationCheck deno - mutants that leave tests green survive` — reviewer: met
+- **met** — Rust target repos use cargo mutants --in-diff . Deno target repos use the built-in mutator. — evidence: `worker/deno/lib/mutation runner.ts:613; worker/deno/tests/mutation runner test.ts::runMutationCheck rust - a missed mutant is a survivor; worker/deno/tests/mutation runner test.ts::runMutationCheck deno - mutants that leave tests green survive` — reviewer: met
 - **met** — The check runs only on changed lines, within a configurable time budget, and reports when the budget ran out. — evidence: `worker/deno/tests/mutation_gate_test.ts::generateDenoMutants - only mutates added lines; worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - mutation_check_budget_seconds overrides the budget; worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - budget exhaustion is reported, not passed; worker/deno/tests/mutation_runner_test.ts::runMutationCheck deno - the mutant cap is global and a capped run is not a pass` — reviewer: partial — reason: the gap the reviewer named (changed lines past the 40-mutant cap or over 400 characters unreported) is closed in this head by the capped-run and over-long-line tests; the verdict predates that fix
 - **met** — Tests cover a surviving mutant, a killed mutant and budget exhaustion. — evidence: `worker/deno/tests/mutation runner test.ts::runMutationCheck deno - mutants that leave tests green survive; ::runMutationCheck deno - mutants that turn tests red are killed; ::runMutationCheck deno - budget exhaustion is reported, not passed` — reviewer: met
 - **met** — Docs describe the check and how to configure or disable it per repo. — evidence: `docs/mutation-check.md` (flowchart, language detection, mutation table, Budget, Child environment) — reviewer: partial — reason: the flowchart step order and the ternary-negation row the reviewer named are corrected in this head; the verdict predates that fix
@@ -260,14 +263,14 @@ Branch outcomes:
 
 - **violation** — Never Fail Silently: a Deno mutant run is not given --no-check, and any non-zero exit counts as killed, so a mutant that fails to type-check is counted as killed rather than unviable — evidence: `worker/deno/lib/mutation runner.ts:320` — reason: fixed in this diff — mutants run with `--no-check` (`denoTestArgs`), and `runMutationCheck deno - mutants run without the type-checker…` fails without it
 - **violation** — Writing a gate over text, rule 3: mutants beyond the 40-mutant cap and added lines over 400 characters are skipped with no report, and the result is still completed — evidence: `worker/deno/lib/mutation gate.ts:63` — reason: fixed in this diff — `generateDenoMutantsDetailed` counts dropped candidates and a capped run is `budget_exhausted` with `limit: "mutant_cap"`
-- **violation** — Fail Loud: an unrecognised cargo-mutants summary is dropped with continue, counted neither as killed nor as survived, and no test covers it — evidence: `worker/deno/lib/mutation runner.ts:388` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised; this turn may not change code
-- **violation** — Path Confinement, Resolve Before You Check: a bare catch {} in the walk-up treats every realPath failure (dangling symlink, ELOOP, EACCES) as a path that does not exist yet, so a write can follow a dangling symlink out of the repository — evidence: `worker/deno/lib/mutation runner.ts:158` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised; this turn may not change code
-- **violation** — Vet every regex on untrusted text: the length caps reject the hostile inputs before any pattern runs, so those tests never exercise the patterns, and packageNameOf's two patterns have no hostile case at all — evidence: `worker/deno/tests/mutation gate test.ts:211` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised; this turn may not change code
-- **violation** — Every outcome of a branch you add needs a test: no test reaches the cargo 'no mutants' → not applicable arm, the unknown-summary continue, or the comparableBase.ok === false arm — evidence: `worker/deno/lib/mutation runner.ts:545` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised; this turn may not change code
-- **violation** — DRY: defaultMutationRunnerSeams().runProcess writes its own spawn, timeout and kill logic instead of calling runWithTimeout from subprocess timeout.ts — evidence: `worker/deno/lib/mutation runner.ts:597` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised; this turn may not change code
+- **violation** — Fail Loud: an unrecognised cargo-mutants summary is dropped with continue, counted neither as killed nor as survived, and no test covers it — evidence: `worker/deno/lib/mutation runner.ts:388` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised
+- **violation** — Path Confinement, Resolve Before You Check: a bare catch {} in the walk-up treats every realPath failure (dangling symlink, ELOOP, EACCES) as a path that does not exist yet, so a write can follow a dangling symlink out of the repository — evidence: `worker/deno/lib/mutation runner.ts:158` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised
+- **violation** — Vet every regex on untrusted text: the length caps reject the hostile inputs before any pattern runs, so those tests never exercise the patterns, and packageNameOf's two patterns have no hostile case at all — evidence: `worker/deno/tests/mutation gate test.ts:211` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised
+- **violation** — Every outcome of a branch you add needs a test: no test reaches the cargo 'no mutants' → not applicable arm, the unknown-summary continue, or the comparableBase.ok === false arm — evidence: `worker/deno/lib/mutation runner.ts:545` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised
+- **violation** — DRY: defaultMutationRunnerSeams().runProcess writes its own spawn, timeout and kill logic instead of calling runWithTimeout from subprocess timeout.ts — evidence: `worker/deno/lib/mutation runner.ts:597` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised
 - **violation** — A Code Change Owes a Docs Change: adding mutationVerdict to the late-summary chain left the foldInLateSummaryVerdicts doc, the applyDegradedDeliveryGuard doc and the branch-outcomes gate comment out of date — evidence: `worker/deno/lib/phases/completion phase.ts:2824` — reason: fixed in this diff — the `foldInLateSummaryVerdicts`, late-verdict list, `applyDegradedDeliveryGuard` and branch-outcomes gate comments now name the mutation check
 - **violation** — Every doc assertion must match the head code: the flowchart's step order and the ternary-negation row in the mutation manual do not match the code — evidence: `docs/mutation-check.md:28` — reason: fixed in this diff — the flowchart order and the ternary row of `docs/mutation-check.md` now match the code
 - **violation** — PR Summary and departures this diff introduced (broad catch, dangling symlink, unconfined delete, stale doc comment) are listed under Risks instead of being fixed — evidence: `docs/archive/pr-summaries/pr-summary-3393.md:1` — reason: partly fixed — the stale-doc-comment departure is gone; the broad catch, the dangling symlink and the temporary-directory delete stay recorded under Risks, not fixed in this push
-- **violation** — KISS: the deliberate limit that only direct importers count is written as a 'Known limit', with no // SIMPLE-ON-PURPOSE: … upgrade when … marker — evidence: `worker/deno/lib/mutation runner.ts:15` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised; this turn may not change code
-- **violation** — Config defaults belong in config defaults.ts: the mutation check budget seconds default and maximum are defined in mutation gate.ts and completion phase.ts — evidence: `worker/deno/lib/mutation gate.ts:59` — reason: not fixed — these lines were added by this diff (also worker/deno/lib/phases/completion phase.ts:304) and must move before the PR is raised; this turn may not change code
+- **violation** — KISS: the deliberate limit that only direct importers count is written as a 'Known limit', with no // SIMPLE-ON-PURPOSE: … upgrade when … marker — evidence: `worker/deno/lib/mutation runner.ts:15` — reason: not fixed — this line was added by this diff and must be fixed in code before the PR is raised
+- **violation** — Config defaults belong in config defaults.ts: the mutation check budget seconds default and maximum are defined in mutation gate.ts and completion phase.ts — evidence: `worker/deno/lib/mutation gate.ts:59` — reason: not fixed — these lines were added by this diff (also worker/deno/lib/phases/completion phase.ts:304) and must move before the PR is raised
 - **clean** — Australian English in new identifiers and docs; the cargo-mutants toolchain is pinned to an exact version with a SHA-256 and recorded in the dependency inventory; an invalid budget value is refused loudly with a warning; path confinement rejects ../ climbs and escaping symlinked directories and file
