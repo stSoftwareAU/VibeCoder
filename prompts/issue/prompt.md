@@ -303,7 +303,16 @@ guessing — the analysis-only hand-off then routes it to a human.
    X, grep the docs the diff touches for that sibling's `#N`: each
    present-tense hit is backed by head code or reworded as planned (see
    **Behaviour another issue delivers is not described as present** in
-   `CODING-STANDARDS.md`). An issue number the diff adds as provenance —
+   `CODING-STANDARDS.md`).
+   A setting, flag, field, hook or API the diff adds is held to the same
+   rule until something reads it: grep the head for its reader — code
+   outside its own definition, config loading and validation, types and
+   tests that acts on its value — and when there is none, every doc row,
+   prompt line and code comment that describes its effect says it is
+   accepted but not read yet and names the open issue that will read it
+   ("Accepted and validated, but not read yet: #N will use it to …; today X
+   stays Y whatever it is set to"), even when the sentence never names #N.
+   An issue number the diff adds as provenance —
    `Issue #N` or `#N follow-up` in a code comment, `_<N>_test.ts` in a test
    file name, `(Issue #N)` in a doc — names an issue you ran
    `gh issue view N` on in this run, whose title matches the reason you
