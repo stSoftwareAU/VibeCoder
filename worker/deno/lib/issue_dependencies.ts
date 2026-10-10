@@ -18,6 +18,7 @@
 
 import type { Result } from "../types.ts";
 import type { SubIssueRef } from "./native_sub_issues.ts";
+import { maskMarkdownCode, stripMarkdownCode } from "./markdown_code_spans.ts";
 
 /**
  * Represents the state of a GitHub issue for dependency checking.
@@ -106,39 +107,21 @@ export function normaliseIssueState(raw: string): "OPEN" | "CLOSED" {
  * `reasons: ["depends on #5"]`, which was otherwise parsed as a dependency on
  * #5 and blocked the issue forever (Issue #3218).
  *
- * Fenced blocks opened by a line beginning with three or more backticks or
- * tildes (optionally indented, with an optional info string) are dropped
- * through to the matching closing fence — or to the end of the body when the
- * fence is never closed (fail safe: never leak references out of a broken
- * block). Inline `` `code` `` spans on ordinary lines are stripped too.
- * Surrounding prose is preserved verbatim.
+ * Delegates to the shared, paragraph-aware splitter in
+ * `markdown_code_spans.ts` (Issue #3313): an inline span may wrap across a
+ * line break within one paragraph, and a fence closes only on a later line
+ * starting with the same character, a run at least as long as the opener's,
+ * and no info string. An opener with no matching closer still drops
+ * everything after it to the end of the body (fail safe: never leak
+ * references out of a broken block). Surrounding prose is preserved
+ * verbatim.
  *
  * @param body - The raw issue body text.
  * @returns The body with all code spans removed.
  */
 export function stripCodeSpans(body: string): string {
   if (!body) return body;
-  const out: string[] = [];
-  // The fence character (`` ` `` or `~`) that opened the current block, or
-  // null when not inside a fenced block.
-  let fenceChar: string | null = null;
-  for (const line of body.split("\n")) {
-    const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})/);
-    if (fenceChar === null) {
-      if (fenceMatch) {
-        // Opening fence — enter the block and drop the fence line itself.
-        fenceChar = fenceMatch[1]![0]!;
-        continue;
-      }
-      // Ordinary prose line — strip any inline code spans.
-      out.push(line.replace(/`[^`\n]*`/g, ""));
-    } else if (fenceMatch && fenceMatch[1]![0] === fenceChar) {
-      // Closing fence of the same kind — leave the block, drop the fence line.
-      fenceChar = null;
-    }
-    // Lines inside a fenced block are dropped entirely.
-  }
-  return out.join("\n");
+  return stripMarkdownCode(body);
 }
 
 /**
@@ -149,25 +132,14 @@ export function stripCodeSpans(body: string): string {
  * need attribute text from a real marker use that index and then read the
  * original: stripping would also delete backticks inside the marker's own
  * attributes (Issue #3088).
+ *
+ * Delegates to the shared, paragraph-aware splitter in
+ * `markdown_code_spans.ts` (Issue #3313) — see {@link stripCodeSpans} for the
+ * fence and inline-span rules it applies.
  */
 export function maskCodeSpans(body: string): string {
   if (!body) return body;
-  const out: string[] = [];
-  let fenceChar: string | null = null;
-  for (const line of body.split("\n")) {
-    const fenceMatch = line.trimStart().match(/^(`{3,}|~{3,})/);
-    if (fenceChar === null && !fenceMatch) {
-      out.push(line.replace(/`[^`\n]*`/g, (span) => " ".repeat(span.length)));
-      continue;
-    }
-    if (fenceChar === null && fenceMatch) {
-      fenceChar = fenceMatch[1]![0]!;
-    } else if (fenceMatch && fenceMatch[1]![0] === fenceChar) {
-      fenceChar = null;
-    }
-    out.push(" ".repeat(line.length));
-  }
-  return out.join("\n");
+  return maskMarkdownCode(body);
 }
 
 /**
