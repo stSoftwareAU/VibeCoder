@@ -253,6 +253,9 @@ const GH_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--cache",
   "-R",
   "--repo",
+  // `gh api --hostname <host>`: without it the host was read as the endpoint,
+  // so endpoint-based refusals never saw the real one (Issue #3540).
+  "--hostname",
 ]);
 
 /**

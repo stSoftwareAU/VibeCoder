@@ -955,6 +955,71 @@ Deno.test("gh-guard #3433 - an unreadable --input body on a PR PATCH is refused 
   assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED");
 });
 
+Deno.test("gh-guard #3433 - base changes are refused with the allowlist inactive, in every spelling", () => {
+  const ctx = {
+    ...INACTIVE,
+    readBodyFile: (_path: string) => JSON.stringify({ base: "main" }),
+  };
+  const mutation = (body: string) =>
+    `mutation { updatePullRequest(input: {pullRequestId: "X", ${body}}) { pullRequest { id } } }`;
+  for (
+    const args of [
+      ["pr", "edit", "12", "--base", "main"],
+      ["api", "-X", "PATCH", "repos/o/r/pulls/12", "-f", "base=main"],
+      ["api", "repos/o/r/pulls/12", "-f", "base=main"],
+      ["api", "-X", "POST", "repos/o/r/pulls/12", "-f", "base=main"],
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "repos/o/r/pulls/12",
+        "-f",
+        "base=main",
+      ],
+      ["api", "--hostname=github.com", "repos/o/r/pulls/12", "-f", "base=main"],
+      ["api", "graphql", "-f", `query=${mutation('baseRefName: "main"')}`],
+      ["api", "graphql", "-f", `query=${mutation('title: "x"')}`],
+      [
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation { alias: updatePullRequest(input: $i) { clientMutationId } }",
+        "-F",
+        "i[baseRefName]=main",
+      ],
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "graphql",
+        "-f",
+        `query=${mutation('baseRefName: "main"')}`,
+      ],
+    ]
+  ) {
+    const decision = evaluateGhCommand(args, ctx);
+    assertEquals(decision.allowed, false, `expected refusal: ${args}`);
+    assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+  }
+  // Same inactive allowlist: other GraphQL work and a baseless REST edit pass.
+  for (
+    const args of [
+      ["api", "graphql", "-f", "query={ viewer { login } }"],
+      [
+        "api",
+        "--hostname",
+        "github.com",
+        "repos/o/r/pulls/12",
+        "-f",
+        "title=x",
+      ],
+      ["pr", "edit", "12", "--title", "x"],
+    ]
+  ) {
+    assertEquals(evaluateGhCommand(args, ctx).allowed, true, `${args}`);
+  }
+});
+
 Deno.test("gh-guard #3433 - non-base PR edits and pr create --base stay allowed", () => {
   for (
     const args of [

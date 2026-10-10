@@ -921,7 +921,9 @@ export function evaluateGhCommand(
           `changing a pull request's base branch is the worker's call: ` +
           `moving a milestone-fix or milestone child PR to the default ` +
           `branch bypasses the milestone's final review (Issue #3433). ` +
-          `'gh pr edit' for the title, body or labels is unaffected. If a ` +
+          `'gh pr edit' for the title, body or labels is unaffected; a ` +
+          `GraphQL 'updatePullRequest' mutation is refused whole, since its ` +
+          `variables can carry the base. If a ` +
           `PR's base looks wrong, say so in a comment.`,
       };
     }
