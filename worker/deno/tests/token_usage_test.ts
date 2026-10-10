@@ -285,8 +285,9 @@ Deno.test("token_usage - lookupModelPricing keeps the 5.0-5.4 rate below Opus 5.
 });
 
 Deno.test("token_usage - MODEL_PRICING lists Opus 5.5 before the broader Opus 5 key (Issue #2543)", () => {
-  // `lookupPricing` in batch_api.ts takes the first row whose key the model id
-  // contains, so a later 5.5 row would be shadowed by `claude-opus-5`.
+  // MODEL_PRICING's doc requires more specific prefixes before broader ones,
+  // so a prefix walk over the rows reaches the 5.5 row rather than
+  // `claude-opus-5`.
   const keys = [...MODEL_PRICING.keys()];
   const specific = keys.indexOf("claude-opus-5-5");
   const broad = keys.indexOf("claude-opus-5");
