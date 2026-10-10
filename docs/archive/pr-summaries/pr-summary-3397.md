@@ -84,187 +84,6 @@ Where each hit stands:
 All other hits outside `docs/archive/` describe the hold for repos that are not
 opted in, so they are still true.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — "Behaviour matches whichever policy the owner confirms on this issue."
-  No owner comment exists, so the default policy stated on the issue is the
-  one implemented — evidence: `auto_release.ts` (`autoReleaseDecision`,
-  `quoteFound`, `fetchLinkedIssues`, `resolveAutoRelease`),
-  `review_log.ts` (`decideOutcome`, `reviewBody`, `renderSummary`),
-  `post.ts::decidePostOutcome` — reviewer: met
-- **met** — Opt-in is "a list of `owner/repo` names in the reviewing host's
-  `.config.json`" — evidence:
-  `worker/deno/tests/review_fleet_prs_auto_release_3397_test.ts::config: isAutoReleaseRepo, autoReleaseRepos and loadAutoReleaseRepos`
-  — reviewer: met
-- **met** — "With the opt-in off, behaviour is unchanged." For a repo not in
-  the list, `decideOutcome` returns exactly what it returns today, and a test
-  proves it — evidence: `T::opt-in off: no hold release and gh is never called`,
-  `T::decideOutcome: no opts equals empty opts` — reviewer: met — reason
-  (reviewer's note): the opt-in-off path through `decidePostOutcome` is
-  tested only for the meaningful-change case
-- **met** — "Findings still mean request changes, and a removed test file
-  still means a test-change hold." — evidence:
-  `T::findings on an opted-in repo are still changes_requested`,
-  `T::hold kept when test files were removed` — reviewer: met
-- **met** — Each `testChangeNotes` entry gains three fields: a change kind, a
-  verbatim criterion quote, and a fails-without-the-code statement — evidence:
-  `review_log.ts` `TestChangeNote`, SKILL.md rule 5 and reply JSON,
-  `T::parseFableReview accepts new and old note shapes` — reviewer: met
-- **met** — Only "changed expected value or behaviour" can be auto-released.
-  A removed case, an added skip, or a deleted or weakened assertion keeps the
-  hold — evidence: `T::hold kept for non-releasable kinds` — reviewer: met
-- **met** — Linked issues come from `closingIssuesReferences`, and a quote may
-  match the title or body but never the comments — evidence:
-  `auto_release.ts::fetchLinkedIssues`,
-  `T::hold kept when the quote is absent, too short, and comments are never fetched`
-  — reviewer: met
-- **met** — Each quote is at least 5 words long and must appear in a linked
-  issue, with whitespace runs treated as one space — evidence:
-  `T::auto-release: quote matches across different whitespace and case of the repo name`,
-  `T::hold kept when the quote is absent, too short, and comments are never fetched`
-  — reviewer: met — reason (reviewer's note): no test shows that a quote of
-  exactly 5 words is accepted
-- **met** — No linked issue, a failed fetch, a short quote or a quote that is
-  not found keeps the hold, and a test proves the quote-not-found case —
-  evidence: `T::hold kept when no linked issue or gh fails`,
-  `T::hold reasons: fetch failures and missing links are named`,
-  `T::hold kept when the quote is absent, too short, and comments are never fetched`
-  — reviewer: met
-- **met** — A missing or negative fails-without statement keeps the hold —
-  evidence: `T::failsWithoutChange: only a positive statement releases`,
-  `T::hold reasons: kind and fails-without are named` — reviewer: met
-- **met** — When every entry qualifies and there are no findings, the PR is
-  approved, and a test proves it ("Tests cover an auto-release") — evidence:
-  `T::auto-release: qualifying notes on an opted-in repo are approved` —
-  reviewer: met
-- **met** — "Tests cover … a hold kept because one entry lacks a quoted
-  criterion." — evidence:
-  `T::hold kept when one of two entries lacks a criterion quote`,
-  `T::decidePostOutcome: autoReleaseHeld only for an opted-in held PR` —
-  reviewer: met
-- **met** — The approving review lists each auto-released change with its
-  quote, and the `log.jsonl` record carries `autoReleased: true` for the
-  `summary.md` audit trail — evidence: `review_log.ts::reviewBody`,
-  `T::renderSummary marks an auto-released approval only`,
-  `T::postedResult: autoReleased appears only when true` — reviewer: met
-- **met** — `tightened` and `trivial` keep approving as they do today —
-  evidence: `T::opted-in repo with no hold: no release and gh is never called`,
-  `T::autoReleaseDecision names each whole-review reason` — reviewer: met —
-  reason (reviewer's note): `tightened` and `trivial` are not driven through
-  `decidePostOutcome` on an opted-in repo
-- **met** — "`review-fleet-prs` SKILL.md and docs describe the rule." —
-  evidence: `.claude/skills/review-fleet-prs/SKILL.md` (rule 4 exception,
-  rule 5 fields, reply JSON, Post section), `docs/CONFIGURATION.md` new
-  section, `docs/THREAT-MODEL.md` R14 — reviewer: met
-- **unrequested** — Opt-in repo matching ignores case (`isAutoReleaseRepo`) —
-  reviewer: unrequested — reason: tolerates an `owner/repo` written in a
-  different case; harmless
-- **unrequested** — `autoReleaseHeld` reasons in the `post.ts` output and
-  `LogRecord` — reviewer: unrequested — reason: shows why a hold on an
-  opted-in repo was kept
-- **unrequested** — A malformed `pr_reviewer_auto_release` makes `post.ts`
-  throw — reviewer: unrequested — reason: follows the `app_token.ts`
-  fail-loud convention; a bad value stops all posting, not only auto-release
-- **unrequested** — The negative fails-without heuristic (a leading
-  "no"/"false" word plus a phrase list) — reviewer: unrequested — reason:
-  the issue says only "missing or negative"; how to read "negative" is the
-  author's own choice
-- **unrequested** — Extra note kinds `removed-file` and `other` — reviewer:
-  unrequested — reason: catch-alls so that any unlisted edit fails closed
-- **unrequested** — `pr_reviewer_auto_release` added to `KNOWN_CONFIG_KEYS` —
-  reviewer: unrequested — reason: a supporting change, so the worker does not
-  flag the new key as unknown
-- **unrequested** — The SKILL.md frontmatter `description` edit — reviewer:
-  unrequested — reason: keeps the skill summary accurate; falls within
-  "SKILL.md describes the rule"
-
-`T` is `worker/deno/tests/review_fleet_prs_auto_release_3397_test.ts`.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-The reviewer reported eleven violations. None is fixed in this diff: this
-retry only corrects the PR summary, and the code on the branch is unchanged.
-Each is recorded below as the reviewer stated it, with the line numbers
-mapped to the files at HEAD.
-
-- **violation** — Every changed call site needs a test that goes red without
-  it — evidence: `.claude/skills/review-fleet-prs/scripts/post.ts:273-289`,
-  `post.ts:344-345`, `post.ts:370-376` — reason: open, not fixed in this
-  diff; no test drives `main()`, so reverting the `loadAutoReleaseRepos()`
-  call, the `{ autoReleased }` passed to `reviewBody`, the log-record fields
-  or the new `postedResult` arguments leaves the suite green
-- **violation** — A gate over text must fail closed and have an evasion
-  table — evidence: `.claude/skills/review-fleet-prs/scripts/auto_release.ts:41-57`
-  — reason: open, not fixed in this diff; `failsWithout` accepts any
-  non-empty string that avoids a short denylist, so "would still pass", "it
-  would not fail without the change", "not sure" and "N/A" all count as
-  positive and release the hold
-- **violation** — Prose about the PR's own change must name each condition
-  — evidence: `docs/CONFIGURATION.md:437-440`,
-  `.claude/skills/review-fleet-prs/SKILL.md:52-60` and `SKILL.md:260` —
-  reason: open, not fixed in this diff; the docs omit that no notes at all
-  keeps the hold (`auto_release.ts:74`), and "states that the edited test
-  still fails" overstates the denylist check above
-- **violation** — An absolute word needs code that guarantees it — evidence:
-  `docs/THREAT-MODEL.md:247` (R14 "removing, skipping or loosening a test
-  still keeps the hold") — reason: open, not fixed in this diff; the hold is
-  kept only for notes the reviewer model itself labels with a kind other than
-  `expected-value` (`auto_release.ts:77`), so the claim rests on the model's
-  classification, not on code
-- **violation** — A new behaviour-carrying parameter must not default to off
-  — evidence: `.claude/skills/review-fleet-prs/scripts/review_log.ts:236`,
-  `review_log.ts:257`, `post.ts:149-155` — reason: open, not fixed in this
-  diff; `opts = {}` on `decideOutcome`/`reviewBody` and the optional
-  `postedResult` parameters silently default to off. The production callers
-  do pass them. Author's note: the default was chosen because the issue
-  requires `decideOutcome` to return exactly today's result for every repo
-  that is not opted in; the reviewer's verdict stands as recorded
-- **violation** — DRY: single source of truth — evidence:
-  `auto_release.ts:185` and `post.ts:171-172` — reason: open, not fixed in
-  this diff; the sentinel string `"repo not opted in"` is duplicated across
-  two modules and compared by value
-- **violation** — DRY: reuse an in-repo helper — evidence:
-  `auto_release.ts:15` and `review_log.ts:96` — reason: open, not fixed in
-  this diff; `DEFAULT_CONFIG` is redefined rather than exported from
-  `review_log.ts` (minor; `gate.ts` and `app_token.ts` already do the same)
-- **violation** — KISS: avoid over-engineering — evidence: `post.ts:186`,
-  `post.ts:201`, `auto_release.ts:66` — reason: open, not fixed in this
-  diff; `autoReleaseReasons` is read only by tests, and the
-  `"review has findings"` reason cannot be reached through
-  `resolveAutoRelease` (minor)
-- **violation** — One hostile-input test per regex on untrusted text —
-  evidence: `auto_release.ts:25` (`/\s+/g`), `auto_release.ts:41`
-  (`/^(?:no|false)\b/`) — reason: open, not fixed in this diff; both
-  patterns are linear and safe, so only the test is missing
-- **violation** — A negative test must be able to fail — evidence:
-  `worker/deno/tests/review_fleet_prs_auto_release_3397_test.ts:139-141` —
-  reason: open, not fixed in this diff; the test calls
-  `syncNeedsHumanLabel("approved", …)` directly, so its no-`--add-label`
-  assertion holds with or without auto-release
-- **violation** — Deno/TypeScript conventions: use `Result<T, E>` —
-  evidence: `auto_release.ts:130` — reason: open, not fixed in this diff;
-  `fetchLinkedIssues` returns an ad-hoc `LinkedIssue[] | { error }` told
-  apart with `Array.isArray` (minor; the sibling `BranchUpdateResult` uses a
-  similar local shape)
-- **clean** — Australian English in added lines; fail loud (a malformed key
-  throws, other read errors are rethrown, a fetch failure keeps the hold with
-  a logged reason); persisted shape (the new `LogRecord` and `TestChangeNote`
-  fields are optional and additive, with old-shape tests); a test for every
-  outcome of each added branch; regex safety by construction (`quoteFound`
-  uses a plain substring match); compare like with like (both sides
-  whitespace-normalised); unit-test classification (self-contained,
-  parallel-safe, no sleeps); fake the external service (`fakeGh`); config key
-  registration in `KNOWN_CONFIG_KEYS` and `docs/CONFIGURATION.md`; docs sweep
-  (the remaining "held for the owner" statements in
-  `docs/GITHUB-ACTIONS-AUDIT-SCAN.md` and `DESIGN-PRINCIPLES.md` still hold);
-  insertion points; secret redaction (no new public sink); Deno TypeScript
-  for new logic; `deno fmt --check`, `deno lint`, `deno task check:manifests`
-  and the new test file (22 passed) all clean; prompt and markdown precision
-
 ### Author's own checks (not from the independent reviewer)
 
 - The `LogRecord.autoReleaseHeld` doc comment contradicted the code. Fixed in
@@ -330,3 +149,29 @@ Branch outcomes:
 - `./quality.sh < /dev/null` on the final head: `Result: PASSED (with skipped checks)`, `exit=0`. The only skipped check is config integration, because this host has no `.config.json`.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Behaviour matches whichever policy the owner confirms on this issue. — evidence: `.claude/skills/review-fleet-prs/scripts/auto release.ts (autoReleaseDecision, quoteFound, fetchLinkedIssues, resolveAutoRelease); worker/deno/tests/review fleet prs auto release 3397 test.ts::auto-release: qualifying notes on an opted-in repo are approved` — reviewer: met
+- **met** — With the opt-in off, behaviour is unchanged. — evidence: `worker/deno/tests/review fleet prs auto release 3397 test.ts::opt-in off: no hold release and gh is never called; ::decideOutcome: no opts equals empty opts` — reviewer: met
+- **met** — Tests cover an auto-release, and a hold kept because one entry lacks a quoted criterion. — evidence: `worker/deno/tests/review fleet prs auto release 3397 test.ts::auto-release: qualifying notes on an opted-in repo are approved; ::hold kept when one of two entries lacks a criterion quote` — reviewer: met
+- **partial** — review-fleet-prs SKILL.md and docs describe the rule. — evidence: `.claude/skills/review-fleet-prs/SKILL.md; docs/CONFIGURATION.md; docs/THREAT-MODEL.md` — reviewer: partial — reason: the docs leave out that having no test-change notes keeps the hold, and they overstate the fails-without check, which is only a denylist
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Every changed call site needs a test that goes red without it: no test drives main(), so reverting the loadAutoReleaseRepos() call, the { autoReleased } passed to reviewBody, the log-record fields or the new postedResult arguments leaves the suite green — evidence: `.claude/skills/review-fleet-prs/scripts/post.ts:273` — reason: not fixed: still present on lines this diff adds; this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — A gate over text must fail closed and have an evasion table: failsWithout accepts any non-empty string that avoids a short denylist ('would still pass', 'N/A', 'not sure' all release) — evidence: `.claude/skills/review-fleet-prs/scripts/auto release.ts:41` — reason: not fixed: still present on lines this diff adds; this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — Prose about the PR's own change must name each condition: the docs omit the no-notes hold and overstate the fails-without check — evidence: `docs/CONFIGURATION.md:437` — reason: not fixed: still present on lines this diff adds (also SKILL.md:52-60, SKILL.md:260); this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — An absolute word needs code that guarantees it: R14 says removing, skipping or loosening a test 'still keeps the hold', but that holds only if the reviewer model labels the note with a kind other than expected-value — evidence: `docs/THREAT-MODEL.md:247` — reason: not fixed: still present on lines this diff adds; this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — A new behaviour-carrying parameter must not default to off: opts = {} on decideOutcome / reviewBody and the optional autoReleased / autoReleaseHeld parameters on postedResult — evidence: `.claude/skills/review-fleet-prs/scripts/review log.ts:262` — reason: not fixed: still present on lines this diff adds (also post.ts:154-155); this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — DRY, single source of truth: the sentinel string 'repo not opted in' appears in two modules and is compared by value — evidence: `.claude/skills/review-fleet-prs/scripts/post.ts:172` — reason: not fixed: still present on lines this diff adds (also auto release.ts:185); this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — DRY, reuse an in-repo helper: DEFAULT CONFIG is defined again instead of being shared from review log.ts — evidence: `.claude/skills/review-fleet-prs/scripts/auto release.ts:15` — reason: not fixed: still present on lines this diff adds; this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — KISS: only tests read autoReleaseReasons, and resolveAutoRelease can never produce the 'review has findings' reason — evidence: `.claude/skills/review-fleet-prs/scripts/post.ts:186` — reason: not fixed: still present on lines this diff adds (also post.ts:201, auto release.ts:66); this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — One hostile-input test per regex on untrusted text: /\s+/g and /^(?:no false)\b/ have no hostile-input test — evidence: `.claude/skills/review-fleet-prs/scripts/auto release.ts:25` — reason: not fixed: still present on lines this diff adds (also auto release.ts:41); this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — A negative test must be able to fail: the test calls syncNeedsHumanLabel('approved', …) directly, so its no---add-label assertion passes with or without auto-release — evidence: `worker/deno/tests/review fleet prs auto release 3397 test.ts:140` — reason: not fixed: still present on lines this diff adds; this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **violation** — Deno/TypeScript conventions, use Result<T, E>: fetchLinkedIssues returns an ad-hoc LinkedIssue[] { error } that callers tell apart with Array.isArray — evidence: `.claude/skills/review-fleet-prs/scripts/auto release.ts:191` — reason: not fixed: still present on lines this diff adds (also auto release.ts:130); this no-code turn cannot fix it, so it needs a code-change turn before the PR can be raised
+- **clean** — Australian English spelling (normaliseWs), regex built from a fixed pattern never from untrusted text (quoteFound uses a plain substring match), fail-loud config loading (loadAutoReleaseRepos rethrows non-NotFound errors), new config key registered in config unknown keys.ts
