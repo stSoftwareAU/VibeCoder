@@ -1279,7 +1279,16 @@ The file MUST contain:
    the inventory of what the old copy holds, with what is guarded and what
    is accepted as lost, and name a test per refusal whose fixture holds that
    state and asserts it survives; a destructive operation that deletes state
-   it never checked is a blocking self-review finding
+   it never checked is a blocking self-review finding. Likewise, a persistent
+   record of a bad condition the diff writes — a health or capability ledger
+   entry, a degraded or failure streak, a marker or lock file, a `first_seen`
+   or count carried between runs — is cleared on every path where a later run
+   finds the condition gone (see **State recorded on a failure path is cleared
+   on the path that recovers** in the guidelines): list the set/clear pairs
+   checked, and name a test that uses the real record helper, drives the
+   failure and then a healthy run, asserts the record is gone, and goes red
+   when the clear is deleted; a record with no clear on a healthy path is a
+   blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at

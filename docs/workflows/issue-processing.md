@@ -1388,6 +1388,22 @@ operation, calling an existing sibling guard rather than writing a new
 one, a refusal test whose fixture holds that state, and the inventory
 in the PR summary.
 
+**State recorded on a failure path is cleared on the path that recovers
+(Issue #3430).** Two private fleet PRs wrote a persistent record of a bad
+condition on the failure path and never cleared it on a later healthy run. A
+self-healing step recorded a degraded streak when its repair failed and
+cleared it only after a repair succeeded, so a run that measured the state
+healthy, below threshold or switched off left a stale `first_seen` that would
+trip an absolute "off for too long" limit on the next failure. A "this host
+cannot run this suite" outcome wrote an ineligible ledger entry that nothing
+cleared when a later run fitted, so the next report would claim the host had
+been ineligible since days earlier. Both PRs' tests stubbed the record helper.
+The guidelines and the issue prompt's Test Plan step now require listing every
+path on which a later run finds the condition gone, clearing the record on
+each (or saying why it should outlive a healthy run), following an existing
+set/clear pair, a lifecycle test through the real helper that goes red when
+the clear is deleted, and the set/clear pairs in the PR summary.
+
 **Changing the shape of persisted data bumps its key or reads the old shape
 (Issue #3328).** Fleet PRs changed the type of a value that outlives a
 deployment or relaunch and kept its versioned key, so the previous release's
