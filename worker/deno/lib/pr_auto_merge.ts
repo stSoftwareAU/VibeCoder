@@ -12,6 +12,7 @@ import type { Logger, Result } from "../types.ts";
 import { runGhOrThrow } from "./gh_spawn.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { directMergePr } from "./direct_merge.ts";
+import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_fix_pr.ts";
 import {
   decideMilestoneBaseMerge,
@@ -906,22 +907,7 @@ export async function enableAutoMerge(
     isMilestoneFixBranch(options.headRefName ?? "") && baseRefName &&
     !isMilestoneBranch(baseRefName)
   ) {
-    try {
-      await ghCommandFn([
-        "pr",
-        "merge",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--disable-auto",
-      ]);
-    } catch (err) {
-      log(
-        `WARNING: could not disarm auto-merge on ${repo}#${prNumber}: ${
-          err instanceof Error ? err.message : String(err)
-        } (Issue #3433)`,
-      );
-    }
+    await disarmAutoMerge(repo, prNumber, ghCommandFn, log);
     return {
       result: AutoMergeResult.HeldBaseRetargeted,
       message:

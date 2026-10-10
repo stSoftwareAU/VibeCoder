@@ -16,7 +16,10 @@ import {
   type SweepablePr,
   sweepAutoMerge,
 } from "../lib/auto_merge_sweep.ts";
-import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
+import {
+  AutoMergeResult,
+  type EnableAutoMergeResult,
+} from "../lib/pr_auto_merge.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -47,6 +50,8 @@ interface Harness {
   updated: { repo: string; prNumber: number }[];
   recorded: { repo: string; prNumber: number; result: AutoMergeResult }[];
   invalidated: string[];
+  /** Base-integrity checks (Issue #3433). */
+  baseChecks: { repo: string; prNumber: number; armed: boolean }[];
 }
 
 function harness(
@@ -68,6 +73,14 @@ function harness(
       repo: string,
       pr: SweepablePr,
     ) => Promise<PrLiveStateReading>;
+    checkBaseIntegrity?: (
+      repo: string,
+      pr: SweepablePr,
+      armed: boolean,
+    ) => Promise<
+      | { action: "hold"; outcome: EnableAutoMergeResult }
+      | { action: "proceed"; disarmed: boolean }
+    >;
   } = {},
 ) {
   const state: Harness = {
@@ -77,6 +90,7 @@ function harness(
     updated: [],
     recorded: [],
     invalidated: [],
+    baseChecks: [],
   };
 
   const options = {
@@ -96,6 +110,12 @@ function harness(
         : Promise.resolve(
           { open: true, mergeable: "MERGEABLE" } as PrLiveStateReading,
         );
+    },
+    checkBaseIntegrity: (repo: string, pr: SweepablePr, armed: boolean) => {
+      state.baseChecks.push({ repo, prNumber: pr.number, armed });
+      return overrides.checkBaseIntegrity
+        ? overrides.checkBaseIntegrity(repo, pr, armed)
+        : Promise.resolve({ action: "proceed" as const, disarmed: false });
     },
     attemptMerge: (repo: string, pr: SweepablePr) => {
       state.attempted.push({ repo, prNumber: pr.number });
@@ -694,4 +714,91 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
     ),
     JSON.stringify(infos),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Auto-merge follows the base (Issue #3433)
+// ---------------------------------------------------------------------------
+
+const ARMED_BEHIND: PrLiveStateReading = {
+  open: true,
+  mergeable: "MERGEABLE",
+  armed: true,
+  behind: true,
+};
+
+Deno.test("a held base check records its outcome and neither merges nor updates the branch, even armed and behind", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () => Promise.resolve(ARMED_BEHIND),
+    checkBaseIntegrity: () =>
+      Promise.resolve({
+        action: "hold",
+        outcome: {
+          result: AutoMergeResult.HeldBaseRetargeted,
+          message: "held",
+        },
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.baseChecks, [{
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 42,
+    armed: true,
+  }]);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, []);
+  assertEquals(state.recorded.map((r) => r.result), [
+    AutoMergeResult.HeldBaseRetargeted,
+  ]);
+});
+
+Deno.test("a base check that disarmed an armed, behind PR gets no branch update and is merge-attempted afresh", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () => Promise.resolve(ARMED_BEHIND),
+    checkBaseIntegrity: () =>
+      Promise.resolve({ action: "proceed", disarmed: true }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted.map((a) => a.prNumber), [42]);
+});
+
+Deno.test("a throwing base check is logged and the PR is not armed", async () => {
+  warnings.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }, { number: 43 }],
+  }, {
+    checkBaseIntegrity: (_repo, pr) =>
+      pr.number === 42
+        ? Promise.reject(new Error("boom"))
+        : Promise.resolve({ action: "proceed", disarmed: false }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted.map((a) => a.prNumber), [43]);
+  assert(warnings.some((w) => w.message.includes("base check threw")));
+});
+
+Deno.test("only the PRs the fleet listing returns are base-checked", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.baseChecks.map((c) => c.prNumber), [42]);
+  assertEquals(state.listed[0]!.authors, FLEET);
 });

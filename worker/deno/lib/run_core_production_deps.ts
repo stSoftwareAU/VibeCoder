@@ -117,6 +117,7 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
@@ -3366,6 +3367,15 @@ export async function createProductionRunCoreDeps(
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
           requestBranchUpdate(repo, prNumber, runGhCommand),
+        // Issue #3433: auto-merge follows the base — re-read it first.
+        checkBaseIntegrity: (repo, pr, armed) =>
+          checkPrBaseIntegrity({
+            repo,
+            pr,
+            armed,
+            gh: runGhCommand,
+            log: (m: string) => logger.warn(m),
+          }),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,

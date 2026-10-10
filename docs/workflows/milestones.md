@@ -628,10 +628,12 @@ A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its m
 
 - **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head off its own milestone branch or any PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH …/pulls/N` with `base`).
 - **A closed route holds the PR.** A PR whose milestone route has closed (rollup merged or milestone closed) is held on its milestone branch instead of being retargeted: not merged, auto-merge disarmed, one comment. A human retargets or closes it (result `held_route_closed`).
-- **Auto-merge follows the base.** The fix PR's auto-merge is armed only after its base is re-read as the milestone branch. On every Auto-Merge sweep pass:
-  - a fleet PR whose head is `milestone-fix/**` and whose base is not a `milestone/**` branch is disarmed, never armed, and flagged with a comment on it and on the milestone's final PR #N;
-  - a fleet PR moved onto the default branch after it was opened is disarmed and left for a human;
-  - an armed fleet PR whose base changed after arming is disarmed and re-evaluated (result `held_base_retargeted`).
+- **Auto-merge follows the base.** On every Auto-Merge sweep pass, before any arming or branch update, the worker re-reads each listed fleet PR's base (one GraphQL read: default branch, head, base, `autoMergeRequest`, latest base-change event; [`pr_base_integrity.ts`](../../worker/deno/lib/pr_base_integrity.ts)). An unarmed PR on a milestone base that is not a fix PR is not read, as there is nothing to disarm. The read then decides, in order:
+  - a PR whose head is `milestone-fix/**` and whose base is not a `milestone/**` branch is disarmed, never armed, and flagged with one comment on it and one on the milestone's final PR #N (a `[MILESTONE_FIX_RETARGETED]` warning is logged);
+  - a PR moved onto the default branch after it was opened is disarmed and left for a human, with one comment. A milestone sync PR is excluded: the Issue #1967 close path handles it;
+  - an armed PR whose base changed after it was armed is disarmed and re-evaluated on the same pass, so the normal arming path decides afresh for its current base.
+
+  The first two return `held_base_retargeted`. An unreadable PR is deferred and not armed that pass (it fails closed and is re-read next pass). The sweep lists fleet-authored PRs only, so a human's PR is never checked. Comments are de-duplicated by marker among fleet-authored comments.
 - **Human retargets are untouched.** A human's retarget of a PR the fleet did not raise is left alone; the Issue #2022 rule above still applies to the self-heal.
 
 ## 🏷️ Issue ordering within milestones
