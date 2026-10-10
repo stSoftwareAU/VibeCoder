@@ -21,6 +21,7 @@ import {
   parseBatchResponse,
   parseBatchResults,
 } from "../lib/batch_api.ts";
+import { lookupModelPricing } from "../lib/token_usage.ts";
 
 // =============================================================================
 // buildBatchRequestItem tests
@@ -409,6 +410,55 @@ Deno.test("batch_api - estimateBatchSavings never applies Anthropic's discount t
     assertEquals(savings.batchCost, 0);
     assertEquals(savings.savings, 0);
   }
+});
+
+Deno.test("batch_api - estimateBatchSavings prices the bare haiku alias at lookupModelPricing's row (Issue #3436)", () => {
+  const row = lookupModelPricing("haiku")!;
+  const savings = estimateBatchSavings({
+    model: "haiku",
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+  assertAlmostEquals(
+    savings.standardCost,
+    row.inputPerMillion + row.outputPerMillion,
+    0.001,
+  );
+  // The flat Haiku 4.x row: $1 input + $5 output per million.
+  assertAlmostEquals(savings.standardCost, 6, 0.001);
+  assertAlmostEquals(savings.batchCost, 3, 0.001);
+});
+
+Deno.test("batch_api - estimateBatchSavings classifies a future Opus minor by version (Issue #3436)", () => {
+  const row = lookupModelPricing("claude-opus-5-7")!;
+  const savings = estimateBatchSavings({
+    model: "claude-opus-5-7",
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+  });
+  // Opus 5.5+ rate: $4 input + $20 output per million.
+  assertAlmostEquals(savings.standardCost, 24, 0.001);
+  assertAlmostEquals(
+    savings.standardCost,
+    row.inputPerMillion + row.outputPerMillion,
+    0.001,
+  );
+});
+
+Deno.test("batch_api - estimateBatchSavings costs a banded row at its upper band (Issue #3436)", () => {
+  // With no per-request prompt size the batch estimate uses the row's own
+  // (upper-band) rates, as estimateCost does for run totals, never the lower
+  // band's 0.10/0.50.
+  const savings = estimateBatchSavings({
+    model: "claude-haiku-5-5",
+    inputTokens: 10_000,
+    outputTokens: 1_000,
+  });
+  assertAlmostEquals(
+    savings.standardCost,
+    (10_000 / 1e6) * 0.50 + (1_000 / 1e6) * 2.50,
+    1e-9,
+  );
 });
 
 Deno.test("batch_api - estimateBatchSavings handles zero tokens", () => {
