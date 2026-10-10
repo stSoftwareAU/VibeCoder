@@ -324,3 +324,40 @@ Deno.test("enforcePrBaseChangeGuard - implicit-POST REST spelling looks up the P
   );
   assertEquals(looked, ["12", "12"]);
 });
+
+Deno.test("classifyPrBaseChange - GraphQL updatePullRequest is an unreadable base change", () => {
+  const doc = (field: string) =>
+    `query=mutation { ${field}(input: {pullRequestId: "X"}) { clientMutationId } }`;
+  for (const field of ["updatePullRequest", "alias: updatePullRequest"]) {
+    assertEquals(
+      classifyPrBaseChange(["api", "graphql", "-f", doc(field)]),
+      { newBase: null },
+      field,
+    );
+  }
+  assertEquals(
+    classifyPrBaseChange(["api", "graphql", "-f", doc("addComment")]),
+    undefined,
+  );
+  assertEquals(
+    classifyPrBaseChange([
+      "api",
+      "graphql",
+      "-f",
+      "query={ viewer { login } }",
+    ]),
+    undefined,
+  );
+  // `--hostname`'s value is not the endpoint.
+  assertEquals(
+    classifyPrBaseChange([
+      "api",
+      "--hostname",
+      "github.com",
+      "repos/o/r/pulls/12",
+      "-f",
+      "base=main",
+    ])?.prSelector,
+    "12",
+  );
+});

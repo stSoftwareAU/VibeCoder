@@ -3,8 +3,8 @@
  *
  * A milestone-fix PR targets its milestone branch, and a milestone child PR
  * targets a milestone branch too. Editing either PR's base to the default
- * branch (`gh pr edit --base main`, or `PATCH`/`POST repos/o/r/pulls/N` with
- * `base=main`) lands that work on the default branch and auto-merges it there,
+ * branch (`gh pr edit --base main`, `PATCH`/`POST repos/o/r/pulls/N` with
+ * `base=main`, or a GraphQL `updatePullRequest` mutation) lands that work on the default branch and auto-merges it there,
  * skipping the milestone's final review. The worker owns PR targeting, so:
  *
  *   - the agent guard (`gh_guard_decision.ts`) refuses every base change
@@ -197,12 +197,20 @@ function inputBodyBase(
   }
 }
 
+/** Whether a classified GraphQL mutation includes `updatePullRequest`. */
+function mentionsUpdatePullRequest(info: { target?: string }): boolean {
+  const fields = (info.target ?? "").replace(/^graphql:?/, "").split(",");
+  return fields.some((f) => f.toLowerCase() === "updatepullrequest");
+}
+
 /**
  * Recognise a request that changes a PR's base branch.
  *
- * Covers `gh pr edit --base|-B`, and `gh api repos/o/r/pulls/N` with a `base`
+ * Covers `gh pr edit --base|-B`, `gh api repos/o/r/pulls/N` with a `base`
  * field (inline, or in an `--input` file) sent as PATCH or POST — POST being
- * what `gh api` uses when a field is given and `-X` is not.
+ * what `gh api` uses when a field is given and `-X` is not — and any
+ * `gh api graphql` `updatePullRequest` mutation (`newBase: null`, so callers
+ * fail closed).
  *
  * @returns undefined when the command changes no PR's base.
  */
@@ -224,6 +232,14 @@ export function classifyPrBaseChange(
       ...(repo ? { repo } : {}),
       ...(prSelector ? { prSelector } : {}),
     };
+  }
+
+  // GraphQL `updatePullRequest` sets `baseRefName`; the document's variables
+  // can hide it, so every such mutation is treated as an unreadable base change
+  // (PR #3514 review). The worker never sends one, so failing closed costs it
+  // nothing, and `gh pr edit` still covers the title and body.
+  if (info.verb === "api-graphql-mutation" && mentionsUpdatePullRequest(info)) {
+    return { newBase: null };
   }
 
   // GitHub routes POST on `pulls/N` to the same update handler as PATCH, and
