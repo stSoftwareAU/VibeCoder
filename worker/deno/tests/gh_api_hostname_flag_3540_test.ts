@@ -12,6 +12,8 @@ import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
 import { evaluateGhCommand } from "../lib/gh_guard_decision.ts";
 
 const INACTIVE = { active: false, allowedRepos: [] as string[] };
+const ACTIVE = { active: true, allowedRepos: ["o/r"] };
+const WRITE = ["-X", "POST", "repos/o/r/issues", "-f", "title=x"];
 
 Deno.test("#3540: --hostname <host> value is not the endpoint", () => {
   const info = classifyGhMutation([
@@ -82,4 +84,83 @@ Deno.test("#3540: control: same argv with a non-reserved label is allowed", () =
     "repos/o/r/labels/my-label",
   ], INACTIVE);
   assertEquals(d.allowed, true);
+});
+
+// Issue #1420: the host decides where the request lands, so a non-GitHub
+// `--hostname` must not be classified from the path's repo.
+for (
+  const [label, host] of [
+    ["two-token", ["--hostname", "evil.example"]],
+    ["inline", ["--hostname=evil.example"]],
+    ["repeated, last wins", [
+      "--hostname",
+      "github.com",
+      "--hostname",
+      "evil.example",
+    ]],
+    ["missing value", ["--hostname"]],
+  ] as const
+) {
+  const argv = label === "missing value"
+    ? ["api", ...WRITE, ...host]
+    : ["api", ...host, ...WRITE];
+
+  Deno.test(`#3540/#1420: classifier derives no repo for foreign host (${label})`, () => {
+    const info = classifyGhMutation(argv);
+    assert(info);
+    assertEquals(info.scope, "unknown");
+    assertEquals(info.repo, undefined);
+  });
+
+  Deno.test(`#3540/#1420: active allowlist refuses foreign host (${label})`, () => {
+    const d = evaluateGhCommand(argv, ACTIVE);
+    assertEquals(d.allowed, false);
+    assertEquals(d.marker, "WRITE_TARGET_UNDETERMINABLE");
+  });
+}
+
+for (
+  const host of [["--hostname", "github.com"], ["--hostname=GitHub.com"]]
+) {
+  Deno.test(`#3540/#1420: ${host.join(" ")} still resolves the real repo`, () => {
+    const argv = ["api", ...host, ...WRITE];
+    const info = classifyGhMutation(argv);
+    assert(info);
+    assertEquals(info.repo, "o/r");
+    assertEquals(info.scope, "explicit");
+    assertEquals(evaluateGhCommand(argv, ACTIVE).allowed, true);
+  });
+}
+
+Deno.test("#3540/#1420: foreign host on a placeholder endpoint is not cwd-scoped", () => {
+  const info = classifyGhMutation([
+    "api",
+    "--hostname",
+    "evil.example",
+    "-X",
+    "POST",
+    "repos/{owner}/{repo}/issues",
+  ]);
+  assert(info);
+  assertEquals(info.scope, "unknown");
+});
+
+Deno.test("#3540/#1420: foreign host on a sanctioned graphql mutation fails closed", () => {
+  const mutation = [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation { changeUserStatus(input: {}) { clientMutationId } }",
+  ];
+  assertEquals(classifyGhMutation(mutation)?.scope, "non-repo");
+  const info = classifyGhMutation([
+    "api",
+    "--hostname",
+    "evil.example",
+    "graphql",
+    "-f",
+    mutation[3]!,
+  ]);
+  assert(info);
+  assertEquals(info.scope, "unknown");
 });
