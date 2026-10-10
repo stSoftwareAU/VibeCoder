@@ -200,6 +200,22 @@ a fault must never be masked as success.
 - **Prefer loud, early failure.** Fail fast at the point of the fault rather
   than continuing in a degraded or partial state that hides the problem
   downstream.
+- **A failure reason names the cause, not just the failure.** When a recorded
+  error, log or degradation reason quotes an external tool's output, quote the
+  line that names the cause (or a classification of it, where the repository has
+  a classifier), and redact any credential the line carries. Never take the last
+  line blindly: over SSH or a local path, git ends a failed fetch or clone with
+  `fatal: Could not read from remote repository.` and the advice sentence
+  "Please make sure you have the correct access rights and the repository
+  exists." whatever the cause. The cause is on an earlier line — in each of
+  these observed cases the first line of stderr:
+  `fatal: '<path>' does not appear to be a git repository`,
+  `ssh: Could not resolve hostname <host>: Name or service not known`, or, over
+  HTTPS, `remote: Repository not found.` When a retry or wrapper re-runs the
+  command, carry the cause from the attempt that failed, not the wrapper's
+  summary. Observe the real tool's output for each failure class the reason
+  claims to tell apart (see **Observe the real tool before you rely on it**),
+  and test it as **A failure-reason test asserts the cause** says.
 
 <!-- guidelines-layer: code -->
 
@@ -1492,6 +1508,16 @@ observed output, not from what you expect it to be. In the PR summary, give
 the command you ran and the part of the output the code depends on. If the
 case cannot be observed safely, cite the tool's documentation or source for
 that behaviour.
+
+**A failure-reason test asserts the cause.** A test of a recorded error, log or
+ledger reason triggers a realistic failure of the real tool, or of a fake built
+from its observed output, and asserts that the cause text appears in the reason
+(for example `does not appear to be a git repository`). Asserting only the fixed
+prefix, the exit code or a wrapper's own text is not enough: such a test stays
+green when the quoted cause is dropped or replaced by boilerplate. Remove the
+cause from the reason on purpose and confirm the test goes red (see **A new test
+must go red without its change**). A failure-reason test that passes with the
+cause missing is a blocking self-review finding.
 
 **A workflow behaviour change extends the workflow validator.** When a change
 alters what a `.github/workflows/*` file does — a new or changed flag, step,
