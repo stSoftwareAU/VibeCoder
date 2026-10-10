@@ -98,7 +98,7 @@ The mutator works on added lines of non-test source files.
 | Mutation                   | Effect                                                   |
 | -------------------------- | -------------------------------------------------------- |
 | Negate an `if` condition   | `if (c)` becomes `if (!(c))`                             |
-| Negate a ternary condition | `c ? a : b` becomes `!(c) ? a : b`, `c` being the whole condition |
+| Negate a ternary condition | `c ? a : b` becomes `!(c) ? a : b`, `c` being the whole condition; none is made when the condition holds a statement keyword or an unbalanced bracket (`if (x) return a ? b : c;`) |
 | Swap booleans              | `true` becomes `false` and the reverse                   |
 | Replace a return value     | `return x` becomes `return undefined;`; `true`/`false`, numbers and plain strings flip to `false`/`true`, `0`/`1` and `""` |
 | Delete a call statement    | A single call statement is removed                       |
@@ -137,11 +137,11 @@ budget ran out or the cap was hit still block.
 ## Child environment
 
 `deno test -A` and `cargo mutants` run repository code (tests, build scripts)
-after the agent has written tests. Every child process therefore gets only the
+after the agent has written tests. Every child process therefore starts from the
 allowlisted environment built by `buildUntrustedCommandEnv` with `clearEnv`,
 never the worker's own, so `GH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and cloud
-credentials are not visible to it (Issue #572, the same control as the quality
-gate).
+credentials are not inherited by it (Issue #572, the same control as the quality
+gate). The only additions are the declared credentials described below.
 
 The credentials the repository declared in `quality_credentials` (Issues #573,
 #574) are resolved once in the completion phase and added to each child's

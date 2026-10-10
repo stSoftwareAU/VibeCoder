@@ -8,7 +8,9 @@
 - [x] Spec and Standards reviews
 - [x] PR #3533 review: child env allowlist, nested `deno.json`, `--no-check`,
   mutation-aware recovery prompt, `--output` for `mutants.out`, capped runs
-  reported
+  reported; second round: Rust budget exhaustion reported as `budget_exhausted`,
+  unviable parse-failed mutants, `quality_credentials` reaching the mutation
+  child
 - [ ] `./quality.sh` on the final head: skipped in this run (see Test Plan); CI runs it
 
 ## Summary
@@ -61,7 +63,7 @@ flowchart LR
   block the PR with a remedy. A Rust run killed at the budget before
   cargo-mutants wrote any outcomes (its clean build and baseline test run
   come first) is `budget_exhausted` with nothing tried, a warning, as a
-  Deno baseline timeout is. A runner that is not wired (no seam) is the only quiet pass.
+  Deno baseline timeout is. Quiet outcomes are a runner that is not wired (no seam), and a failed `quality_credentials` mint, which is `not_applicable` with a warning and no block.
 - **Budget and cap.** The default is 300 s (`DEFAULT_MUTATION_BUDGET_SECONDS`).
   The built-in Deno mutator also stops at 40 mutants per run
   (`DEFAULT_MUTANT_CAP`); candidates past the cap and added lines over 400
@@ -139,7 +141,11 @@ Backend-only change: no UI files are touched.
   nested `deno.json`, the capped and over-long-line runs, whole-condition
   ternary negation, the mutation-aware retry prompt (unit and through
   `workOnIssueCompletion`, including a survivor folded into another gate's
-  block), and the logged not-applicable and capped notes.
+  block), and the logged not-applicable and capped notes. Second round: the Rust
+  timeout-before-outcomes budget-exhausted run, the parse-failure unviable
+  mutant, the ternary after a statement keyword, and the declared credentials
+  (Deno and Rust runners, `defaultMutationRunnerSeams`, and the completion
+  phase).
 - Issue numbers cited as provenance in this push: #572: "Credentials are in
   the environment when third-party code runs: a build, test or install hook
   from a public repo inherits every token"; #3393: this PR's issue.
@@ -256,7 +262,7 @@ Branch outcomes:
 - `worker/deno/lib/phases/completion_phase.ts:2809` resolved credentials handed to the runner → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a declared quality credential reaches the mutation runner and an undeclared one does not`; flipped → red
 - `worker/deno/lib/phases/completion_phase.ts:2793` failed credential mint → not applicable with a warning, runner not called → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a failed credential mint is not applicable with a warning, never a run without them`; flipped → red
 - `worker/deno/lib/mutation_gate.ts:327` ternary condition holding a statement keyword or unbalanced bracket → no ternary mutant → `worker/deno/tests/mutation_gate_test.ts::generateDenoMutants - a ternary after a statement keyword is not negated into unparseable code`; flipped → red
-- `worker/deno/lib/mutation_runner.ts:783` child gets only the allowlisted environment → `worker/deno/tests/mutation_runner_test.ts::defaultMutationRunnerSeams runProcess - the child gets the allowlisted environment, not the worker's`; flipped → red
+- `worker/deno/lib/mutation_runner.ts:783` child starts from the allowlisted environment (declared credentials are the only additions) → `worker/deno/tests/mutation_runner_test.ts::defaultMutationRunnerSeams runProcess - the child gets the allowlisted environment, not the worker's`; flipped → red
 - `worker/deno/lib/summary_rule_gate_retry.ts:202` `allowsTestChanges` → test-allowing step 2, else documentation-only → `worker/deno/tests/summary_rule_gate_retry_test.ts::summary-rule retry - a mutation-check item allows test changes; other items stay documentation-only`; flipped → red
 - `worker/deno/lib/phases/completion_phase.ts:2879` a folded mutation verdict sets `allowsTestChanges` → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a survivor folded into another gate's block still lets the recovery turn change tests`; flipped → red
 - `worker/deno/lib/phases/completion_phase.ts:2825` non-exhausted note (not applicable, N of M killed) logged → `worker/deno/tests/completion_phase_mutation_gate_test.ts::completion - a not-applicable mutation check is logged with its reason`; flipped → red
