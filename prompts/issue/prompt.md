@@ -175,7 +175,24 @@ guessing — the analysis-only hand-off then routes it to a human.
    legitimate contract change or a test that only pins incidental implementation
    may require changing or deleting a test; document why and what still protects
    the behaviour. For UI/PWA tests prefer user-visible browser behaviour and
-   semantic locators; avoid exact CSS/DOM assertions unless explicitly required.
+   semantic locators; avoid exact DOM-structure assertions unless explicitly
+   required. **A style literal is incidental wherever it lives.** An exact
+   colour, length, `calc()`/`min()` expression, font, z-index, class name or
+   similar style value is never a test's expected value unless the issue names
+   that value — whether it sits in a stylesheet, in a TS/JS options object
+   (chart or theme config, an inline `style` prop) or in a computed style a
+   browser test reads (`getComputedStyle`, `toHaveCSS`). The rule is about the
+   kind of value, not the file it lives in: an `rgba(...)` string a chart's
+   options callback returns for a gridline, or a computed `max-height` compared
+   with the stylesheet's `calc(...)` expression, breaks on a restyle while the
+   regression the issue is about can still pass. Before raising the PR, for
+   every new or edited assertion whose expected value is a style literal, either
+   quote in the Test Plan the issue sentence that names that value, or replace
+   the literal with the behaviour it stands for: not transparent, differs from
+   the off state, the panel's box ends above the bar's top, the element is
+   within the viewport. Semantic state the product exposes — an `aria-*`
+   attribute, or an open-only class whose absence marks the closed state — is
+   not a style literal.
    A test that reads a `.css` or `.scss` file and matches selectors or
    property values is a source-text grep, not a layout test, even where the
    appearance is itself the stated contract: it breaks when a selector list
