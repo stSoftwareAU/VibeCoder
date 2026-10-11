@@ -276,6 +276,20 @@ Deno.test("pr_ci_processor - the post-quality retry carries the same hook from o
   );
 });
 
+Deno.test("pr_ci_processor - the fix attempt and the post-quality retry both carry the repo for the agent's pre-push hook (PR #3584 review)", async () => {
+  const observed = await runCiFix({
+    enabled: false,
+    seam: rtkSeam([]),
+    qualityRetry: true,
+  });
+
+  assertEquals(observed.runOptions.length, 2, "the retry must have run");
+  // The pre-push hook resolves the repo's pre-flight from `repo` alone.
+  for (const spawn of observed.runOptions) {
+    assertEquals(spawn.repo, "org/repo");
+  }
+});
+
 Deno.test("pr_ci_processor - a run with no workDir still records a status rather than throwing (Issue #2384)", async () => {
   const seam = healthyRtkSeam(100, 140);
   const observed = await runCiFix({ enabled: true, seam, noWorkDir: true });

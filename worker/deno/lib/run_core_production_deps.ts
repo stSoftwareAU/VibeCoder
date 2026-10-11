@@ -242,7 +242,7 @@ import { customDispatchMappings } from "./custom_label_prompts_config.ts";
 import { resolveCallbackRunMode } from "./callback_run_mode.ts";
 import { findCustomLabelPrCandidates } from "./custom_label_pr_finder.ts";
 import { dispatchCustomLabelPrPrompts } from "./custom_label_pr_dispatch.ts";
-import { buildCustomPrPrompt } from "./prompt_builder.ts";
+import { buildCustomPrPrompt, type PromptParts } from "./prompt_builder.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
 import { verifyPushLanded } from "./push_claim_verification.ts";
 
@@ -3919,15 +3919,14 @@ export async function createProductionRunCoreDeps(
               // Issue #2720: the watchdog's abandonment line names it.
               noteAgentRunWorkItem(`${candidate.repo}#${candidate.prNumber}`);
               const run = await workerDeps.claude.runClaudeWithRetry(
-                {
-                  prompt: parts.prompt,
-                  systemPrompt: parts.systemPrompt,
+                buildCustomPrAgentRequest({
+                  repo: candidate.repo,
+                  parts,
                   timeoutSeconds: reactivePhaseTimeout(config, "pr-feedback"),
                   noOutputTimeout: config.claudeNoOutputTimeout,
-                  phase: "pr_feedback",
                   cwd: prRunWorkDir ?? workDir,
                   logger,
-                },
+                }),
                 { maxRetries: config.maxRateLimitRetries },
               );
               if (!run.ok) throw run.error;
@@ -6603,6 +6602,31 @@ async function scanStaleWorkflowIssuesFn(
       },
     },
   );
+}
+
+/**
+ * The agent request for a PR-phase custom-label run (priority 1.87). It
+ * carries `repo` so the agent's own `git push` runs that repo's pre-flight
+ * through the pre-push hook (Issue #3394).
+ */
+export function buildCustomPrAgentRequest(input: {
+  repo: string;
+  parts: PromptParts;
+  timeoutSeconds: number;
+  noOutputTimeout: number;
+  cwd: string;
+  logger: Logger;
+}) {
+  return {
+    prompt: input.parts.prompt,
+    systemPrompt: input.parts.systemPrompt,
+    timeoutSeconds: input.timeoutSeconds,
+    noOutputTimeout: input.noOutputTimeout,
+    phase: "pr_feedback" as const,
+    repo: input.repo,
+    cwd: input.cwd,
+    logger: input.logger,
+  };
 }
 
 // ---------------------------------------------------------------------------

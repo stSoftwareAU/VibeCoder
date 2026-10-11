@@ -170,7 +170,7 @@ Closes #7.
 
 ${SENTENCE}
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -292,7 +292,7 @@ Closes #7.
 
 Subjectless entries are now rejected.
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -732,7 +732,7 @@ Closes #7.
 
 Subjectless entries are now rejected.
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -964,7 +964,7 @@ Closes #7.
 
 Subjectless entries are now rejected.
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 

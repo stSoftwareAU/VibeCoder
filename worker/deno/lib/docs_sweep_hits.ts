@@ -11,7 +11,8 @@
  * #2405 was sent back three times for the same claim).
  *
  * Once the gate accepts the line, this re-runs each term the line quotes
- * after `grep:` (backticked or double-quoted), case-insensitively, over the
+ * after `grep:` (backticked or double-quoted), and each term it quotes after
+ * `siblings:` (Issue #3371), case-insensitively, over the
  * head's `README.md`, every `*\/README.md` and `docs/` (excluding
  * `docs/archive/`). A hit is stale unless it sits in a line the branch's
  * diff added or changed, or the Docs sweep line names it as left alone by
@@ -19,7 +20,12 @@
  * the worker posts them once as a PR comment for the reviewer and logs them,
  * but they never block the run.
  *
- * The same terms are also re-run over source files outside `docs/`
+ * The `siblings:` terms are re-run too (Issue #3371): fleet PRs that added a
+ * member to a set grepped only the new member's name, which is in no doc
+ * yet, and left lists of the set one short (GRQ-AutoTrader#2460, #2481,
+ * #2682, #2792). They reach the same hit rules as the grep terms.
+ *
+ * The grep and sibling terms are also re-run over source files outside `docs/`
  * (`SOURCE_COMMENT_PATHSPECS`), keeping only hits on a whole comment line
  * (Issue #3219). Fleet PRs fixed the manuals and the comment above the code
  * they edited, but left doc comments on a shared constant, a reader or a
@@ -108,7 +114,10 @@ export function isSourceCommentLine(text: string): boolean {
   return SOURCE_COMMENT_RE.test(text);
 }
 
-/** Up to how many grep terms are re-run from one Docs sweep line. */
+/**
+ * Up to how many grep terms, and separately how many sibling terms, are
+ * re-run from one Docs sweep line.
+ */
 export const MAX_TERMS = 20;
 
 /** A term longer than this is not a grep term anyone typed; it is skipped. */
@@ -172,8 +181,36 @@ const CLOSING_QUOTE: Readonly<Record<string, string>> = {
  *   (`DocsSweepLine.rawBody`).
  */
 export function extractGrepTerms(rawBody: string): string[] {
-  const text = rawBody ?? "";
-  const label = text.match(GREP_LABEL_RE);
+  return quotedTermsAfter(rawBody ?? "", GREP_LABEL_RE);
+}
+
+/** The `siblings:` field label (Issue #3371). */
+const SIBLINGS_LABEL_RE = /\bsiblings?\s*:/i;
+
+/** The honest negative a `siblings:` value opens with (Issue #3371). */
+const SIBLINGS_NONE_RE = /^none\b/i;
+
+/** Whitespace and quote marks skipped before a `siblings:` value is read. */
+const LEADING_QUOTE_RE = /^[\s`"“”]+/;
+
+/**
+ * Whether a `siblings:` value (the text after its label) is the honest
+ * `none — <why>` negative (Issue #3371). Leading whitespace, backticks and
+ * straight or curly double quotes are skipped first, so `"none" — x` and
+ * `“none” — x` are the negative too.
+ */
+export function isSiblingsNegative(value: string): boolean {
+  return SIBLINGS_NONE_RE.test(value.replace(LEADING_QUOTE_RE, ""));
+}
+
+/**
+ * The quoted terms after a field label: each backticked or double-quoted
+ * span, up to the first `;` outside a span (the next field). Deduplicated
+ * case-insensitively, first spelling kept, capped at `MAX_TERMS`; an empty
+ * term or one longer than `MAX_TERM_CHARS` is skipped.
+ */
+function quotedTermsAfter(text: string, labelRe: RegExp): string[] {
+  const label = text.match(labelRe);
   if (!label || label.index === undefined) return [];
 
   const terms: string[] = [];
@@ -192,6 +229,47 @@ export function extractGrepTerms(rawBody: string): string[] {
     const term = text.slice(i + 1, end).trim();
     i = end + 1;
     if (term === "" || term.length > MAX_TERM_CHARS) continue;
+    const key = term.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    terms.push(term);
+  }
+  return terms;
+}
+
+/**
+ * The sibling terms a Docs sweep line quotes after `siblings:` (Issue #3371),
+ * read exactly as `extractGrepTerms` reads `grep:`. Returns `[]` when the
+ * value is the honest negative `siblings: none — <why>`, even if the reason
+ * quotes a term.
+ *
+ * @param rawBody - The Docs sweep entry with backticks and quotes intact
+ *   (`DocsSweepLine.rawBody`).
+ */
+export function extractSiblingTerms(rawBody: string): string[] {
+  const text = rawBody ?? "";
+  const label = text.match(SIBLINGS_LABEL_RE);
+  if (!label || label.index === undefined) return [];
+  if (isSiblingsNegative(text.slice(label.index + label[0].length))) return [];
+  return quotedTermsAfter(text, SIBLINGS_LABEL_RE);
+}
+
+/**
+ * The terms a Docs sweep line re-runs: its grep terms, then its sibling terms
+ * (Issue #3371), deduplicated case-insensitively across both with the first
+ * spelling kept. Each source is capped at `MAX_TERMS` on its own, so twenty
+ * grep terms never crowd out the siblings.
+ *
+ * @param rawBody - The Docs sweep entry (`DocsSweepLine.rawBody`).
+ */
+export function extractSweepTerms(rawBody: string): string[] {
+  const terms: string[] = [];
+  const seen = new Set<string>();
+  const candidates = [
+    ...extractGrepTerms(rawBody),
+    ...extractSiblingTerms(rawBody),
+  ];
+  for (const term of candidates) {
     const key = term.toLowerCase();
     if (seen.has(key)) continue;
     seen.add(key);
@@ -399,9 +477,10 @@ async function readGit(
 }
 
 /**
- * Re-run a Docs sweep line's grep terms over the head's docs and the
- * comment lines of its source files, and return the hits the branch neither
- * changed nor named as left alone.
+ * Re-run a Docs sweep line's grep and sibling terms (Issue #3371) over the
+ * head's docs and the comment lines of its source files, and return the hits
+ * the branch neither changed nor named as left alone. A sibling term's hit is
+ * cleared or reported exactly as a grep term's is.
  *
  * @param opts.rawBody - The Docs sweep entry (`DocsSweepLine.rawBody`).
  * @param opts.base - The ref the branch's diff is taken against.
@@ -412,11 +491,11 @@ export async function checkDocsSweepTerms(opts: {
   base: string;
   runGit: DocsSweepGitRunner;
 }): Promise<DocsSweepTermCheck> {
-  const terms = extractGrepTerms(opts.rawBody);
+  const terms = extractSweepTerms(opts.rawBody);
   if (terms.length === 0) {
     return {
       status: "skipped",
-      reason: "the Docs sweep line quotes no grep term",
+      reason: "the Docs sweep line quotes no grep or sibling term",
     };
   }
 
@@ -512,7 +591,7 @@ function renderHitText(text: string): string {
 export function describeDocsSweepHits(hits: readonly DocsSweepHit[]): string {
   const named = hits.slice(0, 5).map((h) => `${h.path}:${h.line}`).join(", ");
   const extra = hits.length - 5;
-  return `the Docs sweep's own grep terms still hit ${hits.length} doc ` +
+  return `the Docs sweep's own grep and sibling terms still hit ${hits.length} doc ` +
     `or source-comment line(s) outside the diff and not named as still true: ${named}${
       extra > 0 ? ` and ${extra} more` : ""
     }`;
@@ -534,7 +613,8 @@ export function buildDocsSweepHitsComment(
   if (extra > 0) listed.push(`- … and ${extra} more`);
   return [
     "ℹ️ **Docs sweep terms still hit the head (advisory).** Re-running the " +
-    "grep terms this PR's **Docs sweep** line quotes over `README.md`, " +
+    "grep and sibling terms this PR's **Docs sweep** line quotes over " +
+    "`README.md`, " +
     "`*/README.md` and `docs/` (excluding `docs/archive/`), and over the " +
     "comment lines in source files outside `docs/`, at the head finds lines " +
     "the diff did not change and the line does not name:",

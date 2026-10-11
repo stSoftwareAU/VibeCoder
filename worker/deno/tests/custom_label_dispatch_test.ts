@@ -25,7 +25,10 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildIssuePrompt } from "../lib/prompt_builder.ts";
 import { workOnIssueExecuteClaude } from "../lib/phases/execute_phase.ts";
 import { buildPriorityDispatchTable } from "../lib/run_core.ts";
-import { createProductionRunCoreDeps } from "../lib/run_core_production_deps.ts";
+import {
+  buildCustomPrAgentRequest,
+  createProductionRunCoreDeps,
+} from "../lib/run_core_production_deps.ts";
 import type { RunCoreDeps } from "../lib/run_core.ts";
 import type {
   IssueContext,
@@ -655,4 +658,21 @@ Deno.test("production wiring - an issue-only config leaves 1.87 unwired", async 
   } finally {
     await Deno.remove(path);
   }
+});
+
+Deno.test("production wiring - the PR-phase custom-label agent request carries the repo for the pre-push hook (PR #3584 review)", () => {
+  const logger = createMockDeps().logger;
+  const request = buildCustomPrAgentRequest({
+    repo: "org/repo",
+    parts: { prompt: "do the thing", systemPrompt: "be careful" },
+    timeoutSeconds: 60,
+    noOutputTimeout: 30,
+    cwd: "/tmp/pr-clone",
+    logger,
+  });
+  // The agent's pre-push hook resolves the repo's pre-flight from `repo`
+  // alone (Issue #3394).
+  assertEquals(request.repo, "org/repo");
+  assertEquals(request.phase, "pr_feedback");
+  assertEquals(request.cwd, "/tmp/pr-clone");
 });

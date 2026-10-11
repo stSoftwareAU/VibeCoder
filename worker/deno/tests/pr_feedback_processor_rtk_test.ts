@@ -156,6 +156,14 @@ Deno.test("pr_feedback_processor - the RTK switch off spawns no rtk, no settings
   assertEquals(observed.rtkOutput, { enabled: false, status: "off" });
 });
 
+Deno.test("pr_feedback_processor - the agent request carries the repo for the agent's pre-push hook (PR #3584 review)", async () => {
+  const observed = await runFeedback(false, rtkSeam([]));
+
+  assertEquals(observed.runOptions.length, 1);
+  // The pre-push hook resolves the repo's pre-flight from `repo` alone.
+  assertEquals(observed.runOptions[0]?.repo, "org/repo");
+});
+
 Deno.test("pr_feedback_processor - a caller that never names the RTK switch gets the shipped default (Issue #2432)", async () => {
   const seam = healthyRtkSeam(100, 140);
   const observed = await runFeedback(undefined, seam);

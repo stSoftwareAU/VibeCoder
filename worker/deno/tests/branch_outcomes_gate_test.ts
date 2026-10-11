@@ -38,7 +38,7 @@ Deno.test("parseBranchOutcomes - header as a list item with nested entries does 
     "- Branch outcomes:\n" +
       "  - entry one\n" +
       "  - entry two\n" +
-      "- Docs sweep — section: none\n",
+      "- Docs sweep — section: none; siblings: none — no existing set gained a member\n",
   );
   assert(record.present);
   assertEquals(record.entries, ["entry one", "entry two"]);

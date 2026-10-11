@@ -643,6 +643,7 @@ async function runQualityGateBody(
         timeoutSeconds: config.claudeTimeout,
         killAfterSeconds: config.claudeKillAfter,
         phase: "quality_fix",
+        repo,
         cwd: state.repoPath,
         logger,
       },

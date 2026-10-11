@@ -65,7 +65,7 @@ Distinguished the outcomes. Closes #1140.
 
 - **clean** — Australian English, TDD, fail-loud error handling
 
-**Docs sweep** — grep: \`describeRunOutcome\`; section: \`docs/EXTENDING.md#run-outcome\`; no hits
+**Docs sweep** — grep: \`describeRunOutcome\`; section: \`docs/EXTENDING.md#run-outcome\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
