@@ -116,7 +116,7 @@ no key bump is needed.
 
 - `deno check`: clean.
 - `deno fmt --check` and `deno lint` on both changed files: clean.
-- `deno task test:unit tests/milestone_completion_test.ts`: 100 passed,
+- `deno task test:unit tests/milestone_completion_test.ts`: 107 passed,
   0 failed.
 - Red checks. Each mutation below was applied, turned the named tests red,
   and was then restored:
@@ -188,7 +188,7 @@ Quality gate: the full `./quality.sh` passed on this branch with exit 0
 merged-arm tracker test, the two mutation-killing test changes, a doc-comment
 line in `milestone_sync_pr_retirement.ts` and the `docs/workflows/milestones.md`
 bullets. On this head, `deno check`, `deno lint` and `deno fmt --check` are
-clean on the changed files, and the targeted run above passed (100/100). The
+clean on the changed files, and the targeted run above passed (107/107). The
 worker re-runs the full gate.
 
 ## Acceptance Criteria
