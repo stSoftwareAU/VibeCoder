@@ -695,7 +695,15 @@ stale. Before calling a gate done (Issue #3149):
    nearby variant an agent or human would plausibly produce — commented out,
    wrapped in a condition (`if (false)`), loosened, re-wrapped across lines,
    escaped, indented, moved to another file, deleted with its file, and
-   renamed — each asserting the gate still blocks. Run the table both ways:
+   renamed — each asserting the gate still blocks. For a guard over another
+   tool's command line or request (`gh`, `git`, a URL), the variants come
+   from that tool's parser and the server's routing, not from the issue's one
+   example: every flag spelling and placement the parser accepts, and every
+   path, method or encoding the server resolves to the same resource. Check
+   each against the real tool (`gh --verbose`, `GH_DEBUG=api`) and register
+   the rule with the shared table in
+   `worker/deno/tests/support/gh_guard_conformance.ts` where one exists
+   (Issue #3568). Run the table both ways:
    for each look-alike the gate must ignore — the pattern inside a string or
    template literal, a skipped or ignored declaration (`Deno.test.ignore`,
    `it.skip`), an example inside a code block — add a test asserting it does
