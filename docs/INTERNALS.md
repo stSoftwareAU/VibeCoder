@@ -4604,7 +4604,11 @@ ledger entry either has an attempt **open on this host** or has **spent its
 conflict budget** (Issue #2305), logging
 `skipped: milestone behind default branch (<reason>)` and recording the
 `milestone-behind` skip reason. Without it a paced milestone was claimed,
-deferred and commented on again on every scan cycle. A branch with one
+deferred and commented on again on every scan cycle. The idle-decision
+census reads the same ledger through the same `milestonePacedUntil` and counts
+a paced milestone's issues as `run_local_hold` rather than claimable
+(Issue #3464), so a persistently paced milestone no longer raises a false
+`inversion_signal`. A branch with one
 charged failure and an attempt still in hand is *not* paced: its children may
 be claimed, and the next child run's own pre-cut sync is what tries again.
 
