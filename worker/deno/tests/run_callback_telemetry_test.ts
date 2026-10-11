@@ -460,6 +460,7 @@ Deno.test("run_callback_telemetry - a split run's model and effort stay the invo
   // ran as an Opus advisor at `high`: reporting a sub-agent model beside that
   // effort would name a pair no call ran with.
   const [split] = splitRun(usage(0, 0));
+  assert(split !== undefined, "splitRun yields one invocation");
   const telemetry = summariseCallbackTelemetry([{
     runStats: { ...split.runStats, effort: "high" },
   }]);
