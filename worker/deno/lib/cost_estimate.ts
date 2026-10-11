@@ -194,11 +194,11 @@ export function readModelUsageBreakdown(
  * Split a run's total token usage across the models that actually served it
  * (Issue #2346).
  *
- * A split run's advisor (Opus) and its executor sub-agents (Sonnet) share one
- * CLI invocation, so `RunStats.modelUsage` is the only record of who spent
- * what. Attributing the whole invocation to its first served model prices the
- * executors' Sonnet tokens at Opus rates and leaves Sonnet with no cost line at
- * all.
+ * A split run's advisor (Opus) and its executor and reviewer sub-agents (Sonnet
+ * or Haiku) share one CLI invocation, so `RunStats.modelUsage` is the only
+ * record of who spent what. Attributing the whole invocation to its first
+ * served model prices the sub-agents' tokens at Opus rates and leaves their
+ * model with no cost line at all.
  *
  * **The breakdown is trusted when every entry reads cleanly.** On a split run
  * the CLI's result `usage` covers only the main session (or is all zero) while
