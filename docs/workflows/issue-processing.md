@@ -2966,6 +2966,16 @@ the record by its worker-written `**Category:** \`summary-incomplete\`` line at
 the head of the comment (`isSummaryGateFailureRecord`) and leave its labels
 alone, however the quoted summary reads. The catch-all `Error:` rule excludes `::` paths.
 
+A run refused by the security-fix gate is categorised `security_fix_gate`
+(display `security-fix-gate`, Issue #3454) the same way: the failure reason opens
+with the worker's own `SECURITY_FIX_GATE_MARKER` when the twice-blocked in-run
+retry report ends the run, so quoted test declarations (for example `TypeError:`
+or "timeout") are not read as a crash, timeout or rate limit. The completion
+phase's first-block reason stays unmarked, because the in-run retry always
+replaces it. It is an `agent-outcome` with the normal retry and `failed-once` rules.
+A retry that could not be launched is not marked and keeps its own category.
+There is no label-release record check for this category.
+
 ## 🔁 One run, one attempt per issue
 
 The scan ranks a **cached** issue list (`issues_all`, TTL 600 s), and until

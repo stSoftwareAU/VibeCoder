@@ -523,6 +523,7 @@ const MARKED_REFUSAL_QUOTING_BROKEN_REF = `${SUMMARY_RULE_GATE_MARKER}: ` +
 async function postedRecord(
   write: typeof markIssueAsFailedOnce,
   failureMessage: string,
+  extra: { qualityGateOutput?: boolean } = {},
 ): Promise<string> {
   let body = "";
   await write({
@@ -530,6 +531,7 @@ async function postedRecord(
     issueNumber: 1,
     githubUser: FLEET_AUTHOR,
     failureMessage,
+    ...extra,
   }, {
     ghCommandFn: (args: string[]) => {
       if (args[1] === "comment") body = args[args.indexOf("--body") + 1] ?? "";
@@ -592,4 +594,43 @@ Deno.test("releaseHostFaultFailureLabels - a quoted summary-incomplete category 
     authorOptions: FLEET,
   });
   assertEquals(outcome.released, [122]);
+});
+
+Deno.test("releaseHostFaultFailureLabels - a quality-gate record quoting host-looking test output keeps its labels (Issue #3445)", async () => {
+  resetHostFaultReleaseSweepsForTest();
+  const diskFull = "FAILED | tests/x_test.ts => a full disk " +
+    "(No space left on device) is disk-full";
+  const brokenRef = "FAILED | tests/x_test.ts => " +
+    "warning: ignoring broken ref refs/remotes/origin/Develop";
+  const gate = { qualityGateOutput: true };
+  const bodies: string[] = [
+    await postedRecord(markIssueAsFailedOnce, diskFull, gate),
+    await postedRecord(markIssueAsFailed, diskFull, gate),
+    await postedRecord(markIssueAsFailedOnce, brokenRef, gate),
+    await postedRecord(markIssueAsFailed, brokenRef, gate),
+  ];
+  const [d1, d2, b1, b2] = bodies as [string, string, string, string];
+  // Fixture check: the legacy body match would fire without the Source line.
+  assertEquals(detectHostFault(b1), "clone-corrupt");
+  assertEquals(detectHostFault(b2), "clone-corrupt");
+
+  const issues: FakeIssue[] = [
+    { number: 130, labels: ["failed-once"], comments: [d1] },
+    { number: 131, labels: ["failed"], comments: [d1, d2] },
+    { number: 132, labels: ["failed-once"], comments: [b1] },
+    { number: 133, labels: ["failed"], comments: [b1, b2] },
+  ];
+  const gh = fakeGh(issues);
+  const outcome = await releaseHostFaultFailureLabels({
+    repo: REPO,
+    ghCommandFn: gh.fn,
+    authorOptions: FLEET,
+  });
+
+  assertEquals(outcome.released, []);
+  assertEquals(gh.byNumber.get(130)?.labels, ["failed-once"]);
+  assertEquals(gh.byNumber.get(131)?.labels, ["failed"]);
+  assertEquals(gh.byNumber.get(132)?.labels, ["failed-once"]);
+  assertEquals(gh.byNumber.get(133)?.labels, ["failed"]);
+  assertEquals(gh.calls.filter((c) => c[1] === "edit"), []);
 });

@@ -4943,6 +4943,35 @@ head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
 `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
 rejection in a refused summary cannot strip `failed-once` or `failed`.
 
+#### `security_fix_gate` is its own failure category (Issue #3454)
+
+The security-fix gate's refusal reason quotes agent-authored test declarations
+(scrubbed, code-fenced, via `formatMatchedTestDeclarations`). A declaration such
+as `Deno.test("rejects a forged token with TypeError: invalid signature after
+timeout", ...)` was read by the catch-all `Error:` rule as `internal_error`,
+classed `worker-crash` / `code_fixable`, and a false diagnostic issue was
+auto-filed; a quoted "timeout", "SIGTERM" or "rate limit" gave `timeout`,
+`killed` or `rate_limit`. The shared mechanism is the one described under
+"`summary_incomplete` is its own failure category" above, with
+`SECURITY_FIX_GATE_MARKER` ("the security fix did not pass the worker's
+security-fix gate") opening only the run-ending reason: the twice-blocked report
+from the in-run retry (`reportBlock` in `security_fix_gate_retry.ts` with
+`countsAsBlockedRun` true). The completion phase's first-block reason
+(`completion_phase.ts`) stays unmarked, because `recoverFromSecurityGateBlock`
+always replaces it, so it never ends a run.
+`detectFailureCategory` matches it with `startsWith`, right after the
+summary-gate marker, giving `security_fix_gate` (display `security-fix-gate`),
+which is `not_code_fixable` (class `agent-outcome`), not infrastructure, and
+follows the normal retry and `failed-once` rules. `classifyCodingFailure`
+returns a `ladder` decision with cooldown `non_transient` for it,
+`classifyRunFailure` answers it before the free-text rules, and
+`detectHostFault` returns `null` for a marked reason. A message that merely
+quotes the marker later keeps its own category. A retry that could not be
+launched at all (a rate limit, a failed spawn) is deliberately not marked: that
+is a real launch fault and its own error text must still be classified. The
+posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
+`isSummaryGateFailureRecord`-style record check for the label-release sweeps.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a
@@ -4952,7 +4981,9 @@ really the worker's host — a corrupt clone, a clone that could not be made, a
 full disk, a container image that failed to build — the failure comment gains a
 **Host fault:** line naming the kind and a final marker
 (`<!-- vibe-host-fault kind="<kind>" -->`), detected by
-[host_fault.ts](../worker/deno/lib/host_fault.ts):
+[host_fault.ts](../worker/deno/lib/host_fault.ts). A quality-gate failure
+never gains the Host fault line or marker, because its error output is the
+repository's own test output, not host output (Issue #3445):
 
 | Kind                     | Fault                                                                                                       |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
@@ -4976,7 +5007,9 @@ Escalation to Planning Mode". Only an "Automated Processing Failed" record can b
 a host fault: either it carries the marker, or — for failures made before this
 change had no marker to write — its body matches the `clone-corrupt` git
 broken-ref, bad-object, bad `.git/config` line, or "not in a git directory"
-signature (Issue #2953). Any issue carrying even one non-host-fault record (an
+signature (Issue #2953). A quality-gate record (its head carries the
+`**Source:** quality gate` line) is never one, even on that legacy body match
+(Issue #3445). Any issue carrying even one non-host-fault record (an
 agent failure, claim churn, an ordinary setup error such as an invalid base
 branch) keeps its label. `failed` is released only when a host-fault "Second
 Attempt" record, the run that applies it, explains it; otherwise the issue keeps

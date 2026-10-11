@@ -20,6 +20,7 @@
  * Australian English throughout.
  */
 
+import { SECURITY_FIX_GATE_MARKER } from "./failure_diagnosis.ts";
 import {
   buildSecurityFixGateMessage,
   type SecurityFixEvidenceKind,
@@ -200,6 +201,11 @@ async function persistVerdict(
  * {@link MAX_CONSECUTIVE_BLOCKED_RUNS} consecutive runs have ended that way. An
  * agent invocation that could not be launched is not a gate verdict, so it is
  * reported without charging the issue a blocked run.
+ *
+ * A run-ending gate verdict is returned prefixed with
+ * {@link SECURITY_FIX_GATE_MARKER} so quoted agent test text cannot reclassify
+ * it; the launch-failure reason stays unmarked so it classifies on its own
+ * launch-error text (Issue #3454).
  */
 async function reportBlock(
   ctx: IssueContext,
@@ -244,7 +250,12 @@ async function reportBlock(
     });
   }
 
-  return { status: "failure", reason: `${reasonPrefix}${comment}` };
+  return {
+    status: "failure",
+    reason: countsAsBlockedRun
+      ? `${SECURITY_FIX_GATE_MARKER}: ${comment}`
+      : `${reasonPrefix}${comment}`,
+  };
 }
 
 /**

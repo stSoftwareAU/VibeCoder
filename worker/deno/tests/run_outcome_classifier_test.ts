@@ -16,6 +16,7 @@ import {
 import {
   detectFailureCategory,
   type FailureCategory,
+  SECURITY_FIX_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 
 /** Real strings: from failure_diagnosis_test.ts fixtures and worker logs. */
@@ -277,6 +278,7 @@ Deno.test("run failure classifier - every FailureCategory member is covered; a n
     "no_changes",
     "evidence_missing",
     "summary_incomplete",
+    "security_fix_gate",
     "internal_error",
     "missing_tools",
     "unknown",
@@ -678,4 +680,22 @@ Deno.test("run failure classifier - summary_incomplete is an agent outcome even 
   );
   assertEquals(got.fixability, "not_code_fixable");
   assertEquals(got.failureClass, "agent-outcome");
+});
+
+// Issue #3454 — a security-fix gate refusal quotes agent test declarations; the
+// auto-filer (fileRunFailureIssue) classifies via classifyRunFailure on the
+// detected category, so the quoted text must never make it a worker defect.
+Deno.test("classifyRunFailure - a marked security-fix gate refusal is not_code_fixable and an agent-outcome (Issue #3454)", () => {
+  const message = `${SECURITY_FIX_GATE_MARKER}: PR creation blocked: ` +
+    'Deno.test("rejects a forged token with TypeError: invalid signature after timeout", ...); ENOSPC';
+  const category = detectFailureCategory(message);
+  assertEquals(category, "security_fix_gate");
+  const c = classifyRunFailure(category, message);
+  assertEquals(c.fixability, "not_code_fixable");
+  assertEquals(c.failureClass, "agent-outcome");
+  // The classifier's own early return, independent of the detector.
+  assertEquals(
+    classifyRunFailure("security_fix_gate", message).failureClass,
+    "agent-outcome",
+  );
 });

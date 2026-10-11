@@ -2172,7 +2172,10 @@ A second corruption of the same repo on the same host inside that window is
 a different, worse signal: the run's setup failure carries a machine-readable
 `clone-corrupt-repeat` payload, and the release path backs the repository off
 fleet-wide at once and escalates the tally issue to a human (Issue #2958) —
-no waiting for the tally threshold.
+no waiting for the tally threshold. The release path reads that payload only
+from a setup-phase failure, and only from a line that begins with the marker,
+so a later phase's message that merely quotes it (an agent's PR summary,
+quality-gate output) never triggers the back-off (Issue #3446).
 
 The repository's diagnostic issue carries two independent markers on the
 same body, and the two states they describe are distinct:
