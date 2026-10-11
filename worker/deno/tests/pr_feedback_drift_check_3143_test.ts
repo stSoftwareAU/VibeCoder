@@ -1137,7 +1137,7 @@ Deno.test("runPrFeedbackDriftCheck - a red run result the recount cannot check i
     );
 
     const hit = warnings.filter((w) =>
-      w.startsWith("Test Plan recount could not check 1 run result(s)")
+      w.startsWith("Test Plan recount could not check 1 figure(s)")
     );
     assertEquals(hit.length, 1);
     assertStringIncludes(hit[0]!, SUMMARY_PATH);

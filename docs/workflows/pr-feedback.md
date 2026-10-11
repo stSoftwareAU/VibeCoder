@@ -440,21 +440,25 @@ Five checks run, each only when it applies:
    and skipped when there are none or several.
    A file is left out when a declaration is inside a block, parentheses, or
    a loop, or the scan ends inside a literal or with unbalanced depth.
-   A hard-wrapped paragraph or list item is read as one claim, using the
+   A hard-wrapped paragraph or list item is read as one unit, using the
    shared `markdownLogicalUnits` splitter in
-   `worker/deno/lib/markdown_code_spans.ts` (Issue #3356); claims never
+   `worker/deno/lib/markdown_code_spans.ts` (Issue #3356). A unit with one
+   count is compared with the sum of the test files it names; a unit with
+   several counts over several test files is compared claim by claim, each
+   count with the files named since the previous count. Units never
    join across a blank line, a heading, a new list item, a table row or a
    fence. Inside a fenced block each line is its own claim, except a
    command continued onto the next line with a trailing `\` or `/`.
    An issue number (`#3143`) is not a count, and a line that says tests
    were added to or extended an existing file (`added to`, `extended`,
    `with N tests`) is not compared with that file's whole count. Lines it
-   cannot total (an uncounted file, `--filter`, two different numbers, "N
-   new tests", a paired result in a block citing `./quality.sh`, whose
-   figures cover the whole suite) are skipped. A paired result naming an
-   unchanged test file, several files whose runs differ, or a red result
-   with no file and no sole changed test file is logged by the worker as not
-   checked rather than compared.
+   cannot total (an uncounted file, `--filter`, "N new tests", a paired
+   result in a block citing `./quality.sh`, whose figures cover the whole
+   suite) are skipped. A paired result naming an unchanged test file,
+   several files whose runs differ, a red result with no file and no sole
+   changed test file, several counts that do not each follow the test file
+   they count, or different counts for one test file is logged by the worker
+   as not checked rather than compared.
 3. **Docs sweep re-check** — when the push changes a code file and a summary
    exists, the Issue #3073 docs-sweep gate is re-run against the PR's changed
    files.

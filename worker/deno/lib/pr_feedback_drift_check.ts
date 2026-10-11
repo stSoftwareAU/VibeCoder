@@ -1122,8 +1122,8 @@ export async function runPrFeedbackDriftCheck(
     prFiles,
     changesBehaviour,
   );
-  // A paired run result the recount cannot check is reported, not passed
-  // silently (Issue #3381).
+  // A figure the recount cannot check is reported, not passed silently
+  // (Issue #3381).
   for (const s of summaries) {
     const unchecked = findUncheckedRunResults({
       summary: s.content,
@@ -1131,7 +1131,7 @@ export async function runPrFeedbackDriftCheck(
     });
     if (unchecked.length === 0) continue;
     logger.warn(
-      `Test Plan recount could not check ${unchecked.length} run result(s) ` +
+      `Test Plan recount could not check ${unchecked.length} figure(s) ` +
         `in ${s.path}: ${
           unchecked.map((u) => `${u.reason} — "${u.line}"`).join("; ")
         }`,

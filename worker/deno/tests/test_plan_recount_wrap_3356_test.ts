@@ -2,6 +2,7 @@
 import { assertEquals } from "@std/assert";
 import {
   findTestPlanMismatches,
+  findUncheckedRunResults,
   logicalBlocks,
   type TestDeclarationCounts,
 } from "../lib/test_plan_recount.ts";
@@ -131,4 +132,91 @@ Deno.test("logicalBlocks keeps a heading and the following paragraph apart", () 
     "### Results",
     "First line second line",
   ]);
+});
+
+const GH = "tests/gh_wrapper_test.ts";
+const BRIDGE = "tests/deno_bridge_migration_test.ts";
+// Real wrap: docs/archive/pr-summaries/pr-summary-1233.md:111-113 (a count per file).
+function plan1233(bridge: number): string {
+  return "## Test Plan\n\n" +
+    "Existing coverage re-run green: `" + GH + "` (25 tests) and\n" +
+    "`" + BRIDGE + "` (" + bridge + " tests), plus the full `./quality.sh`\n" +
+    "gate.\n";
+}
+
+Deno.test("a wrapped sentence with a count per file checks each file (1233 shape)", () => {
+  assertEquals(
+    findTestPlanMismatches({
+      summary: plan1233(25),
+      headCounts: counts({ [GH]: 25, [BRIDGE]: 25 }),
+    }),
+    [],
+  );
+  const found = findTestPlanMismatches({
+    summary: plan1233(25),
+    headCounts: counts({ [GH]: 25, [BRIDGE]: 24 }),
+  });
+  assertEquals(found.length, 1);
+  assertEquals(found[0]!.files, [BRIDGE]);
+  assertEquals(found[0]!.claimed, 25);
+  assertEquals(found[0]!.actual, 24);
+});
+
+const GUARD = "worker/deno/tests/git_guard_cli_test.ts";
+const FIELD = "worker/deno/tests/guard_field_encoding_test.ts";
+// Real wrap: docs/archive/pr-summaries/pr-summary-1284.md:147-148 (differing counts).
+const PLAN_1284 = "## Test Plan\n\n" +
+  "New — `" + GUARD + "` (8 tests) and\n" +
+  "`" + FIELD + "` (4 tests): the guard's verdict.\n";
+
+Deno.test("a stale per-file count in a wrapped sentence is flagged, not passed (1284 shape)", () => {
+  assertEquals(
+    findTestPlanMismatches({
+      summary: PLAN_1284,
+      headCounts: counts({ [GUARD]: 8, [FIELD]: 4 }),
+    }),
+    [],
+  );
+  const found = findTestPlanMismatches({
+    summary: PLAN_1284,
+    headCounts: counts({ [GUARD]: 9, [FIELD]: 4 }),
+  });
+  assertEquals(found.length, 1);
+  assertEquals(found[0]!.files, [GUARD]);
+  assertEquals(found[0]!.claimed, 8);
+  assertEquals(found[0]!.actual, 9);
+});
+
+Deno.test("several counts that do not follow their files are reported as unchecked", () => {
+  const summary = "## Test Plan\n\n" +
+    "`" + GUARD + "` has 8 tests, was 6 tests,\n" +
+    "and `" + FIELD + "` is new.\n";
+  const headCounts = counts({ [GUARD]: 9, [FIELD]: 4 });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }), []);
+  const found = findUncheckedRunResults({ summary, headCounts });
+  assertEquals(found.length, 1);
+  assertEquals(found[0]!.line.includes("was 6 tests"), true);
+});
+
+Deno.test("a test file named after the last count is reported as unchecked", () => {
+  const summary = "## Test Plan\n\n" +
+    "`" + GUARD + "` (9 tests) and `" + FIELD + "` (4 tests),\n" +
+    "plus `tests/other_test.ts`.\n";
+  const headCounts = counts({
+    [GUARD]: 9,
+    [FIELD]: 4,
+    "tests/other_test.ts": 2,
+  });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }), []);
+  assertEquals(findUncheckedRunResults({ summary, headCounts }).length, 1);
+});
+
+Deno.test("different counts for one test file are reported as unchecked", () => {
+  const summary = "## Test Plan\n\n`" + GUARD +
+    "` has 9 tests (was 8 tests).\n";
+  const headCounts = counts({ [GUARD]: 9 });
+  assertEquals(findTestPlanMismatches({ summary, headCounts }), []);
+  const found = findUncheckedRunResults({ summary, headCounts });
+  assertEquals(found.length, 1);
+  assertEquals(found[0]!.reason, "several different counts for one test file");
 });

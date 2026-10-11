@@ -50,8 +50,8 @@ flowchart LR
   - `branch_outcomes_gate.ts`: the heading-citation and fenced-citation tests failed (valid=true).
 - **Corpus run** over all 946 files in `docs/archive/pr-summaries/`, base against head:
   - `validateDocsSweep` and `validateBranchOutcomes` gave identical verdicts on all 946, so the corpus shows no new false positives and no lost hits.
-  - `findTestPlanMismatches` differs on 40 summaries. The counts used are those at today's head, not at each PR's head, so absolute mismatch counts are not false-positive counts.
-  - Every difference I read is the head reading the whole wrapped sentence where the base read its last physical line: the 1878, 2112 and 2276 shapes the issue names.
+  - `findTestPlanMismatches` differs on 68 of 962 summaries (the #3356 change alone, rerun after the per-file pairing was added: the base before the splitter against the splitter commit). The per-file pairing then changes the verdict on 6 more (pr-summary-1233, 1284, 2322, 3315, 3405 and 839). The counts used are those at today's head, not at each PR's head, so absolute mismatch counts are not false-positive counts.
+  - The differences I read are the head reading the whole wrapped sentence where the base read its last physical line: the 1878, 2112 and 2276 shapes the issue names. The per-file pairing corrects two more shapes: 1233, where two files each have 25 tests and the earlier head compared the one figure 25 with their combined 50 (no longer flagged), and 1284, where the earlier head passed a stale per-file count silently (now flagged 8 against 16, beside 25 against 32 and 14 against 11). I did not read the other four per-file differences (2322, 3315, 3405, 839).
   - The one fenced regression found before the fix (pr-summary-1021's `\` continuation) is preserved by the shell-continuation rule and pinned by a test.
 - **Provenance numbers the diff adds:**
   - #3356: Markdown gates keep matching hard-wrapped prose one physical line at a time
@@ -104,7 +104,7 @@ Tests added (all new files except the drift pin):
 
 - `worker/deno/tests/markdown_logical_units_3356_test.ts`: 14 tests, one per unit rule, plus `splitMarkdownLines` terminators and a linear-growth guard. Registered in `WALL_CLOCK_TEST_FILES`.
 - `worker/deno/tests/docs_sweep_wrap_3356_test.ts`: 5 tests.
-- `worker/deno/tests/test_plan_recount_wrap_3356_test.ts`: 8 tests.
+- `worker/deno/tests/test_plan_recount_wrap_3356_test.ts`: 13 tests (PR #3553 review: the pr-summary-1233.md:111-113 and pr-summary-1284.md:147-148 shapes, plus two unchecked-report cases). The new 1233, 1284 and unchecked tests go red on the previous head's `test_plan_recount.ts`.
 - `worker/deno/tests/branch_outcomes_wrap_3356_test.ts`: 7 tests.
 - `worker/deno/tests/text_gate_matcher_3149_test.ts`: one new drift test. `deno task drift-pins-on-base origin/milestone/worker-deno-lib-pr-summary-markdown-gates CODING-STANDARDS.md "Writing a gate over text" …` printed `absent on base` for all four phrases: `markdownLogicalUnits`, `never per physical line`, `splits the matched phrase or claim itself across a line break`, `a real wrapped shape from the corpus`.
 
@@ -139,8 +139,11 @@ Each outcome was flipped on purpose and the named test went red; the file was re
 - `worker/deno/lib/markdown_code_spans.ts:556` — list item opens a new unit — `worker/deno/tests/markdown_logical_units_3356_test.ts::a list item joins an indented continuation line` — flipping it went red
 - `worker/deno/lib/markdown_code_spans.ts:559` — table row is its own unit — `worker/deno/tests/markdown_logical_units_3356_test.ts::each table row is its own unit and a following line does not join it` — flipping it went red
 - `worker/deno/lib/markdown_code_spans.ts:562` — ordinary line extends an open paragraph or list item — `worker/deno/tests/markdown_logical_units_3356_test.ts::a hard-wrapped paragraph is one unit joined with single spaces` — flipping it went red
-- `worker/deno/lib/test_plan_recount.ts:441` — non-code unit read as one block — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::wrapped paragraph naming two files is read as one claim (2276 shape)` — flipping it to per-line went red
-- `worker/deno/lib/test_plan_recount.ts:447` — fenced `\` continuation joins — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::fenced shell continuation joins into one command (1021 shape)` — flipping it went red
+- `worker/deno/lib/test_plan_recount.ts:457` — non-code unit read as one block — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::wrapped paragraph naming two files is read as one claim (2276 shape)` — flipping it to per-line went red
+- `worker/deno/lib/test_plan_recount.ts:463` — fenced `\` continuation joins — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::fenced shell continuation joins into one command (1021 shape)` — flipping it went red
+- `worker/deno/lib/test_plan_recount.ts:634` — one claim is a combined total; one file with differing counts is unchecked (`:636`) — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::different counts for one test file are reported as unchecked` — flipping it went red
+- `worker/deno/lib/test_plan_recount.ts:660` — several claims over several files are compared per file — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::a wrapped sentence with a count per file checks each file (1233 shape)` and `::a stale per-file count in a wrapped sentence is flagged, not passed (1284 shape)` — comparing against all files went red
+- `worker/deno/lib/test_plan_recount.ts:663` — a claim with no file before it, or a file after the last claim, is reported as unchecked (`:664`) — `worker/deno/tests/test_plan_recount_wrap_3356_test.ts::several counts that do not follow their files are reported as unchecked` and `::a test file named after the last count is reported as unchecked` — flipping each went red
 - `worker/deno/lib/docs_sweep_gate.ts:125` — fenced line is not the entry — `worker/deno/tests/docs_sweep_wrap_3356_test.ts::a fenced example is not the entry` — flipping it went red
 - `worker/deno/lib/docs_sweep_gate.ts:138` — entry ends with its unit — `worker/deno/tests/docs_sweep_wrap_3356_test.ts::a following table row carrying section: is not part of the entry` — flipping it went red
 - `worker/deno/lib/branch_outcomes_gate.ts:715` — a new unit starts a new group — `worker/deno/tests/branch_outcomes_wrap_3356_test.ts::a deeper heading citation does not clear a weak admission on the next line (Issue #3356)` — flipping it went red

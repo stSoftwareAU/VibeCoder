@@ -25,10 +25,12 @@ Closes #3381.
 - The fallback uses the section's sole **changed** test file: a token that resolves to a file in the PR's head counts. A test path quoted inside an assertion would otherwise make the section ambiguous, as the real PR #3372 summary shows (`unrelated_test.ts`). A red run must have run a changed test file, because an unchanged test file passes on base.
 - The fallback applies only to a result with failures. A file-less green figure, such as a full-suite total, is never compared.
 - A block citing `quality.sh` is skipped, because its figures cover the whole suite. Two corpus false positives had this shape (`pr-summary-3255.md`, `pr-summary-3292.md`).
-- Three kinds of result are reported through `findUncheckedRunResults` and a drift-check `logger.warn`, not passed silently:
+- Figures the recount cannot check are reported through `findUncheckedRunResults` and a drift-check `logger.warn`, not passed silently. Three kinds are paired run results (this issue); the per-file pairing added in PR #3553 adds two more:
   - a result whose block names an unchanged test file;
   - a result whose block names several files whose runs differ;
   - a red result with no file in its block and no sole changed test file in the section.
+  - several counts in one block that do not each follow the test file they count (PR #3553);
+  - different counts for one test file in one block (PR #3553).
 
 ### Undiscoverable Facts
 
@@ -120,9 +122,9 @@ Hits left in place:
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — Writing a gate over text, item 3: a paired result the recount could not check returned as a clean pass — evidence: `worker/deno/lib/test_plan_recount.ts:651` — reason: fixed in this diff. Unresolvable results now return `unchecked` (lines 651, 662 and 674), `findUncheckedRunResults` exposes them, and `worker/deno/lib/pr_feedback_drift_check.ts:1132` logs them, with one test per reason and a drift-check warn test.
-- **violation** — Writing a gate over text, item 1: no evasion case for a result inside a code span — evidence: `worker/deno/lib/test_plan_recount.ts:549` — reason: fixed in this diff. The code-span text is the deno output the check reads, so it is deliberately not masked, and `paired run result - a result inside a code span is the deno output and is checked` pins it both ways.
-- **violation** — Writing a gate over text, item 2: corpus false-positive and false-negative counts not in the diff — evidence: `worker/deno/lib/test_plan_recount.ts:643` — reason: fixed in this diff. The counts are recorded in this summary's Evidence.
+- **violation** — Writing a gate over text, item 3: a paired result the recount could not check returned as a clean pass — evidence: `worker/deno/lib/test_plan_recount.ts:699` — reason: fixed in this diff. Unresolvable results now return `unchecked` (lines 699, 710 and 722), `findUncheckedRunResults` exposes them, and `worker/deno/lib/pr_feedback_drift_check.ts:1133` logs them, with one test per reason and a drift-check warn test.
+- **violation** — Writing a gate over text, item 1: no evasion case for a result inside a code span — evidence: `worker/deno/lib/test_plan_recount.ts:553` — reason: fixed in this diff. The code-span text is the deno output the check reads, so it is deliberately not masked, and `paired run result - a result inside a code span is the deno output and is checked` pins it both ways.
+- **violation** — Writing a gate over text, item 2: corpus false-positive and false-negative counts not in the diff — evidence: `worker/deno/lib/test_plan_recount.ts:691` — reason: fixed in this diff. The counts are recorded in this summary's Evidence.
 - **clean** — Checked and compliant:
   - the regex on untrusted text (`RESULT_RE` has no overlapping quantifiers and has a hostile growth case);
   - named tests and helpers exist at the head;
@@ -145,7 +147,7 @@ Tests added or modified (no existing assertion is removed):
 Red on base (the head test files run against the base branch's `worker/deno/lib/test_plan_recount.ts` and `worker/deno/lib/pr_feedback_drift_check.ts`, in a throwaway worktree):
 
 - `tests/test_plan_recount_red_on_base_3381_test.ts`: the whole module fails to load with `SyntaxError: The requested module '../lib/test_plan_recount.ts' does not provide an export named 'findUncheckedRunResults'` (deno: `FAILED | 0 passed | 1 failed`).
-- `tests/pr_feedback_drift_check_3143_test.ts`: `FAILED | 26 passed | 1 failed`. The failure is `runPrFeedbackDriftCheck - a red run result the recount cannot check is warned about (Issue #3381)`.
+- `tests/pr_feedback_drift_check_3143_test.ts`: `FAILED | 26 passed | 1 failed` (27 tests). The failure is `runPrFeedbackDriftCheck - a red run result the recount cannot check is warned about (Issue #3381)`.
 
 Green at the head:
 
@@ -154,15 +156,15 @@ Green at the head:
 
 Branch outcomes:
 
-- `worker/deno/lib/test_plan_recount.ts:549`: the two words of a pair match, so it is not a paired result. Reached by `paired run result - two passed figures are not read as a pass/fail pair`. Commenting the line out turned it red (`FAILED | 22 passed | 1 failed`).
-- `worker/deno/lib/test_plan_recount.ts:539`: the sole changed test file feeds the fallback. Reached by `paired run result - the stale PR #3372 plan is flagged once`. Counting unresolved tokens as well turned it red.
-- `worker/deno/lib/test_plan_recount.ts:643`: a `quality.sh` block is skipped. Reached by `paired run result - a quality.sh full-gate line naming a failing test file is skipped`. Removing the guard turned it red.
-- `worker/deno/lib/test_plan_recount.ts:651`: an unchanged test file in the block makes the result unchecked. Reached by `unchecked run results - (a) a block naming an unchanged test file is reported`. Returning ok instead turned it red.
-- `worker/deno/lib/test_plan_recount.ts:662`: several files whose runs differ make the result unchecked. Reached by `unchecked run results - (b) several files whose runs differ are reported` and `paired run result - two files with different totals are skipped`. Returning ok, or removing the check, turned them red.
-- `worker/deno/lib/test_plan_recount.ts:672-673`: a block that names no test file keeps only its runs with failures, and returns ok when none are left. Reached by `unchecked run results - quality.sh and file-less green blocks are not reported`, which now also asserts `findTestPlanMismatches` returns `[]` for the file-less green `deno task test:unit` line beside a sole changed test file (PR #3553 review). With the `failed > 0` filter dropped (`candidates = runs`), that test went red (`FAILED`, tests/test_plan_recount_red_on_base_3381_test.ts:299) and the other 22 stayed green; restored, all 23 pass.
-- `worker/deno/lib/test_plan_recount.ts:674`: no sole changed test file makes the result unchecked. Reached by `unchecked run results - (c) a red result with no file and no sole changed test file is reported` and the drift-check warn test. Returning ok turned the drift-check test red.
-- `worker/deno/lib/test_plan_recount.ts:687`: passed + failed differs from runnable, which is a mismatch. Reached by `paired run result - a block naming the test file is compared by passed + failed`. Comparing passed alone turned it, and the variant tests, red.
-- `worker/deno/lib/test_plan_recount.ts:705`: the run description. Reached by `describeTestPlanMismatch - a run names total, passed, failed, file and actual`, which asserts the full string.
+- `worker/deno/lib/test_plan_recount.ts:553`: the two words of a pair match, so it is not a paired result. Reached by `paired run result - two passed figures are not read as a pass/fail pair`. Commenting the line out turned it red (`FAILED | 22 passed | 1 failed`).
+- `worker/deno/lib/test_plan_recount.ts:543`: the sole changed test file feeds the fallback. Reached by `paired run result - the stale PR #3372 plan is flagged once`. Counting unresolved tokens as well turned it red.
+- `worker/deno/lib/test_plan_recount.ts:691`: a `quality.sh` block is skipped. Reached by `paired run result - a quality.sh full-gate line naming a failing test file is skipped`. Removing the guard turned it red.
+- `worker/deno/lib/test_plan_recount.ts:699`: an unchanged test file in the block makes the result unchecked. Reached by `unchecked run results - (a) a block naming an unchanged test file is reported`. Returning ok instead turned it red.
+- `worker/deno/lib/test_plan_recount.ts:710`: several files whose runs differ make the result unchecked. Reached by `unchecked run results - (b) several files whose runs differ are reported` and `paired run result - two files with different totals are skipped`. Returning ok, or removing the check, turned them red.
+- `worker/deno/lib/test_plan_recount.ts:720-721`: a block that names no test file keeps only its runs with failures, and returns ok when none are left. Reached by `unchecked run results - quality.sh and file-less green blocks are not reported`, which now also asserts `findTestPlanMismatches` returns `[]` for the file-less green `deno task test:unit` line beside a sole changed test file (PR #3553 review). With the `failed > 0` filter dropped (`candidates = runs`), that test went red (`FAILED`, tests/test_plan_recount_red_on_base_3381_test.ts:299) and the other 22 stayed green; restored, all 23 pass.
+- `worker/deno/lib/test_plan_recount.ts:722`: no sole changed test file makes the result unchecked. Reached by `unchecked run results - (c) a red result with no file and no sole changed test file is reported` and the drift-check warn test. Returning ok turned the drift-check test red.
+- `worker/deno/lib/test_plan_recount.ts:735`: passed + failed differs from runnable, which is a mismatch. Reached by `paired run result - a block naming the test file is compared by passed + failed`. Comparing passed alone turned it, and the variant tests, red.
+- `worker/deno/lib/test_plan_recount.ts:753`: the run description. Reached by `describeTestPlanMismatch - a run names total, passed, failed, file and actual`, which asserts the full string.
 - `worker/deno/lib/pr_feedback_drift_check.ts:1132`: unchecked results are warned about. Reached by `runPrFeedbackDriftCheck - a red run result the recount cannot check is warned about (Issue #3381)`. Removing the `logger.warn` call turned it red.
 
 Entry points checked:
