@@ -228,9 +228,11 @@ export const SUMMARY_RULE_GATE_MARKER =
   "the PR summary did not pass the worker's completion gates";
 
 /**
- * Phrase the completion phase / security-fix gate retry opens a security-fix
- * gate refusal with (Issue #3454). Worker-authored prefix put ahead of the
- * gate's refusal text, which quotes agent-authored test declarations (e.g.
+ * Phrase the security-fix gate retry opens a run-ending security-fix gate
+ * refusal with (Issue #3454): only the twice-blocked report (`reportBlock` with
+ * `countsAsBlockedRun` true) is marked; the completion phase's first-block
+ * reason is always replaced by the retry, so it is not. Worker-authored prefix
+ * put ahead of the gate's refusal text, which quotes agent-authored test declarations (e.g.
  * `Deno.test("rejects a forged token with TypeError: invalid signature after
  * timeout", ...)`) that tripped the catch-all `Error:`, timeout, killed and
  * rate-limit rules. Matched with `startsWith` ahead of every other rule, so a

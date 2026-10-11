@@ -65,8 +65,12 @@ Cited issues:
 
 Docs sweep: section: `docs/security-fix-gate-feedback.md` "The in-run retry
 (Issue #1575)" and "Recognising a false block", `docs/INTERNALS.md` (new
-security-fix gate marker section), `docs/workflows/issue-processing.md` (new
-paragraph); siblings: `summary_incomplete`, `"summary-incomplete"`,
+security-fix gate marker subsection, inserted above the unchanged
+"🩹 Host-fault failure labels release themselves (Issue #2890)" heading),
+`docs/workflows/issue-processing.md` (new paragraph). Both doc paragraphs and
+the `SECURITY_FIX_GATE_MARKER` JSDoc say that only the run-ending twice-blocked
+report (`reportBlock` with `countsAsBlockedRun` true) is marked, and that the
+completion phase's first-block reason stays unmarked; siblings: `summary_incomplete`, `"summary-incomplete"`,
 `workflow_gate`. Every switch and list that names those siblings in
 `lib/failure_diagnosis.ts` (category union, display union,
 `VALID_FAILURE_CATEGORIES`, the infrastructure, display, diagnosis and
@@ -80,10 +84,11 @@ template or coding standard.
 - [x] TDD: the new tests in `worker/deno/tests/failure_diagnosis_test.ts`,
       `worker/deno/tests/run_outcome_classifier_test.ts`,
       `worker/deno/tests/coding_failure_ladder_test.ts`,
-      `worker/deno/tests/host_fault_test.ts` and
-      `worker/deno/tests/completion_phase_security_gate_retry_test.ts` fail
-      against the base. Targeted run: 129 passed, 0 failed; fmt, lint and
-      check are clean.
+      `worker/deno/tests/host_fault_test.ts`,
+      `worker/deno/tests/completion_phase_security_gate_retry_test.ts` and
+      `worker/deno/tests/security_fix_gate_retry_test.ts` fail against the
+      base. Targeted run of those six files: 224 passed, 0 failed; fmt, lint
+      and check are clean.
 - [x] Red-checks, each mutation reverted afterwards:
 
   | Mutation | Result |
@@ -95,6 +100,7 @@ template or coding standard.
   | Remove the `host_fault` early return | 1 failed |
   | Remove the `reportBlock` prefix | test (a) failed |
   | Make `reportBlock` always mark | test (c) and the existing "a retry that cannot be launched charges no blocked run" failed |
+  | Delete `status: "failure"` from the `reportBlock` return (`lib/security_fix_gate_retry.ts:254`) | 2 failed (the two direct `security_fix_gate_retry_test.ts` tests) |
 
 **Branch outcomes:**
 
@@ -126,6 +132,14 @@ template or coding standard.
   → unmarked reason. Reached by
   `worker/deno/tests/completion_phase_security_gate_retry_test.ts::completion - a launch failure is not marked as the security-fix gate (Issue #3454)`.
   Marking it always turned it red.
+- `worker/deno/lib/security_fix_gate_retry.ts:254`, the `reportBlock` return
+  carries `status: "failure"` on both paths. Reached by
+  `worker/deno/tests/security_fix_gate_retry_test.ts::gate retry - a second block ends the run in failure with the gate marker (Issue #3454)`
+  and
+  `worker/deno/tests/security_fix_gate_retry_test.ts::gate retry - a retry that cannot be launched ends the run in failure, unmarked (Issue #3454)`.
+  These call `recoverFromSecurityGateBlock` directly, so the mutation check
+  (which runs only tests that import the mutated module) reaches the line.
+  Deleting the property turned both red.
 
 Persisted data: none. `security_fix_gate` is a new category value, and no
 stored record changes shape.
@@ -134,7 +148,7 @@ Quality gate: `./quality.sh` ran for about 20 minutes and was stopped by the
 tool time limit before the full test suite finished. Every stage that
 completed passed: completeness checks, source targets, mermaid,
 markdownlint, semgrep and the release-tag ruleset. The targeted suites for
-every touched file pass (129/0), and fmt, lint and check are clean. CI runs
+every touched file pass (224/0), and fmt, lint and check are clean. CI runs
 the full gate.
 
 <!-- vibe-quality-gate-skipped reason="full ./quality.sh exceeded the tool time limit (stopped after ~20 min); completed stages all passed; targeted tests, fmt, lint and check green" -->

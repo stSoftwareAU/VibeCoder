@@ -4949,9 +4949,11 @@ auto-filed; a quoted "timeout", "SIGTERM" or "rate limit" gave `timeout`,
 `killed` or `rate_limit`. The shared mechanism is the one described under
 "`summary_incomplete` is its own failure category" above, with
 `SECURITY_FIX_GATE_MARKER` ("the security fix did not pass the worker's
-security-fix gate") opening the reason at both refusal sites: the completion
-phase's gate block (`completion_phase.ts`) and the twice-blocked report from the
-in-run retry (`reportBlock` in `security_fix_gate_retry.ts`).
+security-fix gate") opening only the run-ending reason: the twice-blocked report
+from the in-run retry (`reportBlock` in `security_fix_gate_retry.ts` with
+`countsAsBlockedRun` true). The completion phase's first-block reason
+(`completion_phase.ts`) stays unmarked, because `recoverFromSecurityGateBlock`
+always replaces it, so it never ends a run.
 `detectFailureCategory` matches it with `startsWith`, right after the
 summary-gate marker, giving `security_fix_gate` (display `security-fix-gate`),
 which is `not_code_fixable` (class `agent-outcome`), not infrastructure, and
@@ -4965,7 +4967,7 @@ is a real launch fault and its own error text must still be classified. The
 posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
 `isSummaryGateFailureRecord`-style record check for the label-release sweeps.
 
-
+### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a
 repo-level fact clears; the same problem exists one level down, for a single
