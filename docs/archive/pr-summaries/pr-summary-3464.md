@@ -47,12 +47,16 @@ Issue references in the added lines:
 - #622: Add update-mode fields to the .config.json schema with validation and a dynamic default. This appears in an existing sentence of `docs/workflows/issue-processing.md` that this change extends.
 - #623: Give the Claude CLI and gh updaters an exact-version install path. It appears in the same existing sentence.
 
-**Docs sweep:** I updated `docs/INTERNALS.md` (around L4607), `docs/workflows/issue-processing.md:443`, and the `idle_decision_census.ts` module and `runLocalHolds` doc comments. They now read "Three sources sustain a streak". The remaining `milestone-behind` hits are still true:
+**Docs sweep** — grep: `milestone-behind`, `runLocalHolds`, `run_local_hold`, "Two sources sustain a streak"; section: `docs/IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census`; updated: `docs/IDLE-TASK-FRAMEWORK.md`, `docs/INTERNALS.md`, `docs/workflows/issue-processing.md`
+
+- `docs/IDLE-TASK-FRAMEWORK.md#idle-decision-claimable-work-census` is the manual section for the census. Its run-local hold paragraph listed only the retry cooldown and the processed-issue registry. It now also names the paced-milestone source, which only the census reads.
+- `docs/INTERNALS.md` (around L4607, under "Sync before new work — the child run's own pre-cut sync") and `docs/workflows/issue-processing.md:443` now say the census counts a paced milestone's issues as `run_local_hold`, read through `milestonePacedUntil`.
+- In code, the `runLocalHolds` doc comment in `worker/deno/lib/idle_decision_census.ts` now reads "Three sources sustain a streak". The module doc comment there says Issue #3464 adds the paced milestone's issues to the `run_local_hold` set.
+
+The remaining `milestone-behind` hits are still true:
 
 - `worker/deno/lib/find_oldest_issue.ts:501`, `worker/deno/lib/issue_finder_logger.ts:65` and `worker/deno/lib/skip_reason_clearing.ts:100` describe the scan side, which did not change.
-- `worker/deno/lib/run_core.ts:2508` covers the child-run deferral, which did not change.
 - `milestone_children_gate.ts`, `milestone_partial_rollup.ts`, `pr_auto_merge.ts`, `pr_maintenance.ts` and `docs/MERGE.md` are about the unrelated PR-merge `milestone-behind` reason.
-- `docs/IDLE-TASK-FRAMEWORK.md` (L902–1408) does not claim to list every source of the hold set.
 - `docs/archive/` and `docs/audits/` are historical.
 
 **Related rules checked:** none. No prompt template or standards rule changed.
@@ -75,4 +79,4 @@ Branch outcomes:
 - `worker/deno/lib/run_core_production_deps.ts:5810` no ledger entry → the issue stays claimable. Test: the same file's "…without a ledger entry the same issue is claimable (Issue #3464 negative control)". This guards over-holding. With the union always holding the issue, the `work_on=1` assertion fails.
 - `worker/deno/lib/idle_decision_census.ts:365` coverage is `modelled`. Test: `worker/deno/tests/idle_decision_census_test.ts` "#3464 - the milestone-behind gate is modelled, not silently over-counted". Setting it back to `run-local` went red.
 
-Final state: the branch holds the fix, its docs, the three tests and this summary. No persisted shape changed; the census only reads the existing ledger.
+Final state: the branch holds the fix, its docs (including the `docs/IDLE-TASK-FRAMEWORK.md` census paragraph added in the docs sweep), the three tests and this summary. No persisted shape changed; the census only reads the existing ledger.
