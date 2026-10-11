@@ -17,7 +17,8 @@ Deno.test("hard-wrapped key split from its value is read (pr-summary-3092 shape)
   const result = run(
     "- **Docs sweep**: grep: reportSummaryRuleBlock, degraded-run guard,\n" +
       "  assessDegradedDelivery; section:\n" +
-      "  docs/workflows/issue-processing.md#️-a-degraded-run-never-closes-an-issue-as-complete\n",
+      "  docs/workflows/issue-processing.md#️-a-degraded-run-never-closes-an-issue-as-complete;\n" +
+      "  siblings: none — no existing set gained a member\n",
   );
   assert(result.valid, result.problems.join("; "));
   assertEquals(
@@ -59,7 +60,8 @@ Deno.test("a fenced example is not the entry", () => {
   assertStringIncludes(alone.problems.join("\n"), "no `Docs sweep` line");
 
   const withReal = run(
-    fenced + "\n**Docs sweep** — grep: `y`; section: `docs/c.md#d`\n",
+    fenced +
+      "\n**Docs sweep** — grep: `y`; section: `docs/c.md#d`; siblings: none — no existing set gained a member\n",
   );
   assert(withReal.valid, withReal.problems.join("; "));
   assertEquals(withReal.line.section, "docs/c.md#d");

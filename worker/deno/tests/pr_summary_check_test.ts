@@ -22,7 +22,7 @@ const GOOD_SUMMARY = [
   "",
   "Adds foo handling.",
   "",
-  "**Docs sweep** — grep: `foo`; section: `docs/foo.md#foo`; updated",
+  "**Docs sweep** — grep: `foo`; section: `docs/foo.md#foo`; updated; siblings: none — no existing set gained a member",
   "",
   "**Branch outcomes:**",
   `- \`worker/deno/lib/foo.ts:42\` — error — \`${TEST_PATH}::rejects bad\``,
