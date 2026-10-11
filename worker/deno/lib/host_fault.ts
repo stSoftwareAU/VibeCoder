@@ -174,3 +174,24 @@ export function buildHostFaultNote(kind: HostFaultKind): string {
     describeHostFault(kind)
   }. This failure came from the worker host, not from this issue; the label is released automatically once the host is healthy again.`;
 }
+
+/**
+ * Source line a quality-gate failure record carries (Issue #3445). The
+ * gate's output is the repository's own test output, so the record is never a
+ * host fault; the release sweep keys on this line to leave it alone.
+ */
+export const QUALITY_GATE_SOURCE_NOTE =
+  "**Source:** quality gate — this failure is the repository's own check output, so it is not classified as a host fault.";
+
+const QUALITY_GATE_RECORD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\*[^\n]*\n\s*\*\*Source:\*\* quality gate\b/;
+
+/**
+ * Whether a posted failure-record body is a quality-gate failure (Issue
+ * #3445). Anchored to the worker-written head of the comment (heading,
+ * Category line, Source line) so a quoted line deeper in the output cannot
+ * forge it; mirrors `isSummaryGateFailureRecord` in failure_diagnosis.ts.
+ */
+export function isQualityGateFailureRecord(body: string): boolean {
+  return QUALITY_GATE_RECORD_RE.test(body.trimStart());
+}

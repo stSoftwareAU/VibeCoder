@@ -4947,7 +4947,9 @@ really the worker's host — a corrupt clone, a clone that could not be made, a
 full disk, a container image that failed to build — the failure comment gains a
 **Host fault:** line naming the kind and a final marker
 (`<!-- vibe-host-fault kind="<kind>" -->`), detected by
-[host_fault.ts](../worker/deno/lib/host_fault.ts):
+[host_fault.ts](../worker/deno/lib/host_fault.ts). A quality-gate failure
+never gains the Host fault line or marker, because its error output is the
+repository's own test output, not host output (Issue #3445):
 
 | Kind                     | Fault                                                                                                       |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
@@ -4971,7 +4973,9 @@ Escalation to Planning Mode". Only an "Automated Processing Failed" record can b
 a host fault: either it carries the marker, or — for failures made before this
 change had no marker to write — its body matches the `clone-corrupt` git
 broken-ref, bad-object, bad `.git/config` line, or "not in a git directory"
-signature (Issue #2953). Any issue carrying even one non-host-fault record (an
+signature (Issue #2953). A quality-gate record (its head carries the
+`**Source:** quality gate` line) is never one, even on that legacy body match
+(Issue #3445). Any issue carrying even one non-host-fault record (an
 agent failure, claim churn, an ordinary setup error such as an invalid base
 branch) keeps its label. `failed` is released only when a host-fault "Second
 Attempt" record, the run that applies it, explains it; otherwise the issue keeps

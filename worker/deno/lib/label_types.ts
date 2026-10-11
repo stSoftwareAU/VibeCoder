@@ -70,6 +70,15 @@ export interface FailureOptions {
   diagnosticContext?: string;
   labels?: LabelConfig;
   workerFooter?: string;
+  /**
+   * True when `failureMessage` is the quality gate's raw output (Issue #3445).
+   * That output is repository-authored (failing test names, assertion diffs),
+   * so it is never classified as a host fault, and the record carries
+   * `QUALITY_GATE_SOURCE_NOTE` so the release sweep's legacy body match leaves
+   * it alone too. Absent for every other caller, whose message is a
+   * setup/clone or run-level reason that can carry host output.
+   */
+  qualityGateOutput?: boolean;
 }
 
 /** Options for the unified failure handler. */
