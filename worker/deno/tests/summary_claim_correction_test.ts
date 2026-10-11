@@ -174,6 +174,7 @@ Deno.test("buildSummaryClaimCorrectionPrompt - throws for a blank comment", () =
 
 const BASE_RESULT: SummaryClaimCheckResult = {
   findings: [],
+  docFindings: [],
   unconfirmedFindings: [],
   testPlanProblems: [],
   notChecked: [],

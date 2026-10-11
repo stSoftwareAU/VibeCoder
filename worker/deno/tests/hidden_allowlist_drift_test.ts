@@ -26,10 +26,14 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { REQUIRED_GITIGNORE_PATTERNS } from "../lib/gitignore_enforcer.ts";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import {
+  type DocSection,
+  flat,
+  readRepoDoc,
+  section,
+} from "./support/markdown_docs.ts";
 
-const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-const PROMPTS_DIR = `${REPO_ROOT}prompts`;
+const COMMIT_SAFETY_SECTION = "Commit Safety";
 
 /** The hidden entries the enforcer re-allows, without the `!`. */
 function reAllowedEntries(): string[] {
@@ -54,18 +58,16 @@ const KEY_MATERIAL = [
   "service-account*.json",
 ] as const;
 
-/** The `coding_guidelines` text the worker injects. */
-async function latestGuidelines(): Promise<{ text: string }> {
-  const loaded = await loadPrompt("coding_guidelines", PROMPTS_DIR);
-  assertEquals(loaded.ok, true);
-  if (!loaded.ok) throw new Error(loaded.error.message);
-  return { text: loaded.value };
+/** The `coding_guidelines` Commit Safety section the worker injects. */
+async function guidelinesCommitSafety(): Promise<DocSection> {
+  const text = await readRepoDoc("prompts/coding_guidelines/prompt.md");
+  return section(text, COMMIT_SAFETY_SECTION);
 }
 
-/** `CODING-STANDARDS.md`, as one collapsed line so wrapping cannot hide a term. */
-async function standardsText(): Promise<string> {
-  const text = await Deno.readTextFile(`${REPO_ROOT}CODING-STANDARDS.md`);
-  return text.replace(/\s+/g, " ");
+/** `CODING-STANDARDS.md`'s Commit Safety section. */
+async function standardsCommitSafety(): Promise<DocSection> {
+  const text = await readRepoDoc("CODING-STANDARDS.md");
+  return section(text, COMMIT_SAFETY_SECTION);
 }
 
 Deno.test("hidden allowlist - the enforcer re-allows exactly the five documented entries (Issue #784)", () => {
@@ -81,8 +83,7 @@ Deno.test("hidden allowlist - the enforcer re-allows exactly the five documented
 });
 
 Deno.test("hidden allowlist - the guidelines state every entry the enforcer re-allows (Issue #784)", async () => {
-  const { text } = await latestGuidelines();
-  const collapsed = text.replace(/\s+/g, " ");
+  const collapsed = flat(await guidelinesCommitSafety());
   for (const entry of reAllowedEntries()) {
     assert(
       collapsed.includes(`\`${entry}\``) ||
@@ -95,7 +96,7 @@ Deno.test("hidden allowlist - the guidelines state every entry the enforcer re-a
 });
 
 Deno.test("hidden allowlist - CODING-STANDARDS states every entry the enforcer re-allows (Issue #784)", async () => {
-  const collapsed = await standardsText();
+  const collapsed = flat(await standardsCommitSafety());
   for (const entry of reAllowedEntries()) {
     assert(
       collapsed.includes(`\`${entry}\``) ||
@@ -108,9 +109,8 @@ Deno.test("hidden allowlist - CODING-STANDARDS states every entry the enforcer r
 Deno.test("hidden allowlist - both surfaces state the private-key class (Issue #784)", async () => {
   // The guidelines had no counterpart for this at all, so an agent running on
   // the injected block alone had no rule against staging a `.pem`.
-  const { text } = await latestGuidelines();
-  const guidelines = text.replace(/\s+/g, " ");
-  const standards = await standardsText();
+  const guidelines = flat(await guidelinesCommitSafety());
+  const standards = flat(await standardsCommitSafety());
   for (const pattern of KEY_MATERIAL) {
     assertStringIncludes(
       guidelines,
@@ -129,7 +129,12 @@ Deno.test("hidden allowlist - both surfaces state the private-key class (Issue #
 Deno.test("hidden allowlist - both surfaces name the enforcer as the source (Issue #784)", async () => {
   // The lists are restatements. Saying so is what stops the next reader
   // treating a document as the definition and editing it on its own.
-  const { text } = await latestGuidelines();
-  assertStringIncludes(text, "REQUIRED_GITIGNORE_PATTERNS");
-  assertStringIncludes(await standardsText(), "REQUIRED_GITIGNORE_PATTERNS");
+  assertStringIncludes(
+    flat(await guidelinesCommitSafety()),
+    "REQUIRED_GITIGNORE_PATTERNS",
+  );
+  assertStringIncludes(
+    flat(await standardsCommitSafety()),
+    "REQUIRED_GITIGNORE_PATTERNS",
+  );
 });

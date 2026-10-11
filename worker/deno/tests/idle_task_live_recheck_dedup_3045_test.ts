@@ -21,6 +21,7 @@
 
 import { assert } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -48,6 +49,16 @@ const PROMPT_NAMES = [
  */
 const flatten = (text: string) => text.replace(/\s+/g, " ");
 
+/**
+ * The heading under which each prompt's Phase 4 per-finding step states the
+ * dedup rule. `best_practices` words its Phase 4 differently from the other
+ * thirteen.
+ */
+const DEDUP_RULE_HEADING = (name: string): string =>
+  name === "best_practices"
+    ? "## Phase 4 — File one issue per finding (outcome-only)"
+    : "### For each surviving finding (skip silently if its id is in the suppressed or known-open list)";
+
 Deno.test(
   "idle-task prompts dedup only on the fleet-filtered known-open list (Issue #3045)",
   async () => {
@@ -67,8 +78,12 @@ Deno.test(
         !text.includes("Re-check the live open-issue list"),
         `${name} must not re-check the live open-issue list for dedup`,
       );
+      const rule = flat(section(
+        await readRepoDoc(`prompts/${name}/prompt.md`),
+        DEDUP_RULE_HEADING(name),
+      ));
       assert(
-        text.includes("the only finding-id dedup source"),
+        rule.includes("the only finding-id dedup source"),
         `${name} must state that the known-open list is the only ` +
           `finding-id dedup source (scoped to the marker check, not the ` +
           `separate open-issue-titles check)`,

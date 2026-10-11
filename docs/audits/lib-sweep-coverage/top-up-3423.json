@@ -1,0 +1,13 @@
+{
+  "issue": 3423,
+  "chunk": "top-up-3423",
+  "title": "top-up: local PR-summary gate check task",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3423",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_summary_check.ts, pr_summary_check_cli.ts (#3423)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_summary_check.ts",
+    "worker/deno/lib/pr_summary_check_cli.ts"
+  ],
+  "sweptAt": "315649331ebce1a99fc5b0ddd31c45d1ab7ac85f"
+}

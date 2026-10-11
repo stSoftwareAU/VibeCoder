@@ -40,7 +40,7 @@ import { normaliseGhArgs } from "./gh_flag_parser.ts";
  *
  * `--flag=value` needs no entry: it is one token and consumes nothing.
  */
-const VALUE_TAKING_LONG_FLAGS: ReadonlySet<string> = new Set([
+export const GH_VALUE_TAKING_LONG_FLAGS: ReadonlySet<string> = new Set([
   "--field",
   "--raw-field",
   "--header",
@@ -68,9 +68,20 @@ const VALUE_TAKING_LONG_FLAGS: ReadonlySet<string> = new Set([
  * as REST — so this set lists only the letters that genuinely take a value,
  * and it is complete for `gh api`'s own value-taking shorthands.
  */
-const VALUE_TAKING_SHORTHANDS: ReadonlySet<string> = new Set(
+export const GH_VALUE_TAKING_SHORTHANDS: ReadonlySet<string> = new Set(
   ["f", "F", "H", "X", "q", "t", "R", "p"],
 );
+
+/**
+ * Every separated value-taking flag token (`--field`, `-f`, …) — the one table
+ * every `gh` argv walker shares (Issue #3568). The audit classifier kept its
+ * own shorter list, which lacked `-p`/`--preview`, so the two disagreed about
+ * which token was the endpoint (Issue #3561).
+ */
+export const GH_SEPARATED_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  ...GH_VALUE_TAKING_LONG_FLAGS,
+  ...[...GH_VALUE_TAKING_SHORTHANDS].map((letter) => `-${letter}`),
+]);
 
 /**
  * Whether a shorthand token takes the *following* argv token as its value.
@@ -84,11 +95,11 @@ const VALUE_TAKING_SHORTHANDS: ReadonlySet<string> = new Set(
  * read (`-R`, `-l`, `-X`, `-f`, `-F`); this covers the rest, so a group like
  * `gh api -iq .data graphql` cannot hide the endpoint token.
  */
-function shorthandTakesNextToken(token: string): boolean {
+export function shorthandTakesNextToken(token: string): boolean {
   for (let i = 1; i < token.length; i++) {
     const letter = token[i]!;
     // Boolean here; pflag moves on to the next letter in the group.
-    if (!VALUE_TAKING_SHORTHANDS.has(letter)) continue;
+    if (!GH_VALUE_TAKING_SHORTHANDS.has(letter)) continue;
     return i === token.length - 1;
   }
   return false;
@@ -118,7 +129,7 @@ export function ghPositionalArgs(args: readonly string[]): string[] {
     }
     if (token.startsWith("--")) {
       // `--flag=value` carries its value in the same token.
-      if (!token.includes("=") && VALUE_TAKING_LONG_FLAGS.has(token)) i++;
+      if (!token.includes("=") && GH_VALUE_TAKING_LONG_FLAGS.has(token)) i++;
       continue;
     }
     if (token.startsWith("-") && token !== "-") {
@@ -150,7 +161,7 @@ export function ghFlagNames(args: readonly string[]): string[] {
     if (token.startsWith("--")) {
       const eq = token.indexOf("=");
       names.push(eq < 0 ? token : token.slice(0, eq));
-      if (eq < 0 && VALUE_TAKING_LONG_FLAGS.has(token)) i++;
+      if (eq < 0 && GH_VALUE_TAKING_LONG_FLAGS.has(token)) i++;
       continue;
     }
     if (token.startsWith("-") && token !== "-") {
