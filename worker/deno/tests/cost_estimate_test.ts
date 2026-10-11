@@ -7,6 +7,7 @@
 import {
   assertAlmostEquals,
   assertEquals,
+  assertExists,
   assertStringIncludes,
 } from "@std/assert";
 import {
@@ -395,7 +396,7 @@ Deno.test("cost_estimate - formatCostEstimateLines renders every model of a spli
     `- **Estimated cost (USD, estimate only):** ~${formatUsd(total)}`,
   );
   for (const [i, { model }] of THREE_ENTRIES.entries()) {
-    assertStringIncludes(lines[i + 1], `\`${model}\``);
+    assertStringIncludes(lines[i + 1] ?? "", `\`${model}\``);
   }
 });
 
@@ -417,7 +418,7 @@ Deno.test("cost_estimate - formatCostEstimateLines flags sub-agents not costed",
   ];
   const plain = formatCostEstimateLines(opus);
   const flagged = formatCostEstimateLines(opus, { subAgentsNotCosted: true });
-  assertStringIncludes(flagged[0], " (partial — see below)");
+  assertStringIncludes(flagged[0] ?? "", " (partial — see below)");
   assertEquals(
     flagged[flagged.length - 1],
     "  - sub-agents: not costed — the run served more than one model but recorded no usable per-model usage, so only the main session is priced",
@@ -438,6 +439,7 @@ Deno.test("cost_estimate - formatCostEstimateLines flags sub-agents not costed",
     ],
   );
   assertEquals(plain.length, 2);
+  assertExists(plain[0]);
   assertEquals(plain[0].endsWith("(partial — see below)"), false);
 });
 
