@@ -275,9 +275,14 @@ at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 >    this PR causes, even in a file it only touches in passing, is a
 >    blocking **finding** this PR must fix; when in doubt, it is a
 >    finding. Only real, verified problems with a file
->    and line, at most 3; not style, polish or wishes. Skip any that
->    `gh issue list -R {repo} --search "<words> in:title"` shows is already
->    open. Write each as a standalone issue: a title that names the defect,
+>    and line, at most 3; not style, polish or wishes. Before writing one,
+>    search the open issues by the file path and the defect's key words,
+>    not only its title (`gh issue list -R {repo} --search "<path> <words>"`).
+>    If an open issue already covers the same defect class, including an
+>    umbrella issue for it, set `existingIssue` to that issue's number:
+>    the new instance is added there as a comment instead of filed again
+>    (Issue #3598). Leave out an instance that issue already describes.
+>    Write each as a standalone issue: a title that names the defect,
 >    and a body saying what is wrong, the failure scenario and a suggested
 >    fix. Describe a security gap by class and location only (for example
 >    "the query is written into the page unescaped"), never with a working
@@ -292,7 +297,7 @@ at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
 > always a finding, never an unrelated issue.
 >
 > Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
+> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 
 If an agent fails or returns something that isn't this JSON, post nothing for
 that PR; the next gate run reports it again.
@@ -314,7 +319,11 @@ The script does the rest, so do not post anything yourself:
 
 - It files each of the reviewer's `unrelatedIssues` first: they are already on
   the base branch, so they are filed even if the PR has since moved or
-  merged.
+  merged. One with `existingIssue` naming an open issue is added to that
+  issue as a comment instead; if it is closed or cannot be read, the
+  finding is filed as new, never dropped (Issue #3598). These follow-ups
+  carry no label, because the fleet discovers open issues without one; only
+  step 3's guidance issues get `idle-task`.
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
 - It decides the outcome: reviewer findings mean **request changes** (the

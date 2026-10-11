@@ -41,6 +41,8 @@ import {
   reviewBody,
   sameIssueTitle,
   stateDir,
+  unrelatedInstanceComment,
+  type UnrelatedIssue,
   unrelatedIssueBody,
   writeSummary,
 } from "./review_log.ts";
@@ -95,15 +97,32 @@ async function notify(title: string, message: string) {
 
 // Best effort: a failure to file one issue never stops the review being
 // posted. An issue already open under the same title is linked, not refiled.
-async function fileUnrelatedIssues(
-  pr: Input["pr"],
+// An issue the reviewer named as covering the same defect class gets the new
+// instance as a comment (Issue #3598); if that issue is closed or cannot be
+// read, the finding is filed as new, never dropped. Exported, with `gh`
+// injectable, for its tests.
+export async function fileUnrelatedIssues(
+  pr: Pick<Input["pr"], "repo" | "number" | "url">,
   review: FableReview,
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
 ): Promise<FiledIssue[]> {
   const filed: FiledIssue[] = [];
   for (const issue of review.unrelatedIssues) {
+    if (issue.existingIssue !== undefined) {
+      const added = await addToExistingIssue(
+        pr,
+        issue,
+        issue.existingIssue,
+        gh,
+      );
+      if (added) {
+        filed.push(added);
+        continue;
+      }
+    }
     try {
       const open: FiledIssue[] = JSON.parse(
-        await run("gh", [
+        await gh([
           "issue",
           "list",
           "-R",
@@ -123,7 +142,7 @@ async function fileUnrelatedIssues(
       }
       const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
       await Deno.writeTextFile(bodyFile, unrelatedIssueBody(issue, pr));
-      const url = await run("gh", [
+      const url = await gh([
         "issue",
         "create",
         "-R",
@@ -144,6 +163,65 @@ async function fileUnrelatedIssues(
     }
   }
   return filed;
+}
+
+/**
+ * Comment a new instance onto the open issue the reviewer named, or return
+ * null so the caller files it as a new issue instead.
+ */
+async function addToExistingIssue(
+  pr: Pick<Input["pr"], "repo" | "number" | "url">,
+  issue: UnrelatedIssue,
+  number: number,
+  gh: (args: string[]) => Promise<string>,
+): Promise<FiledIssue | null> {
+  try {
+    const existing: {
+      number: number;
+      url: string;
+      title: string;
+      state: string;
+    } = JSON.parse(
+      await gh([
+        "issue",
+        "view",
+        String(number),
+        "-R",
+        pr.repo,
+        "--json",
+        "number,url,title,state",
+      ]),
+    );
+    if (existing.state !== "OPEN") return null;
+    const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
+    await Deno.writeTextFile(bodyFile, unrelatedInstanceComment(issue, pr));
+    try {
+      await gh([
+        "issue",
+        "comment",
+        String(number),
+        "-R",
+        pr.repo,
+        "--body-file",
+        bodyFile,
+      ]);
+    } finally {
+      await Deno.remove(bodyFile).catch(() => {});
+    }
+    return {
+      number: existing.number,
+      url: existing.url,
+      title: existing.title,
+      addedTo: true,
+    };
+  } catch (e) {
+    console.error(
+      `could not add "${issue.title}" to #${number}, filing it instead: ${
+        (e as Error).message
+      }`,
+    );
+    return null;
+  }
 }
 
 export function postedResult(
