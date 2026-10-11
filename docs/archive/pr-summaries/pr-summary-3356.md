@@ -100,6 +100,28 @@ and prose after the list are still checked for an admission
 
 ## Test Plan
 
+### PR #3553 review correction
+
+- Unknown-file, mixed-count and partial-addition paragraphs now report an
+  unchecked reason. Files already paired with an earlier claim are excluded
+  from later totals; an empty later group is reported unchecked.
+- Added five tests to `test_plan_recount_wrap_3356_test.ts`, including corpus
+  shapes 1690, 373 and 3315, a stale later count and repeated-only groups.
+  Existing assertions are unchanged.
+- A temporary test copy replaced only the unavailable `@std/assert`
+  `assertEquals` import with Node's `deepStrictEqual`, retaining the test
+  bodies and importing the production module. Deno reported 13 passed and
+  all 5 new tests failed before the fix; all 18 passed after it. This is
+  focused validation, not a pass of the standard dependency-backed suite.
+- Lint, formatting and `git diff --check` passed on the changed files.
+  The full quality gate was attempted but dependency loading blocked its
+  completeness and test stages. No fresh full-gate pass is claimed.
+- Docs sweep: read and updated `docs/workflows/pr-feedback.md`'s
+  deterministic recount section for unchecked blocks and repeated files.
+  Earlier corpus and test figures below describe prior validation.
+
+### Earlier implementation validation
+
 Tests added (all new files except the drift pin):
 
 - `worker/deno/tests/markdown_logical_units_3356_test.ts`: 14 tests, one per unit rule, plus `splitMarkdownLines` terminators and a linear-growth guard. Registered in `WALL_CLOCK_TEST_FILES`.
