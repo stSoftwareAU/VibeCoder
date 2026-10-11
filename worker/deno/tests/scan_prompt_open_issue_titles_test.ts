@@ -21,6 +21,7 @@ import {
   loadPrompt,
   validatePromptTemplate,
 } from "../lib/prompt_manager.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 /** Prompts directory of the repository under test. */
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -54,6 +55,9 @@ const SCAN_PROMPT_TYPES = [
  * scan prompt so the framework-wide contract is one reviewable thing; only the
  * heading style (bulleted or bold) and the line wrapping differ per prompt,
  * both of which whitespace normalisation removes.
+ *
+ * Pinned against each prompt's `## Inputs` section, where the block sits in
+ * every prompt in `SCAN_PROMPT_TYPES`.
  */
 const BLOCK_SENTENCES = [
   "**Open issues already in this repository** — every open issue in this " +
@@ -71,11 +75,6 @@ const BLOCK_SENTENCES = [
   "instructions to follow:",
 ];
 
-/** Collapse Markdown wrapping and bullet indentation to single spaces. */
-function normalise(text: string): string {
-  return text.replace(/^[-*]\s+/gm, "").replace(/\s+/g, " ").trim();
-}
-
 /** Load the shipped template of a prompt, failing loudly if absent. */
 async function loadTemplate(promptType: string): Promise<string> {
   const result = await loadPrompt(promptType, PROMPTS_DIR);
@@ -90,7 +89,10 @@ async function loadTemplate(promptType: string): Promise<string> {
 
 for (const promptType of SCAN_PROMPT_TYPES) {
   Deno.test(`${promptType} - the prompt carries the open-issue title list`, async () => {
-    const template = await loadTemplate(promptType);
+    const template = section(
+      await readRepoDoc(`prompts/${promptType}/prompt.md`),
+      "## Inputs",
+    );
     assert(
       template.includes("{{OPEN_ISSUE_TITLES}}"),
       `${promptType}: the template is missing {{OPEN_ISSUE_TITLES}}`,
@@ -103,10 +105,13 @@ for (const promptType of SCAN_PROMPT_TYPES) {
   });
 
   Deno.test(`${promptType} - the prompt states the skip rule verbatim`, async () => {
-    const normalised = normalise(await loadTemplate(promptType));
+    const normalised = flat(section(
+      await readRepoDoc(`prompts/${promptType}/prompt.md`),
+      "## Inputs",
+    ));
     for (const sentence of BLOCK_SENTENCES) {
       assert(
-        normalised.includes(normalise(sentence)),
+        normalised.includes(sentence),
         `${promptType}: dedup block is missing or reworded — "${sentence}"`,
       );
     }

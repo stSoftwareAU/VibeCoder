@@ -1107,6 +1107,20 @@ rewrite it, never append to it:
   the diff adds or edits (see **Check where you insert** in
   `CODING-STANDARDS.md`).
 
+**Run the summary gates before you finish.** When `worker/deno/deno.json`
+defines a `pr-summary-check` task (the Vibe Coder repository), commit your
+changes, write the summary, then run
+`deno task pr-summary-check --base <base-branch> --issue-body-file <file> --labels <labels> <summary-file>`
+from `worker/deno` (save the issue body with
+`gh issue view {{ISSUE_NUMBER}} --json body -q .body`, and pass the labels
+comma-separated), and fix everything it reports as blocked before you finish.
+It runs the closure, two-axis review, reproduction, docs-sweep, placeholder and
+branch-outcomes gates the worker applies when it raises the PR. A gate it
+reports as not checked is not a pass. It does not run the removed-assertion
+gate or the claim check, which run only when the worker raises the PR. In a
+repository without that task, follow the rules in this section as written; they
+also say why each check exists.
+
 The file MUST contain:
 
 1. **Summary**: A brief description of what was changed and why, **including

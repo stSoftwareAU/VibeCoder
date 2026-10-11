@@ -71,6 +71,29 @@ Deno.test("CODING-STANDARDS.md Writing a gate over text points at the shared Mar
   }
 });
 
+Deno.test("CODING-STANDARDS.md Writing a gate over text matches Markdown prose per logical unit (Issue #3356)", async () => {
+  const text = flat(
+    section(
+      await readRepoDoc("CODING-STANDARDS.md"),
+      "Writing a gate over text",
+    ),
+  );
+
+  for (
+    const phrase of [
+      "markdownLogicalUnits",
+      "never per physical line",
+      "splits the matched phrase or claim itself across a line break",
+      "a real wrapped shape from the corpus",
+    ]
+  ) {
+    assert(
+      text.includes(phrase),
+      `Writing a gate over text is missing "${phrase}": ${text}`,
+    );
+  }
+});
+
 const ISSUE_PROMPT_KEY_PHRASES = [
   "A gate over text catches the variants and never passes what it skipped",
   "Writing a gate over text",

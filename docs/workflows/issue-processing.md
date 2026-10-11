@@ -1120,7 +1120,9 @@ the PR is raised (Issue #3058). Only a departure that predates the diff may
 stand, and its `reason:` links the follow-up issue the run filed
 (`pre-existing, filed #<n>`); one the issue itself requires names that issue.
 The gate cannot see the diff, so it does not check which lines a finding sits
-on, but it does refuse every other way out: a `violation` whose reason neither
+on (the completion phase does read the diff, to route a standing violation on
+the branch's own lines to a code-capable recovery turn — Issue #3382, see
+[the in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block)), but it does refuse every other way out: a `violation` whose reason neither
 opens with `fixed` (or `corrected` / `resolved`) nor links an issue (`#123`,
 `owner/repo#123` or an issue URL) blocks PR creation. "Stands" and "left for a
 follow-up" used to pass, and fleet review then sent the PR back for the breach
@@ -1586,7 +1588,11 @@ documentation (`.md`, `.mdx`, `.markdown`, `.rst`, `.adoc`, `.txt`, or a
 `docs/` path segment) — and also when the diff cannot be read, fail closed.
 It blocks a summary with no **Docs sweep** line, or a `section:` that is
 empty or a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`);
-`section: none — <reason>` and `no hits` are both accepted. Its verdict is
+`section: none — <reason>` and `no hits` are both accepted. The entry is
+read as one logical unit from the shared `markdownLogicalUnits` splitter
+(Issue #3356), so a hard-wrapped entry is joined up to the next blank
+line, list item, heading, table row, fence or HTML comment, and a
+`Docs sweep` line inside a fenced example is not the entry. Its verdict is
 computed once, early, so it stands beside — not strictly after — the
 reproduction-status gate: when the closure, independent-review or
 reproduction-status gate blocks the summary first, the docs-sweep verdict is
@@ -1866,6 +1872,13 @@ the test command runs from `worker/deno` (Issue #3160); a failed lookup also
 blocks, fail closed. A test identifier with no test-file path (for example a
 Rust inline `mod::tests::name`) is not existence-checked. `Branch outcomes:
 none added` is accepted when the diff adds no branch.
+A line that opens with the phrase inside a code span — a hard-wrapped
+sentence quoting `` `Branch outcomes:` `` followed by more prose, say — is a
+quoted mention, not the header: it neither satisfies the gate nor ends a real
+list (Issue #3377). The exception is a code-span line with nothing after the
+separator except `none` or `none added`, such as a bare
+`` `Branch outcomes:` `` line above a list or
+`` `Branch outcomes: none added` ``, which still counts as the header.
 
 It also blocks an entry that admits its own outcome is unreached. A strong
 admission — "no test reaches", "covers" or "exercises" it, "not reached by
@@ -1968,9 +1981,38 @@ takes the one recovery turn, then a further block fails the run (or
 finalises an existing PR as `summary_incomplete`). The claim check runs again
 on the re-run after that turn either way.
 
+**Changed manuals and prompts (Issue #3347).** The one read-only model question
+also covers the manual and prompt files among the branch's changed files (the
+completion phase's `git diff --name-only <base>...HEAD` list, so committed
+changes), up to 20 of them. A file qualifies when
+[`isManualProsePath`](../../worker/deno/lib/doc_prose_claims.ts) accepts it: a
+Markdown path outside `docs/archive/pr-summaries/` that is not a PR summary, a
+test file or a worker state file, and has a safe relative shape. For each, the
+shared question (`docProseClaimInstruction`) asks the model to check only the
+lines the change adds or edits, and only the sentences that say when the new
+behaviour happens, what it refuses, rejects, allows or skips, or that use an
+absolute word ("only", "never", "always", "any", "every", "all", "each",
+"automatically") or a counted or closed list. It opens the head code that
+decides each one (the branch condition, the callers, the list the sentence
+names) and reports the sentence, quoted verbatim, when that code contradicts
+it, naming the contradicting `file:line`. Files past the cap are logged at error
+level and recorded as not checked; a changed file deleted on the branch is
+skipped; one that cannot be read is recorded as not checked. If the
+changed-files list itself could not be read, the doc part is recorded as not
+checked (an error log) and the summary is still questioned. A doc finding is
+confirmed only when it names one of those files and its sentence is found in
+that file's current text; it goes into a separate `docFindings` list and blocks
+like any other claim-check finding, through the same summary-rule block. The
+gate comment names the file and asks for that sentence to be rewritten in that
+file to say what the head code does, or removed — "not the code".
+GRQ-AutoTrader#2609, #2685 and #2699 and VibeCoder#3308 each shipped a manual or
+prompt sentence about the PR's own new behaviour that the head code
+contradicted, after #3120 and #3232 had asked for this care in prose only.
+
 **Issue #3324.** A later block where the claim check is the only gate still
-failing — reached only once every earlier summary gate has passed — instead
-gets one summary-only correction turn before the ordinary recovery path even
+failing — reached only once every earlier summary gate has passed, and every
+finding it confirmed is in the summary itself — instead gets one summary-only
+correction turn before the ordinary recovery path even
 applies: the claim gate's comment and the current summary, fenced as
 untrusted data, go to a fresh agent invocation with file-writing tools and
 `Bash` denied (`Read`/`Grep`/`Glob` stay), which must reply with the complete
@@ -1988,15 +2030,17 @@ VibeCoder#3322, where the claim check found its wrong sentence only on the re-ru
 after recovery — the run's second block, spent with no correction turn left.
 A claim-check block folded with another gate on a later attempt is not this
 case and gets no correction turn — the ordinary recovery (or its absence)
-applies.
+applies. Neither does a block carrying a doc finding (Issue #3347): the turn can
+only rewrite the summary file, so that block takes the ordinary path (fails the
+run, or finalises an existing PR as `summary_incomplete`).
 
 ```mermaid
 flowchart TD
     A["Completion phase, summary loaded,<br/>before raising the PR"] --> B["Test Plan backstop:<br/>quoted behaviour vs. named test file"]
     A --> C{"Base ref known?"}
     C -- no --> D["Not checked"]
-    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code"]
-    E --> F["Confirm each finding against<br/>the summary's own text"]
+    C -- yes --> E["One read-only model question:<br/>quote wrong claims about named code,<br/>and changed manual and prompt prose"]
+    E --> F["Confirm each finding against<br/>the summary's or the doc's own text"]
     B --> G{"Any confirmed finding<br/>or Test Plan problem?"}
     F --> G
     D --> G
@@ -2004,7 +2048,7 @@ flowchart TD
     G -- no --> I["PR raised"]
     H -- yes --> RT["One recovery turn<br/>(all folded gates, one per item)"]
     RT --> A
-    H -- no --> J{"Claim check the only<br/>gate still blocking?"}
+    H -- no --> J{"Claim check the only gate,<br/>summary findings only?"}
     J -- no --> K["Fail / finalise<br/>summary_incomplete"]
     J -- yes --> L["One summary-only<br/>correction turn (Issue #3324)"]
     L --> M["Re-run: wrong sentences<br/>still present carried forward"]
@@ -2225,7 +2269,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2235,7 +2279,8 @@ whether or not the run's branch already carries a PR (Issue #3163) — see
 An existing PR is not finalised, labelled or auto-merged across that turn;
 only a block that survives the recovery (the run's second such block) on an
 existing-PR branch finalises as `summary_incomplete` — except that when the
-claim check alone is still blocking on that second attempt, it first gets
+claim check alone is still blocking on that second attempt, on the summary's
+own sentences, it first gets
 one summary-only correction turn (Issue #3324), and only a block that
 survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
@@ -2377,7 +2422,9 @@ now recover the way the security-fix gate does
    and remediation comment fenced as untrusted data under a per-render nonce,
    a boundary-integrity rule naming that fence's nonce, and the genuine
    review-block markers printed outside it (Issue #3152); told to edit the
-   summary file and commit, and nothing else. When several gates folded their
+   summary file and commit, and nothing else — except for a `CODE FIX` item
+   (Issue #3382, below), which may also edit the cited files and add tests.
+   When several gates folded their
    verdicts into one notice, each folded section is rendered as its own
    fenced `REQUIRED ITEM k of n`, the agent is told every item must be fixed
    before it finishes, and it must name each item by number with what it
@@ -2393,7 +2440,8 @@ A run that satisfies the gate on the re-run raises its PR, or, when the run's
 branch already carried a PR from the execute phase, updates and finalises that
 same PR — no second PR is opened. A **second** block in the same run is not
 recovered again, with one exception: when the claim check alone is still
-blocking — every earlier summary gate having passed — the run instead gets
+blocking on the summary's own sentences — every earlier summary gate having
+passed — the run instead gets
 one summary-only correction turn before it is treated as a second block
 (Issue #3324, [above](#-a-summary-that-describes-named-code-wrongly-blocks-the-pr-issue-3257)).
 Any other second block fails exactly as a block did before, with the
@@ -2417,8 +2465,36 @@ the old no-changes deferral in this manual. The run's first block now always
 takes the one recovery turn, whichever kind of branch it is on; a block that
 survives that turn is handled as before — finalised as `summary_incomplete`
 when a PR exists, failed when none does — unless it is the claim check
-alone still blocking, in which case it gets the one summary-only correction
-turn first (Issue #3324).
+alone still blocking on the summary's own sentences, in which case it gets the
+one summary-only correction turn first (Issue #3324).
+
+**Issue #3382.** The recovery turn used to be told the code had already
+passed the quality gate and must not change, while the Issue #3196 gate
+demands `reason: fixed in this diff` for a breach on the branch's own lines.
+VibeCoder#3308 and #3380 shipped with such violations recorded as "this turn
+may not change code" and were sent back by review. Before the summary gates
+run, the completion phase now finds each Standards `violation` left standing
+(no reason, or a reason that neither records a fix nor links a filed issue)
+whose `file:line` evidence lies on a line `git diff --unified=0 <base>...HEAD`
+adds or changes; a cited path matches a diff path exactly or as a path
+suffix. A violation whose evidence names no `path:line`, or any standing
+violation when the base ref cannot be resolved or the diff cannot be read, is
+treated as on the branch's own lines (fail closed; the not-checked case is
+logged at error). On the run's first summary-rule block the recovery prompt
+lists those violations as fenced `CODE FIX` items: the turn may edit the cited
+files and add the tests the finding or reason names, re-dispatch the Standards
+reviewer over the new diff, and write `reason: fixed in this diff` only for a
+breach it actually fixed. Every other `REQUIRED ITEM` keeps the
+documentation-shortfall rule, "do not change the code", and "this turn cannot
+change code" is not a settling reason. The quality gate re-runs over the
+changed tree before completion re-runs. If a later block in the same run
+finalises an existing PR as `summary_incomplete` while such a violation is
+still standing, the worker does not arm auto-merge on that PR and labels it
+`standing-violation` instead, logging a warning; the rest of finalisation is
+unchanged. Known gap: the Priority 1.65 auto-merge sweep does not read PR
+labels, so it can still arm a held PR on a later cycle (follow-up
+[VibeCoder#3517](https://github.com/stSoftwareAU/VibeCoder/issues/3517)). The
+Issue #3196 gate itself is unchanged; it still cannot see the diff.
 
 All eight summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
