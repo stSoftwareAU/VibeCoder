@@ -92,29 +92,34 @@ flowchart TD
 
 ## Test Plan
 
-- PR #3514 review fix: percent-decode REST paths, fail closed on malformed
-  encoding, and match leading PR-number digits plus a non-slash suffix on
-  both `repos/o/r` and `repositories/id` routes. Child routes stay excluded.
-- Added four regression tests across `pr_base_change_guard_test.ts` and
-  `gh_guard_decision_test.ts`: suffixed/encoded numbers, malformed encoding,
-  and child-route negatives. PATCH and implicit POST are covered; the agent
-  tests exercise both active and inactive allowlists. Existing assertions
-  are unchanged.
-- A standalone Deno script using `node:assert` and importing the real
-  `classifyPrBaseChange` and `evaluateGhCommand` functions failed before
-  the fix on `pulls/12.json`, then passed 156 checks after the fix. It covers
-  both repository routes, relative and absolute URLs, suffixes, percent
-  encoding, malformed encoding and child routes. This is a focused check,
-  not a run of the repository test suites.
-- Fresh repository test attempt was blocked loading `@std/assert` from JSR.
-  `deno lint --no-config` and `deno fmt --check --no-config` passed for all
-  three changed TypeScript files; the repository-configured lint and format
-  commands also passed. `git diff --check` passed.
-- Fresh `./quality.sh < /dev/null` was attempted; dependency loading blocked
-  completeness checks. No fresh full-gate pass is claimed.
+- PR #3514 review fixes: the REST base-change matcher splits the endpoint
+  path on literal `/` first and percent-decodes each segment on its own, since
+  GitHub's router treats an encoded slash as part of the PR-number segment.
+  It matches `repos/<o>/<r>/pulls/<seg>` or `repositories/<id>/pulls/<seg>`
+  with nothing after the segment, so literal child routes such as
+  `pulls/N/comments` stay excluded. The PR number is the decoded segment's
+  leading digits after any whitespace (`%2012`, `%0A12`, `12%2F`,
+  `12%2Fcomments`, `12.json`, `12;x` all name PR 12). Malformed encoding, and
+  a base-carrying PATCH/POST whose number segment has no readable number,
+  return `{ newBase: null }` (fail closed).
+- Six regression tests across `pr_base_change_guard_test.ts` and
+  `gh_guard_decision_test.ts`: suffixed and encoded numbers; malformed
+  encoding with child-route negatives; encoded leading whitespace and encoded
+  trailing slashes (classifier); an unreadable number segment failing closed
+  (classifier); and, in the agent guard, the suffixed spellings and the
+  whitespace/slash spellings, each refused with `PR_BASE_CHANGE_REFUSED`.
+  They cover both routes, PATCH and implicit POST, relative and absolute
+  URLs, and active and inactive allowlists. The two added for the
+  whitespace/slash round, and the fail-closed one, failed before `fd8d2bf2`.
+  Existing assertions are unchanged.
+- `./quality.sh` after `fd8d2bf2`: deno fmt, lint, type check, markdownlint,
+  semgrep, mermaid and both Deno test runs (parallel and serial) passed. The
+  gate's one-second unit-test time budget failed locally on git-subprocess
+  suites this change does not touch (machine load); CI runs the gate.
 - Review-fix docs sweep: read the milestone-fix targeting section and the
   agent-wrapper base-change rule; updated `docs/workflows/milestones.md`
-  and `SECURITY.md` to describe decoding, suffixes and fail-closed handling.
+  and `SECURITY.md` to describe the literal-slash split, per-segment
+  decoding, leading whitespace, suffixes and fail-closed handling.
 
 
 - Earlier implementation validation recorded `./quality.sh < /dev/null` as
@@ -134,15 +139,16 @@ flowchart TD
 
 **Branch outcomes:**
 
-- `worker/deno/lib/pr_base_change_guard.ts:394` — unreadable new base refused — `worker/deno/tests/pr_base_change_guard_test.ts::decidePrBaseChange - rules` — forcing allow went red
-- `worker/deno/lib/pr_base_change_guard.ts:400` — milestone-fix head off its own milestone refused / onto it allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a milestone-fix PR off its milestone branch` — forcing allow went red
-- `worker/deno/lib/pr_base_change_guard.ts:411` — milestone base → non-milestone refused, others allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a PR off a milestone base`, `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - allows retargeting an ordinary PR onto a milestone branch` — forcing allow went red
+- `worker/deno/lib/pr_base_change_guard.ts:417` — unreadable new base refused — `worker/deno/tests/pr_base_change_guard_test.ts::decidePrBaseChange - rules` — forcing allow went red
+- `worker/deno/lib/pr_base_change_guard.ts:423` — milestone-fix head off its own milestone refused / onto it allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a milestone-fix PR off its milestone branch` — forcing allow went red
+- `worker/deno/lib/pr_base_change_guard.ts:434` — milestone base → non-milestone refused, others allowed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - refuses moving a PR off a milestone base`, `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - allows retargeting an ordinary PR onto a milestone branch` — forcing allow went red
 - `worker/deno/lib/pr_base_change_guard.ts:350` — REST `POST …/pulls/N` (implicit via a field with no `-X`, or `-X POST`) classified like `PATCH`; POST without `base`, or on `pulls`/`pulls/N/comments`, unclassified — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - POST spellings (implicit and explicit) are base changes`, `worker/deno/tests/pr_base_change_guard_test.ts::enforcePrBaseChangeGuard - implicit-POST REST spelling looks up the PR and refuses`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - POST spellings of a PR base change (implicit and -X POST) are refused` — dropping `api-post` from the check went red
 - `worker/deno/lib/pr_base_change_guard.ts:341` — a `gh api` GraphQL request (endpoint `graphql`, `/graphql` or the absolute `api.github.com/graphql` URL) that may carry `updatePullRequest` (the name anywhere in the argv, case-insensitively, or in a file/stdin document that is unreadable or mentions it, including an `--input` JSON body that spells it with `\uXXXX` escapes) classified as an unreadable base change (`newBase: null`); other mutations, reads and readable files without the name unclassified — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - GraphQL updatePullRequest is an unreadable base change`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - base changes are refused with the allowlist inactive, in every spelling`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - a GraphQL updatePullRequest document off the command line is refused with the allowlist inactive`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - updatePullRequest hidden by operationName or a # comment is refused with the allowlist inactive` — removing the branch went red; reverting the file/stdin and argv-scan fix to the previous head failed the two new tests
 - `worker/deno/lib/pr_base_change_guard.ts:298` — an `--input` JSON body is searched decoded (every key and string value) as well as raw, so a `\uXXXX`-escaped `updatePullRequest` is found; a body that is not valid JSON counts as a match — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - /graphql, absolute-URL and escaped --input spellings are unreadable base changes (PR #3514 review)`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - an --input JSON body that escapes the mutation name is refused with the allowlist inactive` — dropping the decoded search went red; the valid-JSON benign body stays allowed
-- `worker/deno/lib/audit_mutation_classifier.ts:686` — an endpoint of `/graphql`, `graphql/`, `graphql?x=1` or `https://api.github.com/graphql` classifies as GraphQL; a foreign-host `/graphql` does not (host not vouched for) — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - /graphql, absolute-URL and escaped --input spellings are unreadable base changes (PR #3514 review)`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - /graphql, absolute-URL and repositories/<id> spellings are refused with the allowlist inactive` — restoring `endpoint === "graphql"` went red
-- `worker/deno/lib/pr_base_change_guard.ts:366` — `repositories/<id>/pulls/N` with a `base` returns `newBase: null` (no `owner/repo` to look up, so fail closed); without a `base` unclassified — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - repositories/<id>/pulls/N with a base fails closed (PR #3514 review)` — returning the base instead went red
-- `worker/deno/lib/audit_mutation_classifier.ts:838` — `--hostname` value skipped so the endpoint is the real one (also honoured before the `api` root, as merged from main #3540/#3556), and a host other than `github.com` makes the target unknown (no repo, `scope: "unknown"`; both spellings, REST and GraphQL) — `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #1420 - gh api --hostname naming a non-GitHub host is not an allowed write to the named repo`, `worker/deno/tests/security_gh_api_endpoint_host_1420_test.ts::classifyGhMutation - --hostname on a non-GitHub host yields no repo and unknown scope (PR #3514 review)`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - base changes are refused with the allowlist inactive, in every spelling` — removing the flag or the host check went red
+- `worker/deno/lib/audit_mutation_classifier.ts:425` — an endpoint of `/graphql`, `graphql/`, `graphql?x=1` or `https://api.github.com/graphql` classifies as GraphQL; a foreign-host `/graphql` does not (host not vouched for) — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - /graphql, absolute-URL and escaped --input spellings are unreadable base changes (PR #3514 review)`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - /graphql, absolute-URL and repositories/<id> spellings are refused with the allowlist inactive` — restoring `endpoint === "graphql"` went red
+- `worker/deno/lib/pr_base_change_guard.ts:386` — a base-carrying PATCH/POST on `pulls/<seg>` whose decoded segment has no leading number (after any whitespace) returns `newBase: null` (fail closed) — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - a base field on a PR number segment with no readable number fails closed`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - encoded leading whitespace or an encoded trailing slash cannot bypass the base guard` — returning `undefined` instead went red
+- `worker/deno/lib/pr_base_change_guard.ts:390` — `repositories/<id>/pulls/N` with a `base` returns `newBase: null` (no `owner/repo` to look up, so fail closed); without a `base` unclassified — `worker/deno/tests/pr_base_change_guard_test.ts::classifyPrBaseChange - repositories/<id>/pulls/N with a base fails closed (PR #3514 review)` — returning the base instead went red
+- `worker/deno/lib/audit_mutation_classifier.ts:854` — `--hostname` value skipped so the endpoint is the real one (also honoured before the `api` root, as merged from main #3540/#3556), and a host other than `github.com` makes the target unknown (no repo, `scope: "unknown"`; both spellings, REST and GraphQL) — `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #1420 - gh api --hostname naming a non-GitHub host is not an allowed write to the named repo`, `worker/deno/tests/security_gh_api_endpoint_host_1420_test.ts::classifyGhMutation - --hostname on a non-GitHub host yields no repo and unknown scope (PR #3514 review)`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - base changes are refused with the allowlist inactive, in every spelling` — removing the flag or the host check went red
 - `worker/deno/lib/gh_spawn.ts:416` — lookup failure fails closed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - a failed head/base lookup fails closed` — classifier returning undefined went red
 - `worker/deno/lib/gh_guard_decision.ts:919` — agent base change refused / non-base edits allowed — `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - every agent PR base change is refused with PR_BASE_CHANGE_REFUSED`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - non-base PR edits and pr create --base stay allowed` — classifier returning undefined went red
 - `worker/deno/lib/pr_auto_merge.ts:894` — closed route held, never retargeted — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - a base whose rollup already merged: comment once, disarm, no retarget, no merge (Issue #3433)` — re-adding `pr edit --base` went red

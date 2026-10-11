@@ -628,10 +628,14 @@ A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its m
 
 - **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head to anything but its own milestone branch, or any other PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH` or `POST …/pulls/N` (or `repositories/<id>/pulls/N`) with `base`, including `gh api`'s default POST when a field is given without `-X`, and any GraphQL request (`graphql`, `/graphql` or the absolute `api.github.com/graphql` URL) that may carry an `updatePullRequest` mutation, including a document read from a file or stdin that cannot be read, and an `--input` JSON body that spells the name with `\uXXXX` escapes), whether or not the write-repo allowlist is active.
 
-  The REST base-change guard percent-decodes endpoint paths and recognises the
-  leading digits of a PR-number segment even with a suffix such as `.json` or
-  `;x`, on both repository routes. Malformed percent-encoding fails closed.
-  Child routes such as `pulls/N/comments` are not PR base-change requests.
+  The REST base-change guard splits the endpoint path on literal `/` before
+  decoding each segment on its own, because GitHub's router treats an encoded
+  slash (`%2F`) as part of the PR-number segment. It reads the PR number as
+  the decoded segment's leading digits after any whitespace, so `%2012`,
+  `12%2F`, `12%2Fcomments`, `12.json` and `12;x` all name PR 12, on both
+  repository routes. Malformed percent-encoding, and a base change whose
+  number segment has no readable number, fail closed. Literal child routes
+  such as `pulls/N/comments` are not PR base-change requests.
 
 - **A closed route holds the PR.** A PR whose milestone route has closed (rollup merged or milestone closed) is held on its milestone branch instead of being retargeted: not merged, auto-merge disarmed (best effort), one comment per PR (marker-deduplicated; a failed comment is logged). A human retargets or closes it (result `held_route_closed`, returned by the arming path in `pr_auto_merge.ts`).
 - **Auto-merge follows the base.** On every Auto-Merge sweep pass, before any arming or branch update, the worker re-reads each listed fleet PR's base (one GraphQL read: default branch, head, base, `autoMergeRequest`, latest base-change event; [`pr_base_integrity.ts`](../../worker/deno/lib/pr_base_integrity.ts)). An unarmed, non-fix PR on a milestone base skips the read, as there is nothing to disarm. The read then decides, in order:
