@@ -1288,6 +1288,13 @@ The file MUST contain:
    checked, and name a test that uses the real record helper, drives the
    failure and then a healthy run, asserts the record is gone, and goes red
    when the clear is deleted; a record with no clear on a healthy path is a
+   blocking self-review finding. Likewise, each field, prop, parameter, type
+   or export the diff adds to non-test code has a production reader or
+   setter (see **Nothing exists only for a test to read** in the
+   guidelines): find one with `git grep -n -w <name>` outside test code, or
+   remove the member and move the assertion onto the observable output; a
+   member the issue explicitly asks for as public API is exempt and the
+   summary says so, and a new member only a test reads or sets is a
    blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
