@@ -170,7 +170,12 @@ interface Scenario {
    * file's content after the call; `output` is the reply text (used by the
    * correction turn's `CORRECTED_SUMMARY_OPEN`/`CLOSE` markers).
    */
-  claudeTurns?: Array<{ writes?: string; output?: string }>;
+  claudeTurns?: Array<{
+    writes?: string;
+    output?: string;
+    /** Rewrites another repo file (repo-relative path), e.g. a manual. */
+    writesFile?: { path: string; content: string };
+  }>;
   /** The branch's changed files, as `git diff --name-only` reports them. */
   changedFiles: string;
   /** Tracked files `ls-files` reports. */
@@ -302,6 +307,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (turn !== undefined) {
           if (turn.writes !== undefined) {
             Deno.writeTextFileSync(summaryPath, turn.writes);
+          }
+          if (turn.writesFile !== undefined) {
+            Deno.writeTextFileSync(
+              `${repoPath}/${turn.writesFile.path}`,
+              turn.writesFile.content,
+            );
           }
           return Promise.resolve({
             ok: true as const,
@@ -838,6 +849,146 @@ ${SENTENCE_C}
       2,
       "no third (correction) turn — the correction runs at most once per run",
     );
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Changed manual and prompt prose (Issue #3347): a sentence in a changed
+// Markdown manual is checked too, and a block carrying one never gets the
+// summary-only correction turn.
+// ---------------------------------------------------------------------------
+
+const MANUAL_PATH = "docs/manual.md";
+const DOC_SENTENCE =
+  "`phraseAnywhere()` escapes the phrase and joins its words with `\\s+`.";
+const MANUAL_WITH_CLAIM = `# Manual\n\n${DOC_SENTENCE}\n`;
+const MANUAL_FIXED = `# Manual\n\nThe phrase helper is documented elsewhere.\n`;
+const DOC_CHANGED_FILES = `${MANUAL_PATH}\ndocs/notes.md`;
+
+function docFindingFor(sentence: string, reason: string) {
+  return { file: MANUAL_PATH, sentence, reason };
+}
+
+// (3347 a)
+Deno.test(
+  "completion - the changed file list reaches the claim question so a changed manual is checked",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      changedFiles: DOC_CHANGED_FILES,
+      repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+      questionReplies: [verdictReply([])],
+    });
+
+    assertEquals(outcome.status, "continue", outcome.reason);
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.questionCalls.length, 1);
+    const prompt = outcome.questionCalls[0]!.prompt;
+    assertStringIncludes(prompt, MANUAL_PATH);
+    assertStringIncludes(
+      prompt,
+      "check only the lines this branch's diff adds or edits",
+    );
+  },
+);
+
+// (3347 b)
+Deno.test(
+  "completion - a first block from a doc finding takes the recovery turn, which fixes the manual and the PR is raised",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      changedFiles: DOC_CHANGED_FILES,
+      repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+      claudeTurns: [
+        { writesFile: { path: MANUAL_PATH, content: MANUAL_FIXED } },
+      ],
+      questionReplies: [
+        verdictReply([
+          docFindingFor(
+            DOC_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([]),
+      ],
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.claudeCalls, 1, "exactly one recovery turn");
+    const recoveryPrompt = outcome.claudeCallDetails[0]!.prompt;
+    assertStringIncludes(recoveryPrompt, MANUAL_PATH);
+    assertStringIncludes(recoveryPrompt, DOC_SENTENCE);
+  },
+);
+
+// (3347 c)
+Deno.test(
+  "completion - a later block from a doc finding gets no summary-only correction turn",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WRONG_CLAIM,
+      changedFiles: DOC_CHANGED_FILES,
+      repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+      claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          docFindingFor(
+            DOC_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+      ],
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.claudeCalls, 1, "the recovery turn only");
+    for (const call of outcome.claudeCallDetails) {
+      assertEquals(call.prompt.includes(CORRECTED_SUMMARY_OPEN), false);
+    }
+  },
+);
+
+// (3347 d)
+Deno.test(
+  "completion - a later doc-finding block on an existing PR is finalised as summary_incomplete with no correction turn",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WRONG_CLAIM,
+      changedFiles: DOC_CHANGED_FILES,
+      repoFiles: { [MANUAL_PATH]: MANUAL_WITH_CLAIM },
+      existingPr: true,
+      claudeTurns: [{ writes: SUMMARY_WRONG_CLAIM_FIXED }],
+      questionReplies: [
+        verdictReply([
+          findingFor(
+            WRONG_CLAIM_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+        verdictReply([
+          docFindingFor(
+            DOC_SENTENCE,
+            "the head's phraseAnywhere builds no regex",
+          ),
+        ]),
+      ],
+    });
+
+    assertEquals(outcome.status, "early_exit");
+    assertEquals(outcome.outcomeKind, "summary_incomplete");
+    assertEquals(outcome.claudeCalls, 1, "the recovery turn only");
+    for (const call of outcome.claudeCallDetails) {
+      assertEquals(call.prompt.includes(CORRECTED_SUMMARY_OPEN), false);
+    }
   },
 );
 

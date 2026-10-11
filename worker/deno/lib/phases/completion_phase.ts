@@ -204,6 +204,11 @@ import {
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
+  findOwnLineStandingViolations,
+  STANDING_VIOLATION_LABEL,
+  type StandingViolation,
+} from "../standing_violation_routing.ts";
+import {
   carryForwardCorrectedClaims,
   correctSummaryClaimsInRun,
   shouldOfferClaimCorrection,
@@ -534,6 +539,13 @@ interface SummaryRuleBlock {
    */
   sections: readonly string[];
   /**
+   * The Standards `violation`s standing on lines this branch adds or changes
+   * (Issue #3382). Recorded on the verdict so the recovery turn gets a CODE
+   * FIX item for each, and — when one survives to the existing-PR finalise —
+   * the PR is labelled and auto-merge withheld.
+   */
+  standingViolations: readonly StandingViolation[];
+  /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
    * mutation gate, Issue #3393), so the recovery prompt allows test changes.
    */
@@ -578,7 +590,10 @@ interface SummaryRuleBlock {
  *   arming auto-merge on it ahead of that guard would close the issue with
  *   any undelivered scope recorded nowhere (Issue #3092). Only once the
  *   guard succeeds is the PR finalised the way the recovery path finalises
- *   it (body, labels, link, auto-merge), and the run reports
+ *   it (body, labels, link, auto-merge — except that auto-merge is withheld
+ *   and the PR labelled `standing-violation` when a Standards violation on
+ *   the branch's own lines survived the recovery turn, Issue #3382), and the
+ *   run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
  *   issue stays attached to its PR instead of going back in the queue. If
  *   the guard itself cannot file its follow-up, this reports `failure`
@@ -625,7 +640,8 @@ async function reportSummaryRuleBlock(
   // comment; the existing-PR finalise below is a path that posts it too.
   docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
-  const { reason, comment, sections, allowsTestChanges } = block;
+  const { reason, comment, sections, standingViolations, allowsTestChanges } =
+    block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
@@ -651,6 +667,7 @@ async function reportSummaryRuleBlock(
         reason,
         comment,
         sections,
+        ...(standingViolations.length > 0 ? { standingViolations } : {}),
         ...(allowsTestChanges ? { allowsTestChanges } : {}),
         ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
       },
@@ -762,7 +779,10 @@ async function reportSummaryRuleBlock(
     state,
     guarded.prBody,
     deps,
-    docsSweepHitsComment,
+    {
+      docsSweepHitsComment,
+      holdAutoMerge: block.standingViolations.length > 0,
+    },
   );
   if (recovered.status !== "continue") return recovered;
 
@@ -918,8 +938,13 @@ async function postDocsSweepHitsComment(
  * "PR created" link comment and call `ensureIssueClosedIfPrMerged` so the
  * worker does not loop re-picking up an issue whose work is already shipped.
  *
- * Issue #3237: `docsSweepHitsComment`, when non-empty, is posted to the
- * recovered PR once — advisory, best-effort, never affects the result.
+ * Issue #3237: `finalise.docsSweepHitsComment`, when non-empty, is posted to
+ * the recovered PR once — advisory, best-effort, never affects the result.
+ *
+ * Issue #3382: `finalise.holdAutoMerge` is set when a Standards violation is
+ * still standing on the branch's own lines after the recovery turn. Auto-merge
+ * is then NOT armed and the PR is labelled `standing-violation` for the next
+ * run to fix. The flag has no default: every caller states it.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -930,8 +955,9 @@ export async function recoverAndFinaliseExistingPr(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-  docsSweepHitsComment = "",
+  finalise: { docsSweepHitsComment: string; holdAutoMerge: boolean },
 ): Promise<PhaseResult> {
+  const { docsSweepHitsComment, holdAutoMerge } = finalise;
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
   const logger = deps.logger;
   const prNumber = prNumberFromUrl(prUrl);
@@ -985,7 +1011,35 @@ export async function recoverAndFinaliseExistingPr(
 
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
-    if (prNumber > 0) {
+    if (prNumber > 0 && holdAutoMerge) {
+      // Issue #3382: a standing violation on this branch's own lines — hold
+      // the merge and make the hold visible on the PR.
+      logger.warn(
+        "Auto-merge NOT armed: a Standards violation is still standing on " +
+          "this branch's own lines — PR labelled standing-violation for the " +
+          "next run to fix (Issue #3382)",
+        { repo, prNumber },
+      );
+      const ensured = await deps.github.ensureLabelExists(
+        repo,
+        STANDING_VIOLATION_LABEL,
+      );
+      if (!ensured.ok) {
+        logger.warn("Could not ensure the standing-violation label exists", {
+          error: ensured.error.message,
+        });
+      }
+      const held = await deps.pr.updatePrLabels(repo, prNumber, [
+        STANDING_VIOLATION_LABEL,
+      ]);
+      if (!held.ok) {
+        logger.error(
+          "Could not label the PR standing-violation — the auto-merge hold " +
+            "is not visible on the PR (Issue #3382)",
+          { repo, prNumber, error: held.error.message },
+        );
+      }
+    } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
@@ -2635,6 +2689,9 @@ async function completionBody(
   // run is logged as not checked (by `runSummaryClaimCheck` itself), never
   // read as clean, and does not block.
   //
+  // Issue #3347: the question also covers the manual and prompt Markdown in
+  // the branch's changed-file list (`changedFiles`), not just the summary.
+  //
   // Skipped entirely when no summary file with content was loaded — with no
   // summary there are no claims about named code to check.
   // ---------------------------------------------------------------------
@@ -2648,6 +2705,7 @@ async function completionBody(
         baseRef: comparableBase.ok ? comparableBase.value : null,
         summaryPath: summarySource,
         summaryContent,
+        changedFiles: changedFilesKnown ? changedFiles : null,
       },
       {
         runGit: async (args) => {
@@ -2920,6 +2978,43 @@ async function completionBody(
     prePrVerifierVerdict,
   ];
 
+  // Issue #3382: the #3196 gate refuses a Standards violation left standing,
+  // but the recovery turn used to be forbidden from changing code, so the
+  // refusal could only ever be a documentary retry that could not succeed.
+  // Find the violations on this branch's own lines once, here, so every block
+  // below carries them: the recovery turn gets a CODE FIX item for each, and
+  // a violation that survives it holds auto-merge rather than shipping.
+  const standing = await findOwnLineStandingViolations({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+    base: comparableBase.ok ? comparableBase.value : null,
+    runGit: async (args) => {
+      const result = await deps.git.runGitCommand(args, {
+        cwd: state.repoPath,
+      });
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+  });
+  if (standing.notChecked !== null) {
+    logger.error(
+      "Standing violations could not be placed against the diff — every one " +
+        "is treated as on the branch's own lines (Issue #3382)",
+      {
+        reason: standing.notChecked,
+        violations: standing.violations.length,
+      },
+    );
+  }
+  if (standing.violations.length > 0) {
+    logger.warn(
+      `${standing.violations.length} Standards violation(s) standing on the ` +
+        "branch's own lines (Issue #3382)",
+      { violations: standing.violations.length },
+    );
+  }
+  const standingViolations = standing.violations;
+
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
    * placeholder, branch outcomes, mutation check, summary claim check, pre-PR
@@ -2951,6 +3046,7 @@ async function completionBody(
       reason: foldedReason,
       comment: foldedComment,
       sections,
+      standingViolations,
       ...(allowsTestChanges ? { allowsTestChanges } : {}),
     };
   }
@@ -3270,6 +3366,7 @@ async function completionBody(
   if (claimCheckVerdict.blocked && claimCheck !== null) {
     logger.warn("Summary claim check blocked PR creation", {
       findings: claimCheck.findings.length,
+      docFindings: claimCheck.docFindings.length,
       testPlanProblems: claimCheck.testPlanProblems.length,
       notChecked: claimCheck.notChecked.length,
     });
@@ -3283,7 +3380,15 @@ async function completionBody(
     // posted yet, because the correction turn may yet clear the finding
     // before anything reaches the thread. The re-run posts the comment via
     // this same gate if the sentence survives.
-    if (summarySource !== null && shouldOfferClaimCorrection(state)) {
+    //
+    // Issue #3347: the correction turn rewrites only the PR summary, so a
+    // block that carries a finding in a changed manual or prompt
+    // (`docFindings`) can never be cleared by it — that goes to
+    // `reportSummaryRuleBlock` like any other later block.
+    if (
+      summarySource !== null && shouldOfferClaimCorrection(state) &&
+      claimCheck.docFindings.length === 0
+    ) {
       state.summaryClaimCorrection = {
         status: "pending",
         reason: claimCheckVerdict.reason,
@@ -3340,6 +3445,7 @@ async function completionBody(
         reason: prePrVerifierVerdict.reason,
         comment,
         sections: [comment],
+        standingViolations,
       },
       ctx,
       state,
@@ -3447,7 +3553,7 @@ async function completionBody(
       state,
       prBody,
       deps,
-      docsSweepHitsComment,
+      { docsSweepHitsComment, holdAutoMerge: false },
     );
   }
 
@@ -3582,7 +3688,7 @@ async function completionBody(
           state,
           prBody,
           deps,
-          docsSweepHitsComment,
+          { docsSweepHitsComment, holdAutoMerge: false },
         );
       } else if (isSecondaryRateLimitMessage(errorMsg)) {
         // The latch's own cool-down names both limits (Issue #1456), so it
