@@ -348,9 +348,20 @@ export function classifyPrBaseChange(
   // GitHub routes POST on `pulls/N` to the same update handler as PATCH, and
   // `gh api` sends POST whenever a field is given without `-X` (PR #3514 review).
   if (info.verb !== "api-patch" && info.verb !== "api-post") return undefined;
+  // Decode the path before matching GitHub's route. Invalid percent-encoding
+  // cannot be safely classified, so both callers must fail closed.
+  let path: string;
+  try {
+    path = decodeURIComponent(endpointPath(info.target ?? ""));
+  } catch {
+    return { newBase: null };
+  }
+  // GitHub takes the leading digits of the number segment, including when
+  // followed by .json, letters or a semicolon parameter (PR #3514 review).
+  // Keep child endpoints such as pulls/N/comments outside this match.
   // `repositories/<id>/pulls/N` is the same route addressed by repository id.
-  const match = endpointPath(info.target ?? "").match(
-    /^(?:repos\/([^/]+)\/([^/]+)|repositories\/(\d+))\/pulls\/(\d+)$/,
+  const match = path.match(
+    /^(?:repos\/([^/]+)\/([^/]+)|repositories\/(\d+))\/pulls\/(\d+)[^/]*$/,
   );
   if (!match) return undefined;
 

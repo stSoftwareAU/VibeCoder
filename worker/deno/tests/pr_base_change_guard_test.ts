@@ -443,3 +443,68 @@ Deno.test("classifyPrBaseChange - repositories/<id>/pulls/N with a base fails cl
     undefined,
   );
 });
+
+Deno.test("classifyPrBaseChange - decoded and suffixed PR numbers select the leading digits", () => {
+  for (const route of ["repos/o/r", "repositories/123"]) {
+    for (
+      const number of [
+        "12.json",
+        "12abc",
+        "12-x",
+        "12;x",
+        "%31%32",
+        "%31%32.json",
+      ]
+    ) {
+      for (const method of [["-X", "PATCH"], []]) {
+        for (const prefix of ["", "https://api.github.com/"]) {
+          const endpoint = `${prefix}${route}/pulls/${number}?x=1#fragment`;
+          assertEquals(
+            classifyPrBaseChange([
+              "api",
+              ...method,
+              endpoint,
+              "-f",
+              "base=main",
+            ]),
+            route === "repos/o/r"
+              ? { newBase: "main", repo: "o/r", prSelector: "12" }
+              : { newBase: null, prSelector: "12" },
+            endpoint,
+          );
+        }
+      }
+    }
+  }
+});
+
+Deno.test("classifyPrBaseChange - malformed encoding fails closed but child routes are not base changes", () => {
+  for (const route of ["repos/o/r", "repositories/123"]) {
+    for (const method of [["-X", "PATCH"], []]) {
+      for (const number of ["%", "%ZZ", "%C3%28"]) {
+        assertEquals(
+          classifyPrBaseChange([
+            "api",
+            ...method,
+            `${route}/pulls/${number}`,
+            "-f",
+            "base=main",
+          ]),
+          { newBase: null },
+        );
+      }
+      for (const number of ["12", "12.json", "%31%32"]) {
+        assertEquals(
+          classifyPrBaseChange([
+            "api",
+            ...method,
+            `${route}/pulls/${number}/comments`,
+            "-f",
+            "base=main",
+          ]),
+          undefined,
+        );
+      }
+    }
+  }
+});

@@ -1297,3 +1297,61 @@ Deno.test("gh-guard #1420 - gh api --hostname naming a non-GitHub host is not an
     "WRITE_REPO_BLOCKED",
   );
 });
+
+Deno.test("gh-guard #3433 - decoded and suffixed REST PR numbers cannot bypass the base guard", () => {
+  for (const ctx of [INACTIVE, ACTIVE]) {
+    for (
+      const route of ["repos/stSoftwareAU/VibeCoder", "repositories/1334753061"]
+    ) {
+      for (
+        const number of [
+          "12.json",
+          "12abc",
+          "12-x",
+          "12;x",
+          "%31%32",
+          "%31%32.json",
+          "%",
+          "%ZZ",
+          "%C3%28",
+        ]
+      ) {
+        for (const method of [["-X", "PATCH"], []]) {
+          const args = [
+            "api",
+            ...method,
+            `${route}/pulls/${number}`,
+            "-f",
+            "base=main",
+          ];
+          const decision = evaluateGhCommand(args, ctx);
+          assertEquals(decision.allowed, false, `${args}`);
+          assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+        }
+      }
+    }
+  }
+});
+
+Deno.test("gh-guard #3433 - child routes with a base field are not PR base edits", () => {
+  for (
+    const route of ["repos/stSoftwareAU/VibeCoder", "repositories/1334753061"]
+  ) {
+    for (const method of [["-X", "PATCH"], []]) {
+      const args = [
+        "api",
+        ...method,
+        `${route}/pulls/12/comments`,
+        "-f",
+        "base=main",
+      ];
+      const decision = evaluateGhCommand(args, INACTIVE);
+      assertEquals(decision.allowed, true, `${args}`);
+      assertEquals(
+        decision.marker === "PR_BASE_CHANGE_REFUSED",
+        false,
+        `${args}`,
+      );
+    }
+  }
+});

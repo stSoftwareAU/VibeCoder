@@ -92,7 +92,34 @@ flowchart TD
 
 ## Test Plan
 
-- `./quality.sh < /dev/null` on the final head: `Result: PASSED (with skipped checks)` (only `config integration` skipped).
+- PR #3514 review fix: percent-decode REST paths, fail closed on malformed
+  encoding, and match leading PR-number digits plus a non-slash suffix on
+  both `repos/o/r` and `repositories/id` routes. Child routes stay excluded.
+- Added four regression tests across `pr_base_change_guard_test.ts` and
+  `gh_guard_decision_test.ts`: suffixed/encoded numbers, malformed encoding,
+  and child-route negatives. PATCH and implicit POST are covered; the agent
+  tests exercise both active and inactive allowlists. Existing assertions
+  are unchanged.
+- A standalone Deno script using `node:assert` and importing the real
+  `classifyPrBaseChange` and `evaluateGhCommand` functions failed before
+  the fix on `pulls/12.json`, then passed 156 checks after the fix. It covers
+  both repository routes, relative and absolute URLs, suffixes, percent
+  encoding, malformed encoding and child routes. This is a focused check,
+  not a run of the repository test suites.
+- Fresh repository test attempt was blocked loading `@std/assert` from JSR.
+  `deno lint --no-config` and `deno fmt --check --no-config` passed for all
+  three changed TypeScript files; the repository-configured lint and format
+  commands also passed. `git diff --check` passed.
+- Fresh `./quality.sh < /dev/null` was attempted; dependency loading blocked
+  completeness checks. No fresh full-gate pass is claimed.
+- Review-fix docs sweep: read the milestone-fix targeting section and the
+  agent-wrapper base-change rule; updated `docs/workflows/milestones.md`
+  and `SECURITY.md` to describe decoding, suffixes and fail-closed handling.
+
+
+- Earlier implementation validation recorded `./quality.sh < /dev/null` as
+  `Result: PASSED (with skipped checks)` (only `config integration` skipped).
+  This is historical evidence, not a fresh pass for the PR #3514 review fix.
 - `deno task check:manifests`: PASSED (692 passed).
 - New: `worker/deno/tests/pr_base_change_guard_test.ts`, `worker/deno/tests/pr_base_integrity_test.ts`, `worker/deno/tests/auto_merge_disarm_test.ts`.
 - Extended: `worker/deno/tests/gh_spawn_test.ts`, `worker/deno/tests/gh_guard_decision_test.ts`, `worker/deno/tests/auto_merge_sweep_test.ts`, `worker/deno/tests/pr_auto_merge_test.ts`, `worker/deno/tests/milestone_fix_pr_test.ts`, `worker/deno/tests/milestone_children_gate_test.ts`, `worker/deno/tests/conflict_takeover_test.ts` (the stub answers the new `pr view` read; expected comment count unchanged).
