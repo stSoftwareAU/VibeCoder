@@ -60,7 +60,7 @@ Issue references in the added lines:
 ## Test Plan
 
 - `deno test` on the 6 touched or related test files: 142 passed. `deno lint` and `deno check` are clean. `claim_path_differential_test.ts` and `skip_reason_clearing_test.ts` also pass.
-- `./quality.sh < /dev/null` runs from the repo root before the PR is raised.
+- `./quality.sh < /dev/null` from the repo root: every check passed (deno tests 598s, deno check, lint, fmt, semgrep, mermaid, release-tag ruleset) except markdownlint. It flagged MD018 at `docs/INTERNALS.md:4610`, because a wrapped line began with `#3464)`. I rewrapped the line, and `npx --no-install markdownlint-cli2 docs/INTERNALS.md` (which lints all 222 configured files) now reports 0 issues. I did not re-run the full gate after this one-line docs rewrap.
 - Red checks, one per new test:
   - With the `pacedMilestoneIssueNumbers` union removed from the census `runLocalHolds`, the wiring test failed (`work_on=1 run_local_hold=0 inversion_signal=true`).
   - With `"milestone-behind"` set back to `"run-local"`, the coverage test in `idle_decision_census_test.ts` failed.
