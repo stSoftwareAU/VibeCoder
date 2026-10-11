@@ -36,6 +36,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  markdownLogicalUnits,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
 import { codeChangingFiles } from "./docs_sweep_gate.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import type { Result } from "../types.ts";
@@ -66,13 +70,6 @@ const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
-
-/**
- * A markdown table row. Each one is kept as its own paragraph group (PR
- * #3312 review) — merging table rows into one joined unit would let a test
- * citation in one row clear a weak admission in another.
- */
-const TABLE_ROW_RE = /^\s*\|/;
 
 /** A markdown heading, capturing its `#` run so the level can be read off. */
 const HEADING_RE = /^\s{0,3}(#{1,6})\s/;
@@ -122,7 +119,11 @@ function sectionBoundaryLevel(enclosingHeadingLevel: number): number {
     : FALLBACK_SECTION_HEADING_LEVEL;
 }
 
-/** The `Branch outcomes` prefix once markdown decoration is stripped. */
+/**
+ * The `Branch outcomes` prefix once markdown decoration is stripped. Only
+ * ever tested via `matchHeader`, which first rules out a line that opens with
+ * a code span (Issue #3377).
+ */
 const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
 
 /**
@@ -135,7 +136,9 @@ const BRANCH_OUTCOMES_PREFIX_RE = /^branch\s+outcomes\s*[:\-–—]/i;
 const BRANCH_OUTCOMES_HEADING_RE = /^#{1,6}\s*branch\s+outcomes\s*:?$/i;
 
 /**
- * Strip list marker and `*`/backtick decoration from a line.
+ * Strip list marker and `*`/backtick decoration from a line. Because this
+ * drops every backtick, header detection must not rely on it alone: see
+ * `opensWithCodeSpan` (Issue #3377).
  *
  * Underscore is deliberately NOT stripped here, unlike `docs_sweep_gate.ts`'s
  * decoration strip: a Branch-outcomes entry routinely cites a test path such
@@ -147,6 +150,55 @@ function stripDecoration(line: string): string {
     .replace(LIST_MARKER_RE, "")
     .replace(/[*`]/g, "")
     .trim();
+}
+
+/**
+ * True when the raw line, past its list marker and any `*` bold/italic
+ * markers, opens with a backtick: a candidate code-span mention of the header
+ * such as `` `Branch outcomes:`, "example" `` (Issue #3377). A real ATX
+ * heading can never start with a backtick, so the heading form is never a
+ * header here. Whether an inline form is still a header is `matchHeader`'s
+ * call.
+ */
+function opensWithCodeSpan(rawLine: string): boolean {
+  return rawLine
+    .replace(LIST_MARKER_RE, "")
+    .replace(/\*/g, "")
+    .trimStart()
+    .startsWith("`");
+}
+
+/**
+ * The single place the header regexes are applied to a raw line. A line that
+ * opens with a code span is a mention, not a header (Issue #3377), with one
+ * exception: an inline header whose body after the separator is empty or an
+ * honest `none` (`` `Branch outcomes:` `` alone, `` `Branch outcomes: none
+ * added` ``) stays a header, since PR #3312 review supported a bare
+ * backticked header. Any other text after the separator, and the
+ * heading form (`` `### Branch outcomes` ``), is a mention. Otherwise the
+ * decoration-stripped line is tested against both header forms.
+ */
+function matchHeader(
+  rawLine: string,
+): {
+  stripped: string;
+  inlineMatch: RegExpMatchArray | null;
+  heading: boolean;
+} {
+  const stripped = stripDecoration(rawLine);
+  if (opensWithCodeSpan(rawLine)) {
+    const inline = stripped.match(BRANCH_OUTCOMES_PREFIX_RE);
+    const body = inline ? stripped.slice(inline[0].length).trim() : null;
+    if (inline && (body === "" || isNoneBody(body!))) {
+      return { stripped, inlineMatch: inline, heading: false };
+    }
+    return { stripped, inlineMatch: null, heading: false };
+  }
+  return {
+    stripped,
+    inlineMatch: stripped.match(BRANCH_OUTCOMES_PREFIX_RE),
+    heading: BRANCH_OUTCOMES_HEADING_RE.test(stripped),
+  };
 }
 
 /** Leading-space indent of a raw (undecorated) line. */
@@ -243,7 +295,7 @@ export function parseBranchOutcomes(
   prSummaryContent: string,
 ): BranchOutcomesRecord {
   const raw = (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS);
-  const lines = raw.split(LINE_TERMINATOR_RE);
+  const lines = splitMarkdownLines(raw);
   const entries: string[] = [];
   const entryLineIndices: number[][] = [];
   const bodyParts: string[] = [];
@@ -257,9 +309,7 @@ export function parseBranchOutcomes(
 
   for (let i = 0; i < lines.length; i++) {
     const rawLine = lines[i]!;
-    const stripped = stripDecoration(rawLine);
-    const inlineMatch = stripped.match(BRANCH_OUTCOMES_PREFIX_RE);
-    const heading = BRANCH_OUTCOMES_HEADING_RE.test(stripped);
+    const { stripped, inlineMatch, heading } = matchHeader(rawLine);
     if (!inlineMatch && !heading) {
       const lvl = headingLevel(rawLine);
       if (lvl > 0) lastHeadingLevel = lvl;
@@ -359,16 +409,17 @@ export function parseBranchOutcomes(
 /**
  * Every line from `startIndex` to the next section-boundary heading (level
  * at or above `boundaryLevel`, see `sectionBoundaryLevel`), the next `Branch
- * outcomes` header, or the end of the document — scanned (decoration
- * stripped) for `namedTestPaths` only. Deliberately independent of
- * `collectEntries`: that function's list-shaped parsing legitimately stops
- * on a sibling bullet, a table row, or prose after a blank line, any of
- * which can still name a test the header logically covers (PR #3160
- * review). A deeper grouping heading (e.g. a `#### path/to/file.ts` label
- * nested under a `**Branch outcomes:**` paragraph) does not end the scan
- * (PR #3160 review, sixth round). Stopping at the next header, or a
- * section-boundary heading, keeps every header's scan disjoint, so the
- * combined cost across a whole PR summary stays linear.
+ * outcomes` header (a code-span mention is not one, Issue #3377), or the
+ * end of the document — scanned (decoration stripped) for `namedTestPaths`
+ * only. Deliberately independent of `collectEntries`: that function's
+ * list-shaped parsing legitimately stops on a sibling bullet, a table row,
+ * or prose after a blank line, any of which can still name a test the
+ * header logically covers (PR #3160 review). A deeper grouping heading
+ * (e.g. a `#### path/to/file.ts` label nested under a `**Branch outcomes:**`
+ * paragraph) does not end the scan (PR #3160 review, sixth round). Stopping
+ * at the next header, or a section-boundary heading, keeps every header's
+ * scan disjoint, so the combined cost across a whole PR summary stays
+ * linear.
  *
  * Also returns the raw line indices behind `text`, so `parseBranchOutcomes`
  * can tell which of this header's scanned lines were never folded into a
@@ -386,13 +437,8 @@ function scanRegion(
     const line = lines[j]!;
     const lvl = headingLevel(line);
     if (lvl > 0 && lvl <= boundaryLevel) break;
-    const stripped = stripDecoration(line);
-    if (
-      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
-      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
-    ) {
-      break;
-    }
+    const { stripped, inlineMatch, heading } = matchHeader(line);
+    if (inlineMatch || heading) break;
     if (stripped) {
       parts.push(stripped);
       indices.push(j);
@@ -409,10 +455,11 @@ function scanRegion(
  * from `entries` (PR #3160 review, sixth round) — but only once it has been
  * checked against the header forms below and found not to be a real
  * `Branch outcomes` header. The scan stops at the next `Branch outcomes`
- * header, inline or heading-form, however deep, same as `scanRegionText`, so
- * the outer loop in `parseBranchOutcomes` is the one to parse that header
- * (Issue #3340; the heading-form case was still missed on the first fix —
- * PR #3372 review).
+ * header, inline or heading-form, however deep (a code-span mention such as
+ * `` `Branch outcomes:`, "x" `` is not a header, Issue #3377), same as
+ * `scanRegion`, so the outer loop in `parseBranchOutcomes` is the one to
+ * parse that header (Issue #3340; the heading-form case was still missed on
+ * the first fix — PR #3372 review).
  *
  * Also reports, per entry, which line indices actually contributed to its
  * final (possibly `capEntry`-truncated) text, and which lines made up
@@ -453,7 +500,7 @@ function collectEntries(
     const lvl = headingLevel(line);
     if (lvl > 0 && lvl <= boundaryLevel) break;
 
-    const stripped = stripDecoration(line);
+    const { stripped, inlineMatch, heading } = matchHeader(line);
     // A real `Branch outcomes` header reached mid-scan ends this call here
     // rather than being swallowed into `wrap` or pushed as an entry; the
     // outer loop in `parseBranchOutcomes` parses it on the next iteration
@@ -462,12 +509,7 @@ function collectEntries(
     // Branch outcomes`) deeper than `boundaryLevel` is still a real header,
     // not a grouping sub-heading, so it must not fall into that skip
     // unexamined (PR #3372 review).
-    if (
-      BRANCH_OUTCOMES_PREFIX_RE.test(stripped) ||
-      BRANCH_OUTCOMES_HEADING_RE.test(stripped)
-    ) {
-      break;
-    }
+    if (inlineMatch || heading) break;
     if (lvl > 0) continue; // A deeper grouping heading: skip it, keep scanning.
 
     const indent = leadingIndent(line);
@@ -637,7 +679,7 @@ function isBarePlaceholder(body: string): boolean {
 
 /**
  * Blank test/command citations across one unit's own raw lines (an entry,
- * one body contribution, or one grouped run of uncaptured lines — see
+ * one body contribution, or one logical unit of uncaptured lines — see
  * `groupUncapturedIndices`), then decoration-strip the result. The raw lines
  * are joined with `\n` and passed through `blankLineCitationNames` as ONE
  * string before being split back apart (PR #3312 review, round 4): a span
@@ -683,41 +725,39 @@ function blankedUnitText(
 }
 
 /**
- * Group consecutive uncaptured line indices into paragraphs, so
- * `blankedUnitLines` can pair a backtick span across a wrapped line within
- * one paragraph while never reaching into a different one (Issue #3288, PR
- * #3312 review round 4). Each `Branch outcomes:` header's uncaptured lines
- * are otherwise one flat list with no grouping at all — blanking each raw
- * line on its own (the previous shape) mis-pairs a span that opens on one
- * line and closes on the next, which can blank away the entry's OWN prose
- * between the close and the next span and hide a real admission.
+ * Group consecutive uncaptured line indices into the shared Markdown logical
+ * units (`markdownLogicalUnits`), so `blankedUnitLines` can pair a backtick
+ * span across a wrapped line within one paragraph or list item while never
+ * reaching into a different one (Issue #3288, PR #3312 review round 4;
+ * re-based on the shared helper by Issue #3356).
  *
- * A gap in the index sequence (a blank line, a captured line, or the end of
- * a header's scanned region) always starts a new paragraph, and so does
- * every list-marker line (`` `- ` ``, `` `* ` ``, `1. `, …) — the same
- * cross-item isolation the removed `blankTestCitationNames` used to provide
- * by resetting at every list-marker line, now applied before blanking
- * rather than during it: a stray backtick in one bullet can never reach a
- * later, unrelated bullet's text. A non-list, non-blank line that
- * immediately follows (whether indented or not — a "lazy" unindented
- * continuation is still one Markdown paragraph) stays in the current
- * paragraph, so a span wrapped across that line break still pairs.
+ * A new group starts when the index is not `prev + 1` (a blank line, a
+ * captured line or the end of a header's scanned region) OR when its logical
+ * unit differs from the previous index's unit. A hard-wrapped paragraph or
+ * list item is therefore one group, while a new list item, table row, heading,
+ * HTML comment, thematic break or quote-depth change always starts a new one.
+ * Each fenced line is its own `code` unit, so it is its own group: still
+ * checked, but never joined to the prose beside it, so a test citation in a
+ * fence or deeper heading cannot clear a weak admission in the neighbouring
+ * prose (Issue #3356).
  */
 function groupUncapturedIndices(
   lines: readonly string[],
   indices: readonly number[],
 ): number[][] {
+  const unitOf = new Map<number, number>();
+  markdownLogicalUnits(lines).forEach((unit, unitId) => {
+    for (const lineIdx of unit.lines) unitOf.set(lineIdx, unitId);
+  });
   const groups: number[][] = [];
   let current: number[] = [];
   let prevIndex = Number.NaN;
-  let prevWasTableRow = false;
+  let prevUnit: number | undefined;
   for (const idx of indices) {
-    const isTableRow = TABLE_ROW_RE.test(lines[idx]!);
+    const unit = unitOf.get(idx);
     const startsNewGroup = current.length === 0 ||
       idx !== prevIndex + 1 ||
-      LIST_MARKER_RE.test(lines[idx]!) ||
-      isTableRow ||
-      prevWasTableRow;
+      unit !== prevUnit;
     if (startsNewGroup) {
       if (current.length > 0) groups.push(current);
       current = [idx];
@@ -725,7 +765,7 @@ function groupUncapturedIndices(
       current.push(idx);
     }
     prevIndex = idx;
-    prevWasTableRow = isTableRow;
+    prevUnit = unit;
   }
   if (current.length > 0) groups.push(current);
   return groups;
@@ -1098,9 +1138,9 @@ export function validateBranchOutcomes(
   input: ValidateBranchOutcomesInput,
 ): BranchOutcomesGateResult {
   const record = parseBranchOutcomes(input.prSummaryContent ?? "");
-  const lines = (input.prSummaryContent ?? "")
-    .slice(0, MAX_SCAN_CHARS)
-    .split(LINE_TERMINATOR_RE);
+  const lines = splitMarkdownLines(
+    (input.prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS),
+  );
 
   if (input.changedFiles === null) {
     return evaluateApplicable(record, lines, [], false, input.testsAtHead);
@@ -1180,12 +1220,13 @@ function evaluateApplicable(
     // boundaries than the real parse and block an honest summary on a
     // shape mismatch that was never a real line merge (PR #3312 review,
     // round 3; see `blankedUnitLines`). Uncaptured lines are grouped into
-    // paragraphs first (`groupUncapturedIndices` — each table row its own
-    // group) and each paragraph is checked as ONE joined unit, so an
-    // admission a hard wrap splits across two lines still matches (PR
-    // #3312 review, round 6); a table row stays its own unit so one row's
-    // test citation cannot clear another row's weak admission. Each
-    // header's own `bodyLineIndexGroups` entry is likewise kept as its own
+    // logical units first (`groupUncapturedIndices` over the shared
+    // `markdownLogicalUnits` — Issue #3356) and each wrapped paragraph or
+    // list item is checked as ONE joined unit, so an admission a hard wrap
+    // splits across two lines still matches (PR #3312 review, round 6); a
+    // table row, heading, HTML comment or fenced line stays its own unit so
+    // its test citation cannot clear a weak admission in neighbouring prose.
+    // Each header's own `bodyLineIndexGroups` entry is likewise kept as its own
     // unit rather than joined across headers, so a citation in one header
     // cannot clear a weak admission in another (PR #3312 review, round 6).
     const blanked: BlankedUnits = {

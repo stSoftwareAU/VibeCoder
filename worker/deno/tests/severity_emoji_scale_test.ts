@@ -20,9 +20,16 @@
  * per scan (and it does) while the mapping cannot.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ *
+ * The cross-scan pairing checks below loop over every prompt directory's
+ * `prompt.md` on disk, so they stay whole-file (CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 4). The one pin scoped to a single
+ * doc's section — orphan_deps' no-critical-band rationale — moved to
+ * `severity_emoji_scale_drift_test.ts` (Issue #3309); the absence check
+ * beside it stays here, whole-file, per condition 3.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
@@ -121,13 +128,11 @@ Deno.test("severity scale - orphan_deps still has no critical band to justify a 
   const loaded = await loadPrompt("orphan_deps", PROMPTS_DIR);
   assertEquals(loaded.ok, true);
   if (!loaded.ok) return;
-  // The template says so itself, which is a stronger check than the absence
-  // of the string — it mentions `severity:critical` deliberately, to say the
-  // red belongs to the scan that does have that band.
-  assertStringIncludes(
-    loaded.value.replace(/\s+/g, " "),
-    "There is **no `severity:critical`**",
-  );
+  // The positive pin for "There is **no `severity:critical`**", scoped to
+  // orphan_deps' Severity guidance section, moved to
+  // `severity_emoji_scale_drift_test.ts` (Issue #3309). This absence check
+  // stays whole-file per CODING-STANDARDS.md § Documentation-drift tests,
+  // condition 3 — it must never narrow.
   assertEquals(
     loaded.value.includes("one `severity:critical`"),
     false,

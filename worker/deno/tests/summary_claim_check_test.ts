@@ -678,6 +678,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - builds a well-formed question", () 
     issueNumber: 42,
     baseRef: "origin/main",
     summaryPath: "docs/archive/pr-summaries/pr-summary-99.md",
+    docFiles: [],
     boundaryId: "0123456789ab",
   });
   assertStringIncludes(prompt, "git diff origin/main...HEAD");
@@ -693,6 +694,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a flag-shaped base ref", 
       issueNumber: 1,
       baseRef: "--output=/tmp/x",
       summaryPath: ".pr_summary",
+      docFiles: [],
     })
   );
 });
@@ -704,6 +706,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a base ref containing '..
       issueNumber: 1,
       baseRef: "a..b",
       summaryPath: ".pr_summary",
+      docFiles: [],
     })
   );
 });
@@ -715,6 +718,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on an unrecognised summary p
       issueNumber: 1,
       baseRef: "origin/main",
       summaryPath: "../etc/passwd",
+      docFiles: [],
     })
   );
 });
@@ -726,6 +730,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a zero issue number", () 
       issueNumber: 0,
       baseRef: "origin/main",
       summaryPath: ".pr_summary",
+      docFiles: [],
     })
   );
   assertStringIncludes(
@@ -741,6 +746,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a non-integer issue numbe
       issueNumber: 1.5,
       baseRef: "origin/main",
       summaryPath: ".pr_summary",
+      docFiles: [],
     })
   );
   assertStringIncludes(
@@ -755,6 +761,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - the same args with a valid issue nu
     issueNumber: 7,
     baseRef: "origin/main",
     summaryPath: ".pr_summary",
+    docFiles: [],
   });
   assertStringIncludes(prompt, "acme/widgets#7");
 });
@@ -766,6 +773,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on a base ref with a leading
       issueNumber: 1,
       baseRef: "-x",
       summaryPath: ".pr_summary",
+      docFiles: [],
     })
   );
 });
@@ -777,6 +785,7 @@ Deno.test("buildSummaryClaimQuestionPrompt - throws on an absolute-path base ref
       issueNumber: 1,
       baseRef: "/etc/x",
       summaryPath: ".pr_summary",
+      docFiles: [],
     })
   );
 });
@@ -813,6 +822,7 @@ Deno.test("runSummaryClaimCheck - runGit returning null skips the Test Plan back
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: SUMMARY_WITH_MISSING_FILE_CLAIM,
     },
     {
@@ -845,6 +855,7 @@ Deno.test("runSummaryClaimCheck - a non-zero ls-files exit code skips the Test P
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: SUMMARY_WITH_MISSING_FILE_CLAIM,
     },
     {
@@ -880,6 +891,7 @@ Deno.test("runSummaryClaimCheck - contrast: ls-files succeeding yields the missi
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: SUMMARY_WITH_MISSING_FILE_CLAIM,
     },
     {
@@ -915,6 +927,7 @@ Deno.test("runSummaryClaimCheck - #3252-shaped confirmed finding blocks", async 
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent,
     },
     {
@@ -950,6 +963,7 @@ Deno.test("runSummaryClaimCheck - a misquoted sentence is unconfirmed, not block
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent,
     },
     {
@@ -984,6 +998,7 @@ Deno.test("runSummaryClaimCheck - a finding naming another file is unconfirmed",
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent,
     },
     {
@@ -1009,6 +1024,7 @@ Deno.test("runSummaryClaimCheck - askQuestion error is notChecked, not blocked",
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: "## Summary\n\nText.\n",
     },
     {
@@ -1037,6 +1053,7 @@ Deno.test("runSummaryClaimCheck - a null baseRef never calls askQuestion", async
       repoPath: "/does/not/matter",
       baseRef: null,
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: "## Summary\n\nText.\n",
     },
     {
@@ -1060,6 +1077,7 @@ Deno.test("runSummaryClaimCheck - a reply with no verdict block is notChecked", 
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: "## Summary\n\nText.\n",
     },
     {
@@ -1084,6 +1102,7 @@ Deno.test("runSummaryClaimCheck - a base ref that fails validation is notChecked
       repoPath: "/does/not/matter",
       baseRef: "origin/rel+1",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: "## Summary\n\nText.\n",
     },
     {
@@ -1114,6 +1133,7 @@ Deno.test("runSummaryClaimCheck - an ambiguous test-file reference reaches resul
       repoPath: "/does/not/matter",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: SUMMARY_WITH_COVERAGE_CLAIM(
         "foo_test.ts",
         "handles the empty input case correctly",
@@ -1144,6 +1164,7 @@ Deno.test("runSummaryClaimCheck - an unreadable tracked test file reaches result
       repoPath: "/does/not/exist/anywhere",
       baseRef: "origin/main",
       summaryPath: SUMMARY_PATH,
+      changedFiles: [],
       summaryContent: SUMMARY_WITH_COVERAGE_CLAIM(
         "worker/deno/tests/foo_test.ts",
         "handles the empty input case correctly",
@@ -1177,6 +1198,7 @@ Deno.test("buildSummaryClaimGateComment - includes the sentence, the Test Plan p
         reason: "parseRow does not escape anything",
       },
     ],
+    docFindings: [],
     unconfirmedFindings: [],
     testPlanProblems: [
       {
@@ -1202,6 +1224,7 @@ Deno.test("summaryClaimBlockReason - starts with the expected prefix", () => {
     findings: [
       { file: SUMMARY_PATH, sentence: "Some sentence.", reason: "wrong" },
     ],
+    docFindings: [],
     unconfirmedFindings: [],
     testPlanProblems: [],
     notChecked: [],
@@ -1304,5 +1327,305 @@ Deno.test("findTestPlanClaimProblems - a hostile test-file body scales linearly 
         readFile: async () => input,
       }),
     10_000,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Changed manual and prompt prose (Issue #3347)
+// ---------------------------------------------------------------------------
+
+const DOC_SENTENCE = "A negative `cash` on a cash account is refused.";
+
+const PROMPT_BASE = {
+  repo: "acme/widgets",
+  issueNumber: 7,
+  baseRef: "origin/main",
+  summaryPath: ".pr_summary",
+} as const;
+
+Deno.test("buildSummaryClaimQuestionPrompt - docFiles add the doc instruction and files", () => {
+  const withDocs = buildSummaryClaimQuestionPrompt({
+    ...PROMPT_BASE,
+    docFiles: ["docs/manual.md", "SECURITY.md"],
+    boundaryId: "0123456789ab",
+  });
+  assertStringIncludes(withDocs, "docs/manual.md");
+  assertStringIncludes(withDocs, "SECURITY.md");
+  assertStringIncludes(
+    withDocs,
+    "check only the lines this branch's diff adds or edits",
+  );
+  assertStringIncludes(withDocs, "For the summary file:");
+  const without = buildSummaryClaimQuestionPrompt({
+    ...PROMPT_BASE,
+    docFiles: [],
+    boundaryId: "0123456789ab",
+  });
+  assertFalse(
+    without.includes("check only the lines this branch's diff adds or edits"),
+  );
+  assertFalse(without.includes("For the summary file:"));
+});
+
+Deno.test("buildSummaryClaimQuestionPrompt - rejects non-prose and over-cap docFiles", () => {
+  for (
+    const bad of [
+      "docs/archive/pr-summaries/pr-summary-3.md",
+      "../x.md",
+      "lib/x.ts",
+    ]
+  ) {
+    const err = assertThrows(() =>
+      buildSummaryClaimQuestionPrompt({ ...PROMPT_BASE, docFiles: [bad] })
+    );
+    assertStringIncludes(
+      err instanceof Error ? err.message : String(err),
+      `requires manual or prompt Markdown paths, got '${bad}'`,
+    );
+  }
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => `docs/m${i}.md`);
+  assertThrows(() =>
+    buildSummaryClaimQuestionPrompt({ ...PROMPT_BASE, docFiles: many(21) })
+  );
+  const ok = buildSummaryClaimQuestionPrompt({
+    ...PROMPT_BASE,
+    docFiles: many(20),
+  });
+  assertStringIncludes(ok, "docs/m19.md");
+});
+
+async function withDocRepo(
+  files: Record<string, string>,
+  body: (repoPath: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir();
+  try {
+    for (const [name, content] of Object.entries(files)) {
+      const full = `${dir}/${name}`;
+      await Deno.mkdir(full.slice(0, full.lastIndexOf("/")), {
+        recursive: true,
+      });
+      await Deno.writeTextFile(full, content);
+    }
+    await body(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+function docVerdict(file: string, sentence: string): string {
+  const body = JSON.stringify({
+    findings: [{ file, sentence, reason: "src/capacity.rs:88 carries on" }],
+  });
+  return `${DRIFT_VERDICT_OPEN}\n${body}\n<!-- /vibe-drift-verdict -->`;
+}
+
+function docInput(repoPath: string, changedFiles: readonly string[] | null) {
+  return {
+    repo: "acme/widgets",
+    issueNumber: 7,
+    repoPath,
+    baseRef: "origin/main",
+    summaryPath: SUMMARY_PATH,
+    summaryContent: "## Summary\n\nText.\n",
+    changedFiles,
+  };
+}
+
+Deno.test("runSummaryClaimCheck - a confirmed changed-manual finding lands in docFindings and blocks", async () => {
+  await withDocRepo(
+    { "docs/manual.md": `# Manual\n\n${DOC_SENTENCE}\n` },
+    async (dir) => {
+      let captured = "";
+      const result = await runSummaryClaimCheck(
+        docInput(dir, ["docs/manual.md", "lib/x.ts", SUMMARY_PATH]),
+        {
+          runGit: okGit(""),
+          askQuestion: async (prompt) => {
+            captured = prompt;
+            return okResult(docVerdict("docs/manual.md", DOC_SENTENCE));
+          },
+          logger: makeLogger(),
+        },
+      );
+      assertEquals(result.docFindings.length, 1);
+      assertEquals(result.findings.length, 0);
+      assertEquals(result.unconfirmedFindings.length, 0);
+      assert(summaryClaimCheckBlocked(result));
+      assertStringIncludes(captured, "docs/manual.md");
+      assertFalse(captured.includes("lib/x.ts"));
+    },
+  );
+});
+
+Deno.test("runSummaryClaimCheck - a doc finding whose sentence is not in the file is unconfirmed", async () => {
+  await withDocRepo(
+    { "docs/manual.md": "# Manual\n\nSomething else.\n" },
+    async (dir) => {
+      const result = await runSummaryClaimCheck(
+        docInput(dir, ["docs/manual.md"]),
+        {
+          runGit: okGit(""),
+          askQuestion: async () =>
+            okResult(docVerdict("docs/manual.md", DOC_SENTENCE)),
+          logger: makeLogger(),
+        },
+      );
+      assertEquals(result.docFindings.length, 0);
+      assertEquals(result.unconfirmedFindings.length, 1);
+      assertFalse(summaryClaimCheckBlocked(result));
+    },
+  );
+});
+
+Deno.test("runSummaryClaimCheck - a finding naming an unchanged file is unconfirmed", async () => {
+  await withDocRepo({
+    "docs/manual.md": "# Manual\n",
+    "docs/other.md": `# Other\n\n${DOC_SENTENCE}\n`,
+  }, async (dir) => {
+    const result = await runSummaryClaimCheck(
+      docInput(dir, ["docs/manual.md"]),
+      {
+        runGit: okGit(""),
+        askQuestion: async () =>
+          okResult(docVerdict("docs/other.md", DOC_SENTENCE)),
+        logger: makeLogger(),
+      },
+    );
+    assertEquals(result.docFindings.length, 0);
+    assertEquals(result.unconfirmedFindings.length, 1);
+    assertFalse(summaryClaimCheckBlocked(result));
+  });
+});
+
+Deno.test("runSummaryClaimCheck - null changedFiles is notChecked and the doc instruction is omitted", async () => {
+  const logger = makeLogger();
+  let captured = "";
+  const result = await runSummaryClaimCheck(
+    docInput("/does/not/matter", null),
+    {
+      runGit: okGit(""),
+      askQuestion: async (prompt) => {
+        captured = prompt;
+        return okResult("no findings");
+      },
+      logger,
+    },
+  );
+  assert(captured.length > 0);
+  assertFalse(captured.includes("check only the lines this branch's diff"));
+  assert(
+    result.notChecked.some((n) =>
+      n.includes("changed files could not be listed")
+    ),
+  );
+  assert(
+    logger.errors.some((e) => e.includes("changed files could not be listed")),
+  );
+});
+
+Deno.test("runSummaryClaimCheck - manual files over the cap are reported and left out of the prompt", async () => {
+  const names = Array.from({ length: 21 }, (_, i) => `docs/m${i}.md`);
+  const files: Record<string, string> = {};
+  for (const n of names) files[n] = "# Doc\n";
+  await withDocRepo(files, async (dir) => {
+    let captured = "";
+    const result = await runSummaryClaimCheck(docInput(dir, names), {
+      runGit: okGit(""),
+      askQuestion: async (prompt) => {
+        captured = prompt;
+        return okResult("no findings");
+      },
+      logger: makeLogger(),
+    });
+    const note = result.notChecked.find((n) =>
+      n.includes("over the 20-file cap")
+    );
+    assert(note !== undefined);
+    assertStringIncludes(note, "docs/m20.md");
+    assertStringIncludes(captured, "docs/m19.md");
+    assertFalse(captured.includes("docs/m20.md"));
+  });
+});
+
+Deno.test("runSummaryClaimCheck - an absent changed manual is skipped silently; an unreadable one is notChecked", async () => {
+  await withDocRepo({ "docs/dir.md/keep": "x" }, async (dir) => {
+    let captured = "";
+    const result = await runSummaryClaimCheck(
+      docInput(dir, ["docs/gone.md", "docs/dir.md"]),
+      {
+        runGit: okGit(""),
+        askQuestion: async (prompt) => {
+          captured = prompt;
+          return okResult("no findings");
+        },
+        logger: makeLogger(),
+      },
+    );
+    assertFalse(captured.includes("docs/gone.md"));
+    assertFalse(result.notChecked.some((n) => n.includes("docs/gone.md")));
+    assert(
+      result.notChecked.some((n) =>
+        n.includes("docs/dir.md") && n.includes("could not be read")
+      ),
+    );
+  });
+});
+
+Deno.test("buildSummaryClaimGateComment - a doc-only finding names the file, sentence and procedure", () => {
+  const result: SummaryClaimCheckResult = {
+    findings: [],
+    docFindings: [
+      { file: "docs/manual.md", sentence: DOC_SENTENCE, reason: "carried on" },
+    ],
+    unconfirmedFindings: [],
+    testPlanProblems: [],
+    notChecked: [],
+  };
+  assert(summaryClaimCheckBlocked(result));
+  const comment = buildSummaryClaimGateComment(result);
+  assertStringIncludes(
+    comment,
+    "A changed manual or prompt describes the PR's own behaviour wrongly.",
+  );
+  assertStringIncludes(comment, "`docs/manual.md`");
+  assertStringIncludes(comment, DOC_SENTENCE);
+  assertStringIncludes(comment, "rewrite that sentence in that file");
+  assertStringIncludes(
+    comment,
+    "Fix the flagged manual or prompt sentences, not the code.",
+  );
+  assertFalse(comment.includes("PR summary describes named code wrongly"));
+  assertEquals(
+    summaryClaimBlockReason(result),
+    `Changed doc describes the PR's own behaviour wrongly: \`docs/manual.md\`: ${DOC_SENTENCE}`,
+  );
+});
+
+Deno.test("buildSummaryClaimGateComment - summary and doc findings render both blocks", () => {
+  const result: SummaryClaimCheckResult = {
+    findings: [
+      { file: SUMMARY_PATH, sentence: "`parseRow()` escapes.", reason: "no" },
+    ],
+    docFindings: [
+      { file: "docs/manual.md", sentence: DOC_SENTENCE, reason: "carried on" },
+    ],
+    unconfirmedFindings: [],
+    testPlanProblems: [],
+    notChecked: [],
+  };
+  const comment = buildSummaryClaimGateComment(result);
+  assertStringIncludes(comment, "PR summary describes named code wrongly");
+  assertStringIncludes(comment, "`parseRow()` escapes.");
+  assertStringIncludes(comment, "`docs/manual.md`");
+  assertStringIncludes(
+    comment,
+    "Fix the summary and the flagged manual or prompt sentences, not the code.",
+  );
+  assert(
+    summaryClaimBlockReason(result).startsWith(
+      "PR summary describes named code wrongly",
+    ),
   );
 });

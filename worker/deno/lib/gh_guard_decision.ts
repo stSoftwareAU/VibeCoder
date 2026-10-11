@@ -62,6 +62,7 @@ import {
   ISSUE_LIFECYCLE_VERBS,
 } from "./gh_issue_lifecycle.ts";
 import { classifyPrLifecycle, PR_LIFECYCLE_VERBS } from "./gh_pr_lifecycle.ts";
+import { canonicaliseGhArgs } from "./gh_argv_canonical.ts";
 import { classifyPrBaseChange } from "./pr_base_change_guard.ts";
 import { classifyGhCredentialDisclosure } from "./gh_credential_disclosure_guard.ts";
 import { classifyGhLocalStateChange } from "./gh_local_state_guard.ts";
@@ -857,9 +858,14 @@ function refuseClaimedPrLifecycle(
  * @returns The verdict; `allowed: false` carries a marker and a reason.
  */
 export function evaluateGhCommand(
-  args: readonly string[],
+  rawArgs: readonly string[],
   ctx: GhGuardContext,
 ): GhGuardDecision {
+  // Issue #3568: every check below reads one canonical spelling of the
+  // command — a `gh api` call with its flags after the root, an explicit
+  // method and its endpoint as GitHub routes it — so a rule written against
+  // one spelling holds for every spelling gh and GitHub treat the same.
+  const args = canonicaliseGhArgs(rawArgs);
   const info = classifyGhMutation(args);
 
   if (info) {

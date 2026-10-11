@@ -1,0 +1,12 @@
+{
+  "issue": 3347,
+  "chunk": "top-up-3347",
+  "title": "top-up: manual and prompt prose claim scope",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3347",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: doc_prose_claims.ts (#3347)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/doc_prose_claims.ts"
+  ],
+  "sweptAt": "b424db9a641615ccbb38c0f5a51ff435de2f552a"
+}
