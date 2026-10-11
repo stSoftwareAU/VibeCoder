@@ -5681,6 +5681,19 @@ export async function createProductionRunCoreDeps(
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.
         const runLocalHold = await loadRunLocalHolds();
+        // Issue #3464: the milestone pacing ledger the claim scan reads, from
+        // the same path and through the same loader, once for every repo. A
+        // missing or corrupt file reads as empty here exactly as it does in
+        // the scan, so the two cannot disagree about it.
+        const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+          "./milestone_sync_streak.ts"
+        );
+        const { pacedMilestoneIssueNumbers } = await import(
+          "./milestone_presync.ts"
+        );
+        const pacingLedger = await loadSyncStreaks(
+          milestoneSyncStreakPath(config.workDir || workDir),
+        );
         // Issue #2085: the repositories this host has backed off for fast
         // failures (Issue #1950). `findNextIssue` unions them into
         // `findOldestIssue`'s `excludeRepos`, which drops a repository before
@@ -5795,11 +5808,24 @@ export async function createProductionRunCoreDeps(
               // or an issue this run has already finished with. Unmodelled,
               // they held `inversion_signal=true` open for the life of the
               // process.
-              runLocalHolds: new Set(
-                issues
+              // Issue #3464: unioned with the issues whose milestone the
+              // persisted pacing ledger holds (`milestone-behind`), read
+              // through the same `milestonePacedUntil` the scan uses.
+              // Unmodelled, a persistently paced milestone raised a false
+              // `inversion_signal` every cycle.
+              runLocalHolds: new Set([
+                ...issues
                   .filter((i) => runLocalHold(repo, i.number))
                   .map((i) => i.number),
-              ),
+                ...pacedMilestoneIssueNumbers(
+                  pacingLedger,
+                  repo,
+                  issues.map((i) => ({
+                    number: i.number,
+                    milestone: i.milestone,
+                  })),
+                ),
+              ]),
               // Issue #2405: the holds the claim path created by *deferring*
               // an issue nobody is working. Swallowed into `run_local_hold`
               // they hid a 23-hour stream-affinity deadlock from the

@@ -13,6 +13,7 @@ import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
   MILESTONE_BEHIND_DEFER_REASON,
   milestonePacedUntil,
+  pacedMilestoneIssueNumbers,
   presyncMilestoneBranch,
   presyncMilestoneOnceForArming,
   resetMilestoneArmSyncMemo,
@@ -25,12 +26,14 @@ import {
   resetConflictLedgerOnSuccess,
   saveSyncStreaks,
   type SyncStreakEntry,
+  syncStreakKey,
   type SyncStreaks,
 } from "../lib/milestone_sync_streak.ts";
 import { MilestoneConflictEscalation } from "../lib/milestone_conflict_triage.ts";
 import type { MilestoneSyncConflict } from "../lib/milestone_sync_conflict.ts";
 import type { IssueRunPresyncArgs } from "../lib/milestone_presync.ts";
 import { presyncMilestoneBranchForIssueRun } from "../lib/milestone_presync.ts";
+import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -935,4 +938,33 @@ Deno.test("presyncMilestoneOnceForArming - two PRs on one milestone share a sing
   } finally {
     await Deno.remove(workDir, { recursive: true }).catch(() => {});
   }
+});
+
+Deno.test("pacedMilestoneIssueNumbers - returns only the issues in a paced milestone (Issue #3464)", () => {
+  const streaks: SyncStreaks = {
+    [syncStreakKey("owner/repo", createMilestoneBranchName("M1"))]: {
+      count: 2,
+      escalated: false,
+      conflictAttempts: MILESTONE_CONFLICT_ATTEMPT_BUDGET,
+    },
+    [syncStreakKey("owner/repo", createMilestoneBranchName("M3"))]: {
+      count: 1,
+      escalated: false,
+      attemptOpenedAt: new Date(NOW - 60_000).toISOString(),
+    },
+  };
+  const paced = pacedMilestoneIssueNumbers(streaks, "owner/repo", [
+    { number: 1, milestone: "M1" },
+    { number: 2, milestone: "M2" },
+    { number: 3, milestone: "" },
+    { number: 4, milestone: "M3" },
+  ]);
+  assertEquals([...paced].sort(), [1, 4]);
+  // The ledger is per repository.
+  assertEquals(
+    pacedMilestoneIssueNumbers(streaks, "other/repo", [
+      { number: 1, milestone: "M1" },
+    ]).size,
+    0,
+  );
 });
