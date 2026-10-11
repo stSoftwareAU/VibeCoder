@@ -157,11 +157,12 @@ export function classifyCodingFailure(
   const category = detectFailureCategory(message);
   const { failureClass, rationale } = classifyRunFailure(category, message);
 
-  // A PR-summary gate refusal (Issue #3431; PR #3440 review) is the worker's
+  // A PR-summary gate refusal (Issue #3431; PR #3440 review) or a
+  // security-fix gate refusal (Issue #3454) is the worker's
   // refusal plus the agent's quoted summary, so no free-text check below may
   // read it: a quoted "at the cycle deadline" or "timeout" must neither make
   // it transient nor a timeout-class failure. It earns a normal attempt.
-  if (category === "summary_incomplete") {
+  if (category === "summary_incomplete" || category === "security_fix_gate") {
     return {
       disposition: "ladder",
       category,

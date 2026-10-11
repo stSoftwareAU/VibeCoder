@@ -194,7 +194,7 @@ const AGENT_OUTCOME: RunFailureClassification = {
   fixability: "not_code_fixable",
   failureClass: "agent-outcome",
   rationale:
-    "The agent did not deliver (quality gate, PR-summary gates, no changes, missing evidence) — not a worker defect.",
+    "The agent did not deliver (quality gate, PR-summary gates, security-fix evidence, no changes, missing evidence) — not a worker defect.",
 };
 
 /**
@@ -203,9 +203,10 @@ const AGENT_OUTCOME: RunFailureClassification = {
  * ORDER MATTERS and is fixed here, most specific first — exactly as
  * `detectFailureCategory` documents its own ordering:
  *
- * 0. `summary_incomplete` — answered before everything else, because the
- *    gate refusal quotes the agent's summary and a quoted "ENOSPC", usage
- *    limit or stack trace must not turn it into another class.
+ * 0. `summary_incomplete` and `security_fix_gate` (Issue #3454) — answered
+ *    before everything else, because the gate refusal quotes the agent's
+ *    summary or tests and a quoted "ENOSPC", usage limit or stack trace
+ *    must not turn it into another class.
  * 1. Account limits (`rate_limit` category, out-of-credit message) — the
  *    highest-cost false positive is auto-filing on a fleet-wide usage cap,
  *    so these win over everything, including a stack trace in the same
@@ -244,6 +245,9 @@ export function classifyRunFailure(
   //    `summary_incomplete` only for a worker-authored marker prefix (or an
   //    existing-PR finalise), so it answers first (Issue #3431; PR #3440).
   if (category === "summary_incomplete") return AGENT_OUTCOME;
+  // Same for the security-fix gate refusal (Issue #3454): marker-prefixed
+  // worker text quoting agent test declarations.
+  if (category === "security_fix_gate") return AGENT_OUTCOME;
 
   // 1. Account limits: usage / rate limit and out-of-credit are never a
   //    worker fault. Checked before anything else so a stack trace or a

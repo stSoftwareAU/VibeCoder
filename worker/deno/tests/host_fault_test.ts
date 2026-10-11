@@ -19,6 +19,7 @@ import {
   parseHostFaultMarker,
   QUALITY_GATE_SOURCE_NOTE,
 } from "../lib/host_fault.ts";
+import { SECURITY_FIX_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import {
   markIssueAsFailed,
   markIssueAsFailedOnce,
@@ -457,4 +458,11 @@ Deno.test("label_failure - markIssueAsFailedOnce leaves an ordinary failure unma
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("host fault - a marked security-fix gate refusal quoting ENOSPC or a clone failure is never a host fault (Issue #3454)", () => {
+  const quoted =
+    "removed assertion: ENOSPC: no space left on device; Failed to clone org/repo: fatal: unable to access";
+  assertEquals(detectHostFault(quoted) === null, false);
+  assertEquals(detectHostFault(`${SECURITY_FIX_GATE_MARKER}: ${quoted}`), null);
 });
