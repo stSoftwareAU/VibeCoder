@@ -51,12 +51,19 @@ export interface UnrelatedIssue {
   body: string;
   file?: string;
   line?: number;
+  /**
+   * An open issue the reviewer found that already covers this defect class
+   * (Issue #3598): the instance is added there as a comment, not filed anew.
+   */
+  existingIssue?: number;
 }
 
 export interface FiledIssue {
   number: number;
   url: string;
   title: string;
+  /** The instance was added to this existing issue, not filed (Issue #3598). */
+  addedTo?: true;
 }
 
 export const MAX_UNRELATED_ISSUES = 3;
@@ -206,7 +213,14 @@ function parseUnrelatedIssues(raw: unknown): UnrelatedIssue[] {
     typeof i === "object" && i !== null &&
     typeof i.title === "string" && i.title.trim() !== "" &&
     typeof i.body === "string" && i.body.trim() !== ""
-  ).slice(0, MAX_UNRELATED_ISSUES);
+  ).slice(0, MAX_UNRELATED_ISSUES).map((i) => {
+    // Only a positive whole number names an issue; anything else is dropped,
+    // so the finding is filed as new rather than commented somewhere wrong.
+    const { existingIssue, ...rest } = i;
+    return Number.isInteger(existingIssue) && existingIssue! > 0
+      ? { ...rest, existingIssue }
+      : rest;
+  });
 }
 
 const normTitle = (t: string) =>
@@ -217,17 +231,52 @@ const normTitle = (t: string) =>
 export const sameIssueTitle = (a: string, b: string) =>
   normTitle(a) === normTitle(b);
 
+/**
+ * The reviewer's body without a footer it may have copied from earlier
+ * filings, so the footer is written exactly once (Issue #3598).
+ */
+function withoutFooter(body: string): string {
+  return body.split("\n").filter((line) => {
+    const t = line.trim();
+    return !/^Found while reviewing \S+, but outside that PR's scope\.?$/.test(
+      t,
+    ) &&
+      t !== `_${REVIEW_MARKER}._`;
+  }).join("\n").trim();
+}
+
+/** `file:line: ` ahead of an unrelated issue's body, when it names one. */
+function unrelatedWhere(issue: UnrelatedIssue): string {
+  return issue.file
+    ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`: `
+    : "";
+}
+
 export function unrelatedIssueBody(
   issue: UnrelatedIssue,
   pr: { repo: string; number: number; url: string },
 ): string {
-  const where = issue.file
-    ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`: `
-    : "";
   return [
-    `${where}${issue.body}`,
+    `${unrelatedWhere(issue)}${withoutFooter(issue.body)}`,
     "",
     `Found while reviewing ${pr.url}, but outside that PR's scope.`,
+    "",
+    `_${REVIEW_MARKER}._`,
+  ].join("\n");
+}
+
+/**
+ * The comment that adds a new instance of a defect class to the open issue
+ * that already covers it (Issue #3598).
+ */
+export function unrelatedInstanceComment(
+  issue: UnrelatedIssue,
+  pr: { repo: string; number: number; url: string },
+): string {
+  return [
+    `Another instance of this defect class, found while reviewing ${pr.url} (outside that PR's scope): **${issue.title}**`,
+    "",
+    `${unrelatedWhere(issue)}${withoutFooter(issue.body)}`,
     "",
     `_${REVIEW_MARKER}._`,
   ].join("\n");
@@ -302,7 +351,11 @@ export function reviewBody(
     lines.push(
       "",
       "Filed separately, as they are outside this PR's scope:",
-      ...filed.map((i) => `- #${i.number} ${i.title}`),
+      ...filed.map((i) =>
+        `- #${i.number} ${i.title}${
+          i.addedTo ? " (added as a new instance)" : ""
+        }`
+      ),
     );
   }
   lines.push("", `_${REVIEW_MARKER}._`);
