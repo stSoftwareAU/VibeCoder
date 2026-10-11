@@ -4938,7 +4938,34 @@ head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
 `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
 rejection in a refused summary cannot strip `failed-once` or `failed`.
 
-### 🩹 Host-fault failure labels release themselves (Issue #2890)
+#### `security_fix_gate` is its own failure category (Issue #3454)
+
+The security-fix gate's refusal reason quotes agent-authored test declarations
+(scrubbed, code-fenced, via `formatMatchedTestDeclarations`). A declaration such
+as `Deno.test("rejects a forged token with TypeError: invalid signature after
+timeout", ...)` was read by the catch-all `Error:` rule as `internal_error`,
+classed `worker-crash` / `code_fixable`, and a false diagnostic issue was
+auto-filed; a quoted "timeout", "SIGTERM" or "rate limit" gave `timeout`,
+`killed` or `rate_limit`. The shared mechanism is the one described under
+"`summary_incomplete` is its own failure category" above, with
+`SECURITY_FIX_GATE_MARKER` ("the security fix did not pass the worker's
+security-fix gate") opening the reason at both refusal sites: the completion
+phase's gate block (`completion_phase.ts`) and the twice-blocked report from the
+in-run retry (`reportBlock` in `security_fix_gate_retry.ts`).
+`detectFailureCategory` matches it with `startsWith`, right after the
+summary-gate marker, giving `security_fix_gate` (display `security-fix-gate`),
+which is `not_code_fixable` (class `agent-outcome`), not infrastructure, and
+follows the normal retry and `failed-once` rules. `classifyCodingFailure`
+returns a `ladder` decision with cooldown `non_transient` for it,
+`classifyRunFailure` answers it before the free-text rules, and
+`detectHostFault` returns `null` for a marked reason. A message that merely
+quotes the marker later keeps its own category. A retry that could not be
+launched at all (a rate limit, a failed spawn) is deliberately not marked: that
+is a real launch fault and its own error text must still be classified. The
+posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
+`isSummaryGateFailureRecord`-style record check for the label-release sweeps.
+
+
 
 The milestone-branch refusal release above frees a milestone's issues once a
 repo-level fact clears; the same problem exists one level down, for a single

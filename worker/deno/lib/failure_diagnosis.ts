@@ -102,6 +102,12 @@ export type FailureCategory =
    * fell short; the worker did not malfunction.
    */
   | "summary_incomplete"
+  /**
+   * The security-fix gate refused the run (Issue #3454). The agent did not
+   * deliver the vulnerability-fix verification evidence the gate requires;
+   * the worker did not malfunction.
+   */
+  | "security_fix_gate"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -130,6 +136,8 @@ export type CategoryDisplay =
   | "clone-corrupt"
   /** Issue #3431: the PR-summary gates refused the run. */
   | "summary-incomplete"
+  /** Issue #3454: the security-fix gate refused the run. */
+  | "security-fix-gate"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -220,6 +228,19 @@ export const SUMMARY_RULE_GATE_MARKER =
   "the PR summary did not pass the worker's completion gates";
 
 /**
+ * Phrase the completion phase / security-fix gate retry opens a security-fix
+ * gate refusal with (Issue #3454). Worker-authored prefix put ahead of the
+ * gate's refusal text, which quotes agent-authored test declarations (e.g.
+ * `Deno.test("rejects a forged token with TypeError: invalid signature after
+ * timeout", ...)`) that tripped the catch-all `Error:`, timeout, killed and
+ * rate-limit rules. Matched with `startsWith` ahead of every other rule, so a
+ * quotation cannot forge or outrank it. The failure ladder and the host-fault
+ * detector honour the same prefix.
+ */
+export const SECURITY_FIX_GATE_MARKER =
+  "the security fix did not pass the worker's security-fix gate";
+
+/**
  * The worker-written head of a posted summary-gate failure record: the
  * `## Automated Processing Failed …` heading line followed by the
  * `**Category:** \`summary-incomplete\`` line `markIssueAsFailedOnce` and
@@ -279,6 +300,9 @@ export function buildScheduledReleaseReason(
  * string that can be used to select appropriate diagnosis messaging.
  *
  * Order matters: more specific patterns are checked before general ones.
+ * The leading worker-written gate markers ({@link SUMMARY_RULE_GATE_MARKER},
+ * Issue #3431, then {@link SECURITY_FIX_GATE_MARKER}, Issue #3454) are
+ * `startsWith` rules checked ahead of every other rule.
  */
 export function detectFailureCategory(failureMessage: string): FailureCategory {
   if (!failureMessage) return "unknown";
@@ -293,6 +317,12 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // {@link SCHEDULED_RELEASE_MARKER}, so none can open with this marker.
   if (failureMessage.startsWith(SUMMARY_RULE_GATE_MARKER)) {
     return "summary_incomplete";
+  }
+
+  // The security-fix gate refusal (Issue #3454): same reasoning as above —
+  // a worker-written prefix ahead of quoted agent test declarations.
+  if (failureMessage.startsWith(SECURITY_FIX_GATE_MARKER)) {
+    return "security_fix_gate";
   }
 
   // A scheduled release outranks every other pattern (Issue #424, parent
@@ -532,6 +562,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "prompt_too_long",
   "clone_corrupt",
   "summary_incomplete",
+  "security_fix_gate",
   "unknown",
 ]);
 
@@ -607,6 +638,10 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // completion gates; retrying is governed by the normal retry rules.
     case "summary_incomplete":
       return false;
+    // Not infrastructure (Issue #3454): the agent did not deliver the
+    // security-fix evidence; retrying is governed by the normal retry rules.
+    case "security_fix_gate":
+      return false;
     default:
       return false;
   }
@@ -655,6 +690,8 @@ export function getFailureCategoryDisplay(
       return "clone-corrupt";
     case "summary_incomplete":
       return "summary-incomplete";
+    case "security_fix_gate":
+      return "security-fix-gate";
     case "unknown":
       return "unknown";
     default:
@@ -981,6 +1018,12 @@ export function getFailureDiagnosis(
 - This is the agent's deliverable falling short, not a worker defect
 - The normal retry and \`failed-once\` rules apply`;
 
+    case "security_fix_gate":
+      return `- The security fix did not pass the worker's security-fix gate (Issue #3454)
+- The agent did not deliver the vulnerability-fix verification evidence the gate requires
+- This is the agent's deliverable falling short, not a worker defect
+- The normal retry and \`failed-once\` rules apply`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -1084,6 +1127,10 @@ export function getFailureDiagnosisOneliner(
     // completion gates refused the summary and named each gap (Issue #3431).
     case "summary_incomplete":
       return "The PR summary did not pass the worker's completion gates — see the gate comment for each gap.";
+    // Deliberately not "Likely cause": the worker's own security-fix gate
+    // refused the run (Issue #3454).
+    case "security_fix_gate":
+      return "The agent did not deliver the vulnerability-fix verification evidence the worker's security-fix gate requires — not a worker defect.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":
