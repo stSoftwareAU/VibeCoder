@@ -130,7 +130,14 @@ template or coding standard.
 Persisted data: none. `security_fix_gate` is a new category value, and no
 stored record changes shape.
 
-Quality gate: QUALITY_GATE_RESULT_PLACEHOLDER
+Quality gate: `./quality.sh` ran for about 20 minutes and was stopped by the
+tool time limit before the full test suite finished. Every stage that
+completed passed: completeness checks, source targets, mermaid,
+markdownlint, semgrep and the release-tag ruleset. The targeted suites for
+every touched file pass (129/0), and fmt, lint and check are clean. CI runs
+the full gate.
+
+<!-- vibe-quality-gate-skipped reason="full ./quality.sh exceeded the tool time limit (stopped after ~20 min); completed stages all passed; targeted tests, fmt, lint and check green" -->
 
 ## Pre-PR Security Self-Check
 
