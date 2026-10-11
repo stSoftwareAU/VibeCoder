@@ -365,15 +365,30 @@ VibeCoder's own guidance:
    recent review history it records. A recurrence means the same preventable
    mistake has appeared in at least **two independent PRs**; repeated comments
    on one PR or one head commit count once.
-2. Ask whether a concrete change to VibeCoder's prompt, a skill,
+2. First assess a deterministic check: something that catches the mistake
+   mechanically, every time, whether or not the agent remembers a rule.
+   Consider, in this order:
+   - a worker gate (the worker refuses the PR or the push);
+   - a test or lint rule;
+   - a Semgrep rule;
+   - a script or deno task the agent or the gate runs.
+
+   Prose rules alone keep being broken, and each one added makes the
+   guidance longer without reducing the mistake, so a feasible check is
+   always the proposal.
+3. Propose prose guidance only when none of these checks is feasible: ask
+   whether a concrete change to VibeCoder's prompt, a skill,
    `CODING-STANDARDS.md`, templates, or similar worker guidance would likely
    prevent or materially reduce that mistake. If the answer is no, do
    nothing. Product bugs, repository-specific design decisions and random
-   implementation mistakes are not automatically prompt problems.
-3. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
+   implementation mistakes are not automatically prompt problems. A prose
+   proposal prefers rewording, moving or replacing an existing rule over
+   adding a new one. When a rule already exists and was ignored, diagnose
+   why first (#3425) rather than restating it.
+4. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
    mistake and the proposed guidance area. If an issue already covers it,
    do not create another one.
-4. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
+5. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
    - the recurring failure pattern and why it is preventable;
    - at least two independent PR/review examples: a link for each one in a
      public repo, and a concept-level description, with no name, number or
@@ -381,13 +396,15 @@ VibeCoder's own guidance:
      [Keeping private repos private](#keeping-private-repos-private));
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
    - the proposed guidance or guardrail and how future reviews can verify it
-     worked.
+     worked;
+   - a `## Deterministic check assessment` section naming the checks
+     considered, and the check proposed or why none is feasible.
    Apply `idle-task` to the issue filed, and no reserved label (never
    `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer
    App is in `authorized_commenters`, so the worker trusts only its
    `idle-task` add, and reserved labels are for humans to set. Otherwise
    leave assignment/triage unchanged.
-5. Keep the threshold evidence-based. Similar symptoms with different causes
+6. Keep the threshold evidence-based. Similar symptoms with different causes
    are not a recurrence. Never create an issue solely to make a review pass,
    and never relax safety, testing or correctness guidance as the cure.
 
