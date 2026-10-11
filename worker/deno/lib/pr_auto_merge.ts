@@ -460,8 +460,15 @@ export interface EnableAutoMergeResult {
    * `sync-base-unreadable` is the same kind of hold (Issue #1967): a
    * sync-shaped head whose base could not be compared with the default
    * branch is neither armed nor escalated — it is re-read next scan.
+   *
+   * `fix-base-unreadable` is the same hold for a `milestone-fix/**` head
+   * whose base could not be read (Issue #3433): it may have been moved off
+   * its milestone branch, so it is not armed until the base is read.
    */
-  deferral?: "milestone-behind" | "sync-base-unreadable";
+  deferral?:
+    | "milestone-behind"
+    | "sync-base-unreadable"
+    | "fix-base-unreadable";
   /**
    * Whether a `deferred` outcome is the deliberate #4375/#1082 gated
    * direct-merge hold: an unprotected base has no required checks, so the
@@ -902,7 +909,19 @@ export async function enableAutoMerge(
 
   // Issue #3433: a `milestone-fix/**` PR is raised into a milestone branch.
   // On any other base it has been moved (carrying the milestone's diff), so
-  // it is never armed or merged there.
+  // it is never armed or merged there. A base that could not be read (an
+  // empty `baseRefName`) might be such a move, so it is not armed either:
+  // nothing is disarmed or merged, and the next pass reads it again.
+  if (isMilestoneFixBranch(options.headRefName ?? "") && !baseRefName) {
+    return {
+      result: AutoMergeResult.Deferred,
+      deferral: "fix-base-unreadable",
+      message:
+        `PR #${prNumber} has a milestone-fix head '${options.headRefName}' ` +
+        `whose base could not be read — not armed, re-read next pass ` +
+        `(Issue #3433)`,
+    };
+  }
   if (
     isMilestoneFixBranch(options.headRefName ?? "") && baseRefName &&
     !isMilestoneBranch(baseRefName)

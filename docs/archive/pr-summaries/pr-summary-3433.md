@@ -116,6 +116,14 @@ flowchart TD
   semgrep, mermaid and both Deno test runs (parallel and serial) passed. The
   gate's one-second unit-test time budget failed locally on git-subprocess
   suites this change does not touch (machine load); CI runs the gate.
+- Review fix (unreadable base): `enableAutoMerge` no longer arms a
+  `milestone-fix/**` head whose base read failed; it returns `Deferred`
+  (`fix-base-unreadable`) and is re-read next pass. A new test throws on the
+  `pr view` base read and asserts no `--auto`, no `--disable-auto` and no
+  direct merge; it failed before the fix. A harmless-reader case in
+  `gh_api_body_classification_test.ts` pins that a readable GraphQL document
+  without `updatePullRequest` still meets the allowlist
+  (`WRITE_TARGET_UNDETERMINABLE`).
 - Review-fix docs sweep: read the milestone-fix targeting section and the
   agent-wrapper base-change rule; updated `docs/workflows/milestones.md`
   and `SECURITY.md` to describe the literal-slash split, per-segment
@@ -151,8 +159,9 @@ flowchart TD
 - `worker/deno/lib/audit_mutation_classifier.ts:854` — `--hostname` value skipped so the endpoint is the real one (also honoured before the `api` root, as merged from main #3540/#3556), and a host other than `github.com` makes the target unknown (no repo, `scope: "unknown"`; both spellings, REST and GraphQL) — `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #1420 - gh api --hostname naming a non-GitHub host is not an allowed write to the named repo`, `worker/deno/tests/security_gh_api_endpoint_host_1420_test.ts::classifyGhMutation - --hostname on a non-GitHub host yields no repo and unknown scope (PR #3514 review)`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - base changes are refused with the allowlist inactive, in every spelling` — removing the flag or the host check went red
 - `worker/deno/lib/gh_spawn.ts:416` — lookup failure fails closed — `worker/deno/tests/gh_spawn_test.ts::spawnGh #3433 - a failed head/base lookup fails closed` — classifier returning undefined went red
 - `worker/deno/lib/gh_guard_decision.ts:919` — agent base change refused / non-base edits allowed — `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - every agent PR base change is refused with PR_BASE_CHANGE_REFUSED`, `worker/deno/tests/gh_guard_decision_test.ts::gh-guard #3433 - non-base PR edits and pr create --base stay allowed` — classifier returning undefined went red
-- `worker/deno/lib/pr_auto_merge.ts:894` — closed route held, never retargeted — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - a base whose rollup already merged: comment once, disarm, no retarget, no merge (Issue #3433)` — re-adding `pr edit --base` went red
-- `worker/deno/lib/pr_auto_merge.ts:907` — fix head on non-milestone base held / on milestone base armed — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - milestone-fix head on the default branch is held, never armed (Issue #3433)`, `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - milestone-fix head on a milestone base is not held (Issue #3433)` — disabling the rule went red
+- `worker/deno/lib/pr_auto_merge.ts:901` — closed route held, never retargeted — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - a base whose rollup already merged: comment once, disarm, no retarget, no merge (Issue #3433)` — re-adding `pr edit --base` went red
+- `worker/deno/lib/pr_auto_merge.ts:915` — fix head whose base could not be read (empty `baseRefName`, e.g. a failed `pr view`) deferred as `fix-base-unreadable`: not armed, not disarmed, not merged; `attemptMerge` treats it as an unreadable-route hold, not an escalation — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - a milestone-fix head whose base cannot be read is deferred, never armed (Issue #3433)` — before the fix it armed (`--auto --squash`) and went red
+- `worker/deno/lib/pr_auto_merge.ts:926` — fix head on non-milestone base held / on milestone base armed — `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - milestone-fix head on the default branch is held, never armed (Issue #3433)`, `worker/deno/tests/pr_auto_merge_test.ts::pr_auto_merge - milestone-fix head on a milestone base is not held (Issue #3433)` — disabling the rule went red
 - `worker/deno/lib/milestone_fix_pr.ts:297` — base read back wrong, unreadable or non-string → not armed — `worker/deno/tests/milestone_fix_pr_test.ts::raiseMilestoneFixPr - a base that reads back as main is not armed (Issue #3433)`, `worker/deno/tests/milestone_fix_pr_test.ts::raiseMilestoneFixPr - an unreadable base fails closed and warns (Issue #3433)`, `worker/deno/tests/milestone_fix_pr_test.ts::raiseMilestoneFixPr - a base the view does not return as a string is 'unknown' and not armed (Issue #3433)` — removing the check went red
 - `worker/deno/lib/pr_base_integrity.ts:183` — mistargeted fix PR held, both comments — `worker/deno/tests/pr_base_integrity_test.ts::check: a retargeted milestone-fix PR is disarmed, commented twice and held` — flipping the outcome went red
 - `worker/deno/lib/pr_base_integrity.ts:304` — unparsable head comments on its own PR only — `worker/deno/tests/pr_base_integrity_test.ts::check: an unparsable milestone-fix head is held on its own PR and comments nowhere else` — a fake fallback PR number went red

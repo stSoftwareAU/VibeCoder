@@ -957,6 +957,38 @@ Deno.test("pr_auto_merge - milestone-fix head on a milestone base is not held (I
   assert(r.calls.some((c) => c.includes("--auto")), "armed as normal");
 });
 
+Deno.test("pr_auto_merge - a milestone-fix head whose base cannot be read is deferred, never armed (Issue #3433)", async () => {
+  const calls: string[][] = [];
+  let direct = 0;
+  const result = await enableAutoMerge({
+    repo: "owner/repo",
+    prNumber: 41,
+    headRefName: "milestone-fix/clean-up/pr-40-ci",
+    isBaseProtectedFn: async () => true,
+    directMergeFn: async () => {
+      direct++;
+      return { merged: true } as never;
+    },
+    decideMilestoneBaseFn: async () => ({ decision: "allow" } as never),
+    ghCommandFn: async (args) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        throw new Error("HTTP 502");
+      }
+      return "";
+    },
+  });
+  assertEquals(result.result, AutoMergeResult.Deferred, result.message);
+  assertEquals(result.deferral, "fix-base-unreadable");
+  assert(!anyCallHas(calls, "--auto"), "no --auto issued");
+  assert(!anyCallHas(calls, "--disable-auto"), "nothing disarmed");
+  assertEquals(direct, 0);
+});
+
+function anyCallHas(calls: string[][], flag: string): boolean {
+  return calls.some((c) => c.includes(flag));
+}
+
 Deno.test("pr_auto_merge - a non-fix head on the default branch is not held by the fix rule (Issue #3433)", async () => {
   const r = fixRuleRun("issue-9-x", "main");
   const result = await r.promise;

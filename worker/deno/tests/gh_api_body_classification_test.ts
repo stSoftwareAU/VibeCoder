@@ -391,6 +391,23 @@ Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
   assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED");
 });
 
+Deno.test("evaluateGhCommand - a readable graphql document of unknown target still meets the allowlist", () => {
+  // PR #3514 review: the base rule only takes a document that may carry
+  // `updatePullRequest`. A readable one without it still reaches the
+  // allowlist, which cannot tell its target and refuses it as before.
+  const decision = evaluateGhCommand(
+    ["api", "graphql", "-F", "query=@/tmp/q.graphql"],
+    {
+      active: true,
+      allowedRepos: ["me/target"],
+      readBodyFile: () =>
+        'mutation { addStar(input: {starrableId: "x"}) { clientMutationId } }',
+    },
+  );
+  assertEquals(decision.allowed, false);
+  assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE");
+});
+
 // Coverage boundary (Issue #94): this case proves only that an argv-VISIBLE
 // reserved label is refused on a command that also carries `--input`. The label
 // is duplicated in the argv (`-f labels[]=work-on`), so `extractLabelValues`
