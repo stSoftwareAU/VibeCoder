@@ -1675,19 +1675,26 @@ flowchart TD
   and nothing else. Stable and greppable by contract, exactly like the
   quality-gate line above. A phase other than the implementation run renders no
   such line.
-- **A split run's executor tokens are costed at Sonnet rates.** The advisor
-  (Opus) and its executor sub-agents (Sonnet) share one CLI invocation, so the
+- **A split run's sub-agent tokens are costed at their own model's rates.** The
+  advisor (Opus) and its executor and reviewer sub-agents (Sonnet, or Haiku when
+  `issue_sub_agent_tier` resolves `"haiku"`) share one CLI invocation, so the
   run's `modelUsage` breakdown is attributed per served model rather than
-  charging the whole invocation to the first one (Issue #2346). A run serving
-  two or more models therefore lists each model's own token counts and its own
-  cost line, and the estimated USD — and so the cumulative issue total — is
-  their sum. The breakdown prices the run only when it **reconciles** against
-  the run's own recorded totals: an entry that is not a usable object, a
-  counter that is present but not a number, or a sum exceeding the totals in
-  any bucket discards the breakdown whole and charges the run to its primary
-  model, so a malformed breakdown can never over-report the pilot's spend. An
+  charging the whole invocation to the first one (Issues #2346, #3603). A run
+  serving two or more models therefore lists each model's own token counts and
+  its own cost line, and the estimated USD — and so the cumulative issue total
+  and the per-tier fleet telemetry — is their sum; the CLI's own `costUSD`
+  figure is never used. The breakdown is trusted whenever every entry reads
+  cleanly: on a split run the result's `usage` covers only the main session (or
+  is all zero) while `modelUsage` covers every model, so a breakdown larger than
+  the run's totals is expected rather than a fault. An entry that is not a
+  usable object, or a counter that is present but not a non-negative number,
+  discards the breakdown whole and charges the run to its primary model. An
   under-attributed remainder is charged to the primary model as a residual, so
-  no token is lost either.
+  no token is lost. A run that served more than one model but recorded no
+  readable breakdown is flagged `sub-agents: not costed` in the comment — its
+  heading marked `(partial — see below)` — rather than presenting the
+  advisor-only figure as the run's cost; cost data recorded before Issue #3603
+  counts the advisor only.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
