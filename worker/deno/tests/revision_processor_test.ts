@@ -373,13 +373,16 @@ Deno.test("processIssueRevision - processes review feedback and posts response",
 
   let postedComment = "";
   let editedBody = "";
+  const requests: Array<Record<string, unknown>> = [];
   const deps = createMockDeps({
     claude: {
-      runClaudeWithRetry: () =>
-        Promise.resolve({
+      runClaudeWithRetry: ((request: Record<string, unknown>) => {
+        requests.push(request);
+        return Promise.resolve({
           ok: true,
           value: { output: claudeResponse, exitCode: 0, timedOut: false },
-        }),
+        });
+      }) as never,
     },
     github: {
       runGhCommand: () => Promise.resolve(""),
@@ -433,6 +436,10 @@ Deno.test("processIssueRevision - processes review feedback and posts response",
     );
     assertEquals(postedComment.includes("## Issue Revision"), true);
     assertEquals(postedComment.includes("Added error handling details"), true);
+    // The agent's pre-push hook resolves the repo's pre-flight from `repo`
+    // alone (PR #3584 review).
+    assertEquals(requests.length, 1);
+    assertEquals(requests[0]?.repo, ctx.repo);
   }
 });
 

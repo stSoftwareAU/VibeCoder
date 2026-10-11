@@ -127,6 +127,48 @@ Deno.test("planChangedFileChecks: unquotable path is an error naming the file", 
   assert(result.error.includes("we'ird"));
 });
 
+Deno.test("planChangedFileChecks: files outside the deno fmt/lint include are not checked", () => {
+  const denoScopes = {
+    ".": { fmt: { include: ["src/"] }, lint: { include: ["src/"] } },
+  };
+  const opts = { repoRoot: "/r", markdownlintBinary: null, denoScopes };
+  const outOfScope = planChangedFileChecks(
+    ["README.md", "scripts/x.ts"],
+    ["deno.json", "README.md"],
+    opts,
+  );
+  assert(outOfScope.ok);
+  assertEquals(outOfScope.value, []);
+
+  const mixed = planChangedFileChecks(
+    ["README.md", "src/a.ts"],
+    ["deno.json"],
+    opts,
+  );
+  assert(mixed.ok);
+  assertEquals(mixed.value.map((c) => c.command), [
+    "deno fmt --check --permit-no-files 'src/a.ts'",
+    "deno lint --permit-no-files 'src/a.ts'",
+  ]);
+});
+
+Deno.test("planChangedFileChecks: a nested root filters against its own scope, relative to it", () => {
+  const result = planChangedFileChecks(
+    ["worker/deno/lib/a.ts", "worker/deno/README.md"],
+    ["worker/deno/deno.json"],
+    {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      denoScopes: { "worker/deno": { fmt: { include: ["lib/"] } } },
+    },
+  );
+  assert(result.ok);
+  assertEquals(result.value.map((c) => c.command), [
+    "deno fmt --check --permit-no-files 'lib/a.ts'",
+    "deno lint --permit-no-files 'lib/a.ts'",
+  ]);
+});
+
 // ---- runPrePushGate against a real git repo --------------------------------
 
 const GIT_ENV = ["-c", "user.email=t@e", "-c", "user.name=t"];
@@ -272,6 +314,84 @@ Deno.test("runPrePushGate: doc-only push blocked by failing markdownlint", async
   } finally {
     await Deno.remove(root, { recursive: true });
   }
+});
+
+Deno.test("runPrePushGate: a doc outside the repo's deno fmt include is not deno-checked", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    await Deno.writeTextFile(
+      `${clone}/deno.json`,
+      '{ // scoped\n "fmt": {"include": ["src/"]}, "lint": {"include": ["src/"]} }\n',
+    );
+    const seen: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: recordingRunner(() => false, seen),
+      findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+    });
+    assert(result.ok);
+    // Only markdownlint ran: README.md is outside fmt.include.
+    assertEquals(result.value.checksRun.length, 1);
+    assert(result.value.checksRun[0]?.includes("/fake/mdl"));
+    assert(!seen.some((c) => c.startsWith("deno ")));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+const SCOPED =
+  '{ "fmt": {"include": ["src/"]}, "lint": {"include": ["src/"]} }';
+
+/** Run the gate over the doc-commit repo and return the deno commands run. */
+async function denoCommandsRun(
+  setup: (clone: string) => Promise<void>,
+): Promise<string[]> {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    await setup(clone);
+    const seen: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin,
+      preFlightCommands: [],
+      runner: recordingRunner(() => false, seen),
+      findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+    });
+    assert(result.ok);
+    return seen.filter((c) => c.startsWith("deno "));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+}
+
+Deno.test("runPrePushGate: an unparseable deno.json leaves the push unfiltered", async () => {
+  const ran = await denoCommandsRun((clone) =>
+    Deno.writeTextFile(`${clone}/deno.json`, "{ not json")
+  );
+  assertEquals(ran, ["deno fmt --check --permit-no-files 'README.md'"]);
+});
+
+Deno.test("runPrePushGate: a deno.jsonc alone supplies the scope", async () => {
+  const ran = await denoCommandsRun(async (clone) => {
+    await Deno.remove(`${clone}/deno.json`);
+    await Deno.writeTextFile(`${clone}/deno.jsonc`, SCOPED);
+  });
+  assertEquals(ran, []);
+});
+
+Deno.test("runPrePushGate: deno.json wins over a deno.jsonc beside it", async () => {
+  const ran = await denoCommandsRun(async (clone) => {
+    await Deno.writeTextFile(`${clone}/deno.json`, SCOPED);
+    await Deno.writeTextFile(`${clone}/deno.jsonc`, "{}");
+  });
+  assertEquals(ran, []);
+  const unscoped = await denoCommandsRun(async (clone) => {
+    await Deno.writeTextFile(`${clone}/deno.json`, "{}");
+    await Deno.writeTextFile(`${clone}/deno.jsonc`, SCOPED);
+  });
+  assertEquals(unscoped, ["deno fmt --check --permit-no-files 'README.md'"]);
 });
 
 Deno.test("runPrePushGate: pre-flight failure blocks after changed-file checks ran", async () => {

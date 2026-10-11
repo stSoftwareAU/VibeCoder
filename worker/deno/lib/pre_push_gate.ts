@@ -25,6 +25,11 @@ import { outermostConfigDirs } from "./repo_formatters.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
+import {
+  type DenoScopeConfig,
+  inDenoScope,
+  parseDenoScope,
+} from "./deno_scope.ts";
 
 /** One ref line from git's pre-push hook stdin. */
 export interface PrePushRef {
@@ -215,11 +220,21 @@ function quoteAll(paths: string[]): Result<string, string> {
   return { ok: true, value: quoted.join(" ") };
 }
 
-/** Plan the always-on changed-file format/lint commands. */
+/**
+ * Plan the always-on changed-file format/lint commands. `denoScopes` maps a
+ * deno root to its parsed include/exclude config: explicit paths override
+ * deno's own `include`, so a file the repo's `deno fmt` / `deno lint` would
+ * not check is dropped here instead of being passed to deno. A root with no
+ * entry is unfiltered.
+ */
 export function planChangedFileChecks(
   changed: string[],
   tracked: string[],
-  opts: { repoRoot: string; markdownlintBinary: string | null },
+  opts: {
+    repoRoot: string;
+    markdownlintBinary: string | null;
+    denoScopes?: Record<string, DenoScopeConfig>;
+  },
 ): Result<ChangedFileCheck[], string> {
   const checks: ChangedFileCheck[] = [];
   const dirCwd = (dir: string) =>
@@ -234,17 +249,24 @@ export function planChangedFileChecks(
     const rel = root === "."
       ? under
       : under.map((p) => p.slice(root.length + 1));
-    const groups: Array<[string, string[], readonly string[], string]> = [
+    const scope = opts.denoScopes?.[root];
+    const groups: Array<
+      ["fmt" | "lint", string[], readonly string[], string]
+    > = [
       [
-        "deno fmt",
+        "fmt",
         rel,
         DENO_FORMAT_EXTENSIONS,
         "deno fmt --check --permit-no-files",
       ],
-      ["deno lint", rel, DENO_LINT_EXTENSIONS, "deno lint --permit-no-files"],
+      ["lint", rel, DENO_LINT_EXTENSIONS, "deno lint --permit-no-files"],
     ];
-    for (const [label, files, extensions, base] of groups) {
-      const matching = files.filter((f) => hasExtension(f, extensions));
+    for (const [tool, files, extensions, base] of groups) {
+      const label = `deno ${tool}`;
+      const matching = files.filter((f) =>
+        hasExtension(f, extensions) &&
+        (scope === undefined || inDenoScope(f, scope, tool))
+      );
       if (matching.length === 0) continue;
       const quoted = quoteAll(matching);
       if (!quoted.ok) return quoted;
@@ -300,6 +322,35 @@ export function planChangedFileChecks(
   }
 
   return { ok: true, value: checks };
+}
+
+/**
+ * Parse each deno root's `deno.json` / `deno.jsonc` scope from the working
+ * tree. A root whose config is unreadable or unparseable is left out, so its
+ * files are checked unfiltered and deno itself reports the broken config.
+ */
+async function loadDenoScopes(
+  repoRoot: string,
+  tracked: string[],
+): Promise<Record<string, DenoScopeConfig>> {
+  const scopes: Record<string, DenoScopeConfig> = {};
+  for (
+    const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
+  ) {
+    const dir = root === "." ? repoRoot : `${repoRoot}/${root}`;
+    for (const name of ["deno.json", "deno.jsonc"]) {
+      let text: string;
+      try {
+        text = await Deno.readTextFile(`${dir}/${name}`);
+      } catch {
+        continue; // This config name is absent; try the other.
+      }
+      const parsed = parseDenoScope(text);
+      if (parsed !== null) scopes[root] = parsed;
+      break; // Deno prefers deno.json; do not fall through to deno.jsonc.
+    }
+  }
+  return scopes;
 }
 
 /**
@@ -384,6 +435,7 @@ export async function runPrePushGate(opts: {
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
+    denoScopes: await loadDenoScopes(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);
 
