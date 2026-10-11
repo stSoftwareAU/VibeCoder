@@ -4617,10 +4617,17 @@ The hook runs two stages:
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
    remote-tracking ref (merge commits and deleted files excluded), then runs
-   the repo's own tools on just those files:
+   the repo's own tools on just those files (deno gets only the files its own
+   config would check, see below):
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
-     ts/js family), per outermost `deno.json` / `deno.jsonc` directory;
+     ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
+     files the repo's own `deno fmt` / `deno lint` would check are passed: an
+     explicit path overrides deno's `fmt.include` / `lint.include`, so the hook
+     drops a changed file that falls outside the config's `include` or inside a
+     top-level or per-tool `exclude` (file, directory and glob entries; a
+     `!`-negated `exclude` entry re-includes) before it runs deno. An
+     unparseable `deno.json` is left unfiltered;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo

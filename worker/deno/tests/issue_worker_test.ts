@@ -1843,6 +1843,7 @@ Deno.test("qualityGate - passes quality_fix phase to Claude invocation (Issue #1
   const ctx = makeContext();
   const state = makeState();
   let capturedPhase: string | undefined;
+  let capturedRepo: string | undefined;
   let callCount = 0;
   const deps = createMockDeps({
     quality: {
@@ -1871,8 +1872,9 @@ Deno.test("qualityGate - passes quality_fix phase to Claude invocation (Issue #1
       },
     },
     claude: {
-      runClaudeWithRetry: ((options: { phase?: string }) => {
+      runClaudeWithRetry: ((options: { phase?: string; repo?: string }) => {
         capturedPhase = options.phase;
+        capturedRepo = options.repo;
         return Promise.resolve({
           ok: true,
           value: { output: "fixed", exitCode: 0 },
@@ -1884,6 +1886,9 @@ Deno.test("qualityGate - passes quality_fix phase to Claude invocation (Issue #1
   await workOnIssueQualityGate(ctx, state, deps);
 
   assertEquals(capturedPhase, "quality_fix");
+  // The agent's pre-push hook resolves the repo's pre-flight from `repo`
+  // alone (PR #3584 review).
+  assertEquals(capturedRepo, ctx.repo);
 });
 
 Deno.test("qualityGate - fails after max fix attempts", async () => {

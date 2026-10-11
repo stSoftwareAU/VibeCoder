@@ -85,7 +85,8 @@ flowchart TD
 
 ## Test Plan
 
-- Added `worker/deno/tests/pre_pr_verifier_3395_test.ts` (32 tests), `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts` (10 tests), `worker/deno/tests/pr_review_brief_shared_3395_test.ts` (5 tests).
+- Added `worker/deno/tests/pre_pr_verifier_3395_test.ts` (33 tests), `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts` (10 tests), `worker/deno/tests/pr_review_brief_shared_3395_test.ts` (5 tests).
+- PR #3584 review: the issue title is no longer copied into the worker-written `REVIEW_CONTEXT` paragraph; it appears only inside the fenced, scrubbed `Linked issue (title and body)` block (`fenceUntrustedIssueText`). `buildPrePrVerifierPrompt keeps a hostile issue title inside the untrusted fence only` asserts a hostile title occurs once, between the boundary markers; restoring the old sentence turned it red (`the title appears once`). The verifier's `ask` request also carries `repo` (asserted in `runPrePrVerifier runs the brief in a disposable, remote-less checkout and reports findings`).
 - No existing test is edited; the diff removes no assertion from a test on the base branch.
 - Divergence test red-checks: appending a brief rule line to SKILL.md turned "SKILL.md carries no copy of the brief's rules" red; adding `{{EXTRA_FIELD}}` to the template turned the placeholder and rendering tests red.
 - Drift pins, `deno task drift-pins-on-base origin/milestone/fleet-guidance-issue-and-feedback-prompts .claude/skills/review-fleet-prs/SKILL.md "1. Review" …`: `prompts/pr_review_brief/prompt.md`, `{{REVIEW_CONTEXT}}`, `{{NO_TEST_ADDED_NOTE}}`, `{{TEST_CHANGES}}`, `{{PREVIOUS_FINDINGS}}` — each printed "absent on base"; the base has a `### 1. Review` heading, so the section matched.

@@ -173,6 +173,14 @@ Deno.test("question_processor - the RTK switch on installs the hook and the prom
   assertEquals(on.rtkOutput, { enabled: true, status: "ok", savedTokens: 40 });
 });
 
+Deno.test("question_processor - the agent request carries the repo for the agent's pre-push hook (PR #3584 review)", async () => {
+  const observed = await runQuestion(false, rtkSeam([]));
+
+  assertEquals(observed.runOptions.length, 1);
+  // The pre-push hook resolves the repo's pre-flight from `repo` alone.
+  assertEquals(observed.runOptions[0]?.repo, "org/repo");
+});
+
 Deno.test("question_processor - a host without rtk answers unfiltered rather than failing (Issue #2384)", async () => {
   const seam = rtkSeam([rtkMissing()]);
   const observed = await runQuestion(true, seam);
