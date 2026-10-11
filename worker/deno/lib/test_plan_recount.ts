@@ -475,7 +475,7 @@ export function logicalBlocks(section: string): string[] {
  * Flag Test Plan lines whose quoted figure disagrees with the head recount:
  * a single "N tests"/"N passed" claim is compared with the named files' counts
  * (summed), several claims over several files are each compared with the files
- * named since the previous claim, and a paired "N passed, M failed" run result is compared by N + M with the
+ * named since the previous claim (excluding files already matched), and a paired "N passed, M failed" run result is compared by N + M with the
  * runnable count of the test file it ran (Issue #3381).
  */
 export function findTestPlanMismatches(
@@ -487,7 +487,8 @@ export function findTestPlanMismatches(
 /**
  * A figure the recount could not check, so it was neither compared nor passed
  * as correct: a paired run result (Issue #3381) or several counts that do not
- * each follow the test file they count. The worker logs these rather than
+ * each follow the test file they count, unknown files, mixed count kinds or
+ * partial additions. The worker logs these rather than
  * letting an unchecked figure pass silently.
  */
 export interface UncheckedRunResult {
@@ -587,10 +588,14 @@ function scanTestPlan(
       }
       resolvedKeys.add(resolved);
     }
-    if (hasUnknownToken) continue;
-
     const claimMatches = [...rawLine.matchAll(CLAIM_RE)];
     if (claimMatches.length === 0) continue;
+    const skip = (reason: string) =>
+      unchecked.push({ line: rawLine.trim().slice(0, 300), reason });
+    if (hasUnknownToken) {
+      skip("the block names a test file the PR did not change");
+      continue;
+    }
     const claims = claimMatches.map((m) => Number(m[1]));
     const uniqueClaims = new Set(claims);
     // A "passed" figure never includes a skipped declaration; mixing a
@@ -599,11 +604,17 @@ function scanTestPlan(
       claimMatches.map((m) => (m[2] ?? "").toLowerCase()),
     );
     const isPassedClaim = words.has("passed");
-    if (isPassedClaim && words.size > 1) continue;
+    if (isPassedClaim && words.size > 1) {
+      skip("the block mixes tests and passed counts");
+      continue;
+    }
     // "Added to file (3 tests)" describes tests added to an existing file,
     // not the file's whole declaration count. A "passed" command result
     // is still the whole run.
-    if (!isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) continue;
+    if (!isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) {
+      skip("the block describes partial test additions, not whole-file counts");
+      continue;
+    }
 
     const countOf = (key: string): number => {
       const counts = opts.headCounts.get(key);
@@ -625,8 +636,6 @@ function scanTestPlan(
         });
       }
     };
-    const skip = (reason: string) =>
-      unchecked.push({ line: rawLine.trim().slice(0, 300), reason });
 
     // One claim is a combined total for every file the block names (the
     // wrapped-paragraph shape of Issue #3356); the same figure repeated for
@@ -646,11 +655,15 @@ function scanTestPlan(
     const segments: { keys: string[]; claimed: number }[] = [];
     let segmentStart = 0;
     let paired = true;
+    const matchedKeys = new Set<string>();
     for (const m of claimMatches) {
       const keys = new Set<string>();
       for (const t of tokenMatches) {
         if (t.index >= segmentStart && t.index < m.index) {
-          keys.add(resolveToken(t[0], opts.headCounts) as string);
+          const key = resolveToken(t[0], opts.headCounts) as string;
+          // A breakdown may repeat a file after its own total. Do not add
+          // that file to the next run; an empty group remains unchecked.
+          if (!matchedKeys.has(key)) keys.add(key);
         }
       }
       if (keys.size === 0) {
@@ -658,6 +671,7 @@ function scanTestPlan(
         break;
       }
       segments.push({ keys: [...keys], claimed: Number(m[1]) });
+      for (const key of keys) matchedKeys.add(key);
       segmentStart = m.index + m[0].length;
     }
     if (!paired || tokenMatches.some((t) => t.index >= segmentStart)) {

@@ -220,3 +220,87 @@ Deno.test("different counts for one test file are reported as unchecked", () => 
   assertEquals(found.length, 1);
   assertEquals(found[0]!.reason, "several different counts for one test file");
 });
+
+Deno.test("wrapped unchanged-file references are reported unchecked (1690 shape)", () => {
+  const summary = "## Test Plan\n\n" +
+    "All in `worker/deno/tests/planning_milestone_test.ts` (24 tests, all passing),\n" +
+    "plus `tests/planning_processor_test.ts` and `tests/native_sub_issues_test.ts`\n" +
+    "re-run unchanged.\n";
+  const opts = {
+    summary,
+    headCounts: counts({ "worker/deno/tests/planning_milestone_test.ts": 25 }),
+  };
+  assertEquals(findTestPlanMismatches(opts), []);
+  const found = findUncheckedRunResults(opts);
+  assertEquals(found.length, 1);
+  assertEquals(
+    found[0]!.reason,
+    "the block names a test file the PR did not change",
+  );
+});
+
+Deno.test("wrapped test counts mixed with red-run prose are reported unchecked (373 shape)", () => {
+  const summary = "## Test Plan\n\n" +
+    "New `worker/deno/tests/coding_guidelines_v42_test.ts` (12 tests), written\n" +
+    "before the template and confirmed failing against v41 (10 failed / 2 passed)\n";
+  const opts = {
+    summary,
+    headCounts: counts({
+      "worker/deno/tests/coding_guidelines_v42_test.ts": 13,
+    }),
+  };
+  assertEquals(findTestPlanMismatches(opts), []);
+  const found = findUncheckedRunResults(opts);
+  assertEquals(found.length, 1);
+  assertEquals(found[0]!.reason, "the block mixes tests and passed counts");
+});
+
+Deno.test("wrapped partial additions are reported unchecked instead of silently skipped", () => {
+  const opts = {
+    summary:
+      "## Test Plan\n\nExtended `tests/a_test.ts` with 3 tests,\nplus `tests/b_test.ts` (4 tests).\n",
+    headCounts: counts({ "tests/a_test.ts": 10, "tests/b_test.ts": 5 }),
+  };
+  assertEquals(findTestPlanMismatches(opts), []);
+  const found = findUncheckedRunResults(opts);
+  assertEquals(found.length, 1);
+  assertEquals(
+    found[0]!.reason,
+    "the block describes partial test additions, not whole-file counts",
+  );
+});
+
+Deno.test("a per-file breakdown is not counted again in the next run (3315 shape)", () => {
+  const summary = "## Test Plan\n\n" +
+    "`deno test -A tests/pr_body_sync_test.ts tests/missing_criterion_close_guard_3177_test.ts` — 40 passed " +
+    "(30 in `pr_body_sync_test.ts`). `deno test -A tests/pr_feedback_processor_test.ts` — 41 passed.\n";
+  for (const feedback of [41, 42]) {
+    const opts = {
+      summary,
+      headCounts: counts({
+        "tests/pr_body_sync_test.ts": 30,
+        "tests/missing_criterion_close_guard_3177_test.ts": 10,
+        "tests/pr_feedback_processor_test.ts": feedback,
+      }),
+    };
+    assertEquals(findUncheckedRunResults(opts), []);
+    const found = findTestPlanMismatches(opts);
+    if (feedback === 41) assertEquals(found, []);
+    else {
+      assertEquals(found.length, 1);
+      assertEquals(found[0]!.files, ["tests/pr_feedback_processor_test.ts"]);
+      assertEquals(found[0]!.claimed, 41);
+      assertEquals(found[0]!.actual, 42);
+    }
+  }
+});
+
+Deno.test("a later claim naming only an already matched file is reported unchecked", () => {
+  const opts = {
+    summary:
+      "## Test Plan\n\n`tests/a_test.ts` and `tests/b_test.ts` — 40 passed; `tests/a_test.ts` — 30 passed.\n",
+    headCounts: counts({ "tests/a_test.ts": 30, "tests/b_test.ts": 10 }),
+  };
+  assertEquals(findTestPlanMismatches(opts), []);
+  assertEquals(findUncheckedRunResults(opts).length, 1);
+});
