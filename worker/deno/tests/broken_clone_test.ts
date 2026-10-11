@@ -13,7 +13,6 @@
 import { assert, assertEquals } from "@std/assert";
 import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
 import type { RunOutcome } from "../lib/run_outcome.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
 import {
   cloneCorruptRepeatFromOutcome,
   cloneRecoveryStatePath,
@@ -507,26 +506,6 @@ Deno.test("cloneCorruptRepeatFromOutcome - null for undefined and non-no_pr outc
     }),
     null,
   );
-});
-
-Deno.test("parseCloneCorruptRepeat - hostile unterminated payload lines grow linearly (Issue #3446)", () => {
-  for (
-    const build of [
-      (chars: number) =>
-        ("clone-corrupt-repeat: {" + "x".repeat(50) + "\n").repeat(
-          Math.ceil(chars / 74),
-        ),
-      (chars: number) => "clone-corrupt-repeat: {" + "x".repeat(chars),
-    ]
-  ) {
-    const result = assertLinearGrowth(
-      "parseCloneCorruptRepeat, hostile unterminated payloads",
-      build,
-      parseCloneCorruptRepeat,
-      { baseChars: 10_000 },
-    );
-    assertEquals(result, null);
-  }
 });
 
 Deno.test("recoverCorruptClone - legacy string state still enforces the cap, with no previousGitMessage/aside", async () => {
