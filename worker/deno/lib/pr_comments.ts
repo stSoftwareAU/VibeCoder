@@ -87,12 +87,48 @@ function reactionsPath(
 }
 
 /**
- * Mark a comment as processed by adding an eyes reaction (or dismissing a review).
+ * How a `pr_review` was settled — selects the dismissal message GitHub shows
+ * on the dismissed review (Issue #3409). Only `addressed` claims the requested
+ * changes were made; every other outcome says what actually happened.
+ */
+export type ReviewDismissalOutcome =
+  | "addressed"
+  | "permanently_failed"
+  | "rebuttal"
+  | "escalated"
+  | "handed_off"
+  | "fix_pr_pending";
+
+/** The dismissal message for each {@link ReviewDismissalOutcome}. */
+export const REVIEW_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> =
+  {
+    addressed: "Changes have been addressed by the automated worker.",
+    permanently_failed:
+      "Not addressed after two automated attempts — see the PR thread.",
+    rebuttal:
+      "Answered with a rebuttal — no code change was made. See the PR thread.",
+    escalated: "Not addressed — escalated to needs-human. See the PR thread.",
+    handed_off:
+      "Not addressed — handed off to a follow-up issue. See the PR thread.",
+    fix_pr_pending:
+      "A fix was pushed to a branch, but the fix PR still needs to be opened — see the PR thread.",
+  };
+
+/**
+ * Mark a comment as processed by adding an eyes reaction (or dismissing a
+ * review).
+ *
+ * A dismissed `pr_review` carries the {@link REVIEW_DISMISSAL_MESSAGES} entry
+ * for `outcome`; only `"addressed"` claims the change was made, so a review
+ * that was rebutted, escalated, handed off or permanently failed is never
+ * reported as addressed (Issue #3409).
  *
  * @param repo - Repository in "owner/repo" format
  * @param commentType - Type of comment ("review", "issue", or "pr_review")
  * @param commentId - The comment or review ID
  * @param prNumber - PR number (required for pr_review type)
+ * @param outcome - How the comment was settled; selects the dismissal message
+ *   for `pr_review` and is unused for the other comment types (eyes reaction)
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @returns Result indicating success or failure
  */
@@ -100,7 +136,8 @@ export async function markCommentProcessed(
   repo: string,
   commentType: CommentType,
   commentId: string,
-  prNumber?: number,
+  prNumber: number | undefined,
+  outcome: ReviewDismissalOutcome,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
 ): Promise<Result<void, Error>> {
   try {
@@ -121,7 +158,7 @@ export async function markCommentProcessed(
           "PUT",
           `repos/${repo}/pulls/${prNumber}/reviews/${commentId}/dismissals`,
           "-f",
-          "message=Changes have been addressed by the automated worker.",
+          `message=${REVIEW_DISMISSAL_MESSAGES[outcome]}`,
         ]);
       }
     } else {
@@ -568,12 +605,14 @@ export async function markPrCommentAsFailed(
   failureMessage: string,
   ghCommandFn: (args: string[]) => Promise<string> = defaultGhCommand,
 ): Promise<void> {
-  // Mark as processed (eyes) to prevent further retries
+  // Mark as processed to prevent further retries: an eyes reaction, or for a
+  // pr_review a dismissal that says it was not addressed (Issue #3409).
   await markCommentProcessed(
     repo,
     commentType,
     commentId,
     prNumber,
+    "permanently_failed",
     ghCommandFn,
   );
 

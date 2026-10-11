@@ -27,6 +27,7 @@ import {
   buildSingleInvocationPlanningPrompt,
   RESERVED_LABEL_PROHIBITION,
 } from "../lib/planning_processor.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -119,26 +120,24 @@ for (const name of PROMPTS) {
   Deno.test(
     `${name} - forbids reserved labels on the follow-up issue`,
     async () => {
-      const result = await loadPrompt(name, PROMPTS_DIR);
-      assertEquals(result.ok, true);
-      if (result.ok) {
-        // The escape-hatch follow-up clause must name the prohibition and
-        // its rationale. The clause wraps across lines in every template, so
-        // the comparison is on collapsed whitespace.
-        const collapsed = result.value.replace(/\s+/g, " ");
-        assertStringIncludes(
-          collapsed,
-          "The follow-up issue you open must carry only descriptive labels",
-        );
-        assertStringIncludes(
-          collapsed,
-          "do **not** add any reserved workflow label",
-        );
-        // Issue #780 replaced the "silently stripped" rationale here: on an
-        // issue the agent just filed, every reserved label goes after
-        // creation, so applying one achieves nothing.
-        assertStringIncludes(collapsed, "is removed after creation");
-      }
+      // The escape-hatch follow-up clause must name the prohibition and its
+      // rationale. The clause wraps across lines in every template, so the
+      // comparison is on collapsed whitespace, scoped to the Escape Hatch
+      // section that carries it.
+      const doc = await readRepoDoc(`prompts/${name}/prompt.md`);
+      const collapsed = flat(section(doc, "Escape Hatch"));
+      assertStringIncludes(
+        collapsed,
+        "The follow-up issue you open must carry only descriptive labels",
+      );
+      assertStringIncludes(
+        collapsed,
+        "do **not** add any reserved workflow label",
+      );
+      // Issue #780 replaced the "silently stripped" rationale here: on an
+      // issue the agent just filed, every reserved label goes after
+      // creation, so applying one achieves nothing.
+      assertStringIncludes(collapsed, "is removed after creation");
     },
   );
 }

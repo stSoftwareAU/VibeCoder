@@ -181,11 +181,20 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the capped, linear scan from the quadratic regex it replaced
   // (Issue #3085 review).
   "tests/docs_sweep_gate_test.ts",
+  // The docs-sweep re-run reads the `siblings:` label and its `none`
+  // negative from a Docs sweep line an agent (steered by an untrusted issue
+  // body) writes; only a growth measurement separates those linear patterns
+  // from a backtracking one on hostile space and quote runs (Issue #3371).
+  "tests/docs_sweep_hits_test.ts",
   // The branch-outcomes heading regex scans a PR-summary line an agent
   // (steered by an untrusted issue body) writes; only a growth measurement
   // separates the fixed, linear scan from the quadratic `\s*:?\s*$` tail it
   // replaced (PR #3160 review).
   "tests/branch_outcomes_gate_test.ts",
+  // The paired run-result scan reads a PR-summary line an agent writes; only
+  // a growth measurement separates its linear separator scan from a
+  // backtracking regex (Issue #3381).
+  "tests/test_plan_recount_red_on_base_3381_test.ts",
   // The change-request quote extractor scans reviewer-written text; only a
   // growth measurement separates its linear hand-written scanners from a
   // backtracking regex (#3244).
@@ -252,6 +261,14 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // failure messages that quote git output; only a growth measurement
   // separates it from a backtracking one (Issue #3446).
   "tests/clone_corrupt_repeat_growth_3446_test.ts",
+  // The mutation runner's import-specifier scan reads test sources a PR
+  // author writes; only a growth measurement separates its linear scan of an
+  // unclosed specifier from a backtracking one (Issue #3393).
+  "tests/mutation_runner_test.ts",
+  // The shared Markdown logical-unit splitter groups the lines of untrusted
+  // PR summaries; only a growth measurement separates its single linear pass
+  // from a rescan per line (Issue #3356).
+  "tests/markdown_logical_units_3356_test.ts",
 ];
 
 /**

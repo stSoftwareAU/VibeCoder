@@ -30,7 +30,7 @@ const SUMMARY_WITHOUT_BLOCK = `## Summary
 
 Fixed the leap-year branch. Closes #521.
 
-**Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits
+**Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -50,7 +50,7 @@ Fixed the leap-year branch. Closes #521.
 - **status** — \`not-run\` — reason: the failing input only arrives from the production scheduler, which is unreachable from this container
 - **regression test** — \`worker/deno/tests/date_parser_test.ts::parses a leap day\`
 
-**Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits
+**Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -70,7 +70,7 @@ Fixed the leap-year branch. Closes #521.
 - **status** — \`verified\` — the regression test was observed failing against the unfixed code and passing after the fix
 - **regression test** — \`worker/deno/tests/date_parser_test.ts::parses a leap day\`
 
-**Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits
+**Docs sweep** — grep: \`parseDate\`; section: \`docs/EXTENDING.md#date-parsing\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 

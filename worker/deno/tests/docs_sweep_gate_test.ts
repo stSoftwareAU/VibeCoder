@@ -194,7 +194,7 @@ Deno.test("validateDocsSweep - a wrapped plain entry with section on the next li
     changedFiles: ["worker/deno/lib/x.ts"],
     prSummaryContent:
       '**Docs sweep** — grep: "A stub mirrors the real callee\'s contract", "stub\n' +
-      'must mirror"; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md',
+      'must mirror"; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md; siblings: none — no existing set gained a member',
   });
   assertEquals(result.valid, true);
   assertEquals(result.line.section, "docs/workflows/issue-processing.md#stubs");
@@ -204,7 +204,7 @@ Deno.test("validateDocsSweep - a wrapped list item with section on the continuat
   const result = validateDocsSweep({
     changedFiles: ["worker/deno/lib/x.ts"],
     prSummaryContent: "- **Docs sweep** — grep: `stub`\n" +
-      "  must mirror; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md",
+      "  must mirror; section: `docs/workflows/issue-processing.md#stubs`; updated: docs/workflows/issue-processing.md; siblings: none — no existing set gained a member",
   });
   assertEquals(result.valid, true);
   assertEquals(result.line.section, "docs/workflows/issue-processing.md#stubs");
@@ -223,7 +223,7 @@ Deno.test("validateDocsSweep - 'section: none — <reason>' is accepted", () => 
   const result = validateDocsSweep({
     changedFiles: CODE_FILES,
     prSummaryContent:
-      "**Docs sweep** — grep: `x`; section: none — no manual documents this flag; no hits",
+      "**Docs sweep** — grep: `x`; section: none — no manual documents this flag; siblings: none — no existing set gained a member; no hits",
   });
   assertEquals(result.valid, true, result.problems.join("; "));
 });
@@ -241,7 +241,7 @@ Deno.test(
     const accepted = validateDocsSweep({
       changedFiles: CODE_FILES,
       prSummaryContent:
-        "**Docs sweep** — grep: `retryLimit`; section: `docs/workflows/retries.md#retry-limit`; no hits",
+        "**Docs sweep** — grep: `retryLimit`; section: `docs/workflows/retries.md#retry-limit`; siblings: none — no existing set gained a member; no hits",
     });
     assertEquals(accepted.valid, true, accepted.problems.join("; "));
   },
@@ -262,7 +262,7 @@ Deno.test("validateDocsSweep - changedFiles null is accepted with a valid line",
   const result = validateDocsSweep({
     changedFiles: null,
     prSummaryContent:
-      "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; no hits",
+      "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; siblings: none — no existing set gained a member; no hits",
   });
   assertEquals(result.applicable, true);
   assertEquals(result.valid, true, result.problems.join("; "));
@@ -302,6 +302,161 @@ Deno.test("buildDocsSweepGateComment - contains the problems and the section sha
 });
 
 // ---------------------------------------------------------------------------
+// The siblings: part (Issue #3371)
+// ---------------------------------------------------------------------------
+
+const SIBLINGS_LINE =
+  "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; no hits";
+
+Deno.test("parseDocsSweepLine - reads siblings from a wrapped continuation line", () => {
+  const line = parseDocsSweepLine(
+    "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; siblings: `Foo::get`,\n" +
+      '  "Foo::set"; updated: docs/x.md',
+  );
+  assert(line.present);
+  assertEquals(line.siblings, 'Foo::get, "Foo::set"');
+});
+
+Deno.test("validateDocsSweep - a line with no siblings: is refused, and accepted once an explained none is added", () => {
+  const refused = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE,
+  });
+  assertEquals(refused.valid, false);
+  assertEquals(refused.problems.length, 1);
+  assertStringIncludes(refused.problems[0]!, "names no `siblings:`");
+
+  const accepted = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE +
+      "; siblings: none — no existing set gained a member",
+  });
+  assertEquals(accepted.valid, true, accepted.problems.join("; "));
+});
+
+Deno.test("validateDocsSweep - a bare siblings: placeholder is refused, with only the placeholder problem", () => {
+  for (const placeholder of ["none", "tbd", "n/a."]) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: ${placeholder}`,
+    });
+    assertEquals(result.valid, false, placeholder);
+    assertEquals(result.problems.length, 1, placeholder);
+    assertStringIncludes(
+      result.problems[0]!,
+      "`siblings:` is a bare placeholder",
+    );
+  }
+});
+
+Deno.test("validateDocsSweep - a none negative for siblings: is accepted with backticks, straight or curly quotes", () => {
+  for (
+    const negative of [
+      "`none` — no existing set gained a member",
+      '"none" — no existing set gained a member',
+      "“none” — no existing set gained a member",
+    ]
+  ) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: ${negative}`,
+    });
+    assertEquals(
+      result.valid,
+      true,
+      `${negative}: ${result.problems.join("; ")}`,
+    );
+  }
+});
+
+Deno.test("validateDocsSweep - a quote-wrapped bare none for siblings: is refused as a bare placeholder", () => {
+  for (const placeholder of ['"none"', "“none”"]) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: ${placeholder}`,
+    });
+    assertEquals(result.valid, false, placeholder);
+    assertEquals(result.problems.length, 1, placeholder);
+    assertStringIncludes(
+      result.problems[0]!,
+      "`siblings:` is a bare placeholder",
+    );
+  }
+});
+
+Deno.test("validateDocsSweep - a siblings: value that quotes no term is refused, and accepted once terms are quoted", () => {
+  const refused = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE + "; siblings: max_buy_price, buy ceiling",
+  });
+  assertEquals(refused.valid, false);
+  assertEquals(refused.problems.length, 1);
+  assertStringIncludes(refused.problems[0]!, "`siblings:` quotes no term");
+
+  const accepted = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: SIBLINGS_LINE +
+      '; siblings: `max_buy_price`, "buy ceiling" (`OWNER_TUNED`)',
+  });
+  assertEquals(accepted.valid, true, accepted.problems.join("; "));
+});
+
+Deno.test("validateDocsSweep - a line with neither section nor siblings reports both problems, section first", () => {
+  const refused = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: "**Docs sweep** — grep: `x`; no hits",
+  });
+  assertEquals(refused.valid, false);
+  assertEquals(refused.problems.length, 2);
+  assertStringIncludes(refused.problems[0]!, "names no `section:`");
+  assertStringIncludes(refused.problems[1]!, "names no `siblings:`");
+
+  const fixed = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent:
+      "**Docs sweep** — grep: `x`; section: `docs/x.md#y`; siblings: none — no existing set gained a member; no hits",
+  });
+  assertEquals(fixed.valid, true, fixed.problems.join("; "));
+});
+
+Deno.test("validateDocsSweep - a siblings label with no colon and a long space run is read quickly and refused", () => {
+  const hostile = "**Docs sweep** — grep: `x`; section: none — r; siblings" +
+    " ".repeat(3_500) + "x";
+  const result = validateDocsSweep({
+    changedFiles: CODE_FILES,
+    prSummaryContent: hostile,
+  });
+  assertEquals(result.line.present, true);
+  assertEquals(result.problems.length, 1);
+  assertStringIncludes(result.problems[0]!, "names no `siblings:`");
+});
+
+Deno.test("buildDocsSweepGateComment - each example Docs sweep line it shows passes the gate", () => {
+  const comment = buildDocsSweepGateComment(
+    validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: "## Summary\n\nNo docs sweep line.\n",
+    }),
+  );
+  const examples = comment.split("\n").filter((l) =>
+    l.startsWith("**Docs sweep**")
+  );
+  assertEquals(examples.length, 2);
+  for (const example of examples) {
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: example,
+    });
+    assertEquals(result.applicable, true);
+    assertEquals(
+      result.valid,
+      true,
+      `${example}: ${result.problems.join("; ")}`,
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // isBarePlaceholder growth (Issue #3085 review) — driven indirectly through
 // validateDocsSweep's `section:` field, since the helper is module-private.
 // ---------------------------------------------------------------------------
@@ -335,6 +490,68 @@ Deno.test(
       "still a bare placeholder, not an explained negative",
     );
     assertStringIncludes(result.problems[0]!, "placeholder");
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a long quote run in siblings: with a letter after it scales linearly and quotes no term",
+  () => {
+    // `/^["“”]+/` is anchored, so the run is skipped once. The entry is also
+    // capped at MAX_DOCS_SWEEP_ENTRY_CHARS, so the trailing `x` is cut away at
+    // these sizes; the result is the one the gate gives the capped entry.
+    const result = assertLinearGrowth(
+      "docs-sweep siblings: leading-quote scan",
+      (chars) => SIBLINGS_LINE + `; siblings: ${'"'.repeat(chars)}x`,
+      (input) =>
+        validateDocsSweep({
+          changedFiles: CODE_FILES,
+          prSummaryContent: input,
+        }),
+      { baseChars: 20_000 },
+    );
+
+    assertEquals(result.problems.length, 1, result.problems.join("; "));
+    assertStringIncludes(result.problems[0]!, "`siblings:` quotes no term");
+  },
+);
+
+Deno.test(
+  'validateDocsSweep - a siblings: value of x, a long ` ."` run and y scales linearly and is not a placeholder',
+  () => {
+    // `/[.!\s"“”]+$/` is unanchored, and the run of ` ."` characters is one
+    // class run ending before `y`, the shape that backtracks quadratically if
+    // the value is not capped. isBarePlaceholder caps it at 64 characters, so
+    // the value is read as `x …` and no placeholder problem fires.
+    const result = assertLinearGrowth(
+      "docs-sweep siblings: trailing-decoration scan",
+      (chars) => SIBLINGS_LINE + `; siblings: x${' ."'.repeat(chars)}y`,
+      (input) =>
+        validateDocsSweep({
+          changedFiles: CODE_FILES,
+          prSummaryContent: input,
+        }),
+      { baseChars: 20_000 },
+    );
+
+    assertEquals(result.problems, []);
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a quoted none with a trailing dot run is a bare siblings: placeholder",
+  () => {
+    // The trailing `."."` run is stripped by `/[.!\s"“”]+$/`, which leaves
+    // `none`, so the value is a placeholder even with the quotes and dots.
+    const result = validateDocsSweep({
+      changedFiles: CODE_FILES,
+      prSummaryContent: SIBLINGS_LINE + `; siblings: "none" ."."`,
+    });
+    assertEquals(result.valid, false);
+    assertEquals(result.problems.length, 1, result.problems.join("; "));
+    assertStringIncludes(
+      result.problems[0]!,
+      "`siblings:` is a bare placeholder",
+    );
   },
 );
 

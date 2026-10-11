@@ -111,6 +111,11 @@ A failed `mint` fails the phase loudly rather than running the checks without
 the credential they declared — a check that runs unauthenticated fails later
 and further from the cause. Values are never logged; only names are.
 
+The same credentials reach the diff-scoped mutation check, which reruns the
+repository's tests; there a failed `mint` makes the check not applicable, with
+a warning, instead of failing the phase (see
+[Diff-scoped mutation check](mutation-check.md)).
+
 
 ## Two axes of trust
 
@@ -449,7 +454,7 @@ explicitly overridden.
 | `codex_phase_effort_overrides` | `{}` | Per-phase **Codex** reasoning-effort overrides (`minimal`, `low`, `medium`, `high` — Codex has no `xhigh`/`max`). See [Codex per-phase routing](MODEL-AND-CACHING.md#-codex-per-phase-routing). |
 | `gemini_phase_model_overrides` | `{}` | Per-phase **Gemini** model overrides, applied when `agent_provider` is `gemini`. Same shape as `phase_model_overrides`, with Gemini model ids. There is no Gemini effort key — the CLI has no reasoning-effort option, and an effort requested for a Gemini phase is warned about instead. See [Gemini per-phase routing](MODEL-AND-CACHING.md#-gemini-per-phase-routing). |
 | `deepseek_phase_model_overrides` | `{}` | Per-phase **DeepSeek** model overrides, applied when `agent_provider` is `deepseek`. Same shape as `phase_model_overrides`, with DeepSeek model ids (`deepseek-v4-pro` for the planning-shaped phases, `deepseek-flash` elsewhere). There is no DeepSeek effort key — DeepSeek's Anthropic-compatible endpoint has no effort control, and an effort requested for a DeepSeek phase is warned about instead. See [DeepSeek per-phase routing](MODEL-AND-CACHING.md#-deepseek-per-phase-routing). |
-| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Sonnet at `medium` effort by default, or Haiku at `high` effort when `issue_sub_agent_tier` resolves `"haiku"` (Issue #3402) — while the advisor — the main session — keeps the phase's own model and effort. Off, no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and the run's executor tokens are costed separately from the advisor's (Opus) rather than all charged at the advisor's rate. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
+| `issue_executor_split` | `true` | Whether `issue`-phase runs split work between an advisor and executor sub-agents (Issues #2341, #2342, #2343). On, the `issue` prompt carries an **Advisor and Executors** section (Issue #2343) — the advisor makes no edit itself, dispatches one executor per independent group of files, reviews each returned diff and re-tasks a mismatched executor at most twice, and runs the repository's full quality gate once at the end — and the phase hands the Claude CLI `--agents` definitions of an executor (`Read`, `Grep`, `Glob`, `Edit`, `Write`, `Bash`; no `Agent` tool, so an executor cannot spawn further sub-agents) — Sonnet at `medium` effort by default, or Haiku at `high` effort when `issue_sub_agent_tier` resolves `"haiku"` (Issue #3402) — while the advisor — the main session — keeps the phase's own model and effort. Off, no `--agents` argument is passed at all and every sub-agent inherits the phase's model, exactly as before the key existed. It scopes to every `issue`-phase run on the host — `failed-once` retries and milestone child issues included — and never to another phase (`planning`, `pr_feedback`, `ci_fix`, …) whatever it is set to. Only the `claude` provider carries the flag: under `codex` or `gemini` the definitions are never built into an argument, and under `deepseek` — which runs the same Claude binary against its own endpoint — they are stripped and the drop is warned about, so those runs keep single-model routing. On, the invocation also carries a `PreToolUse` hook (`--settings`) that **denies the advisor's own `Edit`/`Write` calls and allows an executor's** (Issue #2344) — the Claude CLI's hook payload carries `agent_id` only for a sub-agent call, which is what makes the caller-aware denial possible; a denied call is logged, naming the tool, and never fails the run. The same run's stream is tallied into the run-stats comment's `- executors dispatched:`, `- re-tasks issued:` and `- advisor edit calls: N (M denied)` lines, under a `- split: on` line (Issue #2346), and every model the run served — the advisor's and each sub-agent's (executors and reviewers) — is costed from the CLI's per-model `modelUsage` breakdown at its own rate, one cost sub-bullet per model, in both the comment and the callback telemetry (Issue #3603); a run that served several models but recorded no readable breakdown says `sub-agents: not costed` instead of presenting the advisor-only figure as the run's cost. Off, no hook is configured and no tally is parsed, and the comment carries `- split: off` and nothing more. A `repo_config.<repo>.issue_executor_split` entry overrides it for that repository. Default `true` since Issue #2812; set it `false` for a single-session run. Whether the default stays is decided by the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria) — the first 30 `issue` runs after the change against the last 30 before it, reverted if the success rate or first-attempt gate pass rate falls, or violations per PR or USD per run rise. |
 | `issue_sub_agent_tier` | `"sonnet"` | Model tier for the `issue`-phase executor and Standards-reviewer sub-agents, and for whether the run carries the read-only explorer sub-agent (Issue #3402). `"sonnet"` (the default) leaves the `--agents` JSON byte-identical to before the key existed. `"haiku"` moves the executor (when `issue_executor_split` resolves on) to Haiku at `high` effort and the Standards reviewer (when `issue_reviewer_agents` is on) to Haiku at `medium` effort, and adds a read-only `explorer` sub-agent (`Read`, `Grep`, `Glob` only, no `Agent` tool) to every run on the tier, whatever the split and reviewer switches resolved to. An invalid value (a non-string, or any other string, e.g. `"opus"`) never stops the run: it is logged as a warning naming the key and value, and the `"sonnet"` default stands. A `repo_config.<repo>.issue_sub_agent_tier` entry overrides it for that repository. See [Haiku sub-agent tier](MODEL-AND-CACHING.md#haiku-sub-agent-tier-issue-phase). The resolved tier is also counted in the fleet summary's per-tier `issue_tier_runs` / `issue_tier_usd` figures ([fleet telemetry](INTERNALS.md#-fleet-telemetry--idle-blocked-and-success-rate-issue-855)) and recorded on the PR an issue run opens as a hidden `<!-- vibe-sub-agent-tier tier="sonnet" -->` (or `haiku`) marker, which attributes that PR's outcomes — `pr_tier_rejections`, `ci_fix_tier_*`, `pr_feedback_tier_usd`, `merged_tier_prs` and `cost_per_merged_pr` (Issue #3404) — to the tier (Issue #3403). |
 | `issue_reviewer_agents` | `true` | Whether `issue`-phase runs dispatch the independent Spec and Standards reviewers as defined `--agents` sub-agents (Issue #2575) instead of general-purpose sub-agents that inherit the advisor's model and effort (Opus at `high`). On, the invocation carries a `spec-reviewer` (`sonnet`, `medium` effort) and a `standards-reviewer` (`sonnet`, `low` effort by default — Haiku at `medium` effort when `issue_sub_agent_tier` resolves `"haiku"`, Issue #3402; the Spec reviewer stays `sonnet`/`medium` at every tier), both read-only (`Read`, `Grep`, `Glob`) with the `Agent` tool denied, and the `issue` prompt dispatches them by name. Off, no reviewer definition is passed and the reviewers inherit the phase's model as before. Independent of `issue_executor_split`: either, both or neither may be on. Host-wide only — there is no per-repository override. Only the `claude` provider carries the flag; under `deepseek` the definitions are stripped with a warning. Default `true` since Issue #2812; set it `false` to revert to inheriting reviewers. See [reviewer sub-agents](MODEL-AND-CACHING.md#reviewer-sub-agents-issue-phase) and the [before/after check](MODEL-AND-CACHING.md#default-on-decision-criteria). |
 | `idle_task_template_weights` | `{}`                      | Per-template weights biasing the idle-task draw (see [Idle-Task Template Weights](#%EF%B8%8F-idle-task-template-weights))                                                                                                                                                                      |
@@ -4466,12 +4471,14 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `requires_screenshots`  | boolean | When `true`, always injects the screenshot retry notice into Claude's prompt. The Playwright MCP browser itself is handed to every run unless `skip_screenshot_check` is set (Issue #2925), so this is no longer needed to get the browser. Use for UI/frontend repositories. Overridden by `skip_screenshot_check: true` (Issue #1584).                                                                                                                                                                                                                                                               |
 | `skip_screenshot_check` | boolean | When `true`, skips screenshot validation in PR completion **and** disables the Playwright MCP browser: no Chromium and no MCP server are started for this repository (Issue #1584). It wins over both screenshot triggers — `requires_screenshots: true` and the `needs-screenshot` label — and the override is logged at info level, naming the repository. Use for non-UI repositories to prevent false positives. |
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
+| `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
+| `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
 | `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#%EF%B8%8F-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
-| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
+| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. The same commands also gate the agent's own `git push` through a per-run `pre-push` hook (see the section below). A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
@@ -4525,6 +4532,10 @@ compilation error the worker
 pushed is even reported. The `pre-flight` gate refuses to commit or push work
 that is already known to be broken, so the failure is caught locally in
 seconds instead of downstream in the build.
+
+The gate runs at two points: the worker's own commit chokepoint, and the
+agent's own `git push` through a per-run `pre-push` hook (see
+[Agent pre-push hook](#agent-pre-push-hook-and-the-changed-files-check)).
 
 Configure it per repo with a list of commands (kebab-case `pre-flight`,
 snake_case `pre_flight`, or camelCase `preFlight` are all accepted):
@@ -4591,6 +4602,77 @@ flowchart TD
     style G fill:#14532d,stroke:#052e16,color:#fff
     style S fill:#495057,stroke:#212529,color:#fff
 ```
+
+#### Agent pre-push hook and the changed-files check
+
+The commit chokepoint above only sees the worker's own push. An agent that runs
+`git push` itself during its run would otherwise skip it (Issue #3394). For
+every agent run, the worker writes a per-run
+`pre-push` hook into a temporary directory and enables it in the **agent's
+environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
+`GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
+agent runs goes through it. The worker's own pushes (its final-mile
+commit-and-push and WIP preservation) do not carry the agent's environment and
+are not gated by the hook; they keep the pre-flight at the commit chokepoint.
+
+The hook runs two stages:
+
+1. **Always-on changed-files check, whatever the run budget.** It lists the
+   files changed by the commits being pushed that are not already on any
+   remote-tracking ref (merge commits and deleted files excluded), then runs
+   the repo's own tools on just those files (deno gets only the files its own
+   config would check, see below):
+   - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
+     cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
+     ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only
+     files the repo's own `deno fmt` / `deno lint` would check are passed: an
+     explicit path overrides deno's `fmt.include` / `lint.include`, so the hook
+     drops a changed file that falls outside the config's `include` or inside a
+     top-level or per-tool `exclude` (file, directory and glob entries; a
+     `!`-negated `exclude` entry re-includes) before it runs deno. An entry of
+     `.` or `./` names the whole config directory, as it does for deno, so
+     `"include": ["."]` keeps every file in scope. An `include` the hook cannot
+     represent (such as one with a `..` segment) leaves the file in scope for
+     deno to judge, and an unparseable `deno.json` is left unfiltered;
+   - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
+     changed `.rs` file;
+   - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
+     root carries a markdownlint config (`.markdownlint-cli2.*` or
+     `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
+     first, else the one on `PATH`.
+2. **Configured `pre-flight` commands.** The commands are resolved by the
+   run's repo from `repo_config`, so every agent run that names its repo gets
+   that repo's `pre-flight` commands in the hook; a run that names no repo gets
+   only the changed-files check.
+
+It fails closed, by the same rules as pre-flight: a check that fails, cannot
+start, or times out refuses the push; markdownlint configured but
+`markdownlint-cli2` not found refuses the push; a missing hook module, spec or
+`deno` binary refuses the push. Refusals print lines starting
+`[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
+pre-flight (the hook reuses `runPreFlightGate`).
+
+```mermaid
+flowchart TD
+    P["agent runs git push"] --> H["per-run pre-push hook"]
+    H --> C["changed-files check<br/>(always, any run budget)"]
+    C --> O{"pass?"}
+    O -->|no| B["[PRE_PUSH_BLOCKED]<br/>push refused"]
+    O -->|yes| F{"pre-flight commands<br/>passed to hook?"}
+    F -->|no| G["push proceeds"]
+    F -->|yes| R["run pre-flight commands"]
+    R --> Q{"all exit 0?"}
+    Q -->|yes| G
+    Q -->|no| B
+    style B fill:#7f1d1d,stroke:#450a0a,color:#fff
+    style G fill:#14532d,stroke:#052e16,color:#fff
+```
+
+Residual risk: `git push --no-verify`, or the agent rewriting its own
+environment, bypasses the hook. It is containment against honest mistakes, not
+a security boundary. It also overrides `core.hooksPath` for the agent's git, so
+a repository's own hooks directory (for example husky) does not run for agent
+git commands.
 
 ### 🛑 Auto-fix attempt cap
 

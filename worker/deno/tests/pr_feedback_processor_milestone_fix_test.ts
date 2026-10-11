@@ -274,6 +274,7 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
   const captured: CapturedGh = { comments: [], calls: [] };
   const gitCalls: string[][] = [];
   const markCommentProcessedSpy: string[] = [];
+  const outcomeSpy: string[] = [];
   const handlePrCommentFailureSpy: string[] = [];
 
   const deps = createMockDeps({
@@ -284,8 +285,15 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
     }),
     git: makeSuccessfulPushGit(gitCalls),
     pr: {
-      markCommentProcessed: ((_repo: string, commentType: string) => {
+      markCommentProcessed: ((
+        _repo: string,
+        commentType: string,
+        _commentId: string,
+        _prNumber: number | undefined,
+        outcome: string,
+      ) => {
         markCommentProcessedSpy.push(commentType);
+        outcomeSpy.push(outcome);
         return Promise.resolve({ ok: true, value: undefined });
         // deno-lint-ignore no-explicit-any
       }) as any,
@@ -314,6 +322,8 @@ Deno.test("processPrFeedback - gated head: pr_review fix PR creation failure => 
 
   assertStringIncludes(captured.comments.at(-1) ?? "", "could not raise");
   assertEquals(markCommentProcessedSpy, ["pr_review"]);
+  // Issue #3409: the dismissal must say the fix PR is still to be opened.
+  assertEquals(outcomeSpy, ["fix_pr_pending"]);
   assertEquals(handlePrCommentFailureSpy.length, 0);
 });
 

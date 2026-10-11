@@ -16,7 +16,11 @@ import {
   type SweepablePr,
   sweepAutoMerge,
 } from "../lib/auto_merge_sweep.ts";
-import { AutoMergeResult } from "../lib/pr_auto_merge.ts";
+import {
+  AutoMergeResult,
+  type EnableAutoMergeResult,
+} from "../lib/pr_auto_merge.ts";
+import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
 import type { Logger, Result } from "../types.ts";
 
@@ -47,6 +51,8 @@ interface Harness {
   updated: { repo: string; prNumber: number }[];
   recorded: { repo: string; prNumber: number; result: AutoMergeResult }[];
   invalidated: string[];
+  /** Base-integrity checks (Issue #3433). */
+  baseChecks: { repo: string; prNumber: number; armed: boolean }[];
 }
 
 function harness(
@@ -68,6 +74,14 @@ function harness(
       repo: string,
       pr: SweepablePr,
     ) => Promise<PrLiveStateReading>;
+    checkBaseIntegrity?: (
+      repo: string,
+      pr: SweepablePr,
+      armed: boolean,
+    ) => Promise<
+      | { action: "hold"; outcome: EnableAutoMergeResult }
+      | { action: "proceed"; disarmed: boolean }
+    >;
   } = {},
 ) {
   const state: Harness = {
@@ -77,6 +91,7 @@ function harness(
     updated: [],
     recorded: [],
     invalidated: [],
+    baseChecks: [],
   };
 
   const options = {
@@ -96,6 +111,12 @@ function harness(
         : Promise.resolve(
           { open: true, mergeable: "MERGEABLE" } as PrLiveStateReading,
         );
+    },
+    checkBaseIntegrity: (repo: string, pr: SweepablePr, armed: boolean) => {
+      state.baseChecks.push({ repo, prNumber: pr.number, armed });
+      return overrides.checkBaseIntegrity
+        ? overrides.checkBaseIntegrity(repo, pr, armed)
+        : Promise.resolve({ action: "proceed" as const, disarmed: false });
     },
     attemptMerge: (repo: string, pr: SweepablePr) => {
       state.attempted.push({ repo, prNumber: pr.number });
@@ -693,5 +714,180 @@ Deno.test("an armed, behind PR with changes requested gets no branch update (Iss
       line.context?.prNumber === 42
     ),
     JSON.stringify(infos),
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Auto-merge follows the base (Issue #3433)
+// ---------------------------------------------------------------------------
+
+const ARMED_BEHIND: PrLiveStateReading = {
+  open: true,
+  mergeable: "MERGEABLE",
+  armed: true,
+  behind: true,
+};
+
+Deno.test("a held base check records its outcome and neither merges nor updates the branch, even armed and behind", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () => Promise.resolve(ARMED_BEHIND),
+    checkBaseIntegrity: () =>
+      Promise.resolve({
+        action: "hold",
+        outcome: {
+          result: AutoMergeResult.HeldBaseRetargeted,
+          message: "held",
+        },
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.baseChecks, [{
+    repo: "stSoftwareAU/VibeCoder",
+    prNumber: 42,
+    armed: true,
+  }]);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted, []);
+  assertEquals(state.recorded.map((r) => r.result), [
+    AutoMergeResult.HeldBaseRetargeted,
+  ]);
+});
+
+Deno.test("a base check that disarmed an armed, behind PR gets no branch update and is merge-attempted afresh", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  }, {
+    prLiveState: () => Promise.resolve(ARMED_BEHIND),
+    checkBaseIntegrity: () =>
+      Promise.resolve({ action: "proceed", disarmed: true }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.updated, []);
+  assertEquals(state.attempted.map((a) => a.prNumber), [42]);
+});
+
+Deno.test("a throwing base check is logged and the PR is not armed", async () => {
+  warnings.length = 0;
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }, { number: 43 }],
+  }, {
+    checkBaseIntegrity: (_repo, pr) =>
+      pr.number === 42
+        ? Promise.reject(new Error("boom"))
+        : Promise.resolve({ action: "proceed", disarmed: false }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted.map((a) => a.prNumber), [43]);
+  assert(warnings.some((w) => w.message.includes("base check threw")));
+});
+
+Deno.test("only the PRs the fleet listing returns are base-checked", async () => {
+  const { state, options } = harness({
+    "stSoftwareAU/VibeCoder": [{ number: 42 }],
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.baseChecks.map((c) => c.prNumber), [42]);
+  assertEquals(state.listed[0]!.authors, FLEET);
+});
+
+/**
+ * Issue #3433 spec: a human retarget of a non-fleet PR is untouched (the
+ * Issue #2022 rule). Wires the real `checkPrBaseIntegrity` into the sweep.
+ */
+Deno.test("a human PR moved onto the default branch is never read or touched, while a fleet milestone-fix PR on main is disarmed and held", async () => {
+  const FIX_HEAD = "milestone-fix/m1/pr-77-abc";
+  const FIX = 9;
+  const HUMAN = 4242;
+  const all = [
+    {
+      author: "VibeCoderST",
+      pr: { number: FIX, headRefName: FIX_HEAD, baseRefName: "main" },
+    },
+    {
+      author: "a-human",
+      pr: { number: HUMAN, headRefName: "feature-x", baseRefName: "main" },
+    },
+  ];
+  const ghCalls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    ghCalls.push(args);
+    if (args[0] === "api" && args[1] === "graphql") {
+      return Promise.resolve(JSON.stringify({
+        data: {
+          repository: {
+            defaultBranchRef: { name: "main" },
+            pullRequest: {
+              headRefName: FIX_HEAD,
+              baseRefName: "main",
+              autoMergeRequest: { enabledAt: "2026-01-01T00:00:00Z" },
+              timelineItems: { nodes: [] },
+            },
+          },
+        },
+      }));
+    }
+    if (args[0] === "api") return Promise.resolve("[]");
+    return Promise.resolve("");
+  };
+  const { state, options } = harness({}, {
+    // Honours the authors argument rather than hard-coding the exclusion.
+    listOpenPrs: (_repo, authors) =>
+      Promise.resolve(
+        all.filter((e) => authors.includes(e.author)).map((e) => e.pr),
+      ),
+    prLiveState: () =>
+      Promise.resolve(
+        {
+          open: true,
+          mergeable: "MERGEABLE",
+          armed: true,
+        } as PrLiveStateReading,
+      ),
+  });
+  const result = await sweepAutoMerge({
+    ...options,
+    repos: ["stSoftwareAU/VibeCoder"],
+    checkBaseIntegrity: (repo, pr, armed) =>
+      checkPrBaseIntegrity({
+        repo,
+        pr,
+        armed,
+        gh,
+        log: () => {},
+        authorOptions: { fleetAuthors: FLEET },
+      }),
+  });
+
+  assert(result.ok);
+  // The human PR is never named by any gh call, nor listed, checked or recorded.
+  assert(
+    !ghCalls.some((c) => c.some((a) => a.includes(String(HUMAN)))),
+    JSON.stringify(ghCalls),
+  );
+  assertEquals(state.stateReads.map((r) => r.prNumber), [FIX]);
+  assertEquals(state.recorded.map((r) => r.prNumber), [FIX]);
+  // The fleet milestone-fix PR on main is disarmed and held, not merge-attempted.
+  assertEquals(state.recorded[0]!.result, AutoMergeResult.HeldBaseRetargeted);
+  assertEquals(state.attempted, []);
+  assertEquals(
+    ghCalls.filter((c) =>
+      c[0] === "pr" && c[1] === "merge" && c.includes("--disable-auto") &&
+      c[2] === String(FIX)
+    ).length,
+    1,
   );
 });

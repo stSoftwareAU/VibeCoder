@@ -96,7 +96,8 @@ export interface CallbackRunTelemetry {
   turns?: number;
   /**
    * The model the largest share of the run went through (Issue #2100): the
-   * served model of the invocation with the biggest token total.
+   * served model of the invocation with the biggest token total, counting
+   * the sub-agent models it spawned (Issue #3603).
    */
   model?: string;
   /**

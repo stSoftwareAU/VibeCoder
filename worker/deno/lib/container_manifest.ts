@@ -228,6 +228,7 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "cargo-clippy",
   "rustfmt",
   "cargo-deny",
+  "cargo-mutants",
   "shellcheck",
   "actionlint",
   "markdownlint-cli2",

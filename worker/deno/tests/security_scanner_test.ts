@@ -274,6 +274,10 @@ Deno.test(
     const result = await runSecurityScan(BASE_OPTS, makeDeps("", captured));
     assertEquals(result.ok, true);
 
+    // The agent's pre-push hook resolves the repo's pre-flight from `repo`
+    // alone (PR #3584 review).
+    assertEquals(captured.options?.repo, BASE_OPTS.repo);
+
     const prompt = captured.options?.prompt ?? "";
     assertStringIncludes(prompt, "SEC-suppressed1");
     assertStringIncludes(prompt, "SEC-known00000a");

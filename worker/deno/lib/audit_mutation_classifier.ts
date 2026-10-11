@@ -14,7 +14,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { normaliseGhArgs } from "./gh_flag_parser.ts";
+import { GH_SEPARATED_VALUE_FLAGS } from "./gh_argv.ts";
+import { canonicaliseGhArgs, GITHUB_API_HOST } from "./gh_argv_canonical.ts";
 
 /**
  * How the mutation's target repo was — or was not — determined (Issue #3703).
@@ -235,25 +236,33 @@ export const GH_SANCTIONED_GRAPHQL_MUTATIONS: ReadonlySet<string> = new Set([
   "changeuserstatus",
 ]);
 
-/** `gh` flags whose following token is a value, not a positional argument. */
-const GH_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "-X",
-  "--method",
-  "-f",
-  "-F",
-  "--field",
-  "--raw-field",
-  "-H",
-  "--header",
-  "--input",
-  "--jq",
-  "-q",
-  "--template",
-  "-t",
-  "--cache",
-  "-R",
-  "--repo",
-]);
+/**
+ * `gh` flags whose following token is a value, not a positional argument.
+ *
+ * Derived from the one table every `gh` argv walker shares (Issue #3568):
+ * this classifier used to keep its own copy, which lacked `-p`/`--preview`,
+ * so a preview name was read as the endpoint (Issue #3561).
+ */
+const GH_VALUE_FLAGS: ReadonlySet<string> = GH_SEPARATED_VALUE_FLAGS;
+
+/**
+ * gh's placeholder syntax (cli/cli `pkg/cmd/api` `fillPlaceholders`): it
+ * rewrites these in a magic field's value (`-F`/`--field`) with the current
+ * repository's owner, name or checked-out branch — after this classifier has
+ * read the value, and the agent chooses the branch (Issue #3566).
+ */
+const GH_FIELD_PLACEHOLDER = /:(?:owner|repo|branch)\b|\{[a-z]+\}/;
+
+/**
+ * Magic-field keys whose substituted value could change what the guard
+ * decided: the GraphQL document and operation name (a branch name can close a
+ * string and add an operation), and label names (Issue #3566).
+ */
+function isPlaceholderSensitiveKey(key: string): boolean {
+  const k = key.trim().toLowerCase();
+  return k === "query" || k === "operationname" || k === "name" ||
+    k === "new_name" || k.startsWith("labels");
+}
 
 /**
  * Extract `owner/repo` from a `-R`/`--repo` flag anywhere in the args.
@@ -342,14 +351,19 @@ export function ghSubVerb(args: readonly string[]): string | undefined {
  * The only host a `gh api` endpoint may name and still be classified from its
  * path (Issue #1420).
  *
- * A GitHub Enterprise deployment answers on its own host. Naming it here is
- * the one edit that would extend this, and it is deliberately not read from
+ * Defined in `gh_argv_canonical.ts`, whose endpoint canonicaliser shares it
+ * (Issue #3568), and re-exported here. A GitHub Enterprise deployment answers
+ * on its own host. Naming it there is the one edit that would extend this,
+ * and it is deliberately not read from
  * `GH_HOST`: that variable reaches this classifier through the same argv-
  * adjacent environment the guard exists to distrust. An enterprise fleet's
  * ABSOLUTE endpoints therefore classify as `unknown` and are refused —
  * fail-closed, and the relative form every normal call uses is unaffected.
  */
-export const GITHUB_API_HOST = "api.github.com";
+export { GITHUB_API_HOST };
+
+/** The only `gh api --hostname` value classified from its path (Issue #1420). */
+const GITHUB_HOST = "github.com";
 
 /** Does this endpoint carry a `scheme://` origin at all? */
 const ABSOLUTE_ENDPOINT = /^[a-z][a-z0-9+.-]*:\/\//i;
@@ -400,6 +414,27 @@ function endpointPath(endpoint: string): string | undefined {
   return slash < 0 ? "" : afterScheme.slice(slash + 1);
 }
 
+/**
+ * Whether a `gh api` endpoint addresses GitHub's GraphQL endpoint.
+ *
+ * `gh` itself special-cases only the bare word `graphql`, but `/graphql`,
+ * `graphql?x=1` and `https://api.github.com/graphql` all POST a `{"query": …}`
+ * body to the same endpoint, and GitHub runs it (PR #3514 review). An absolute
+ * URL counts only when {@link endpointPath} vouches for its host.
+ */
+function isGraphqlEndpoint(endpoint: string): boolean {
+  const path = endpointPath(endpoint);
+  if (path === undefined) return false;
+  const cut = path.search(/[?#]/);
+  const bare = cut < 0 ? path : path.slice(0, cut);
+  // Slice rather than `/\/+$/`, which is quadratic on a long run of slashes.
+  let start = 0;
+  let end = bare.length;
+  while (start < end && bare[start] === "/") start++;
+  while (end > start && bare[end - 1] === "/") end--;
+  return bare.slice(start, end) === "graphql";
+}
+
 /** Whether an endpoint path is repo-scoped via `{owner}/{repo}` placeholders. */
 function isPlaceholderRepoEndpoint(endpoint: string): boolean {
   return /^\/?repos\/\{owner\}\/\{repo\}(\/|$)/.test(endpoint);
@@ -414,72 +449,211 @@ function repoFromEndpoint(endpoint: string): string | undefined {
   return match ? `${match[1]}/${match[2]}` : undefined;
 }
 
+/** Result of scanning a GraphQL document for mutation operations. */
+export interface GraphqlScan {
+  /** Depth-1 field names of every `mutation` operation, in document order. */
+  fields: string[];
+  /** Whether at least one `mutation` operation was seen. */
+  hasMutation: boolean;
+  /**
+   * Whether the document parsed cleanly: strings terminated, brackets
+   * balanced, only GraphQL characters. A document that is not clean can never
+   * be vouched for, whatever fields were found before it broke.
+   */
+  clean: boolean;
+}
+
+const GRAPHQL_OPERATION_KEYWORDS: ReadonlySet<string> = new Set([
+  "mutation",
+  "query",
+  "subscription",
+  "fragment",
+]);
+
+/** Characters GraphQL permits outside strings and comments (besides names). */
+const GRAPHQL_PUNCTUATION = ' \t\n\r\uFEFF,!$&().:=@[]{|}-+"#';
+
+function isGraphqlNameChar(ch: string): boolean {
+  return (ch >= "a" && ch <= "z") || (ch >= "A" && ch <= "Z") ||
+    (ch >= "0" && ch <= "9") || ch === "_";
+}
+
+/** Whether the next token after `from` (past blanks, commas, comments) starts a name. */
+function nextSignificantIsNameStart(document: string, from: number): boolean {
+  let i = from;
+  while (i < document.length) {
+    const ch = document[i]!;
+    if (ch === "#") {
+      while (
+        i < document.length && document[i] !== "\n" && document[i] !== "\r"
+      ) i++;
+    } else if (
+      ch === " " || ch === "\t" || ch === "\n" || ch === "\r" || ch === "," ||
+      ch === "\uFEFF"
+    ) {
+      i++;
+    } else {
+      return isGraphqlNameChar(ch) && !(ch >= "0" && ch <= "9");
+    }
+  }
+  return false;
+}
+
 /**
- * Top-level field names selected by a GraphQL mutation document, or `null`
- * when the document contains no mutation operation (i.e. it is a read).
+ * Scan a GraphQL document with a single-pass character scanner (no regex, so
+ * no backtracking) and collect the depth-1 fields of every mutation
+ * operation (Issue #3549).
  *
- * Only the depth-1 selections are returned, so a nested field name can never
- * be mistaken for the mutation being performed. Argument lists are skipped
- * wholesale, so an object literal inside `(input: {…})` does not perturb the
- * brace depth.
+ * `#` comments, `"…"` strings and `"""…"""` block strings are skipped in every
+ * context, so a brace or the word `mutation` inside one cannot move the
+ * depth count. A bracket stack tracks `(`/`{` over the whole document;
+ * argument lists and variable definitions are skipped wholesale. Aliases
+ * (`alias: field`) yield the field; directive names (`@x`) are ignored.
+ *
+ * @param document - The GraphQL document text.
+ */
+export function scanGraphqlMutations(document: string): GraphqlScan {
+  const fields: string[] = [];
+  const stack: string[] = [];
+  let hasMutation = false;
+  let clean = true;
+  /** Keyword of the operation whose selection set has not opened yet. */
+  let pendingKind: string | undefined;
+  /** Kind of the operation whose selection set is currently open. */
+  let openKind: string | undefined;
+  let token = "";
+  let afterDirectiveMark = false;
+  let sawSelectionSet = false;
+
+  const flush = (terminator: string): void => {
+    if (!token) return;
+    const name = token;
+    token = "";
+    if (afterDirectiveMark) {
+      afterDirectiveMark = false;
+      return;
+    }
+    if (stack.length === 0) {
+      if (pendingKind !== undefined) return;
+      const keyword = name.toLowerCase();
+      if (name === keyword && GRAPHQL_OPERATION_KEYWORDS.has(keyword)) {
+        pendingKind = keyword;
+        if (keyword === "mutation") hasMutation = true;
+      } else {
+        clean = false;
+      }
+    } else if (
+      stack.length === 1 && openKind === "mutation" && terminator !== ":"
+    ) {
+      fields.push(name);
+    }
+  };
+
+  const n = document.length;
+  let i = 0;
+  while (i < n) {
+    const ch = document[i]!;
+    if (isGraphqlNameChar(ch)) {
+      token += ch;
+      i++;
+      continue;
+    }
+    flush(ch);
+    if (ch === "#") {
+      while (i < n && document[i] !== "\n" && document[i] !== "\r") i++;
+      continue;
+    }
+    if (ch === '"') {
+      if (document.startsWith('"""', i)) {
+        i += 3;
+        let closed = false;
+        while (i < n) {
+          if (document.startsWith('\\"""', i)) i += 4;
+          else if (document.startsWith('"""', i)) {
+            i += 3;
+            closed = true;
+            break;
+          } else i++;
+        }
+        if (!closed) clean = false;
+        continue;
+      }
+      i++;
+      let closed = false;
+      while (i < n) {
+        const c = document[i]!;
+        if (c === "\\") i += 2;
+        else if (c === '"') {
+          i++;
+          closed = true;
+          break;
+        } else if (c === "\n" || c === "\r") break;
+        else i++;
+      }
+      if (!closed) clean = false;
+      continue;
+    }
+    if (ch === "(" || ch === "{") {
+      if (ch === "{") sawSelectionSet = true;
+      if (ch === "{" && stack.length === 0) {
+        openKind = pendingKind ?? "query";
+        pendingKind = undefined;
+      }
+      stack.push(ch);
+    } else if (ch === ")" || ch === "}") {
+      const open = stack.pop();
+      if (open !== (ch === ")" ? "(" : "{")) {
+        clean = false;
+        // Keep the stack consistent: a mismatched closer is not consumed.
+        if (open !== undefined) stack.push(open);
+      } else if (stack.length === 0) {
+        openKind = undefined;
+      }
+    } else if (ch === "@") {
+      // A directive name must follow; otherwise the mark would swallow the
+      // next real field name (Issue #3549).
+      if (nextSignificantIsNameStart(document, i + 1)) {
+        afterDirectiveMark = true;
+      } else {
+        afterDirectiveMark = false;
+        clean = false;
+      }
+    } else if (ch === "." && stack.length === 1 && openKind === "mutation") {
+      // A spread or inline fragment at the mutation root can select further
+      // mutation fields below depth 1; refuse to vouch for it (Issue #3549).
+      clean = false;
+    } else if (!GRAPHQL_PUNCTUATION.includes(ch)) {
+      clean = false;
+    }
+    i++;
+  }
+  flush("");
+  // An operation keyword never followed by a selection set, an open bracket
+  // or an unterminated string all mean the text was not understood.
+  if (stack.length > 0 || pendingKind !== undefined) clean = false;
+  // With no mutation keyword and no `{` at all, nothing is executable (GitHub
+  // rejects it), so garbage such as `@/tmp/q.graphql` is inert, not a mutation.
+  if (!hasMutation && !sawSelectionSet) clean = true;
+  return { fields, hasMutation, clean };
+}
+
+/**
+ * Top-level field names selected by the mutation operations of a GraphQL
+ * document, or `null` when the document provably contains no mutation
+ * operation (i.e. it is a read).
+ *
+ * Issue #3549: every `mutation` operation is collected, not just the first,
+ * and comments and strings are skipped (see {@link scanGraphqlMutations}). A
+ * document that does not parse cleanly is never `null`: it cannot be proven a
+ * read, so the (possibly empty) field list is returned and callers must use
+ * {@link scanGraphqlMutations} to learn whether it may be sanctioned.
  *
  * @param document - The GraphQL document text.
  */
 export function graphqlMutationFields(document: string): string[] | null {
-  const start = /(^|[^A-Za-z0-9_])mutation(?![A-Za-z0-9_])/.exec(document);
-  if (!start) return null;
-
-  // Walk to the operation's selection set, skipping the variable definitions.
-  let i = start.index + start[0].length;
-  let parens = 0;
-  for (; i < document.length; i++) {
-    const ch = document[i];
-    if (ch === "(") parens++;
-    else if (ch === ")") parens--;
-    else if (ch === "{" && parens === 0) break;
-  }
-  if (i >= document.length) return [];
-
-  const fields: string[] = [];
-  let depth = 0;
-  let token = "";
-  parens = 0;
-  for (; i < document.length; i++) {
-    const ch = document[i]!;
-    if (parens > 0) {
-      if (ch === "(") parens++;
-      else if (ch === ")") parens--;
-      continue;
-    }
-    if (ch === "(") {
-      if (depth === 1 && token) fields.push(token);
-      token = "";
-      parens = 1;
-      continue;
-    }
-    if (ch === "{") {
-      if (depth === 1 && token) fields.push(token);
-      token = "";
-      depth++;
-      continue;
-    }
-    if (ch === "}") {
-      if (depth === 1 && token) fields.push(token);
-      token = "";
-      depth--;
-      if (depth === 0) break;
-      continue;
-    }
-    if (/[A-Za-z0-9_]/.test(ch)) {
-      token += ch;
-      continue;
-    }
-    // A separator (whitespace, comma, colon): an alias (`alias: field`) ends
-    // here too, and the aliased field is captured by the next token.
-    if (depth === 1 && token && ch !== ":") fields.push(token);
-    token = "";
-  }
-  return fields;
+  const scan = scanGraphqlMutations(document);
+  if (scan.clean && !scan.hasMutation) return null;
+  return scan.fields;
 }
 
 /**
@@ -497,6 +671,11 @@ export function graphqlMutationFields(document: string): string[] | null {
  * nor dismissed as a read. Such a call is undeterminable rather than `null`,
  * which is what every downstream control short-circuits on.
  *
+ * Issue #3549: a document is sanctioned as non-repo only when it parses
+ * cleanly and every field of every mutation operation is sanctioned. A
+ * malformed document (unterminated string, unbalanced brackets) falls to
+ * `unknown`, since the parser cannot know what GitHub would execute.
+ *
  * @param documents - Values of `query=` fields on the command line.
  * @param unreadable - Whether part of the request body is off the command line.
  */
@@ -506,24 +685,51 @@ function classifyGhGraphql(
 ): MutationInfo | null {
   const fields: string[] = [];
   let isMutation = false;
+  let allClean = true;
   for (const document of documents) {
-    const mutationFields = graphqlMutationFields(document);
-    if (mutationFields === null) continue;
+    const scan = scanGraphqlMutations(document);
+    if (scan.clean && !scan.hasMutation) continue;
     isMutation = true;
-    fields.push(...mutationFields);
+    if (!scan.clean) allClean = false;
+    fields.push(...scan.fields);
   }
   if (!isMutation) {
     if (!unreadable) return null;
     return { verb: "api-graphql-unknown", target: "graphql", scope: "unknown" };
   }
 
-  const sanctioned = !unreadable && fields.length > 0 &&
+  const sanctioned = !unreadable && allClean && fields.length > 0 &&
     fields.every((f) => GH_SANCTIONED_GRAPHQL_MUTATIONS.has(f.toLowerCase()));
   return {
     verb: "api-graphql-mutation",
     target: fields.length > 0 ? `graphql:${fields.join(",")}` : "graphql",
     scope: sanctioned ? "non-repo" : "unknown",
   };
+}
+
+/**
+ * The last `--hostname` value among the tokens before the `api` root, or
+ * undefined when there is none. `gh --hostname=evil.invalid api …` sends the
+ * request to that host exactly as the after-`api` spelling does. A bare
+ * `--hostname` with no value yields "" so it fails closed.
+ */
+function hostnameBeforeRoot(
+  args: readonly string[],
+  rootIdx: number,
+): string | undefined {
+  let host: string | undefined;
+  for (let i = 0; i < rootIdx; i++) {
+    const token = args[i] ?? "";
+    if (token === "--hostname") {
+      host = args[i + 1] ?? "";
+      i++;
+    } else if (token.startsWith("--hostname=")) {
+      host = token.slice("--hostname=".length);
+    } else if (GH_VALUE_FLAGS.has(token)) {
+      i++;
+    }
+  }
+  return host;
 }
 
 /**
@@ -545,6 +751,12 @@ function classifyGhApi(
   let hasBody = false;
   let endpoint: string | undefined;
   let skipNext = false;
+  /**
+   * Last `--hostname` value; `gh` sends the request to that host (Issue #1420).
+   * Seeded from the tokens before the `api` root: `gh` honours the flag there
+   * too, and the tokens after it still win (pflag's last-occurrence rule).
+   */
+  let hostname: string | undefined = hostnameBeforeRoot(args, start - 1);
   /** A body component the argv cannot show: `--input`, or a `@file` value. */
   let unreadableBody = false;
   /** Path of a readable `--input <file>` body (Issue #91); `-` stays absent. */
@@ -571,6 +783,15 @@ function classifyGhApi(
     const eq = value.indexOf("=");
     if (eq < 0) return;
     if (expandsAtFile && value.slice(eq + 1).startsWith("@")) {
+      unreadableBody = true;
+      return;
+    }
+    // Issue #3566: gh fills placeholders in a magic field after this read, so
+    // the text classified is not the text sent — fail closed.
+    if (
+      expandsAtFile && isPlaceholderSensitiveKey(value.slice(0, eq)) &&
+      GH_FIELD_PLACEHOLDER.test(value.slice(eq + 1))
+    ) {
       unreadableBody = true;
       return;
     }
@@ -629,6 +850,16 @@ function classifyGhApi(
       if (path !== "-") bodyFilePath = path;
       continue;
     }
+    // pflag: a repeated string flag resolves to its last occurrence.
+    if (token === "--hostname") {
+      hostname = args[i + 1] ?? "";
+      skipNext = true;
+      continue;
+    }
+    if (token.startsWith("--hostname=")) {
+      hostname = token.slice("--hostname=".length);
+      continue;
+    }
     if (GH_VALUE_FLAGS.has(token)) {
       skipNext = true;
       continue;
@@ -637,15 +868,25 @@ function classifyGhApi(
     if (endpoint === undefined) endpoint = token;
   }
 
-  if (endpoint === "graphql") {
-    return classifyGhGraphql(queryDocuments, unreadableBody);
+  // Issue #1420: a request bound for a host other than github.com carries its
+  // field and body data there, so the path's repo says nothing about where the
+  // write lands. Derive no repo and fail closed, as for an absolute endpoint
+  // on another host. A `--hostname` with no value is unusable and fails closed.
+  const foreignHost = hostname !== undefined &&
+    hostname.toLowerCase() !== GITHUB_HOST;
+
+  if (endpoint !== undefined && isGraphqlEndpoint(endpoint)) {
+    const info = classifyGhGraphql(queryDocuments, unreadableBody);
+    return info && foreignHost ? { ...info, scope: "unknown" } : info;
   }
 
   const effectiveMethod = (method ?? (hasBody ? "POST" : "GET")).toUpperCase();
   if (!["POST", "PATCH", "PUT", "DELETE"].includes(effectiveMethod)) {
     return null;
   }
-  const repo = endpoint ? repoFromEndpoint(endpoint) : undefined;
+  const repo = endpoint && !foreignHost
+    ? repoFromEndpoint(endpoint)
+    : undefined;
   // Issue #3703: an endpoint that names no repo (`gists`, `orgs/…`, `user/…`)
   // cannot be checked against the allowlist, so it fails closed. The
   // `repos/{owner}/{repo}/…` placeholder form is resolved by `gh` from the
@@ -655,10 +896,10 @@ function classifyGhApi(
   // cwd-scoped and needs no allowlist comparison — but that reasoning holds
   // only for a request actually bound for GitHub's API. Pointed elsewhere,
   // the same path is a write to somebody else's host.
-  const path = endpoint ? endpointPath(endpoint) : undefined;
+  const path = endpoint && !foreignHost ? endpointPath(endpoint) : undefined;
   const scope: MutationScope = repo
     ? "explicit"
-    : (path !== undefined && isPlaceholderRepoEndpoint(path))
+    : (!foreignHost && path !== undefined && isPlaceholderRepoEndpoint(path))
     ? "cwd"
     : "unknown";
   return {
@@ -683,8 +924,11 @@ export function classifyGhMutation(
 ): MutationInfo | null {
   // Issue #3867: pflag's attached shorthand spellings (`-Rowner/repo`,
   // `-X=POST`) are rewritten to their separated form first, so every match
-  // below sees the one spelling.
-  const args = normaliseGhArgs(rawArgs);
+  // below sees the one spelling. Issue #3568: a `gh api` call is further
+  // rewritten to its canonical form — flags after the root, an explicit
+  // method, the endpoint as GitHub routes it — so no equivalent spelling
+  // classifies differently.
+  const args = canonicaliseGhArgs(rawArgs);
   const rootIdx = firstNonFlag(args, 0);
   const root = args[rootIdx];
   if (!root) return null;
