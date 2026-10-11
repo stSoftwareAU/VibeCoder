@@ -10,9 +10,11 @@
  * Supported: `include` / `exclude` entries as file paths, directory paths
  * (with or without a trailing `/`) and globs (`*`, `**`, `?`, `{a,b}`), and
  * `!`-negated `exclude` entries (the last matching entry wins). `node_modules`
- * and `.git` are always out of scope, as in deno. An `include` list holding an
- * entry this module cannot compile (empty, oversized or an unbalanced brace)
- * is ignored, leaving the file in scope.
+ * and `.git` are always out of scope, as in deno. `.` segments are dropped, so
+ * an entry of `.` or `./` names the whole config directory, as deno reads it.
+ * An `include` list holding an entry this module cannot compile (empty,
+ * oversized, an unbalanced brace, or a `..` segment it cannot resolve) is
+ * ignored, leaving the file in scope.
  *
  * Australian English spelling throughout.
  */
@@ -70,7 +72,21 @@ export function parseDenoScope(text: string): DenoScopeConfig | null {
   };
 }
 
-/** Normalise a config entry to a repo-config-relative path pattern. */
+/**
+ * Normalise a config entry to a config-relative path pattern: empty and `.`
+ * segments are dropped, so `.`, `./` and `./src/./lib` read as deno reads
+ * them, and `""` (after a non-empty entry) means the whole config directory.
+ * Null for an empty entry and for one with a `..` segment, which would reach
+ * outside the directory this matcher works in.
+ */
+function normaliseEntry(entry: string): string | null {
+  if (entry === "") return null;
+  const segments = entry.split("/").filter((seg) => seg !== "" && seg !== ".");
+  if (segments.includes("..")) return null;
+  return segments.join("/");
+}
+
+/** Normalise a changed file's path to a config-relative path. */
 function normalisePattern(entry: string): string {
   return entry.replace(/^(?:\.\/)+/, "").replace(/^\/+/, "").replace(
     /\/+$/,
@@ -145,13 +161,16 @@ type Segment = string[] | "**";
 
 /**
  * Compile one path/glob entry into a matcher over `/`-separated paths; null
- * when it is empty, oversized or malformed. A `**` segment matches any number
+ * when it is empty, oversized, malformed or reaches outside the config
+ * directory. A `**` segment matches any number
  * of path segments, matched by a memoised walk so a hostile pattern costs
  * O(pattern segments × path segments), never exponential time.
  */
 function compile(entry: string): ((path: string) => boolean) | null {
-  const pattern = normalisePattern(entry);
-  if (pattern === "" || pattern.length > MAX_PATTERN_LENGTH) return null;
+  const pattern = normaliseEntry(entry);
+  if (pattern === null || pattern.length > MAX_PATTERN_LENGTH) return null;
+  // The config directory itself: every path under it.
+  if (pattern === "") return () => true;
   const segments: Segment[] = [];
   for (const raw of pattern.split("/")) {
     if (raw === "**") {

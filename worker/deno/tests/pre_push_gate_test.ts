@@ -152,6 +152,27 @@ Deno.test("planChangedFileChecks: files outside the deno fmt/lint include are no
   ]);
 });
 
+Deno.test("planChangedFileChecks: an include of the config directory still plans deno fmt and lint", () => {
+  for (const entry of [".", "./"]) {
+    const result = planChangedFileChecks(
+      ["README.md", "src/a.ts"],
+      ["deno.json"],
+      {
+        repoRoot: "/r",
+        markdownlintBinary: null,
+        denoScopes: {
+          ".": { fmt: { include: [entry] }, lint: { include: [entry] } },
+        },
+      },
+    );
+    assert(result.ok);
+    assertEquals(result.value.map((c) => c.command), [
+      "deno fmt --check --permit-no-files 'README.md' 'src/a.ts'",
+      "deno lint --permit-no-files 'src/a.ts'",
+    ]);
+  }
+});
+
 Deno.test("planChangedFileChecks: a nested root filters against its own scope, relative to it", () => {
   const result = planChangedFileChecks(
     ["worker/deno/lib/a.ts", "worker/deno/README.md"],

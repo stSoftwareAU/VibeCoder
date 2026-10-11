@@ -4626,8 +4626,11 @@ The hook runs two stages:
      explicit path overrides deno's `fmt.include` / `lint.include`, so the hook
      drops a changed file that falls outside the config's `include` or inside a
      top-level or per-tool `exclude` (file, directory and glob entries; a
-     `!`-negated `exclude` entry re-includes) before it runs deno. An
-     unparseable `deno.json` is left unfiltered;
+     `!`-negated `exclude` entry re-includes) before it runs deno. An entry of
+     `.` or `./` names the whole config directory, as it does for deno, so
+     `"include": ["."]` keeps every file in scope. An `include` the hook cannot
+     represent (such as one with a `..` segment) leaves the file in scope for
+     deno to judge, and an unparseable `deno.json` is left unfiltered;
    - `cargo fmt --all --check` per outermost `Cargo.toml` directory with a
      changed `.rs` file;
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo

@@ -119,3 +119,44 @@ Deno.test("inDenoScope: a trailing star may match nothing and ? matches exactly 
   assert(!inDenoScope("lib/xy.ts", c, "fmt"));
   assert(!inDenoScope("lib/.ts", c, "fmt"));
 });
+
+Deno.test("inDenoScope: an include naming the config directory itself keeps every file in scope", () => {
+  // Deno reads `"include": ["."]` as the whole config directory.
+  for (const entry of [".", "./", "./.", ".//", "./././"]) {
+    const c = scope(
+      `{"fmt":{"include":["${entry}"]},"lint":{"include":["${entry}"]}}`,
+    );
+    for (const path of ["README.md", "src/a.ts", "src/deep/b.ts"]) {
+      assert(
+        inDenoScope(path, c, "fmt"),
+        `${entry} should admit ${path} (fmt)`,
+      );
+      assert(
+        inDenoScope(path, c, "lint"),
+        `${entry} should admit ${path} (lint)`,
+      );
+    }
+  }
+});
+
+Deno.test("inDenoScope: `.` segments inside an entry are dropped", () => {
+  const c = scope('{"fmt":{"include":["./src/./lib/"]}}');
+  assert(inDenoScope("src/lib/a.ts", c, "fmt"));
+  assert(!inDenoScope("src/other/a.ts", c, "fmt"));
+  assert(!inDenoScope("README.md", c, "fmt"));
+});
+
+Deno.test("inDenoScope: an exclude naming the config directory excludes every file, as deno does", () => {
+  const c = scope('{"fmt":{"exclude":["."]}}');
+  assert(!inDenoScope("README.md", c, "fmt"));
+  assert(!inDenoScope("src/a.ts", c, "fmt"));
+  assert(inDenoScope("src/a.ts", c, "lint"));
+});
+
+Deno.test("inDenoScope: an include with a `..` segment cannot be represented, so the file stays in scope", () => {
+  const c = scope('{"fmt":{"include":["../shared/","src/"]}}');
+  assert(inDenoScope("README.md", c, "fmt"));
+  // A `..` exclude matches nothing here rather than guessing a file out.
+  const e = scope('{"exclude":["../src/"]}');
+  assert(inDenoScope("src/a.ts", e, "fmt"));
+});
