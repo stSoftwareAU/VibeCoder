@@ -3166,35 +3166,44 @@ Deno.test("close-out - abandoned final PR comments on and closes the open tracke
 });
 
 Deno.test("close-out - a failing abandoned-PR comment does not stop the close (Issue #3474)", async () => {
-  const calls: string[] = [];
-  const logs: string[] = [];
-  const result = await checkAndHandleMilestoneCompletions(createMockDeps({
-    log: (m) => logs.push(m),
-    ghCommandFn: async (args: string[]) => {
-      const key = args.join(" ");
-      calls.push(key);
-      const a = authoritativeStub(key);
-      if (a !== null) return a;
-      if (key.includes("-X PATCH")) return "{}";
-      if (key.includes("api") && key.endsWith("/milestones")) {
-        return JSON.stringify([{ title: "scan", number: 1 }]);
-      }
-      if (key.includes(".default_branch")) return "main";
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        return JSON.stringify([
-          { number: 100, title: "w", milestone: { title: "scan" } },
-        ]);
-      }
-      if (key.includes("number,state,headRefName")) {
-        return JSON.stringify([pr3474(77, "CLOSED")]);
-      }
-      if (key.includes("pr comment")) throw new Error("comment boom");
-      return "[]";
-    },
-  }));
-  assertEquals(result.ok, true);
-  assertEquals(calls.some((c) => c.includes("-X PATCH")), true);
-  assertEquals(logs.some((l) => l.includes("Could not comment")), true);
+  // A thrown non-Error must still reach the log as its own text.
+  for (const thrown of [new Error("comment boom"), "raw comment failure"]) {
+    const calls: string[] = [];
+    const logs: string[] = [];
+    const result = await checkAndHandleMilestoneCompletions(createMockDeps({
+      log: (m) => logs.push(m),
+      ghCommandFn: async (args: string[]) => {
+        const key = args.join(" ");
+        calls.push(key);
+        const a = authoritativeStub(key);
+        if (a !== null) return a;
+        if (key.includes("-X PATCH")) return "{}";
+        if (key.includes("api") && key.endsWith("/milestones")) {
+          return JSON.stringify([{ title: "scan", number: 1 }]);
+        }
+        if (key.includes(".default_branch")) return "main";
+        if (key.includes("issue list") && key.includes("--state closed")) {
+          return JSON.stringify([
+            { number: 100, title: "w", milestone: { title: "scan" } },
+          ]);
+        }
+        if (key.includes("number,state,headRefName")) {
+          return JSON.stringify([pr3474(77, "CLOSED")]);
+        }
+        if (key.includes("pr comment")) throw thrown;
+        return "[]";
+      },
+    }));
+    assertEquals(result.ok, true);
+    assertEquals(calls.some((c) => c.includes("-X PATCH")), true);
+    const expected = thrown instanceof Error ? thrown.message : thrown;
+    assertEquals(
+      logs.some((l) =>
+        l.includes("Could not comment") && l.includes(`: ${expected} (Issue`)
+      ),
+      true,
+    );
+  }
 });
 
 Deno.test("close-out - a merged final PR beside a closed one closes the milestone with no comment (Issue #3474)", async () => {
@@ -3364,6 +3373,14 @@ Deno.test("classifyMilestoneFinalPrs - errors on bad JSON, non-array output or a
       );
     }
   }
+});
+
+Deno.test("classifyMilestoneFinalPrs - a thrown non-Error is reported by its own text (Issue #3474)", async () => {
+  const r = await classify3474(() => {
+    throw "raw gh failure";
+  });
+  assertEquals(r.ok, false);
+  if (!r.ok) assertStringIncludes(r.error.message, ": raw gh failure");
 });
 
 // ============================================================================

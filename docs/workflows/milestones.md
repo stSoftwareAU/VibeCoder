@@ -665,6 +665,8 @@ Priority extraction is implemented in `worker/deno/lib/milestone_priority.ts`. T
 
 - **Milestone branch sync conflict:** Merge from default into milestone fails; worker logs and aborts; user may need to resolve on milestone branch manually.
 - **Final PR already exists:** Worker should not create a duplicate; ensure idempotent behaviour (create or update/find existing).
+- **Final PR closed without merging (Issue #3474):** Once no milestone issue is open, the worker reads the PRs from the milestone branch (up to 100). If one has merged, the milestone is closed as merged. If one is open, the milestone stays open. If every one was closed unmerged, the worker comments on the tracking issue (or on the closed PR when there is no tracker) naming the closed PR, closes the tracker and the milestone, and raises no new final PR.
+- **Nothing to merge (Issues #3214, #3474):** When the milestone branch is missing or 0 commits ahead of the default branch, the milestone is closed directly with no tracker or final PR — even when it has no closed issues. An empty milestone whose branch has commits ahead is still skipped.
 - **Milestone closed on GitHub:** Worker should not pick new issues from closed milestones; in-progress work on already-claimed issues may complete.
 
 ## 📚 Further reading
