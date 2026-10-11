@@ -473,8 +473,9 @@ export function logicalBlocks(section: string): string[] {
 
 /**
  * Flag Test Plan lines whose quoted figure disagrees with the head recount:
- * a single "N tests"/"N passed" claim is compared with the named files' counts,
- * and a paired "N passed, M failed" run result is compared by N + M with the
+ * a single "N tests"/"N passed" claim is compared with the named files' counts
+ * (summed), several claims over several files are each compared with the files
+ * named since the previous claim, and a paired "N passed, M failed" run result is compared by N + M with the
  * runnable count of the test file it ran (Issue #3381).
  */
 export function findTestPlanMismatches(
@@ -484,9 +485,10 @@ export function findTestPlanMismatches(
 }
 
 /**
- * A paired run result the recount could not check, so it was neither
- * compared nor passed as correct (Issue #3381). The worker logs these rather
- * than letting an unchecked figure pass silently.
+ * A figure the recount could not check, so it was neither compared nor passed
+ * as correct: a paired run result (Issue #3381) or several counts that do not
+ * each follow the test file they count. The worker logs these rather than
+ * letting an unchecked figure pass silently.
  */
 export interface UncheckedRunResult {
   /** The Test Plan line, trimmed (truncated to 300 chars). */
@@ -496,7 +498,9 @@ export interface UncheckedRunResult {
 }
 
 /**
- * The paired run results `findTestPlanMismatches` could not check: a block
+ * The figures `findTestPlanMismatches` could not check: a block with several
+ * "N tests" counts that do not pair up with the test files before them (or
+ * differ for one file), a paired run result in a block
  * naming a test file that is not one of the PR's changed test files, a block
  * naming several files whose runs differ, or a red result naming no test file
  * when the section has no sole changed test file. A `quality.sh` block and a
@@ -589,7 +593,6 @@ function scanTestPlan(
     if (claimMatches.length === 0) continue;
     const claims = claimMatches.map((m) => Number(m[1]));
     const uniqueClaims = new Set(claims);
-    if (uniqueClaims.size > 1) continue;
     // A "passed" figure never includes a skipped declaration; mixing a
     // "passed" claim with a "tests" claim on the same line is ambiguous.
     const words = new Set(
@@ -602,21 +605,66 @@ function scanTestPlan(
     // is still the whole run.
     if (!isPassedClaim && PARTIAL_ADD_RE.test(rawLine)) continue;
 
-    const claimed = claims[0] as number;
-    let actual = 0;
-    for (const key of resolvedKeys) {
+    const countOf = (key: string): number => {
       const counts = opts.headCounts.get(key);
-      actual += counts ? (isPassedClaim ? counts.runnable : counts.total) : 0;
+      return counts ? (isPassedClaim ? counts.runnable : counts.total) : 0;
+    };
+    const sumOf = (keys: Iterable<string>): number => {
+      let sum = 0;
+      for (const key of keys) sum += countOf(key);
+      return sum;
+    };
+    const flag = (keys: string[], claimed: number) => {
+      const actual = sumOf(keys);
+      if (claimed !== actual) {
+        results.push({
+          line: rawLine.trim().slice(0, 300),
+          files: keys,
+          claimed,
+          actual,
+        });
+      }
+    };
+    const skip = (reason: string) =>
+      unchecked.push({ line: rawLine.trim().slice(0, 300), reason });
+
+    // One claim is a combined total for every file the block names (the
+    // wrapped-paragraph shape of Issue #3356); the same figure repeated for
+    // a sole file is that file's count.
+    if (claimMatches.length === 1 || resolvedKeys.size === 1) {
+      if (uniqueClaims.size > 1) {
+        skip("several different counts for one test file");
+      } else flag([...resolvedKeys], claims[0] as number);
+      continue;
     }
 
-    if (claimed !== actual) {
-      results.push({
-        line: rawLine.trim().slice(0, 300),
-        files: [...resolvedKeys],
-        claimed,
-        actual,
-      });
+    // Several claims over several files: each claim is the count of the
+    // files named since the previous claim, so a wrapped sentence that gives
+    // each file its own count is compared file by file. Anything that does
+    // not pair up is reported, never passed (Issue #3553 review).
+    const tokenMatches = [...rawLine.matchAll(TOKEN_RE)];
+    const segments: { keys: string[]; claimed: number }[] = [];
+    let segmentStart = 0;
+    let paired = true;
+    for (const m of claimMatches) {
+      const keys = new Set<string>();
+      for (const t of tokenMatches) {
+        if (t.index >= segmentStart && t.index < m.index) {
+          keys.add(resolveToken(t[0], opts.headCounts) as string);
+        }
+      }
+      if (keys.size === 0) {
+        paired = false;
+        break;
+      }
+      segments.push({ keys: [...keys], claimed: Number(m[1]) });
+      segmentStart = m.index + m[0].length;
     }
+    if (!paired || tokenMatches.some((t) => t.index >= segmentStart)) {
+      skip("several counts that do not each follow the test file they count");
+      continue;
+    }
+    for (const seg of segments) flag(seg.keys, seg.claimed);
   }
 
   return { mismatches: results, unchecked };
