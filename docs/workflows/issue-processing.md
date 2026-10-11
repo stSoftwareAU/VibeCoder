@@ -1404,6 +1404,22 @@ each (or saying why it should outlive a healthy run), following an existing
 set/clear pair, a lifecycle test through the real helper that goes red when
 the clear is deleted, and the set/clear pairs in the PR summary.
 
+**Nothing exists only for a test to read (Issue #3455).** Three private
+fleet PRs in one week added a production member that only tests used: an
+optional preset prop on a web UI component that no production caller
+passed, there only so tests could server-render the component; a field on a
+chart data record whose only production caller read just the label and
+value; and a public field on an API client's error class whose data the UI
+already showed through the error message. Each test checked the member
+instead of what a user or caller sees, so it could stay green while that
+output was wrong. `CODING-STANDARDS.md`, the guidelines and the issue
+prompt's Test Plan step now require one production reader or setter for each
+field, prop, parameter, type or export the diff adds to non-test code, found
+with `git grep -n -w <name>` outside test code; with none, the member is
+removed and the assertion moves onto the returned value, error message or
+rendered text. A member the issue asks for as public API is exempt, and the
+PR summary says so.
+
 **Changing the shape of persisted data bumps its key or reads the old shape
 (Issue #3328).** Fleet PRs changed the type of a value that outlives a
 deployment or relaunch and kept its versioned key, so the previous release's

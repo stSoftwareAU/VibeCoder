@@ -1229,6 +1229,25 @@ breaks on any refactor. Specifically, do not:
 If a function needs an external service (e.g., the GitHub API) to test, skip it
 rather than faking a test with grep.
 
+**Nothing exists only for a test to read.** A field, prop, parameter, type or
+export that only a test reads or sets does not belong in production code: the
+test checks the member instead of what a user or caller sees, so it stays
+green while that output is wrong. Assert on what production does with it
+instead — the returned value, the error message, the rendered text — or
+inject through a seam the code already has. Before raising the PR, run
+`git grep -n -w <name>` for each field, prop, parameter, type or export the
+diff adds to non-test code, and find one hit outside test code (a test file,
+a `#[cfg(test)]` module, a fixture or a test double) that reads or sets it. A
+production default that passes the real dependency through an injected seam
+(a clock, a scheduler, a process runner) counts as its setter. Do not filter
+with `':!*test*'`: that pathspec also drops production files whose path
+contains `test`, such as `latest.ts` or `attestation.ts`. If there is no
+production reader or setter, remove the member and move the assertion onto
+the observable output. A member the issue explicitly asks for as public API
+(for example, a library export) is exempt, and the PR summary says so. A new
+member with no production reader or setter is a blocking self-review finding
+(Issue #3455).
+
 ## Test Coverage Expectations
 
 For supported public behaviour lacking a useful safety net, add tests as
