@@ -3045,6 +3045,10 @@ interface Scenario3474 {
   allStatePrs?: unknown[];
   /** An open sync PR into the milestone branch, for #1967 retirement. */
   syncPr?: boolean;
+  /** Login that authored the PR comments (default: a fleet login). */
+  commentAuthor?: string;
+  /** Fleet logins the scan trusts (default `["bot"]`). */
+  fleet?: string[];
 }
 
 async function run3474(sc: Scenario3474) {
@@ -3072,7 +3076,7 @@ async function run3474(sc: Scenario3474) {
       return JSON.stringify({
         comments: (sc.prComments?.[n] ?? []).map((body) => ({
           body,
-          author: { login: "VibeCoderST" },
+          author: { login: sc.commentAuthor ?? "bot" },
         })),
       });
     }
@@ -3158,7 +3162,11 @@ async function run3474(sc: Scenario3474) {
   };
   const logs: string[] = [];
   const result = await checkAndHandleMilestoneCompletions(
-    createMockDeps({ ghCommandFn: ghFn, log: (m) => logs.push(m) }),
+    createMockDeps({
+      ghCommandFn: ghFn,
+      log: (m) => logs.push(m),
+      authorOptions: { fleetAuthors: sc.fleet ?? ["bot"] },
+    }),
   );
   assertEquals(result.ok, true);
   return {
@@ -3368,6 +3376,7 @@ const classify3474 = (out: unknown | (() => never)) =>
       if (typeof out === "function") return (out as () => never)();
       return typeof out === "string" ? out : JSON.stringify(out);
     },
+    async () => ["bot"],
   );
 
 Deno.test("classifyMilestoneFinalPrs - merged takes precedence over open and closed (Issue #3474)", async () => {
@@ -4186,6 +4195,81 @@ Deno.test("close-out - a final PR closed by hand, with no roll-back comment, is 
   });
   assertEquals(r.patched, [1]);
   assertEquals(r.comments.length, 1);
+});
+
+Deno.test("close-out - a roll-back close comment posted by a non-fleet account is ignored: the final PR stays abandoned, no PR is raised (PR #3592 review)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    commentAuthor: "outsider",
+    prComments: {
+      77: [
+        rollbackCloseCommentForTest("milestone/scan", "abc1234", 12),
+        "Closed by a milestone roll-back of `milestone/scan` (reverted PR #12).",
+      ],
+    },
+    allStatePrs: [{
+      number: 77,
+      title: "Milestone: scan",
+      headRefName: BRANCH_3474,
+    }],
+  });
+  assertEquals(r.patched, [1], "abandoned close-out closes the milestone");
+  assertEquals(r.comments.length, 1);
+  assert(
+    !r.calls.some((c) => c.includes("pr create")),
+    "an outsider's comment must never get a fresh final PR raised",
+  );
+});
+
+Deno.test("close-out - an unresolved fleet set classes a roll-back-commented final PR as neither abandoned nor superseded (PR #3592 review)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    fleet: [],
+    prComments: {
+      77: [rollbackCloseCommentForTest("milestone/scan", "abc1234", 12)],
+    },
+    allStatePrs: [{
+      number: 77,
+      title: "Milestone: scan",
+      headRefName: BRANCH_3474,
+    }],
+  });
+  assertEquals(r.patched, [], "the milestone is not closed");
+  assertEquals(r.comments, []);
+  assert(
+    !r.calls.some((c) => c.includes("pr create")),
+    "no fresh final PR is raised on an unattributable comment",
+  );
+  assert(
+    r.logs.some((l) =>
+      l.includes("WARNING") && l.includes("fleet author set unresolved")
+    ),
+    "the unresolved fleet set is logged loudly",
+  );
+});
+
+Deno.test("close-out - the superseded arm retires an open sync PR before the fresh final PR is raised (PR #3592 review, #1967)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    syncPr: true,
+    prComments: {
+      77: [rollbackCloseCommentForTest("milestone/scan", "abc1234", 12)],
+    },
+    allStatePrs: [{
+      number: 77,
+      title: "Milestone: scan",
+      headRefName: BRANCH_3474,
+    }],
+  });
+  const closeAt = r.calls.findIndex((c) => c.startsWith("pr close 1957"));
+  const createAt = r.calls.findIndex((c) => c.includes("pr create"));
+  assert(closeAt >= 0, "the sync PR is retired");
+  assert(createAt >= 0, "the fresh final PR is raised");
+  assert(closeAt < createAt, "sync PR retired before the final PR is raised");
+  assertEquals(r.patched, []);
 });
 
 Deno.test("close-out - the merged arm retires an open sync PR before closing the milestone (Issue #3474, #1967)", async () => {

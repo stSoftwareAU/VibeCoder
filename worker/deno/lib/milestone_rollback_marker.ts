@@ -57,13 +57,36 @@ const LEGACY_ROLLBACK_CLOSE_PREFIX = "Closed by a milestone roll-back of ";
 /**
  * Whether a PR comment is a roll-back's close comment: it carries
  * {@link ROLLBACK_CLOSE_MARKER}, or opens with the prose roll-backs used
- * before the marker existed. Matching errs only towards "superseded" — a
- * fresh final PR is raised, which still needs review — never towards closing
- * a milestone.
+ * before the marker existed.
+ *
+ * Body only — a body is writable by any GitHub account, so this alone is not
+ * evidence the fleet wrote it. Decisions go through
+ * {@link isFleetRollbackCloseComment}, which also checks the author.
  */
 export function isRollbackCloseComment(body: string): boolean {
   return body.includes(ROLLBACK_CLOSE_MARKER) ||
     body.trimStart().startsWith(LEGACY_ROLLBACK_CLOSE_PREFIX);
+}
+
+/**
+ * Whether a raw PR comment (REST or `gh pr view --json comments` shape) is a
+ * roll-back close comment authored by a fleet login (Issue #3474).
+ *
+ * Author, not body: a comment from anyone outside `fleetAuthors` — or with no
+ * readable author — never counts, and neither does any comment when
+ * `fleetAuthors` is empty. A wrong "yes" here makes close-out raise a fresh
+ * final PR the owner never asked for.
+ */
+export function isFleetRollbackCloseComment(
+  raw: unknown,
+  fleetAuthors: readonly string[],
+): boolean {
+  if (typeof raw !== "object" || raw === null) return false;
+  const comment = raw as Record<string, unknown>;
+  if (typeof comment.body !== "string") return false;
+  if (!isRollbackCloseComment(comment.body)) return false;
+  const author = commentAuthor(comment);
+  return author !== undefined && isFleetAuthor(author, [...fleetAuthors]);
 }
 
 /** What a roll-back marker records. */

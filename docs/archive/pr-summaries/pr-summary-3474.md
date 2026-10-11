@@ -116,7 +116,7 @@ no key bump is needed.
 
 - `deno check`: clean.
 - `deno fmt --check` and `deno lint` on both changed files: clean.
-- `deno task test:unit tests/milestone_completion_test.ts`: 107 passed,
+- `deno task test:unit tests/milestone_completion_test.ts`: 110 passed,
   0 failed.
 - Red checks. Each mutation below was applied, turned the named tests red,
   and was then restored:
@@ -188,7 +188,7 @@ Quality gate: the full `./quality.sh` passed on this branch with exit 0
 merged-arm tracker test, the two mutation-killing test changes, a doc-comment
 line in `milestone_sync_pr_retirement.ts` and the `docs/workflows/milestones.md`
 bullets. On this head, `deno check`, `deno lint` and `deno fmt --check` are
-clean on the changed files, and the targeted run above passed (107/107). The
+clean on the changed files, and the targeted run above passed (110/110). The
 worker re-runs the full gate.
 
 ## Acceptance Criteria
@@ -216,5 +216,8 @@ worker re-runs the full gate.
 ## Review round (PR #3592, 2026-10-11)
 
 - **Fork-headed PRs:** `classifyMilestoneFinalPrs` now asks for `isCrossRepository` and drops every entry where it isn't exactly `false` (Issue #1124). A closed fork PR reusing the milestone branch name no longer closes the milestone; the real final PR is raised instead.
-- **Roll-back closes:** a roll-back's close comment now carries `<!-- vibe-final-pr-rollback-close -->` (`ROLLBACK_CLOSE_MARKER`, `milestone_rollback_marker.ts`). If the newest closed final PR carries that marker, or the pre-marker roll-back prose, it is classed `superseded`, not `abandoned`. A fresh final PR is then raised, and the create path's idempotency check ignores the superseded closed PRs.
+- **Roll-back closes:** a roll-back's close comment now carries `<!-- vibe-final-pr-rollback-close -->` (`ROLLBACK_CLOSE_MARKER`, `milestone_rollback_marker.ts`). If the newest closed final PR carries that marker, or the pre-marker roll-back prose, in a comment authored by a fleet login (`isFleetRollbackCloseComment`, `milestone_rollback_marker.ts`), it is classed `superseded`, not `abandoned`. A comment from any other account is ignored, so the PR stays abandoned. The fleet set comes from `resolveAlertDedupAuthors(authorOptions)`, the same rule the tracker author check uses; when it is empty `classifyMilestoneFinalPrs` returns an error (logged as a WARNING by the caller, which falls through to the pre-existing flow), so neither verdict is reached. A fresh final PR is raised for `superseded`, and the create path's idempotency check ignores the superseded closed PRs.
 - **Sync-PR retirement:** each new arm has a test with an open sync PR, asserting that it is closed before the milestone PATCH.
+- **Superseded sync-PR retirement:** the `hasExistingMilestoneSummaryPr` check that gates `retireMilestoneSyncPrs` now takes the same superseded ignore list as `createMilestoneSummaryPr` (one `supersededPrNumbers` value), so the sync PR is closed before the fresh final PR is raised (Issue #1967).
+- **Tests added** (`worker/deno/tests/milestone_completion_test.ts`), each turned red by reverting only its guard: "a roll-back close comment posted by a non-fleet account is ignored …" (author check removed), "an unresolved fleet set classes a roll-back-commented final PR as neither abandoned nor superseded …" (empty-set guard removed), "the superseded arm retires an open sync PR before the fresh final PR is raised …" (ignore list removed from the retirement check).
+- **Branch outcomes (added this round):** `milestone_completion.ts:411` — empty fleet set → error, no verdict — the unresolved-fleet test; `milestone_completion.ts:461` / `milestone_rollback_marker.ts:80` — non-fleet author ignored → `abandoned`, fleet author → `superseded` — the non-fleet-author test and the existing superseded tests; `milestone_completion.ts:1933` — superseded list shared by the retirement check and the create path — the sync-PR ordering test. Flips went red as listed above.

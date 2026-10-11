@@ -30,7 +30,10 @@ import {
   fetchAuthoritativeOpenChildren,
   formatChildNumbers,
 } from "./milestone_open_children.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "./alert_dedup_authors.ts";
 import {
   autoMergeOutcomeNeedsComment,
   AutoMergeResult,
@@ -38,7 +41,7 @@ import {
   finalisePr,
 } from "./pr_auto_merge.ts";
 import { retireMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
-import { isRollbackCloseComment } from "./milestone_rollback_marker.ts";
+import { isFleetRollbackCloseComment } from "./milestone_rollback_marker.ts";
 import { raiseDeadlockPartialRollups } from "./milestone_deadlock_rollup.ts";
 import {
   isMilestoneTrackingTitle,
@@ -333,13 +336,21 @@ export type MilestoneFinalPrState =
  * decide the outcome, and a fork-headed PR proves nothing (Issue #1124). An
  * entry whose `isCrossRepository` is not exactly `false` is dropped.
  *
- * A closed-unmerged newest PR whose comments show the fleet's roll-back
- * closed it is "superseded", not "abandoned" (PR #3592 review).
+ * A closed-unmerged newest PR carrying a roll-back close comment authored by
+ * a fleet login is "superseded", not "abandoned" (PR #3592 review). A comment
+ * from anyone else is ignored — any account can comment on a public PR — and
+ * when the fleet set cannot be resolved the result is an error rather than
+ * either verdict: neither the close-out nor a fresh final PR may rest on a
+ * comment nobody can attribute.
+ *
+ * @param resolveFleetAuthors - Resolves the fleet logins; called only when
+ *   every PR is closed, the one case that reads comments.
  */
 export async function classifyMilestoneFinalPrs(
   repo: string,
   milestoneBranch: string,
   ghCommandFn: GhCommandFn,
+  resolveFleetAuthors: () => Promise<readonly string[]>,
 ): Promise<Result<MilestoneFinalPrState>> {
   try {
     const output = await ghCommandFn([
@@ -396,7 +407,15 @@ export async function classifyMilestoneFinalPrs(
     }
     const closed = highest("CLOSED");
     if (closed === null) return { ok: true, value: { kind: "none" } };
-    if (await closedByRollback(repo, closed, ghCommandFn)) {
+    const fleetAuthors = await resolveFleetAuthors();
+    if (fleetAuthors.length === 0) {
+      throw new Error(
+        `fleet author set unresolved — cannot tell whether closed final PR ` +
+          `#${closed} was closed by a milestone roll-back, so it is ` +
+          `classed neither abandoned nor superseded`,
+      );
+    }
+    if (await closedByRollback(repo, closed, ghCommandFn, fleetAuthors)) {
       return {
         ok: true,
         value: {
@@ -417,11 +436,15 @@ export async function classifyMilestoneFinalPrs(
   }
 }
 
-/** Whether a closed PR carries a roll-back's close comment (Issue #1781). */
+/**
+ * Whether a closed PR carries a roll-back's close comment (Issue #1781)
+ * authored by a fleet login.
+ */
 async function closedByRollback(
   repo: string,
   prNumber: number,
   ghCommandFn: GhCommandFn,
+  fleetAuthors: readonly string[],
 ): Promise<boolean> {
   const output = await ghCommandFn([
     "pr",
@@ -435,9 +458,7 @@ async function closedByRollback(
   const parsed = JSON.parse(output) as { comments?: unknown };
   const comments = Array.isArray(parsed.comments) ? parsed.comments : [];
   return comments.some((c: unknown) =>
-    c !== null && typeof c === "object" &&
-    typeof (c as { body?: unknown }).body === "string" &&
-    isRollbackCloseComment((c as { body: string }).body)
+    isFleetRollbackCloseComment(c, fleetAuthors)
   );
 }
 
@@ -1537,6 +1558,15 @@ async function processRepoMilestones(
     ...(authorOptions !== undefined ? { authorOptions } : {}),
     log,
   };
+  // PR #3592 review: the fleet logins whose roll-back close comments count,
+  // resolved at most once per repo scan by the same rule the tracker author
+  // check uses, and only if a closed-only milestone needs it.
+  let fleetForRollbackCloses: Promise<string[]> | undefined;
+  const resolveFleetForRollbackCloses = (): Promise<string[]> =>
+    fleetForRollbackCloses ??= resolveAlertDedupAuthors(
+      authorOptions ?? {},
+      log,
+    );
   // Resolve default branch via injected function (Issue #1509 — uses the
   // persistent 7-day cache in production so we don't burn a GitHub REST
   // quota slot every run_core cycle).
@@ -1725,6 +1755,7 @@ async function processRepoMilestones(
       repo,
       milestoneBranch,
       ghCommandFn,
+      resolveFleetForRollbackCloses,
     );
     if (!finalPrs.ok) {
       log(
@@ -1897,12 +1928,19 @@ async function processRepoMilestones(
     // it endlessly while leaving the milestone branch unable to take the
     // default branch through a PR. The post-merge retirement below is what
     // covers a sync raised after this point.
+    // A final PR a roll-back closed does not count as existing here either,
+    // or the sync PR would stay open while the fresh final PR is raised.
+    const supersededPrNumbers =
+      finalPrs.ok && finalPrs.value.kind === "superseded"
+        ? finalPrs.value.closedPrNumbers
+        : [];
     const existingSummary = await hasExistingMilestoneSummaryPr(
       repo,
       milestone.title,
       milestoneBranch,
       ghCommandFn,
       cache,
+      supersededPrNumbers,
     );
     if (existingSummary.ok && existingSummary.value === null) {
       await retireMilestoneSyncPrs({
@@ -1929,9 +1967,7 @@ async function processRepoMilestones(
       log,
       cache,
       { ...arming, ...(authorOptions !== undefined ? { authorOptions } : {}) },
-      finalPrs.ok && finalPrs.value.kind === "superseded"
-        ? finalPrs.value.closedPrNumbers
-        : [],
+      supersededPrNumbers,
     );
     if (prResult.outcome === "created") {
       onPrCreated(1);
