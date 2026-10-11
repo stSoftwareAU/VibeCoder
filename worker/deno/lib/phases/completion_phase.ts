@@ -48,6 +48,7 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
@@ -150,6 +151,12 @@ import {
   matchedTestDeclarations,
   referencesFindingId,
 } from "../security_fix_gate.ts";
+import {
+  buildMutationGateComment,
+  DEFAULT_MUTATION_BUDGET_SECONDS,
+  evaluateMutationGate,
+  type MutationCheckResult,
+} from "../mutation_gate.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
@@ -298,6 +305,35 @@ async function runGitOrThrow(
     );
   }
   return result.value.stdout;
+}
+
+/** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
+export const MAX_MUTATION_BUDGET_SECONDS = 3600;
+
+/**
+ * Resolve the mutation gate's wall-clock budget from the per-repo
+ * `mutation_check_budget_seconds` value (Issue #3393). A missing value is the
+ * default; a value that is not a positive integer no greater than
+ * {@link MAX_MUTATION_BUDGET_SECONDS} is refused loudly through `warn` and
+ * the default applies, as the other untrusted per-repo numbers do.
+ */
+export function resolveMutationBudgetSeconds(
+  raw: string,
+  warn: (message: string, context?: Record<string, unknown>) => void,
+): number {
+  if (raw === "") return DEFAULT_MUTATION_BUDGET_SECONDS;
+  const parsed = Number(raw);
+  if (
+    !Number.isInteger(parsed) || parsed <= 0 ||
+    parsed > MAX_MUTATION_BUDGET_SECONDS
+  ) {
+    warn(
+      "Ignoring invalid mutation_check_budget_seconds — using the default",
+      { value: raw, default: DEFAULT_MUTATION_BUDGET_SECONDS },
+    );
+    return DEFAULT_MUTATION_BUDGET_SECONDS;
+  }
+  return parsed;
 }
 
 /**
@@ -497,6 +533,11 @@ interface SummaryRuleBlock {
    * nothing folded in passes `[comment]`.
    */
   sections: readonly string[];
+  /**
+   * True when a blocked gate in `sections` is fixed by changing tests (the
+   * mutation gate, Issue #3393), so the recovery prompt allows test changes.
+   */
+  allowsTestChanges?: boolean;
 }
 
 /**
@@ -584,7 +625,7 @@ async function reportSummaryRuleBlock(
   // comment; the existing-PR finalise below is a path that posts it too.
   docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
-  const { reason, comment, sections } = block;
+  const { reason, comment, sections, allowsTestChanges } = block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
@@ -610,6 +651,7 @@ async function reportSummaryRuleBlock(
         reason,
         comment,
         sections,
+        ...(allowsTestChanges ? { allowsTestChanges } : {}),
         ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
       },
     ];
@@ -756,9 +798,9 @@ async function reportSummaryRuleBlock(
  * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
  * because that gate ran after the guard; the closure, independent-review
  * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all five late-summary gates (Issue #3257
- * added the summary claim check as the fifth) pass, whether the PR is then
- * raised or recovered.
+ * in `completionBody` runs once all six late-summary gates (Issue #3393
+ * added the mutation check as the fifth and Issue #3257 the summary claim
+ * check as the sixth) pass, whether the PR is then raised or recovered.
  *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
  *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
@@ -2703,9 +2745,10 @@ async function completionBody(
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, the summary claim check, then the pre-PR
-   * verifier (Issue #3147 added branch outcomes; Issue #3257 added the claim
-   * check; Issue #3395 added the verifier last). One
+   * placeholder, branch outcomes, mutation check, the summary claim check,
+   * then the pre-PR verifier (Issue #3147 added branch outcomes; Issue #3393
+   * the mutation check; Issue #3257 the claim check; Issue #3395 added the
+   * verifier last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
    */
@@ -2713,6 +2756,8 @@ async function completionBody(
     blocked: boolean;
     reason: string;
     comment: () => string;
+    /** Only a test change satisfies this verdict (the mutation gate). */
+    needsTestChanges?: boolean;
   }
   const docsSweepVerdict: LateSummaryVerdict = {
     blocked: docsSweepBlocked,
@@ -2737,6 +2782,118 @@ async function completionBody(
     reason: branchOutcomesReason,
     comment: () => buildBranchOutcomesGateComment(branchOutcomes),
   };
+  // ---------------------------------------------------------------------
+  // Diff-scoped mutation verdict (Issue #3393), computed once alongside the
+  // other late-summary verdicts so a summary that fails an earlier gate AND
+  // leaves a changed line's mutant surviving is told about both in the one
+  // recovery turn. Mutants are generated only for the lines this PR changed;
+  // a survivor is a changed line no test notices, and blocks unless the
+  // summary exempts it. A diff or runner that cannot answer fails closed
+  // (`error`); a runner that is not wired, or a repo that opts out, never
+  // blocks.
+  // ---------------------------------------------------------------------
+  let mutationVerdict: LateSummaryVerdict;
+  {
+    let mutationResult: MutationCheckResult | null = null;
+    if (
+      getRepoConfig(config.repoConfig, repo, "skipMutationCheck") === "true"
+    ) {
+      logger.info("mutation check skipped by skip_mutation_check", { repo });
+      mutationResult = {
+        kind: "not_applicable",
+        reason: "skipped by skip_mutation_check",
+      };
+    } else if (!deps.quality.runMutationCheck) {
+      logger.warn("Mutation runner not wired — mutation check not applicable");
+      mutationResult = {
+        kind: "not_applicable",
+        reason: "mutation runner not wired",
+      };
+    } else {
+      const budgetSeconds = resolveMutationBudgetSeconds(
+        getRepoConfig(config.repoConfig, repo, "mutationCheckBudgetSeconds"),
+        (message, context) => logger.warn(message, context),
+      );
+      let mutationDiff: string | null = null;
+      if (comparableBase.ok) {
+        try {
+          mutationDiff = await runGitOrThrow(
+            ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+            state.repoPath,
+            deps,
+          );
+        } catch (error) {
+          logger.warn("Could not collect the PR diff for the mutation check", {
+            base: comparableBase.value,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (mutationDiff === null) {
+        mutationResult = {
+          kind: "error",
+          reason: `could not collect the PR diff against ${baseBranch}`,
+        };
+      } else {
+        // The quality gate's child gets the credentials this repository
+        // declared, and its tests need them here too or the baseline fails
+        // before mutation. A failed mint is not run without them: that would
+        // block the PR on a fault that is not its code.
+        const credentials = await resolveRepoCredentials(
+          repo,
+          config.repoConfig?.[repo]?.qualityCredentials,
+        );
+        if (!credentials.ok) {
+          logger.warn(
+            "Could not resolve quality_credentials for the mutation check",
+            { repo, error: credentials.error.message },
+          );
+          mutationResult = {
+            kind: "not_applicable",
+            reason:
+              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          };
+        } else {
+          try {
+            mutationResult = await deps.quality.runMutationCheck({
+              repoPath: state.repoPath,
+              diff: mutationDiff,
+              budgetSeconds,
+              credentialEnv: credentials.value.env,
+            });
+          } catch (error) {
+            mutationResult = {
+              kind: "error",
+              reason: `mutation runner failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
+        }
+      }
+    }
+    const gate = evaluateMutationGate(mutationResult, prBody);
+    if (gate.budgetExhausted) {
+      logger.warn(gate.note, { repo, issueNumber });
+    } else if (gate.note !== "") {
+      // "Not applicable" and "N of M killed" are logged too, so a gate that
+      // never ran (no Deno project above the changed files) is visible.
+      logger.info(gate.note, { repo, issueNumber });
+    }
+    if (gate.survivors.length > 0 || gate.blocked) {
+      logger.warn("Mutation check found changed lines no test notices", {
+        survivors: gate.survivors.map((m) => `${m.file}:${m.line}`),
+        exempted: gate.exempted.map((m) => `${m.file}:${m.line}`),
+        reason: gate.reason,
+      });
+    }
+    mutationVerdict = {
+      blocked: gate.blocked,
+      reason: gate.reason,
+      comment: () => buildMutationGateComment(gate),
+      needsTestChanges: true,
+    };
+  }
   const claimCheckVerdict: LateSummaryVerdict = {
     blocked: claimCheck !== null && summaryClaimCheckBlocked(claimCheck),
     reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
@@ -2758,32 +2915,44 @@ async function completionBody(
     removedAssertionsVerdict,
     placeholderVerdict,
     branchOutcomesVerdict,
+    mutationVerdict,
     claimCheckVerdict,
     prePrVerifierVerdict,
   ];
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, summary claim check, pre-PR verifier — in
-   * that order) other
-   * than those in `skip` into an earlier gate's block.
+   * placeholder, branch outcomes, mutation check, summary claim check, pre-PR
+   * verifier — in that order) other than those in `skip` into an earlier
+   * gate's block.
+   * `allowsTestChanges` is set on the result when the block, or any verdict
+   * folded in, is one that only a test change satisfies (the mutation check).
    */
   function foldInLateSummaryVerdicts(
     reason: string,
     comment: string,
     skip: readonly LateSummaryVerdict[] = [],
-  ): { reason: string; comment: string; sections: readonly string[] } {
+  ): SummaryRuleBlock {
     let foldedReason = reason;
     let foldedComment = comment;
     const sections = [comment];
+    // `skip` names the verdicts already represented by `reason`/`comment`, so a
+    // blocked mutation verdict there still means the recovery turn must test.
+    let allowsTestChanges = skip.some((v) => v.blocked && v.needsTestChanges);
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
+      if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
       foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
       sections.push(verdictComment);
     }
-    return { reason: foldedReason, comment: foldedComment, sections };
+    return {
+      reason: foldedReason,
+      comment: foldedComment,
+      sections,
+      ...(allowsTestChanges ? { allowsTestChanges } : {}),
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -2898,8 +3067,8 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
   // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), the summary claim check (Issue #3257), and the pre-PR
-  // verifier (Issue #3395) — in that order.
+  // (Issue #3147), the mutation check (Issue #3393), the summary claim check
+  // (Issue #3257), and the pre-PR verifier (Issue #3395) — in that order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
@@ -3023,8 +3192,9 @@ async function completionBody(
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
   // reaching it, or named a test that did not exist at the head. Folds in
-  // the summary claim check (Issue #3257) and the pre-PR verifier
-  // (Issue #3395), the two late verdicts still named below it.
+  // the mutation check (Issue #3393), the summary claim check (Issue #3257)
+  // and the pre-PR verifier (Issue #3395), the late verdicts still named
+  // below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
     logger.warn("Branch-outcomes gate blocked PR creation", {
@@ -3041,6 +3211,41 @@ async function completionBody(
         removedAssertionsVerdict,
         placeholderVerdict,
         branchOutcomesVerdict,
+      ],
+    );
+    return await reportSummaryRuleBlock(
+      folded,
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Mutation gate (Issue #3393).
+  //
+  // A changed line whose mutant survives the repository's own tests is a
+  // change nothing checks. Blocked like the other summary-rule gates so the
+  // single recovery turn is told the `file:line` and the mutation and either
+  // adds a test that kills it or records an exemption in the summary. Folds
+  // in the summary claim check and the pre-PR verifier (Issue #3395), the late
+  // verdicts still named below it.
+  // ---------------------------------------------------------------------
+  if (mutationVerdict.blocked) {
+    logger.warn("Mutation gate blocked PR creation", {
+      reason: mutationVerdict.reason,
+    });
+    const folded = foldInLateSummaryVerdicts(
+      mutationVerdict.reason,
+      mutationVerdict.comment(),
+      [
+        docsSweepVerdict,
+        removedAssertionsVerdict,
+        placeholderVerdict,
+        branchOutcomesVerdict,
+        mutationVerdict,
       ],
     );
     return await reportSummaryRuleBlock(

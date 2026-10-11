@@ -1312,7 +1312,9 @@ existing harness" with no search named is not a reason. An outcome the linked
 issue asks a test for, in its acceptance criteria or Definition of done,
 cannot be `exempt (untestable)`. The gate checks only that an exemption gives
 a reason of three or more words, so the search must be named for a reviewer to
-check it (Issue #3428). A fix to an existing PR re-enumerates every branch its
+check it (Issue #3428). The diff-scoped mutation check (Issue #3393, `docs/mutation-check.md`) blocks
+the PR on any added line whose mutation the tests do not catch, exempt only by
+the same `exempt (untestable): <reason>` record naming `path:line`. A fix to an existing PR re-enumerates every branch its
 own commits add, not only those a review finding named, and refreshes the list
 to the head.
 

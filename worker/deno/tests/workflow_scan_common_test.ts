@@ -14,6 +14,7 @@ import {
 } from "../lib/suppression_comments.ts";
 import { assert, assertEquals } from "@std/assert";
 import {
+  type BlameFileFn,
   fileWorkflowFinding,
   type GhCommandFn,
   isFindingSuppressed,
@@ -185,7 +186,7 @@ Deno.test("isFindingSuppressed - true for a matching best-practice-ignore marker
       " — author=nigel expires=2099-12-31 pinned upstream by mirror",
       "      - uses: actions/checkout@v4",
     ].join("\n");
-    assert(isFindingSuppressed(text, 2, id));
+    assert(isFindingSuppressed({ rawText: text }, 2, id));
   } finally {
     _clearSuppressionAllowlist();
     _clearSuppressionCommitAuthors();
@@ -205,7 +206,7 @@ Deno.test("isFindingSuppressed - true on the same line", async () => {
     ]);
     const text =
       `      - uses: actions/checkout@v4 # best-practice-ignore: ${id} — author=nigel expires=2099-12-31 ok`;
-    assert(isFindingSuppressed(text, 1, id));
+    assert(isFindingSuppressed({ rawText: text }, 1, id));
   } finally {
     _clearSuppressionAllowlist();
     _clearSuppressionCommitAuthors();
@@ -216,15 +217,164 @@ Deno.test("isFindingSuppressed - false when no marker, wrong id, or wrong line",
   const id = await makeStableId(["github-actions-audit", "ci.yml", "sha-pin"]);
   const other = await makeStableId(["github-actions-audit", "ci.yml", "other"]);
   const plain = "      - uses: actions/checkout@v4\n";
-  assertEquals(isFindingSuppressed(plain, 1, id), false);
+  assertEquals(isFindingSuppressed({ rawText: plain }, 1, id), false);
 
   const wrongId =
     `      # best-practice-ignore: ${other} — different finding\n      - uses: actions/checkout@v4`;
-  assertEquals(isFindingSuppressed(wrongId, 2, id), false);
+  assertEquals(isFindingSuppressed({ rawText: wrongId }, 2, id), false);
 
   const farAway =
     `      # best-practice-ignore: ${id} — too far\n\n\n      - uses: actions/checkout@v4`;
-  assertEquals(isFindingSuppressed(farAway, 4, id), false);
+  assertEquals(isFindingSuppressed({ rawText: farAway }, 4, id), false);
+});
+
+const BLAME_ID = "BP-0123456789ab";
+const BLAME_MARKER =
+  `# best-practice-ignore: ${BLAME_ID} — author=nigel expires=2099-12-31 pinned upstream`;
+
+/** Run `fn` with only the author allowlist set — never the commit-author seam. */
+async function withBlameBinding(fn: () => Promise<void>): Promise<void> {
+  _clearSuppressionCommitAuthors();
+  _setSuppressionAllowlist(["nigel"]);
+  try {
+    await fn();
+  } finally {
+    _clearSuppressionAllowlist();
+  }
+}
+
+Deno.test("isFindingSuppressed - honours a marker whose author matches the blamed line without the commit-author seam (Issue #3389)", async () => {
+  await withBlameBinding(() => {
+    const rawText = `${BLAME_MARKER}\n      - uses: actions/checkout@v4\n`;
+    const path = ".github/workflows/ci.yml";
+    assert(
+      isFindingSuppressed(
+        { rawText, path, lineAuthors: { 1: "nigel" } },
+        2,
+        BLAME_ID,
+      ),
+    );
+    return Promise.resolve();
+  });
+});
+
+Deno.test("isFindingSuppressed - rejects a marker blamed on someone else or with no blame (Issue #3389)", async () => {
+  await withBlameBinding(() => {
+    const rawText = `${BLAME_MARKER}\n      - uses: actions/checkout@v4\n`;
+    const path = ".github/workflows/ci.yml";
+    assertEquals(
+      isFindingSuppressed(
+        { rawText, path, lineAuthors: { 1: "mallory" } },
+        2,
+        BLAME_ID,
+      ),
+      false,
+    );
+    assertEquals(isFindingSuppressed({ rawText, path }, 2, BLAME_ID), false);
+    return Promise.resolve();
+  });
+});
+
+Deno.test("readWorkflowFiles - blames a file carrying a BP- marker and attaches lineAuthors (Issue #3389)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "wsc-blame-" });
+  try {
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/marked.yml`,
+      `${BLAME_MARKER}\n${CI_YML}`,
+    );
+    await Deno.writeTextFile(`${dir}/.github/workflows/clean.yml`, CI_YML);
+    const calls: string[] = [];
+    const blameFileFn: BlameFileFn = (_dir, file) => {
+      calls.push(file);
+      return Promise.resolve({ 1: "nigel" });
+    };
+
+    const files = await readWorkflowFiles(dir, { blameFileFn });
+
+    assertEquals(calls, [".github/workflows/marked.yml"]);
+    const byPath = new Map(files.map((f) => [f.path, f]));
+    assertEquals(byPath.get(".github/workflows/marked.yml")!.lineAuthors, {
+      1: "nigel",
+    });
+    assertEquals(
+      byPath.get(".github/workflows/clean.yml")!.lineAuthors,
+      undefined,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+async function commitAs(
+  cwd: string,
+  login: string,
+  message: string,
+): Promise<void> {
+  const env = {
+    GIT_AUTHOR_NAME: login,
+    GIT_AUTHOR_EMAIL: `${login}@users.noreply.github.com`,
+    GIT_COMMITTER_NAME: login,
+    GIT_COMMITTER_EMAIL: `${login}@users.noreply.github.com`,
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+  };
+  for (const args of [["add", "-A"], ["commit", "-q", "-m", message]]) {
+    const out = await new Deno.Command("git", {
+      args,
+      cwd,
+      env,
+      stdin: "null",
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    assertEquals(
+      out.code,
+      0,
+      `git ${args.join(" ")}: ${new TextDecoder().decode(out.stderr)}`,
+    );
+  }
+}
+
+Deno.test("readWorkflowFiles + isFindingSuppressed - a committed marker is honoured in production wiring (Issue #3389)", async () => {
+  await withBlameBinding(async () => {
+    const dir = await Deno.makeTempDir({ prefix: "wsc-e2e-" });
+    try {
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q", "-b", "main"],
+        cwd: dir,
+        env: { GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+        stdin: "null",
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      assertEquals(init.code, 0);
+      await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+      const wf = `${dir}/.github/workflows/ci.yml`;
+      const head =
+        `name: CI\non: [push]\njobs:\n  b:\n    runs-on: ubuntu-latest\n    steps:\n`;
+      const uses = `      - uses: actions/checkout@v4\n`;
+      await Deno.writeTextFile(wf, `${head}      ${BLAME_MARKER}\n${uses}`);
+      await commitAs(dir, "nigel", "add marker");
+
+      // No deps: the default (real git blame) is the production path.
+      let files = await readWorkflowFiles(dir);
+      assertEquals(files.length, 1);
+      const usesLine = 8;
+      assert(isFindingSuppressed(files[0]!, usesLine, BLAME_ID));
+
+      // A different author rewrites the marker line: forgery is rejected.
+      await Deno.writeTextFile(
+        wf,
+        `${head}      ${BLAME_MARKER} (edited)\n${uses}`,
+      );
+      await commitAs(dir, "mallory", "forge marker");
+      files = await readWorkflowFiles(dir);
+      assertEquals(isFindingSuppressed(files[0]!, usesLine, BLAME_ID), false);
+    } finally {
+      await Deno.remove(dir, { recursive: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -447,4 +597,24 @@ Deno.test("selectLiveSteps - an in-source marker drops the step it sits above", 
     _clearSuppressionAllowlist();
     _clearSuppressionCommitAuthors();
   }
+});
+
+Deno.test("selectLiveSteps - a file's blamed lineAuthors lets an in-source marker drop a step without the seam (Issue #3389)", async () => {
+  await withBlameBinding(() => {
+    const file: WorkflowFile = {
+      ...stepsFile(
+        [
+          "jobs:",
+          "  - uses: actions/checkout@v4",
+          "  # best-practice-ignore: BP-DEMO-ci — author=nigel expires=2099-12-31 needed",
+          "  - uses: actions/checkout@v4",
+        ].join("\n"),
+      ),
+      lineAuthors: { 3: "nigel" },
+    };
+    assertEquals(selectLiveSteps(TWO_STEPS, opts(file)), [TWO_STEPS[0]!]);
+    const forged = { ...file, lineAuthors: { 3: "mallory" } };
+    assertEquals(selectLiveSteps(TWO_STEPS, opts(forged)), TWO_STEPS);
+    return Promise.resolve();
+  });
 });

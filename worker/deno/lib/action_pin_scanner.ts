@@ -212,7 +212,7 @@ export function scanActionPins(
 
       const lineNumber = i + 1;
       // Honour in-source suppression markers per call-site.
-      if (isFindingSuppressed(file.rawText, lineNumber, findingId, file.path)) {
+      if (isFindingSuppressed(file, lineNumber, findingId)) {
         continue;
       }
 

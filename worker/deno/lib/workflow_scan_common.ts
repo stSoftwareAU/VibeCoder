@@ -24,7 +24,9 @@
  *     `runner_deprecation_filer.ts`, matching the v7 Phase 4 body shape.
  *   - {@link isFindingSuppressed} — honour in-source
  *     `best-practice-ignore: BP-…` markers so native pre-filers respect
- *     suppression the same way the LLM Phase-3 triage does.
+ *     suppression the same way the LLM Phase-3 triage does. A marker's
+ *     `author=` is bound to the `git blame` login of its line, which
+ *     {@link readWorkflowFiles} attaches (Issue #3389).
  *   - {@link makeStableId} — produce a deterministic `BP-`-prefixed
  *     stable id (the `BP-` prefix is required: `listKnownOpenFindingIds`
  *     defaults `idPrefix` to `BP-`, so a non-`BP-` id silently breaks
@@ -42,6 +44,7 @@ import {
 import { buildAttributionFooter } from "./idle_task_attribution.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import type { GhCommandFn } from "./runner_deprecation_scanner.ts";
+import { blameFileLineLogins } from "./suppression_identity.ts";
 
 export type { GhCommandFn };
 
@@ -72,6 +75,52 @@ export interface WorkflowFile {
   parsed: unknown;
   /** Whether this is a workflow or a composite action definition. */
   kind: WorkflowFileKind;
+  /**
+   * 1-based line → GitHub login from `git blame` (Issue #3389, binding per
+   * Issue #269). Set by {@link readWorkflowFiles} only when the file text
+   * carries a `BP-` marker candidate and blame yielded logins. When absent,
+   * `findSuppressions` falls back to the process-wide commit-author list,
+   * which production never sets, so markers fail closed.
+   */
+  lineAuthors?: Readonly<Record<number, string>>;
+}
+
+/** What {@link isFindingSuppressed} needs to know about a scanned file. */
+export interface SuppressionSource {
+  rawText: string;
+  path?: string;
+  lineAuthors?: Readonly<Record<number, string>>;
+}
+
+/** Blames `file` under `workDir` into a line → login map. */
+export type BlameFileFn = (
+  workDir: string,
+  file: string,
+) => Promise<Readonly<Record<number, string>>>;
+
+/** Injectable dependencies for {@link readWorkflowFiles}. */
+export interface ReadWorkflowFilesDeps {
+  /** Defaults to `blameFileLineLogins`; tests inject a stub. */
+  blameFileFn?: BlameFileFn;
+}
+
+/**
+ * Blame `relPath` only when `text` could hold a suppression marker.
+ *
+ * Every best-practices marker form requires a `BP-` id, so the pre-check
+ * is a strict superset and spares marker-free files the blame cost.
+ * Returns `undefined` when there is nothing to bind (no candidate, or blame
+ * yielded no logins), which fails closed in production.
+ */
+export async function blameSuppressionMarkerLines(
+  workDir: string,
+  relPath: string,
+  text: string,
+  blameFileFn: BlameFileFn,
+): Promise<Readonly<Record<number, string>> | undefined> {
+  if (!/BP-/i.test(text)) return undefined;
+  const blamed = await blameFileFn(workDir, relPath);
+  return Object.keys(blamed).length > 0 ? blamed : undefined;
 }
 
 /**
@@ -86,11 +135,18 @@ export interface WorkflowFile {
  * `.github/workflows` and no `.github/actions` returns an empty array
  * without throwing.
  *
+ * A file carrying a `BP-` marker candidate is also `git blame`d so each
+ * marker's `author=` can be verified against the blamed line author
+ * (Issue #3389); the result is attached as `lineAuthors`.
+ *
  * Results are sorted by path so test assertions stay deterministic.
  */
 export async function readWorkflowFiles(
   workDir: string,
+  deps: ReadWorkflowFilesDeps = {},
 ): Promise<WorkflowFile[]> {
+  const blameFileFn: BlameFileFn = deps.blameFileFn ??
+    ((dir, file) => blameFileLineLogins(dir, file));
   const files: WorkflowFile[] = [];
 
   const workflowsDir = `${workDir}/.github/workflows`;
@@ -100,6 +156,8 @@ export async function readWorkflowFiles(
       `${workflowsDir}/${name}`,
       rel,
       "workflow",
+      workDir,
+      blameFileFn,
     );
     if (entry) files.push(entry);
   }
@@ -109,7 +167,13 @@ export async function readWorkflowFiles(
     const rel = abs.startsWith(`${workDir}/`)
       ? abs.slice(workDir.length + 1)
       : abs;
-    const entry = await readWorkflowFile(abs, rel, "composite-action");
+    const entry = await readWorkflowFile(
+      abs,
+      rel,
+      "composite-action",
+      workDir,
+      blameFileFn,
+    );
     if (entry) files.push(entry);
   }
 
@@ -122,6 +186,8 @@ async function readWorkflowFile(
   absPath: string,
   relPath: string,
   kind: WorkflowFileKind,
+  workDir: string,
+  blameFileFn: BlameFileFn,
 ): Promise<WorkflowFile | null> {
   let rawText: string;
   try {
@@ -136,7 +202,19 @@ async function readWorkflowFile(
     // Leave `parsed` null — the pre-filer can still inspect the raw text.
     parsed = null;
   }
-  return { path: relPath, rawText, parsed, kind };
+  const lineAuthors = await blameSuppressionMarkerLines(
+    workDir,
+    relPath,
+    rawText,
+    blameFileFn,
+  );
+  return {
+    path: relPath,
+    rawText,
+    parsed,
+    kind,
+    ...(lineAuthors ? { lineAuthors } : {}),
+  };
 }
 
 /** Yield the names of `*.yml`/`*.yaml` files directly inside `dir`. */
@@ -242,19 +320,23 @@ export async function makeStableId(
  * Native pre-filers call this before filing so they honour suppression
  * the same way the LLM Phase-3 triage does.
  *
- * `filePath` is recorded against each marker in the per-run suppression
+ * `source.path` is recorded against each marker in the per-run suppression
  * registry so the scan report can name where an active waiver lives
- * (Issue #3712).
+ * (Issue #3712). A marker's `author=` must match the login blamed on the
+ * marker line in `source.lineAuthors` (Issue #3389); without it the
+ * marker fails closed.
  */
 export function isFindingSuppressed(
-  fileText: string,
+  source: SuppressionSource,
   lineNumber: number,
   stableId: string,
-  filePath?: string,
 ): boolean {
   // YAML comments are `#`-style — reuse the hash-comment marker forms.
   const suppressions = filterByFamily(
-    findSuppressions(fileText, "sh", filePath ? { file: filePath } : {}),
+    findSuppressions(source.rawText, "sh", {
+      ...(source.path ? { file: source.path } : {}),
+      ...(source.lineAuthors ? { lineAuthors: source.lineAuthors } : {}),
+    }),
     "best-practices",
   );
   return isSuppressed(stableId, suppressions, lineNumber);
@@ -295,7 +377,7 @@ export interface SelectLiveStepsOptions<T> {
  *     above) its cited line. The file yields no finding once every step
  *     is dropped.
  *
- * Pure aside from reading `file.rawText`.
+ * Pure aside from reading `file.rawText` and `file.lineAuthors`.
  */
 export function selectLiveSteps<T extends { line: number }>(
   steps: readonly T[],
@@ -310,10 +392,10 @@ export function selectLiveSteps<T extends { line: number }>(
   return steps.filter((step) => {
     const id = stepId(step);
     if (suppressedIds.has(id)) return false;
-    if (isFindingSuppressed(file.rawText, step.line, findingId, file.path)) {
+    if (isFindingSuppressed(file, step.line, findingId)) {
       return false;
     }
-    return !isFindingSuppressed(file.rawText, step.line, id, file.path);
+    return !isFindingSuppressed(file, step.line, id);
   });
 }
 

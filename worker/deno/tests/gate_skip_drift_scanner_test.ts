@@ -449,6 +449,42 @@ Deno.test("scanGateSkipDrift - an attributed in-source waiver suppresses the too
   }
 });
 
+/** Blame stub mapping every line of `file` (under `dir`) to `login`. */
+function blameEveryLineAs(login: string) {
+  return async (dir: string, file: string): Promise<Record<number, string>> => {
+    const text = await Deno.readTextFile(`${dir}/${file}`);
+    const authors: Record<number, string> = {};
+    text.split("\n").forEach((_, i) => authors[i + 1] = login);
+    return authors;
+  };
+}
+
+Deno.test("scanGateSkipDrift - a waiver bound by blame suppresses the tool without the commit-author seam (Issue #3389)", async () => {
+  _resetSuppressionCommitAuthors();
+  setSuppressionAuthorAllowlist(["nigel"]);
+  const dir = await checkoutFixture("neat_ai_core");
+  try {
+    await waiveBats(dir, " — author=nigel expires=2099-12-31 CI-only suite");
+    const manifestText = await pre1595ManifestText();
+    const run = (login: string) =>
+      scanGateSkipDrift({
+        repoPath: dir,
+        repo: "stSoftwareAU/NEAT-AI-core",
+        manifestText,
+        blameFileFn: blameEveryLineAs(login),
+      });
+
+    const honoured = unwrap(await run("nigel"));
+    assertEquals(honoured.drifts.map((d) => d.tool), ["codespell"]);
+
+    const forged = unwrap(await run("mallory"));
+    assertEquals(forged.drifts.map((d) => d.tool), ["bats", "codespell"]);
+  } finally {
+    _resetSuppressionAuthorAllowlist();
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("scanGateSkipDrift - an unattributed waiver suppresses nothing", async () => {
   const dir = await checkoutFixture("neat_ai_core");
   try {
