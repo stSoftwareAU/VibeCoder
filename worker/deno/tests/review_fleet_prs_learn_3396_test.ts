@@ -77,7 +77,9 @@ Deno.test("review-fleet-prs filed improvement issues carry a Deterministic check
     learn.includes("`## Deterministic check assessment`"),
     "the filed issue's required contents must include the assessment heading",
   );
-  const contents = learn.slice(learn.indexOf("`## Deterministic check assessment`"));
+  const contents = learn.slice(
+    learn.indexOf("`## Deterministic check assessment`"),
+  );
   assert(
     /checks considered/.test(contents) &&
       /why none is feasible/.test(contents),
