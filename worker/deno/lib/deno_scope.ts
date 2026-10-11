@@ -70,10 +70,6 @@ export function parseDenoScope(text: string): DenoScopeConfig | null {
   };
 }
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.+^$()|\\[\]{}]/g, "\\$&");
-}
-
 /** Normalise a config entry to a repo-config-relative path pattern. */
 function normalisePattern(entry: string): string {
   return entry.replace(/^(?:\.\/)+/, "").replace(/^\/+/, "").replace(
@@ -82,32 +78,70 @@ function normalisePattern(entry: string): string {
   );
 }
 
-/** Compile one glob segment (no `/`); null on an unbalanced brace. */
-function compileSegment(segment: string): RegExp | null {
-  let out = "";
-  let braceDepth = 0;
-  for (const ch of segment) {
-    if (ch === "*") {
-      // Runs of `*` collapse, so adjacent stars add no backtracking.
-      if (!out.endsWith("[^/]*")) out += "[^/]*";
-    } else if (ch === "?") {
-      out += "[^/]";
-    } else if (ch === "{") {
-      braceDepth++;
-      out += "(?:";
-    } else if (ch === "}" && braceDepth > 0) {
-      braceDepth--;
-      out += ")";
-    } else if (ch === "," && braceDepth > 0) {
-      out += "|";
-    } else {
-      out += escapeRegExp(ch);
-    }
+const MAX_BRACE_ALTERNATIVES = 64;
+
+/**
+ * Expand `{a,b}` groups (nesting allowed) into plain wildcard patterns; null
+ * on an unbalanced brace or more than {@link MAX_BRACE_ALTERNATIVES} results.
+ */
+function expandBraces(pattern: string): string[] | null {
+  const open = pattern.indexOf("{");
+  if (open === -1) return [pattern];
+  let depth = 0;
+  let close = -1;
+  const cuts: number[] = [];
+  for (let i = open; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    } else if (ch === "," && depth === 1) cuts.push(i);
   }
-  return braceDepth === 0 ? new RegExp(`^${out}$`) : null;
+  if (close === -1) return null;
+  const head = pattern.slice(0, open);
+  const tail = pattern.slice(close + 1);
+  const bounds = [open, ...cuts, close];
+  const out: string[] = [];
+  for (let i = 0; i + 1 < bounds.length; i++) {
+    const alt = pattern.slice((bounds[i] as number) + 1, bounds[i + 1]);
+    const expanded = expandBraces(`${head}${alt}${tail}`);
+    if (expanded === null) return null;
+    out.push(...expanded);
+    if (out.length > MAX_BRACE_ALTERNATIVES) return null;
+  }
+  return out;
 }
 
-type Segment = RegExp | "**";
+/** Match `text` against a `*` / `?` wildcard pattern in O(pattern × text). */
+function wildcardMatch(pattern: string, text: string): boolean {
+  let p = 0;
+  let t = 0;
+  let starP = -1;
+  let starT = 0;
+  while (t < text.length) {
+    const pc = pattern[p];
+    if (pc === "*") {
+      starP = p++;
+      starT = t;
+    } else if (pc === "?" || (pc !== undefined && pc === text[t])) {
+      p++;
+      t++;
+    } else if (starP !== -1) {
+      p = starP + 1;
+      t = ++starT;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === "*") p++;
+  return p === pattern.length;
+}
+
+type Segment = string[] | "**";
 
 /**
  * Compile one path/glob entry into a matcher over `/`-separated paths; null
@@ -124,9 +158,9 @@ function compile(entry: string): ((path: string) => boolean) | null {
       if (segments[segments.length - 1] !== "**") segments.push("**");
       continue;
     }
-    const re = compileSegment(raw);
-    if (re === null) return null;
-    segments.push(re);
+    const alternatives = expandBraces(raw);
+    if (alternatives === null) return null;
+    segments.push(alternatives);
   }
   return (path) => {
     const parts = path.split("/");
@@ -143,7 +177,8 @@ function compile(entry: string): ((path: string) => boolean) | null {
         result = walk(si + 1, pi) || (pi < parts.length && walk(si, pi + 1));
       } else {
         const part = parts[pi];
-        result = part !== undefined && seg.test(part) && walk(si + 1, pi + 1);
+        result = part !== undefined &&
+          seg.some((alt) => wildcardMatch(alt, part)) && walk(si + 1, pi + 1);
       }
       memo.set(key, result);
       return result;

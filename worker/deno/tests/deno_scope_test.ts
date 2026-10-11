@@ -97,3 +97,25 @@ Deno.test("inDenoScope: an empty include list or an unbalanced brace leaves file
   assert(!inDenoScope("README.md", legal, "fmt"));
   assert(inDenoScope("src/a/x.ts", legal, "fmt"));
 });
+
+Deno.test("inDenoScope: a hostile wildcard pattern and a brace explosion stay bounded", () => {
+  const stars = scope(`{"exclude":["${"*a".repeat(40)}*b"]}`);
+  assert(inDenoScope(`${"a".repeat(2000)}.ts`, stars, "fmt"));
+  // 7 groups of 3 alternatives is 2187 expansions: refused, so uncompilable.
+  const boom = scope(`{"fmt":{"include":["${"{a,b,c}".repeat(7)}"]}}`);
+  assert(inDenoScope("README.md", boom, "fmt"));
+  // Within the cap the same shape is honoured: 2 groups of 3 is 9 alternatives.
+  const ok = scope(`{"fmt":{"include":["${"{a,b,c}".repeat(2)}"]}}`);
+  assert(inDenoScope("ab", ok, "fmt"));
+  assert(!inDenoScope("README.md", ok, "fmt"));
+});
+
+Deno.test("inDenoScope: a trailing star may match nothing and ? matches exactly one character", () => {
+  const c = scope('{"fmt":{"include":["src/a*","lib/?.ts"]}}');
+  assert(inDenoScope("src/a", c, "fmt"));
+  assert(inDenoScope("src/abc", c, "fmt"));
+  assert(!inDenoScope("src/b", c, "fmt"));
+  assert(inDenoScope("lib/x.ts", c, "fmt"));
+  assert(!inDenoScope("lib/xy.ts", c, "fmt"));
+  assert(!inDenoScope("lib/.ts", c, "fmt"));
+});
