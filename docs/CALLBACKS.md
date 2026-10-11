@@ -491,7 +491,7 @@ The same facts are exported as scalars, one variable each:
 | `VIBECODER_CACHE_READ_TOKENS`            | `telemetry.cacheReadTokens`     | no             | Cache-read tokens                                                                                                    |
 | `VIBECODER_ESTIMATED_COST_USD`           | `telemetry.estimatedCostUsd`    | no             | Estimated spend in USD                                                                                               |
 | `VIBECODER_TURNS`                        | `telemetry.turns`               | no             | Turns the run took, summed across its invocations                                                                    |
-| `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Served model of the invocation with the biggest token total — the model most of the run went through                 |
+| `VIBECODER_MODEL`                        | `telemetry.model`               | no             | Served model of the invocation with the biggest token total (its sub-agents' tokens included) — the model most of the run went through                 |
 | `VIBECODER_EFFORT`                       | `telemetry.effort`              | no             | Effort that same dominant invocation was started with (`low`, `medium`, `high`, `xhigh`, `max`) — Issue #2573        |
 | `VIBECODER_TELEMETRY_ABSENT_REASON`      | `telemetryAbsentReason`         | no             | Why telemetry is missing (`agent_not_invoked`, `usage_not_reported`, `provider_unsupported`)                         |
 | `VIBECODER_OUTCOME_KIND`                 | `outcome.kind`                  | no             | Structured result: `pr`, `no_pr`, `no_pr_expected`, `superseded`, `summary_incomplete`, `claim_stale`                |
@@ -546,8 +546,8 @@ optional, and a hook written before they existed is unaffected:
 - `telemetry.turns` is summed over the invocations that reported a turn
   count, and is absent when none did — never nought.
 - `telemetry.model` is the served model of the invocation with the biggest
-  token total, falling back to that invocation's requested model when the API
-  reported none. Tokens rather than estimated cost, so a model with no
+  token total (its sub-agents' tokens included, Issue #3603), falling back to
+  that invocation's requested model when the API reported none. Tokens rather than estimated cost, so a model with no
   pricing row can still be named; it is present whenever `telemetry` is.
 
 `telemetry.effort` was **added** the same way (Issue #2573), for the per-phase

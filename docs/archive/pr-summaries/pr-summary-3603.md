@@ -47,9 +47,11 @@ Closes #3603
   that invocation served more than one real model (excluding `<synthetic>`),
   the comment adds `sub-agents: not costed` and marks the total
   `(partial — see below)`.
-- **Callback telemetry's dominant model.** The dominant model is now the
-  largest attributed entry, not `servedModels[0]`, and token sums come from
-  the attributed entries.
+- **Callback telemetry's dominant model stays per invocation.** Invocations
+  are ranked by their attributed token total (sub-agents included) and
+  `model` is that invocation's `servedModels[0] ?? requestedModel`, so it
+  still pairs with that invocation's `stats.effort` (PR #3611 review). Token
+  sums come from the attributed entries.
 
 ### Undiscoverable Facts
 
@@ -152,11 +154,14 @@ flowchart LR
     and "…a run on one model is unchanged". Flip (`> 0`) went red.
   - `worker/deno/lib/planning_run_stats.ts:726` — the flag is passed to the
     formatter. Test: the planning not-costed test. Flip (pass `{}`) went red.
-  - `worker/deno/lib/run_callback_telemetry.ts:88` — the breakdown feeds the
-    attribution. Tests: the three new telemetry tests. Flip (pass
+  - `worker/deno/lib/run_callback_telemetry.ts:89` — the breakdown feeds the
+    attribution. Tests: the split-run telemetry tests. Flip (pass
     `undefined`) went red.
-  - `worker/deno/lib/run_callback_telemetry.ts:107` — largest entry wins, and
-    ties go to invocation order. Test: "an equal-token tie is broken
+  - `worker/deno/lib/run_callback_telemetry.ts:111` — the invocation with the
+    largest attributed total wins, with its main model and effort, and ties go
+    to invocation order. Tests: "a split run's model and effort stay the
+    invocation's main model and its effort" and "invocations are ranked by
+    their attributed token total". Test: "an equal-token tie is broken
     deterministically by invocation order". Flip (`>=`) went red.
   - `worker/deno/lib/cost_estimate.ts:218` — attribution used rather than
     `whole`. Tests: the AC3 measureIssuePhaseRun test and three #2346 tests.
@@ -171,7 +176,7 @@ flowchart LR
 - **met** — The per-tier fleet telemetry from #3403/#3404 uses the same corrected figure. — evidence: `worker/deno/tests/issue run stats comment test.ts::measureIssuePhaseRun - a split run's spend covers every served model, as the comment does (Issue #3603); worker/deno/tests/phase run usd test.ts::phase run usd - prices a split run from modelUsage when tokenUsage is all zero (Issue #3603)` — reviewer: met
 - **unrequested** — readModelUsageBreakdown exported from worker/deno/lib/cost estimate.ts — reviewer: unrequested — reason: justified — planning run stats needs the same breakdown-readable check to raise the not-costed flag, and sharing it avoids a second parser
 - **unrequested** — Tokens line in planning run stats and token sums in run callback telemetry taken from the attributed entries — reviewer: unrequested — reason: justified — otherwise the token counts would cover only the main session while the cost covers every model; it does change what the published telemetry. Tokens fields mean
-- **unrequested** — Callback telemetry's dominant model is now the largest attributed entry, not servedModels[0] ( worker/deno/lib/run callback telemetry.ts:100-112 ) — reviewer: unrequested — reason: unjustified — the issue does not ask for it, effort is still the advisor's stats.effort so a Haiku-dominated run reports the Opus advisor's effort, and docs/CALLBACKS.md was not updated; outstanding
+- **unrequested** — Callback telemetry ranks invocations by their attributed token total (sub-agents included); `model` and `effort` still come from the same invocation (`worker/deno/lib/run_callback_telemetry.ts:111-115`) — reviewer: unrequested — reason: justified — keeps the ranking consistent with the attributed sums, and `docs/CALLBACKS.md` and `run_callbacks.ts` doc comments now say sub-agent tokens count
 - **unrequested** — docs/MODEL-AND-CACHING.md run-cost bullet rewrite — reviewer: unrequested — reason: justified — the old text described the reconcile-or-discard rule this change removes
 - **unrequested** — #2346 test rewritten in worker/deno/tests/cost estimate test.ts (discard rule → trusts a breakdown exceeding the run totals without a residual) — reviewer: unrequested — reason: justified — the discard rule is exactly what dropped sub-agent usage; the trade-off is that a readable but inflated breakdown is now trusted
 - **unrequested** — Per-counter residual clamped at zero, the formatCostEstimateLines options parameter, and modelUsage added to TelemetrySource — reviewer: unrequested — reason: justified — these are what trusting a larger breakdown, the not-costed flag and the corrected callback cost need to work
@@ -180,7 +185,7 @@ flowchart LR
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — A Code Change Owes a Docs Change: telemetry.model now names the largest per-model entry, but docs/CALLBACKS.md:494-495 and 548-551 still say 'served model of the invocation with the biggest token total' — evidence: `worker/deno/lib/run callback telemetry.ts:100-112` — reason: NOT fixed in this diff and not pre-existing (the changed lines cause it) — outstanding; neither permitted reason applies truthfully, so the PR should not be raised until it is fixed
-- **violation** — A Contract a Deployed Extension Reads Is Additive-Only: VIBECODER MODEL / VIBECODER EFFORT change meaning, and effort: stats.effort can pair a sub-agent model with the advisor's effort, so the comment 'model and effort can never describe two calls' is now false — evidence: `worker/deno/lib/run callback telemetry.ts:107-110` — reason: NOT fixed in this diff and not pre-existing (the changed lines cause it) — outstanding; neither permitted reason applies truthfully, so the PR should not be raised until it is fixed
+- **clean** — A Code Change Owes a Docs Change: `docs/CALLBACKS.md` (VIBECODER_MODEL row and `telemetry.model` prose) and the `CallbackRunTelemetry.model` doc comment now state that sub-agent tokens count toward the invocation's total
+- **clean** — A Contract a Deployed Extension Reads Is Additive-Only: `telemetry.model` is still the main model of one invocation and `telemetry.effort` that invocation's effort, so the pair is one call's (`worker/deno/lib/run_callback_telemetry.ts:111-115`)
 - **violation** — Never Fail Silently: callback and per-tier telemetry record a multi-model run with no readable breakdown as a full cost with no not-costed flag, and docs/CONFIGURATION.md:457 does not say the flag appears only in the comment — evidence: `worker/deno/lib/run callback telemetry.ts:88-93` — reason: NOT fixed in this diff and not pre-existing (the changed lines cause it) — outstanding; neither permitted reason applies truthfully, so the PR should not be raised until it is fixed
 - **clean** — Australian English spelling, TDD (a failing test per criterion added alongside the change), KISS/DRY (one shared attributeUsageByModel / readModelUsageBreakdown path for comment, callback and fleet telemetry), Deno/TypeScript strict-index conventions

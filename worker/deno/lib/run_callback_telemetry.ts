@@ -69,7 +69,7 @@ export function summariseCallbackTelemetry(
   let cacheCreationTokens = 0;
   let cacheReadTokens = 0;
   let turns: number | undefined;
-  /** The dominant model entry so far: most tokens wins, first-seen on a tie. */
+  /** The dominant invocation so far: most tokens wins, first-seen on a tie. */
   let dominant: { model: string; effort?: string; tokens: number } | undefined;
 
   for (const invocation of invocations) {
@@ -85,30 +85,34 @@ export function summariseCallbackTelemetry(
     // main session, so the per-model breakdown is what prices every model.
     // The fallback is the served model, then the requested one — the same
     // rule the per-run stats comment applies.
+    const mainModel = stats.servedModels[0] ?? stats.requestedModel;
     const attributed = attributeUsageByModel(
       stats.tokenUsage,
       stats.modelUsage,
-      stats.servedModels[0] ?? stats.requestedModel,
+      mainModel,
     );
     entries.push(...attributed);
-    // Issue #2100: one run can be served by several models, so `model` names
-    // the one the largest share of the run went through — the model entry
-    // with the biggest token total. Tokens rather than estimated cost, because
-    // a model with no pricing row has no cost to rank by but always has a
-    // token count. Deterministic: strictly-greater, so an exact tie keeps the
-    // earlier entry rather than depending on iteration luck.
-    for (const { model, usage } of attributed) {
+    let tokens = 0;
+    for (const { usage } of attributed) {
       inputTokens += usage.inputTokens;
       outputTokens += usage.outputTokens;
       cacheCreationTokens += usage.cacheCreationTokens;
       cacheReadTokens += usage.cacheReadTokens;
-      const tokens = usage.inputTokens + usage.outputTokens +
+      tokens += usage.inputTokens + usage.outputTokens +
         usage.cacheCreationTokens + usage.cacheReadTokens;
-      if (dominant === undefined || tokens > dominant.tokens) {
-        // Issue #2573: the effort travels with the model, from the same
-        // invocation, so `model` and `effort` can never describe two calls.
-        dominant = { model, effort: stats.effort, tokens };
-      }
+    }
+    // Issue #2100: one run can be served by several models, so `model` names
+    // the invocation the largest share of the run went through — ranked by its
+    // attributed token total, so a split run's sub-agent spend counts toward
+    // the invocation that made it (Issue #3603). Tokens rather than estimated
+    // cost, because a model with no pricing row has no cost to rank by but
+    // always has a token count. Deterministic: strictly-greater, so an exact
+    // tie keeps the earlier invocation rather than depending on iteration luck.
+    if (dominant === undefined || tokens > dominant.tokens) {
+      // Issue #2573: the effort travels with the model, from the same
+      // invocation (its main model, not a sub-agent's), so `model` and
+      // `effort` can never describe two calls.
+      dominant = { model: mainModel, effort: stats.effort, tokens };
     }
   }
 

@@ -455,9 +455,42 @@ Deno.test("run_callback_telemetry - a zero top-level usage is filled from the mo
   );
 });
 
-Deno.test("run_callback_telemetry - the dominant model is the largest breakdown entry, not servedModels[0] (Issue #3603)", () => {
-  const telemetry = summariseCallbackTelemetry(splitRun(usage(0, 0)));
-  assertEquals(telemetry?.model, "claude-haiku-5-5");
+Deno.test("run_callback_telemetry - a split run's model and effort stay the invocation's main model and its effort (PR #3611 review)", () => {
+  // The executors (Haiku, Sonnet) carry most of the tokens, but the invocation
+  // ran as an Opus advisor at `high`: reporting a sub-agent model beside that
+  // effort would name a pair no call ran with.
+  const [split] = splitRun(usage(0, 0));
+  const telemetry = summariseCallbackTelemetry([{
+    runStats: { ...split.runStats, effort: "high" },
+  }]);
+  assertEquals(telemetry?.model, "claude-opus-5-5");
+  assertEquals(telemetry?.effort, "high");
+});
+
+Deno.test("run_callback_telemetry - invocations are ranked by their attributed token total, so sub-agent spend counts (PR #3611 review)", () => {
+  // The first invocation's top-level usage is bigger than the second's, but
+  // the second's breakdown holds far more once its sub-agents are counted.
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-5-5"],
+        requestedModel: "sonnet",
+        effort: "medium",
+        tokenUsage: usage(5_000, 5_000),
+      },
+    },
+    {
+      runStats: {
+        servedModels: SPLIT_MODELS,
+        requestedModel: "opus",
+        effort: "high",
+        tokenUsage: usage(0, 0),
+        modelUsage: SPLIT_BREAKDOWN,
+      },
+    },
+  ]);
+  assertEquals(telemetry?.model, "claude-opus-5-5");
+  assertEquals(telemetry?.effort, "high");
 });
 
 Deno.test("run_callback_telemetry - a main-session-only top-level usage gives the same sums (Issue #3603)", () => {
@@ -468,7 +501,7 @@ Deno.test("run_callback_telemetry - a main-session-only top-level usage gives th
   assertEquals(telemetry?.outputTokens, 132_000);
   assertEquals(telemetry?.cacheCreationTokens, 243_000);
   assertEquals(telemetry?.cacheReadTokens, 3_054_000);
-  assertEquals(telemetry?.model, "claude-haiku-5-5");
+  assertEquals(telemetry?.model, "claude-opus-5-5");
   const cost = telemetry?.estimatedCostUsd;
   assert(cost !== undefined);
   assert(Math.abs(cost - expectedSplitCost()) < 1e-9);
