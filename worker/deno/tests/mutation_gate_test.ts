@@ -658,3 +658,18 @@ Deno.test("wiring mutants - a literal value such as null is never reverted to a 
   assertFalse(ms.some((m) => m.description.startsWith("reverted property")));
   assert(ms.some((m) => m.description === "deleted object property `pending`"));
 });
+
+Deno.test("wiring mutants - a key holding $ is matched as a name, not as a pattern (Issue #3601)", () => {
+  const src = [
+    "function f($state: string, next: string) {",
+    "  return {",
+    "    $state: next,",
+    "  };",
+    "}",
+  ].join("\n");
+  assert(
+    wiringMutants(src, [3]).some((m) =>
+      m.description === "reverted property `$state` to shorthand"
+    ),
+  );
+});

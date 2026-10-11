@@ -624,10 +624,23 @@ function entryName(entry: string): string {
  * false survivor.
  */
 function nameInUse(name: string, lines: readonly string[], n: number): boolean {
-  const use = new RegExp(`(?<![\\w$.])${name}(?![\\w$])`);
+  // A plain scan, not a RegExp built from `name`: identifiers may hold `$`,
+  // which a pattern would read as an anchor.
+  const isIdent = (c: string | undefined) =>
+    c !== undefined && IDENT_CHAR.test(c);
   for (let i = Math.max(0, n - 201); i < n - 1; i++) {
     const text = lines[i] ?? "";
-    if (text.length <= MAX_MUTATED_LINE_LENGTH && use.test(text)) return true;
+    if (text.length > MAX_MUTATED_LINE_LENGTH) continue;
+    for (
+      let at = text.indexOf(name);
+      at >= 0;
+      at = text.indexOf(name, at + 1)
+    ) {
+      const before = text[at - 1];
+      if (isIdent(before) || before === ".") continue;
+      if (isIdent(text[at + name.length])) continue;
+      return true;
+    }
   }
   return false;
 }
