@@ -17,7 +17,11 @@ import type { Logger, RepoConfig, Result } from "../types.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
-import { type CommentType, removeProcessedMark } from "./pr_comments.ts";
+import {
+  type CommentType,
+  removeProcessedMark,
+  type ReviewDismissalOutcome,
+} from "./pr_comments.ts";
 import { getTokenEstimate } from "./claude_runner.ts";
 import { fetchIssueData } from "./issue_data.ts";
 import { fetchPrOwnerDirection } from "./owner_direction.ts";
@@ -737,7 +741,8 @@ interface FeedbackRunCarrier {
   rtkOutput?: RtkOutputResult;
   /**
    * How a claimed `pr_review` was settled this run (Issue #3383): `retired`
-   * once `markCommentProcessed` dismisses it on a conclusive outcome,
+   * once `markCommentProcessed` dismisses it on a conclusive outcome (with a
+   * message matching that outcome, Issue #3409),
    * `charged` once `handlePrCommentFailure` records a failed attempt, or
    * `released` when the branch could not even be prepared through no fault
    * of the review's — the lease simply lapses and the review is retried.
@@ -784,15 +789,20 @@ async function _processFeedbackWithHeartbeat(
    * The dismissal itself is `markCommentProcessed`'s `pr_review` branch — a
    * PUT to the dismissals endpoint — which offers no un-dismissal, so a
    * failure here is fail-loud: the review stays outstanding and may be
-   * processed again.
+   * processed again. `outcome` selects the dismissal message GitHub shows
+   * (Issue #3409): only `"addressed"` claims the change was made; a rebuttal,
+   * escalation, hand-off or pending fix PR each say what actually happened.
    */
-  const retireReview = async (): Promise<void> => {
+  const retireReview = async (
+    outcome: ReviewDismissalOutcome,
+  ): Promise<void> => {
     carrier.reviewSettlement = "retired";
     const result = await deps.pr.markCommentProcessed(
       repo,
       commentType,
       commentId,
       prNumber,
+      outcome,
     );
     if (!result.ok) {
       logger.error(
@@ -1407,7 +1417,15 @@ async function _processFeedbackWithHeartbeat(
   // down this function (Issue #3383): dismissing it here, before the push
   // even lands, would answer the review before the work is verified.
   if (commentType !== "pr_review") {
-    await deps.pr.markCommentProcessed(repo, commentType, commentId, prNumber);
+    // The outcome only selects a `pr_review` dismissal message, so it is
+    // unused for the eyes reaction these comment types get.
+    await deps.pr.markCommentProcessed(
+      repo,
+      commentType,
+      commentId,
+      prNumber,
+      "addressed",
+    );
   }
 
   // Always commit and push any pending work (Issue #1643).
@@ -1701,7 +1719,7 @@ async function _processFeedbackWithHeartbeat(
     // here — but only once that hand-off actually landed on the PR.
     if (commentType === "pr_review") {
       if (handOffPosted) {
-        await retireReview();
+        await retireReview("handed_off");
       } else {
         await chargeReviewFailure(
           "The escape-hatch hand-off reply could not be posted to the PR.",
@@ -1779,7 +1797,7 @@ async function _processFeedbackWithHeartbeat(
     // review nothing was ever said about.
     if (commentType === "pr_review") {
       if (posted) {
-        await retireReview();
+        await retireReview("fix_pr_pending");
       } else {
         await chargeReviewFailure(
           "The fix was pushed, but the PR comment asking someone to open " +
@@ -1803,7 +1821,7 @@ async function _processFeedbackWithHeartbeat(
     // review once the reply announcing it actually landed on the PR.
     if (commentType === "pr_review") {
       if (posted) {
-        await retireReview();
+        await retireReview("addressed");
       } else {
         await chargeReviewFailure(
           "The fix was pushed, but the PR comment reporting it could not " +
@@ -1838,7 +1856,7 @@ async function _processFeedbackWithHeartbeat(
     // failed attempt instead of dismissing a review nothing was said about.
     rebuttalPosted = posted;
     if (posted) {
-      await retireReview();
+      await retireReview("rebuttal");
     } else {
       await chargeReviewFailure(
         "A rebuttal was prepared, but the PR comment posting it failed.",
@@ -1889,7 +1907,7 @@ async function _processFeedbackWithHeartbeat(
     // comment) and the review must be charged, not silently retired.
     reviewerEscalated = escalated.ok;
     if (escalated.ok) {
-      await retireReview();
+      await retireReview("escalated");
     } else {
       logger.error(
         "PR feedback: escalating the unanswered request-changes review " +

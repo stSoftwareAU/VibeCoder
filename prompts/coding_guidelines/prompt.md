@@ -750,8 +750,9 @@ line, and so are the REST spellings (`gh api -X PUT …/pulls/N/merge`,
 `gh api -X POST …/pulls/N/reviews`). The worker merges through its own path,
 which re-checks CI status, branch freshness and the default-branch approval
 gate; a merge you issue directly has none of them. `gh pr create`, `gh pr view`,
-`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected — finish by
-creating the PR and leave it open. If it should not land, say so in a comment
+`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected (except that
+changing a PR's base with `--base` is refused too) — finish by creating the PR
+and leave it open. If it should not land, say so in a comment
 rather than closing it.
 
 ### Blocked on another issue → say so; the worker defers
@@ -1346,7 +1347,10 @@ does it) and assert what it sends or changes; when the linked issue states
 an acceptance criterion as a user action ("pressing X requests Y"), a test
 of the helper behind X does not cover that criterion. A test double that
 bypasses the production path (for example, a stub that ignores the filter
-it is passed, or forcing a fallback path) does not count for that path.
+it is passed, or forcing a fallback path) does not count for that path. In a
+Deno repository the mutation gate now performs this revert itself for object
+properties, array elements and renamed property values (Issue #3601): a
+surviving mutant of that kind is this rule's finding at that call site.
 List each entry point checked in the PR summary. A changed call site
 whose revert leaves the suite green is a blocking self-review finding: add
 a test through that caller, ideally at the level the linked issue's
