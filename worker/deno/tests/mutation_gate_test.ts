@@ -477,3 +477,184 @@ Deno.test("buildMutationGateComment - includes the budget note when exhausted", 
   const v = evaluateMutationGate({ ...EXHAUSTED, survivors: [SURVIVOR] }, "");
   assertStringIncludes(buildMutationGateComment(v), "untested, not passed");
 });
+
+// ---------------------------------------------------------------------------
+// Wiring mutants: object properties, array elements, property values
+// (Issue #3601)
+// ---------------------------------------------------------------------------
+
+/** Mutants of every line of `src` (1-based), keyed by description. */
+function wiringMutants(src: string, lines: number[]) {
+  return generateDenoMutants("lib/a.ts", src, lines, 100);
+}
+
+/** The mutated text of `line` in a mutant's source. */
+const lineOf = (m: { mutatedSource: string }, line: number) =>
+  m.mutatedSource.split("\n")[line - 1];
+
+Deno.test("wiring mutants - deletes a shorthand property alone on its line in an object literal (Issue #3601)", () => {
+  const src = [
+    "const request = {",
+    "  issue,",
+    "  repo,",
+    "};",
+  ].join("\n");
+  const ms = wiringMutants(src, [3]);
+  const del = ms.find((m) =>
+    m.description === "deleted object property `repo`"
+  );
+  assert(
+    del,
+    `no property deletion in ${JSON.stringify(ms.map((m) => m.description))}`,
+  );
+  assertEquals(lineOf(del, 3), "");
+});
+
+Deno.test("wiring mutants - deletes one entry of a single-line object literal argument (Issue #3601)", () => {
+  const src = "  await runner.run({ repo, ...request });";
+  const ms = wiringMutants(src, [1]);
+  const del = ms.find((m) =>
+    m.description === "deleted object property `repo`"
+  );
+  assert(
+    del,
+    `no entry deletion in ${JSON.stringify(ms.map((m) => m.description))}`,
+  );
+  assertEquals(lineOf(del, 1), "  await runner.run({ ...request });");
+});
+
+Deno.test("wiring mutants - deletes a string element alone on its line in an array literal (Issue #3601)", () => {
+  const src = [
+    "const fields = [",
+    '  "number",',
+    '  "subIssuesSummary",',
+    "];",
+  ].join("\n");
+  const ms = wiringMutants(src, [3]);
+  const del = ms.find((m) =>
+    m.description === 'deleted array element `"subIssuesSummary"`'
+  );
+  assert(
+    del,
+    `no element deletion in ${JSON.stringify(ms.map((m) => m.description))}`,
+  );
+  assertEquals(lineOf(del, 3), "");
+});
+
+Deno.test("wiring mutants - reverts a renamed property value to the shorthand when that name is in scope (Issue #3601)", () => {
+  const src = [
+    "function block(reason: string, failureReason: string) {",
+    "  return {",
+    "    reason: failureReason,",
+    "  };",
+    "}",
+  ].join("\n");
+  const ms = wiringMutants(src, [3]);
+  const revert = ms.find((m) =>
+    m.description === "reverted property `reason` to shorthand"
+  );
+  assert(
+    revert,
+    `no revert in ${JSON.stringify(ms.map((m) => m.description))}`,
+  );
+  assertEquals(lineOf(revert, 3), "    reason,");
+  assert(
+    ms.some((m) => m.description === "deleted object property `reason`"),
+    "the property can also be deleted",
+  );
+});
+
+Deno.test("wiring mutants - no revert when the key is not a name in use nearby (Issue #3601)", () => {
+  const src = [
+    "export const config = {",
+    "  colour: defaultColour,",
+    "};",
+  ].join("\n");
+  const ms = wiringMutants(src, [2]);
+  assertFalse(ms.some((m) => m.description.startsWith("reverted property")));
+});
+
+Deno.test("wiring mutants - type-only lines produce none: interfaces, type literals, annotations and generics (Issue #3601)", () => {
+  const cases: Array<[string, number]> = [
+    ["interface Request {\n  repo: string;\n  issue: number,\n}", 3],
+    ["type Request = {\n  repo: string,\n};", 2],
+    ["export type Pair = [\n  string,\n  number,\n];", 2],
+    ["function f(opts: {\n  repo: string,\n}) {}", 2],
+    ["const m: Record<string, {\n  repo: string,\n}> = {};", 2],
+    ["function f(\n  repo,\n  issue,\n) {}", 2],
+  ];
+  for (const [src, line] of cases) {
+    const ms = wiringMutants(src, [line]);
+    assertEquals(
+      ms.map((m) => m.description),
+      [],
+      `expected no mutants for line ${line} of:\n${src}`,
+    );
+  }
+});
+
+Deno.test("wiring mutants - index access, comments and strings are not array or object literals (Issue #3601)", () => {
+  assertEquals(
+    wiringMutants("const x = items[0];", [1]).map((m) => m.description),
+    [],
+  );
+  const commented = "const a = {\n  // repo,\n};";
+  assertEquals(wiringMutants(commented, [2]), []);
+  const template = "const s = `\n  repo,\n`;";
+  assertEquals(wiringMutants(template, [2]), []);
+});
+
+Deno.test("wiring mutants - a file whose brackets do not balance gets no wiring mutants, only the old kinds (Issue #3601)", () => {
+  const src = [
+    "const request = {",
+    "  repo,",
+    "]; // mismatched closer",
+    "if (ok) { run(); }",
+  ].join("\n");
+  const ms = wiringMutants(src, [2, 4]);
+  assertFalse(
+    ms.some((m) => m.description.startsWith("deleted object property")),
+  );
+  assert(ms.some((m) => m.description === "negated if condition"));
+});
+
+Deno.test("wiring mutants - a property line that continues onto the next line is not deleted (Issue #3601)", () => {
+  const src = [
+    "const request = {",
+    "  repo: base +",
+    "    suffix,",
+    "};",
+  ].join("\n");
+  assertFalse(
+    wiringMutants(src, [2]).some((m) =>
+      m.description.startsWith("deleted object property")
+    ),
+  );
+});
+
+Deno.test("wiring mutants - an element that continues the previous line's expression is not deleted (Issue #3601)", () => {
+  const src = [
+    "const notes = [",
+    '  "first part " +',
+    '    "second part",',
+    "];",
+  ].join("\n");
+  assertFalse(
+    wiringMutants(src, [3]).some((m) =>
+      m.description.startsWith("deleted array element")
+    ),
+  );
+});
+
+Deno.test("wiring mutants - a literal value such as null is never reverted to a shorthand (Issue #3601)", () => {
+  const src = [
+    "function f(pending: string) {",
+    "  return {",
+    "    pending: null,",
+    "  };",
+    "}",
+  ].join("\n");
+  const ms = wiringMutants(src, [3]);
+  assertFalse(ms.some((m) => m.description.startsWith("reverted property")));
+  assert(ms.some((m) => m.description === "deleted object property `pending`"));
+});
