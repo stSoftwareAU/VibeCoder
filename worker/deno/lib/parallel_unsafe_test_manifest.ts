@@ -248,6 +248,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // linear pairing from the quadratic forward scan it replaced (Issue
   // #3313).
   "tests/markdown_code_spans_test.ts",
+  // The release path's line-anchored clone-corrupt-repeat regex scans setup
+  // failure messages that quote git output; only a growth measurement
+  // separates it from a backtracking one (Issue #3446).
+  "tests/clone_corrupt_repeat_growth_3446_test.ts",
 ];
 
 /**
