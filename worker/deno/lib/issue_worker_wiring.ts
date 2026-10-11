@@ -192,6 +192,12 @@ import { evaluateRunGuard } from "./run_entrypoint.ts";
 import { runQualityGate } from "./quality_gate.ts";
 import { formatSummary } from "./quality_helpers.ts";
 import { collectDiffableGateFindings } from "./baseline_gate.ts";
+import type { MutationCheckResult } from "./mutation_gate.ts";
+import {
+  defaultMutationRunnerSeams,
+  type MutationRunInput,
+  runMutationCheck,
+} from "./mutation_runner.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -486,6 +492,14 @@ export interface QualityDeps {
   readBaselineQualityCache: typeof readBaselineQualityCache;
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
+  /**
+   * Run the diff-scoped mutation check over the PR diff (Issue #3393).
+   * Optional: when absent the mutation gate is not applicable and never
+   * blocks, so fixtures that build their own deps never run real mutants.
+   */
+  runMutationCheck?: (
+    input: MutationRunInput,
+  ) => Promise<MutationCheckResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -752,6 +766,8 @@ export function createDefaultDeps(
       fileRedCheckTracker,
       readBaselineQualityCache,
       writeBaselineQualityCache,
+      runMutationCheck: (input) =>
+        runMutationCheck(input, defaultMutationRunnerSeams()),
     },
   };
 }

@@ -349,7 +349,7 @@ export function scanRunInjection(
             const line = lineOfFirstInjection(lines, fields);
             if (
               !suppressed.has(findingId) && !knownOpen.has(findingId) &&
-              !isFindingSuppressed(file.rawText, line, findingId, file.path)
+              !isFindingSuppressed(file, line, findingId)
             ) {
               findings.push(
                 buildRunFinding(
@@ -379,7 +379,7 @@ export function scanRunInjection(
               const line = lineOfFirstInjection(lines, fields);
               if (
                 !suppressed.has(findingId) && !knownOpen.has(findingId) &&
-                !isFindingSuppressed(file.rawText, line, findingId, file.path)
+                !isFindingSuppressed(file, line, findingId)
               ) {
                 findings.push(
                   buildAiPromptFinding(

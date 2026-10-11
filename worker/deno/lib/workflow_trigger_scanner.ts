@@ -239,7 +239,7 @@ export function scanWorkflowTriggers(
 
     const lines = file.rawText.split("\n");
     const line = lineOfPushTrigger(lines);
-    if (isFindingSuppressed(file.rawText, line, findingId, file.path)) continue;
+    if (isFindingSuppressed(file, line, findingId)) continue;
 
     findings.push(buildFinding(file, findingId, line, defaultBranch));
   }

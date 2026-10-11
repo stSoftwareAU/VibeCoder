@@ -1302,7 +1302,10 @@ the test that goes red, or remove the branch. Only an outcome the issue puts
 out of scope, or one production can reach but a test cannot stage, may stand,
 written `exempt (out of scope): <reason>` or `exempt (untestable): <reason>`;
 an issue run's branch-outcomes gate blocks PR creation on any other admission
-(Issue #3288). An outcome no input can reach is dead code: remove it, never
+(Issue #3288). The diff-scoped mutation check (Issue #3393,
+`docs/mutation-check.md`) blocks the PR on any added line whose mutation the
+tests do not catch, exempt only by the same `exempt (untestable): <reason>`
+record naming `path:line`. An outcome no input can reach is dead code: remove it, never
 exempt it. `exempt (untestable)` is for an outcome production can reach but a
 test cannot stage, such as a permission or I/O fault the suite cannot stage
 portably; its reason names what blocks staging and the harness search — the
