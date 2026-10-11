@@ -24,13 +24,17 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  markdownLogicalUnits,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
 /**
- * Cap on one Docs sweep entry after wrapped continuation lines are joined.
+ * Cap on one Docs sweep entry after the rest of its logical unit is joined.
  * A real entry is one sentence plus paths; joining past this cannot be a
  * wrap and would pull later summary text into the `section:` scan
  * (Issue #3085 review).
@@ -80,9 +84,6 @@ export interface DocsSweepLine {
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
 
-/** A markdown heading. A wrapped Docs sweep entry stops before the next one. */
-const HEADING_RE = /^\s{0,3}#{1,6}\s/;
-
 /**
  * The `Docs sweep` prefix once markdown decoration is stripped: the words,
  * optional space, then a separator. The body is the slice after that
@@ -90,9 +91,6 @@ const HEADING_RE = /^\s{0,3}#{1,6}\s/;
  * cannot make the match backtrack (Issue #3085 review).
  */
 const DOCS_SWEEP_PREFIX_RE = /^docs\s+sweep\s*[:\-–—]/i;
-
-/** Every line terminator, so a lone CR or Unicode separator cannot stay inside a line. */
-const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
 
 /** The `section:` / `sections:` field inside a Docs sweep line's body. */
 const SECTION_FIELD_RE = /\bsections?\s*:\s*([^;]+)/i;
@@ -111,56 +109,51 @@ function stripDecoration(line: string): string {
 }
 
 /**
- * A wrapped Docs sweep entry ends at a blank line, a new list item, or a
- * heading. The entry's own first line is a list item and is not tested here.
- */
-function isEntryBoundary(raw: string): boolean {
-  if (raw.trim() === "") return true;
-  if (LIST_MARKER_RE.test(raw)) return true;
-  if (HEADING_RE.test(raw)) return true;
-  return false;
-}
-
-/**
  * Parse the first `Docs sweep` entry out of a PR summary. First match wins.
- * Continuation lines are joined until a blank line, a new list marker, or a
- * heading, so `section:` on a hard-wrapped line is still read (Issue #3085).
+ * The entry's continuation lines are the rest of its logical unit from
+ * `markdownLogicalUnits` (Issue #3356), so the entry ends at a blank line, a
+ * new list item, a heading, a table row, a fence or an HTML comment, and
+ * `section:` on a hard-wrapped line is still read (Issue #3085). A fenced
+ * example is not the entry.
  */
 export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
-  const lines = (prSummaryContent ?? "")
-    .slice(0, MAX_SCAN_CHARS)
-    .split(LINE_TERMINATOR_RE);
+  const lines = splitMarkdownLines(
+    (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS),
+  );
 
-  for (let i = 0; i < lines.length; i++) {
-    const stripped = stripDecoration(lines[i]!);
-    const prefix = stripped.match(DOCS_SWEEP_PREFIX_RE);
-    if (!prefix) continue;
-    const firstBody = stripped.slice(prefix[0].length).trim();
-    // An empty body after the separator is not an entry. Joining the
-    // following lines would turn `Docs sweep:\rX` into a line (Issue #3085
-    // linear-scan case).
-    if (firstBody === "") continue;
-    const parts = [firstBody];
-    const rawParts = [lines[i]!.replace(LIST_MARKER_RE, "").trim()];
-    for (let j = i + 1; j < lines.length; j++) {
-      const next = lines[j]!;
-      if (isEntryBoundary(next)) break;
-      parts.push(stripDecoration(next));
-      rawParts.push(next.trim());
-      if (parts.join(" ").length >= MAX_DOCS_SWEEP_ENTRY_CHARS) break;
+  for (const unit of markdownLogicalUnits(lines)) {
+    if (unit.kind === "code") continue;
+    for (let k = 0; k < unit.lines.length; k++) {
+      const i = unit.lines[k]!;
+      const stripped = stripDecoration(lines[i]!);
+      const prefix = stripped.match(DOCS_SWEEP_PREFIX_RE);
+      if (!prefix) continue;
+      const firstBody = stripped.slice(prefix[0].length).trim();
+      // An empty body after the separator is not an entry. Joining the
+      // following lines would turn `Docs sweep:\rX` into a line (Issue #3085
+      // linear-scan case).
+      if (firstBody === "") continue;
+      const parts = [firstBody];
+      const rawParts = [lines[i]!.replace(LIST_MARKER_RE, "").trim()];
+      for (let m = k + 1; m < unit.lines.length; m++) {
+        const next = lines[unit.lines[m]!]!;
+        parts.push(stripDecoration(next));
+        rawParts.push(next.trim());
+        if (parts.join(" ").length >= MAX_DOCS_SWEEP_ENTRY_CHARS) break;
+      }
+      const rawBody = rawParts.join(" ").slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
+      let body = parts.join(" ").trim();
+      if (body.length > MAX_DOCS_SWEEP_ENTRY_CHARS) {
+        body = body.slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
+      }
+      if (body === "") continue;
+      // The section value is read from the joined (decoration-stripped) body,
+      // trimmed of surrounding backtick/whitespace decoration left after the
+      // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
+      const sectionMatch = body.match(SECTION_FIELD_RE);
+      const section = sectionMatch ? trimDecoration(sectionMatch[1]!) : "";
+      return { present: true, body, section, rawBody };
     }
-    const rawBody = rawParts.join(" ").slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
-    let body = parts.join(" ").trim();
-    if (body.length > MAX_DOCS_SWEEP_ENTRY_CHARS) {
-      body = body.slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
-    }
-    if (body === "") continue;
-    // The section value is read from the joined (decoration-stripped) body,
-    // trimmed of surrounding backtick/whitespace decoration left after the
-    // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
-    const sectionMatch = body.match(SECTION_FIELD_RE);
-    const section = sectionMatch ? trimDecoration(sectionMatch[1]!) : "";
-    return { present: true, body, section, rawBody };
   }
 
   return { present: false, body: "", section: "", rawBody: "" };

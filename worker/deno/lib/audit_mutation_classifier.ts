@@ -14,7 +14,8 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { normaliseGhArgs } from "./gh_flag_parser.ts";
+import { GH_SEPARATED_VALUE_FLAGS } from "./gh_argv.ts";
+import { canonicaliseGhArgs, GITHUB_API_HOST } from "./gh_argv_canonical.ts";
 
 /**
  * How the mutation's target repo was — or was not — determined (Issue #3703).
@@ -235,27 +236,33 @@ export const GH_SANCTIONED_GRAPHQL_MUTATIONS: ReadonlySet<string> = new Set([
   "changeuserstatus",
 ]);
 
-/** `gh` flags whose following token is a value, not a positional argument. */
-const GH_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "-X",
-  "--method",
-  "-f",
-  "-F",
-  "--field",
-  "--raw-field",
-  "-H",
-  "--header",
-  "--input",
-  "--jq",
-  "-q",
-  "--template",
-  "-t",
-  "--cache",
-  "-R",
-  "--repo",
-  // `gh api --hostname <host>`: the host is a value, not the endpoint (Issue #3540).
-  "--hostname",
-]);
+/**
+ * `gh` flags whose following token is a value, not a positional argument.
+ *
+ * Derived from the one table every `gh` argv walker shares (Issue #3568):
+ * this classifier used to keep its own copy, which lacked `-p`/`--preview`,
+ * so a preview name was read as the endpoint (Issue #3561).
+ */
+const GH_VALUE_FLAGS: ReadonlySet<string> = GH_SEPARATED_VALUE_FLAGS;
+
+/**
+ * gh's placeholder syntax (cli/cli `pkg/cmd/api` `fillPlaceholders`): it
+ * rewrites these in a magic field's value (`-F`/`--field`) with the current
+ * repository's owner, name or checked-out branch — after this classifier has
+ * read the value, and the agent chooses the branch (Issue #3566).
+ */
+const GH_FIELD_PLACEHOLDER = /:(?:owner|repo|branch)\b|\{[a-z]+\}/;
+
+/**
+ * Magic-field keys whose substituted value could change what the guard
+ * decided: the GraphQL document and operation name (a branch name can close a
+ * string and add an operation), and label names (Issue #3566).
+ */
+function isPlaceholderSensitiveKey(key: string): boolean {
+  const k = key.trim().toLowerCase();
+  return k === "query" || k === "operationname" || k === "name" ||
+    k === "new_name" || k.startsWith("labels");
+}
 
 /**
  * Extract `owner/repo` from a `-R`/`--repo` flag anywhere in the args.
@@ -344,14 +351,16 @@ export function ghSubVerb(args: readonly string[]): string | undefined {
  * The only host a `gh api` endpoint may name and still be classified from its
  * path (Issue #1420).
  *
- * A GitHub Enterprise deployment answers on its own host. Naming it here is
- * the one edit that would extend this, and it is deliberately not read from
+ * Defined in `gh_argv_canonical.ts`, whose endpoint canonicaliser shares it
+ * (Issue #3568), and re-exported here. A GitHub Enterprise deployment answers
+ * on its own host. Naming it there is the one edit that would extend this,
+ * and it is deliberately not read from
  * `GH_HOST`: that variable reaches this classifier through the same argv-
  * adjacent environment the guard exists to distrust. An enterprise fleet's
  * ABSOLUTE endpoints therefore classify as `unknown` and are refused —
  * fail-closed, and the relative form every normal call uses is unaffected.
  */
-export const GITHUB_API_HOST = "api.github.com";
+export { GITHUB_API_HOST };
 
 /** The only `gh api --hostname` value classified from its path (Issue #1420). */
 const GITHUB_HOST = "github.com";
@@ -756,6 +765,15 @@ function classifyGhApi(
       unreadableBody = true;
       return;
     }
+    // Issue #3566: gh fills placeholders in a magic field after this read, so
+    // the text classified is not the text sent — fail closed.
+    if (
+      expandsAtFile && isPlaceholderSensitiveKey(value.slice(0, eq)) &&
+      GH_FIELD_PLACEHOLDER.test(value.slice(eq + 1))
+    ) {
+      unreadableBody = true;
+      return;
+    }
     if (value.slice(0, eq) === "query") {
       queryDocuments.push(value.slice(eq + 1));
     }
@@ -885,8 +903,11 @@ export function classifyGhMutation(
 ): MutationInfo | null {
   // Issue #3867: pflag's attached shorthand spellings (`-Rowner/repo`,
   // `-X=POST`) are rewritten to their separated form first, so every match
-  // below sees the one spelling.
-  const args = normaliseGhArgs(rawArgs);
+  // below sees the one spelling. Issue #3568: a `gh api` call is further
+  // rewritten to its canonical form — flags after the root, an explicit
+  // method, the endpoint as GitHub routes it — so no equivalent spelling
+  // classifies differently.
+  const args = canonicaliseGhArgs(rawArgs);
   const rootIdx = firstNonFlag(args, 0);
   const root = args[rootIdx];
   if (!root) return null;
