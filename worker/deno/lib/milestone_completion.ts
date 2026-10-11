@@ -195,6 +195,22 @@ interface GitHubMilestone {
    * is safe to auto-close — only fire when no in-flight work remains.
    */
   open_issues?: number;
+  /** ISO creation time from the milestone listing (PR #3592 review grace window). */
+  created_at?: string;
+}
+
+/** How long an empty milestone is left alone after creation (planning assigns its items). */
+const EMPTY_MILESTONE_GRACE_MS = 15 * 60_000;
+
+/** True when `createdAt` is missing, unparsable, in the future, or inside the grace window. */
+export function isMilestoneYoung(
+  createdAt: string | undefined,
+  nowMs: number,
+): boolean {
+  if (typeof createdAt !== "string") return true;
+  const created = Date.parse(createdAt);
+  if (Number.isNaN(created)) return true;
+  return nowMs - created < EMPTY_MILESTONE_GRACE_MS;
 }
 
 /**
@@ -1847,6 +1863,33 @@ async function processRepoMilestones(
       continue;
     }
 
+    // Issue #3474: read the closed items before the nothing-to-merge close
+    // so a milestone with none can be told apart from one planning has only
+    // just created.
+    const closedIssues = await getClosedIssues(
+      repo,
+      milestone.title,
+      ghCommandFn,
+      cache,
+    );
+    // PR #3592 review: planning POSTs the milestone and only then assigns its
+    // sub-issues, so for a moment it has no items and no branch. Leave a young
+    // (or undated) empty milestone for a later scan rather than closing it
+    // under the planning run.
+    if (
+      closedIssues.length === 0 &&
+      isMilestoneYoung(milestone.created_at, Date.now())
+    ) {
+      log(
+        `Milestone '${milestone.title}' in ${repo} has no closed items and ` +
+          `was created within the last ${
+            EMPTY_MILESTONE_GRACE_MS / 60_000
+          } minutes (or has no usable created_at) — leaving it for a later ` +
+          `scan (PR #3592 review)`,
+      );
+      continue;
+    }
+
     // Issue #3214 (scope item 2): check the milestone branch BEFORE creating a
     // tracker. When there is nothing to merge (branch missing, or 0 commits
     // ahead of the default branch — the common issue-only-milestone case),
@@ -1892,13 +1935,8 @@ async function processRepoMilestones(
     // Skip empty milestones (no closed issues means nothing was worked on).
     // Issue #3474: this runs only after the nothing-to-merge check above, so
     // an empty milestone with no branch (or 0 ahead) is closed rather than
-    // skipped; an empty milestone with commits ahead is still skipped.
-    const closedIssues = await getClosedIssues(
-      repo,
-      milestone.title,
-      ghCommandFn,
-      cache,
-    );
+    // skipped (once past the grace window above); an empty milestone with
+    // commits ahead is still skipped.
     if (closedIssues.length === 0) {
       continue;
     }

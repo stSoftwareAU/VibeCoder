@@ -23,6 +23,7 @@ import {
   hasExistingMilestoneTrackingIssue,
   hasNothingToMerge,
   isMilestoneTrackingTitle,
+  isMilestoneYoung,
   isSummaryPrMerged,
   type MilestoneCompletionDeps,
   selectDuplicateTrackersToClose,
@@ -3049,6 +3050,8 @@ interface Scenario3474 {
   commentAuthor?: string;
   /** Fleet logins the scan trusts (default `["bot"]`). */
   fleet?: string[];
+  /** Milestone `created_at`: a string, or `null` to omit it (default: long ago). */
+  createdAt?: string | null;
 }
 
 async function run3474(sc: Scenario3474) {
@@ -3101,7 +3104,14 @@ async function run3474(sc: Scenario3474) {
       return "{}";
     }
     if (key.includes("api") && key.endsWith("/milestones")) {
-      return JSON.stringify([{ title: "scan", number: 1, open_issues: 0 }]);
+      return JSON.stringify([{
+        title: "scan",
+        number: 1,
+        open_issues: 0,
+        ...(sc.createdAt === null
+          ? {}
+          : { created_at: sc.createdAt ?? "2020-01-01T00:00:00Z" }),
+      }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
       return "main";
@@ -3308,6 +3318,44 @@ Deno.test("close-out - empty milestone with only closed PRs and no branch is clo
   });
   assertEquals(r.patched, [1]);
   assertEquals(r.created, []);
+});
+
+Deno.test("close-out - a just-created empty branchless milestone is left for a later scan (PR #3592 review)", async () => {
+  const r = await run3474({
+    prs: [],
+    closedIssues: false,
+    createdAt: new Date().toISOString(),
+  });
+  assertEquals(r.patched, []);
+  assertEquals(r.created, []);
+  assertEquals(
+    r.logs.some((l) => l.includes("leaving it for a later scan")),
+    true,
+  );
+});
+
+Deno.test("close-out - an empty branchless milestone with no usable created_at is left for a later scan (PR #3592 review)", async () => {
+  for (const createdAt of [null, "not-a-date"]) {
+    const r = await run3474({ prs: [], closedIssues: false, createdAt });
+    assertEquals(r.patched, []);
+  }
+});
+
+Deno.test("close-out - a young milestone WITH closed items is still closed (PR #3592 review)", async () => {
+  const r = await run3474({
+    prs: [],
+    createdAt: new Date().toISOString(),
+  });
+  assertEquals(r.patched, [1]);
+});
+
+Deno.test("isMilestoneYoung - grace window boundaries (PR #3592 review)", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+  assertEquals(isMilestoneYoung("2026-01-01T11:50:00Z", now), true);
+  assertEquals(isMilestoneYoung("2026-01-01T11:45:00Z", now), false);
+  assertEquals(isMilestoneYoung("2026-01-01T13:00:00Z", now), true);
+  assertEquals(isMilestoneYoung(undefined, now), true);
+  assertEquals(isMilestoneYoung("", now), true);
 });
 
 Deno.test("close-out - empty milestone with commits ahead is still skipped (Issue #3474)", async () => {

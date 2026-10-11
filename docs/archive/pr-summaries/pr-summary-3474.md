@@ -8,7 +8,10 @@ skip on every scan:
 - A milestone whose final PR was closed without merging is closed, and a
   comment names the closed PR.
 - A milestone with no closed issues now reaches the #3214 nothing-to-merge
-  close path before the empty-milestone skip.
+  close path before the empty-milestone skip, unless it was created in the
+  last 15 minutes (or has no usable `created_at`): planning creates a
+  milestone before it assigns the sub-issues, so a young empty milestone is
+  left for a later scan.
 
 When the milestone branch has several PRs, a merged PR wins over a closed one.
 
@@ -56,19 +59,21 @@ flowchart TD
     B -->|merged| C[close tracker, retire sync PRs, close milestone]
     B -->|abandoned| D[comment naming closed PR, close tracker, close milestone]
     B -->|open| E[leave open]
-    B -->|none / error| F[hasNothingToMerge — Issue #3214]
+    B -->|none / error| K[getClosedIssues]
+    K -->|zero and young or undated| L[leave for a later scan]
+    K -->|otherwise| F[hasNothingToMerge — Issue #3214]
     F -->|nothing to merge| G[close milestone directly]
-    F -->|commits ahead| H[getClosedIssues]
-    H -->|zero| I[skip]
-    H -->|some| J[existing final-PR flow]
+    F -->|commits ahead, zero closed| I[skip]
+    F -->|commits ahead, some closed| J[existing final-PR flow]
 ```
 
-- `worker/deno/lib/milestone_completion.ts:349` — `classifyMilestoneFinalPrs`.
-- `worker/deno/lib/milestone_completion.ts:1754` — the classification call and
-  the merged arm (1765) and abandoned arm (1791) in
+- `worker/deno/lib/milestone_completion.ts:365` — `classifyMilestoneFinalPrs`.
+- `worker/deno/lib/milestone_completion.ts:1770` — the classification call and
+  the merged arm (1781) and abandoned arm (1807) in
   `checkAndHandleMilestoneCompletions`.
-- `worker/deno/lib/milestone_completion.ts:1896` — `getClosedIssues` and its
-  empty skip now run after `hasNothingToMerge` (1857).
+- `worker/deno/lib/milestone_completion.ts:1869` — `getClosedIssues` now runs
+  before `hasNothingToMerge` (1900), with the young-empty-milestone grace skip
+  (1879-1892); the empty skip at 1940 runs after it.
 - Issue references:
   - #3474: Milestone close-out never reaches milestones with a closed-unmerged
     final PR or no closed issues
@@ -118,7 +123,7 @@ no key bump is needed.
 
 - `deno check`: clean.
 - `deno fmt --check` and `deno lint` on both changed files: clean.
-- `deno task test:unit tests/milestone_completion_test.ts`: 110 passed,
+- `deno task test:unit tests/milestone_completion_test.ts`: 114 passed,
   0 failed.
 - Red checks. Each mutation below was applied, turned the named tests red,
   and was then restored:
@@ -131,41 +136,42 @@ no key bump is needed.
     classification failure falls through to the existing flow".
   - The AC4 path: "empty milestone with only closed PRs and no branch is
     closed".
+  - Grace-window guard disabled (`false &&`): the two young-milestone tests.
   - Merged-arm tracker close disabled: "a merged final PR closes the open
     tracker".
 
 Branch outcomes:
 
-- `worker/deno/lib/milestone_completion.ts:387` — `none` (no PRs) — "none when
+- `worker/deno/lib/milestone_completion.ts:403` — `none` (no PRs) — "none when
   there are no PRs" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:392` — `none` (missing or unknown
+- `worker/deno/lib/milestone_completion.ts:408` — `none` (missing or unknown
   state) — "a PR with no state is not treated as abandoned", "a missing or
   unknown state fails safe to none" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:402` — `merged` — "merged takes
+- `worker/deno/lib/milestone_completion.ts:418` — `merged` — "merged takes
   precedence over open and closed", "a merged final PR beside a closed one …"
   — flip went red.
-- `worker/deno/lib/milestone_completion.ts:406` — `open` — "open beats
+- `worker/deno/lib/milestone_completion.ts:422` — `open` — "open beats
   closed", "an open final PR leaves the milestone open with no comment" — flip
   went red.
-- `worker/deno/lib/milestone_completion.ts:427` — `abandoned` — "all closed is
+- `worker/deno/lib/milestone_completion.ts:443` — `abandoned` — "all closed is
   abandoned at the highest number", "closes a milestone whose only final PR
   was closed unmerged …" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:1760` — classification error falls
+- `worker/deno/lib/milestone_completion.ts:1776` — classification error falls
   through — "a classification failure falls through to the existing flow",
   "errors on bad JSON, non-array output or a gh failure" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:1767` — merged-arm tracker close —
+- `worker/deno/lib/milestone_completion.ts:1783` — merged-arm tracker close —
   "a merged final PR closes the open tracker" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:1796` — abandoned comment on the
+- `worker/deno/lib/milestone_completion.ts:1812` — abandoned comment on the
   tracker, or on the PR — "abandoned final PR comments on and closes the open
   tracker", "closes a milestone whose only final PR was closed unmerged …" —
   flip went red.
-- `worker/deno/lib/milestone_completion.ts:1818` — comment failure logs and
+- `worker/deno/lib/milestone_completion.ts:1834` — comment failure logs and
   continues — "a failing abandoned-PR comment does not stop the close" — flip
   went red.
-- `worker/deno/lib/milestone_completion.ts:1825` — abandoned-arm tracker
+- `worker/deno/lib/milestone_completion.ts:1841` — abandoned-arm tracker
   close — "abandoned final PR comments on and closes the open tracker" — flip
   went red.
-- `worker/deno/lib/milestone_completion.ts:1902` — empty skip after
+- `worker/deno/lib/milestone_completion.ts:1940` — empty skip after
   nothing-to-merge. "empty milestone with commits ahead is still skipped"
   covers the skip; "empty milestone with no branch is closed, not skipped"
   and "empty milestone with only closed PRs and no branch is closed" cover
@@ -173,11 +179,11 @@ Branch outcomes:
 
 Mutation check (diff-scoped survivors from the previous gate run), now killed:
 
-- `worker/deno/lib/milestone_completion.ts:429` — negated `err instanceof Error ? err.message : String(err)` in
+- `worker/deno/lib/milestone_completion.ts:445` — negated `err instanceof Error ? err.message : String(err)` in
   the classifier's catch — new test "classifyMilestoneFinalPrs - a thrown
   non-Error is reported by its own text (Issue #3474)" went red under the
   mutation and passes on the head.
-- `worker/deno/lib/milestone_completion.ts:1819` — the same negation in the comment-failure catch — "close-out -
+- `worker/deno/lib/milestone_completion.ts:1835` — the same negation in the comment-failure catch — "close-out -
   a failing abandoned-PR comment does not stop the close (Issue #3474)" now
   throws both an `Error` and a bare string, and checks that the log carries
   the thrown text. It went red under the mutation and passes on the head.
@@ -190,7 +196,7 @@ Quality gate: the full `./quality.sh` passed on this branch with exit 0
 merged-arm tracker test, the two mutation-killing test changes, a doc-comment
 line in `milestone_sync_pr_retirement.ts` and the `docs/workflows/milestones.md`
 bullets. On this head, `deno check`, `deno lint` and `deno fmt --check` are
-clean on the changed files, and the targeted run above passed (110/110). The
+clean on the changed files, and the targeted run above passed (114/114). The
 worker re-runs the full gate.
 
 ## Acceptance Criteria
@@ -222,4 +228,11 @@ worker re-runs the full gate.
 - **Sync-PR retirement:** the merged and abandoned arms each have a test with an open sync PR, asserting that it is closed before the milestone PATCH; the superseded arm's test is described in the next bullet.
 - **Superseded sync-PR retirement:** the `hasExistingMilestoneSummaryPr` check that gates `retireMilestoneSyncPrs` now takes the same superseded ignore list as `createMilestoneSummaryPr` (one `supersededPrNumbers` value), so the sync PR is closed before the fresh final PR is raised (Issue #1967).
 - **Tests added** (`worker/deno/tests/milestone_completion_test.ts`), each turned red by reverting only its guard: "a roll-back close comment posted by a non-fleet account is ignored …" (author check removed), "an unresolved fleet set classes a roll-back-commented final PR as neither abandoned nor superseded …" (empty-set guard removed), "the superseded arm retires an open sync PR before the fresh final PR is raised …" (ignore list removed from the retirement check).
-- **Branch outcomes (added this round):** `milestone_completion.ts:411` — empty fleet set → error, no verdict — the unresolved-fleet test; `milestone_completion.ts:461` / `milestone_rollback_marker.ts:80` — non-fleet author ignored → `abandoned`, fleet author → `superseded` — the non-fleet-author test and the existing superseded tests; `milestone_completion.ts:1933` — superseded list shared by the retirement check and the create path — the sync-PR ordering test. Flips went red as listed above.
+- **Branch outcomes (added this round):** `milestone_completion.ts:427` — empty fleet set → error, no verdict — the unresolved-fleet test; `milestone_completion.ts:477` / `milestone_rollback_marker.ts:80` — non-fleet author ignored → `abandoned`, fleet author → `superseded` — the non-fleet-author test and the existing superseded tests; `milestone_completion.ts:1971` — superseded list shared by the retirement check and the create path — the sync-PR ordering test. Flips went red as listed above.
+
+## Review round 2 (PR #3592, 2026-10-11)
+
+- **Newly created milestones:** `ensureAndAssignGroup` (`planning_milestone.ts`) POSTs a milestone and only then assigns its sub-issues, so for a moment it has no items and no branch. `getClosedIssues` now runs before the nothing-to-merge close; a milestone with zero closed items whose `created_at` (read from the milestone listing already fetched) is under 15 minutes old, missing or unparsable is left for a later scan and logged (`isMilestoneYoung`, `EMPTY_MILESTONE_GRACE_MS`). A milestone with closed items is unaffected, and an old empty one still closes.
+- **Guards kept:** the guard sits after the open-child gate and the final-PR classification, so a merged or abandoned final PR still closes out regardless of age; a milestone with closed items never reaches it.
+- **Tests added** (`worker/deno/tests/milestone_completion_test.ts`): "a just-created empty branchless milestone is left for a later scan", "an empty branchless milestone with no usable created_at is left for a later scan" (missing and `"not-a-date"`), "a young milestone WITH closed items is still closed", and the `isMilestoneYoung` boundary test. The two young-milestone tests went red with the guard disabled. The old-`created_at` close is the existing "empty milestone with no branch is closed, not skipped", whose scenario now sends an old `created_at`.
+- **Branch outcomes (added this round):** `milestone_completion.ts:1879` — empty and young → skip — the two young-milestone tests, flip red; empty and old → falls to the nothing-to-merge close — "empty milestone with no branch is closed, not skipped"; non-empty and young → proceeds — "a young milestone WITH closed items is still closed"; `milestone_completion.ts:206` — `isMilestoneYoung` missing, unparsable, future, inside and outside the window — the boundary test.
