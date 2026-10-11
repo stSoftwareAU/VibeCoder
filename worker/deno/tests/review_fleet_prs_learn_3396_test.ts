@@ -86,3 +86,36 @@ Deno.test("review-fleet-prs filed improvement issues carry a Deterministic check
     "the section must name the checks considered and the proposal or why none is feasible",
   );
 });
+
+Deno.test("review-fleet-prs step 3 tracks filed guidance in the ledger and retires guidance that keeps recurring (Issue #3539)", async () => {
+  const learn = await learnStep();
+  for (
+    const needle of [
+      "`## Target pattern`",
+      "guidance.ts track",
+      "guidance.ts hit",
+      "guidance.ts due",
+      "guidance.ts retire",
+      "references/guidance-ledger.md",
+    ]
+  ) {
+    assert(learn.includes(needle), `step 3 must mention ${needle}`);
+  }
+  assert(
+    /removal or a rewrite[^.]*never an extension/i.test(learn),
+    "a recurring entry is answered by removing or rewriting the guidance, never extending it",
+  );
+});
+
+Deno.test("review-fleet-prs step 4 reports recurring guidance, and a due failure never changes a review outcome (Issue #3539)", async () => {
+  const markdown = await Deno.readTextFile(SKILL);
+  const report = section(markdown, "### 4. Report").replace(/\s+/g, " ");
+  assert(
+    /`recurring`/.test(report),
+    "the round report lists recurring entries",
+  );
+  assert(
+    /`due` fail[^.]*never changes? (a|the) (PR )?review outcome/i.test(report),
+    "a due failure is named in the report and never changes a review outcome",
+  );
+});

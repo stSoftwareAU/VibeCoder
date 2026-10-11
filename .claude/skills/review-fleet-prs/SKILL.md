@@ -373,7 +373,10 @@ VibeCoder's own guidance:
    wording or file. Compare it with `<logs>/review-fleet-prs/log.jsonl` and the
    recent review history it records. A recurrence means the same preventable
    mistake has appeared in at least **two independent PRs**; repeated comments
-   on one PR or one head commit count once.
+   on one PR or one head commit count once. When the finding matches the
+   target pattern of guidance already filed (the `pattern` slugs in
+   `guidance.ts due`'s output), record it with
+   `guidance.ts hit --pattern=<slug> --pr=<owner/repo#n>`.
 2. First assess a deterministic check: something that catches the mistake
    mechanically, every time, whether or not the agent remembers a rule.
    Consider, in this order:
@@ -407,13 +410,23 @@ VibeCoder's own guidance:
    - the proposed guidance or guardrail and how future reviews can verify it
      worked;
    - a `## Deterministic check assessment` section naming the checks
-     considered, and the check proposed or why none is feasible.
+     considered, and the check proposed or why none is feasible;
+   - a `## Target pattern` section naming one lower-case slug for the root
+     mistake (for example `untested-call-site`). After filing, record it with
+     `guidance.ts track --issue=<n> --pattern=<slug>`.
    Apply `idle-task` to the issue filed, and no reserved label (never
    `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer
    App is in `authorized_commenters`, so the worker trusts only its
    `idle-task` add, and reserved labels are for humans to set. Otherwise
    leave assignment/triage unchanged.
-6. Keep the threshold evidence-based. Similar symptoms with different causes
+6. Once per round, run `guidance.ts due` and act on each `recurring` entry:
+   guidance that closed as completed at least 30 days ago while its pattern
+   still recurs in two or more independent PRs has not worked. Search first,
+   then file at most one issue proposing removal or a rewrite of that
+   guidance, never an extension, under the same private-repo rules, and
+   record it with `guidance.ts retire --issue=<n> --by=<new issue>`. See
+   [references/guidance-ledger.md](references/guidance-ledger.md).
+7. Keep the threshold evidence-based. Similar symptoms with different causes
    are not a recurrence. Never create an issue solely to make a review pass,
    and never relax safety, testing or correctness guidance as the cure.
 
@@ -423,7 +436,9 @@ search or file an improvement issue must not change the PR review outcome.
 ### 4. Report
 
 One short line per round: approved, sent back, and held for the owner, each
-with PR links, plus any issues filed. When post.ts printed a `labelError` or
+with PR links, plus any issues filed and any `recurring` guidance entries
+from `guidance.ts due`. When `due` fails, name the failure in the report; a
+`due` failure never changes a PR review outcome. When post.ts printed a `labelError` or
 a `branchUpdateError` for a PR, name that PR and the failure. Then go back to
 the loop.
 
