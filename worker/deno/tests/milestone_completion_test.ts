@@ -3254,6 +3254,25 @@ Deno.test("close-out - a PR with no state is not treated as abandoned (Issue #34
   assertEquals(r.comments, []);
 });
 
+Deno.test("close-out - a classification failure falls through to the existing flow (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [],
+    classifyThrows: true,
+    branchExists: true,
+  });
+  assertEquals(r.patched, []);
+  assertEquals(r.comments, []);
+  assertEquals(
+    r.logs.some((l) =>
+      l.includes("WARNING") &&
+      l.includes("Failed to classify final PRs for milestone branch")
+    ),
+    true,
+  );
+  // Execution continued past classification into the normal final-PR flow.
+  assertEquals(r.created.length > 0, true);
+});
+
 // --- classifyMilestoneFinalPrs ---------------------------------------------
 
 const classify3474 = (out: unknown | (() => never)) =>
