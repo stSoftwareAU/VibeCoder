@@ -11,6 +11,7 @@ import {
   buildMilestoneSummaryBody,
   checkAndHandleMilestoneCompletions,
   checkMilestoneComplete,
+  classifyMilestoneFinalPrs,
   closeGitHubMilestone,
   getOpenMilestoneTrackers,
   hasExistingMilestoneSummaryPr,
@@ -21,6 +22,7 @@ import {
   type MilestoneCompletionDeps,
   selectDuplicateTrackersToClose,
 } from "../lib/milestone_completion.ts";
+import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
 import { partialRollupMarker } from "../lib/milestone_partial_rollup.ts";
@@ -3015,6 +3017,311 @@ Deno.test("checkAndHandleMilestoneCompletions - closes a premature tracker when 
     l.includes("premature milestone tracking issue #816")
   );
   assertEquals(prematureLog !== undefined, true);
+});
+
+// ============================================================================
+// Final-PR classification and empty-milestone close-out (Issue #3474)
+// ============================================================================
+
+const BRANCH_3474 = createMilestoneBranchName("scan");
+
+interface Scenario3474 {
+  /** Value returned for the `number,state,headRefName` PR classification. */
+  prs: unknown;
+  closedIssues?: boolean;
+  branchExists?: boolean;
+  tracker?: boolean;
+  openIssue?: boolean;
+  classifyThrows?: boolean;
+}
+
+async function run3474(sc: Scenario3474) {
+  const calls: string[] = [];
+  const patched: number[] = [];
+  const ghFn = async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    calls.push(key);
+    const authoritative = sc.openIssue
+      ? authoritativeStub(key, 1, [{
+        number: 5,
+        title: "real",
+        pull_request: null,
+      }])
+      : authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+
+    if (args[0] === "api" && args.includes("-X") && args.includes("PATCH")) {
+      const match = key.match(/milestones\/(\d+)/);
+      if (match) patched.push(Number(match[1]));
+      return "{}";
+    }
+    if (key.includes("api") && key.endsWith("/milestones")) {
+      return JSON.stringify([{ title: "scan", number: 1, open_issues: 0 }]);
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (key.includes("issue list") && key.includes("--state open")) {
+      const open: unknown[] = [];
+      if (sc.tracker) {
+        open.push({
+          number: 1508,
+          title: "Merge milestone 'scan' to main",
+          assignees: [],
+          labels: [],
+          createdAt: "2024-01-01T00:00:00Z",
+          milestone: { title: "scan" },
+          author: { login: "bot" },
+          url: "u",
+          body: MILESTONE_TRACKING_MARKER,
+        });
+      }
+      if (sc.openIssue) {
+        open.push({
+          number: 5,
+          title: "real",
+          assignees: [],
+          labels: [],
+          createdAt: "2024-01-01T00:00:00Z",
+          milestone: { title: "scan" },
+          author: { login: "alice" },
+          url: "u",
+        });
+      }
+      return JSON.stringify(open);
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify(
+        sc.closedIssues === false
+          ? []
+          : [{ number: 100, title: "did work", milestone: { title: "scan" } }],
+      );
+    }
+    if (key.includes("api") && key.includes("/branches/")) {
+      if (sc.branchExists) return BRANCH_3474;
+      throw new Error("Not found");
+    }
+    if (key.includes("api") && key.includes("/compare/")) return "5";
+    if (key.includes("number,state,headRefName")) {
+      if (sc.classifyThrows) throw new Error("gh boom");
+      return JSON.stringify(sc.prs);
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/999";
+    }
+    if (key.includes("pr create")) {
+      return "https://github.com/owner/repo/pull/999";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+  const logs: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({ ghCommandFn: ghFn, log: (m) => logs.push(m) }),
+  );
+  assertEquals(result.ok, true);
+  return {
+    calls,
+    patched,
+    logs,
+    created: calls.filter((c) =>
+      c.includes("pr create") || c.includes("issue create")
+    ),
+    comments: calls.filter((c) =>
+      /^(pr|issue) comment /.test(c) && c.includes("closed without merging")
+    ),
+  };
+}
+
+const pr3474 = (number: number, state?: string, head = BRANCH_3474) => ({
+  number,
+  headRefName: head,
+  ...(state !== undefined ? { state } : {}),
+});
+
+Deno.test("close-out - closes a milestone whose only final PR was closed unmerged, commenting on the PR (Issue #3474)", async () => {
+  const r = await run3474({ prs: [pr3474(77, "CLOSED")], branchExists: true });
+  assertEquals(r.patched, [1]);
+  assertEquals(r.comments.length, 1);
+  assertStringIncludes(r.comments[0]!, "pr comment 77");
+  assertStringIncludes(r.comments[0]!, "#77");
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - abandoned final PR comments on and closes the open tracker (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    tracker: true,
+  });
+  assertEquals(r.patched, [1]);
+  assertEquals(r.comments.length, 1);
+  assertStringIncludes(r.comments[0]!, "issue comment 1508");
+  assertStringIncludes(r.comments[0]!, "#77");
+  assertEquals(
+    r.calls.some((c) => c.startsWith("issue close") && c.includes("1508")),
+    true,
+  );
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - a failing abandoned-PR comment does not stop the close (Issue #3474)", async () => {
+  const calls: string[] = [];
+  const logs: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(createMockDeps({
+    log: (m) => logs.push(m),
+    ghCommandFn: async (args: string[]) => {
+      const key = args.join(" ");
+      calls.push(key);
+      const a = authoritativeStub(key);
+      if (a !== null) return a;
+      if (key.includes("-X PATCH")) return "{}";
+      if (key.includes("api") && key.endsWith("/milestones")) {
+        return JSON.stringify([{ title: "scan", number: 1 }]);
+      }
+      if (key.includes(".default_branch")) return "main";
+      if (key.includes("issue list") && key.includes("--state closed")) {
+        return JSON.stringify([
+          { number: 100, title: "w", milestone: { title: "scan" } },
+        ]);
+      }
+      if (key.includes("number,state,headRefName")) {
+        return JSON.stringify([pr3474(77, "CLOSED")]);
+      }
+      if (key.includes("pr comment")) throw new Error("comment boom");
+      return "[]";
+    },
+  }));
+  assertEquals(result.ok, true);
+  assertEquals(calls.some((c) => c.includes("-X PATCH")), true);
+  assertEquals(logs.some((l) => l.includes("Could not comment")), true);
+});
+
+Deno.test("close-out - a merged final PR beside a closed one closes the milestone with no comment (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(80, "CLOSED"), pr3474(81, "MERGED")],
+    branchExists: true,
+  });
+  assertEquals(r.patched, [1]);
+  assertEquals(r.comments, []);
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - empty milestone with no branch is closed, not skipped (Issue #3474)", async () => {
+  const r = await run3474({ prs: [], closedIssues: false });
+  assertEquals(r.patched, [1]);
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - empty milestone with only closed PRs and no branch is closed (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    closedIssues: false,
+  });
+  assertEquals(r.patched, [1]);
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - empty milestone with commits ahead is still skipped (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [],
+    closedIssues: false,
+    branchExists: true,
+  });
+  assertEquals(r.patched, []);
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - open issues keep the milestone open even with a closed final PR (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    openIssue: true,
+  });
+  assertEquals(r.patched, []);
+  assertEquals(r.comments, []);
+});
+
+Deno.test("close-out - an open final PR leaves the milestone open with no comment (Issue #3474)", async () => {
+  const r = await run3474({ prs: [pr3474(77, "OPEN")], branchExists: true });
+  assertEquals(r.patched, []);
+  assertEquals(r.comments, []);
+});
+
+Deno.test("close-out - a PR with no state is not treated as abandoned (Issue #3474)", async () => {
+  const r = await run3474({ prs: [pr3474(77)], branchExists: true });
+  assertEquals(r.patched, []);
+  assertEquals(r.comments, []);
+});
+
+// --- classifyMilestoneFinalPrs ---------------------------------------------
+
+const classify3474 = (out: unknown | (() => never)) =>
+  classifyMilestoneFinalPrs(
+    "owner/repo",
+    BRANCH_3474,
+    async (args: string[]) => {
+      assertEquals(args.includes("number,state,headRefName"), true);
+      if (typeof out === "function") return (out as () => never)();
+      return typeof out === "string" ? out : JSON.stringify(out);
+    },
+  );
+
+Deno.test("classifyMilestoneFinalPrs - merged takes precedence over open and closed (Issue #3474)", async () => {
+  const r = await classify3474([
+    pr3474(1, "OPEN"),
+    pr3474(2, "MERGED"),
+    pr3474(3, "CLOSED"),
+    pr3474(4, "MERGED"),
+  ]);
+  assertEquals(r, { ok: true, value: { kind: "merged", prNumber: 4 } });
+});
+
+Deno.test("classifyMilestoneFinalPrs - open beats closed (Issue #3474)", async () => {
+  const r = await classify3474([pr3474(1, "CLOSED"), pr3474(2, "OPEN")]);
+  assertEquals(r, { ok: true, value: { kind: "open", prNumber: 2 } });
+});
+
+Deno.test("classifyMilestoneFinalPrs - all closed is abandoned at the highest number (Issue #3474)", async () => {
+  const r = await classify3474([pr3474(5, "CLOSED"), pr3474(9, "CLOSED")]);
+  assertEquals(r, { ok: true, value: { kind: "abandoned", prNumber: 9 } });
+});
+
+Deno.test("classifyMilestoneFinalPrs - none when there are no PRs (Issue #3474)", async () => {
+  assertEquals(await classify3474([]), { ok: true, value: { kind: "none" } });
+});
+
+Deno.test("classifyMilestoneFinalPrs - a missing or unknown state fails safe to none (Issue #3474)", async () => {
+  assertEquals(await classify3474([pr3474(5), pr3474(6, "CLOSED")]), {
+    ok: true,
+    value: { kind: "none" },
+  });
+  assertEquals(await classify3474([pr3474(5, "WEIRD")]), {
+    ok: true,
+    value: { kind: "none" },
+  });
+});
+
+Deno.test("classifyMilestoneFinalPrs - ignores PRs on other head branches (Issue #3474)", async () => {
+  const r = await classify3474([pr3474(5, "MERGED", "milestone/other")]);
+  assertEquals(r, { ok: true, value: { kind: "none" } });
+});
+
+Deno.test("classifyMilestoneFinalPrs - errors on bad JSON, non-array output or a gh failure (Issue #3474)", async () => {
+  for (
+    const out of ["not json", "{}", () => {
+      throw new Error("gh boom");
+    }]
+  ) {
+    const r = await classify3474(out);
+    assertEquals(r.ok, false);
+    if (!r.ok) {
+      assertStringIncludes(
+        r.error.message,
+        "Failed to classify final PRs for milestone branch",
+      );
+    }
+  }
 });
 
 // ============================================================================

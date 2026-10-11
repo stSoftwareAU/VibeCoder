@@ -305,6 +305,93 @@ export async function checkMilestoneComplete(
 }
 
 // ---------------------------------------------------------------------------
+// classifyMilestoneFinalPrs (Issue #3474)
+// ---------------------------------------------------------------------------
+
+/** Aggregate state of the PRs whose head is a milestone branch. */
+export type MilestoneFinalPrState =
+  | { kind: "merged"; prNumber: number }
+  | { kind: "open"; prNumber: number }
+  | { kind: "abandoned"; prNumber: number }
+  | { kind: "none" };
+
+/**
+ * Classify the final PR(s) of a milestone branch across all states so
+ * close-out can tell merged and closed-unmerged apart (Issue #3474). Uncached
+ * on purpose: the state must be fresh. A missing or unrecognised state is
+ * never classed merged or abandoned (fail safe, returns "none").
+ */
+export async function classifyMilestoneFinalPrs(
+  repo: string,
+  milestoneBranch: string,
+  ghCommandFn: GhCommandFn,
+): Promise<Result<MilestoneFinalPrState>> {
+  try {
+    const output = await ghCommandFn([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "all",
+      "--head",
+      milestoneBranch,
+      "--json",
+      "number,state,headRefName",
+      "--limit",
+      "100",
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected a JSON array");
+    }
+    const entries = (parsed as Array<
+      { number?: unknown; state?: unknown; headRefName?: unknown }
+    >).filter((pr) =>
+      pr !== null && typeof pr === "object" &&
+      pr.headRefName === milestoneBranch && typeof pr.number === "number"
+    ) as Array<{ number: number; state?: unknown }>;
+
+    if (entries.length === 0) return { ok: true, value: { kind: "none" } };
+    const known = new Set(["MERGED", "OPEN", "CLOSED"]);
+    if (
+      entries.some((pr) => typeof pr.state !== "string" || !known.has(pr.state))
+    ) {
+      return { ok: true, value: { kind: "none" } };
+    }
+    const highest = (state: string): number | null => {
+      const nums = entries.filter((pr) => pr.state === state).map((pr) =>
+        pr.number
+      );
+      return nums.length > 0 ? Math.max(...nums) : null;
+    };
+    const merged = highest("MERGED");
+    if (merged !== null) {
+      return { ok: true, value: { kind: "merged", prNumber: merged } };
+    }
+    const open = highest("OPEN");
+    if (open !== null) {
+      return { ok: true, value: { kind: "open", prNumber: open } };
+    }
+    const closed = highest("CLOSED");
+    return {
+      ok: true,
+      value: closed !== null
+        ? { kind: "abandoned", prNumber: closed }
+        : { kind: "none" },
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to classify final PRs for milestone branch ${milestoneBranch} in repo ${repo}: ${message}`,
+      ),
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // hasExistingMilestoneSummaryPr
 // ---------------------------------------------------------------------------
 
@@ -313,6 +400,10 @@ export async function checkMilestoneComplete(
  *
  * Checks all states (open, merged, closed) to avoid re-creating PRs
  * that have already been merged or handled (Issue #568).
+ *
+ * Issue #3474: merged and closed-unmerged final PRs are now classified
+ * earlier by `classifyMilestoneFinalPrs`; this check stays as the idempotency
+ * guard for the create path.
  *
  * Issue #1133: Returns the existing PR number when found, so it can be
  * logged when closing the tracking issue.
@@ -1567,14 +1658,101 @@ async function processRepoMilestones(
       }
     }
 
-    // Skip empty milestones (no closed issues means nothing was worked on)
-    const closedIssues = await getClosedIssues(
+    // Issue #3474: classify the milestone's final PR(s) before anything else.
+    // A merged final PR closes the milestone; one closed without merging means
+    // no new final PR will be raised, so close out instead of wedging forever.
+    const finalPrs = await classifyMilestoneFinalPrs(
       repo,
-      milestone.title,
+      milestoneBranch,
       ghCommandFn,
-      cache,
     );
-    if (closedIssues.length === 0) {
+    if (!finalPrs.ok) {
+      log(
+        `WARNING: ${finalPrs.error.message} — continuing close-out without ` +
+          `final PR classification (Issue #3474)`,
+      );
+    } else if (finalPrs.value.kind === "merged") {
+      const prNumber = finalPrs.value.prNumber;
+      if (canonicalTracker !== null) {
+        await closeMilestoneTrackingIssue(
+          repo,
+          canonicalTracker,
+          ghCommandFn,
+          log,
+          milestone.number,
+          cache,
+        );
+      }
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason:
+          `the final PR #${prNumber} for milestone '${milestone.title}' ` +
+          `has merged, so '${milestoneBranch}' is being retired`,
+      });
+      await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
+      log(
+        `Milestone '${milestone.title}' in ${repo}: final PR #${prNumber} merged — closed (Issue #3474)`,
+      );
+      continue;
+    } else if (finalPrs.value.kind === "abandoned") {
+      const prNumber = finalPrs.value.prNumber;
+      const body = `Milestone '${milestone.title}' close-out: the final PR ` +
+        `#${prNumber} was closed without merging, so no new final PR will ` +
+        `be raised and the milestone is being closed (Issue #3474).`;
+      try {
+        await ghCommandFn(
+          canonicalTracker !== null
+            ? [
+              "issue",
+              "comment",
+              String(canonicalTracker),
+              "--repo",
+              repo,
+              "--body",
+              body,
+            ]
+            : [
+              "pr",
+              "comment",
+              String(prNumber),
+              "--repo",
+              repo,
+              "--body",
+              body,
+            ],
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(
+          `WARNING: Could not comment on the close-out of milestone ` +
+            `'${milestone.title}' in ${repo}: ${message} (Issue #3474)`,
+        );
+      }
+      if (canonicalTracker !== null) {
+        await closeMilestoneTrackingIssue(
+          repo,
+          canonicalTracker,
+          ghCommandFn,
+          log,
+          milestone.number,
+          cache,
+        );
+      }
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason: `milestone '${milestone.title}' final PR #${prNumber} was ` +
+          `closed unmerged, so '${milestoneBranch}' is being retired`,
+      });
+      await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
+      log(
+        `Milestone '${milestone.title}' in ${repo}: final PR #${prNumber} closed unmerged — milestone closed, no new final PR (Issue #3474)`,
+      );
       continue;
     }
 
@@ -1617,6 +1795,20 @@ async function processRepoMilestones(
       log(
         `Milestone '${milestone.title}' in ${repo} is complete with nothing to merge (branch missing or 0 commits ahead) — closed directly, no tracker or summary PR (Issue #3214)`,
       );
+      continue;
+    }
+
+    // Skip empty milestones (no closed issues means nothing was worked on).
+    // Issue #3474: this runs only after the nothing-to-merge check above, so
+    // an empty milestone with no branch (or 0 ahead) is closed rather than
+    // skipped; an empty milestone with commits ahead is still skipped.
+    const closedIssues = await getClosedIssues(
+      repo,
+      milestone.title,
+      ghCommandFn,
+      cache,
+    );
+    if (closedIssues.length === 0) {
       continue;
     }
 
