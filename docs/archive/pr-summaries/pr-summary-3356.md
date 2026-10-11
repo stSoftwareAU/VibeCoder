@@ -50,8 +50,8 @@ flowchart LR
   - `branch_outcomes_gate.ts`: the heading-citation and fenced-citation tests failed (valid=true).
 - **Corpus run** over all 946 files in `docs/archive/pr-summaries/`, base against head:
   - `validateDocsSweep` and `validateBranchOutcomes` gave identical verdicts on all 946, so the corpus shows no new false positives and no lost hits.
-  - `findTestPlanMismatches` differs on 40 summaries. The counts used are those at today's head, not at each PR's head, so absolute mismatch counts are not false-positive counts.
-  - Every difference I read is the head reading the whole wrapped sentence where the base read its last physical line: the 1878, 2112 and 2276 shapes the issue names.
+  - `findTestPlanMismatches` differs on 68 of 962 summaries (the #3356 change alone, rerun after the per-file pairing was added: the base before the splitter against the splitter commit). The per-file pairing then changes the verdict on 6 more (pr-summary-1233, 1284, 2322, 3315, 3405 and 839). The counts used are those at today's head, not at each PR's head, so absolute mismatch counts are not false-positive counts.
+  - The differences I read are the head reading the whole wrapped sentence where the base read its last physical line: the 1878, 2112 and 2276 shapes the issue names. The per-file pairing corrects two more shapes: 1233, where two files each have 25 tests and the earlier head compared the one figure 25 with their combined 50 (no longer flagged), and 1284, where the earlier head passed a stale per-file count silently (now flagged 8 against 16, beside 25 against 32 and 14 against 11). I did not read the other four per-file differences (2322, 3315, 3405, 839).
   - The one fenced regression found before the fix (pr-summary-1021's `\` continuation) is preserved by the shell-continuation rule and pinned by a test.
 - **Provenance numbers the diff adds:**
   - #3356: Markdown gates keep matching hard-wrapped prose one physical line at a time
