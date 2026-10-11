@@ -70,7 +70,7 @@ CODING-STANDARDS' prefer-positive-instructions guidance.
   - #3075 (PR): Fleet PRs repeatedly claim body/docs evidence absent from the diff (GRQ5084, GRQ5135, GRQ-validation904, VibeCoder3049, GRQ-AutoTrader2185, VibeCoder3054) (Issue #3058)
   - TagsTS#88 (PR): Restrict spellcheck workflow token to read-only contents (#59)
   - GRQ-AutoTrader#2699 (PR): Policy: replace ceiling_below_target_percent with minimum_upside_percent (#2695)
-- Docs sweep: grep `this run's scope` over `docs`, `README.md`,
+- Docs sweep: section: `docs/workflows/pr-feedback.md` "Fix the defect everywhere it lives (Issues #3086, #3114)", which documents the Change Scope surface the new prompt blocks touch. grep `this run's scope` over `docs`, `README.md`,
   `CODING-STANDARDS.md`, `DESIGN-PRINCIPLES.md` and `prompts` found only the
   three new blocks, so there is no older doc to conflict with them. grep
   `Change Scope` over `docs`, `README.md` and `CODING-STANDARDS.md`:

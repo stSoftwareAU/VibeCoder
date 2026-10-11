@@ -4617,7 +4617,8 @@ The hook runs two stages:
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
    remote-tracking ref (merge commits and deleted files excluded), then runs
-   the repo's own tools on just those files:
+   the repo's own tools on just those files (deno gets only the files its own
+   config would check, see below):
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
      cts, json, jsonc, md, markdown) and `deno lint --permit-no-files` (the
      ts/js family), per outermost `deno.json` / `deno.jsonc` directory. Only

@@ -52,7 +52,7 @@ Provenance cited in the diff: #3374: Edited test expectations pass without their
   - The issue prompt's Instructions has the red-check.
   - The issue prompt's PR Summary File has the red-check line.
   - The issue prompt's Independent Review has the Standards reviewer brief.
-- Red-check: I restored the three prompt/standards files from `origin/milestone/fleet-guidance-issue-and-feedback-prompts` and ran `deno task test:unit tests/edited_expectation_red_3374_docs_test.ts`. Result: `0 passed | 5 failed`. I then restored the head files.
+- Red-check: I restored the three prompt/standards files from `origin/milestone/fleet-guidance-issue-and-feedback-prompts` and ran `deno task test:unit tests/edited_expectation_red_3374_docs_test.ts`. Result: all 5 tests failed (`5 failed`). I then restored the head files.
 - Per-phrase base check with `deno task drift-pins-on-base origin/milestone/fleet-guidance-issue-and-feedback-prompts …`. All of these were reported `absent on base` in their sections:
   - `An edited expectation must still go red without its guard.`, `the code its name says it guards is broken`, `a de-duplicated list`, `move the lost check to a test that still covers it`, `Record the red-check result per edited expectation`, `An edited test that stays green without its guard`: in `CODING-STANDARDS.md` "Test coverage expectations" and `prompts/coding_guidelines/prompt.md` "Test Coverage Expectations".
   - `each edited expectation also owes the red-check`: in TDD.
