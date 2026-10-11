@@ -28,8 +28,10 @@ Closes #3474
 ### Essential Design Decisions
 
 - A new `classifyMilestoneFinalPrs` reads every PR from the milestone branch
-  and returns `merged` / `open` / `abandoned` / `none`. Its precedence is
-  merged, then open, then the highest-numbered CLOSED PR.
+  and returns `merged` / `open` / `abandoned` / `superseded` / `none`, or an error
+  when the fleet author set is empty. Its precedence is merged, then open,
+  then the highest-numbered CLOSED PR, which is `superseded` when a fleet
+  roll-back closed it and `abandoned` otherwise.
 - Classification runs after the open-issue gate and the tracker self-heal.
   Open issues and an open final PR therefore still keep the milestone open.
 - `abandoned` comments on the canonical tracker, or on the closed PR when
@@ -61,12 +63,12 @@ flowchart TD
     H -->|some| J[existing final-PR flow]
 ```
 
-- `worker/deno/lib/milestone_completion.ts:324` — `classifyMilestoneFinalPrs`.
-- `worker/deno/lib/milestone_completion.ts:1664` — the classification call and
-  the merged arm (1674) and abandoned arm (1700) in
+- `worker/deno/lib/milestone_completion.ts:349` — `classifyMilestoneFinalPrs`.
+- `worker/deno/lib/milestone_completion.ts:1754` — the classification call and
+  the merged arm (1765) and abandoned arm (1791) in
   `checkAndHandleMilestoneCompletions`.
-- `worker/deno/lib/milestone_completion.ts:1801` — `getClosedIssues` and its
-  empty skip now run after `hasNothingToMerge` (1766).
+- `worker/deno/lib/milestone_completion.ts:1896` — `getClosedIssues` and its
+  empty skip now run after `hasNothingToMerge` (1857).
 - Issue references:
   - #3474: Milestone close-out never reaches milestones with a closed-unmerged
     final PR or no closed issues
@@ -134,36 +136,36 @@ no key bump is needed.
 
 Branch outcomes:
 
-- `worker/deno/lib/milestone_completion.ts:355` — `none` (no PRs) — "none when
+- `worker/deno/lib/milestone_completion.ts:387` — `none` (no PRs) — "none when
   there are no PRs" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:360` — `none` (missing or unknown
+- `worker/deno/lib/milestone_completion.ts:392` — `none` (missing or unknown
   state) — "a PR with no state is not treated as abandoned", "a missing or
   unknown state fails safe to none" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:370` — `merged` — "merged takes
+- `worker/deno/lib/milestone_completion.ts:402` — `merged` — "merged takes
   precedence over open and closed", "a merged final PR beside a closed one …"
   — flip went red.
-- `worker/deno/lib/milestone_completion.ts:374` — `open` — "open beats
+- `worker/deno/lib/milestone_completion.ts:406` — `open` — "open beats
   closed", "an open final PR leaves the milestone open with no comment" — flip
   went red.
-- `worker/deno/lib/milestone_completion.ts:380` — `abandoned` — "all closed is
+- `worker/deno/lib/milestone_completion.ts:427` — `abandoned` — "all closed is
   abandoned at the highest number", "closes a milestone whose only final PR
   was closed unmerged …" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:1669` — classification error falls
+- `worker/deno/lib/milestone_completion.ts:1760` — classification error falls
   through — "a classification failure falls through to the existing flow",
   "errors on bad JSON, non-array output or a gh failure" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:1676` — merged-arm tracker close —
+- `worker/deno/lib/milestone_completion.ts:1767` — merged-arm tracker close —
   "a merged final PR closes the open tracker" — flip went red.
-- `worker/deno/lib/milestone_completion.ts:1707` — abandoned comment on the
+- `worker/deno/lib/milestone_completion.ts:1796` — abandoned comment on the
   tracker, or on the PR — "abandoned final PR comments on and closes the open
   tracker", "closes a milestone whose only final PR was closed unmerged …" —
   flip went red.
-- `worker/deno/lib/milestone_completion.ts:1727` — comment failure logs and
+- `worker/deno/lib/milestone_completion.ts:1818` — comment failure logs and
   continues — "a failing abandoned-PR comment does not stop the close" — flip
   went red.
-- `worker/deno/lib/milestone_completion.ts:1734` — abandoned-arm tracker
+- `worker/deno/lib/milestone_completion.ts:1825` — abandoned-arm tracker
   close — "abandoned final PR comments on and closes the open tracker" — flip
   went red.
-- `worker/deno/lib/milestone_completion.ts:1811` — empty skip after
+- `worker/deno/lib/milestone_completion.ts:1902` — empty skip after
   nothing-to-merge. "empty milestone with commits ahead is still skipped"
   covers the skip; "empty milestone with no branch is closed, not skipped"
   and "empty milestone with only closed PRs and no branch is closed" cover
@@ -171,11 +173,11 @@ Branch outcomes:
 
 Mutation check (diff-scoped survivors from the previous gate run), now killed:
 
-- `worker/deno/lib/milestone_completion.ts:384` — negated `err instanceof Error ? err.message : String(err)` in
+- `worker/deno/lib/milestone_completion.ts:429` — negated `err instanceof Error ? err.message : String(err)` in
   the classifier's catch — new test "classifyMilestoneFinalPrs - a thrown
   non-Error is reported by its own text (Issue #3474)" went red under the
   mutation and passes on the head.
-- `worker/deno/lib/milestone_completion.ts:1728` — the same negation in the comment-failure catch — "close-out -
+- `worker/deno/lib/milestone_completion.ts:1819` — the same negation in the comment-failure catch — "close-out -
   a failing abandoned-PR comment does not stop the close (Issue #3474)" now
   throws both an `Error` and a bare string, and checks that the log carries
   the thrown text. It went red under the mutation and passes on the head.
@@ -217,7 +219,7 @@ worker re-runs the full gate.
 
 - **Fork-headed PRs:** `classifyMilestoneFinalPrs` now asks for `isCrossRepository` and drops every entry where it isn't exactly `false` (Issue #1124). A closed fork PR reusing the milestone branch name no longer closes the milestone; the real final PR is raised instead.
 - **Roll-back closes:** a roll-back's close comment now carries `<!-- vibe-final-pr-rollback-close -->` (`ROLLBACK_CLOSE_MARKER`, `milestone_rollback_marker.ts`). If the newest closed final PR carries that marker, or the pre-marker roll-back prose, in a comment authored by a fleet login (`isFleetRollbackCloseComment`, `milestone_rollback_marker.ts`), it is classed `superseded`, not `abandoned`. A comment from any other account is ignored, so the PR stays abandoned. The fleet set comes from `resolveAlertDedupAuthors(authorOptions)`, the same rule the tracker author check uses; when it is empty `classifyMilestoneFinalPrs` returns an error (logged as a WARNING by the caller, which falls through to the pre-existing flow), so neither verdict is reached. A fresh final PR is raised for `superseded`, and the create path's idempotency check ignores the superseded closed PRs.
-- **Sync-PR retirement:** each new arm has a test with an open sync PR, asserting that it is closed before the milestone PATCH.
+- **Sync-PR retirement:** the merged and abandoned arms each have a test with an open sync PR, asserting that it is closed before the milestone PATCH; the superseded arm's test is described in the next bullet.
 - **Superseded sync-PR retirement:** the `hasExistingMilestoneSummaryPr` check that gates `retireMilestoneSyncPrs` now takes the same superseded ignore list as `createMilestoneSummaryPr` (one `supersededPrNumbers` value), so the sync PR is closed before the fresh final PR is raised (Issue #1967).
 - **Tests added** (`worker/deno/tests/milestone_completion_test.ts`), each turned red by reverting only its guard: "a roll-back close comment posted by a non-fleet account is ignored …" (author check removed), "an unresolved fleet set classes a roll-back-commented final PR as neither abandoned nor superseded …" (empty-set guard removed), "the superseded arm retires an open sync PR before the fresh final PR is raised …" (ignore list removed from the retirement check).
 - **Branch outcomes (added this round):** `milestone_completion.ts:411` — empty fleet set → error, no verdict — the unresolved-fleet test; `milestone_completion.ts:461` / `milestone_rollback_marker.ts:80` — non-fleet author ignored → `abandoned`, fleet author → `superseded` — the non-fleet-author test and the existing superseded tests; `milestone_completion.ts:1933` — superseded list shared by the retirement check and the create path — the sync-PR ordering test. Flips went red as listed above.
