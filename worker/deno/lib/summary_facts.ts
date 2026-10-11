@@ -380,9 +380,12 @@ function codeSpan(text: string): string {
  * blanks any code span containing whitespace before reading the exemption
  * reason, so the reason must stay outside a span. Backticks become
  * apostrophes and `<` becomes `&lt;` so the text can neither open a span nor
- * start an HTML comment that would swallow the bullets after it.
+ * start an HTML comment that would swallow the bullets after it. The sink is
+ * Markdown, not an HTML DOM, so the escape targets only the two characters
+ * that can open a code span or HTML comment (pinned by tests).
  */
 function plainText(text: string): string {
+  // nosemgrep: javascript.audit.detect-replaceall-sanitization.detect-replaceall-sanitization
   return sanitise(text).replaceAll("`", "'").replaceAll("<", "&lt;").trim();
 }
 

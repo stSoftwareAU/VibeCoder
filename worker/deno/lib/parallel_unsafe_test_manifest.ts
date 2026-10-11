@@ -210,6 +210,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // the fixed, linear patterns from the quadratic ones they replaced
   // (Issue #3311).
   "tests/pre_commit_safety_test.ts",
+  // The summary-facts validator and renderer walk untrusted agent-written
+  // strings; only a growth measurement separates linear scans from quadratic
+  // ones (Issue #3396).
+  "tests/summary_facts_3396_test.ts",
   // The prompt-leak matcher scans one unbroken block per phrase, and only a
   // growth measurement can tell a linear scan from a quadratic one (#1463).
   // The PR-body tier-marker finder scans an untrusted PR body for an
