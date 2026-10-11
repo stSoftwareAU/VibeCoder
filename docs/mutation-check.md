@@ -110,6 +110,19 @@ The mutator works on added lines of non-test source files.
 | Swap booleans              | `true` becomes `false` and the reverse                   |
 | Replace a return value     | `return x` becomes `return undefined;`; `true`/`false`, numbers and plain strings flip to `false`/`true`, `0`/`1` and `""` |
 | Delete a call statement    | A single call statement is removed                       |
+| Delete an object property  | A property line (`repo,`, `key: value,`, `...rest,`) directly inside an object literal is removed, or one entry of a single-line `f({ repo, ...rest })` argument (Issue #3601) |
+| Delete an array element    | A string or identifier element alone on its line in an array literal is removed, such as one name in a `--json` field list (Issue #3601) |
+| Revert a property value    | `key: otherName,` becomes `key,` when `key` is a name used just above, undoing a renamed value at a call site (Issue #3601) |
+
+The last three perform the revert the call-site rule asks for ("drop the new
+argument and watch a test go red"), so a surviving one means a caller's new
+wiring has no test that notices it is gone. They apply only to lines that a scan
+of the whole file places directly inside an object or array literal, never to a
+type, an interface, an annotation or a generic argument: mutants run with
+`--no-check`, so a mutant of a type-only line could never be caught and would
+block the PR. A file whose brackets the scan cannot balance gets none of these
+three, only the kinds above. They count towards the same mutant cap, after the
+other kinds on each line.
 
 Each mutant runs only the test files that import the mutated module
 (`deno test --no-check -A <those files>`). `--no-check` is deliberate: a mutant
