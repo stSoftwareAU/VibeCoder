@@ -227,7 +227,9 @@ async function closeSyncPr(
  *
  * Called before the milestone's final PR is raised, and again once that PR
  * has merged: the window between the final merge and GitHub's branch deletion
- * is where the retarget happens, so the sync PR must already be gone.
+ * is where the retarget happens, so the sync PR must already be gone. Also
+ * called when a milestone closes without a final PR to merge — nothing to
+ * merge (Issue #3214), or its final PR was closed unmerged (Issue #3474).
  *
  * @param options - Repo, milestone branch, `gh` runner, log sink and reason
  * @returns The PR numbers actually closed
