@@ -6,7 +6,12 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals, assertFalse, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+} from "@std/assert";
 import {
   buildMilestoneSummaryBody,
   checkAndHandleMilestoneCompletions,
@@ -26,6 +31,7 @@ import { createMilestoneBranchName } from "../lib/git_branch.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 import { _resetBaseProtectionMemo } from "../lib/pr_auto_merge.ts";
 import { partialRollupMarker } from "../lib/milestone_partial_rollup.ts";
+import { rollbackCloseComment as rollbackCloseCommentForTest } from "../lib/milestone_rollback_requeue.ts";
 
 /**
  * Issue #1246: a tracking-shaped title is only a candidate — the fleet's own
@@ -3033,14 +3039,46 @@ interface Scenario3474 {
   tracker?: boolean;
   openIssue?: boolean;
   classifyThrows?: boolean;
+  /** Comments on a closed final PR, keyed by PR number (`pr view --json comments`). */
+  prComments?: Record<number, string[]>;
+  /** PRs the cached all-state branch listing (create-path idempotency) returns. */
+  allStatePrs?: unknown[];
+  /** An open sync PR into the milestone branch, for #1967 retirement. */
+  syncPr?: boolean;
 }
 
 async function run3474(sc: Scenario3474) {
   const calls: string[] = [];
   const patched: number[] = [];
+  const order: string[] = [];
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     calls.push(key);
+    if (
+      sc.syncPr && key.startsWith("pr list") && key.includes("--head sync/")
+    ) {
+      return JSON.stringify([{
+        number: 1957,
+        headRefName: `sync/${BRANCH_3474.replace("/", "-")}`,
+        baseRefName: BRANCH_3474,
+      }]);
+    }
+    if (key.startsWith("pr close")) {
+      order.push(`pr-closed-${args[2]}`);
+      return "";
+    }
+    if (key.startsWith("pr view") && key.includes("--json comments")) {
+      const n = Number(args[2]);
+      return JSON.stringify({
+        comments: (sc.prComments?.[n] ?? []).map((body) => ({
+          body,
+          author: { login: "VibeCoderST" },
+        })),
+      });
+    }
+    if (key.includes("number,title,headRefName")) {
+      return JSON.stringify(sc.allStatePrs ?? []);
+    }
     const authoritative = sc.openIssue
       ? authoritativeStub(key, 1, [{
         number: 5,
@@ -3052,7 +3090,10 @@ async function run3474(sc: Scenario3474) {
 
     if (args[0] === "api" && args.includes("-X") && args.includes("PATCH")) {
       const match = key.match(/milestones\/(\d+)/);
-      if (match) patched.push(Number(match[1]));
+      if (match) {
+        patched.push(Number(match[1]));
+        order.push("milestone-patched");
+      }
       return "{}";
     }
     if (key.includes("api") && key.endsWith("/milestones")) {
@@ -3123,6 +3164,7 @@ async function run3474(sc: Scenario3474) {
   return {
     calls,
     patched,
+    order,
     logs,
     created: calls.filter((c) =>
       c.includes("pr create") || c.includes("issue create")
@@ -3133,9 +3175,15 @@ async function run3474(sc: Scenario3474) {
   };
 }
 
-const pr3474 = (number: number, state?: string, head = BRANCH_3474) => ({
+const pr3474 = (
+  number: number,
+  state?: string,
+  head = BRANCH_3474,
+  isCrossRepository: unknown = false,
+) => ({
   number,
   headRefName: head,
+  isCrossRepository,
   ...(state !== undefined ? { state } : {}),
 });
 
@@ -3312,7 +3360,11 @@ const classify3474 = (out: unknown | (() => never)) =>
     "owner/repo",
     BRANCH_3474,
     async (args: string[]) => {
-      assertEquals(args.includes("number,state,headRefName"), true);
+      if (args[0] === "pr" && args[1] === "view") return '{"comments":[]}';
+      assertEquals(
+        args.includes("number,state,headRefName,isCrossRepository"),
+        true,
+      );
       if (typeof out === "function") return (out as () => never)();
       return typeof out === "string" ? out : JSON.stringify(out);
     },
@@ -4065,4 +4117,91 @@ Deno.test("milestone deadlock rollup - the final rollup still fires after a merg
   assertEquals(created[created.indexOf("--head") + 1], BRANCH);
   assertEquals(created[created.indexOf("--base") + 1], "main");
   assertEquals(refPostCalls(calls).length, 0);
+});
+
+// --- PR #3478 review of #3474: forks, roll-back closes, sync-PR retirement ---
+
+Deno.test("close-out - a closed fork-headed PR reusing the branch name does not close the milestone (Issue #3474, #1124)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED", BRANCH_3474, true)],
+    branchExists: true,
+  });
+  assertEquals(r.comments, []);
+  assert(!r.patched.includes(1), "a fork's PR must never close the milestone");
+  assert(
+    r.created.some((c) => c.includes("pr create")),
+    "with no same-repo final PR, the real final PR is raised",
+  );
+});
+
+Deno.test("close-out - a PR whose isCrossRepository is not exactly false is ignored (Issue #3474, #1124)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED", BRANCH_3474, null)],
+    branchExists: true,
+  });
+  assertEquals(r.comments, []);
+  assert(!r.patched.includes(1));
+});
+
+Deno.test("close-out - a final PR the fleet's roll-back closed is superseded: a fresh final PR is raised, the milestone stays open (Issue #3474, #1781)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    prComments: {
+      77: [rollbackCloseCommentForTest("milestone/scan", "abc1234", 12)],
+    },
+    allStatePrs: [{
+      number: 77,
+      title: "Milestone: scan",
+      headRefName: BRANCH_3474,
+    }],
+  });
+  assertEquals(r.comments, [], "no 'closed without merging' close-out");
+  assert(!r.patched.includes(1), "the milestone stays open");
+  assert(
+    r.created.some((c) => c.includes("pr create")),
+    "a fresh final PR is raised despite the closed one",
+  );
+});
+
+Deno.test("close-out - a roll-back close from before the marker existed (prose only) is also superseded (Issue #3474, #1781)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    prComments: {
+      77: [
+        "Closed by a milestone roll-back of `milestone/scan` (reverted PR #12, revert `abc123`) (Issue #1781).",
+      ],
+    },
+  });
+  assertEquals(r.comments, []);
+  assert(!r.patched.includes(1));
+});
+
+Deno.test("close-out - a final PR closed by hand, with no roll-back comment, is still abandoned (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    prComments: { 77: ["Closing: nothing left to land."] },
+  });
+  assertEquals(r.patched, [1]);
+  assertEquals(r.comments.length, 1);
+});
+
+Deno.test("close-out - the merged arm retires an open sync PR before closing the milestone (Issue #3474, #1967)", async () => {
+  const r = await run3474({
+    prs: [pr3474(81, "MERGED")],
+    branchExists: true,
+    syncPr: true,
+  });
+  assertEquals(r.order, ["pr-closed-1957", "milestone-patched"]);
+});
+
+Deno.test("close-out - the abandoned arm retires an open sync PR before closing the milestone (Issue #3474, #1967)", async () => {
+  const r = await run3474({
+    prs: [pr3474(77, "CLOSED")],
+    branchExists: true,
+    syncPr: true,
+  });
+  assertEquals(r.order, ["pr-closed-1957", "milestone-patched"]);
 });

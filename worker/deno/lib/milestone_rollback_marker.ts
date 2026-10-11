@@ -42,6 +42,30 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 /** Opening literal of the roll-back marker. */
 export const ROLLBACK_MARKER = "<!-- vibe-milestone-rollback";
 
+/**
+ * Marker on the comment a roll-back leaves when it closes PRs (Issue #1781),
+ * including a milestone's final PR. Close-out reads it so a final PR the
+ * fleet closed in order to redo work is never mistaken for one a human
+ * abandoned (Issue #3474). Deliberately not prefixed by {@link ROLLBACK_MARKER},
+ * so the roll-back record parsers never read it as a record.
+ */
+export const ROLLBACK_CLOSE_MARKER = "<!-- vibe-final-pr-rollback-close -->";
+
+/** The prose every roll-back close comment opens with, before the marker existed. */
+const LEGACY_ROLLBACK_CLOSE_PREFIX = "Closed by a milestone roll-back of ";
+
+/**
+ * Whether a PR comment is a roll-back's close comment: it carries
+ * {@link ROLLBACK_CLOSE_MARKER}, or opens with the prose roll-backs used
+ * before the marker existed. Matching errs only towards "superseded" — a
+ * fresh final PR is raised, which still needs review — never towards closing
+ * a milestone.
+ */
+export function isRollbackCloseComment(body: string): boolean {
+  return body.includes(ROLLBACK_CLOSE_MARKER) ||
+    body.trimStart().startsWith(LEGACY_ROLLBACK_CLOSE_PREFIX);
+}
+
 /** What a roll-back marker records. */
 export interface RollbackMarkerFields {
   /** The child PR whose merge was reverted. */
