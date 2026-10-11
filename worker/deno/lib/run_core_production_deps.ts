@@ -314,7 +314,7 @@ import {
   escalateRepeatCloneCorruption,
   recordRepoFastFailureTally,
 } from "./repo_fast_failure_issue.ts";
-import { parseCloneCorruptRepeat } from "./corrupt_clone_recovery.ts";
+import { cloneCorruptRepeatFromOutcome } from "./corrupt_clone_recovery.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -5060,10 +5060,10 @@ export async function createProductionRunCoreDeps(
       // the repository off fleet-wide and escalate to a human straight
       // away, rather than counting towards the ordinary tally threshold
       // below. The repeat payload rides in the setup error message, so the
-      // parse is what tells the two corruptions apart.
-      const repeatCorruption = outcome?.kind === "no_pr"
-        ? parseCloneCorruptRepeat(outcome.message)
-        : null;
+      // parse is what tells the two corruptions apart. It reads only a
+      // setup-phase outcome's own line, so a later phase's message quoting the
+      // payload never escalates (Issue #3446).
+      const repeatCorruption = cloneCorruptRepeatFromOutcome(outcome);
       if (repeatCorruption !== null) {
         try {
           const decision = await escalateRepeatCloneCorruption({

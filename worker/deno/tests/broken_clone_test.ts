@@ -12,7 +12,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import { discardBrokenClone, probeCorruptClone } from "../lib/broken_clone.ts";
+import type { RunOutcome } from "../lib/run_outcome.ts";
+import { assertLinearGrowth } from "./support/growth.ts";
 import {
+  cloneCorruptRepeatFromOutcome,
   cloneRecoveryStatePath,
   formatCloneCorruptRepeat,
   isCloneCorruption,
@@ -431,6 +434,99 @@ Deno.test("parseCloneCorruptRepeat - null when an optional field has the wrong t
     ),
     null,
   );
+});
+
+const REPEAT_3446 = {
+  repo: "org/widget",
+  host: "test-host",
+  previousAt: "2026-10-01T12:00:00.000Z",
+  currentAt: "2026-10-01T13:00:00.000Z",
+  currentGitMessage: "fatal: bad object refs/heads/main",
+};
+
+Deno.test("parseCloneCorruptRepeat - null when the marker is quoted mid-line, not at a line start (Issue #3446)", () => {
+  const formatted = formatCloneCorruptRepeat(REPEAT_3446);
+  assertEquals(
+    parseCloneCorruptRepeat(`The summary quoted: ${formatted}`),
+    null,
+  );
+  assertEquals(parseCloneCorruptRepeat(`> ${formatted}`), null);
+  assertEquals(parseCloneCorruptRepeat(` ${formatted}`), null);
+  assertEquals(
+    parseCloneCorruptRepeat(`prose\n${formatted}`),
+    REPEAT_3446,
+  );
+});
+
+function noPrOutcome(phase: string, message: string): RunOutcome {
+  return {
+    kind: "no_pr",
+    category: "clone_corrupt",
+    phase,
+    elapsedSeconds: 12,
+    message,
+  };
+}
+
+const REPEAT_MESSAGE_3446 =
+  `Failed to set up repo org/repo: The clone is corrupt\n${
+    formatCloneCorruptRepeat(REPEAT_3446)
+  }`;
+
+Deno.test("cloneCorruptRepeatFromOutcome - reads the payload from a setup-phase no_pr outcome (Issue #3446)", () => {
+  assertEquals(
+    cloneCorruptRepeatFromOutcome(
+      noPrOutcome("setup", REPEAT_MESSAGE_3446),
+    ),
+    REPEAT_3446,
+  );
+});
+
+Deno.test("cloneCorruptRepeatFromOutcome - a completion-phase no_pr outcome quoting a well-formed payload is not a repeat corruption (Issue #3446)", () => {
+  assertEquals(
+    cloneCorruptRepeatFromOutcome(
+      noPrOutcome("completion", REPEAT_MESSAGE_3446),
+    ),
+    null,
+  );
+  assertEquals(
+    cloneCorruptRepeatFromOutcome(
+      noPrOutcome("execute", REPEAT_MESSAGE_3446),
+    ),
+    null,
+  );
+});
+
+Deno.test("cloneCorruptRepeatFromOutcome - null for undefined and non-no_pr outcomes (Issue #3446)", () => {
+  assertEquals(cloneCorruptRepeatFromOutcome(undefined), null);
+  assertEquals(
+    cloneCorruptRepeatFromOutcome({
+      kind: "no_pr_expected",
+      phase: "setup",
+      summary: REPEAT_MESSAGE_3446,
+    }),
+    null,
+  );
+});
+
+Deno.test("parseCloneCorruptRepeat - hostile unterminated payload lines grow linearly (Issue #3446)", () => {
+  for (
+    const build of [
+      (chars: number) =>
+        ("clone-corrupt-repeat: {" + "x".repeat(50) + "\n").repeat(
+          Math.ceil(chars / 74),
+        ),
+      (chars: number) => "clone-corrupt-repeat: {" + "x".repeat(chars),
+    ]
+  ) {
+    const result = assertLinearGrowth(
+      "parseCloneCorruptRepeat, hostile unterminated payloads",
+      build,
+      parseCloneCorruptRepeat,
+      { baseChars: 10_000 },
+    );
+    assertEquals(result, null);
+  }
 });
 
 Deno.test("recoverCorruptClone - legacy string state still enforces the cap, with no previousGitMessage/aside", async () => {
