@@ -112,43 +112,6 @@ no key bump is needed.
 - Regression tests: the `close-out - … (Issue #3474)` cases in
   `worker/deno/tests/milestone_completion_test.ts`.
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — A milestone whose only final PR is closed and unmerged is closed on the next scan, and a comment names the closed PR. — evidence: `worker/deno/tests/milestone_completion_test.ts::close-out - closes a milestone whose only final PR was closed unmerged, commenting on the PR (Issue #3474)`, `worker/deno/tests/milestone_completion_test.ts::close-out - abandoned final PR comments on and closes the open tracker (Issue #3474)`, `worker/deno/lib/milestone_completion.ts:1700` — reviewer: met
-- **met** — A milestone with a closed final PR and a later merged one is closed as merged. — evidence: `worker/deno/tests/milestone_completion_test.ts::close-out - a merged final PR beside a closed one closes the milestone with no comment (Issue #3474)`, `worker/deno/tests/milestone_completion_test.ts::classifyMilestoneFinalPrs - merged takes precedence over open and closed (Issue #3474)`, `worker/deno/lib/milestone_completion.ts:368`, `worker/deno/lib/milestone_completion.ts:1674` — reviewer: met
-- **met** — An empty milestone with no branch is closed on the next scan. — evidence: `worker/deno/tests/milestone_completion_test.ts::close-out - empty milestone with no branch is closed, not skipped (Issue #3474)`, `worker/deno/lib/milestone_completion.ts:1766`, `worker/deno/lib/milestone_completion.ts:1811` — reviewer: met
-- **partial** — A milestone that holds only closed PRs, with no branch, is closed on the next scan. — evidence: `worker/deno/tests/milestone_completion_test.ts::close-out - empty milestone with only closed PRs and no branch is closed (Issue #3474)`, `worker/deno/lib/milestone_completion.ts:1766` — reviewer: partial — reason: the test's closed PR is on the milestone branch, so it closes through the abandoned arm. No test covers the issue's real case (NEAT-AI M58: closed PRs on other branches reaching the nothing-to-merge path at line 1766).
-- **met** — A milestone with open issues, or with an open final PR, is unchanged. — evidence: `worker/deno/tests/milestone_completion_test.ts::close-out - open issues keep the milestone open even with a closed final PR (Issue #3474)`, `worker/deno/tests/milestone_completion_test.ts::close-out - a merged final PR with an open issue leaves the milestone open (Issue #3474)`, `worker/deno/tests/milestone_completion_test.ts::close-out - an open final PR leaves the milestone open with no comment (Issue #3474)`, `worker/deno/lib/milestone_completion.ts:1560`, `worker/deno/lib/milestone_completion.ts:1629` — reviewer: met
-- **unrequested** — The merged and abandoned arms also close the canonical tracker and call `retireMilestoneSyncPrs` (`worker/deno/lib/milestone_completion.ts:1676`, `worker/deno/lib/milestone_completion.ts:1734`) — reviewer: unrequested — reason: mirrors the existing #3214 nothing-to-merge close path, so a closed milestone leaves no open tracker or sync PR behind.
-- **unrequested** — A merged final PR now closes the milestone at `worker/deno/lib/milestone_completion.ts:1674`, before the tracker and closed-issue steps, instead of later through `isSummaryPrMerged` — reviewer: unrequested — reason: follows from the issue's "prefer a merged one" requirement; the close path moved.
-- **unrequested** — Fail-safe tests for a classifier failure, a comment failure, and a missing or unknown PR state, plus a doc-comment addition on `hasExistingMilestoneSummaryPr` — reviewer: unrequested — reason: defensive coverage and docs that support the change.
-
-The reviewer also noted a minor deviation. `classifyMilestoneFinalPrs` filters on `--head` only, so a closed PR from the milestone branch into a base other than the default branch would also count as abandoned.
-
-The `close-out - …` tests drive `checkAndHandleMilestoneCompletions` (which
-calls `processRepoMilestones`) with a stubbed `gh`. The
-`classifyMilestoneFinalPrs - …` tests call `classifyMilestoneFinalPrs`
-directly through the `classify3474` helper.
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **violation** — DRY: single source of truth — evidence: `worker/deno/lib/milestone_completion.ts:1676-1699`, `worker/deno/lib/milestone_completion.ts:1734-1756` — reason: not fixed. The merged and abandoned arms repeat the nothing-to-merge close sequence (tracker, sync PRs, milestone, log). A shared helper was left out of this pass.
-- **violation** — Every outcome of a branch you add needs a test (KISS) — evidence: `worker/deno/lib/milestone_completion.ts:381` — reason: not fixed. The `: { kind: "none" }` arm cannot run, because by then every entry is CLOSED. It is dead code to remove in a follow-up.
-- **violation** — Every outcome of a branch you add needs a test — evidence: `worker/deno/lib/milestone_completion.ts:350-352` — reason: not fixed. No test passes a null or non-object entry, or a non-numeric `number`.
-- **violation** — Every changed call site needs a test that goes red without it — evidence: `worker/deno/lib/milestone_completion.ts:1686`, `worker/deno/lib/milestone_completion.ts:1744` — reason: not fixed. The stub returns no open sync PR, so deleting either new `retireMilestoneSyncPrs` call stays green.
-- **violation** — Secret redaction for every `gh issue/pr comment` body — evidence: `worker/deno/lib/milestone_completion.ts:1702-1726` — reason: not fixed. The close-out comment includes `milestone.title` and does not go through `redactSecrets()`. The existing comment site at `worker/deno/lib/milestone_completion.ts:930` doesn't redact either.
-- **violation** — Never fail silently — evidence: `worker/deno/lib/milestone_completion.ts:357-361` — reason: not fixed. A missing or unknown PR state returns `none` with no log line, so the caller can't tell it from "no PRs". The fail-safe direction is right.
-- **violation** — A code change owes a docs change — evidence: `worker/deno/lib/milestone_sync_pr_retirement.ts:228-232` — reason: fixed in this diff. The `retireMilestoneSyncPrs` doc comment now names the nothing-to-merge and closed-unmerged callers.
-- **clean** — Australian English spelling; `Result<T,E>` use and error wrapping with context (a thrown non-Error is handled, and both sites are tested); log levels; strict TS, `deno lint` and `deno fmt --check`; `@std/assert` only; tests call real code and no assertions were removed; the new arms sit after the authoritative open-children veto; the classifier is separate from the cached `fetchAllStatePRsByBranch` because that function drops `state` and swallows errors.
-
-Reviewer note (not a codified violation): the lookup is capped at
-`--limit 100`. If `closeGitHubMilestone` fails (it only logs a WARNING), the
-abandoned arm posts its comment again on the next scan.
-
 ## Test Plan
 
 - `deno check`: clean.
@@ -227,3 +190,25 @@ line in `milestone_sync_pr_retirement.ts` and the `docs/workflows/milestones.md`
 bullets. On this head, `deno check`, `deno lint` and `deno fmt --check` are
 clean on the changed files, and the targeted run above passed (100/100). The
 worker re-runs the full gate.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A milestone whose only final PR is closed and unmerged is closed on the next scan, and a comment names the closed PR. — evidence: `worker/deno/tests/milestone completion test.ts::close-out - closes a milestone whose only final PR was closed unmerged, commenting on the PR (Issue #3474); ::close-out - abandoned final PR comments on and closes the open tracker (Issue #3474)` — reviewer: met
+- **met** — A milestone with a closed final PR and a later merged one is closed as merged. — evidence: `worker/deno/tests/milestone completion test.ts::close-out - a merged final PR beside a closed one closes the milestone with no comment (Issue #3474); ::classifyMilestoneFinalPrs - merged takes precedence over open and closed (Issue #3474)` — reviewer: met
+- **met** — An empty milestone with no branch is closed on the next scan. — evidence: `worker/deno/tests/milestone completion test.ts::close-out - empty milestone with no branch is closed, not skipped (Issue #3474)` — reviewer: met
+- **met** — A milestone that holds only closed PRs, with no branch, is closed on the next scan. — evidence: `worker/deno/tests/milestone completion test.ts::close-out - empty milestone with only closed PRs and no branch is closed (Issue #3474)` — reviewer: met
+- **met** — A milestone with open issues, or with an open final PR, is unchanged. — evidence: `worker/deno/tests/milestone completion test.ts::close-out - open issues keep the milestone open even with a closed final PR (Issue #3474); ::close-out - an open final PR leaves the milestone open with no comment (Issue #3474); ::close-out - a merged final PR with an open issue leaves the milestone o` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Secret redaction: the new close-out comment body includes milestone.title and is passed to gh issue/pr comment without going through redactSecrets() — evidence: `worker/deno/lib/milestone completion.ts:1702` — reason: NOT fixed at HEAD b71c1668. This line is added by this diff, so it must be fixed in this diff, and this turn cannot change code. Writing 'fixed in this diff' would be false. The pre-existing unredacted comment at :930 is unchanged context and has not been filed.
+- **violation** — Every changed call site needs a test that goes red without it: the two new retireMilestoneSyncPrs calls are untested, because the run3474 stub never returns an open sync PR — evidence: `worker/deno/lib/milestone completion.ts:1686` — reason: NOT fixed at HEAD b71c1668. These calls (at :1686 and :1744) are added by this diff, and this turn cannot change code. Writing 'fixed in this diff' would be false.
+- **violation** — Never fail silently: a missing or unknown PR state returns { kind: "none" } with no log line, so callers cannot tell it apart from 'no PRs' — evidence: `worker/deno/lib/milestone completion.ts:358` — reason: NOT fixed at HEAD b71c1668. This line is added by this diff, and this turn cannot change code. Writing 'fixed in this diff' would be false.
+- **violation** — Every outcome of a branch you add needs a test: no test passes a null entry, a non-object entry or a non-numeric number to classifyMilestoneFinalPrs — evidence: `worker/deno/lib/milestone completion.ts:352` — reason: NOT fixed at HEAD b71c1668. This filter is added by this diff, and this turn cannot change code. Writing 'fixed in this diff' would be false.
+- **violation** — Dead branch: the ': { kind: "none" }' fallback after highest("CLOSED") can never run, because every entry is CLOSED by that point — evidence: `worker/deno/lib/milestone completion.ts:381` — reason: NOT fixed at HEAD b71c1668. This line is added by this diff, and this turn cannot change code. Writing 'fixed in this diff' would be false.
+- **violation** — DRY: the merged and abandoned arms repeat the same nothing-to-merge close sequence (close the tracker, retire the sync PRs, close the milestone, log) — evidence: `worker/deno/lib/milestone completion.ts:1674` — reason: NOT fixed at HEAD b71c1668. Both arms (:1674-1699 and :1700-1757) are added by this diff, and this turn cannot change code. Writing 'fixed in this diff' would be false.
+- **clean** — Checked and compliant: Australian English in new comments, docs and identifiers; the Result-typed error path in classifyMilestoneFinalPrs, where a gh failure logs a WARNING and falls through; comment failures are logged rather than swallowed; tests for the merged, open, abandoned, none, other-head a
