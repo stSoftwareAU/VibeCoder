@@ -233,6 +233,49 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "generic bypass - a failing gate hands handleIssueFailure the quality-gate flag (Issue #3445)",
+  async () => {
+    const ctx = makeContext();
+    const state = makeState({ baselineGateFindings: [PRE_EXISTING_MERMAID] });
+    const seen: Array<{ qualityGateOutput?: boolean }> = [];
+
+    const deps = createMockDeps({
+      quality: {
+        runQualityGate: () =>
+          failedGate([
+            { name: "mermaid", status: "FAILED" },
+            { name: "deno tests", status: "FAILED" },
+          ]),
+        collectDiffableGateFindings: () =>
+          Promise.resolve([PRE_EXISTING_MERMAID]),
+      },
+      claude: {
+        runClaudeWithRetry: (() =>
+          Promise.resolve({ ok: true, value: { output: "" } })) as never,
+      },
+      github: {
+        handleIssueFailure: ((options: { qualityGateOutput?: boolean }) => {
+          seen.push(options);
+          return Promise.resolve({
+            ok: true,
+            value: {
+              markedAsFailed: false,
+              markedAsFailedOnce: true,
+              failureCategory: "unknown",
+              isInfrastructure: false,
+            },
+          });
+        }) as never,
+      },
+    });
+
+    await workOnIssueQualityGate(ctx, state, deps);
+    assertEquals(seen.length, 1, "handleIssueFailure must be reached");
+    assertEquals(seen[0]?.qualityGateOutput, true);
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Gate passes → no carryover tracker filed (Issue #2605)
 // ---------------------------------------------------------------------------
