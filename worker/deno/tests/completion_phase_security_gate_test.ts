@@ -39,7 +39,7 @@ Fixed the injection flaw. Closes #3939.
 - The original attack input is now rejected by the allowlist, so the original
   trigger is closed with no trivial bypass.
 
-**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits
+**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 `;
@@ -49,7 +49,7 @@ const BARE_SUMMARY = `## Summary
 
 Fixed the injection flaw. Closes #3939.
 
-**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits
+**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits; siblings: none — no existing set gained a member
 
 ## Test Plan
 

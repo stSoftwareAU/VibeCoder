@@ -388,6 +388,7 @@ async function _processSpellingWithHeartbeat(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "spelling_fix",
+      repo,
       cwd: processorDeps.workDir,
       logger,
     },

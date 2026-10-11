@@ -183,7 +183,7 @@ Closes #7.
 
 ${SENTENCE}
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -196,7 +196,7 @@ Closes #7.
 
 The lists pin every entry correctly.
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -213,7 +213,7 @@ ${SENTENCE}
 PR-feedback round 2: the drift-pins-on-base behaviour is now covered by a
 third test case.
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 
@@ -230,7 +230,7 @@ The lists pin each entry, which drift-pins-on-base now confirms.
 PR-feedback round 2: the drift-pins-on-base behaviour is now covered by a
 third test case.
 
-**Docs sweep** — section: none — no manual documents this flag
+**Docs sweep** — section: none — no manual documents this flag; siblings: none — no existing set gained a member
 
 ## Test Plan
 

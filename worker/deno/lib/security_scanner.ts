@@ -337,6 +337,7 @@ export async function runSecurityScan(
   const runOpts: RunClaudeOptions = {
     prompt,
     cwd: opts.workDir,
+    repo: opts.repo,
     phase: "security_scan",
     disallowedTools: [...SECURITY_SCAN_DISALLOWED_TOOLS],
     ...(opts.model !== undefined ? { model: opts.model } : {}),
