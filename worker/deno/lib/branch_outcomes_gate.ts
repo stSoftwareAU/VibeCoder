@@ -899,8 +899,8 @@ const EXEMPT_RE =
 /** A "word" for the exemption-reason word count: anything containing a letter. */
 const WORD_WITH_LETTER_RE = /[A-Za-z]/;
 
-/** Number of words in `reason` that contain at least one letter. */
-function reasonWordCount(reason: string): number {
+/** Count the words in an exempt reason that contain at least one letter. */
+export function reasonWordCount(reason: string): number {
   return reason
     .trim()
     .split(/\s+/)
