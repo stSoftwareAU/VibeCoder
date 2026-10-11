@@ -44,7 +44,7 @@ const DIFF_TEXT = `diff --git a/${CHANGED_FILE} b/${CHANGED_FILE}
 const ISSUE_BODY = "## Problem\n\nChanged lines are not pinned by tests.\n";
 
 const DOCS_SWEEP_LINE =
-  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits";
+  "**Docs sweep** — grep: `BrokerBalance`; section: `docs/reporting-api.md#decisions-report`; no hits; siblings: none — no existing set gained a member";
 
 const SUMMARY = `## Summary
 
