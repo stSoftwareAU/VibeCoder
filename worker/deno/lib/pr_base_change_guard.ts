@@ -348,22 +348,26 @@ export function classifyPrBaseChange(
   // GitHub routes POST on `pulls/N` to the same update handler as PATCH, and
   // `gh api` sends POST whenever a field is given without `-X` (PR #3514 review).
   if (info.verb !== "api-patch" && info.verb !== "api-post") return undefined;
-  // Decode the path before matching GitHub's route. Invalid percent-encoding
-  // cannot be safely classified, so both callers must fail closed.
-  let path: string;
+  // Match GitHub's route on the raw path, split on literal `/` only: its
+  // router treats an encoded slash (`%2F`) as part of the segment, so decoding
+  // first would invent a separator (PR #3514 review). Each segment is then
+  // decoded on its own; invalid percent-encoding cannot be safely classified,
+  // so both callers must fail closed.
+  const raw = endpointPath(info.target ?? "").split("/");
+  let segments: string[];
   try {
-    path = decodeURIComponent(endpointPath(info.target ?? ""));
+    segments = raw.map((segment) => decodeURIComponent(segment));
   } catch {
     return { newBase: null };
   }
-  // GitHub takes the leading digits of the number segment, including when
-  // followed by .json, letters or a semicolon parameter (PR #3514 review).
-  // Keep child endpoints such as pulls/N/comments outside this match.
-  // `repositories/<id>/pulls/N` is the same route addressed by repository id.
-  const match = path.match(
-    /^(?:repos\/([^/]+)\/([^/]+)|repositories\/(\d+))\/pulls\/(\d+)[^/]*$/,
-  );
-  if (!match) return undefined;
+  // `repos/<owner>/<repo>/pulls/<n>`, or the same route addressed by
+  // repository id, `repositories/<id>/pulls/<n>`, with nothing after the
+  // number segment: child endpoints such as pulls/N/comments are not PR edits.
+  const byName = segments.length === 5 && segments[0] === "repos" &&
+    segments[3] === "pulls";
+  const byId = segments.length === 4 && segments[0] === "repositories" &&
+    /^\d+$/.test(segments[1]!) && segments[2] === "pulls";
+  if (!byName && !byId) return undefined;
 
   let base = apiBaseField(args);
   if (base === undefined && info.unreadableBody) {
@@ -371,19 +375,27 @@ export function classifyPrBaseChange(
   }
   if (base === undefined) return undefined;
 
+  // GitHub skips leading whitespace in the number segment and reads its
+  // leading digits, whatever follows them (`.json`, letters, `;x`, an encoded
+  // slash). A segment with no such number cannot be read, and a base change
+  // that cannot be read fails closed rather than being enumerated spelling by
+  // spelling (PR #3514 review).
+  const number = segments[segments.length - 1]!.match(
+    /^[ \t\n\v\f\r]*(\d+)/,
+  )?.[1];
+  if (number === undefined) return { newBase: null };
+
   // A repository id names no `owner/repo` the lookup could pass to `--repo`,
   // so the PR cannot be read: report the base as unreadable (fail closed).
-  if (match[3] !== undefined) {
-    return { newBase: null, prSelector: match[4]! };
-  }
-  const owner = match[1]!;
-  const name = match[2]!;
+  if (byId) return { newBase: null, prSelector: number };
+  const owner = segments[1]!;
+  const name = segments[2]!;
   const placeholder = owner === "{owner}" || name === "{repo}";
   const repo = placeholder ? undefined : `${owner}/${name}`;
   return {
     newBase: base,
     ...(repo ? { repo } : {}),
-    prSelector: match[4]!,
+    prSelector: number,
   };
 }
 

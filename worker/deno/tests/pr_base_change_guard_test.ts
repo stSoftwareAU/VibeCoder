@@ -478,6 +478,70 @@ Deno.test("classifyPrBaseChange - decoded and suffixed PR numbers select the lea
   }
 });
 
+Deno.test("classifyPrBaseChange - encoded leading whitespace and an encoded trailing slash still select the PR number", () => {
+  // GitHub's router skips leading whitespace in the number segment and treats
+  // an encoded slash as part of it, so each of these updates PR 12.
+  for (const route of ["repos/o/r", "repositories/123"]) {
+    for (
+      const number of [
+        "%2012",
+        "%0912",
+        "%0A12",
+        "%0B12",
+        "%0C12",
+        "%0D12",
+        "%20%2012",
+        "%09%0A12",
+        "12%2F",
+        "12%2f",
+        "12%2F%2F",
+        "12%2Fcomments",
+        "12%2Fx%2Fy",
+        "%2012%2F",
+      ]
+    ) {
+      for (const method of [["-X", "PATCH"], []]) {
+        for (const prefix of ["", "https://api.github.com/"]) {
+          const endpoint = `${prefix}${route}/pulls/${number}`;
+          assertEquals(
+            classifyPrBaseChange([
+              "api",
+              ...method,
+              endpoint,
+              "-f",
+              "base=main",
+            ]),
+            route === "repos/o/r"
+              ? { newBase: "main", repo: "o/r", prSelector: "12" }
+              : { newBase: null, prSelector: "12" },
+            endpoint,
+          );
+        }
+      }
+    }
+  }
+});
+
+Deno.test("classifyPrBaseChange - a base field on a PR number segment with no readable number fails closed", () => {
+  for (const route of ["repos/o/r", "repositories/123"]) {
+    for (const method of [["-X", "PATCH"], []]) {
+      for (const number of ["abc", "%20abc", "%2F12", "%20", "x12"]) {
+        assertEquals(
+          classifyPrBaseChange([
+            "api",
+            ...method,
+            `${route}/pulls/${number}`,
+            "-f",
+            "base=main",
+          ]),
+          { newBase: null },
+          `${route}/pulls/${number}`,
+        );
+      }
+    }
+  }
+});
+
 Deno.test("classifyPrBaseChange - malformed encoding fails closed but child routes are not base changes", () => {
   for (const route of ["repos/o/r", "repositories/123"]) {
     for (const method of [["-X", "PATCH"], []]) {

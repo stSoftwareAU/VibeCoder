@@ -1333,6 +1333,45 @@ Deno.test("gh-guard #3433 - decoded and suffixed REST PR numbers cannot bypass t
   }
 });
 
+Deno.test("gh-guard #3433 - encoded leading whitespace or an encoded trailing slash cannot bypass the base guard", () => {
+  for (const ctx of [INACTIVE, ACTIVE]) {
+    for (
+      const route of ["repos/stSoftwareAU/VibeCoder", "repositories/1334753061"]
+    ) {
+      for (
+        const number of [
+          "%2012",
+          "%0912",
+          "%0A12",
+          "%0B12",
+          "%0C12",
+          "%0D12",
+          "%20%2012",
+          "12%2F",
+          "12%2f",
+          "12%2F%2F",
+          "12%2Fcomments",
+          "12%2Fx%2Fy",
+          "abc",
+        ]
+      ) {
+        for (const method of [["-X", "PATCH"], []]) {
+          const args = [
+            "api",
+            ...method,
+            `${route}/pulls/${number}`,
+            "-f",
+            "base=main",
+          ];
+          const decision = evaluateGhCommand(args, ctx);
+          assertEquals(decision.allowed, false, `${args}`);
+          assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED", `${args}`);
+        }
+      }
+    }
+  }
+});
+
 Deno.test("gh-guard #3433 - child routes with a base field are not PR base edits", () => {
   for (
     const route of ["repos/stSoftwareAU/VibeCoder", "repositories/1334753061"]
