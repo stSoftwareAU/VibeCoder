@@ -341,6 +341,76 @@ const rejections: Array<[string, string | unknown, string]> = [
     mutate((f) => f.branchOutcomes.entries[0].outcome = "  "),
     `${E}.outcome: must not be empty`,
   ],
+  [
+    "missing branchOutcomes",
+    { version: 1 },
+    "branchOutcomes: required",
+  ],
+  [
+    "path as number",
+    mutate((f) => f.branchOutcomes.entries[0].path = 5),
+    `${E}.path: expected a string`,
+  ],
+  [
+    "empty path",
+    mutate((f) => f.branchOutcomes.entries[0].path = ""),
+    `${E}.path: must not be empty`,
+  ],
+  [
+    "entry missing path",
+    mutate((f) => delete f.branchOutcomes.entries[0].path),
+    `${E}.path: required`,
+  ],
+  [
+    "entry missing line",
+    mutate((f) => delete f.branchOutcomes.entries[0].line),
+    `${E}.line: required`,
+  ],
+  [
+    "entry missing outcome",
+    mutate((f) => delete f.branchOutcomes.entries[0].outcome),
+    `${E}.outcome: required`,
+  ],
+  [
+    "test shape missing test",
+    mutate((f) => delete f.branchOutcomes.entries[0].test),
+    `${E}.test: required`,
+  ],
+  [
+    "test shape missing flipWentRed",
+    mutate((f) => delete f.branchOutcomes.entries[0].flipWentRed),
+    `${E}.flipWentRed: required`,
+  ],
+  [
+    "exempt missing kind",
+    mutate((f) => delete f.branchOutcomes.entries[1].exempt.kind),
+    `${E1}.exempt.kind: required`,
+  ],
+  [
+    "exempt missing reason",
+    mutate((f) => delete f.branchOutcomes.entries[1].exempt.reason),
+    `${E1}.exempt.reason: required`,
+  ],
+  [
+    "exempt as string",
+    mutate((f) => f.branchOutcomes.entries[1].exempt = "untestable"),
+    `${E1}.exempt: expected an object`,
+  ],
+  [
+    "endLine as string",
+    mutate((f) => f.branchOutcomes.entries[0].endLine = "14"),
+    `${E}.endLine: expected a number`,
+  ],
+  [
+    "empty testName",
+    mutate((f) => f.branchOutcomes.entries[0].testName = "  "),
+    `${E}.testName: must not be empty`,
+  ],
+  [
+    "empty flipWentRed",
+    mutate((f) => f.branchOutcomes.entries[0].flipWentRed = "  "),
+    `${E}.flipWentRed: must not be empty`,
+  ],
 ];
 
 for (const [name, input, expected] of rejections) {
@@ -348,6 +418,12 @@ for (const [name, input, expected] of rejections) {
     assertEquals(errorOf(input), expected);
   });
 }
+
+Deno.test("rejects: non-string raw input", () => {
+  const result = parseSummaryFacts(42 as unknown as string);
+  assert(!result.ok);
+  assertEquals(result.error.message, "facts: expected a string");
+});
 
 Deno.test("hostile key text is capped and quoted, never echoed raw", () => {
   const key = "\n" + "k".repeat(500);
@@ -365,6 +441,16 @@ Deno.test("refusal probes: the same input with the value made legal is accepted"
       (f: Obj) =>
         f.branchOutcomes.entries[1].exempt.reason = "three whole words",
       (f: Obj) => f.branchOutcomes.entries[0].endLine = 10,
+      (f: Obj) => f.version = 1,
+      (f: Obj) => f.branchOutcomes.entries[1].exempt.kind = "untestable",
+      (f: Obj) => f.branchOutcomes.entries[1].exempt.kind = "out-of-scope",
+      (f: Obj) => f.branchOutcomes.entries[0].line = 1,
+      (f: Obj) => f.branchOutcomes.entries[0].endLine = 11,
+      (f: Obj) => f.branchOutcomes.entries[0].endLine = 15,
+      (f: Obj) => f.branchOutcomes.entries[0].outcome = "x",
+      (f: Obj) => f.branchOutcomes.entries[0].path = "a/b/c.ts",
+      (f: Obj) => f.branchOutcomes.entries[0].testName = "n",
+      (f: Obj) => f.branchOutcomes.entries[0].flipWentRed = "n",
       (f: Obj) =>
         f.branchOutcomes.entries[0].path = "a".repeat(MAX_PATH_CHARS - 3) +
           ".ts",
@@ -572,13 +658,57 @@ Deno.test("renderer scales linearly on hostile backtick and control runs", () =>
   });
 });
 
-Deno.test("parser scales linearly on a long run of path characters", () => {
-  const build = (n: number) => "a".repeat(n);
-  assertLinearGrowth(
+// Fields are capped, so the parser's regexes can only be stressed by entry
+// count. Each entry carries near-cap runs, and the document stays under
+// MAX_FACTS_CHARS and MAX_ENTRIES so every regex runs on every entry.
+Deno.test("parser scales linearly with entry count of near-cap hostile fields", () => {
+  const build = (count: number) => {
+    const facts = valid();
+    const hostile = {
+      path: "a.".repeat((MAX_PATH_CHARS - 4) / 2) + "ts",
+      line: 1,
+      outcome: "a".repeat(MAX_FIELD_CHARS - 100),
+      test: "tests/" + "a.".repeat((MAX_PATH_CHARS - 10) / 2) + "ts",
+      testName: "n",
+      flipWentRed: "f",
+    };
+    facts.branchOutcomes.entries = Array.from({ length: count }, () => hostile);
+    return JSON.stringify(facts);
+  };
+  const out = assertLinearGrowth(
     "parseSummaryFacts",
     build,
-    (input) => parseSummaryFacts(input).ok,
-    { baseChars: 10_000 },
+    (input) => parseSummaryFacts(input),
+    { baseChars: 10 },
+  );
+  assert(out.ok, out.ok ? "" : out.error.message);
+  assertEquals(out.value.branchOutcomes.entries.length, 40);
+  assert(40 <= MAX_ENTRIES);
+});
+
+Deno.test("hostile path charset run is refused by the charset rule", () => {
+  const path = "a".repeat(MAX_PATH_CHARS - 5) + "!";
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].path = path)),
+    `${E}.path: contains characters outside [A-Za-z0-9_.-/]`,
+  );
+});
+
+Deno.test("hostile dotted test path is refused by the extension rule", () => {
+  // Under tests/, so isTestFilePath passes and only the trailing dot fails.
+  const test = "tests/" + "a.".repeat((MAX_PATH_CHARS - 6) / 2);
+  assert(test.length <= MAX_PATH_CHARS);
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].test = test)),
+    `${E}.test: must end with a file extension`,
+  );
+});
+
+Deno.test("hostile long outcome ending in a newline is refused as multi-line", () => {
+  const outcome = "a".repeat(MAX_FIELD_CHARS - 1) + "\n";
+  assertEquals(
+    errorOf(mutate((f) => f.branchOutcomes.entries[0].outcome = outcome)),
+    `${E}.outcome: must be a single line`,
   );
 });
 

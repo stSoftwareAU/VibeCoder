@@ -58,6 +58,7 @@ export interface ExemptEntry {
   exempt: { kind: ExemptKind; reason: string };
 }
 
+/** One Branch outcomes entry: either tested or exempt. */
 export type BranchOutcomeEntry = TestedEntry | ExemptEntry;
 
 /** The versioned summary facts. */
@@ -385,6 +386,7 @@ function codeSpan(text: string): string {
  * that can open a code span or HTML comment (pinned by tests).
  */
 function plainText(text: string): string {
+  // Markdown sink, not HTML: escaping only backtick and < is intentional.
   // nosemgrep: javascript.audit.detect-replaceall-sanitization.detect-replaceall-sanitization
   return sanitise(text).replaceAll("`", "'").replaceAll("<", "&lt;").trim();
 }
