@@ -109,43 +109,30 @@ flowchart LR
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- [x] "For a split run whose stream records Opus, Haiku 5.5 and Sonnet usage,
-  the comment shows a sub-bullet for each model and a total that is their sum
-  (test with a recorded or synthetic fixture)."
-  - reviewer: met. Tested with a synthetic fixture
-    (`planning_run_stats_test.ts`, the AC1 test, plus the main-session-only
-    variant).
-- [x] "A run on one model is unchanged."
-  - reviewer: met. Tested in `planning_run_stats_test.ts` "…a run on one model
-    is unchanged (Issue #3603)".
-- [x] "The per-tier fleet telemetry from #3403/#3404 uses the same corrected
-  figure."
-  - reviewer: met. Tested in `issue_run_stats_comment_test.ts`
-    "measureIssuePhaseRun - a split run's spend covers every served model, as
-    the comment does (Issue #3603)" and `phase_run_usd_test.ts`.
-- [x] Issue asks: `sub-agents: not costed` when usage is unreadable; Haiku 5.5
-  priced via `lookupModelPricing`; `docs/CONFIGURATION.md` claim made true.
-  - reviewer: met.
-- unrequested:
-  - the `readModelUsageBreakdown` export;
-  - token sums taken from the attributed entries;
-  - callback telemetry's dominant model is now the largest entry;
-  - the docs rewrites;
-  - the replaced #2346 test.
-  - reviewer: justified. The dominant-model change visibly alters the
-    callback `model` field, and the reviewer judged it mostly justified.
-- Residual risks the reviewer noted:
-  - an inflated but readable breakdown is now trusted;
-  - a run with `modelUsage` but no `tokenUsage` is still skipped.
+- **met** — For a split run whose stream records Opus, Haiku 5.5 and Sonnet usage, the comment shows a sub-bullet for each model and a total that is their sum (test with a recorded or synthetic fixture) — evidence: `worker/deno/tests/planning_run_stats_test.ts::buildPlanningStatsSection - split run with Opus, Haiku 5.5 and Sonnet usage shows a sub-bullet per model and a total equal to their sum (Issue #3603)`, `worker/deno/tests/planning_run_stats_test.ts::buildPlanningStatsSection - split run whose result usage is main-session-only gives the same total (Issue #3603)`, `worker/deno/tests/cost_estimate_test.ts::cost_estimate - formatCostEstimateLines renders every model of a split run` — reviewer: met — reason: synthetic fixture only; no recorded split-run stream with a populated `modelUsage` exists in the repo
+- **met** — A run on one model is unchanged — evidence: `worker/deno/tests/planning_run_stats_test.ts::buildPlanningStatsSection - a run on one model is unchanged (Issue #3603)` — reviewer: met — reason: covers a breakdown equal to the totals; a one-model run whose `modelUsage` exceeds `tokenUsage` is now priced from the breakdown, not the totals
+- **met** — The per-tier fleet telemetry from #3403/#3404 uses the same corrected figure — evidence: `worker/deno/tests/issue_run_stats_comment_test.ts::measureIssuePhaseRun - a split run's spend covers every served model, as the comment does (Issue #3603)`, `worker/deno/tests/phase_run_usd_test.ts::phase_run_usd - prices a split run from modelUsage when tokenUsage is all zero (Issue #3603)` — reviewer: met
+- **met** — Price Haiku 5.5 sub-agent usage through `lookupModelPricing("claude-haiku-5-5")` (banded, #3399) — evidence: `worker/deno/lib/cost_estimate.ts` (`estimateRunCost` → `lookupModelPricing`), `worker/deno/tests/cost_estimate_test.ts::cost_estimate - formatCostEstimateLines renders every model of a split run` — reviewer: met — reason: test evidence is indirect (expected figures computed with the same `estimateCost`); no test pins an absolute Haiku dollar figure
+- **met** — If sub-agent usage can't be read, the comment says `sub-agents: not costed` — evidence: `worker/deno/tests/planning_run_stats_test.ts::buildPlanningStatsSection - multi-model invocation with no readable modelUsage says sub-agents: not costed (Issue #3603)`, `worker/deno/tests/cost_estimate_test.ts::cost_estimate - formatCostEstimateLines flags sub-agents not costed` — reviewer: met
+- **met** — The `docs/CONFIGURATION.md` (`issue_executor_split`) claim that executor tokens are costed separately is made true — evidence: `docs/CONFIGURATION.md:457`, `worker/deno/lib/cost_estimate.ts` — reviewer: met
+- **unrequested** — `readModelUsageBreakdown` exported from `worker/deno/lib/cost_estimate.ts` — reviewer: justified — reason: `planning_run_stats` needs the same "is the breakdown readable" check to raise the not-costed flag, and sharing it avoids a second parser
+- **unrequested** — Tokens line in `planning_run_stats` and token sums in `run_callback_telemetry` taken from the attributed entries — reviewer: justified — reason: otherwise the token counts would be main-session-only next to a cost that covers every model; it does change what the published `telemetry.*Tokens` fields mean
+- **unrequested** — Callback telemetry's dominant `model` is now the largest attributed entry, not `servedModels[0]` (`worker/deno/lib/run_callback_telemetry.ts:100-110`) — reviewer: unjustified — reason: the issue does not ask for it, `effort` is still the advisor's `stats.effort`, so a Haiku-dominated run reports `model=claude-haiku-5-5` with the Opus advisor's effort (breaking #2573's same-call invariant), and `docs/CALLBACKS.md:494-495` was not updated; outstanding, not fixed in this diff
+- **unrequested** — `docs/MODEL-AND-CACHING.md` run-cost bullet rewrite — reviewer: justified — reason: the old text described the reconcile-or-discard rule this change removes
+- **unrequested** — #2346 test rewritten in `worker/deno/tests/cost_estimate_test.ts` ("discards a breakdown claiming more than the run recorded" → "trusts a breakdown exceeding the run totals without a residual") — reviewer: justified — reason: the discard rule is exactly what dropped sub-agent usage; the trade-off is that an inflated but readable breakdown is now trusted
+- **unrequested** — per-counter residual clamped at zero, the `formatCostEstimateLines` options parameter, and `modelUsage` added to `TelemetrySource` — reviewer: justified — reason: the mechanisms that trusting a larger breakdown, the not-costed flag and the corrected callback cost need
+- Residual risk the reviewer noted: an invocation with `modelUsage` but no `tokenUsage` is still skipped everywhere.
 
 ## Standards Review
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- reviewer: no violations.
-- Optional note: the `formatCostEstimateLines` options default to `{}`, but
-  its only production caller passes the flag explicitly. Kept as is: the
-  option is an additive flag, not a behaviour that must reach every caller.
+- **violation** — A Code Change Owes a Docs Change: `telemetry.model` now means the largest per-model entry, but `docs/CALLBACKS.md` still says "Served model of the invocation with the biggest token total" — evidence: `worker/deno/lib/run_callback_telemetry.ts:100-110`, `docs/CALLBACKS.md:494-495`, `docs/CALLBACKS.md:548-556` — reason: not fixed in this diff — outstanding (this pass is limited to the PR summary)
+- **violation** — A Contract a Deployed Extension Reads Is Additive-Only: `VIBECODER_MODEL` / `VIBECODER_EFFORT` change meaning, and `effort: stats.effort` can now pair a sub-agent model with the advisor's effort, so the comment "`model` and `effort` can never describe two calls" is false — evidence: `worker/deno/lib/run_callback_telemetry.ts:110` — reason: not fixed in this diff — outstanding
+- **violation** — Never Fail Silently: a multi-model run with no readable breakdown is recorded in callback and per-tier telemetry as a full figure with no flag, while `docs/CONFIGURATION.md:457` does not say the not-costed flag is comment-only — evidence: `worker/deno/lib/run_callback_telemetry.ts:88-93`, `docs/CONFIGURATION.md:457` — reason: not fixed in this diff — limitation documented under Undiscoverable Facts above
+- **violation** (low) — A new behaviour reaches every caller: `formatCostEstimateLines` options default to `{}`, turning the flag off by default — evidence: `worker/deno/lib/cost_estimate.ts:335` — reason: not fixed in this diff — the only production caller (`planning_run_stats.ts:726`) passes it explicitly
+- **violation** (low) — DRY: the not-costed message is written twice, and the four-counter token sum is hand-written again alongside `mergeUsageByModel` — evidence: `worker/deno/lib/cost_estimate.ts:343`, `worker/deno/lib/cost_estimate.ts:374`, `worker/deno/lib/planning_run_stats.ts:667-676`, `worker/deno/lib/run_callback_telemetry.ts:101-106` — reason: not fixed in this diff
+- **clean** — Australian spelling; KISS (no new dependencies or abstractions); Deno/TypeScript placement and strict typing; tests call real code with fixtures, every new branch is reached, and negative tests carry the forbidden value; split-run tests at each call site; no persisted shape changed; `docs/MODEL-AND-CACHING.md`, `docs/CONFIGURATION.md` and source doc comments updated
 
 ## Test Plan
 
@@ -158,12 +145,7 @@ flowchart LR
   - `worker/deno/tests/phase_run_usd_test.ts`
   - `worker/deno/tests/planning_run_stats_test.ts`
   - `worker/deno/tests/run_callback_telemetry_test.ts`
-- **Removed assertion:** `cost_estimate_test.ts` "…discards a breakdown
-  claiming more than the run recorded" (it expected
-  `[{model:"claude-opus-5", usage: usage(100,0)}]`). It is rewritten as
-  "…trusts a breakdown exceeding the run totals without a residual"
-  (`[{model:"claude-sonnet-5", usage: usage(999,0)}]`), because a breakdown
-  larger than the totals is the normal split-run case this issue fixes.
+- Removed from `worker/deno/tests/cost_estimate_test.ts`: `assertEquals( attributeUsageByModel( usage(100, 0), { "claude-sonnet-5": { input_tokens: 999 } }, "claude-opus-5", ), [{ model: "claude-opus-5", usage: usage(100, 0) }], );` — #3603 requires the comment to cost every model of a split run, whose `usage` covers only the main session, so a breakdown larger than the totals must be trusted rather than discarded; the old expectation (charge only the fallback model) is now untrue. The test is renamed "…trusts a breakdown exceeding the run totals without a residual" and now expects `[{ model: "claude-sonnet-5", usage: usage(999, 0) }]`.
 - Branch outcomes:
   - `worker/deno/lib/cost_estimate.ts:128` — unreadable counter →
     `undefined`. Test: "readModelUsageBreakdown rejects absent, empty and
