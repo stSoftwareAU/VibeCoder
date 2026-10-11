@@ -71,7 +71,7 @@ flowchart TD
   - #3474: Milestone close-out never reaches milestones with a closed-unmerged
     final PR or no closed issues
   - #3214: the nothing-to-merge close path this change now reaches
-- **Docs sweep** — grep: `hasExistingMilestoneSummaryPr`, `closedIssues.length === 0`, `retireMilestoneSyncPrs`, "nothing to merge", "no closed issues", "Milestone completion", "Final PR already exists"; section: `docs/workflows/milestones.md#-decision-points-and-exceptions` (read with `#-milestone-completion`); updated: `docs/workflows/milestones.md`, `worker/deno/lib/milestone_sync_pr_retirement.ts`
+- **Docs sweep** — grep: `hasExistingMilestoneSummaryPr`, `closedIssues.length === 0`, `retireMilestoneSyncPrs`, "nothing to merge", "no closed issues", "Milestone completion", "Final PR already exists"; section: `docs/workflows/milestones.md#-decision-points-and-exceptions` (read with `#-milestone-completion`); updated: `docs/workflows/milestones.md`, `worker/deno/lib/milestone_sync_pr_retirement.ts`; advisory hits re-read: `docs/workflows/milestones.md:180` and `:667` describe the final PR (the 667 bullet now covers fork-headed and roll-back-closed PRs); `docs/INTERNALS.md:4290` and the `hasExistingMilestoneSummaryPr` comments in `issue_query.ts`, `milestone_partial_rollup.ts` and the tests — still true because they name the helper, whose open-PR meaning is unchanged (it only gains an ignore list for superseded closed PRs)
   - `docs/workflows/milestones.md` "Decision points and exceptions" now has a
     bullet for a final PR closed without merging and one for nothing to
     merge. Before, the page said nothing about either, so it read as though
