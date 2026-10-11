@@ -3207,6 +3207,29 @@ Deno.test("close-out - a merged final PR beside a closed one closes the mileston
   assertEquals(r.created, []);
 });
 
+Deno.test("close-out - a merged final PR closes the open tracker (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(81, "MERGED")],
+    branchExists: true,
+    tracker: true,
+  });
+  assertEquals(r.patched, [1]);
+  assertEquals(
+    r.calls.some((c) => c.startsWith("issue close") && c.includes("1508")),
+    true,
+  );
+  assertEquals(r.created, []);
+});
+
+Deno.test("close-out - a merged final PR with an open issue leaves the milestone open (Issue #3474)", async () => {
+  const r = await run3474({
+    prs: [pr3474(81, "MERGED")],
+    branchExists: true,
+    openIssue: true,
+  });
+  assertEquals(r.patched, []);
+});
+
 Deno.test("close-out - empty milestone with no branch is closed, not skipped (Issue #3474)", async () => {
   const r = await run3474({ prs: [], closedIssues: false });
   assertEquals(r.patched, [1]);
