@@ -170,6 +170,27 @@ function readModelUsageEntry(
 }
 
 /**
+ * Read a run's per-model `modelUsage` breakdown into usage entries, in
+ * first-seen order. Returns `undefined` when the breakdown is absent, empty, or
+ * any entry is unreadable (not an object, or a counter that is present but not
+ * a non-negative number), so a partly-readable breakdown is never trusted in
+ * part.
+ */
+export function readModelUsageBreakdown(
+  modelUsage: Record<string, unknown> | undefined,
+): ModelUsageEntry[] | undefined {
+  const raw = Object.entries(modelUsage ?? {});
+  if (raw.length === 0) return undefined;
+  const entries: ModelUsageEntry[] = [];
+  for (const [model, value] of raw) {
+    const entry = readModelUsageEntry(model, value);
+    if (!entry) return undefined;
+    entries.push(entry);
+  }
+  return entries;
+}
+
+/**
  * Split a run's total token usage across the models that actually served it
  * (Issue #2346).
  *
@@ -179,17 +200,15 @@ function readModelUsageEntry(
  * executors' Sonnet tokens at Opus rates and leaves Sonnet with no cost line at
  * all.
  *
- * **A breakdown is used only when it reconciles against the run's own totals.**
- * Models keep their first-seen order, and a per-bucket shortfall between the
- * totals and the sum of the breakdown is appended as a residual entry against
- * `fallbackModel`, so the entries never under-report the run. A breakdown that
- * cannot be reconciled — an entry that is not a usable object, a counter that
- * is present but not a number, or a sum that *exceeds* the run's totals in any
- * bucket — is discarded whole rather than trusted in part: the run is then
- * attributed to `fallbackModel` alone, exactly as before this function
- * existed. Charging a count nothing recorded would over-report the pilot's
- * spend and the issue's cumulative total, and the single-entry result is
- * visible as such — the comment renders no per-model breakdown at all.
+ * **The breakdown is trusted when every entry reads cleanly.** On a split run
+ * the CLI's result `usage` covers only the main session (or is all zero) while
+ * `modelUsage` covers every model that served the run, sub-agents included
+ * (Issue #3603), so a breakdown larger than the totals is expected, not a
+ * fault. Models keep their first-seen order, and any per-counter shortfall of
+ * the breakdown against the totals goes on `fallbackModel` as a residual entry,
+ * so the entries never under-report the run. A counter where the breakdown
+ * exceeds the totals contributes no residual. An absent, empty or unreadable
+ * breakdown attributes the whole run to `fallbackModel`.
  *
  * @param tokenUsage - The invocation's recorded totals
  * @param modelUsage - Per-model breakdown as recorded on the run stats
@@ -205,17 +224,8 @@ export function attributeUsageByModel(
     model: fallbackModel,
     usage: tokenUsage,
   }];
-  const raw = Object.entries(modelUsage ?? {});
-  if (raw.length === 0) return whole;
-
-  const entries: ModelUsageEntry[] = [];
-  for (const [model, value] of raw) {
-    const entry = readModelUsageEntry(model, value);
-    // One unusable entry makes the whole breakdown untrustworthy: its tokens
-    // would otherwise be re-attributed to `fallbackModel` at the wrong rate.
-    if (!entry) return whole;
-    entries.push(entry);
-  }
+  const entries = readModelUsageBreakdown(modelUsage);
+  if (!entries) return whole;
 
   const residual: TokenUsage = {
     inputTokens: tokenUsage.inputTokens,
@@ -229,17 +239,13 @@ export function attributeUsageByModel(
     residual.cacheCreationTokens -= usage.cacheCreationTokens;
     residual.cacheReadTokens -= usage.cacheReadTokens;
   }
-  // A breakdown claiming more than the run recorded does not reconcile, so it
-  // never prices the run.
-  if (
-    residual.inputTokens < 0 || residual.outputTokens < 0 ||
-    residual.cacheCreationTokens < 0 || residual.cacheReadTokens < 0
-  ) {
-    return whole;
-  }
+  residual.inputTokens = Math.max(0, residual.inputTokens);
+  residual.outputTokens = Math.max(0, residual.outputTokens);
+  residual.cacheCreationTokens = Math.max(0, residual.cacheCreationTokens);
+  residual.cacheReadTokens = Math.max(0, residual.cacheReadTokens);
 
   if (!usageIsZero(residual)) {
-    entries.push({ model: fallbackModel, usage: residual });
+    return [...entries, { model: fallbackModel, usage: residual }];
   }
   return entries;
 }
@@ -313,15 +319,35 @@ export function formatUsd(n: number): string {
  * shows `pricing unknown` rather than a fabricated figure — a fault is never
  * silently priced at zero (fail-loud, Issue #3234).
  *
+ * With `options.subAgentsNotCosted` (a multi-model run that recorded no usable
+ * per-model usage, Issue #3603) the heading carries the same
+ * `(partial — see below)` suffix and a closing `sub-agents: not costed`
+ * sub-bullet states that only the main session is priced. When nothing is
+ * priced the option yields a single not-costed heading line instead of an empty
+ * array.
+ *
  * @param entries - Per-invocation (or per-model) usage entries
+ * @param options - `subAgentsNotCosted` flags that sub-agent usage is missing
  * @returns Markdown bullet lines (possibly empty)
  */
-export function formatCostEstimateLines(entries: ModelUsageEntry[]): string[] {
+export function formatCostEstimateLines(
+  entries: ModelUsageEntry[],
+  options: { subAgentsNotCosted?: boolean } = {},
+): string[] {
   const estimate = estimateRunCost(entries);
   const priced = estimate.perModel.filter((m) => !usageIsZero(m.usage));
-  if (priced.length === 0) return [];
+  const notCosted = options.subAgentsNotCosted === true;
+  if (priced.length === 0) {
+    return notCosted
+      ? [
+        "- **Estimated cost (USD, estimate only):** sub-agents: not costed — the run served more than one model but recorded no usable per-model usage",
+      ]
+      : [];
+  }
 
-  const suffix = estimate.hasUnknownPricing ? " (partial — see below)" : "";
+  const suffix = estimate.hasUnknownPricing || notCosted
+    ? " (partial — see below)"
+    : "";
   const lines = [
     `- **Estimated cost (USD, estimate only):** ~${
       formatUsd(estimate.totalCost)
@@ -340,6 +366,12 @@ export function formatCostEstimateLines(entries: ModelUsageEntry[]): string[] {
       } · output ${formatUsd(breakdown.outputCost)} · cache write ${
         formatUsd(breakdown.cacheWriteCost)
       } · cache read ${formatUsd(breakdown.cacheReadCost)}`,
+    );
+  }
+
+  if (notCosted) {
+    lines.push(
+      "  - sub-agents: not costed — the run served more than one model but recorded no usable per-model usage, so only the main session is priced",
     );
   }
 
