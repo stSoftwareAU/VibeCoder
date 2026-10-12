@@ -25,6 +25,7 @@ import {
   tallyIssueCost,
 } from "../lib/issue_run_stats_comment.ts";
 import { formatUsd } from "../lib/cost_estimate.ts";
+import { estimateCost } from "../lib/token_usage.ts";
 import type { GraftContextResult } from "../lib/graft_context.ts";
 import type { QualityGateAttemptOutcome } from "../lib/issue_run_stats_comment.ts";
 import {
@@ -1759,6 +1760,80 @@ Deno.test("measureIssuePhaseRun - an invocation with no served model is priced a
 
   assert(figures);
   assertEquals(formatUsd(figures.usd ?? -1), formatUsd(renderedCostUsd(body)));
+});
+
+Deno.test("measureIssuePhaseRun - a split run's spend covers every served model, as the comment does (Issue #3603)", () => {
+  const breakdown = {
+    "claude-opus-5-5": {
+      inputTokens: 1_000,
+      outputTokens: 2_000,
+      cacheCreationInputTokens: 100,
+      cacheReadInputTokens: 50,
+      costUSD: 999,
+    },
+    "claude-haiku-5-5": {
+      inputTokens: 40_000,
+      outputTokens: 20_000,
+      cacheCreationInputTokens: 1_000,
+      cacheReadInputTokens: 60_000,
+      costUSD: 999,
+    },
+    "claude-sonnet-5-5": {
+      inputTokens: 30_000,
+      outputTokens: 16_000,
+      cacheCreationInputTokens: 1_000,
+      cacheReadInputTokens: 36_000,
+      costUSD: 999,
+    },
+  };
+  // The CLI reports main-session-only `tokenUsage` on a split run, so the
+  // per-model breakdown legitimately exceeds it; the CLI's own `costUSD` is
+  // never used.
+  const claudeResults = [
+    claudeResult(
+      ["claude-opus-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"],
+      {
+        tokenUsage: {
+          inputTokens: 1_000,
+          outputTokens: 2_000,
+          cacheCreationTokens: 100,
+          cacheReadTokens: 50,
+        },
+        modelUsage: breakdown,
+      },
+    ),
+  ];
+  const figures = measureIssuePhaseRun({
+    phase: "issue",
+    claudeResults,
+    subAgentTier: "haiku",
+  });
+  const body = buildIssueRunStatsComment({
+    phase: "issue",
+    claudeResults,
+    runId: "vibe-measure-split",
+  });
+
+  const costOf = (model: keyof typeof breakdown): number => {
+    const u = breakdown[model];
+    return estimateCost({
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+      cacheCreationTokens: u.cacheCreationInputTokens,
+      cacheReadTokens: u.cacheReadInputTokens,
+    }, model)!.totalCost;
+  };
+  const expected = costOf("claude-opus-5-5") + costOf("claude-haiku-5-5") +
+    costOf("claude-sonnet-5-5");
+
+  assert(figures);
+  assert(figures.usd !== undefined && figures.usd !== null);
+  assertEquals(formatUsd(figures.usd), formatUsd(renderedCostUsd(body)));
+  assertEquals(formatUsd(figures.usd), formatUsd(expected));
+  assert(
+    figures.usd > costOf("claude-opus-5-5"),
+    "spend must exceed the advisor-only (Opus) cost",
+  );
 });
 
 Deno.test("measureIssuePhaseRun - duration sums the invocations and the split is the comment's own rule", () => {

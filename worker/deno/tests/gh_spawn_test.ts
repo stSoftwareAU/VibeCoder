@@ -31,6 +31,7 @@ import {
   WriteRepoBlockedError,
   WriteTargetUndeterminableError,
 } from "../lib/write_repo_allowlist.ts";
+import { PrBaseChangeRefusedError } from "../lib/pr_base_change_guard.ts";
 import { envFrom } from "./support/env_lookup.ts";
 import { UnredactableBodyError } from "../lib/gh_body_redaction.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
@@ -812,4 +813,104 @@ Deno.test("spawnGh - with no hook registered a refusal is just a failed call (Is
     restore();
     clearPrimaryQuotaLatch();
   }
+});
+
+/** Runner that answers `pr view` with the given head/base and records calls. */
+function prViewRunner(
+  pr: { head: string; base: string } | { fail: true },
+): { calls: string[][] } {
+  const calls: string[][] = [];
+  _setGhSpawnRunner((args) => {
+    calls.push([...args]);
+    if (args[0] === "pr" && args[1] === "view") {
+      if ("fail" in pr) {
+        return Promise.resolve({
+          code: 1,
+          success: false,
+          stdout: "",
+          stderr: "boom",
+        });
+      }
+      return Promise.resolve({
+        code: 0,
+        success: true,
+        stdout: JSON.stringify({ headRefName: pr.head, baseRefName: pr.base }),
+        stderr: "",
+      });
+    }
+    return Promise.resolve({ code: 0, success: true, stdout: "", stderr: "" });
+  });
+  return { calls };
+}
+
+async function assertBaseChange(
+  pr: { head: string; base: string } | { fail: true },
+  args: string[],
+  refused: boolean,
+): Promise<void> {
+  const { calls } = prViewRunner(pr);
+  silenceAllowlist();
+  seedWriteRepoAllowlist("me/target");
+  const errors: unknown[][] = [];
+  const original = console.error;
+  console.error = (...a: unknown[]) => errors.push(a);
+  try {
+    if (refused) {
+      await assertRejects(() => spawnGh(args), PrBaseChangeRefusedError);
+      assertEquals(calls.every((c) => c[1] === "view"), true);
+      assertEquals(calls.length, 1);
+      assertEquals(
+        String(errors[0]?.[0]).startsWith(
+          "[SECURITY] [PR_BASE_CHANGE_REFUSED]",
+        ),
+        true,
+      );
+    } else {
+      await spawnGh(args);
+      assertEquals(calls.at(-1), args);
+    }
+  } finally {
+    console.error = original;
+    restore();
+  }
+}
+
+Deno.test("spawnGh #3433 - refuses moving a milestone-fix PR off its milestone branch", async () => {
+  await assertBaseChange(
+    { head: "milestone-fix/x/pr-5-ci", base: "milestone/x" },
+    ["pr", "edit", "7", "--repo", "me/target", "--base", "main"],
+    true,
+  );
+});
+
+Deno.test("spawnGh #3433 - refuses moving a PR off a milestone base", async () => {
+  await assertBaseChange(
+    { head: "issue-9-foo", base: "milestone/x" },
+    ["pr", "edit", "7", "--repo", "me/target", "--base", "main"],
+    true,
+  );
+});
+
+Deno.test("spawnGh #3433 - refuses the REST spelling", async () => {
+  await assertBaseChange(
+    { head: "milestone-fix/x/pr-5-ci", base: "milestone/x" },
+    ["api", "-X", "PATCH", "repos/me/target/pulls/7", "-f", "base=main"],
+    true,
+  );
+});
+
+Deno.test("spawnGh #3433 - allows retargeting an ordinary PR onto a milestone branch", async () => {
+  await assertBaseChange(
+    { head: "issue-9-foo", base: "main" },
+    ["pr", "edit", "7", "--repo", "me/target", "--base", "milestone/x"],
+    false,
+  );
+});
+
+Deno.test("spawnGh #3433 - a failed head/base lookup fails closed", async () => {
+  await assertBaseChange(
+    { fail: true },
+    ["pr", "edit", "7", "--repo", "me/target", "--base", "main"],
+    true,
+  );
 });

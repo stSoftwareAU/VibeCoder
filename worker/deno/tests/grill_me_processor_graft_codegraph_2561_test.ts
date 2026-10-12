@@ -428,6 +428,10 @@ Deno.test(
       "Add reporting dashboard",
     );
 
+    // The agent's pre-push hook resolves the repo's pre-flight from `repo`
+    // alone (PR #3584 review).
+    assertEquals(observed.runOptions?.repo, "org/repo");
+
     const prompt = String(observed.runOptions?.prompt ?? "");
     assertStringIncludes(prompt, "export function parseDate() {}");
     assertStringIncludes(prompt, GRAFT_PROMPT_LINE);

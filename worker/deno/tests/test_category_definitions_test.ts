@@ -26,43 +26,24 @@
  */
 
 import { assert, assertStringIncludes } from "@std/assert";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 /** tests/ → worker/deno/ → worker/ → repo root. */
 function repoUrl(relative: string): URL {
   return new URL(`../../../${relative}`, import.meta.url);
 }
 
-async function readRepoFile(relative: string): Promise<string> {
-  return await Deno.readTextFile(repoUrl(relative));
-}
-
 const STANDARDS = "CODING-STANDARDS.md";
 
 /** The taxonomy heading, quoted by the scan prompts that cite it. */
-const HEADING = "## Unit, Integration and Benchmark Tests";
+const HEADING = "Unit, Integration and Benchmark Tests";
 
-/** One `## ` section of the standards, heading excluded. */
-function section(text: string, heading: string): string {
-  const start = text.indexOf(`\n${heading}\n`);
-  assert(
-    start >= 0,
-    `${STANDARDS} no longer has a "${heading}" section. The test-audit ` +
-      "prompt cites it by name for checks 12 and 13 — rename it there too, " +
-      "or the citation dangles.",
-  );
-  const from = start + heading.length + 2;
-  const next = text.indexOf("\n## ", from);
-  return text.slice(from, next < 0 ? text.length : next);
-}
-
-async function taxonomy(): Promise<string> {
-  return section(await readRepoFile(STANDARDS), HEADING);
+async function taxonomy() {
+  return section(await readRepoDoc(STANDARDS), HEADING);
 }
 
 /** The section with its line wrapping removed, for phrase matching. */
-function collapse(text: string): string {
-  return text.replace(/\s+/g, " ");
-}
+const collapse = flat;
 
 Deno.test("test taxonomy - the standards name all three categories (Issue #941)", async () => {
   const body = await taxonomy();
@@ -172,7 +153,7 @@ Deno.test("test taxonomy - the surviving carve-outs did not go with the rewrite 
 
 Deno.test("test taxonomy - the quality gate is documented as unit-only (Issue #941)", async () => {
   const body = collapse(
-    section(await readRepoFile(STANDARDS), "## Quality Gates"),
+    section(await readRepoDoc(STANDARDS), "Quality Gates"),
   );
   assertStringIncludes(body, "A quality run executes the unit suite only");
   assert(

@@ -1,0 +1,12 @@
+{
+  "issue": 3568,
+  "chunk": "top-up-3568",
+  "title": "top-up: canonical gh api argv for the agent gh guard",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3568",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: gh_argv_canonical.ts (#3568)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/gh_argv_canonical.ts"
+  ],
+  "sweptAt": "f5d66b2f8e307af3da4bf6eb6882e4306426c7a1"
+}

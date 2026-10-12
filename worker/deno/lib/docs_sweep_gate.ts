@@ -16,6 +16,10 @@
  * grep was run. `section: none — <why no manual documents it>` is accepted as
  * the honest negative; a bare placeholder (`none`, `tbd`, `n/a`, …) is not.
  *
+ * The line also names a `siblings:` part (Issue #3371): the existing members
+ * of each set the change adds a member to, quoted so the worker can re-run
+ * them, or `siblings: none — <why no existing set gained a member>`.
+ *
  * Modelled on `reproduction_status_gate.ts`: pure functions only, hardcoded
  * regexes (no `new RegExp()` built from input), and a bounded scan of the
  * summary — which is agent-authored and steered by an untrusted issue body,
@@ -24,13 +28,18 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
+import {
+  markdownLogicalUnits,
+  splitMarkdownLines,
+} from "./markdown_code_spans.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
+import { extractSiblingTerms, isSiblingsNegative } from "./docs_sweep_hits.ts";
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
 
 /**
- * Cap on one Docs sweep entry after wrapped continuation lines are joined.
+ * Cap on one Docs sweep entry after the rest of its logical unit is joined.
  * A real entry is one sentence plus paths; joining past this cannot be a
  * wrap and would pull later summary text into the `section:` scan
  * (Issue #3085 review).
@@ -70,6 +79,12 @@ export interface DocsSweepLine {
   /** The value of the `section:` (or `sections:`) field, `""` when absent. */
   section: string;
   /**
+   * The value of the `siblings:` (or `sibling:`) field, `""` when absent: the
+   * existing members of each set the change adds a member to, or the
+   * `none — <why>` negative (Issue #3371).
+   */
+  siblings: string;
+  /**
    * The same entry with only list markers stripped — backticks, quotes and
    * underscores intact — so the line's own grep terms and `file:line`
    * references can be read back out of it (Issue #3172). `""` when absent.
@@ -80,9 +95,6 @@ export interface DocsSweepLine {
 /** A list marker leading a line, stripped before matching. */
 const LIST_MARKER_RE = /^\s{0,3}(?:[-*+]|\d+[.)])\s+/;
 
-/** A markdown heading. A wrapped Docs sweep entry stops before the next one. */
-const HEADING_RE = /^\s{0,3}#{1,6}\s/;
-
 /**
  * The `Docs sweep` prefix once markdown decoration is stripped: the words,
  * optional space, then a separator. The body is the slice after that
@@ -91,11 +103,11 @@ const HEADING_RE = /^\s{0,3}#{1,6}\s/;
  */
 const DOCS_SWEEP_PREFIX_RE = /^docs\s+sweep\s*[:\-–—]/i;
 
-/** Every line terminator, so a lone CR or Unicode separator cannot stay inside a line. */
-const LINE_TERMINATOR_RE = /\r\n|[\n\r\u2028\u2029]/;
-
 /** The `section:` / `sections:` field inside a Docs sweep line's body. */
 const SECTION_FIELD_RE = /\bsections?\s*:\s*([^;]+)/i;
+
+/** The `siblings:` / `sibling:` field inside a Docs sweep line's body (Issue #3371). */
+const SIBLINGS_FIELD_RE = /\bsiblings?\s*:\s*([^;]+)/i;
 
 /** Trailing/leading backtick and whitespace trim for an extracted value. */
 function trimDecoration(value: string): string {
@@ -111,62 +123,62 @@ function stripDecoration(line: string): string {
 }
 
 /**
- * A wrapped Docs sweep entry ends at a blank line, a new list item, or a
- * heading. The entry's own first line is a list item and is not tested here.
+ * Parse the first `Docs sweep` entry out of a PR summary. First match wins.
+ * The entry's continuation lines are the rest of its logical unit from
+ * `markdownLogicalUnits` (Issue #3356), so the entry ends at a blank line, a
+ * new list item, a heading, a table row, a fence or an HTML comment, and
+ * `section:` on a hard-wrapped line is still read (Issue #3085). A fenced
+ * example is not the entry.
  */
-function isEntryBoundary(raw: string): boolean {
-  if (raw.trim() === "") return true;
-  if (LIST_MARKER_RE.test(raw)) return true;
-  if (HEADING_RE.test(raw)) return true;
-  return false;
+export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
+  const lines = splitMarkdownLines(
+    (prSummaryContent ?? "").slice(0, MAX_SCAN_CHARS),
+  );
+
+  for (const unit of markdownLogicalUnits(lines)) {
+    if (unit.kind === "code") continue;
+    for (let k = 0; k < unit.lines.length; k++) {
+      const i = unit.lines[k]!;
+      const stripped = stripDecoration(lines[i]!);
+      const prefix = stripped.match(DOCS_SWEEP_PREFIX_RE);
+      if (!prefix) continue;
+      const firstBody = stripped.slice(prefix[0].length).trim();
+      // An empty body after the separator is not an entry. Joining the
+      // following lines would turn `Docs sweep:\rX` into a line (Issue #3085
+      // linear-scan case).
+      if (firstBody === "") continue;
+      const parts = [firstBody];
+      const rawParts = [lines[i]!.replace(LIST_MARKER_RE, "").trim()];
+      for (let m = k + 1; m < unit.lines.length; m++) {
+        const next = lines[unit.lines[m]!]!;
+        parts.push(stripDecoration(next));
+        rawParts.push(next.trim());
+        if (parts.join(" ").length >= MAX_DOCS_SWEEP_ENTRY_CHARS) break;
+      }
+      const rawBody = rawParts.join(" ").slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
+      let body = parts.join(" ").trim();
+      if (body.length > MAX_DOCS_SWEEP_ENTRY_CHARS) {
+        body = body.slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
+      }
+      if (body === "") continue;
+      // The section value is read from the joined (decoration-stripped) body,
+      // trimmed of surrounding backtick/whitespace decoration left after the
+      // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
+      const sectionMatch = body.match(SECTION_FIELD_RE);
+      const section = sectionMatch ? trimDecoration(sectionMatch[1]!) : "";
+      const siblingsMatch = body.match(SIBLINGS_FIELD_RE);
+      const siblings = siblingsMatch ? trimDecoration(siblingsMatch[1]!) : "";
+      return { present: true, body, section, siblings, rawBody };
+    }
+  }
+
+  return { present: false, body: "", section: "", siblings: "", rawBody: "" };
 }
 
 /**
- * Parse the first `Docs sweep` entry out of a PR summary. First match wins.
- * Continuation lines are joined until a blank line, a new list marker, or a
- * heading, so `section:` on a hard-wrapped line is still read (Issue #3085).
+ * Bare placeholder values for `section:` and `siblings:` that name nothing
+ * (Issue #3073, Issue #3371).
  */
-export function parseDocsSweepLine(prSummaryContent: string): DocsSweepLine {
-  const lines = (prSummaryContent ?? "")
-    .slice(0, MAX_SCAN_CHARS)
-    .split(LINE_TERMINATOR_RE);
-
-  for (let i = 0; i < lines.length; i++) {
-    const stripped = stripDecoration(lines[i]!);
-    const prefix = stripped.match(DOCS_SWEEP_PREFIX_RE);
-    if (!prefix) continue;
-    const firstBody = stripped.slice(prefix[0].length).trim();
-    // An empty body after the separator is not an entry. Joining the
-    // following lines would turn `Docs sweep:\rX` into a line (Issue #3085
-    // linear-scan case).
-    if (firstBody === "") continue;
-    const parts = [firstBody];
-    const rawParts = [lines[i]!.replace(LIST_MARKER_RE, "").trim()];
-    for (let j = i + 1; j < lines.length; j++) {
-      const next = lines[j]!;
-      if (isEntryBoundary(next)) break;
-      parts.push(stripDecoration(next));
-      rawParts.push(next.trim());
-      if (parts.join(" ").length >= MAX_DOCS_SWEEP_ENTRY_CHARS) break;
-    }
-    const rawBody = rawParts.join(" ").slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
-    let body = parts.join(" ").trim();
-    if (body.length > MAX_DOCS_SWEEP_ENTRY_CHARS) {
-      body = body.slice(0, MAX_DOCS_SWEEP_ENTRY_CHARS);
-    }
-    if (body === "") continue;
-    // The section value is read from the joined (decoration-stripped) body,
-    // trimmed of surrounding backtick/whitespace decoration left after the
-    // global strip, so `section: \`docs/x.md#y\`` reads as `docs/x.md#y`.
-    const sectionMatch = body.match(SECTION_FIELD_RE);
-    const section = sectionMatch ? trimDecoration(sectionMatch[1]!) : "";
-    return { present: true, body, section, rawBody };
-  }
-
-  return { present: false, body: "", section: "", rawBody: "" };
-}
-
-/** Bare placeholder values for `section:` that name no manual (Issue #3073). */
 const SECTION_PLACEHOLDER_VALUES = new Set([
   "none",
   "n/a",
@@ -199,7 +211,8 @@ function isBarePlaceholder(section: string): boolean {
   const normalised = section
     .trim()
     .slice(0, MAX_PLACEHOLDER_SCAN_CHARS)
-    .replace(/[.!\s]+$/g, "")
+    .replace(/^["“”]+/, "")
+    .replace(/[.!\s"“”]+$/, "")
     .toLowerCase();
   return SECTION_PLACEHOLDER_VALUES.has(normalised);
 }
@@ -243,6 +256,13 @@ function describeCodeFiles(codeFiles: readonly string[]): string {
  *   4. A line present but naming no `section:` → blocked.
  *   5. A `section:` that is a bare placeholder (`none`, `tbd`, …) → blocked;
  *      an explained negative (`none — <why>`) is accepted.
+ *   6. A line naming no `siblings:` → blocked (Issue #3371). The sibling-member
+ *      grep from #3137 was prose only, and fleet PRs still left a list one
+ *      short — GRQ-AutoTrader#2460, #2481, #2682, #2792.
+ *   7. A `siblings:` that is a bare placeholder → blocked; an explained
+ *      negative (`none — <why>`) is accepted (Issue #3371, as rule 6).
+ *   8. A `siblings:` that quotes no term, and is not the `none` negative →
+ *      blocked, so the worker has a term to re-run (Issue #3371, as rule 6).
  *
  * @param opts.changedFiles - The branch's changed files, or `null` when the
  *   diff could not be collected.
@@ -298,6 +318,27 @@ function evaluateApplicable(
     );
   }
 
+  // Issue #3371: checked independently of the section, so a line missing
+  // both parts reports both in one recovery turn.
+  if (line.present) {
+    if (line.siblings === "") {
+      problems.push(
+        "the `Docs sweep` line names no `siblings:` — the existing sibling members you grepped for each set this change adds a member to, or `siblings: none — <why no existing set gained a member>`",
+      );
+    } else if (isBarePlaceholder(line.siblings)) {
+      problems.push(
+        "the `Docs sweep` line's `siblings:` is a bare placeholder — name the existing sibling members you grepped, or write `siblings: none — <why no existing set gained a member>`",
+      );
+    } else if (
+      !isSiblingsNegative(line.siblings) &&
+      extractSiblingTerms(line.rawBody).length === 0
+    ) {
+      problems.push(
+        "the `Docs sweep` line's `siblings:` quotes no term — backtick or double-quote each existing sibling member you grepped, so the worker can re-run it, or write `siblings: none — <why no existing set gained a member>`",
+      );
+    }
+  }
+
   return {
     applicable: true,
     valid: problems.length === 0,
@@ -336,7 +377,12 @@ export function buildDocsSweepGateComment(
     "3. Read that section through and fix every sentence the change makes " +
     "false. Clear a grep hit only after reading the sentence it is in, " +
     "never by the file's topic.",
-    "4. Fixing a stale doc found this way is part of this fix — it is a " +
+    "4. When the change adds a member to an existing set (a field, enum " +
+    "variant, case, caller or constant-list entry), grep for one or two " +
+    "existing sibling members — the new name is in no doc yet — and make " +
+    "every list those hits find name the new member or stop reading as " +
+    "complete.",
+    "5. Fixing a stale doc found this way is part of this fix — it is a " +
     "docs change, not a code change — and is committed along with the " +
     "summary.",
     "",
@@ -345,13 +391,15 @@ export function buildDocsSweepGateComment(
     "",
     "```markdown",
     '**Docs sweep** — grep: `ProposalStore::list`, "one session at a ' +
-    'time"; section: `docs/reporting-api.md#decisions-report`; updated: ' +
-    "`docs/reporting-api.md`",
+    'time"; section: `docs/reporting-api.md#decisions-report`; ' +
+    "siblings: `ProposalStore::get`; updated: `docs/reporting-api.md`",
     "**Docs sweep** — grep: `retryLimit`; section: " +
-    "`docs/workflows/retries.md#retry-limit`; no hits",
+    "`docs/workflows/retries.md#retry-limit`; siblings: none — no existing " +
+    "set gained a member; no hits",
     "```",
     "",
     "`section: none — <reason>` is the honest answer when no manual " +
-    "documents the surface — a bare `none` is not accepted.",
+    "documents the surface, and `siblings: none — <why>` when no existing " +
+    "set gained a member — a bare `none` is not accepted for either part.",
   ].join("\n");
 }

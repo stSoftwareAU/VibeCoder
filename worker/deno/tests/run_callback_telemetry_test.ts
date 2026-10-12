@@ -5,6 +5,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
+import { estimateCost } from "../lib/token_usage.ts";
 import {
   callbackTelemetryAbsenceReason,
   summariseCallbackTelemetry,
@@ -386,4 +387,123 @@ Deno.test("run_callback_telemetry - no effort is reported when the dominant invo
     !("effort" in telemetry),
     "a borrowed effort would attribute the run to an arm it never ran in",
   );
+});
+
+// -- Per-model attribution on split runs (Issue #3603) --
+
+const SPLIT_MODELS = [
+  "claude-opus-5-5",
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5",
+];
+
+function cliUsage(input: number, output: number, create: number, read: number) {
+  return {
+    inputTokens: input,
+    outputTokens: output,
+    cacheCreationInputTokens: create,
+    cacheReadInputTokens: read,
+  };
+}
+
+const SPLIT_BREAKDOWN = {
+  "claude-opus-5-5": cliUsage(1_000, 2_000, 3_000, 4_000),
+  "claude-haiku-5-5": cliUsage(500_000, 100_000, 200_000, 3_000_000),
+  "claude-sonnet-5-5": cliUsage(20_000, 30_000, 40_000, 50_000),
+};
+
+function splitRun(tokenUsage: ReturnType<typeof usage>) {
+  return [{
+    runStats: {
+      servedModels: SPLIT_MODELS,
+      requestedModel: "opus",
+      tokenUsage,
+      modelUsage: SPLIT_BREAKDOWN,
+    },
+  }];
+}
+
+function expectedSplitCost(): number {
+  let total = 0;
+  for (const [model, u] of Object.entries(SPLIT_BREAKDOWN)) {
+    const cost = estimateCost(
+      usage(
+        u.inputTokens,
+        u.outputTokens,
+        u.cacheCreationInputTokens,
+        u.cacheReadInputTokens,
+      ),
+      model,
+    );
+    assert(cost !== null, `${model} must have a pricing row`);
+    total += cost.totalCost;
+  }
+  return total;
+}
+
+Deno.test("run_callback_telemetry - a zero top-level usage is filled from the modelUsage breakdown (Issue #3603)", () => {
+  const telemetry = summariseCallbackTelemetry(splitRun(usage(0, 0)));
+  assertEquals(telemetry?.inputTokens, 521_000);
+  assertEquals(telemetry?.outputTokens, 132_000);
+  assertEquals(telemetry?.cacheCreationTokens, 243_000);
+  assertEquals(telemetry?.cacheReadTokens, 3_054_000);
+  const cost = telemetry?.estimatedCostUsd;
+  assert(cost !== undefined, "every model is priced, so a cost is reported");
+  assert(
+    Math.abs(cost - expectedSplitCost()) < 1e-9,
+    `expected ${expectedSplitCost()}, got ${cost}`,
+  );
+});
+
+Deno.test("run_callback_telemetry - a split run's model and effort stay the invocation's main model and its effort (PR #3611 review)", () => {
+  // The executors (Haiku, Sonnet) carry most of the tokens, but the invocation
+  // ran as an Opus advisor at `high`: reporting a sub-agent model beside that
+  // effort would name a pair no call ran with.
+  const [split] = splitRun(usage(0, 0));
+  assert(split !== undefined, "splitRun yields one invocation");
+  const telemetry = summariseCallbackTelemetry([{
+    runStats: { ...split.runStats, effort: "high" },
+  }]);
+  assertEquals(telemetry?.model, "claude-opus-5-5");
+  assertEquals(telemetry?.effort, "high");
+});
+
+Deno.test("run_callback_telemetry - invocations are ranked by their attributed token total, so sub-agent spend counts (PR #3611 review)", () => {
+  // The first invocation's top-level usage is bigger than the second's, but
+  // the second's breakdown holds far more once its sub-agents are counted.
+  const telemetry = summariseCallbackTelemetry([
+    {
+      runStats: {
+        servedModels: ["claude-sonnet-5-5"],
+        requestedModel: "sonnet",
+        effort: "medium",
+        tokenUsage: usage(5_000, 5_000),
+      },
+    },
+    {
+      runStats: {
+        servedModels: SPLIT_MODELS,
+        requestedModel: "opus",
+        effort: "high",
+        tokenUsage: usage(0, 0),
+        modelUsage: SPLIT_BREAKDOWN,
+      },
+    },
+  ]);
+  assertEquals(telemetry?.model, "claude-opus-5-5");
+  assertEquals(telemetry?.effort, "high");
+});
+
+Deno.test("run_callback_telemetry - a main-session-only top-level usage gives the same sums (Issue #3603)", () => {
+  const telemetry = summariseCallbackTelemetry(
+    splitRun(usage(1_000, 2_000, 3_000, 4_000)),
+  );
+  assertEquals(telemetry?.inputTokens, 521_000);
+  assertEquals(telemetry?.outputTokens, 132_000);
+  assertEquals(telemetry?.cacheCreationTokens, 243_000);
+  assertEquals(telemetry?.cacheReadTokens, 3_054_000);
+  assertEquals(telemetry?.model, "claude-opus-5-5");
+  const cost = telemetry?.estimatedCostUsd;
+  assert(cost !== undefined);
+  assert(Math.abs(cost - expectedSplitCost()) < 1e-9);
 });

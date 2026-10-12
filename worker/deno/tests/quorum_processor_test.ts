@@ -164,6 +164,8 @@ function mockDepsWithAgents(
     drafts: Array<string | Error>;
     judge: string | Error;
     model?: (phase: string) => QuorumModelFields;
+    /** Receives every runner request, to assert what the processor sent. */
+    seen?: Array<Record<string, unknown>>;
   },
   depsOverrides?: Parameters<typeof createMockDeps>[0],
 ) {
@@ -173,6 +175,7 @@ function mockDepsWithAgents(
     claude: {
       // deno-lint-ignore no-explicit-any
       runClaudeWithRetry: ((options: any) => {
+        replies.seen?.push(options);
         const reply = options.phase === "quorum_judge"
           ? replies.judge
           : replies.drafts[draftIndex++] ?? "";
@@ -309,9 +312,11 @@ Deno.test("quorum labels - a completed run removes quorum, adds needs-human, and
   };
   const ctx = makeContext();
   const capture = captureReleaseOutcomes();
+  const seen: Array<Record<string, unknown>> = [];
   const quorumDeps = mockDepsWithAgents({
     drafts: ["Plan from the first drafter.", "Plan from the second drafter."],
     judge: verdictBlock("A", "Plan A handles the migration order."),
+    seen,
   });
   quorumDeps.crashHandling.clearHeartbeat = capture.clearHeartbeat;
   const result = await processQuorum(ctx, {
@@ -332,6 +337,12 @@ Deno.test("quorum labels - a completed run removes quorum, adds needs-human, and
   assertEquals(result.value.outcome, "judged");
   assertEquals(result.value.commentPosted, true);
   assertEquals(result.value.labelRemoved, true);
+  // Every drafter and the judge carry the repo, which the agent's pre-push
+  // hook resolves the repo's pre-flight from (PR #3584 review).
+  assert(seen.length >= 3, "two drafters and a judge ran");
+  for (const request of seen) {
+    assertEquals(request.repo, ctx.repo, `the ${request.phase} request`);
+  }
   assert(
     recorded.removed.includes("quorum"),
     `expected quorum removed, got ${JSON.stringify(recorded.removed)}`,

@@ -14,6 +14,8 @@ import {
   markPrCommentAsFailedOnce,
   prReviewFailedOnceMarker,
   replyToComment,
+  REVIEW_DISMISSAL_MESSAGES,
+  type ReviewDismissalOutcome,
 } from "../lib/pr_comments.ts";
 
 /** Helper to create a mock gh command function that records calls. */
@@ -64,6 +66,7 @@ Deno.test("pr_comments - markCommentProcessed adds eyes reaction for review comm
     "review",
     "123",
     undefined,
+    "addressed",
     fn,
   );
   assertEquals(result.ok, true);
@@ -87,6 +90,7 @@ Deno.test("pr_comments - markCommentProcessed adds eyes reaction for issue comme
     "issue",
     "456",
     undefined,
+    "addressed",
     fn,
   );
   assertEquals(result.ok, true);
@@ -110,6 +114,7 @@ Deno.test("pr_comments - markCommentProcessed dismisses PR review", async () => 
     "pr_review",
     "789",
     42,
+    "addressed",
     fn,
   );
   assertEquals(result.ok, true);
@@ -123,6 +128,61 @@ Deno.test("pr_comments - markCommentProcessed dismisses PR review", async () => 
     dismissal,
     "should PUT a dismissal on the PR review's dismissals endpoint",
   );
+});
+
+/** The `message=` argument of the PR review dismissal call, if one was made. */
+function dismissalMessage(calls: string[][]): string | undefined {
+  const call = findApiCall(
+    calls,
+    (c) =>
+      c.includes("PUT") &&
+      c.includes("repos/owner/repo/pulls/42/reviews/789/dismissals"),
+  );
+  return call?.find((a) => a.startsWith("message="));
+}
+
+const EXPECTED_DISMISSAL_MESSAGES: Record<ReviewDismissalOutcome, string> = {
+  addressed: "message=Changes have been addressed by the automated worker.",
+  permanently_failed:
+    "message=Not addressed after two automated attempts — see the PR thread.",
+  rebuttal:
+    "message=Answered with a rebuttal — no code change was made. See the PR thread.",
+  escalated:
+    "message=Not addressed — escalated to needs-human. See the PR thread.",
+  handed_off:
+    "message=Not addressed — handed off to a follow-up issue. See the PR thread.",
+  fix_pr_pending:
+    "message=A fix was pushed to a branch, but the fix PR still needs to be opened — see the PR thread.",
+};
+
+for (
+  const outcome of Object.keys(EXPECTED_DISMISSAL_MESSAGES) as Array<
+    ReviewDismissalOutcome
+  >
+) {
+  Deno.test(`pr_comments - markCommentProcessed dismisses a PR review with the '${outcome}' message (Issue #3409)`, async () => {
+    const { calls, fn } = createMockGh();
+    const result = await markCommentProcessed(
+      "owner/repo",
+      "pr_review",
+      "789",
+      42,
+      outcome,
+      fn,
+    );
+    assertEquals(result.ok, true);
+    assertEquals(dismissalMessage(calls), EXPECTED_DISMISSAL_MESSAGES[outcome]);
+  });
+}
+
+Deno.test("pr_comments - only the 'addressed' dismissal claims the changes were made (Issue #3409)", () => {
+  for (const [outcome, message] of Object.entries(REVIEW_DISMISSAL_MESSAGES)) {
+    assertEquals(
+      message.includes("Changes have been addressed"),
+      outcome === "addressed",
+      `outcome '${outcome}'`,
+    );
+  }
 });
 
 // --- replyToComment ---
@@ -355,6 +415,21 @@ Deno.test("pr_comments - markPrCommentAsFailed marks as processed and replies", 
   );
   const reply = findPrReplyCall(calls, 42);
   assert(reply, "should post a reply on PR #42");
+});
+
+Deno.test("pr_comments - markPrCommentAsFailed dismisses a pr_review with the permanently-failed wording (Issue #3409)", async () => {
+  const { calls, fn } = createMockGh();
+  await markPrCommentAsFailed(
+    "owner/repo",
+    42,
+    "pr_review",
+    "789",
+    "Permanently failed",
+    fn,
+  );
+  const message = dismissalMessage(calls);
+  assertEquals(message, EXPECTED_DISMISSAL_MESSAGES.permanently_failed);
+  assertFalse(message?.includes("Changes have been addressed"));
 });
 
 // --- handlePrCommentFailure ---

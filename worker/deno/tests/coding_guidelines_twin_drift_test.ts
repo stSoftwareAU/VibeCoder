@@ -33,10 +33,9 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const REPO_ROOT = new URL("../../../", import.meta.url).pathname;
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
 /** Case-insensitive markers for a test-first requirement. */
 const TDD_PATTERN = /TDD|test-driven|failing test/i;
@@ -161,30 +160,52 @@ const markerExample = (text: string, surface: string) =>
   );
 
 async function latestPromptText(name: string): Promise<string> {
-  const result = await loadPrompt(name, PROMPTS_DIR);
-  assert(result.ok, `${name} prompt failed to load`);
-  return result.value;
+  return await readRepoDoc(`prompts/${name}/prompt.md`);
 }
 
 Deno.test("twin pair - both surfaces reject tests added only for coverage (Issue #2810)", async () => {
   const [standards, guidelines] = await Promise.all([
-    readStandards(),
+    readRepoDoc("CODING-STANDARDS.md"),
     latestPromptText("coding_guidelines"),
   ]);
 
+  // "Not every change needs a new test" — standards hold it under the TDD
+  // heading, the injected guidelines under Testing Best Practices.
   for (
-    const [surface, rule] of [
-      ["CODING-STANDARDS.md", standards],
-      ["coding_guidelines", guidelines],
+    const [surface, text] of [
+      [
+        "CODING-STANDARDS.md",
+        flat(section(standards, "Test-Driven Development (TDD)")),
+      ],
+      [
+        "coding_guidelines",
+        flat(section(guidelines, "Testing Best Practices")),
+      ],
     ] as const
   ) {
     assert(
-      /not every\s+change needs a new test/i.test(rule),
+      /not every\s+change needs a new test/i.test(text),
       `${surface} must allow changes with no new test`,
     );
+  }
+
+  // The test-count-target rejection — standards hold it under Test coverage
+  // expectations, the injected guidelines under Testing Best Practices.
+  for (
+    const [surface, text] of [
+      [
+        "CODING-STANDARDS.md",
+        flat(section(standards, "Test coverage expectations")),
+      ],
+      [
+        "coding_guidelines",
+        flat(section(guidelines, "Testing Best Practices")),
+      ],
+    ] as const
+  ) {
     assert(
       /not (?:add a test per function|add tests merely for coverage|merely increase coverage)/i
-        .test(rule),
+        .test(text),
       `${surface} must reject test-count targets`,
     );
   }
@@ -192,22 +213,45 @@ Deno.test("twin pair - both surfaces reject tests added only for coverage (Issue
 
 Deno.test("twin pair - injected test-first guidance is conditional (Issue #2810)", async () => {
   const guidelines = await latestPromptText("coding_guidelines");
-  assert(TDD_PATTERN.test(guidelines));
-  assert(/where practical first add a regression test/.test(guidelines));
-  assert(/not every\s+change needs a new test/i.test(guidelines));
+  const testingBestPractices = flat(
+    section(guidelines, "Testing Best Practices"),
+  );
+  const testCoverageExpectations = flat(
+    section(guidelines, "Test Coverage Expectations"),
+  );
+  assert(TDD_PATTERN.test(testingBestPractices));
+  assert(
+    /where practical first add a regression test/.test(
+      testCoverageExpectations,
+    ),
+  );
+  assert(/not every\s+change needs a new test/i.test(testingBestPractices));
 });
 
+/** Which section of each phase prompt states the conditional TDD sequence. */
+const TDD_SEQUENCE_SECTION = {
+  issue: "Instructions",
+  pr_feedback: "Conflict Resolution",
+} as const;
+
 Deno.test("twin pair - standards describe conditional TDD on each surface (Issue #2810)", async () => {
-  const standards = await readStandards();
+  const standards = await readRepoDoc("CODING-STANDARDS.md");
   assert(
     /injected block asks for test-first work when a new behavioural regression\s+test is warranted/
-      .test(standards),
+      .test(
+        flat(
+          section(
+            standards,
+            "Language-Agnostic Standards vs Per-Language Buckets",
+          ),
+        ),
+      ),
     "CODING-STANDARDS.md must describe the conditional injected rule",
   );
-  for (const name of ["issue", "pr_feedback"]) {
+  for (const name of ["issue", "pr_feedback"] as const) {
     const text = await latestPromptText(name);
     assert(
-      TDD_PATTERN.test(text),
+      TDD_PATTERN.test(flat(section(text, TDD_SEQUENCE_SECTION[name]))),
       `CODING-STANDARDS.md attributes test-first TDD to the ${name} prompt, ` +
         "but that prompt states no test-first rule",
     );

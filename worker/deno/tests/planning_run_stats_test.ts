@@ -21,6 +21,8 @@ import {
   setActiveRepoModelEffortOverrides,
   setPhaseModelConfigOverrides,
 } from "../lib/claude_executor.ts";
+import { formatUsd } from "../lib/cost_estimate.ts";
+import { estimateCost } from "../lib/token_usage.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
 import type { RunStats } from "../lib/run_stats.ts";
 
@@ -1165,4 +1167,168 @@ Deno.test("buildDegradationReport - threads the gate counts into the rendered se
     "- **Failure-Detection gate:** published 5 · offenders 2 · repaired 2 · " +
       "still offending 0 · deferred 0",
   );
+});
+
+// ---------------------------------------------------------------------------
+// Split-run costing from modelUsage (Issue #3603)
+// ---------------------------------------------------------------------------
+
+const SPLIT_MODELS = [
+  "claude-opus-5-5",
+  "claude-haiku-5-5",
+  "claude-sonnet-5-5",
+];
+const SPLIT_USAGE = {
+  "claude-opus-5-5": {
+    inputTokens: 1_000,
+    outputTokens: 2_000,
+    cacheCreationInputTokens: 300,
+    cacheReadInputTokens: 4_000,
+    costUSD: 999,
+  },
+  "claude-haiku-5-5": {
+    inputTokens: 50_000,
+    outputTokens: 6_000,
+    cacheCreationInputTokens: 700,
+    cacheReadInputTokens: 80_000,
+    costUSD: 999,
+  },
+  "claude-sonnet-5-5": {
+    inputTokens: 20_000,
+    outputTokens: 30_000,
+    cacheCreationInputTokens: 1_100,
+    cacheReadInputTokens: 12_000,
+    costUSD: 999,
+  },
+};
+
+function splitRunSection(
+  tokenUsage: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheCreationTokens: number;
+    cacheReadTokens: number;
+  },
+): string {
+  const invocations: PlanningInvocationStats[] = [
+    planningInvocation(SPLIT_MODELS, {
+      tokenUsage,
+      modelUsage: SPLIT_USAGE,
+    }),
+  ];
+  return buildPlanningStatsSection({
+    invocations,
+    expectedModel: "opus",
+    verdict: assessDegradation(invocations, "opus"),
+  });
+}
+
+function assertSplitRunPricedPerModel(section: string): void {
+  let total = 0;
+  for (const model of SPLIT_MODELS) {
+    const u = SPLIT_USAGE[model as keyof typeof SPLIT_USAGE];
+    total += estimateCost({
+      inputTokens: u.inputTokens,
+      outputTokens: u.outputTokens,
+      cacheCreationTokens: u.cacheCreationInputTokens,
+      cacheReadTokens: u.cacheReadInputTokens,
+    }, model)!.totalCost;
+    assert(
+      section.split("\n").some((l) =>
+        l.startsWith(`  - \`${model}\`: $`) && l.includes("input $")
+      ),
+      `missing cost sub-bullet for ${model}:\n${section}`,
+    );
+  }
+  assertStringIncludes(
+    section,
+    `- **Estimated cost (USD, estimate only):** ~${formatUsd(total)}\n`,
+  );
+  assertEquals(section.includes("not costed"), false);
+  assertEquals(section.includes("999"), false);
+  assertStringIncludes(
+    section,
+    "- **Tokens:** input 71,000 · output 38,000 · cache write 2,100 · cache read 96,000",
+  );
+}
+
+Deno.test("buildPlanningStatsSection - split run with Opus, Haiku 5.5 and Sonnet usage shows a sub-bullet per model and a total equal to their sum (Issue #3603)", () => {
+  assertSplitRunPricedPerModel(splitRunSection({
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  }));
+});
+
+Deno.test("buildPlanningStatsSection - split run whose result usage is main-session-only gives the same total (Issue #3603)", () => {
+  assertSplitRunPricedPerModel(splitRunSection({
+    inputTokens: 1_000,
+    outputTokens: 2_000,
+    cacheCreationTokens: 300,
+    cacheReadTokens: 4_000,
+  }));
+});
+
+Deno.test("buildPlanningStatsSection - a run on one model is unchanged (Issue #3603)", () => {
+  const usage = {
+    inputTokens: 1_000_000,
+    outputTokens: 1_000_000,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+  const invocations: PlanningInvocationStats[] = [
+    planningInvocation(["claude-opus-4-8"], {
+      tokenUsage: usage,
+      modelUsage: {
+        "claude-opus-4-8": {
+          inputTokens: 1_000_000,
+          outputTokens: 1_000_000,
+        },
+      },
+    }),
+  ];
+  const section = buildPlanningStatsSection({
+    invocations,
+    expectedModel: "opus",
+    verdict: assessDegradation(invocations, "opus"),
+  });
+  const total = formatUsd(estimateCost(usage, "claude-opus-4-8")!.totalCost);
+  assertStringIncludes(
+    section,
+    "- **Tokens:** input 1,000,000 · output 1,000,000 · cache write 0 · cache read 0\n",
+  );
+  assertStringIncludes(
+    section,
+    `- **Estimated cost (USD, estimate only):** ~${total}\n`,
+  );
+  assertEquals(section.includes("- `claude-opus-4-8`: input"), false);
+  assertEquals(section.includes("not costed"), false);
+  assertEquals(section.includes("partial"), false);
+});
+
+Deno.test("buildPlanningStatsSection - multi-model invocation with no readable modelUsage says sub-agents: not costed (Issue #3603)", () => {
+  const usage = {
+    inputTokens: 1_000,
+    outputTokens: 500,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+  const build = (served: string[]) => {
+    const invocations: PlanningInvocationStats[] = [
+      planningInvocation(served, { tokenUsage: usage }),
+    ];
+    return buildPlanningStatsSection({
+      invocations,
+      expectedModel: "opus",
+      verdict: assessDegradation(invocations, "opus"),
+    });
+  };
+
+  const split = build(["claude-opus-5-5", "claude-sonnet-5-5"]);
+  assertStringIncludes(split, "sub-agents: not costed");
+  assertStringIncludes(split, "(partial — see below)");
+
+  const synthetic = build(["<synthetic>", "claude-opus-5-5"]);
+  assertEquals(synthetic.includes("not costed"), false);
 });

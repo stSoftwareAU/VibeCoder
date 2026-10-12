@@ -335,7 +335,11 @@ not after a reviewer finds it weeks later.
   or two **existing sibling members**, not the new one — the new name is in no
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete.
+  the same change, or is reworded so it no longer reads as complete. Name the
+  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
+  double-quoted, or write `siblings: none — <why no existing set gained a
+  member>`; fleet PRs that grepped only the new name left a list one short
+  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -802,8 +806,9 @@ line, and so are the REST spellings (`gh api -X PUT …/pulls/N/merge`,
 `gh api -X POST …/pulls/N/reviews`). The worker merges through its own path,
 which re-checks CI status, branch freshness and the default-branch approval
 gate; a merge you issue directly has none of them. `gh pr create`, `gh pr view`,
-`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected — finish by
-creating the PR and leave it open. If it should not land, say so in a comment
+`gh pr list`, `gh pr comment` and `gh pr edit` are unaffected (except that
+changing a PR's base with `--base` is refused too) — finish by creating the PR
+and leave it open. If it should not land, say so in a comment
 rather than closing it.
 
 ### Blocked on another issue → say so; the worker defers
@@ -1302,7 +1307,23 @@ each moved check in its own section instead. A test that only pins current
 behaviour — the fault was unreproduced or already fixed, and no production
 change was made — is expected green on base, and the Test Plan says so.
 **A negative test must be able to fail** below is this rule for an
-assertion that something does *not* happen.
+assertion that something does *not* happen, and **An edited expectation
+must still go red without its guard** below is this rule for a test the
+diff edits rather than adds.
+
+**An edited expectation must still go red without its guard.** When an
+issue changes an expected value or expected behaviour in an existing test,
+the edited test must still fail when the code its name says it guards is
+broken. The issue requirement that justifies the new value does not show
+this: a new value the code produces either way — a de-duplicated list, an
+action taken with or without the bound, an earlier refusal — leaves the
+test green with that code gone, and nothing replaces the check it made.
+Break that code on purpose (delete the check, invert the condition, drop
+the stop), run the edited test, confirm it goes red, then restore the code.
+If it stays green, add an assertion that does go red, or move the lost
+check to a test that still covers it and name that test. Record the
+red-check result per edited expectation in the Test Plan. An edited test
+that stays green without its guard is a blocking self-review finding.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
@@ -1332,24 +1353,42 @@ reaches it; one that now stops earlier is a blocking self-review finding.
 new condition, match arm, exit-code check or trait/interface default in the
 diff, list its outcomes (success, absent/empty, error, fail-closed default)
 and name the test that drives each one. A test double that overrides the
-default, or a stub that always returns the same code, does not reach the
-other outcomes. Flip each outcome on purpose (return the lenient value
-instead of the error, treat "absent" as "failed"), run the tests, confirm at
-least one goes red, then restore it. An outcome with no test, or one whose
-flip leaves the suite green, is a blocking self-review finding: add a test
-for it. When the run writes or refreshes a PR summary, record the
-enumeration as a `Branch outcomes:` list in its Test Plan — one line per
-outcome naming `path:line`, the outcome, the test that reaches it, and that
-flipping it went red — or `Branch outcomes: none added` when the diff adds
-no branch; every test it names must exist at the head (see **A named test
-must exist**). An entry that admits no test reaches its outcome is work
-still to do, not a record: add the test that goes red, or remove the
-branch. Only an outcome the issue puts out of scope, or one no test can
-reach, may stand, written `exempt (out of scope): <reason>` or `exempt
-(untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
-creation on any other admission (Issue #3288). A fix to an existing PR
-re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the list to the head.
+default, or a stub that always returns the same code, does not reach the other
+outcomes. Flip each outcome on purpose (return the lenient value instead of
+the error, treat "absent" as "failed"), run the tests, confirm at least one
+goes red, then restore it. A compound condition (`a || b`, `a && b`, a chained
+`?:`) has one outcome per operand: flip each operand on its own, by deleting
+it or forcing it to the value that lets the other operands decide, and name a
+test that goes red for each one. Reverting the whole change, or deleting the
+whole condition, does not show which operand a test reaches. An outcome with
+no test, or one whose flip leaves the suite green, is a blocking self-review
+finding: add a test for it. When the run writes or refreshes a PR summary,
+record the enumeration as a `Branch outcomes:` list in its Test Plan — one
+line per outcome naming `path:line`, the outcome, the test that reaches it,
+and that flipping it went red — or `Branch outcomes: none added` when the diff
+adds no branch; every test it names must exist at the head (see **A named test
+must exist**). A `Branch outcomes:` line for a compound condition names the
+operand it covers, and its flip is that operand's flip (Issue #3376). An entry
+that admits no test reaches its outcome is work still to do, not a record: add
+the test that goes red, or remove the branch. Only an outcome the issue puts
+out of scope, or one production can reach but a test cannot stage, may stand,
+written `exempt (out of scope): <reason>` or `exempt (untestable): <reason>`;
+an issue run's branch-outcomes gate blocks PR creation on any other admission
+(Issue #3288). An outcome no input can reach is dead code: remove it, never
+exempt it. `exempt (untestable)` is for an outcome production can reach but a
+test cannot stage, such as a permission or I/O fault the suite cannot stage
+portably; its reason names what blocks staging and the harness search — the
+test files that already call the enclosing function or script (a grep of the
+test tree for its name), each with why it cannot reach the outcome. "No
+existing harness" with no search named is not a reason. An outcome the linked
+issue asks a test for, in its acceptance criteria or Definition of done,
+cannot be `exempt (untestable)`. The gate checks only that an exemption gives
+a reason of three or more words, so the search must be named for a reviewer to
+check it (Issue #3428). The diff-scoped mutation check (Issue #3393, `docs/mutation-check.md`) blocks
+the PR on any added line whose mutation the tests do not catch, exempt only by
+the same `exempt (untestable): <reason>` record naming `path:line`. A fix to an existing PR re-enumerates every branch its
+own commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -1431,7 +1470,10 @@ does it) and assert what it sends or changes; when the linked issue states
 an acceptance criterion as a user action ("pressing X requests Y"), a test
 of the helper behind X does not cover that criterion. A test double that
 bypasses the production path (for example, a stub that ignores the filter
-it is passed, or forcing a fallback path) does not count for that path.
+it is passed, or forcing a fallback path) does not count for that path. In a
+Deno repository the mutation gate now performs this revert itself for object
+properties, array elements and renamed property values (Issue #3601): a
+surviving mutant of that kind is this rule's finding at that call site.
 List each entry point checked in the PR summary. A changed call site
 whose revert leaves the suite green is a blocking self-review finding: add
 a test through that caller, ideally at the level the linked issue's

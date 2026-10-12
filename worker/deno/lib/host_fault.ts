@@ -16,7 +16,10 @@
  * host fault silently swallows a label a human genuinely needed to see.
  */
 
-import { SUMMARY_RULE_GATE_MARKER } from "./failure_diagnosis.ts";
+import {
+  SECURITY_FIX_GATE_MARKER,
+  SUMMARY_RULE_GATE_MARKER,
+} from "./failure_diagnosis.ts";
 import { brokenRefsIn } from "./broken_ref_repair.ts";
 import { isObjectStoreCorruption } from "./object_store_repair.ts";
 
@@ -92,6 +95,9 @@ export function detectHostFault(message: string): HostFaultKind | null {
   // the agent's summary (Issue #3431; PR #3440 review): a quoted `ENOSPC` or
   // `Failed to clone` there is not host output, so it is never a host fault.
   if (message.startsWith(SUMMARY_RULE_GATE_MARKER)) return null;
+  // Likewise a security-fix gate refusal (Issue #3454) quotes agent-authored
+  // test declarations, never host output.
+  if (message.startsWith(SECURITY_FIX_GATE_MARKER)) return null;
   if (
     brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message) ||
     CLONE_CORRUPT_PATTERNS.some((re) => re.test(message))
@@ -173,4 +179,25 @@ export function buildHostFaultNote(kind: HostFaultKind): string {
   return `**Host fault:** \`${kind}\` — ${
     describeHostFault(kind)
   }. This failure came from the worker host, not from this issue; the label is released automatically once the host is healthy again.`;
+}
+
+/**
+ * Source line a quality-gate failure record carries (Issue #3445). The
+ * gate's output is the repository's own test output, so the record is never a
+ * host fault; the release sweep keys on this line to leave it alone.
+ */
+export const QUALITY_GATE_SOURCE_NOTE =
+  "**Source:** quality gate — this failure is the repository's own check output, so it is not classified as a host fault.";
+
+const QUALITY_GATE_RECORD_RE =
+  /^##[^\n]*\n\s*\*\*Category:\*\*[^\n]*\n\s*\*\*Source:\*\* quality gate\b/;
+
+/**
+ * Whether a posted failure-record body is a quality-gate failure (Issue
+ * #3445). Anchored to the worker-written head of the comment (heading,
+ * Category line, Source line) so a quoted line deeper in the output cannot
+ * forge it; mirrors `isSummaryGateFailureRecord` in failure_diagnosis.ts.
+ */
+export function isQualityGateFailureRecord(body: string): boolean {
+  return QUALITY_GATE_RECORD_RE.test(body.trimStart());
 }
