@@ -10,8 +10,9 @@
  * against the unfixed patterns, a heading plus 20 000 spaces plus `x` cost
  * about 140 ms per line; at the 199 000 spaces fed here, about a minute.
  *
- *   - `acceptance_criteria_gate.ts` — `ACCEPTANCE_HEADING_RE` and
- *     `ACCEPTED_SCOPE_HEADING_RE` (issue body, no scan cap).
+ *   - `acceptance_criteria_gate.ts` — `ACCEPTANCE_HEADING_RE`,
+ *     `ACCEPTED_SCOPE_HEADING_RE` and `DONE_WHEN_HEADING_RE` (issue body, no
+ *     scan cap).
  *   - `failure_detection_gate.ts` and `failure_detection_repair.ts` —
  *     `HEADING_RE` and `BOLD_LABEL_RE` (sub-issue body and agent output, no
  *     scan cap). The bold label's `\s*:?\s*\*\*` is the same shape: the `**`
@@ -82,6 +83,17 @@ Deno.test("3164 - accepted-scope heading: a padded near-miss is rejected and a r
     "- the settled scope",
   ].join("\n");
   assertEquals(extractAcceptedScope(body), ["the settled scope"]);
+});
+
+Deno.test("3486 - done-when heading: a padded near-miss is rejected and a real heading still read", () => {
+  const body = [
+    hostile("## Done when"),
+    "- not a criterion",
+    "",
+    "## Done when:",
+    "- the done-when scope",
+  ].join("\n");
+  assertEquals(extractAcceptedScope(body), ["the done-when scope"]);
 });
 
 Deno.test("3164 - failure-detection gate heading: a padded near-miss is not a section", () => {
