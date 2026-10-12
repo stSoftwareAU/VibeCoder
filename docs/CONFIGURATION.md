@@ -1770,6 +1770,9 @@ unless explicitly overridden.
 | Call-storm threshold | `call_storm_calls` | `60` | Tool calls inside the window at or above which that window reads as a storm. Must be positive and no greater than the 5000 tool calls the progress tracker retains; raise it if a genuinely fast exploration phase is being stopped. |
 | Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
 | Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
+| Quota-poll park floor | `quota_poll_park_floor` | `1500` | GraphQL points remaining below which the polling gate parks repos with `nice` at or above `quota_poll_park_nice` for the cycle (Issue #3628): no PR fetches, no timeline batch, no candidate collectors. Whole number of points, at least `0`; `0` disables the park tier. |
+| Quota-poll park nice | `quota_poll_park_nice` | `99` | The `nice` tier at or above which a repo is parked under the park floor (Issue #3628). Any integer — it is a `nice` comparison, so negative values are legal. |
+| Quota-poll idle floor | `quota_poll_idle_floor` | `500` | GraphQL points remaining below which idle-task collection is deferred fleet-wide for the cycle — the scan's idle collector and the idle-task filer's repo walk both stand down (Issue #3628). Whole number of points, at least `0` and no greater than `quota_poll_park_floor`; `0` disables the idle tier. |
 | Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
 | Self-scheduled diagnostics in flight | `self_schedule_diagnostics_max_in_flight` | `1` | How many self-scheduled diagnostics may be in flight at once (non-negative integer; `0` refuses every one and logs the refusal). Bounds a misfiring detector so it cannot fill the queue with its own work. |
@@ -2825,6 +2828,35 @@ and drop only the guard.
 The agent side of this is in the prompt: the shared quality instructions forbid
 backgrounding a long-running command and polling it turn by turn, and tell the
 agent to run one bounded foreground command instead.
+
+#### Quota-poll gate — park the tail, defer the idle tier (Issue #3628)
+
+The fleet's shared GitHub GraphQL quota is 5,000 points an hour, and a single
+cycle's per-repo polling — the issue scan's searches, the idle-task filer's
+repo walk, the maintenance sweeps — used to spend the whole window within
+twenty-five minutes of each reset, leaving the fleet parked in the pre-flight
+pause for the rest of the hour. The polling gate reserves the tail of the
+window for priority work, judged once per scan from the **free** quota probe
+(`{ rateLimit { … } }` — a query GitHub does not charge):
+
+- **Park tier.** Below `quota_poll_park_floor` points remaining, repos whose
+  `nice` is at or above `quota_poll_park_nice` are skipped whole for that
+  cycle — no PR fetches, no timeline batch, no candidate collectors. Their
+  work resumes next cycle.
+- **Idle tier.** Below `quota_poll_idle_floor` points remaining, idle-task
+  collection is deferred fleet-wide — the scan's idle-task collector and the
+  idle-task filer's repo walk both stand down, because nothing raised below
+  that floor could be claimed before the window resets.
+
+Both boundaries are strict less-than, recovery is automatic (each cycle
+re-probes), and a floor of `0` disables its tier — set both floors to `0` to
+turn the gate off entirely. The gate fails open: an unreadable quota defers
+nothing, so it can never newly block work. One log line per condition per
+cycle records the decision:
+
+```text
+polling-quota-gate: GraphQL quota remaining=1203/5000 below park_floor=1500 — parked 3 repo(s) with nice >= 99 this cycle; they resume next cycle
+```
 
 #### Why did this run take three hours?
 

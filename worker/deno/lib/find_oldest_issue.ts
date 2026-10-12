@@ -58,6 +58,7 @@ import { collectLowPriorityCandidates } from "./collect_low_priority_candidates.
 import { collectIdleTaskCandidates } from "./collect_idle_task_candidates.ts";
 import { collectSelfDiagnosticCandidates } from "./collect_self_diagnostic_candidates.ts";
 import { getRepoNice } from "./repo_config.ts";
+import { pollingGateVerdict } from "./polling_quota_gate.ts";
 import {
   compareFleetAuthorSets,
   resolveFleetMaintenanceAuthorSet,
@@ -296,11 +297,38 @@ export async function findOldestIssue(
     maintenanceAuthors,
   };
 
+  // Issue #3628: the quota-aware polling gate. One reading per scan, judged
+  // per repository: below the park floor, repos at or above the park nice
+  // tier are skipped whole (both PR fetches, the timeline batch and every
+  // collector), and below the idle floor idle-task collection is deferred
+  // fleet-wide. The one-line summaries are the caller's, once per cycle.
+  const gateThresholds = {
+    parkFloor: config.quotaPollParkFloor,
+    parkNice: config.quotaPollParkNice,
+    idleFloor: config.quotaPollIdleFloor,
+  };
+  const parkedRepos: string[] = [];
+
   for (const repo of scanRepos) {
     if (!isRepoAllowed(config.repos, repo)) continue;
 
     if (options.isRepoDeprioritised?.(repo)) continue;
     if (options.excludeRepos?.has(repo)) continue;
+
+    // Issue #3628: below the park floor, a park-tier repo is skipped whole —
+    // `getRepoNice` is the same resolution the selection tier uses
+    // (Issue #2772), so the poll order and the pickup order agree on what
+    // "low priority" means. The repo resumes next cycle; the availability
+    // classification above still saw it, so the census does too.
+    const gateVerdict = pollingGateVerdict(
+      getRepoNice(config.repoConfig, repo),
+      options.quotaReading ?? null,
+      gateThresholds,
+    );
+    if (gateVerdict.parkRepo) {
+      parkedRepos.push(repo);
+      continue;
+    }
 
     const perAuthorPrCounts: Record<string, number> = {};
     const repoPRs = await fetchOpenPRsForFleet(
@@ -353,7 +381,10 @@ export async function findOldestIssue(
         ...(config.issueLabels ?? []),
         config.workOnLabel,
         config.lowPriorityLabel,
-        IDLE_TASK_LABEL,
+        // Issue #3628: the idle collector is skipped below the idle floor,
+        // so its timelines are not fetched either — they have no consumer
+        // this cycle and every point counts against the shared quota.
+        ...(gateVerdict.deferIdle ? [] : [IDLE_TASK_LABEL]),
       ]);
       await options.timelineBatchRegistry.getBatchedGh(
         repo,
@@ -439,16 +470,24 @@ export async function findOldestIssue(
     // Issue #2006: Collect idle-task candidates per repo. Tier 4 —
     // strictly below low-priority. selectHighestPriority enforces
     // global suppression once every repo has been scanned.
-    const idleTaskResult = await collectIdleTaskCandidates(
-      repo,
-      config,
-      optionsWithDiag,
-      repoPRs,
-      repoAllIssues,
-      fetcher,
-      repoClosedPRs,
-    );
-    allIdleTaskCandidates.push(...idleTaskResult);
+    //
+    // Issue #3628: below the idle floor the idle-task tier is deferred
+    // fleet-wide — its collection is the scan's most call-hungry bucket,
+    // and the idle-task filer is deferred by the same reading. Skipping
+    // the collection itself (not just the selection) is what saves the
+    // points the week-pace gate still pays (Issue #1885).
+    if (!gateVerdict.deferIdle) {
+      const idleTaskResult = await collectIdleTaskCandidates(
+        repo,
+        config,
+        optionsWithDiag,
+        repoPRs,
+        repoAllIssues,
+        fetcher,
+        repoClosedPRs,
+      );
+      allIdleTaskCandidates.push(...idleTaskResult);
+    }
   }
 
   // Issue #655: a refusal here is recorded, not merely logged. `blockedDetails`
@@ -857,6 +896,7 @@ export async function findOldestIssue(
       ...noResult,
       diagnosticSummary,
       blockedDetails: allBlockedDetails,
+      ...(parkedRepos.length > 0 ? { parkedRepos } : {}),
     };
   }
 
@@ -872,5 +912,6 @@ export async function findOldestIssue(
       `gh-calls: ${ghMetrics.total} total)`,
     diagnosticSummary,
     blockedDetails: allBlockedDetails,
+    ...(parkedRepos.length > 0 ? { parkedRepos } : {}),
   };
 }

@@ -194,6 +194,16 @@ export interface FindIssuesOptions {
    * "not gated", which is exactly today's pickup order.
    */
   weekPaceEngaged?: boolean;
+  /**
+   * One free GraphQL quota reading per scan (Issue #3628).
+   *
+   * While `remaining < quotaPollParkFloor` repos with
+   * `nice >= quotaPollParkNice` are skipped whole, and while
+   * `remaining < quotaPollIdleFloor` idle-task collection is deferred
+   * fleet-wide. Null — the probe failed, or no caller probed — polls exactly
+   * as before. See `polling_quota_gate.ts` for the decision table.
+   */
+  quotaReading?: { limit: number; remaining: number } | null;
 }
 
 /**
@@ -225,6 +235,14 @@ export interface FindIssuesResult {
    * `ISSUE_FINDER_DEBUG` diagnostics are enabled.
    */
   blockedDetails?: BlockedCandidateInfo[];
+  /**
+   * Repositories the park tier skipped whole this scan (Issue #3628) — their
+   * `nice` is at or above the park floor and the GraphQL quota was below the
+   * park threshold, so no PR fetch, timeline batch or collector ran for them.
+   * Absent means nothing was parked. The caller turns this into the one
+   * per-cycle log line.
+   */
+  parkedRepos?: readonly string[];
 }
 
 /** Check whether an error represents a GitHub API rate limit. */
