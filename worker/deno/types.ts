@@ -666,6 +666,19 @@ export interface WorkerConfig {
    */
   callbacks: CallbacksConfig;
   /**
+   * Quota-aware polling gate floors (Issue #3628).
+   *
+   * `quotaPollParkFloor`: below this many GraphQL points remaining, repos
+   * with `nice >= quotaPollParkNice` are skipped whole for the cycle.
+   * `quotaPollIdleFloor`: below this many, idle-task collection is deferred
+   * fleet-wide. Both are strict less-than boundaries; a floor of 0 disables
+   * its tier. Validated fail-loud in `loadConfig` — the idle floor may not
+   * exceed the park floor, because it would then never be reached.
+   */
+  quotaPollParkFloor: number;
+  quotaPollParkNice: number;
+  quotaPollIdleFloor: number;
+  /**
    * Graft repo-context injection (Issue #2098, part of #2060).
    *
    * Off unless the host's `.config.json` says otherwise, so a host that never
@@ -1344,6 +1357,12 @@ export interface ConfigFile {
   self_schedule_diagnostics_enabled?: boolean;
   /** Self-scheduled diagnostics allowed in flight at once (Issue #505) */
   self_schedule_diagnostics_max_in_flight?: number;
+  /** Quota-aware polling gate: park floor in GraphQL points (Issue #3628) */
+  quota_poll_park_floor?: number;
+  /** Quota-aware polling gate: park tier `nice` floor (Issue #3628) */
+  quota_poll_park_nice?: number;
+  /** Quota-aware polling gate: idle-tier deferral floor (Issue #3628) */
+  quota_poll_idle_floor?: number;
   /** Hard timeout in seconds for the PR feedback phase (Issue #1824) */
   pr_feedback_timeout?: number;
   /** Hard timeout in seconds for the CI fix phase (Issue #1824) */

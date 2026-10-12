@@ -335,6 +335,11 @@ import {
   probeGraphqlQuota,
   toRateLimitDocument,
 } from "./graphql_quota_probe.ts";
+import {
+  formatPollingGateIdleLine,
+  formatPollingGateParkLine,
+  pollingGateVerdict,
+} from "./polling_quota_gate.ts";
 
 /**
  * The previous cycle's GraphQL quota reading, so the next `graphql-quota:`
@@ -627,6 +632,22 @@ export interface ProductionDepsOptions {
   weekPaceGate?: ClaudeWeekPaceGate;
 
   /**
+   * Quota deferral verdict for the idle-task filer (Issue #3628). Production
+   * leaves it unset and gets one probing the free GraphQL quota, deferring
+   * while `remaining < quota_poll_idle_floor`; a wiring test injects a fixed
+   * verdict so run-core's branch is proven without a probe.
+   */
+  idleFilerQuotaDeferred?: () => Promise<string | null>;
+
+  /**
+   * The free GraphQL quota probe (Issue #3628). Production leaves it unset
+   * and gets {@link probeGraphqlQuota}; a wiring test injects a fixed
+   * reading so the scan's park/idle verdicts are proven without spawning
+   * `gh`.
+   */
+  graphqlQuotaProbe?: () => ReturnType<typeof probeGraphqlQuota>;
+
+  /**
    * The Claude credential pool the health gate rotates through before any
    * fallback provider (Issue #2637). Production leaves it unset and gets one
    * reading the credential directory; a wiring test injects one with known
@@ -841,6 +862,11 @@ export async function createProductionRunCoreDeps(
         "budget remains on the held token (Issue #2474)",
     );
   }
+  // Issue #3628: one free GraphQL quota probe for the polling gate, shared
+  // by the scan and the idle-filer deferral so both read the same account
+  // truth. A wiring test injects a fixed reading; production gets the real
+  // probe.
+  const quotaProbeFn = options.graphqlQuotaProbe ?? probeGraphqlQuota;
   // Issue #2637: the owner drains Claude completely before flipping to a
   // fallback provider. The health gate asks this pool for another Claude
   // credential with budget before it probes `agent_provider_fallback`, and
@@ -1581,6 +1607,15 @@ export async function createProductionRunCoreDeps(
    * reading names a gate one scan out of date, never blocks a claim.
    */
   let lastScanBlockedDetails: BlockedCandidateInfo[] = [];
+
+  /**
+   * What the last scan parked for quota (Issue #3628). Read by the idle-hooks
+   * audit and census so they model the same deliberate deferral instead of
+   * crying mis_classification — the Issue #898 principle: never disagree
+   * about a repository the scan was deliberately not shown.
+   */
+  let lastScanParkedRepos: ReadonlySet<string> = new Set();
+  let lastScanIdleDeferred = false;
 
   /**
    * The idle-detect audit's claimable total from the most recent audit
@@ -4022,6 +4057,24 @@ export async function createProductionRunCoreDeps(
       // all-credentials-exhausted path switches provider. So an engaged
       // guard drops the backlog tiers here and switches nothing.
       const weekPaceEngaged = await weekPaceGate.isEngaged();
+      // Issue #3628: one free GraphQL quota probe per scan — the reading
+      // parks expensive repositories and defers idle-task collection while
+      // the fleet's shared quota is low. A failed probe defers nothing
+      // (fail-open) and says so once, so the gate never newly blocks work
+      // when GitHub's numbers are unreadable.
+      const quotaProbe = await quotaProbeFn();
+      const quotaReading = quotaProbe.ok
+        ? {
+          limit: quotaProbe.value.limit,
+          remaining: quotaProbe.value.remaining,
+        }
+        : null;
+      if (!quotaProbe.ok) {
+        logger.warn(
+          `GraphQL quota probe failed — polling gate reads as off this ` +
+            `cycle: ${quotaProbe.error.message}`,
+        );
+      }
       // Issue #1950: repositories whose runs keep dying at setup are not
       // claimed again until the window lapses or their diagnostic issue is
       // closed. The probe runs first so a repaired repository is released
@@ -4042,6 +4095,7 @@ export async function createProductionRunCoreDeps(
       const result = await findOldestIssue(config, {
         githubUser,
         weekPaceEngaged,
+        quotaReading,
         ghCommandFn: runGhCommand,
         cache: issueCache,
         timelineCache,
@@ -4097,6 +4151,31 @@ export async function createProductionRunCoreDeps(
       // the census called claimable. Diagnostics only — overwritten by each
       // scan, read once at the filing decision point.
       lastScanBlockedDetails = result.blockedDetails ?? [];
+
+      // Issue #3628: one line per condition per cycle, never per repository.
+      // The finder reports what it parked; the summary is logged here, where
+      // the injected logger makes "one line, once" testable and the idle
+      // instruments below read the same verdict the scan acted on.
+      const gateThresholds = {
+        parkFloor: config.quotaPollParkFloor,
+        parkNice: config.quotaPollParkNice,
+        idleFloor: config.quotaPollIdleFloor,
+      };
+      lastScanParkedRepos = new Set(result.parkedRepos ?? []);
+      lastScanIdleDeferred = quotaReading !== null &&
+        pollingGateVerdict(0, quotaReading, gateThresholds).deferIdle;
+      if (lastScanParkedRepos.size > 0 && quotaReading !== null) {
+        logger.warn(
+          formatPollingGateParkLine(
+            quotaReading,
+            lastScanParkedRepos.size,
+            gateThresholds,
+          ),
+        );
+      }
+      if (lastScanIdleDeferred && quotaReading !== null) {
+        logger.warn(formatPollingGateIdleLine(quotaReading, gateThresholds));
+      }
 
       // Issue #219: hand the scan's counts to the caller before returning,
       // so a slot that gets nothing back logs why rather than retiring in
@@ -5442,6 +5521,27 @@ export async function createProductionRunCoreDeps(
     // the one verdict the scan, the census and the filer all share.
     weekPaceEngaged: () => weekPaceGate.lastEngaged(),
 
+    // Issue #3628: the filer-side twin of the scan's idle deferral, judged
+    // from one free probe per idle-hooks invocation. An unreadable quota
+    // defers nothing (fail-open).
+    idleFilerQuotaDeferred: options.idleFilerQuotaDeferred ??
+      (async () => {
+        const probe = await quotaProbeFn();
+        if (!probe.ok) return null;
+        const reading = {
+          limit: probe.value.limit,
+          remaining: probe.value.remaining,
+        };
+        const thresholds = {
+          parkFloor: config.quotaPollParkFloor,
+          parkNice: config.quotaPollParkNice,
+          idleFloor: config.quotaPollIdleFloor,
+        };
+        return pollingGateVerdict(0, reading, thresholds).deferIdle
+          ? `remaining=${reading.remaining}/${reading.limit} below idle_floor=${thresholds.idleFloor}`
+          : null;
+      }),
+
     runIdleTaskFiler: async () => {
       try {
         // Issue #2158: rescue any orphan `Run a security scan` wrappers
@@ -5627,10 +5727,21 @@ export async function createProductionRunCoreDeps(
           // it does for a claim gate. Issue #1091: a sibling slot's hold is
           // no longer in this set — the scan evaluated that repository and
           // refused only the held stream, so a disagreement about the rest of
-          // it is real.
-          heldRepos: scanBackedOff.size > 0
-            ? [...new Set([...scanExcludedRepos, ...scanBackedOff])]
+          // it is real. Issue #3628: a repo the polling gate parked was also
+          // deliberately not scanned — same treatment as a lease.
+          heldRepos: scanBackedOff.size > 0 || lastScanParkedRepos.size > 0
+            ? [
+              ...new Set([
+                ...scanExcludedRepos,
+                ...scanBackedOff,
+                ...lastScanParkedRepos,
+              ]),
+            ]
             : scanExcludedRepos,
+          // Issue #3628: while the scan deferred the idle tier, an
+          // idle-task-only issue is refused by a rule the fleet applied
+          // deliberately — not a misclassification.
+          quotaIdleDeferred: lastScanIdleDeferred,
           log: (line: string) => logger.info(line),
         });
         // Return the claimable total so the run-core gate can skip
@@ -5676,7 +5787,12 @@ export async function createProductionRunCoreDeps(
         // Issue #898: the repos this cycle's eligibility pass was never shown
         // because the maintenance lane leased them (Issue #1091: a slot's
         // hold no longer hides a repository — it occupies one work stream).
-        const heldRepos = new Set(scanExcludedRepos);
+        // Issue #3628: repos the polling gate parked join the same set — the
+        // scan deliberately never saw them either.
+        const heldRepos = new Set([
+          ...scanExcludedRepos,
+          ...lastScanParkedRepos,
+        ]);
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.
         const runLocalHold = await loadRunLocalHolds();

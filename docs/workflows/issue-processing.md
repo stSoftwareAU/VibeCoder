@@ -230,7 +230,10 @@ Boundaries worth stating:
   refused, so an engaged week cannot file a false idle-inversion issue about
   the worker's own pace gate. The idle-detect audit models it the same way
   (Issue #1915), reporting `reason=pace_suppressed` rather than counting the
-  skipped tiers in its claimable total.
+  skipped tiers in its claimable total. The quota polling gate's idle-tier
+  deferral gets the same treatment: while it holds, an issue whose only
+  discovery label is `idle-task` reports `reason=quota_idle_deferred`
+  (Issue #3628).
 - **Only a Claude run is paced.** A run on another coding agent is never
   gated, even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared
   environment, and a mid-run token switch discards the previous token's
