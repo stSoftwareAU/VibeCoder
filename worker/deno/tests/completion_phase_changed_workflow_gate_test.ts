@@ -22,7 +22,7 @@ const SUMMARY = `## Summary
 
 Added a unit-test workflow. Closes #1859.
 
-**Docs sweep** — grep: \`unit-test workflow\`; section: \`docs/EXTENDING.md#workflows\`; no hits
+**Docs sweep** — grep: \`unit-test workflow\`; section: \`docs/EXTENDING.md#workflows\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 

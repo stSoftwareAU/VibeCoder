@@ -121,7 +121,9 @@
  * GitHub-visible blocker — and filed VibeCoder#655. The escalation body's
  * "what the claim scan did with them" section was empty, because that filter
  * logged its skip and recorded no reason at all. Issues excluded solely by a
- * run-local hold are surfaced per repo as `run_local_hold=<n>`.
+ * run-local hold are surfaced per repo as `run_local_hold=<n>`. Issue #3464
+ * adds the issues whose milestone the persisted pacing ledger holds
+ * (`milestone-behind`) to that set.
  *
  * NEAT-AI-Rebase also exposed the other half of the same fault, fixed in
  * `collect_work_on_candidates.ts`: the suppressing issue was NEAT-AI-Rebase#48,
@@ -356,11 +358,11 @@ export const CENSUS_SCAN_GATE_COVERAGE: Record<SkipReason, CensusGateCoverage> =
     // claim's assignment lands, and the census is not handed the registry, so
     // it over-counts by at most the issues this host holds right now.
     "slot-in-flight": "run-local",
-    // Issue #1780: the milestone branch's conflict ledger lives in this
-    // worker's own `milestone_sync_failures.json`, and nothing hands it to the
-    // census. Modelling it would need the ledger; omitting it over-counts by
-    // at most the paced milestone's issues.
-    "milestone-behind": "run-local",
+    // Issue #3464: the milestone branch's conflict ledger (Issue #1780) is
+    // now modelled — the caller unions the issues whose milestone the
+    // persisted pacing ledger paces into `RepoCensusInput.runLocalHolds`,
+    // read through the same `milestonePacedUntil` the scan uses.
+    "milestone-behind": "modelled",
     "content-modified-after-approval": "run-local",
     "content-check-error": "run-local",
     "content-editor-unresolved": "run-local",
@@ -593,9 +595,11 @@ export interface RepoCensusInput {
    * filters every tier's candidates against, after the collectors have
    * passed them.
    *
-   * Two sources sustain a streak: the persisted retry cooldown
-   * (`.cooldown_state.json`) and the per-run processed-issue registry, whose
-   * entries live as long as the process does. Omitted → no run-local
+   * Three sources sustain a streak: the persisted retry cooldown
+   * (`.cooldown_state.json`), the per-run processed-issue registry, whose
+   * entries live as long as the process does, and (Issue #3464) the issues
+   * whose milestone the persisted pacing ledger holds (`milestone-behind`).
+   * Omitted → no run-local
    * blocking is applied, preserving the pre-#655 behaviour exactly as
    * `openPRs` does.
    */

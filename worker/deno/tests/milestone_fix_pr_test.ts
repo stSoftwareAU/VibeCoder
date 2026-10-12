@@ -27,6 +27,7 @@ const MILESTONE = "milestone/523-idle-task-scans";
 function fakeGh(handlers: {
   list?: (args: string[]) => string;
   create?: (args: string[]) => string;
+  view?: (args: string[]) => string | Error;
   merge?: (args: string[]) => string | Error;
   comment?: (args: string[]) => string | Error;
   reviewers?: (args: string[]) => string;
@@ -41,6 +42,13 @@ function fakeGh(handlers: {
       return Promise.resolve(
         handlers.create?.(args) ?? "https://github.com/org/repo/pull/900\n",
       );
+    }
+    if (args[1] === "view") {
+      const result = handlers.view?.(args) ??
+        JSON.stringify({ baseRefName: MILESTONE, headRefName: "x" });
+      return result instanceof Error
+        ? Promise.reject(result)
+        : Promise.resolve(result);
     }
     if (args[1] === "merge") {
       const result = handlers.merge?.(args) ?? "";
@@ -309,4 +317,95 @@ Deno.test("raiseMilestoneFixPr - a non-fix-branch head is rejected with no gh ca
 
   assert(!result.ok);
   assertEquals(calls.length, 0);
+});
+
+Deno.test("raiseMilestoneFixPr - arms only after the base reads back as the milestone branch (Issue #3433)", async () => {
+  const fixBranch = milestoneFixBranchFor(MILESTONE, 42, "ci fix");
+  const { gh, calls } = fakeGh({
+    view: () =>
+      JSON.stringify({ baseRefName: MILESTONE, headRefName: fixBranch }),
+  });
+  const result = await raiseMilestoneFixPr({
+    repo: REPO,
+    milestoneBranch: MILESTONE,
+    milestonePrNumber: 42,
+    fixBranch,
+    pass: "CI fix",
+  }, { gh });
+
+  assert(result.ok);
+  const viewAt = calls.findIndex((a) => a[1] === "view");
+  const mergeAt = calls.findIndex((a) => a[1] === "merge");
+  assert(viewAt >= 0 && mergeAt > viewAt, JSON.stringify(calls));
+  assert(calls[mergeAt]!.includes("--auto"));
+  assert(calls[mergeAt]!.includes("--squash"));
+});
+
+Deno.test("raiseMilestoneFixPr - a base that reads back as main is not armed (Issue #3433)", async () => {
+  const fixBranch = milestoneFixBranchFor(MILESTONE, 42, "ci fix");
+  const warnings: string[] = [];
+  const { gh, calls } = fakeGh({
+    view: () => JSON.stringify({ baseRefName: "main", headRefName: fixBranch }),
+  });
+  const result = await raiseMilestoneFixPr({
+    repo: REPO,
+    milestoneBranch: MILESTONE,
+    milestonePrNumber: 42,
+    fixBranch,
+    pass: "CI fix",
+  }, { gh, warn: (m) => warnings.push(m) });
+
+  assert(result.ok);
+  assert(!calls.some((a) => a[1] === "merge"), JSON.stringify(calls));
+  assert(
+    warnings.some((m) =>
+      m.includes("its base is 'main'") && m.includes("Issue #3433")
+    ),
+    warnings.join("\n"),
+  );
+  const comment = calls.find((a) => a[1] === "comment");
+  assert(comment, JSON.stringify(calls));
+  assertStringIncludes(comment.join(" "), "Issue #3433");
+});
+
+Deno.test("raiseMilestoneFixPr - an unreadable base fails closed and warns (Issue #3433)", async () => {
+  const fixBranch = milestoneFixBranchFor(MILESTONE, 42, "ci fix");
+  const warnings: string[] = [];
+  const { gh, calls } = fakeGh({
+    view: () => new Error("HTTP 502 Bad Gateway"),
+  });
+  const result = await raiseMilestoneFixPr({
+    repo: REPO,
+    milestoneBranch: MILESTONE,
+    milestonePrNumber: 42,
+    fixBranch,
+    pass: "CI fix",
+  }, { gh, warn: (m) => warnings.push(m) });
+
+  assert(result.ok);
+  assert(!calls.some((a) => a[1] === "merge"), JSON.stringify(calls));
+  assert(warnings.some((m) => m.includes("HTTP 502")), warnings.join("\n"));
+});
+
+Deno.test("raiseMilestoneFixPr - a base the view does not return as a string is 'unknown' and not armed (Issue #3433)", async () => {
+  const fixBranch = milestoneFixBranchFor(MILESTONE, 42, "ci fix");
+  const warnings: string[] = [];
+  const { gh, calls } = fakeGh({ view: () => "{}" });
+  const result = await raiseMilestoneFixPr({
+    repo: REPO,
+    milestoneBranch: MILESTONE,
+    milestonePrNumber: 42,
+    fixBranch,
+    pass: "CI fix",
+  }, { gh, warn: (m) => warnings.push(m) });
+
+  assert(result.ok);
+  assert(!calls.some((a) => a[1] === "merge"), JSON.stringify(calls));
+  assert(
+    warnings.some((m) => m.includes("its base is 'unknown'")),
+    warnings.join("\n"),
+  );
+  const comment = calls.find((a) => a[1] === "comment");
+  assert(comment, JSON.stringify(calls));
+  assertStringIncludes(comment.join(" "), "its base is 'unknown'");
 });

@@ -1789,6 +1789,7 @@ async function _processCiWithHeartbeat(
       timeoutSeconds: claudeTimeout,
       noOutputTimeout: claudeNoOutputTimeout,
       phase: "ci_fix",
+      repo,
       cwd: processorDeps.workDir,
       logger,
       // The browser unless `skip_screenshot_check` (Issue #2925). CodeGraph
@@ -2782,6 +2783,7 @@ async function _runPostClaudeQualityCheck(
         timeoutSeconds: claudeTimeout,
         noOutputTimeout: claudeNoOutputTimeout,
         phase: "ci_fix",
+        repo: input.repo,
         cwd,
         logger,
         ...graft.mcpConfigOption(

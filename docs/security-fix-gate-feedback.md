@@ -131,7 +131,10 @@ The completion phase therefore recovers from the **first** block inside the run:
 The retry always runs; it is never skipped on time-budget grounds. A run that
 passes on the retry raises its PR and posts **no** block comment for the first
 verdict. A run blocked twice ends in `failure` exactly as a block did before,
-with **one** comment carrying both verdicts.
+with **one** comment carrying both verdicts. Only its category changed: the
+run's failure reason opens with the worker's `SECURITY_FIX_GATE_MARKER`, so it is
+categorised `security_fix_gate` (an `agent-outcome`, Issue #3454) and test
+declarations quoted in it are not misread as a crash, timeout or rate limit.
 
 ### Recognising a false block
 
@@ -144,7 +147,9 @@ what nobody could tell during #1385.
 
 A retry the worker could not launch at all — a rate limit, a failed spawn — is
 not a second gate verdict: the block is still reported on the issue, but it
-charges no blocked run, so a flaky CLI cannot spend the hand-off budget below.
+charges no blocked run, so a flaky CLI cannot spend the hand-off budget below. Its reason is
+deliberately left unmarked, so the launch error is still classified on its own
+text.
 
 ### Test declarations the gate recognises
 

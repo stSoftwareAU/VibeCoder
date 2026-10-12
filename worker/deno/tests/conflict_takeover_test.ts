@@ -115,6 +115,17 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
       return Promise.resolve(labels.join("\n"));
     }
 
+    // Fix PR base/head re-read before arming (Issue #3433).
+    if (
+      args[0] === "pr" && args[1] === "view" &&
+      args.includes("baseRefName,headRefName")
+    ) {
+      return Promise.resolve(JSON.stringify({
+        baseRefName: "milestone/2965-x",
+        headRefName: "milestone-fix/2965-x/pr-48-takeover",
+      }));
+    }
+
     // Label list cache refresh.
     if (args[0] === "label" && args[1] === "list") {
       return Promise.resolve("[]");

@@ -20,6 +20,7 @@ import {
   buildScheduledReleaseReason,
   CLONE_CORRUPT_MARKER,
   DEADLINE_BOUND_TIMEOUT_MARKER,
+  SECURITY_FIX_GATE_MARKER,
   SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import type { HandleFailureOptions } from "../lib/label_types.ts";
@@ -500,4 +501,13 @@ Deno.test("isSetupFault - the same quotation without the gate marker is still a 
     }),
     true,
   );
+});
+
+Deno.test("classifyCodingFailure - a marked security-fix gate refusal quoting a timeout and the cycle deadline earns a normal attempt (Issue #3454)", () => {
+  const reason = `${SECURITY_FIX_GATE_MARKER}: PR creation blocked: ` +
+    `Deno.test("times out at the cycle deadline with timeout", ...) ${DEADLINE_BOUND_TIMEOUT_MARKER}`;
+  const decision = classifyCodingFailure(reason);
+  assertEquals(decision.disposition, "ladder");
+  assertEquals(decision.cooldownKind, "non_transient");
+  assertEquals(decision.category, "security_fix_gate");
 });

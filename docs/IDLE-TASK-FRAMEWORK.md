@@ -997,7 +997,13 @@ cycle for #622 and #623 — both handed back earlier that day, neither carrying 
 single GitHub-visible blocker — and filed VibeCoder#655 against a scan that was
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
 hands the same set to all three readers, and excluded issues are reported as
-`run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
+`run_local_hold=<n>`. Issue #3464 adds a third source, in the census only: the
+issues whose milestone the persisted pacing ledger
+(`milestone_sync_failures.json`, Issue #1780) holds, which the scan skips as
+`milestone-behind`. The census reads that ledger through the scan's own
+`milestonePacedUntil`, so a persistently paced milestone no longer raises a
+false `inversion_signal`. `idle_detect_diagnostics.ts` and
+`repo_busy_for_idle_task.ts` do not read the ledger yet. The per-cycle adaptive-floor deferral (Issue #245) is the
 one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
 streak open the way the registry did.
 

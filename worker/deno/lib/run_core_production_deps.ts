@@ -117,6 +117,7 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
 import { TimelineCache } from "./timeline_cache.ts";
@@ -241,7 +242,7 @@ import { customDispatchMappings } from "./custom_label_prompts_config.ts";
 import { resolveCallbackRunMode } from "./callback_run_mode.ts";
 import { findCustomLabelPrCandidates } from "./custom_label_pr_finder.ts";
 import { dispatchCustomLabelPrPrompts } from "./custom_label_pr_dispatch.ts";
-import { buildCustomPrPrompt } from "./prompt_builder.ts";
+import { buildCustomPrPrompt, type PromptParts } from "./prompt_builder.ts";
 import { preparePrBranch } from "./pr_branch_preparation.ts";
 import { verifyPushLanded } from "./push_claim_verification.ts";
 
@@ -314,7 +315,7 @@ import {
   escalateRepeatCloneCorruption,
   recordRepoFastFailureTally,
 } from "./repo_fast_failure_issue.ts";
-import { parseCloneCorruptRepeat } from "./corrupt_clone_recovery.ts";
+import { cloneCorruptRepeatFromOutcome } from "./corrupt_clone_recovery.ts";
 import {
   isRateLimitActive as rateLimitSignalIsActive,
   readRateLimitBlockKind,
@@ -3366,6 +3367,15 @@ export async function createProductionRunCoreDeps(
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
           requestBranchUpdate(repo, prNumber, runGhCommand),
+        // Issue #3433: auto-merge follows the base — re-read it first.
+        checkBaseIntegrity: (repo, pr, armed) =>
+          checkPrBaseIntegrity({
+            repo,
+            pr,
+            armed,
+            gh: runGhCommand,
+            log: (m: string) => logger.warn(m),
+          }),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -3909,15 +3919,14 @@ export async function createProductionRunCoreDeps(
               // Issue #2720: the watchdog's abandonment line names it.
               noteAgentRunWorkItem(`${candidate.repo}#${candidate.prNumber}`);
               const run = await workerDeps.claude.runClaudeWithRetry(
-                {
-                  prompt: parts.prompt,
-                  systemPrompt: parts.systemPrompt,
+                buildCustomPrAgentRequest({
+                  repo: candidate.repo,
+                  parts,
                   timeoutSeconds: reactivePhaseTimeout(config, "pr-feedback"),
                   noOutputTimeout: config.claudeNoOutputTimeout,
-                  phase: "pr_feedback",
                   cwd: prRunWorkDir ?? workDir,
                   logger,
-                },
+                }),
                 { maxRetries: config.maxRateLimitRetries },
               );
               if (!run.ok) throw run.error;
@@ -5060,10 +5069,10 @@ export async function createProductionRunCoreDeps(
       // the repository off fleet-wide and escalate to a human straight
       // away, rather than counting towards the ordinary tally threshold
       // below. The repeat payload rides in the setup error message, so the
-      // parse is what tells the two corruptions apart.
-      const repeatCorruption = outcome?.kind === "no_pr"
-        ? parseCloneCorruptRepeat(outcome.message)
-        : null;
+      // parse is what tells the two corruptions apart. It reads only a
+      // setup-phase outcome's own line, so a later phase's message quoting the
+      // payload never escalates (Issue #3446).
+      const repeatCorruption = cloneCorruptRepeatFromOutcome(outcome);
       if (repeatCorruption !== null) {
         try {
           const decision = await escalateRepeatCloneCorruption({
@@ -5671,6 +5680,19 @@ export async function createProductionRunCoreDeps(
         // Issue #655: the same holds the claim scan filtered its candidates
         // against, so the two instruments cannot disagree about them.
         const runLocalHold = await loadRunLocalHolds();
+        // Issue #3464: the milestone pacing ledger the claim scan reads, from
+        // the same path and through the same loader, once for every repo. A
+        // missing or corrupt file reads as empty here exactly as it does in
+        // the scan, so the two cannot disagree about it.
+        const { loadSyncStreaks, milestoneSyncStreakPath } = await import(
+          "./milestone_sync_streak.ts"
+        );
+        const { pacedMilestoneIssueNumbers } = await import(
+          "./milestone_presync.ts"
+        );
+        const pacingLedger = await loadSyncStreaks(
+          milestoneSyncStreakPath(config.workDir || workDir),
+        );
         // Issue #2085: the repositories this host has backed off for fast
         // failures (Issue #1950). `findNextIssue` unions them into
         // `findOldestIssue`'s `excludeRepos`, which drops a repository before
@@ -5785,11 +5807,24 @@ export async function createProductionRunCoreDeps(
               // or an issue this run has already finished with. Unmodelled,
               // they held `inversion_signal=true` open for the life of the
               // process.
-              runLocalHolds: new Set(
-                issues
+              // Issue #3464: unioned with the issues whose milestone the
+              // persisted pacing ledger holds (`milestone-behind`), read
+              // through the same `milestonePacedUntil` the scan uses.
+              // Unmodelled, a persistently paced milestone raised a false
+              // `inversion_signal` every cycle.
+              runLocalHolds: new Set([
+                ...issues
                   .filter((i) => runLocalHold(repo, i.number))
                   .map((i) => i.number),
-              ),
+                ...pacedMilestoneIssueNumbers(
+                  pacingLedger,
+                  repo,
+                  issues.map((i) => ({
+                    number: i.number,
+                    milestone: i.milestone,
+                  })),
+                ),
+              ]),
               // Issue #2405: the holds the claim path created by *deferring*
               // an issue nobody is working. Swallowed into `run_local_hold`
               // they hid a 23-hour stream-affinity deadlock from the
@@ -6567,6 +6602,31 @@ async function scanStaleWorkflowIssuesFn(
       },
     },
   );
+}
+
+/**
+ * The agent request for a PR-phase custom-label run (priority 1.87). It
+ * carries `repo` so the agent's own `git push` runs that repo's pre-flight
+ * through the pre-push hook (Issue #3394).
+ */
+export function buildCustomPrAgentRequest(input: {
+  repo: string;
+  parts: PromptParts;
+  timeoutSeconds: number;
+  noOutputTimeout: number;
+  cwd: string;
+  logger: Logger;
+}) {
+  return {
+    prompt: input.parts.prompt,
+    systemPrompt: input.parts.systemPrompt,
+    timeoutSeconds: input.timeoutSeconds,
+    noOutputTimeout: input.noOutputTimeout,
+    phase: "pr_feedback" as const,
+    repo: input.repo,
+    cwd: input.cwd,
+    logger: input.logger,
+  };
 }
 
 // ---------------------------------------------------------------------------

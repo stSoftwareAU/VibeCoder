@@ -53,3 +53,54 @@ Deno.test("phase_run_usd - matches estimateRunCost over the same entries", () =>
   assert(actual > 0);
   assertEquals(actual, expected);
 });
+
+Deno.test("phase_run_usd - prices a split run from modelUsage when tokenUsage is all zero (Issue #3603)", () => {
+  const s: RunStats = {
+    servedModels: ["claude-opus-5-5"],
+    requestedModel: "claude-opus-5-5",
+    wallClockMs: 1000,
+    tokenUsage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+    },
+    modelUsage: {
+      "claude-opus-5-5": {
+        inputTokens: 1_200,
+        outputTokens: 34_000,
+        cacheCreationInputTokens: 560_000,
+        cacheReadInputTokens: 23_030_670,
+      },
+      "claude-haiku-5-5": {
+        inputTokens: 7_000,
+        outputTokens: 8_100,
+        cacheCreationInputTokens: 90_000,
+        cacheReadInputTokens: 1_500_000,
+      },
+    },
+  };
+  const entries: ModelUsageEntry[] = [
+    {
+      model: "claude-opus-5-5",
+      usage: {
+        inputTokens: 1_200,
+        outputTokens: 34_000,
+        cacheCreationTokens: 560_000,
+        cacheReadTokens: 23_030_670,
+      },
+    },
+    {
+      model: "claude-haiku-5-5",
+      usage: {
+        inputTokens: 7_000,
+        outputTokens: 8_100,
+        cacheCreationTokens: 90_000,
+        cacheReadTokens: 1_500_000,
+      },
+    },
+  ];
+  const actual = estimatePhaseRunUsd([s], "fallback-model");
+  assert(actual > 0);
+  assertEquals(actual, estimateRunCost(entries).totalCost);
+});

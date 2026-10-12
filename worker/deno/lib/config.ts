@@ -9,6 +9,7 @@
  * Use setup.sh to configure via .config.json.
  */
 
+import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
@@ -196,6 +197,9 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
   skip_security_fix_check: "skipSecurityFixCheck",
+  // Diff-scoped mutation gate (Issue #3393).
+  skip_mutation_check: "skipMutationCheck",
+  mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
@@ -1226,6 +1230,8 @@ export async function loadConfig(
   // Issue #3577: reject a malformed pre-flight gate loudly at config load,
   // rather than silently ignoring it and running the repo unguarded.
   validatePreFlightConfigs(config.repoConfig);
+  // Issue #3394: make the pre-flight commands available to agent spawns.
+  registerAgentPreFlightConfigs(config.repoConfig);
 
   // Issue #630: Optionally validate required fields at load time
   if (options?.validate) {

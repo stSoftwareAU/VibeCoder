@@ -5,7 +5,9 @@
  * immediately before the worker's automated commit, at the same chokepoint as
  * `assertSafeToCommit()`. The first non-zero exit blocks BOTH the commit and
  * the push — there is deliberately no override/force flag and no environment
- * escape hatch.
+ * escape hatch. The same `runPreFlightGate` also runs before the agent's own
+ * `git push`, through the per-run pre-push hook (`pre_push_hook.ts` →
+ * `pre_push_gate.ts`, Issue #3394).
  *
  * Fail loud, never fail open: a command that is missing, not executable,
  * cannot be started, or times out is a **block**, not a pass. "Could not run

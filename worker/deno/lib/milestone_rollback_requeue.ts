@@ -20,7 +20,10 @@
 import type { RevertedChild } from "./milestone_rollback.ts";
 import { extractIssueFromBranch } from "./pr_maintenance.ts";
 import { extractClosingIssueNumbers } from "./pr_body.ts";
-import { buildRollbackMarker } from "./milestone_rollback_marker.ts";
+import {
+  buildRollbackMarker,
+  ROLLBACK_CLOSE_MARKER,
+} from "./milestone_rollback_marker.ts";
 import { isWorkerAppliableLabel } from "./worker_label_guard.ts";
 import {
   decideMilestoneEscalationTarget,
@@ -628,13 +631,14 @@ async function removeLabel(
   }
 }
 
-function rollbackCloseComment(
+export function rollbackCloseComment(
   branch: string,
   revertSha: string,
   prNumber: number,
 ): string {
   return `Closed by a milestone roll-back of \`${branch}\` ` +
-    `(reverted PR #${prNumber}, revert \`${revertSha}\`) (Issue #1781).`;
+    `(reverted PR #${prNumber}, revert \`${revertSha}\`) (Issue #1781).\n\n` +
+    ROLLBACK_CLOSE_MARKER;
 }
 
 async function closePr(

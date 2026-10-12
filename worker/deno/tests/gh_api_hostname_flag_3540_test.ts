@@ -1,0 +1,237 @@
+/**
+ * Issue #3540: `gh api --hostname <host>` must not have its host value read
+ * as the endpoint.
+ *
+ * `--hostname` was missing from the classifier's value-flag set, so
+ * `github.com` was taken as the endpoint, `MutationInfo.target` was wrong and
+ * the reserved-label-definition denylist was skipped (even with an inactive
+ * guard context).
+ */
+import { assert, assertEquals } from "@std/assert";
+import { classifyGhMutation } from "../lib/audit_mutation_classifier.ts";
+import { evaluateGhCommand } from "../lib/gh_guard_decision.ts";
+
+const INACTIVE = { active: false, allowedRepos: [] as string[] };
+const ACTIVE = { active: true, allowedRepos: ["o/r"] };
+const WRITE = ["-X", "POST", "repos/o/r/issues", "-f", "title=x"];
+
+Deno.test("#3540: --hostname <host> value is not the endpoint", () => {
+  const info = classifyGhMutation([
+    "api",
+    "--hostname",
+    "github.com",
+    "-X",
+    "DELETE",
+    "repos/o/r/labels/top-priority",
+  ]);
+  assert(info);
+  assertEquals(info.target, "repos/o/r/labels/top-priority");
+  assertEquals(info.repo, "o/r");
+  assertEquals(info.verb, "api-delete");
+});
+
+Deno.test("#3540: pin: inline --hostname=<host> already classified correctly", () => {
+  const info = classifyGhMutation([
+    "api",
+    "--hostname=github.com",
+    "-X",
+    "DELETE",
+    "repos/o/r/labels/top-priority",
+  ]);
+  assert(info);
+  assertEquals(info.target, "repos/o/r/labels/top-priority");
+  assertEquals(info.repo, "o/r");
+});
+
+Deno.test("#3540: reserved label DELETE with --hostname is refused (inactive ctx)", () => {
+  const d = evaluateGhCommand([
+    "api",
+    "--hostname",
+    "github.com",
+    "-X",
+    "DELETE",
+    "repos/o/r/labels/top-priority",
+  ], INACTIVE);
+  assertEquals(d.allowed, false);
+  assertEquals(d.marker, "WORKER_LABEL_REFUSED");
+  assert(d.reason?.includes("reserved_workflow_label_definition"));
+  assert(d.reason?.includes("top-priority"));
+});
+
+Deno.test("#3540: rename to reserved label with --hostname is refused (inactive ctx)", () => {
+  const d = evaluateGhCommand([
+    "api",
+    "--hostname",
+    "github.com",
+    "-X",
+    "PATCH",
+    "repos/o/r/labels/my-label",
+    "-f",
+    "new_name=top-priority",
+  ], INACTIVE);
+  assertEquals(d.allowed, false);
+  assertEquals(d.marker, "WORKER_LABEL_REFUSED");
+  assert(d.reason?.includes("reserved_workflow_label_definition"));
+});
+
+Deno.test("#3540: control: same argv with a non-reserved label is allowed", () => {
+  const d = evaluateGhCommand([
+    "api",
+    "--hostname",
+    "github.com",
+    "-X",
+    "DELETE",
+    "repos/o/r/labels/my-label",
+  ], INACTIVE);
+  assertEquals(d.allowed, true);
+});
+
+// Issue #1420: the host decides where the request lands, so a non-GitHub
+// `--hostname` must not be classified from the path's repo.
+for (
+  const [label, host] of [
+    ["two-token", ["--hostname", "evil.example"]],
+    ["inline", ["--hostname=evil.example"]],
+    ["repeated, last wins", [
+      "--hostname",
+      "github.com",
+      "--hostname",
+      "evil.example",
+    ]],
+    ["missing value", ["--hostname"]],
+  ] as const
+) {
+  const argv = label === "missing value"
+    ? ["api", ...WRITE, ...host]
+    : ["api", ...host, ...WRITE];
+
+  Deno.test(`#3540/#1420: classifier derives no repo for foreign host (${label})`, () => {
+    const info = classifyGhMutation(argv);
+    assert(info);
+    assertEquals(info.scope, "unknown");
+    assertEquals(info.repo, undefined);
+  });
+
+  Deno.test(`#3540/#1420: active allowlist refuses foreign host (${label})`, () => {
+    const d = evaluateGhCommand(argv, ACTIVE);
+    assertEquals(d.allowed, false);
+    assertEquals(d.marker, "WRITE_TARGET_UNDETERMINABLE");
+  });
+}
+
+for (
+  const host of [["--hostname", "github.com"], ["--hostname=GitHub.com"]]
+) {
+  Deno.test(`#3540/#1420: ${host.join(" ")} still resolves the real repo`, () => {
+    const argv = ["api", ...host, ...WRITE];
+    const info = classifyGhMutation(argv);
+    assert(info);
+    assertEquals(info.repo, "o/r");
+    assertEquals(info.scope, "explicit");
+    assertEquals(evaluateGhCommand(argv, ACTIVE).allowed, true);
+  });
+}
+
+Deno.test("#3540/#1420: foreign host on a placeholder endpoint is not cwd-scoped", () => {
+  const info = classifyGhMutation([
+    "api",
+    "--hostname",
+    "evil.example",
+    "-X",
+    "POST",
+    "repos/{owner}/{repo}/issues",
+  ]);
+  assert(info);
+  assertEquals(info.scope, "unknown");
+});
+
+Deno.test("#3540/#1420: foreign host on a sanctioned graphql mutation fails closed", () => {
+  const mutation = [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation { changeUserStatus(input: {}) { clientMutationId } }",
+  ];
+  assertEquals(classifyGhMutation(mutation)?.scope, "non-repo");
+  const info = classifyGhMutation([
+    "api",
+    "--hostname",
+    "evil.example",
+    "graphql",
+    "-f",
+    mutation[3]!,
+  ]);
+  assert(info);
+  assertEquals(info.scope, "unknown");
+});
+
+// PR #3556 review: `gh` honours `--hostname` before the `api` root too
+// (`gh --hostname=evil.invalid api …` requests https://evil.invalid/api/v3/…).
+const GQL = [
+  "graphql",
+  "-f",
+  "query=mutation { changeUserStatus(input: {}) { clientMutationId } }",
+];
+const BEFORE_ROOT_CASES: ReadonlyArray<[string, string[]]> = [
+  ["explicit-repo REST write", WRITE],
+  ["placeholder repo write", [
+    "-X",
+    "POST",
+    "repos/{owner}/{repo}/issues",
+    "-f",
+    "title=x",
+  ]],
+  ["sanctioned graphql mutation", GQL],
+];
+
+for (const [label, rest] of BEFORE_ROOT_CASES) {
+  Deno.test(`#3556: inline --hostname=<foreign> before api is unknown (${label})`, () => {
+    const argv = ["--hostname=evil.invalid", "api", ...rest];
+    const info = classifyGhMutation(argv);
+    assert(info);
+    assertEquals(info.scope, "unknown");
+    assertEquals(info.repo, undefined);
+    const d = evaluateGhCommand(argv, ACTIVE);
+    assertEquals(d.allowed, false);
+    assertEquals(d.marker, "WRITE_TARGET_UNDETERMINABLE");
+  });
+
+  Deno.test(`#3556: two-token --hostname <foreign> before api is unknown (${label})`, () => {
+    const info = classifyGhMutation([
+      "--hostname",
+      "evil.invalid",
+      "api",
+      ...rest,
+    ]);
+    assert(info);
+    assertEquals(info.scope, "unknown");
+    assertEquals(info.repo, undefined);
+  });
+}
+
+Deno.test("#3556: --hostname=github.com before api still resolves the repo", () => {
+  const argv = ["--hostname=github.com", "api", ...WRITE];
+  const info = classifyGhMutation(argv);
+  assert(info);
+  assertEquals(info.repo, "o/r");
+  assertEquals(info.scope, "explicit");
+  assertEquals(evaluateGhCommand(argv, ACTIVE).allowed, true);
+});
+
+Deno.test("#3556: last --hostname wins across the api root", () => {
+  const foreignLast = classifyGhMutation([
+    "--hostname=github.com",
+    "api",
+    "--hostname=evil.invalid",
+    ...WRITE,
+  ]);
+  assertEquals(foreignLast?.scope, "unknown");
+  const githubLast = classifyGhMutation([
+    "--hostname=evil.invalid",
+    "api",
+    "--hostname=github.com",
+    ...WRITE,
+  ]);
+  assertEquals(githubLast?.scope, "explicit");
+  assertEquals(githubLast?.repo, "o/r");
+});

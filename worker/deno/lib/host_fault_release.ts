@@ -24,6 +24,7 @@ import {
   describeHostFault,
   detectHostFault,
   type HostFaultKind,
+  isQualityGateFailureRecord,
   parseHostFaultMarker,
 } from "./host_fault.ts";
 import { isSummaryGateFailureRecord } from "./failure_diagnosis.ts";
@@ -127,7 +128,9 @@ function isFailureRecord(body: string): boolean {
  * as a host fault is `clone-corrupt` — a corrupt shared object store or a
  * broken ref, both unambiguous and narrow (`detectHostFault`). A
  * summary-gate refusal record (`isSummaryGateFailureRecord`) is never one:
- * the text it quotes is the agent's summary, not host output.
+ * the text it quotes is the agent's summary, not host output. Likewise a
+ * quality-gate record (`isQualityGateFailureRecord`, Issue #3445): its body
+ * is the repository's own test output.
  */
 function classifyFailureRecord(body: string): HostFaultKind | null {
   if (!HOST_FAULT_CANDIDATE_RE.test(body.trimStart())) return null;
@@ -136,6 +139,8 @@ function classifyFailureRecord(body: string): HostFaultKind | null {
   // A summary-gate refusal quotes the agent's own summary, so text such as
   // `ignoring broken ref` in it is not host output (Issue #3431; PR #3440).
   if (isSummaryGateFailureRecord(body)) return null;
+  // A quality-gate record is the repository's own test output (Issue #3445).
+  if (isQualityGateFailureRecord(body)) return null;
   return detectHostFault(body) === "clone-corrupt" ? "clone-corrupt" : null;
 }
 

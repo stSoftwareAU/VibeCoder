@@ -199,87 +199,37 @@ CI or look at other PRs. Launch one Agent per PR in a single message so they
 run in parallel, each with
 `subagent_type: "fleet-pr-reviewer"` — the agent definition in
 `.claude/agents/fleet-pr-reviewer.md` pins the reviewer to `claude-opus-5-5`
-at `xhigh` effort (Issue #2976) — and this prompt (fill in the fields):
+at `xhigh` effort (Issue #2976) — and the brief in
+[`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),
+shared with the worker's pre-PR verifier
+(`worker/deno/lib/pre_pr_verifier.ts`, Issue #3395), so change the review
+rules there, never in a copy here. Drop its HTML comment and fill in its four
+fields as follows:
 
-> You are reviewing PR #{number} in {repo} ("{title}"), authored by {author}
-> ({kind}), head commit {headSha}, base {baseRef}. CI has passed. You are a
-> read-only reviewer: do not comment, review, push, edit files or change any
-> state on GitHub. Read with `gh pr view`, `gh pr diff {number} -R {repo}`
-> and `gh api repos/{repo}/contents/<path>?ref={headSha}`.
->
-> 1. Read the linked issue (from the PR body or title) and the repo's
->    `AGENTS.md` / `CODING-STANDARDS.md` if they exist.
-> 2. Check that the change does what the issue asks and nothing unrelated.
-> 3. Look for correctness bugs, unhandled edge cases, security problems
->    (injection, secrets, unsafe permissions in workflows), race conditions
->    and regressions for existing callers.
-> 4. Check the tests against the repository's canonical testing guidance.
->    New behaviour and real bug fixes usually need a test that would fail on
->    the externally meaningful regression; existing coverage may suffice.
->    Refactors and UI restyles may need no new test. {noTestAdded: "The PR
->    changes code but adds no test: decide whether existing tests cover the
->    supported behaviour or a new one is warranted."} A missing safety net
->    that matters is a finding. Flag new assertions on incidental CSS values,
->    DOM shape, component/private function names or version strings unless
->    the linked issue makes these an explicit contract. Prefer user-visible
->    browser behaviour and semantic locators for UI, positive and negative
->    contracts for APIs; visual baselines are appropriate when appearance is
->    an explicit requirement and the baseline is reviewable.
-> 5. Judge every change to an existing test: {testChanges}, plus any inline
->    test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change is
->    **meaningful** if it removes a test case, weakens or deletes an
->    assertion, changes an expected value or expected behaviour, or skips or
->    loosens a test. It is **trivial** if it only reformats, renames,
->    updates imports or fixture paths, or adds cases or assertions. It is
->    **tightened** if an expected value or behaviour changes only to make
->    a supported contract test stricter, as the issue asks: it now asserts
->    more, allows less
->    (e.g. no longer tolerates a permission or a call it used to allow), or
->    pins a stricter count, and nothing it used to check is dropped. A change
->    that tightens one thing and loosens another is **meaningful**.
->    If a test is removed, skipped, weakened or loosened and the linked
->    issue does not require it (for example it looks like it was changed to
->    make the build pass), report it as a blocking **finding** asking for the
->    test to be restored, not only under `testChanges`. Report it under
->    `testChanges` as **meaningful** only when the issue requires the change.
-> 6. {previousFindings, if not empty: "An earlier review of this PR asked
->    for these fixes: {previousFindings}. Check each one is fixed; one that
->    is not is still a finding."}
-> 7. For Dependabot: check the changelog or release notes for breaking changes
->    that affect how this repo uses the dependency, and that a major bump is
->    reflected in the code where needed.
-> 8. If, while reading, you notice an important **pre-existing** problem
->    the PR did not cause and is not meant to fix (a bug, a security gap,
->    data loss, a broken workflow in code it passes by), report it under
->    `unrelatedIssues`, not as a finding: it is filed as a separate issue
->    and does not block this PR. First confirm it is pre-existing: the same
->    problem must be present on the base branch
->    (`gh api repos/{repo}/contents/<path>?ref={baseRef}`) and not
->    introduced, widened or newly exposed by this PR's changes. Anything
->    this PR causes, even in a file it only touches in passing, is a
->    blocking **finding** this PR must fix; when in doubt, it is a
->    finding. Only real, verified problems with a file
->    and line, at most 3; not style, polish or wishes. Skip any that
->    `gh issue list -R {repo} --search "<words> in:title"` shows is already
->    open. Write each as a standalone issue: a title that names the defect,
->    and a body saying what is wrong, the failure scenario and a suggested
->    fix. Describe a security gap by class and location only (for example
->    "the query is written into the page unescaped"), never with a working
->    exploit or payload: some repos are public.
->
-> Only report **blocking** findings: things that are wrong, unsafe or
-> untested. Style preferences and optional polish are not blocking. A
-> meaningful test change the issue requires is not a finding; report it under
-> `testChanges`. Do
-> not guess: every finding needs a file and line from the diff and a concrete
-> failure scenario. A problem the PR introduces, widens or newly exposes is
-> always a finding, never an unrelated issue.
->
-> Reply with only this JSON:
-> `{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
+- `{{REVIEW_CONTEXT}}` — this paragraph, with the gate entry's fields filled
+  in (keep it as a blockquote):
 
-If an agent fails or returns something that isn't this JSON, post nothing for
-that PR; the next gate run reports it again.
+  > You are reviewing PR #{number} in {repo} ("{title}"), authored by {author}
+  > ({kind}), head commit {headSha}, base {baseRef}. CI has passed. You are a
+  > read-only reviewer: do not comment, review, push, edit files or change any
+  > state on GitHub. Read with `gh pr view`, `gh pr diff {number} -R {repo}`
+  > and `gh api repos/{repo}/contents/<path>?ref={headSha}`. The linked issue
+  > is named in the PR body or title. Read a file at the base ref with
+  > `gh api repos/{repo}/contents/<path>?ref={baseRef}`, and search the repo's
+  > open issues with `gh issue list -R {repo} --search "<words> in:title"`.
+
+- `{{NO_TEST_ADDED_NOTE}}` — when the entry's `noTestAdded` is true: "The PR
+  changes code but adds no test: decide whether existing tests cover the
+  supported behaviour or a new one is warranted."; otherwise empty.
+- `{{TEST_CHANGES}}` — the entry's `testChanges` (the removed and edited test
+  files).
+- `{{PREVIOUS_FINDINGS}}` — when the entry's `previousFindings` is not empty:
+  "An earlier review of this PR asked for these fixes: {previousFindings}.
+  Check each one is fixed; one that is not is still a finding."; otherwise
+  "No earlier review of this PR asked for fixes."
+
+If an agent fails or returns something that isn't the JSON the brief asks
+for, post nothing for that PR; the next gate run reports it again.
 
 ### 2. Post
 

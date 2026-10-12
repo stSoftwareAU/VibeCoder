@@ -23,6 +23,7 @@
 import { assert, assertEquals } from "@std/assert";
 import { loadPrompt } from "../lib/prompt_manager.ts";
 import { CONTENT_LABEL_DEFINITIONS } from "../setup/content_label_definitions.ts";
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -45,11 +46,30 @@ async function latestSecurityScan(): Promise<string> {
   return result.value;
 }
 
-/** The prompt with wrapping collapsed, for matching sentences across lines. */
-const flatten = (text: string) => text.replace(/\s+/g, " ");
+/**
+ * The exclusive `gh` allowlist sentence lives in Hard Constraint 2 ("No code
+ * execution"), not in the Defensive label creation section itself.
+ */
+async function hardConstraintsSection(): Promise<string> {
+  const doc = await readRepoDoc("prompts/security_scan/prompt.md");
+  return flat(section(doc, "Hard Constraints"));
+}
+
+/** The family's defensive label creation section, where the labels, colours
+ * and descriptions are enumerated. */
+async function defensiveLabelSection(): Promise<string> {
+  const doc = await readRepoDoc("prompts/security_scan/prompt.md");
+  return flat(section(doc, "Defensive label creation"));
+}
+
+/** The same section, with its line breaks kept — for per-line assertions. */
+async function defensiveLabelSectionLines(): Promise<string> {
+  const doc = await readRepoDoc("prompts/security_scan/prompt.md");
+  return section(doc, "Defensive label creation");
+}
 
 Deno.test("security_scan - the gh allowlist permits defensive label creation (Issue #791)", async () => {
-  const flat = flatten(await latestSecurityScan());
+  const flat = await hardConstraintsSection();
   const allowlist = flat.match(/The only permitted `gh` calls are[^.]*\./);
   assert(allowlist, "could not find the exclusive gh allowlist sentence");
   assert(
@@ -68,7 +88,7 @@ Deno.test("security_scan - carries a defensive label creation section (Issue #79
 });
 
 Deno.test("security_scan - defensively creates every label its filer may attach (Issue #791)", async () => {
-  const flat = flatten(await latestSecurityScan());
+  const flat = await defensiveLabelSection();
   const missing = FILER_LABELS.filter(
     (label) => !flat.includes(`gh label create ${label} `),
   );
@@ -81,7 +101,7 @@ Deno.test("security_scan - defensively creates every label its filer may attach 
 });
 
 Deno.test("security_scan - defensive creation uses the canonical colour and description (Issue #791)", async () => {
-  const flat = flatten(await latestSecurityScan());
+  const flat = await defensiveLabelSection();
   const drift: string[] = [];
   for (const label of FILER_LABELS) {
     const canonical = CONTENT_LABEL_DEFINITIONS.find((d) => d.name === label);
@@ -110,7 +130,7 @@ Deno.test("security_scan - defensive creation uses the canonical colour and desc
 });
 
 Deno.test("security_scan - every defensive creation tolerates an existing label (Issue #791)", async () => {
-  const text = await latestSecurityScan();
+  const text = await defensiveLabelSectionLines();
   const lines = text.split("\n").filter((l) => l.includes("gh label create "));
   assert(lines.length >= FILER_LABELS.length, "expected one line per label");
   const unguarded = lines.filter((l) => !l.trimEnd().endsWith("|| true"));

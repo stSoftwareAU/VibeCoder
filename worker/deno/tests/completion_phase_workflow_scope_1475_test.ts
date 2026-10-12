@@ -25,7 +25,7 @@ const SHA = "1f0c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c";
 const SUMMARY = `## Summary
 Added the gitleaks workflow. Closes #10.
 
-**Docs sweep** — grep: \`gitleaks\`; section: \`docs/EXTENDING.md#workflows\`; no hits
+**Docs sweep** — grep: \`gitleaks\`; section: \`docs/EXTENDING.md#workflows\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
