@@ -73,6 +73,12 @@ const ACCEPTANCE_HEADING_RE =
 const ACCEPTED_SCOPE_HEADING_RE =
   /^\s{0,3}#{1,6}\s+accepted\s+scope(?:\s+so\s+far)?\s*(?::\s*)?$/i;
 
+// A "Done when" heading (Issue #3486). An issue whose criteria sit under
+// `## Done when` — rather than "Acceptance Criteria" or grill-me's
+// "Accepted scope so far" — still states its scope, so the degraded-run guard
+// must read it rather than treating the issue as stating no criteria.
+const DONE_WHEN_HEADING_RE = /^\s{0,3}#{1,6}\s+done\s+when\s*(?::\s*)?$/i;
+
 // Any markdown heading — used as the section boundary.
 const ANY_HEADING_RE = /^\s{0,3}#{1,6}\s+/;
 
@@ -159,7 +165,8 @@ export function extractAcceptanceCriteria(issueBody: string): string[] {
 /**
  * Extract the scope an issue settled on (Issue #2562): its acceptance criteria
  * when it states them, otherwise the list under a grill-me
- * `### Accepted scope so far` heading.
+ * `### Accepted scope so far` heading, otherwise the list under a
+ * `## Done when` heading (Issue #3486).
  *
  * Deliberately separate from {@link extractAcceptanceCriteria}: the closure
  * gate keeps reading only the planner's criteria, and this wider reading is
@@ -172,7 +179,9 @@ export function extractAcceptanceCriteria(issueBody: string): string[] {
 export function extractAcceptedScope(issueBody: string): string[] {
   const criteria = extractAcceptanceCriteria(issueBody);
   if (criteria.length > 0) return criteria;
-  return listItemsUnder(issueBody, ACCEPTED_SCOPE_HEADING_RE);
+  const acceptedScope = listItemsUnder(issueBody, ACCEPTED_SCOPE_HEADING_RE);
+  if (acceptedScope.length > 0) return acceptedScope;
+  return listItemsUnder(issueBody, DONE_WHEN_HEADING_RE);
 }
 
 /** The checkbox-stripped list items under `heading`, or none. */

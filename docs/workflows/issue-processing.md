@@ -2357,8 +2357,9 @@ flowchart TD
 ```
 
 - **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
-  refined by grill-me — its `### Accepted scope so far` list. An issue stating
-  neither is named whole as the one unverified item.
+  refined by grill-me — its `### Accepted scope so far` list, or its
+  `## Done when` list (Issue #3486). An issue stating none of these is named
+  whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
   is a shortfall. Entries are matched to scope items by their words, not by
