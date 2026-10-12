@@ -183,6 +183,8 @@ export type ClaimableSkipReason =
   | "run_local_hold"
   /** Every candidate sits in a tier the week-pace guard skipped (#1915). */
   | "pace_suppressed"
+  /** Every candidate is idle-task-only work the quota gate deferred (#3628). */
+  | "quota_idle_deferred"
   /** Every candidate names an open dependency or has open sub-issues (Issue #3334). */
   | "dependency_blocked"
   /** Every candidate carries a future `Deferred until` line (Issue #3334). */
@@ -403,7 +405,13 @@ export type IssueExclusionReason =
    * In a tier the week-pace guard dropped from the ladder (Issues #1885,
    * #1915) — `low-priority` or `idle-task`, for the rest of the week.
    */
-  | "pace_suppressed";
+  | "pace_suppressed"
+  /**
+   * Idle-task-only work the quota polling gate deferred for the cycle
+   * (Issue #3628) — the idle collector never ran while the GraphQL quota
+   * was below the idle floor.
+   */
+  | "quota_idle_deferred";
 
 export interface IssueVerdict {
   number: number;
@@ -516,8 +524,21 @@ export interface ClassifyOptions {
    */
   weekPaceEngaged?: boolean;
   /**
-   * Issue #2533: the repo's own **open** milestone titles, so the classifier
-   * can model the cross-milestone dependency hold (`isDependencyBlocked`,
+   * Whether the scan deferred the idle-task tier for GraphQL quota (Issue
+   * #3628).
+   *
+   * Deferred, the scan's idle-task collector never ran, so an issue whose
+   * only discovery label is `idle-task` is refused by a rule the fleet
+   * applied deliberately — exactly the pace-gate shape above. An issue that
+   * also carries a higher discovery label stays claimable, because its
+   * collector still ran.
+   *
+   * Omitted → off, which is the behaviour every caller had before this
+   * option existed.
+   */
+  quotaIdleDeferred?: boolean;
+  /**
+   * Issue #2533: the repo's own **open** milestone titles, so the classifier   * can model the cross-milestone dependency hold (`isDependencyBlocked`,
    * Issue #2173) the way `idle_decision_census.ts` already does (Issue #2455).
    *
    * A dependency that is closed but sits in another still-open milestone of
@@ -620,6 +641,7 @@ export function classifyIssues(
   const blockingSet = new Set(BLOCKING_LABELS);
   const paceExemptSet = new Set(PACE_EXEMPT_LABELS);
   const weekPaceEngaged = opts.weekPaceEngaged === true;
+  const quotaIdleDeferred = opts.quotaIdleDeferred === true;
   const openPRs = opts.openPRs ?? [];
   const mergedPRs = opts.mergedPRs ?? [];
   const runLocalHolds = opts.runLocalHolds ?? new Set<number>();
@@ -859,6 +881,25 @@ export function classifyIssues(
       });
       continue;
     }
+    // Issue #3628: the quota polling gate deferred the idle-task collector,
+    // so an issue whose only discovery label is `idle-task` was never
+    // collected — the same "the scan's own last word" treatment as the pace
+    // gate above, and applied after it so a pace-refused issue keeps its
+    // more fundamental reason. An issue that also carries a higher discovery
+    // label stays claimable: its collector still ran.
+    if (
+      quotaIdleDeferred &&
+      issue.labels.includes(IDLE_TASK_LABEL) &&
+      !issue.labels.some((l) => claimableSet.has(l) && l !== IDLE_TASK_LABEL)
+    ) {
+      result.push({
+        number: issue.number,
+        claimable: false,
+        excludedBy: "quota_idle_deferred",
+        milestone: issue.milestone,
+      });
+      continue;
+    }
     // No wrapper-title gate: `idle-task` is just the lowest work-trigger
     // priority, so any unblocked, unassigned idle-task issue is
     // claimable here — matching the collector
@@ -914,6 +955,12 @@ export function pickDominantReason(
   // is only ever set on an issue nothing else refused, which makes it more
   // specific than stream occupancy and the filters above that.
   if (seen.has("pace_suppressed")) return "pace_suppressed";
+  // Issue #3628: the quota polling gate defers the idle tier until the
+  // hourly GraphQL window resets — same temporal shape as the pace guard
+  // (the fleet's own deliberate refusal, standing until a window opens),
+  // and it is applied right after it in classifyIssues, so it outranks a
+  // run-local hold for the same reason pace_suppressed does.
+  if (seen.has("quota_idle_deferred")) return "quota_idle_deferred";
   if (seen.has("run_local_hold")) return "run_local_hold";
   // Issue #3334: classifyIssues applies time_deferred, then dependency_blocked,
   // after the PR gates and before the hold and pace gates — the later gate is
@@ -1119,6 +1166,13 @@ export interface AuditClaimableStateOptions {
    * the scan could actually claim. Omitted → off.
    */
   weekPaceEngaged?: boolean;
+  /**
+   * Whether the quota polling gate deferred the idle-task tier this scan
+   * (Issue #3628) — forwarded verbatim to
+   * {@link ClassifyOptions.quotaIdleDeferred}, so the audit counts only
+   * work the scan could actually claim. Omitted → off.
+   */
+  quotaIdleDeferred?: boolean;
   /** Progress log sink. Defaults to `console.log`. */
   log?: (line: string) => void;
   /** Hostname source — exposed for tests. Defaults to `Deno.hostname()`. */
@@ -1311,6 +1365,9 @@ export async function auditClaimableState(
       // Issues #1885, #1915: a tier the pace gate dropped is a modelled
       // refusal, not claimable work the scan mysteriously passed over.
       weekPaceEngaged: opts.weekPaceEngaged,
+      // Issue #3628: the quota gate's idle-tier deferral is the same shape —
+      // a modelled refusal, not a misclassification.
+      quotaIdleDeferred: opts.quotaIdleDeferred,
     });
     const claimableCount = verdicts.filter((v) => v.claimable).length;
     const reason: ClaimableSkipReason = claimableCount > 0
