@@ -1038,7 +1038,15 @@ When creating the PR, include evidence based on the type of change:
   callee's documented contract — the inputs it actually reads and its exit
   codes on failure. A stub more permissive than the real callee is a finding:
   run against a real checkout of the callee, or name the contract the stub
-  mirrors in the PR summary with a source link. When the change relies on how
+  mirrors in the PR summary with a source link. When a test runs a real script
+  with a stubbed tool, binary or measurement, also check that the script
+  reaches the stub on every platform the fleet runs: read the script and
+  everything it sources for OS-specific branches (`OSTYPE`, `uname`, `darwin`,
+  `/opt/homebrew`, `osascript`, `sw_vers`, `diskutil`) and, for each one, pin
+  the override the code provides or set the test up so the real tool and the
+  stub give the same result (see **Never let a unit test inherit the host's
+  state** in `CODING-STANDARDS.md`). CI runs on Linux, so it never exercises a
+  branch only macOS takes. When the change relies on how
   git, `gh`, the GitHub API or another external tool behaves in a particular
   case, run the real tool on that case first and build the fake's fixture
   from the observed output (see **Observe the real tool before you rely on

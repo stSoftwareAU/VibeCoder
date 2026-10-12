@@ -373,6 +373,20 @@ counter that restarts at 1 in every consumer serves one test's result to the
 next file in the same worker. Key it by something only its own owner can
 produce.
 
+The same rule covers an OS-specific branch in the code under test. A test that
+runs a real shell script with a stubbed tool, binary or measurement — a stub
+binary first on `PATH`, a faked `df` — reaches the stub only where the script
+takes the stubbed path. Read the script and everything it sources for
+OS-specific branches (`OSTYPE`, `uname`, `darwin`, Homebrew prefixes such as
+`/opt/homebrew`, `osascript`, `sw_vers`, `diskutil`), and for each one pin the
+override the code provides, or set the test up so the real tool and the stub
+give the same result. CI runs on Linux but the fleet also runs `./quality.sh`
+on macOS hosts, so CI never exercises a branch only macOS takes: a script that
+prepended the Homebrew prefix to `PATH` ran the host's real binary instead of
+the stub, and a disk library that swapped in the free space AppleScript
+reported read the host's disk instead of the faked `df` (Issue #3475). The test
+itself must neutralise the branch; a green Linux CI run says nothing about it.
+
 ### Rendezvous, never sleep, to prove concurrency
 
 "N ran at once" is not provable with `await new Promise((r) => setTimeout(r,
