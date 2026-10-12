@@ -19,7 +19,7 @@ Closes #3486.
 ### Essential Design Decisions
 
 - `## Done when` counts as accepted scope, so it is recognised as a fallback in `extractAcceptedScope` only. `extractAcceptanceCriteria` stays reading the planner's `## Acceptance Criteria`, exactly as the issue's "not covered by #3350" note directs.
-- The new regex reuses the ReDoS-safe tail `\s*(?::\s*)?$` (not `\s*:?\s*$`) and the list-item text `([^\n]*)` with no `$`, matching the existing heading and item patterns (Issues #3164 and #3186).
+- The new regex reuses the ReDoS-safe tail `\s*(?::\s*)?$` (not `\s*:?\s*$`), matching the existing heading patterns `ACCEPTANCE_HEADING_RE` and `ACCEPTED_SCOPE_HEADING_RE` (Issue #3164). The list-item text `([^\n]*)` with no `$` (Issue #3186) belongs to the unchanged `LIST_ITEM_RE`, which this change leaves as-is.
 
 ### Undiscoverable Facts
 
@@ -39,8 +39,10 @@ No UI and no runtime code — this is a one-line fallback plus a regex constant 
 
 ## Test Plan
 
-- Ran `deno task test:unit tests/degraded_delivery_test.ts < /dev/null` from `worker/deno`: all tests passed on the fixed head (47 passed before this session's flip checks; 45 passed / 2 failed only while the flip was applied, then restored).
+- Ran `deno task test:unit tests/degraded_delivery_test.ts < /dev/null` from `worker/deno`: all 47 tests passed on the fixed head (45 passed / 2 failed only while the flip was applied, then restored).
+- Ran `deno task test:unit tests/heading_tail_redos_3164_test.ts < /dev/null` from `worker/deno`: all 11 tests passed, including the new hostile case for `DONE_WHEN_HEADING_RE`.
 - Red checks: the two new tests (`extractAcceptedScope - reads a 'Done when' list (Issue #3486)` and `buildDegradedNoFollowUpSection - (c) does not claim a 'Done when' issue states no criteria`) failed against the pre-fix head and pass after the fix.
+- ReDoS guard: `worker/deno/tests/heading_tail_redos_3164_test.ts::3486 - done-when heading: a padded near-miss is rejected and a real heading still read` mirrors the accepted-scope case — a `## Done when` line padded with a long run of spaces then `x` is not taken for a heading, and a real `## Done when:` heading after it is still read by `extractAcceptedScope`.
 - `./quality.sh` on the head passed. Every stage passed, including `deno tests`, markdownlint and semgrep, except `config integration`, which was skipped.
 
 Branch outcomes: the diff adds one condition `if (acceptedScope.length > 0) return acceptedScope;` (`worker/deno/lib/acceptance_criteria_gate.ts:183`):
