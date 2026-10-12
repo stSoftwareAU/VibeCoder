@@ -295,6 +295,19 @@ export const OPERATIONAL_DEFAULTS = {
    */
   callStormNovelShare: DEFAULT_CALL_STORM_NOVEL_SHARE,
   /**
+   * Quota-aware polling gate floors (Issue #3628).
+   *
+   * `quotaPollParkFloor`: below this many GraphQL points remaining, repos
+   * with `nice >= quotaPollParkNice` are skipped whole for the cycle.
+   * `quotaPollIdleFloor`: below this many, idle-task collection is deferred
+   * fleet-wide (scan collector and filer). Both are strict less-than
+   * boundaries; a floor of 0 disables its tier. A failed quota probe defers
+   * nothing — the gate fails open.
+   */
+  quotaPollParkFloor: 1500,
+  quotaPollParkNice: 99,
+  quotaPollIdleFloor: 500,
+  /**
    * Self-scheduling for auto-filed worker diagnostics (Issue #505).
    *
    * **On by default.** The worker diagnoses its own faults accurately and
@@ -1551,6 +1564,10 @@ export function buildDefaultWorkerConfig(
     callStormCalls: OPERATIONAL_DEFAULTS.callStormCalls,
     callStormWindowSeconds: OPERATIONAL_DEFAULTS.callStormWindowSeconds,
     callStormNovelShare: OPERATIONAL_DEFAULTS.callStormNovelShare,
+    // Issue #3628: quota-aware polling gate floors.
+    quotaPollParkFloor: OPERATIONAL_DEFAULTS.quotaPollParkFloor,
+    quotaPollParkNice: OPERATIONAL_DEFAULTS.quotaPollParkNice,
+    quotaPollIdleFloor: OPERATIONAL_DEFAULTS.quotaPollIdleFloor,
     // Issue #505: self-scheduling for auto-filed worker diagnostics.
     selfScheduleDiagnosticsEnabled:
       OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsEnabled,

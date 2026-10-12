@@ -230,7 +230,10 @@ Boundaries worth stating:
   refused, so an engaged week cannot file a false idle-inversion issue about
   the worker's own pace gate. The idle-detect audit models it the same way
   (Issue #1915), reporting `reason=pace_suppressed` rather than counting the
-  skipped tiers in its claimable total.
+  skipped tiers in its claimable total. The quota polling gate's idle-tier
+  deferral gets the same treatment: while it holds, an issue whose only
+  discovery label is `idle-task` reports `reason=quota_idle_deferred`
+  (Issue #3628).
 - **Only a Claude run is paced.** A run on another coding agent is never
   gated, even if a stale `CLAUDE_CODE_OAUTH_TOKEN` is left in the shared
   environment, and a mid-run token switch discards the previous token's
@@ -2965,6 +2968,16 @@ the two label-release sweeps that re-classify a posted body
 the record by its worker-written `**Category:** \`summary-incomplete\`` line at
 the head of the comment (`isSummaryGateFailureRecord`) and leave its labels
 alone, however the quoted summary reads. The catch-all `Error:` rule excludes `::` paths.
+
+A run refused by the security-fix gate is categorised `security_fix_gate`
+(display `security-fix-gate`, Issue #3454) the same way: the failure reason opens
+with the worker's own `SECURITY_FIX_GATE_MARKER` when the twice-blocked in-run
+retry report ends the run, so quoted test declarations (for example `TypeError:`
+or "timeout") are not read as a crash, timeout or rate limit. The completion
+phase's first-block reason stays unmarked, because the in-run retry always
+replaces it. It is an `agent-outcome` with the normal retry and `failed-once` rules.
+A retry that could not be launched is not marked and keeps its own category.
+There is no label-release record check for this category.
 
 ## 🔁 One run, one attempt per issue
 

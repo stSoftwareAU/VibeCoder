@@ -209,6 +209,8 @@ export async function workOnIssueQualityGate(
       issueNumber: ctx.issueNumber,
       githubUser: ctx.githubUser,
       failureMessage: qualityFailureMessage,
+      // Issue #3445: the gate output is repository-authored, never a host fault.
+      qualityGateOutput: true,
       labels: {
         failedLabel: ctx.config.failedLabel,
         failedOnceLabel: ctx.config.failedOnceLabel,

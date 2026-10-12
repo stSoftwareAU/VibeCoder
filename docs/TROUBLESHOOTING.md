@@ -1009,9 +1009,12 @@ not an ordinary setup fault: something keeps damaging the clone. The run's
 failure carries a `clone-corrupt-repeat` payload, and the worker backs the
 repository off fleet-wide at once and escalates its tally diagnostic issue
 with a `needs-human` label and one comment carrying both corruption times,
-both git messages and the moved-aside path (Issue #2958). The comment's
-checklist names what to check — disk health, the volume, a manual re-clone —
-and closing the diagnostic issue lifts the back-off.
+both git messages and the moved-aside path (Issue #2958). The worker reads
+that payload only from a setup-phase failure, and only from a line that begins
+with the marker, so a later phase's message that merely quotes it (an agent's
+PR summary, quality-gate output) never triggers the back-off (Issue #3446).
+The comment's checklist names what to check — disk health, the volume, a
+manual re-clone — and closing the diagnostic issue lifts the back-off.
 
 The next time that repository's setup phase successfully creates a feature
 branch — proof the host's clone is healthy again — a sweep checks every open
