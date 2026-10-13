@@ -139,6 +139,9 @@ the code (`git status` clean afterwards).
   - "hold is logged once per process, while an armed PR is disarmed on each
     sweep until it succeeds"
   - "failed disarm still yields no merge attempt"
+  - "the hold line says it is disarming only for an armed PR". It pins the
+    `armedHold ? ", disarming auto-merge" : ""` ternary in the hold log line
+    (`auto_merge_sweep.ts:294`).
 - `auto_merge_sweep_disarm_wiring_test.ts`: "production ensureAutoMerge
   disarms an armed standing-violation PR". It asserts the argv
   `pr merge 42 --repo … --disable-auto`.
@@ -148,9 +151,6 @@ the code (`git status` clean afterwards).
     names"
   - "makeGhPrStateFetcher - asks gh for state and mergeable, and returns the
     payload raw"
-  - "the hold line says it is disarming only for an armed PR". It pins the
-    `armedHold ? ", disarming auto-merge" : ""` ternary in the hold log line
-    (`auto_merge_sweep.ts:294`).
 - `pr_live_state_test.ts`:
   - "readPrLiveState - an open PR surfaces its label names"
   - "readPrLiveState - the live read asks gh for labels (Issue #3517)". It
