@@ -34,6 +34,13 @@ import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
 import {
+  applyBranchOutcomesFacts,
+  BRANCH_OUTCOMES_MARKER,
+  prSummaryDigestInput,
+  resolveBranchOutcomesFacts,
+} from "../pr_summary_facts.ts";
+import { namedTestPathsFromFacts } from "../summary_facts.ts";
+import {
   buildSummaryClaimGateComment,
   runSummaryClaimCheck,
   summaryClaimBlockReason,
@@ -2104,6 +2111,31 @@ async function completionBody(
     summaryContent = "";
   }
 
+  // Issue #3535: a structured facts file renders the Branch outcomes list
+  // into the summary. The digest and the hand-written-list check use the raw
+  // file content, so keep it before rendering.
+  const rawSummaryContent = summaryContent;
+  const branchOutcomesFacts = await resolveBranchOutcomesFacts(
+    state.repoPath,
+    issueNumber,
+  );
+  const factsContent = branchOutcomesFacts.kind === "absent"
+    ? null
+    : branchOutcomesFacts.content;
+  if (branchOutcomesFacts.kind === "valid") {
+    logger.info("Loaded PR summary facts file", {
+      source: branchOutcomesFacts.relativePath,
+    });
+    summaryContent = applyBranchOutcomesFacts(
+      summaryContent,
+      branchOutcomesFacts.rendered,
+    );
+  } else if (branchOutcomesFacts.kind === "error") {
+    logger.warn("PR summary facts file is unusable", {
+      error: branchOutcomesFacts.reason,
+    });
+  }
+
   // Screenshots the agent committed to docs/evidence/ but did not reference
   // in the summary (a WIP-resumed run keeps the earlier summary — Issue
   // #4355) are referenced here, so the evidence renders in the PR and the
@@ -2155,7 +2187,9 @@ async function completionBody(
     issueNumber,
     extraSections,
     footer,
-    summaryDigest: await prSummaryDigest(summaryContent),
+    summaryDigest: await prSummaryDigest(
+      prSummaryDigestInput(rawSummaryContent, factsContent),
+    ),
     subAgentTier: prSubAgentTier,
     ensureReferences: deps.pr.ensurePrReferencesIssue,
   });
@@ -2650,12 +2684,21 @@ async function completionBody(
   // happens to name a test. It only skips calling git when there are zero
   // named paths, in which case an empty set is used, which is `valid` for a
   // record with no named tests.
+  //
+  // Issue #3535: when a facts file is valid, the list in `prBody` was
+  // rendered from it, so the HEAD lookup uses the facts' declared test paths
+  // rather than the prose parser's. A facts file that cannot be read or does
+  // not validate, or that sits beside a hand-written Branch outcomes list in
+  // the summary, blocks whether or not the gate is otherwise applicable: a
+  // broken facts file is a fault, not an absent list.
   // ---------------------------------------------------------------------
   // The not-applicable `: []` arm and the empty-list `new Set()` arm both
   // left the suite green when removed. `lookupTestsAtHead` already returns
   // an empty set without calling git when there is nothing to confirm, and
   // a docs-only diff is not applicable inside `validateBranchOutcomes`.
-  const branchOutcomesNamedTests = namedTestPaths(parseBranchOutcomes(prBody));
+  const branchOutcomesNamedTests = branchOutcomesFacts.kind === "valid"
+    ? namedTestPathsFromFacts(branchOutcomesFacts.facts)
+    : namedTestPaths(parseBranchOutcomes(prBody));
   const testsAtHead = await lookupTestsAtHead(
     branchOutcomesNamedTests,
     (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
@@ -2665,11 +2708,22 @@ async function completionBody(
     prSummaryContent: prBody,
     testsAtHead,
   });
-  const branchOutcomesBlocked = branchOutcomes.applicable &&
-    !branchOutcomes.valid;
+  let branchOutcomesFactsProblem: string | null = null;
+  if (branchOutcomesFacts.kind === "error") {
+    branchOutcomesFactsProblem = branchOutcomesFacts.reason;
+  } else if (
+    branchOutcomesFacts.kind === "valid" &&
+    parseBranchOutcomes(rawSummaryContent).present
+  ) {
+    branchOutcomesFactsProblem =
+      `Branch outcomes facts file ${branchOutcomesFacts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
+  }
+  const branchOutcomesBlocked = branchOutcomesFactsProblem !== null ||
+    (branchOutcomes.applicable && !branchOutcomes.valid);
   const branchOutcomesReason =
     `Branch outcomes not recorded in the PR summary: ${
-      branchOutcomes.problems[0] ?? "Branch outcomes list missing"
+      branchOutcomesFactsProblem ??
+        branchOutcomes.problems[0] ?? "Branch outcomes list missing"
     }`;
 
   // ---------------------------------------------------------------------
@@ -2838,7 +2892,14 @@ async function completionBody(
   const branchOutcomesVerdict: LateSummaryVerdict = {
     blocked: branchOutcomesBlocked,
     reason: branchOutcomesReason,
-    comment: () => buildBranchOutcomesGateComment(branchOutcomes),
+    comment: () =>
+      buildBranchOutcomesGateComment(
+        branchOutcomesFactsProblem === null ? branchOutcomes : {
+          ...branchOutcomes,
+          valid: false,
+          problems: [branchOutcomesFactsProblem, ...branchOutcomes.problems],
+        },
+      ),
   };
   // ---------------------------------------------------------------------
   // Diff-scoped mutation verdict (Issue #3393), computed once alongside the
