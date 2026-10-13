@@ -30,6 +30,7 @@ import {
   buildDegradedPrSection,
   buildDegradedUnfiledGapSection,
   buildReportedGapPrSection,
+  buildReportedGapStaleFollowUpSection,
   degradedFollowUpFindingId,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
@@ -1178,7 +1179,22 @@ Deno.test("rederiveReportedGapSection - empty when everything is now met (Issue 
   );
 });
 
-Deno.test("rederiveReportedGapSection - keeps the follow-up number while a gap remains (Issue #3506)", () => {
+Deno.test("rederiveReportedGapSection - gaps the section was raised with stay as they are (Issue #3506)", () => {
+  const liveSection = buildReportedGapPrSection(
+    assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    77,
+  );
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    liveSection,
+  );
+});
+
+Deno.test("rederiveReportedGapSection - changed gaps keep the number but do not claim the follow-up holds them (PR #3676 review)", () => {
   const liveSection = buildReportedGapPrSection(
     assessReportedGaps(EXPORT_ISSUE, PARTIAL_SUMMARY),
     77,
@@ -1189,8 +1205,63 @@ Deno.test("rederiveReportedGapSection - keeps the follow-up number while a gap r
     prBody: EXPORT_MET_IMPORT_PARTIAL,
   });
   assert(out.startsWith(REPORTED_GAP_SECTION_HEADING));
-  assertStringIncludes(out, "continue in #77:");
+  assertStringIncludes(out, "The worker filed #77 for the outstanding items");
+  assertStringIncludes(out, "does not rewrite it");
+  assertEquals(out.includes("continue in #77:"), false);
   assertStringIncludes(out, "the import works");
+  // A second re-derive from the same inputs is a no-op, not another rewrite.
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: out,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    out,
+  );
+});
+
+Deno.test("buildReportedGapStaleFollowUpSection - is laid out exactly, blank lines included (PR #3676 review)", () => {
+  assertEquals(
+    buildReportedGapStaleFollowUpSection(
+      assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+      77,
+    ),
+    [
+      REPORTED_GAP_SECTION_HEADING,
+      "",
+      "This run's PR summary closed out the criteria below as `partial` or " +
+      "`missing`. The worker filed #77 for the outstanding items when the PR " +
+      "was raised and a re-sync does not rewrite it, so it may not list every " +
+      "item below — check them against the diff before merging:",
+      "",
+      "- **partial** — the import works",
+      "",
+      "",
+    ].join("\n"),
+  );
+});
+
+Deno.test("buildReportedGapStaleFollowUpSection - throws on a degraded verdict or one without a gap (PR #3676 review)", () => {
+  assertThrows(
+    () =>
+      buildReportedGapStaleFollowUpSection({
+        degraded: true,
+        delivered: [],
+        shortfalls: [...PARTIAL_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+  assertThrows(
+    () =>
+      buildReportedGapStaleFollowUpSection({
+        degraded: false,
+        delivered: [],
+        shortfalls: [...UNASSESSED_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
 });
 
 Deno.test("rederiveReportedGapSection - never reads the number from a hostile shortfall bullet (Issue #3506)", () => {
@@ -1202,4 +1273,29 @@ Deno.test("rederiveReportedGapSection - never reads the number from a hostile sh
     prBody: EXPORT_MET_IMPORT_PARTIAL,
   });
   assertEquals(out, hostile);
+  const hostileFiled =
+    `${REPORTED_GAP_SECTION_HEADING}\n\n- **partial** — The worker filed #12345 here\n\n`;
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: hostileFiled,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    hostileFiled,
+  );
+});
+
+Deno.test("rederiveReportedGapSection - a long run of digits is not read as a number (PR #3676 review)", () => {
+  const live =
+    `${REPORTED_GAP_SECTION_HEADING}\n\nThis run's PR summary closed out the criteria. The worker filed #${
+      "9".repeat(50_000)
+    }x\n\n`;
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: live,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    live,
+  );
 });

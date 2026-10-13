@@ -5,8 +5,10 @@
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
  * sections — evidence, milestone, the leading degraded-run or
  * partial-delivery section, bump note, footer). That leading section is
- * re-derived at sync time from the current issue and summary, never copied
- * forward (Issue #3350, #3506). A
+ * re-derived at sync time from the current issue and summary rather than
+ * copied forward (Issue #3350, #3506), except that a partial-delivery section
+ * whose follow-up number cannot be read is kept as it is. The sync only reads
+ * the issue: it never writes to the follow-up (PR #3676 review). A
  * review-fix run that rewrites that summary file and pushes new commits never
  * touched the PR body again, so a reviewer reading the description kept
  * seeing the original summary while the diff underneath it changed.
@@ -60,15 +62,10 @@ import {
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
 import {
-  assessReportedGaps,
-  buildReportedGapPrSection,
-  fileDegradedFollowUp,
   rederiveDegradedSection,
   rederiveReportedGapSection,
   REPORTED_GAP_SECTION_HEADING,
 } from "./degraded_delivery.ts";
-import type { FindingIdDedupOptions } from "./idle_task_snapshot.ts";
-import { getRunId } from "./run_id.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
@@ -264,12 +261,6 @@ export interface SyncPrBodyDeps {
   /** Runs a `git` command. */
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
-  /**
-   * Author-verification inputs for finding the open partial-delivery follow-up
-   * (Issue #3506). Omitted in production, which reads the configured fleet
-   * identity; tests state the fleet.
-   */
-  dedupAuthors?: FindingIdDedupOptions;
 }
 
 /** Outcome of a sync attempt. */
@@ -331,7 +322,8 @@ function extractBumpSkipNote(body: string): string {
  *
  * It exists only on the live body — the summary file does not carry it — so
  * this only locates it; the caller re-derives its content from current state
- * rather than copying it forward (Issue #3350). Only a block that opens the
+ * rather than copying it forward (Issue #3350), keeping a partial-delivery
+ * section as it is when its follow-up number cannot be read. Only a block that opens the
  * body counts; a later mention is the summary quoting the phrase.
  */
 function extractLeadingSection(body: string, heading: string): string {
@@ -607,7 +599,6 @@ export async function syncPrBodyFromSummary(
       ? "degraded-run section"
       : "partial-delivery section";
     let issueBody: string;
-    let issueTitle: string | undefined;
     try {
       const raw = await deps.runGhCommand([
         "issue",
@@ -616,14 +607,13 @@ export async function syncPrBodyFromSummary(
         "--repo",
         input.repo,
         "--json",
-        "body,title",
+        "body",
       ]);
-      const parsed = JSON.parse(raw) as { body?: unknown; title?: unknown };
+      const parsed = JSON.parse(raw) as { body?: unknown };
       if (typeof parsed.body !== "string") {
         throw new Error("issue body missing from gh output");
       }
       issueBody = parsed.body;
-      issueTitle = typeof parsed.title === "string" ? parsed.title : undefined;
     } catch (err) {
       return {
         ok: false,
@@ -634,47 +624,12 @@ export async function syncPrBodyFromSummary(
         ),
       };
     }
-    let rederived =
+    const rederived =
       (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
         liveSection,
         issueBody,
         prBody: body,
       });
-    // PR #3676 review: a changed section may list gaps the follow-up it names
-    // does not hold yet. Bring that follow-up up to date first, and name the
-    // number it returns (a closed follow-up is refiled under a new one). A
-    // failure fails the sync rather than claim items continue where they do not.
-    if (liveReportedGap && rederived !== "" && rederived !== liveSection) {
-      if (issueTitle === undefined) {
-        return {
-          ok: false,
-          error: new Error(
-            `Issue #${issueNumber} has no title to update its partial-delivery follow-up for PR #${input.prNumber}`,
-          ),
-        };
-      }
-      const followUp = await fileDegradedFollowUp({
-        repo: input.repo,
-        parentNumber: issueNumber,
-        parentTitle: issueTitle,
-        verdict: assessReportedGaps(issueBody, body),
-        runId: input.runId ?? getRunId(),
-        gh: deps.runGhCommand,
-        ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
-      });
-      if (!followUp.ok) {
-        return {
-          ok: false,
-          error: new Error(
-            `Failed to update the partial-delivery follow-up of issue #${issueNumber} for PR #${input.prNumber}: ${followUp.error.message}`,
-          ),
-        };
-      }
-      rederived = buildReportedGapPrSection(
-        assessReportedGaps(issueBody, body),
-        followUp.value.number,
-      );
-    }
     if (rederived !== liveSection) {
       logger.info(
         liveDegraded

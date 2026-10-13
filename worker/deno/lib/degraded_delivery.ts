@@ -507,14 +507,47 @@ export function buildReportedGapPrSection(
 }
 
 /**
+ * Build the partial-delivery section for a re-sync whose rebuilt gaps differ
+ * from the ones the section was raised with. The follow-up it names was filed
+ * from the earlier gaps and a re-sync never rewrites it (PR #3676 review), so
+ * the section says it may not list every item instead of claiming it does.
+ * Throws without a healthy verdict carrying a gap.
+ */
+export function buildReportedGapStaleFollowUpSection(
+  verdict: DegradedDeliveryVerdict,
+  followUpNumber: number,
+): string {
+  if (verdict.degraded || !degradedNeedsFollowUp(verdict)) {
+    throw new Error(
+      "buildReportedGapStaleFollowUpSection: needs a healthy verdict with a partial or missing shortfall",
+    );
+  }
+  return [
+    REPORTED_GAP_SECTION_HEADING,
+    "",
+    `This run's PR summary closed out the criteria below as \`partial\` or ` +
+    `\`missing\`. The worker filed #${followUpNumber} for the outstanding ` +
+    `items when the PR was raised and a re-sync does not rewrite it, so it ` +
+    `may not list every item below — check them against the diff before ` +
+    `merging:`,
+    "",
+    ...shortfallLines(verdict.shortfalls),
+    "",
+    "",
+  ].join("\n");
+}
+
+/**
  * Re-derive a live partial-delivery section from the current issue body and PR
  * summary (Issue #3506). Returns "" when no gap remains. The follow-up number
  * is read only from the single opening line, never from the untrusted
  * shortfall bullets; when it cannot be read the live section is kept as is.
  *
- * Pure: it does not touch the follow-up. The caller must bring that follow-up
- * up to date with the same verdict before using a changed section, as
- * `syncPrBodyFromSummary` does (PR #3676 review).
+ * Pure, and it never touches the follow-up: a sync must not write freshly
+ * fetched issue text into an issue the fleet works as trusted (PR #3676
+ * review). A section built from the same gaps stays as it is. Any other gap
+ * set is rendered by {@link buildReportedGapStaleFollowUpSection}, which does
+ * not claim the follow-up holds it.
  */
 export function rederiveReportedGapSection(args: {
   liveSection: string;
@@ -526,10 +559,13 @@ export function rederiveReportedGapSection(args: {
   const line = args.liveSection.split("\n").find((l) =>
     l.startsWith("This run's PR summary closed out")
   );
-  const match = line?.match(/continue in #(\d{1,9}):/);
+  const match = line?.match(/(?:continue in|filed) #(\d{1,9})[: ]/);
   const n = match ? Number(match[1]) : NaN;
   if (!Number.isSafeInteger(n) || n <= 0) return args.liveSection;
-  return buildReportedGapPrSection(verdict, n);
+  const heldSection = buildReportedGapPrSection(verdict, n);
+  return args.liveSection === heldSection
+    ? args.liveSection
+    : buildReportedGapStaleFollowUpSection(verdict, n);
 }
 
 /**

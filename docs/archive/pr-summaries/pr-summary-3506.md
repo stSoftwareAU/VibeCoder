@@ -61,7 +61,7 @@ flowchart TD
     F -- filed --> S["PR body opens with<br/>'Partial delivery — follow-up filed'"]
     F -- "gh failed" --> X["Run fails, no PR finalised"]
     S --> Y["Later re-sync:<br/>rederiveReportedGapSection"]
-    Y -- "section changed" --> U["fileDegradedFollowUp<br/>rewrites the follow-up first"]
+    Y -- "gaps changed" --> U["Section keeps the number and says the<br/>follow-up may not list every item<br/>(the follow-up is never written)"]
 ```
 
 - Completion-phase behaviour is tested in
@@ -87,7 +87,7 @@ flowchart TD
 `docs/workflows/issue-processing.md#️-a-degraded-run-never-closes-an-issue-as-complete`;
 siblings: `buildDegradedNoFollowUpSection`, `buildDegradedPrSection` — the
 leading-section set gained the partial-delivery section, and the re-sync docs
-and `pr_body_sync.ts` module doc now name it; the PR #3676 review fix (the re-sync updates the follow-up) re-read the `Re-sync` bullet of the same section and the `rederiveReportedGapSection` doc comment, and fixed both; updated:
+and `pr_body_sync.ts` module doc now name it; the PR #3676 review fix (the re-sync never writes to the follow-up) re-read the `Re-sync` bullet of the same section, the `rederiveReportedGapSection` doc comment, the `pr_body_sync.ts` module doc and the `docs/USAGE.md` re-sync sentence, and rewrote each to the conditions `rederiveReportedGapSection` checks (no gap: dropped with no follow-up call; number unreadable: live section kept; gaps changed: stale-follow-up wording); updated:
 `docs/workflows/issue-processing.md`, `docs/USAGE.md`,
 `prompts/issue/prompt.md`, plus doc comments in
 `worker/deno/lib/degraded_delivery.ts`, `worker/deno/lib/pr_body_sync.ts` and
@@ -127,38 +127,41 @@ true because it names the guard, which still runs for degraded runs:
   the mutation-check tests were added: 27568 passed and 969 passed in its two
   runs, 0 failed. It ran every test file that drives `workOnIssueCompletion`
   or `syncPrBodyFromSummary`, plus `worker/deno/tests/degraded_delivery_test.ts`.
-- PR #3676 review push: `deno fmt --check`, `deno lint` and
-  `deno task test:unit` over `tests/pr_body_sync_test.ts`,
-  `tests/degraded_delivery_test.ts`,
-  `tests/completion_phase_degraded_delivery_test.ts` and
-  `tests/pr_feedback_processor_test.ts` passed (0 failed). The full gate was not
-  re-run on this push.
+- PR #3676 review push (second round, no follow-up writes from the sync):
+  `deno fmt --check`, `deno lint`, `deno check` and `deno task test:unit` over
+  `tests/pr_body_sync_test.ts`, `tests/degraded_delivery_test.ts`,
+  `tests/completion_phase_degraded_delivery_test.ts`,
+  `tests/pr_feedback_processor_test.ts` and `tests/pr_ci_processor_test.ts`
+  passed (218 passed, 0 failed); `markdownlint-cli2` passed on the changed
+  docs. The full gate was not re-run on this push.
 - Earlier head: `./quality.sh < /dev/null` passed (`Result: PASSED (with skipped checks)`;
   `config integration` is skipped as usual). Later commits changed only a doc
   comment, two log messages and test assertions, and the targeted fmt, lint,
   check and test runs passed after each of them. The mutation-check fix changed only
   tests and one manual sentence.
-- Added to `worker/deno/tests/degraded_delivery_test.ts`: 11 tests for
-  `assessReportedGaps`, the healthy and degraded follow-up bodies,
-  `buildReportedGapPrSection` and `rederiveReportedGapSection`.
-- Added to `worker/deno/tests/pr_body_sync_test.ts`: 3 tests. The section is
-  kept while a gap remains, dropped when every criterion is met, and the sync
-  fails loud when the issue cannot be read.
-- Added to `worker/deno/tests/pr_body_sync_test.ts` for the PR #3676 review
-  (5 tests; the file now has 49): a rebuilt summary reporting a different
-  `partial` entry rewrites follow-up #77 to that entry before the section
-  names it; a closed follow-up is refiled and the section names the new
-  number; a failed follow-up update fails the sync without editing the PR; an
-  unchanged section leaves the follow-up alone; an issue with no title fails
-  loudly. `syncWithDegradedLive` gained optional `gh` and `dedupAuthors`
-  parameters, and `SyncPrBodyDeps` an optional `dedupAuthors` (production
-  omits it and reads the configured fleet identity).
-- Red check for the review fix: with the follow-up update in
-  `syncPrBodyFromSummary` disabled, 4 of the 5 new tests failed. Flipping each
-  operand of the guard on its own (`liveReportedGap`, `rederived !== ""`,
-  `rederived !== liveSection`) turned 2, 2 and 3 existing or new sync tests red.
-  The fifth, the unchanged-section test, is the negative that pins the third
-  operand.
+- Added to `worker/deno/tests/degraded_delivery_test.ts` (17 tests; the file
+  now has 64): `assessReportedGaps`, the healthy and degraded follow-up
+  bodies, `buildReportedGapPrSection`, `rederiveReportedGapSection` (empty
+  when met; gaps the section was raised with stay as they are; changed gaps
+  keep the number and say the follow-up may not list them; a hostile bullet
+  and a 50,000-digit run are not read as a number) and
+  `buildReportedGapStaleFollowUpSection` (exact layout and throw).
+- Added to `worker/deno/tests/pr_body_sync_test.ts` (8 tests; the file now
+  has 47): the section is kept while a gap remains, dropped when every
+  criterion is met, logged on drop, not logged when unchanged, and the sync
+  fails loud when the issue cannot be read. For the PR #3676 review, three
+  tests pin that a sync never writes to the follow-up: changed gaps give the
+  stale-follow-up wording and no `gh issue` call other than `view`; an issue
+  retitled after approval produces no `gh issue edit` or `gh issue create`;
+  and a section already in the stale-follow-up form is re-derived under the
+  same number. `syncWithDegradedLive` gained an optional `logger`.
+- Red checks for the review fix: restoring the previous `pr_body_sync.ts`
+  (which wrote the follow-up) turned the first two review tests red. Making
+  `rederiveReportedGapSection` always build the stale wording turned 3 tests
+  red ("gaps the section was raised with stay as they are", and two sync
+  tests). Dropping the `filed` alternative from the number regex turned
+  "a section already marked as possibly stale is re-derived under the same
+  follow-up number" red.
 - Added to `worker/deno/tests/completion_phase_degraded_delivery_test.ts`:
   - The healthy-`partial` test (exactly one `idle-task` follow-up, with the
     section).
@@ -240,16 +243,11 @@ true because it names the guard, which still runs for degraded runs:
 - `worker/deno/lib/degraded_delivery.ts` `buildReportedGapPrSection` throw: `verdict.degraded` operand and `!degradedNeedsFollowUp` operand — "buildReportedGapPrSection - throws on a degraded verdict or one without a gap" asserts both. Removing the throw went red. The healthy arm is "buildReportedGapPrSection - names the follow-up and the shortfall".
 - `worker/deno/lib/degraded_delivery.ts` `rederiveReportedGapSection`:
   - No gap → `""`: "rederiveReportedGapSection - empty when everything is now met". Removing it went red.
-  - Number found: "… keeps the follow-up number while a gap remains".
-  - Number not found → live section kept: "… never reads the number from a hostile shortfall bullet". Reading from the whole section went red.
-- `worker/deno/lib/pr_body_sync.ts:647` follow-up update guard `liveReportedGap && rederived !== "" && rederived !== liveSection` (PR #3676 review):
-  - `liveReportedGap` operand: the degraded-section sync tests ("sync - keeps a leading degraded-run section (Issue #2562)") went red when it was removed.
-  - `rederived !== ""` operand: "sync - drops the partial-delivery section when the rebuilt summary marks every criterion met (Issue #3506)" went red when it was removed.
-  - `rederived !== liveSection` operand: "sync - an unchanged partial-delivery section leaves the follow-up alone (PR #3676 review)" went red when it was removed.
-  - Follow-up filed or reused: "sync - a different partial entry updates the follow-up so the section and the follow-up agree (PR #3676 review)".
-  - Refiled under a new number: "sync - names the refiled follow-up when the old one was closed (PR #3676 review)".
-  - Update fails: "sync - fails loudly, without editing the PR, when the follow-up cannot be updated (PR #3676 review)".
-  - No title: "sync - fails loudly when the issue has no title to refile the follow-up under (PR #3676 review)".
+  - Number not found → live section kept: "… never reads the number from a hostile shortfall bullet" and "… a long run of digits is not read as a number". Reading from the whole section went red.
+  - Number found, live section equals the section built from the current gaps → kept: "… gaps the section was raised with stay as they are". Forcing the stale wording went red.
+  - Number found, live section differs → stale-follow-up wording: "… changed gaps keep the number but do not claim the follow-up holds them". Always keeping the live section goes red here.
+  - Number read from a stale-wording section (`filed` alternative): "sync - a section already marked as possibly stale is re-derived under the same follow-up number". Dropping the alternative went red.
+- `worker/deno/lib/degraded_delivery.ts` `buildReportedGapStaleFollowUpSection` throw (`verdict.degraded` and `!degradedNeedsFollowUp` operands): "buildReportedGapStaleFollowUpSection - throws on a degraded verdict or one without a gap" asserts both; the healthy arm is "… is laid out exactly". Removing the throw went red.
 - `worker/deno/lib/pr_body_sync.ts` `liveReportedGap = liveDegraded ? "" : …`, and the re-derive and section-name ternaries:
   - Degraded arm: the existing #3350 sync tests.
   - Reported-gap arm: "sync - re-derives a live partial-delivery section …" and "sync - fails loudly when the issue cannot be read to re-derive the partial-delivery section (Issue #3506)".

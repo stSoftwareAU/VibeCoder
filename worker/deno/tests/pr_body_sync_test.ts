@@ -20,7 +20,10 @@ import {
   buildSubAgentTierMarker,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
-import { degradedFollowUpFindingId } from "../lib/degraded_delivery.ts";
+import {
+  assessReportedGaps,
+  buildReportedGapStaleFollowUpSection,
+} from "../lib/degraded_delivery.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 import type {
   GitCommandOptions,
@@ -1470,9 +1473,6 @@ async function syncWithDegradedLive(opts: {
   live: string;
   issueView: () => string;
   logger?: Logger;
-  /** Answers `gh` calls the helper does not (e.g. the follow-up's list/edit). */
-  gh?: (args: string[]) => string | undefined;
-  dedupAuthors?: SyncPrBodyDeps["dedupAuthors"];
 }) {
   const repoPath = await makeRepo();
   try {
@@ -1488,16 +1488,10 @@ async function syncWithDegradedLive(opts: {
           ghCalls.push({ args });
           return Promise.resolve(opts.issueView());
         }
-        const answer = opts.gh?.(args);
-        if (answer !== undefined) {
-          ghCalls.push({ args });
-          return Promise.resolve(answer);
-        }
         return record(args);
       },
       runGitCommand: stubGit([], { diffChanged: true }),
       logger: opts.logger ?? logger,
-      ...(opts.dedupAuthors ? { dedupAuthors: opts.dedupAuthors } : {}),
     };
     const result = await syncPrBodyFromSummary({
       repo: REPO,
@@ -1702,7 +1696,7 @@ Deno.test("sync - fails loudly when the issue cannot be read to re-derive the pa
   assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
 });
 
-// --- follow-up kept in step with a re-derived section (PR #3676 review) -----
+// --- a sync never writes to the follow-up (PR #3676 review) -----------------
 
 /** Issue with two criteria; the summary delivers `export`, leaves `import` partial. */
 const TWO_CRITERIA_ISSUE = JSON.stringify({
@@ -1714,128 +1708,73 @@ const IMPORT_PARTIAL_SUMMARY =
   `## Acceptance Criteria\n\n` +
   `- **met** — the export works — evidence: \`worker/deno/tests/x_test.ts\` — reviewer: met\n` +
   `- **partial** — the import works — reviewer: partial\n`;
-const FLEET = { fleetAuthors: ["vibe-bot"] };
-/** The open follow-up #77, as filed when only the export was partial. */
-const FOLLOW_UP_77 = JSON.stringify([{
-  number: 77,
-  body: `<!-- finding-id: ${
-    degradedFollowUpFindingId(ISSUE_NUMBER)
-  } -->\n\n- **partial** — the export works`,
-  author: { login: "vibe-bot" },
-}]);
 
-Deno.test("sync - a different partial entry updates the follow-up so the section and the follow-up agree (PR #3676 review)", async () => {
+Deno.test("sync - changed gaps never write to the follow-up, and the section says it may not list them (PR #3676 review)", async () => {
   const { result, ghCalls } = await syncWithDegradedLive({
     summary: IMPORT_PARTIAL_SUMMARY,
     live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
     issueView: () => TWO_CRITERIA_ISSUE,
-    dedupAuthors: FLEET,
-    gh: (args) =>
-      args[0] === "issue" && args[1] === "list"
-        ? FOLLOW_UP_77
-        : args[0] === "issue" && args[1] === "edit"
-        ? ""
-        : undefined,
-  });
-  assert(result.ok);
-  const synced = ghCalls.find((c) => c.args[1] === "edit" && c.args[0] === "pr")
-    ?.bodyFileContent ?? "";
-  assertStringIncludes(synced, "continue in #77:");
-  assertStringIncludes(synced, "- **partial** — the import works");
-  assertEquals(synced.includes("the export works\n"), false);
-  const followUpEdit = ghCalls.find((c) =>
-    c.args[0] === "issue" && c.args[1] === "edit"
-  );
-  assert(
-    followUpEdit,
-    "the follow-up must be rewritten before the section names it",
-  );
-  assertEquals(followUpEdit.args[2], "77");
-  const followUpBody = followUpEdit
-    .args[followUpEdit.args.indexOf("--body") + 1]!;
-  assertStringIncludes(followUpBody, "- **partial** — the import works");
-  assertEquals(
-    followUpBody.includes("- **partial** — the export works"),
-    false,
-  );
-});
-
-Deno.test("sync - names the refiled follow-up when the old one was closed (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => TWO_CRITERIA_ISSUE,
-    dedupAuthors: FLEET,
-    gh: (args) =>
-      args[0] === "issue" && args[1] === "list"
-        ? "[]"
-        : args[0] === "issue" && args[1] === "create"
-        ? "https://github.com/o/r/issues/91\n"
-        : undefined,
   });
   assert(result.ok);
   const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
     ?.bodyFileContent ?? "";
-  assertStringIncludes(synced, "continue in #91:");
-  assertEquals(synced.includes("#77"), false);
-});
-
-Deno.test("sync - fails loudly, without editing the PR, when the follow-up cannot be updated (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: IMPORT_PARTIAL_SUMMARY,
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () => TWO_CRITERIA_ISSUE,
-    dedupAuthors: FLEET,
-    gh: (args) => {
-      if (args[0] === "issue" && args[1] === "list") return FOLLOW_UP_77;
-      if (args[0] === "issue" && args[1] === "edit") {
-        throw new Error("gh issue edit boom");
-      }
-      return undefined;
-    },
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertStringIncludes(result.error.message, "follow-up");
-    assertStringIncludes(result.error.message, "gh issue edit boom");
-  }
+  assertStringIncludes(
+    synced,
+    "The worker filed #77 for the outstanding items",
+  );
+  assertStringIncludes(synced, "- **partial** — the import works");
+  assertEquals(synced.includes("continue in #77:"), false);
+  // The issue text reached only the PR body: no issue was listed, edited or created.
   assertEquals(
-    ghCalls.some((c) => c.args[0] === "pr" && c.args[1] === "edit"),
-    false,
+    ghCalls.filter((c) => c.args[0] === "issue" && c.args[1] !== "view").length,
+    0,
   );
 });
 
-Deno.test("sync - an unchanged partial-delivery section leaves the follow-up alone (PR #3676 review)", async () => {
-  const { result, ghCalls } = await syncWithDegradedLive({
-    summary: criterionSummary("partial", "partial"),
-    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
-    issueView: () =>
-      JSON.stringify({
-        title: "Move the data",
-        body: "## Acceptance Criteria\n\n- the export works\n",
-      }),
-    dedupAuthors: FLEET,
-    gh: (args) =>
-      args[0] === "issue" && args[1] === "list" ? FOLLOW_UP_77 : undefined,
-  });
-  assert(result.ok);
-  assertEquals(
-    ghCalls.some((c) => c.args[0] === "issue" && c.args[1] === "edit"),
-    false,
-  );
-});
-
-Deno.test("sync - fails loudly when the issue has no title to refile the follow-up under (PR #3676 review)", async () => {
+Deno.test("sync - an issue edited after approval is never copied into a follow-up (PR #3676 review)", async () => {
   const { result, ghCalls } = await syncWithDegradedLive({
     summary: IMPORT_PARTIAL_SUMMARY,
     live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
     issueView: () =>
       JSON.stringify({
+        title: "Move the data (edited by an outside author)",
         body:
           "## Acceptance Criteria\n\n- the export works\n- the import works\n",
       }),
-    dedupAuthors: FLEET,
   });
-  assertEquals(result.ok, false);
-  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+  assert(result.ok);
+  assertEquals(
+    ghCalls.filter((c) =>
+      c.args[0] === "issue" &&
+      (c.args[1] === "edit" || c.args[1] === "create")
+    ).length,
+    0,
+  );
+});
+
+Deno.test("sync - a section already marked as possibly stale is re-derived under the same follow-up number (PR #3676 review)", async () => {
+  const stale = buildReportedGapStaleFollowUpSection(
+    assessReportedGaps(
+      JSON.parse(TWO_CRITERIA_ISSUE).body as string,
+      IMPORT_PARTIAL_SUMMARY,
+    ),
+    77,
+  );
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${stale}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assertStringIncludes(
+    synced,
+    "The worker filed #77 for the outstanding items",
+  );
+  assertStringIncludes(synced, "- **partial** — the export works");
+  assertEquals(synced.includes("the import works\n"), false);
 });

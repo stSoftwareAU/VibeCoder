@@ -2473,14 +2473,17 @@ run:
 - **Re-sync.** A later `syncPrBodyFromSummary` re-derives a leading
   `Partial delivery — follow-up filed` section from the issue's current body
   and the rebuilt summary (`rederiveReportedGapSection`). It is dropped when
-  no gap remains. When a gap remains and the follow-up number can be read
-  from its opening line, it is rebuilt. If the rebuilt section differs from
-  the live one, the sync first files or reuses the follow-up through
-  `fileDegradedFollowUp` (rewriting its body to the current gaps) and names
-  the number that call returns, so the section never lists gaps the follow-up
-  does not hold; a failure there fails the sync and leaves the PR body
-  unedited. When the number cannot be read, the live section is kept
-  unchanged.
+  no gap remains, with no call to the follow-up. When a gap remains but the
+  follow-up number cannot be read from its opening line, the live section is
+  kept unchanged. When a gap remains and the number can be read, a section
+  built from the same gaps stays as it is; any other gap set is rebuilt by
+  `buildReportedGapStaleFollowUpSection`, which keeps the number but says the
+  worker filed that follow-up when the PR was raised, that a re-sync does not
+  rewrite it, and that it may not list every item below. The sync only reads
+  the issue (`gh issue view`) and edits the PR body: it never files, edits or
+  lists the follow-up, because it would copy freshly fetched, unverified issue
+  text into an `idle-task` issue the fleet works as trusted (PR #3676
+  review; THREAT-MODEL AP-7).
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
