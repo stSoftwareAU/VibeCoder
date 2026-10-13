@@ -27,22 +27,25 @@ the diff gets a per-item verdict: `met`, `missing` or `not applicable`. A
   so the file loads as malformed and renders the BLOCKING section. Before this,
   such a glob loaded and the checklist was silently never applied.
   `matchesPathGlob` now drops a leading `./` from the glob as well as the path.
-- **Visible failures.** A malformed or unreadable file, or a changed-file list
-  at or above 3000 (`CHECKLIST_FILE_LIST_LIMIT`), renders a BLOCKING instruction
-  into the brief. An absent file or no matching path renders nothing.
+- **Visible failures.** A malformed or unreadable file renders a BLOCKING
+  instruction into the brief. So does a changed-file list passed as `null`.
+  `gate.ts` (`changedPaths`) passes `null` when the list has 3000 or more
+  entries (`CHECKLIST_FILE_LIST_LIMIT`). The pre-PR verifier does not use that
+  limit: it passes `null` only when the list is unknown, and matches a list of
+  any length normally. An absent file or no matching path renders nothing.
 - **Docs.** `docs/review-checklists.md` documents the location, format and
   path-glob mapping. Pointers sit in `docs/workflows/issue-processing.md` and
   `docs/MODEL-AND-CACHING.md`.
 
 ```mermaid
 flowchart LR
-    F["review-checklists.json<br/>(base ref)"] --> L["review_checklists.ts<br/>loader + matchesPathGlob"]
-    D["changed files"] --> L
-    L -->|"no match"| N["no section"]
-    L -->|"malformed / unreadable / list ≥ 3000"| B["BLOCKING instruction"]
-    L -->|"matched"| V["per-item verdicts"]
-    V --> G["gate.ts → review_log.ts<br/>missing ⇒ changes_requested"]
-    V --> P["pre_pr_verifier.ts<br/>missing ⇒ blocked"]
+    F["review-checklists.json<br/>(base ref)"] --․> L["review_checklists.ts<br/>loader + matchesPathGlob"]
+    D["changed files"] --․> L
+    L --․>|"no match"| N["no section"]
+    L --․>|"malformed / unreadable / list ≥ 3000"| B["BLOCKING instruction"]
+    L --․>|"matched"| V["per-item verdicts"]
+    V --․> G["gate.ts → review_log.ts<br/>missing ⇒ changes_requested"]
+    V --․> P["pre_pr_verifier.ts<br/>missing ⇒ blocked"]
 ```
 
 Closes #3594
@@ -99,7 +102,7 @@ Docs sweep: grep `review-checklists`, `REVIEW_CHECKLISTS`,
 `Repository review checklists`, `reviewChecklists`; section:
 `docs/review-checklists.md` (new); siblings: `testChangeNotes`,
 `unrelatedIssues`, `PREVIOUS_FINDINGS` (the existing reply fields and brief
-placeholders the new `checklist` field and `{{REVIEW_CHECKLISTS}}` joined);
+placeholders the new `checklist` field and `｛｛REVIEW_CHECKLISTS｝｝` joined);
 updated: `README.md:519`, `docs/workflows/issue-processing.md:1193`,
 `docs/MODEL-AND-CACHING.md:777`, `.claude/skills/review-fleet-prs/SKILL.md:230`,
 `prompts/pr_review_brief/prompt.md:48`. Remaining hits:
@@ -113,7 +116,7 @@ updated: `README.md:519`, `docs/workflows/issue-processing.md:1193`,
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+<․!-- vibe-spec-review inputs="diff+issue-body" --․>
 
 - **met** — The location and format are documented, with path globs mapped to
   checklist items. — evidence: `docs/review-checklists.md`,
@@ -137,7 +140,7 @@ updated: `README.md:519`, `docs/workflows/issue-processing.md:1193`,
 
 ## Standards Review
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+<․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
 - **clean** — Checked: fail loud (malformed, unreadable and truncated inputs
   render BLOCKING), path confinement (`..`, `//` and leading `/` rejected on
