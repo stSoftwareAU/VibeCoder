@@ -733,8 +733,11 @@ function assertRepoRelative(path: string): void {
  * is applied by `findSuppressions` itself — an invalid or expired marker
  * never counts. The verified commit identity is bound by blaming each
  * candidate file (Issue #269) the same way `orphan_deps_suppression_scan.ts`
- * does — a fork PR that writes `author=<allowlisted-login>` still blames as
- * the attacker, so the marker is rejected.
+ * does. Under a squash-merge strategy a fork PR that writes
+ * `author=<allowlisted-login>` still blames as the fork author's own GitHub
+ * account, so the marker is rejected; under merge-commit or rebase merge the contributor's
+ * self-set author fields reach the default branch and the binding can be
+ * forged (docs/THREAT-MODEL.md R15).
  *
  * Each evidence path is also canonicalised (symlinks followed) and the
  * resolved path re-checked to stay inside the repo root — a `..`-free,
