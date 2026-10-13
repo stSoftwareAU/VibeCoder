@@ -511,6 +511,10 @@ export function buildReportedGapPrSection(
  * summary (Issue #3506). Returns "" when no gap remains. The follow-up number
  * is read only from the single opening line, never from the untrusted
  * shortfall bullets; when it cannot be read the live section is kept as is.
+ *
+ * Pure: it does not touch the follow-up. The caller must bring that follow-up
+ * up to date with the same verdict before using a changed section, as
+ * `syncPrBodyFromSummary` does (PR #3676 review).
  */
 export function rederiveReportedGapSection(args: {
   liveSection: string;

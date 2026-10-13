@@ -2474,8 +2474,13 @@ run:
   `Partial delivery — follow-up filed` section from the issue's current body
   and the rebuilt summary (`rederiveReportedGapSection`). It is dropped when
   no gap remains. When a gap remains and the follow-up number can be read
-  from its opening line, it is rebuilt, keeping only that number; when the
-  number cannot be read there, the live section is kept unchanged.
+  from its opening line, it is rebuilt. If the rebuilt section differs from
+  the live one, the sync first files or reuses the follow-up through
+  `fileDegradedFollowUp` (rewriting its body to the current gaps) and names
+  the number that call returns, so the section never lists gaps the follow-up
+  does not hold; a failure there fails the sync and leaves the PR body
+  unedited. When the number cannot be read, the live section is kept
+  unchanged.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 

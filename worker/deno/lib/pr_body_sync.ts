@@ -60,10 +60,15 @@ import {
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
 import {
+  assessReportedGaps,
+  buildReportedGapPrSection,
+  fileDegradedFollowUp,
   rederiveDegradedSection,
   rederiveReportedGapSection,
   REPORTED_GAP_SECTION_HEADING,
 } from "./degraded_delivery.ts";
+import type { FindingIdDedupOptions } from "./idle_task_snapshot.ts";
+import { getRunId } from "./run_id.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
@@ -259,6 +264,12 @@ export interface SyncPrBodyDeps {
   /** Runs a `git` command. */
   runGitCommand: typeof runGitCommandType;
   logger: Logger;
+  /**
+   * Author-verification inputs for finding the open partial-delivery follow-up
+   * (Issue #3506). Omitted in production, which reads the configured fleet
+   * identity; tests state the fleet.
+   */
+  dedupAuthors?: FindingIdDedupOptions;
 }
 
 /** Outcome of a sync attempt. */
@@ -596,6 +607,7 @@ export async function syncPrBodyFromSummary(
       ? "degraded-run section"
       : "partial-delivery section";
     let issueBody: string;
+    let issueTitle: string | undefined;
     try {
       const raw = await deps.runGhCommand([
         "issue",
@@ -604,13 +616,14 @@ export async function syncPrBodyFromSummary(
         "--repo",
         input.repo,
         "--json",
-        "body",
+        "body,title",
       ]);
-      const parsed = JSON.parse(raw) as { body?: unknown };
+      const parsed = JSON.parse(raw) as { body?: unknown; title?: unknown };
       if (typeof parsed.body !== "string") {
         throw new Error("issue body missing from gh output");
       }
       issueBody = parsed.body;
+      issueTitle = typeof parsed.title === "string" ? parsed.title : undefined;
     } catch (err) {
       return {
         ok: false,
@@ -621,12 +634,47 @@ export async function syncPrBodyFromSummary(
         ),
       };
     }
-    const rederived =
+    let rederived =
       (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
         liveSection,
         issueBody,
         prBody: body,
       });
+    // PR #3676 review: a changed section may list gaps the follow-up it names
+    // does not hold yet. Bring that follow-up up to date first, and name the
+    // number it returns (a closed follow-up is refiled under a new one). A
+    // failure fails the sync rather than claim items continue where they do not.
+    if (liveReportedGap && rederived !== "" && rederived !== liveSection) {
+      if (issueTitle === undefined) {
+        return {
+          ok: false,
+          error: new Error(
+            `Issue #${issueNumber} has no title to update its partial-delivery follow-up for PR #${input.prNumber}`,
+          ),
+        };
+      }
+      const followUp = await fileDegradedFollowUp({
+        repo: input.repo,
+        parentNumber: issueNumber,
+        parentTitle: issueTitle,
+        verdict: assessReportedGaps(issueBody, body),
+        runId: input.runId ?? getRunId(),
+        gh: deps.runGhCommand,
+        ...(deps.dedupAuthors ? { dedupAuthors: deps.dedupAuthors } : {}),
+      });
+      if (!followUp.ok) {
+        return {
+          ok: false,
+          error: new Error(
+            `Failed to update the partial-delivery follow-up of issue #${issueNumber} for PR #${input.prNumber}: ${followUp.error.message}`,
+          ),
+        };
+      }
+      rederived = buildReportedGapPrSection(
+        assessReportedGaps(issueBody, body),
+        followUp.value.number,
+      );
+    }
     if (rederived !== liveSection) {
       logger.info(
         liveDegraded
