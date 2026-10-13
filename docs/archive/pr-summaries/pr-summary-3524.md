@@ -58,7 +58,7 @@ Documentation and prompt change only, with no runtime code. It is guarded by
 "temp-root", "shared temp"; section:
 `CODING-STANDARDS.md#never-let-a-unit-test-inherit-the-hosts-state`; siblings:
 "process-global caches", "OS-specific branch"; updated: `CODING-STANDARDS.md`,
-`prompts/issue/prompt.md`; `CODING-STANDARDS.md:451` — still true because the
+`prompts/issue/prompt.md`; `CODING-STANDARDS.md:454` — still true because the
 new paragraph sits before the OS-branch paragraph, so that paragraph is still
 the section's last; `prompts/best_practices/buckets/general.md:389` — still
 true because it already flags "a fixed shared temp path" and prescribes a
