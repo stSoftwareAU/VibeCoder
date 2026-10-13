@@ -467,7 +467,13 @@ Deno.test("runPrFeedbackDriftCheck - a facts path that cannot be read at the hea
 });
 
 Deno.test("runPrFeedbackDriftCheck - a failed git read of the facts file at the before-run head is not checked", async () => {
-  for (const failing of ["ls-tree", "show"]) {
+  const cases: [string, "code128" | "null"][] = [
+    ["ls-tree", "code128"],
+    ["show", "code128"],
+    ["ls-tree", "null"],
+    ["show", "null"],
+  ];
+  for (const [failing, mode] of cases) {
     const { dir, beforeSha } = await setupBaseline(
       proseCiting("lib/rule.ts:2"),
       factsJson(2),
@@ -477,7 +483,9 @@ Deno.test("runPrFeedbackDriftCheck - a failed git read of the facts file at the 
       const real = makeRunGit(dir);
       const runGit: DriftCheckDeps["runGit"] = async (args) => {
         if (args[0] === failing && args.at(-1)!.endsWith(".facts.json")) {
-          return { code: 128, stdout: "", stderr: "boom" };
+          return mode === "null"
+            ? null
+            : { code: 128, stdout: "", stderr: "boom" };
         }
         return await real(args);
       };
