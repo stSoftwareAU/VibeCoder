@@ -35,11 +35,11 @@ Issue numbers the diff and this summary cite, each viewed with `gh issue view` /
 | `buildDeclaredHandoffWipCommitMessage` | `… a declared hand-off (Issue #3088)` | `… a declared hand-off` |
 | `buildHandoverOnlyWipCommitMessage` | `wip: handover note … (Issue #769)` | `wip: handover note for the interrupted run on issue #<n>` |
 
-**Docs sweep** — grep: `buildInterruptedWipCommitMessage`, `buildUncommittedWorkWipCommitMessage`, `buildDeclaredHandoffWipCommitMessage`, `buildHandoverOnlyWipCommitMessage`, "preserving", "handover note", "a declared hand-off", "raised no PR"; section: the doc comments on the four builders in `worker/deno/lib/wip_checkpoint.ts` and `worker/deno/lib/phases/run_wip_preservation.ts`; siblings: `buildInterruptedWipCommitMessage`, `WIP_CHECKPOINT_COMMIT_MESSAGE`, "handover note"; updated: the four builder doc comments. `README.md` and `docs/` (archive excluded) contain none of the subject phrases. Hits left in place: the `(Issue #47)` text at `worker/deno/lib/phases/run_wip_preservation.ts:420` and `:447`, and the `(Issue #4170)` text at `:293` and `:437`, is part of the `wipNote` string, not a commit subject. `execute_phase.ts` and `completion_phase.ts` fold `wipNote` into the run's failure or superseded reason, and `formatSupersededReason` (`worker/deno/lib/superseding_pr.ts:185-199`) carries that reason into the claim-release comment, so this text does reach the target repo's issue. It is left out because #3499 covers the four `wip:` commit subjects only; it is a follow-up that no open issue tracks yet (a `gh issue list` search in this run found none).
+**Docs sweep** — grep: `buildInterruptedWipCommitMessage`, `buildUncommittedWorkWipCommitMessage`, `buildDeclaredHandoffWipCommitMessage`, `buildHandoverOnlyWipCommitMessage`, "preserving", "handover note", "a declared hand-off", "raised no PR"; section: the doc comments on the four builders in `worker/deno/lib/wip_checkpoint.ts` and `worker/deno/lib/phases/run_wip_preservation.ts`; siblings: `buildInterruptedWipCommitMessage`, `WIP_CHECKPOINT_COMMIT_MESSAGE`, "handover note"; updated: the four builder doc comments. `README.md` contains none of the subject phrases. In `docs/` (archive excluded), `docs/workflows/issue-processing.md:731` names the handover-only commit subject as `wip: handover note …`; that elided form carries no issue number and still matches the new subject, so it is left unchanged. The other `docs/` hits for "handover note", "preserving" and "a declared hand-off" describe the note file or other behaviour, not a commit subject. Hits left in place: the `(Issue #47)` text at `worker/deno/lib/phases/run_wip_preservation.ts:420` and `:447`, and the `(Issue #4170)` text at `:293` and `:437`, is part of the `wipNote` string, not a commit subject. `execute_phase.ts` and `completion_phase.ts` fold `wipNote` into the run's failure or superseded reason, and `formatSupersededReason` (`worker/deno/lib/superseding_pr.ts:185-199`) carries that reason into the claim-release comment, so this text does reach the target repo's issue. It is left out because #3499 covers the four `wip:` commit subjects only; it is a follow-up that no open issue tracks yet (a `gh issue list` search in this run found none).
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+<․!-- vibe-spec-review inputs="diff+issue-body" --․>
 
 - **met** — Drop the `(Issue #47)` suffix from `buildInterruptedWipCommitMessage` — evidence: `worker/deno/lib/wip_checkpoint.ts:127` — reviewer: met
 - **met** — Drop the `(Issue #218)` suffix from `buildUncommittedWorkWipCommitMessage` — evidence: `worker/deno/lib/wip_checkpoint.ts:146` — reviewer: met
@@ -50,7 +50,7 @@ Issue numbers the diff and this summary cite, each viewed with `gh issue view` /
 
 ## Standards Review
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+<․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
 - **clean** — No material departures. The only issue number the new code cites is #3499, the issue being closed. Every test named here exists at the head. The reviewer's optional note to collapse the template literal at `worker/deno/lib/phases/run_wip_preservation.ts:233-237` was declined, because `deno fmt` accepts the current form.
 
