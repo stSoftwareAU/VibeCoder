@@ -330,6 +330,18 @@ not after a reviewer finds it weeks later.
   must itself pass the rule, checked against the code it describes. Say in
   the PR body that you applied the rule to the PR's own diff, and name what
   you found or say you found nothing.
+- **Every restatement of a rule gives the same answer.** After writing or
+  changing such a rule, list every place this diff states or illustrates it:
+  the rule itself, its examples and parentheticals, its restatement in each
+  other prompt or `CODING-STANDARDS.md` bullet, the operator-doc row, the PR
+  summary, and any helper doc comment or test the rule names. Name the edge
+  case the rule decides, then read each place for that case: every place must
+  give the same answer. Whenever the diff adds an exception, fallback or scope
+  limit in one place — on a review-fix round above all — apply it to every
+  restatement, then search the diff for the old wording (`git diff
+  <base>...HEAD | grep -n '<old phrase>'`) and fix each hit that still gives
+  the old answer. An example or parenthetical that contradicts its own rule is
+  the same blocking self-review finding as two contradictory rules.
 - **Adding a member owes a docs change too.** When you add a field, enum
   variant, kind, flag, column or row element to an existing set, grep for one
   or two **existing sibling members**, not the new one — the new name is in no
@@ -1198,7 +1210,9 @@ This project uses `set -euo pipefail` and must run on **macOS (bash 3.2)**,
 - **`timeout` command**: macOS has no native `timeout`. Use `$TIMEOUT_CMD`
   (resolved to `gtimeout` on macOS by `check_dependencies()`).
 - **GNU vs BSD tools**: prefer POSIX-compatible flags. Document the dependency
-  when GNU-specific flags are needed.
+  when GNU-specific flags are needed, and give any GNU-only form in shell code a
+  test runs a portable fallback: macOS fleet hosts run the same tests too, where
+  GNU-only forms such as `date +%N` and `stat -c` fail or behave differently.
 
 ## Testing Best Practices
 
@@ -1252,6 +1266,31 @@ the observable output. A member the issue explicitly asks for as public API
 (for example, a library export) is exempt, and the PR summary says so. A new
 member with no production reader or setter is a blocking self-review finding
 (Issue #3455).
+
+**Never assume history the worker's shallow checkout lacks.** CI usually
+checks out with `fetch-depth: 0`, so a change that assumes history passes CI
+and then breaks in the fleet's own checkout: the quality gate goes red on
+unrelated work, or production logic gives a wrong answer (Issue #3494).
+
+- **Assume nothing beyond a branch tip.** The worker's checkout of every
+  repository is `--depth=1 --no-single-branch`, so code and tests must not
+  assume history beyond a branch tip. That rules out `HEAD~N` or `<ref>^`,
+  `git log` ranges, `merge-base`, `blame` attribution and ancestry checks
+  against the real checkout.
+- **A test that needs history builds its own.** It runs `git init` in a
+  temporary directory and makes the commits it needs, or it uses a ref that
+  always resolves, such as `HEAD`. If a skip guard is unavoidable, it checks
+  for reachable history (`git rev-parse --is-shallow-repository`), not whether
+  an object exists (Issue #2893).
+- **Production code that needs history deepens first.** It deepens explicitly
+  through the repository's existing helper — in the Vibe Coder worker,
+  `ensureHistoryDepth` in `worker/deno/lib/git_history.ts` or
+  `mergeWithUnshallowRetry` in `worker/deno/lib/git_merge_unshallow_retry.ts`
+  — or it treats an unanswerable result as unknown rather than as an answer
+  (Issue #3398).
+- **"Cannot run here" is a defect, not a caveat.** A PR summary that says a
+  new test cannot run in the worker's checkout because it is shallow names a
+  defect to fix before the PR is raised, not a caveat to report.
 
 ## Test Coverage Expectations
 
@@ -1348,6 +1387,27 @@ refusal that runs before an existing one (a new boundary check, a
 retired-field list, a stricter parse, a fake that throws), re-run the
 existing tests that expect the later refusal and confirm each still
 reaches it; one that now stops earlier is a blocking self-review finding.
+
+**A new precondition must not stop existing tests short.** The re-run in the
+refusal-test rule above covers a refusal; the same holds for any
+precondition a change adds before existing logic: a check, an early return,
+a null or disabled result, or an environment requirement such as a git
+repository, a git identity, a config value, the network or the clock. Find
+the existing tests of the changed function and confirm each one still
+reaches the logic it asserts on. Pay most attention to negative tests (not
+cached, not suppressed, not called), because they stay green when the path
+is skipped. A test that now stops at the new precondition is a blocking
+self-review finding. Fix it by giving the fixture what the precondition
+needs (for example `git init -q` in the temporary directory), and add a
+positive control: an assertion that the precondition holds, such as
+`assert(await denoCheckDigest(config) !== null)`, or the same fixture with
+only the probed value changed reaching the other outcome, so a later
+precondition cannot silently disable the test again. When the precondition
+is a new environment requirement, the Test Plan names the existing tests
+that needed fixture changes, or says that none did and how that was checked.
+stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
+a plain temporary directory that no longer reached the guard it pins
+(Issue #3530).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the

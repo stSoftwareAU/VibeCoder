@@ -16,6 +16,7 @@ today.
 | **[Cloudflare `security-audit-skill` coverage gap analysis](cloudflare-security-audit-gap-analysis.md)** | Detection-class comparison mapping every Cloudflare `security-audit-skill` class to its owning VibeCoder idle task |
 | **[GhostCommit — image prompt-injection threat model](ghostcommit-image-injection-assessment.md)** | The repo's threat model for image-based prompt injection: attack surface, detect-and-flag posture, and the mitigation sub-issues it scoped |
 | **[GhostCommit canary regression tests](ghostcommit-canary-tests.md)** | The empirical half of the same work: canary tests that prove the posture at runtime and guard against regressions |
+| **[VulnHunter methodology evaluation](vulnhunter-methodology-evaluation.md)** | Adopt/skip evaluation of five VulnHunter defensive techniques (falsification, independent verification, evidence filter, remediation mapping, RED→GREEN) against the security-fix gate, the whole-tree sweep and the code-scanning feed |
 
 Related index entries outside this directory:
 

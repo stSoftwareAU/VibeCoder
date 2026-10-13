@@ -117,6 +117,7 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -224,6 +225,12 @@ import {
   getRepoNice,
 } from "./repo_config.ts";
 import { fetchAllIssues } from "./issue_query.ts";
+import {
+  createRepoPollCadence,
+  formatRepoPollCadenceLine,
+  type RepoPollSelection,
+} from "./repo_poll_cadence.ts";
+import { secondaryLatchCount } from "./primary_quota_latch.ts";
 import {
   buildIdleDecisionCensus,
   formatIdleDecisionCensus,
@@ -621,6 +628,13 @@ export interface ProductionDepsOptions {
    * prefetch, not factory-wide.
    */
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
+   * Overrides the `gh` runner used by the auto-merge sweep (list, live read,
+   * branch update, base-integrity, disarm). Defaults to {@link runGhCommand}
+   * (Issue #3517).
+   */
+  autoMergeGhCommandFn?: (args: string[]) => Promise<string>;
 
   /**
    * The weekly-pace gate (Issue #1885). Production leaves it unset and gets
@@ -1570,6 +1584,22 @@ export async function createProductionRunCoreDeps(
   const repos = config.repos ?? [];
 
   /**
+   * The repos this cycle's per-repo Priority 1.x passes poll (Issue #3667).
+   * Every monitored repo until the first `selectCyclePollRepos`, then the
+   * nice-derived cadence's pick: a `nice > 0` repo is polled every few
+   * cycles rather than every cycle, never not at all. Allowlist checks
+   * (`isRepoAllowed`), the Priority 2 scan, auto-merge, conflict repair and
+   * the idle hooks keep the full `repos`.
+   */
+  let pollRepos: string[] = repos;
+  const pollCadence = createRepoPollCadence({
+    lowCycles: config.pollCadenceLowCycles,
+    parkCycles: config.pollCadenceParkCycles,
+    parkNice: config.quotaPollParkNice,
+  });
+  let secondaryLatchesSeen = secondaryLatchCount();
+
+  /**
    * A repo's closed/merged fleet PRs, read through the same iteration-scoped
    * `prs_closed_*` cache the Priority 2 scan populates (GRQ#4419).
    *
@@ -2191,7 +2221,7 @@ export async function createProductionRunCoreDeps(
       const scanPrComments = options.findPrCommentsToFix ?? findPrCommentsToFix;
       const result = await scanPrComments({
         githubUser,
-        repos,
+        repos: pollRepos,
         ...stallLaneScope(),
         logger,
         isRepoAllowed: (repo) => isRepoAllowed(repos, repo),
@@ -2348,7 +2378,7 @@ export async function createProductionRunCoreDeps(
     async findAndProcessSpellingFailure() {
       const result = await findFailedPrChecks({
         githubUser,
-        repos,
+        repos: pollRepos,
         logger,
         isRepoAllowed: (repo) => isRepoAllowed(repos, repo),
         isAuthorisedCommenter: () => true,
@@ -2447,7 +2477,7 @@ export async function createProductionRunCoreDeps(
     async findAndProcessCiFailure() {
       const result = await findFailedCiChecks({
         githubUser,
-        repos,
+        repos: pollRepos,
         ...stallLaneScope(),
         logger,
         isRepoAllowed: (repo) => isRepoAllowed(repos, repo),
@@ -2603,7 +2633,7 @@ export async function createProductionRunCoreDeps(
 
         // Phase 1: Scan for PRs that need updating
         const scanResult = await scanPrBranchUpdates({
-          repos: shuffleArray([...repos]),
+          repos: shuffleArray([...pollRepos]),
           logger,
           isRepoAllowed: (repo: string) => isRepoAllowed(repos, repo),
           getDefaultBranch,
@@ -3143,7 +3173,7 @@ export async function createProductionRunCoreDeps(
           githubUser,
           allowedAuthors: fleetPrAuthorInput.allowedAuthors,
           fleetPrAuthors: fleetPrAuthorInput.fleetPrAuthors,
-          repos,
+          repos: pollRepos,
           ghCommandFn: runGhCommand,
           // Shared PR-list cache (Issue #4303): reuses the superset
           // listing the earlier Priority-1.x scans already fetched.
@@ -3274,7 +3304,7 @@ export async function createProductionRunCoreDeps(
     async scanBlockingPrStalls() {
       try {
         const scan = await runStallRepairPass({
-          repos,
+          repos: pollRepos,
           workOnLabel: config.workOnLabel,
           fleetAuthors,
           // Issue #4133: only a fleet-authored PR can block a `work-on`
@@ -3370,6 +3400,7 @@ export async function createProductionRunCoreDeps(
       // the same set the blocking guard defers `work-on` issues to. A
       // single-login sweep left a sibling account's PR unattended, and with
       // it every issue that PR blocked.
+      const gh = options.autoMergeGhCommandFn ?? runGhCommand;
       const refreshOpenPrs = opts?.refreshOpenPrs === true;
       // Issue #2662: the post-scan pass names the repos it claimed from;
       // only those are listed live, the rest read the prefetch-served cache.
@@ -3387,7 +3418,7 @@ export async function createProductionRunCoreDeps(
             repo,
             [...authors],
             issueCache,
-            runGhCommand,
+            gh,
             undefined,
             refreshesRepoLive(opts, repo),
           ),
@@ -3396,21 +3427,28 @@ export async function createProductionRunCoreDeps(
         // Issue #2462: the same read carries `autoMergeRequest` and
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
-        prLiveState: (repo, pr) =>
-          readPrLiveState(repo, pr.number, runGhCommand),
+        prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
-          requestBranchUpdate(repo, prNumber, runGhCommand),
+          requestBranchUpdate(repo, prNumber, gh),
         // Issue #3433: auto-merge follows the base — re-read it first.
         checkBaseIntegrity: (repo, pr, armed) =>
           checkPrBaseIntegrity({
             repo,
             pr,
             armed,
-            gh: runGhCommand,
+            gh,
             log: (m: string) => logger.warn(m),
           }),
+        // Issue #3517: a standing-violation PR is disarmed, never armed.
+        disarmAutoMerge: (repo, prNumber) =>
+          disarmAutoMerge(
+            repo,
+            prNumber,
+            gh,
+            (m: string) => logger.warn(m),
+          ),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,
@@ -3543,7 +3581,7 @@ export async function createProductionRunCoreDeps(
         // per cycle re-discovering that old issues are still closed.
         const startedAt = Date.now();
         const closed = await prIssueCloseForMerged(
-          repos,
+          pollRepos,
           githubUser,
           undefined,
           config.planningLabel,
@@ -3601,7 +3639,7 @@ export async function createProductionRunCoreDeps(
       }
       try {
         await syncMilestoneBranchesFn(
-          repos,
+          pollRepos,
           config,
           logger,
           env,
@@ -3675,7 +3713,7 @@ export async function createProductionRunCoreDeps(
     async checkMilestoneCompletions() {
       try {
         await checkAndHandleMilestoneCompletionsFn(
-          repos,
+          pollRepos,
           logger,
           config.serviceAccounts ?? [],
           config.repoConfig,
@@ -3696,7 +3734,7 @@ export async function createProductionRunCoreDeps(
     // `enable_session_resume`: with resume off there is simply no stream
     // session record to drop, and the worktree and branch sweep is unchanged.
     async sweepClosedMilestones() {
-      for (const repo of repos) {
+      for (const repo of pollRepos) {
         try {
           const outcome = await libSweepClosedMilestones(
             { repo, workDir },
@@ -3769,7 +3807,7 @@ export async function createProductionRunCoreDeps(
     async resumeFailureDetectionRepairs(opts) {
       try {
         const result = await runFailureDetectionResumePass({
-          repos,
+          repos: pollRepos,
           ghClient: createGitHubClient(logger),
           ghCommandFn: runGhCommand,
           runClaude: (repairPrompt: string) =>
@@ -3990,7 +4028,7 @@ export async function createProductionRunCoreDeps(
     async scanStaleWorkflowIssues(opts) {
       try {
         await scanStaleWorkflowIssuesFn(
-          repos,
+          pollRepos,
           config,
           logger,
           opts.shouldShutdown,
@@ -5416,6 +5454,25 @@ export async function createProductionRunCoreDeps(
       resetRepoAccessLogState();
       resetMilestoneArmSyncMemo();
       resetBehindSyncComments();
+    },
+
+    // Issue #3667: once per cycle, pick the repos the per-repo Priority 1.x
+    // passes poll. A burst (secondary) limit taken since the last pick holds
+    // the due low-priority repos one more cycle.
+    selectCyclePollRepos: (): RepoPollSelection => {
+      const latches = secondaryLatchCount();
+      const burst = latches !== secondaryLatchesSeen;
+      secondaryLatchesSeen = latches;
+      const selection = pollCadence.select(
+        repos,
+        (repo) => getRepoNice(config.repoConfig, repo),
+        burst,
+      );
+      pollRepos = selection.due;
+      stuckIssueConfig.repos = selection.due;
+      const line = formatRepoPollCadenceLine(selection);
+      if (line !== null) logger.info(line);
+      return selection;
     },
 
     // Issue #1486: see `runFleetPrPrefetch` above.

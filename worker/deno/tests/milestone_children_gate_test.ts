@@ -13,6 +13,7 @@ import {
   OPEN_CHILDREN_BLOCK_MARKER,
   postOpenChildrenBlockComment,
   renderOpenChildrenBlockComment,
+  renderRouteClosedHoldComment,
 } from "../lib/milestone_children_gate.ts";
 import { MILESTONE_TRACKING_MARKER } from "../lib/milestone_tracker_identity.ts";
 
@@ -899,4 +900,50 @@ Deno.test("holdOrphanBoundPr - a failed hold comment is logged, does not throw, 
     ),
     true,
   );
+});
+
+Deno.test("renderRouteClosedHoldComment - carries no bare #N apart from the rollup PR or milestone it names (Issue #3501)", () => {
+  // The comment is posted in the target repo, where GitHub autolinks a bare
+  // `#N` to that repo's own issue — a VibeCoder issue number would point at
+  // an unrelated one.
+  const cases: Array<{
+    gate: Parameters<typeof renderRouteClosedHoldComment>[0];
+    expected: string[];
+  }> = [
+    {
+      gate: {
+        decision: "block",
+        reason: "rollup-merged",
+        milestoneBranch: "milestone/x",
+        rollupPrNumber: 41,
+        detail: "rollup merged",
+      },
+      expected: ["#41"],
+    },
+    {
+      gate: {
+        decision: "block",
+        reason: "milestone-closed",
+        milestoneBranch: "milestone/x",
+        milestoneNumber: 7,
+        detail: "milestone closed",
+      },
+      expected: ["#7"],
+    },
+    {
+      gate: {
+        decision: "block",
+        reason: "milestone-closed",
+        milestoneBranch: "milestone/x",
+        detail: "milestone closed",
+      },
+      expected: [],
+    },
+  ];
+  for (const { gate, expected } of cases) {
+    assertEquals(
+      renderRouteClosedHoldComment(gate).match(/#\d+/g) ?? [],
+      expected,
+    );
+  }
 });

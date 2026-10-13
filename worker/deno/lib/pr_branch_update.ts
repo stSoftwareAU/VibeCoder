@@ -137,12 +137,19 @@ export interface PrLiveFields {
    * decision and for an absent field, so unknown never blocks an update.
    */
   changesRequested?: true;
+  /**
+   * Names of the labels on the PR (Issue #3517). `[]` for an absent or
+   * malformed `labels` field and for the bare-state shape; entries that are
+   * not objects with a string `name` are ignored, so an unreadable label list
+   * never invents a label.
+   */
+  labels: readonly string[];
 }
 
 /**
- * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision`
- * payload (Issue #2307; Issue #2462 added the two auto-merge fields and
- * Issue #2702 `reviewDecision`).
+ * Parse one `gh pr view --json state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`
+ * payload (Issue #2307; Issue #2462 added the two auto-merge fields,
+ * Issue #2702 `reviewDecision` and Issue #3517 `labels`).
  *
  * A bare state string — what the fetcher asked for with `--jq .state` before
  * this issue, and what a `gh` stub still answers — reads as that state with
@@ -158,6 +165,7 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
       mergeable: "UNKNOWN",
       armed: false,
       behind: false,
+      labels: [],
     };
   }
   let parsed: unknown;
@@ -169,14 +177,7 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
       mergeable: "UNKNOWN",
       armed: false,
       behind: false,
-    };
-  }
-  if (typeof parsed !== "object" || parsed === null) {
-    return {
-      state: "UNKNOWN",
-      mergeable: "UNKNOWN",
-      armed: false,
-      behind: false,
+      labels: [],
     };
   }
   const fields = parsed as Record<string, unknown>;
@@ -193,7 +194,20 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
     ...(fields.reviewDecision === "CHANGES_REQUESTED"
       ? { changesRequested: true as const }
       : {}),
+    labels: parseLabelNames(fields.labels),
   };
+}
+
+/** Label names from a `gh` `labels` array; anything malformed is ignored. */
+function parseLabelNames(raw: unknown): readonly string[] {
+  if (!Array.isArray(raw)) return [];
+  const names: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const name = (entry as Record<string, unknown>).name;
+    if (typeof name === "string") names.push(name);
+  }
+  return names;
 }
 
 /** Map one state string onto {@link PrLiveState}; anything else is unknown. */
@@ -236,7 +250,8 @@ export function classifyPrLiveState(raw: string): PrLiveState {
  * `mergeStateStatus` to the same round trip, so the auto-merge sweep can see
  * an armed PR whose head has fallen behind without a second `gh` call.
  * Issue #2702 added `reviewDecision`, so the same read tells the sweep not to
- * update a PR a reviewer has blocked. One round trip answers all five.
+ * update a PR a reviewer has blocked. Issue #3517 added `labels`, so the
+ * sweep can hold a `standing-violation` PR. One round trip answers all six.
  */
 export function makeGhPrStateFetcher(
   ghFn: (args: string[]) => Promise<string>,
@@ -263,7 +278,7 @@ export function makeGhPrStateFetcher(
  * questions nobody asked it.
  */
 export const PR_LIVE_STATE_JSON_FIELDS =
-  "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision";
+  "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels";
 
 /** Overall result of executing PR branch updates (Issue #1233). */
 export interface PrBranchUpdateExecutionResult {

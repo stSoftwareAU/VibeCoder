@@ -408,6 +408,30 @@ counter that restarts at 1 in every consumer serves one test's result to the
 next file in the same worker. Key it by something only its own owner can
 produce.
 
+The same rule covers the system temp directory. `/tmp` and `$TMPDIR` are shared
+host state: the gate's own `--parallel` test workers, another lane's
+`./quality.sh` on the same host and other OS users all write to them. A test
+reads, writes and lists only paths inside a directory it created itself
+(`Deno.makeTempDir`, `mktemp -d`), and removes that directory when it finishes.
+Never use a fixed name directly under `/tmp` or `$TMPDIR`, and never assert on
+what the shared temp directory contains. To prove that code cleans up its temp
+files, give the code a temp-root parameter that production leaves unset, pass
+the test's private directory, and assert that this directory is empty afterwards
+— `computeWorkingTreeDigest` in
+[`quality_gate_cache.ts`](worker/deno/lib/quality_gate_cache.ts) takes its
+`tempRoot` for exactly this. A shell test sent stderr to a fixed file directly
+in `/tmp` that another OS user on the host already owned, so the redirect failed
+with "Permission denied" before the command under test ran; and a test that
+listed the shared `TMPDIR` before and after one call reported a leak whenever a
+parallel test or another gate run created the same kind of directory in between
+(Issue #3524). Both fail on Linux too. Before raising the PR, grep new or edited
+test files for a literal `/tmp/`, or for `Deno.env.get("TMPDIR")` or `$TMPDIR`
+used outside a `makeTempDir` or `mktemp` call, and move each hit that the test
+or the code under test actually reads, writes or lists into the test's own
+directory. A `/tmp/...` string that never touches the filesystem (a config
+placeholder, a path handed to an in-memory fake, an escaping payload a test
+asserts on) is not a hit: leave it as it is.
+
 The same rule covers an OS-specific branch in the code under test. A test that
 runs a real shell script with a stubbed tool, binary or measurement — a stub
 binary first on `PATH`, a faked `df` — reaches the stub only where the script
@@ -421,6 +445,70 @@ prepended the Homebrew prefix to `PATH` ran the host's real binary instead of
 the stub, and a disk library that swapped in the free space AppleScript
 reported read the host's disk instead of the faked `df` (Issue #3475). The test
 itself must neutralise the branch; a green Linux CI run says nothing about it.
+
+### Shell code a test runs must behave the same on macOS
+
+Linux CI does not prove the quality gate passes. Fleet hosts also run
+`./quality.sh` on macOS: BSD coreutils, bash 3.2, and temp directories under
+`/var/folders`, which is a symlink to `/private/var`. The last paragraph of
+**Never let a unit test inherit the host's state** covers a script that takes a
+different path on macOS; this rule covers shell code with no OS branch at all
+that assumes GNU/Linux behaviour throughout, so a grep for `OSTYPE` or `darwin`
+finds nothing. Two private fleet PRs went green on Linux CI and red on every
+macOS host: a test compared a `mktemp -d` path as a string with one its helper
+had resolved with `pwd -P`, which differ on macOS because `/var` resolves to
+`/private/var`; and a script its tests ran end to end timed itself with
+`date +%N`, which BSD `date` prints as literal letters, so the script's
+arithmetic failed (Issue #3504).
+
+- **Avoid GNU-only forms, or guard each with a portable fallback**, in any shell
+  code a test runs: `date +%N` / `%3N` (sub-second time), `date -d`, `stat -c`,
+  `readlink -f`, `sed -i` with no suffix argument, `grep -P`, `find -printf`,
+  `xargs -r`, a bare `timeout`, and bash 4+ features (`declare -A`, `mapfile`,
+  `${var,,}`).
+- **Resolve both sides of a path comparison the same way** — `pwd -P` on each,
+  for example — never a raw `mktemp -d` path against a resolved one.
+- **Check before you raise the PR.** Grep the shell files that a new or edited
+  test runs, and everything they source, for the forms listed above. If you
+  cannot run the code on macOS, check every external command it runs against BSD
+  behaviour.
+
+### Never assume history the worker's shallow checkout lacks
+
+The worker clones every monitored repository with
+`gh repo clone -- --depth=1 --no-single-branch` (`setupRepo` in
+[`git_operations.ts`](worker/deno/commands/git_operations.ts)). In that
+checkout every branch tip is a shallow boundary: it has no parents, `git blame`
+credits every line to the boundary commit, and ancestry questions have no
+answer. CI usually checks out with `fetch-depth: 0`, so a change that assumes
+history passes CI and then breaks in the fleet's own checkout — the quality
+gate goes red on unrelated work, or production logic gives a wrong answer. A
+test's shallow-clone guard checked whether an object existed rather than
+whether history was reachable, so its ancestor test failed in grafted fleet
+worktrees (Issue #2893); suppression-marker blame credited every marker older
+than the clone to the author of the boundary commit (Issue #3398). Issue #3494
+collected those cases, with a third from a private fleet repository, into this
+rule:
+
+- **Assume nothing beyond a branch tip.** The worker's checkout of every
+  repository is `--depth=1 --no-single-branch`, so code and tests must not
+  assume history beyond a branch tip. That rules out `HEAD~N` or `<ref>^`,
+  `git log` ranges, `merge-base`, `blame` attribution and ancestry checks
+  against the real checkout.
+- **A test that needs history builds its own.** It runs `git init` in a
+  temporary directory and makes the commits it needs, or it uses a ref that
+  always resolves, such as `HEAD`. If a skip guard is unavoidable, it checks
+  for reachable history (`git rev-parse --is-shallow-repository`), not whether
+  an object exists (Issue #2893).
+- **Production code that needs history deepens first.** It deepens explicitly
+  through the repository's existing helper — in the Vibe Coder worker,
+  `ensureHistoryDepth` in `worker/deno/lib/git_history.ts` or
+  `mergeWithUnshallowRetry` in `worker/deno/lib/git_merge_unshallow_retry.ts`
+  — or it treats an unanswerable result as unknown rather than as an answer
+  (Issue #3398).
+- **"Cannot run here" is a defect, not a caveat.** A PR summary that says a
+  new test cannot run in the worker's checkout because it is shallow names a
+  defect to fix before the PR is raised, not a caveat to report.
 
 ### Rendezvous, never sleep, to prove concurrency
 
@@ -520,6 +608,27 @@ refusal that runs before an existing one (a new boundary check, a
 retired-field list, a stricter parse, a fake that throws), re-run the
 existing tests that expect the later refusal and confirm each still
 reaches it; one that now stops earlier is a blocking self-review finding.
+
+**A new precondition must not stop existing tests short.** The re-run in the
+refusal-test rule above covers a refusal; the same holds for any
+precondition a change adds before existing logic: a check, an early return,
+a null or disabled result, or an environment requirement such as a git
+repository, a git identity, a config value, the network or the clock. Find
+the existing tests of the changed function and confirm each one still
+reaches the logic it asserts on. Pay most attention to negative tests (not
+cached, not suppressed, not called), because they stay green when the path
+is skipped. A test that now stops at the new precondition is a blocking
+self-review finding. Fix it by giving the fixture what the precondition
+needs (for example `git init -q` in the temporary directory), and add a
+positive control: an assertion that the precondition holds, such as
+`assert(await denoCheckDigest(config) !== null)`, or the same fixture with
+only the probed value changed reaching the other outcome, so a later
+precondition cannot silently disable the test again. When the precondition
+is a new environment requirement, the Test Plan names the existing tests
+that needed fixture changes, or says that none did and how that was checked.
+stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
+a plain temporary directory that no longer reached the guard it pins
+(Issue #3530).
 
 **Every changed call site needs a test that goes red without it.** This
 covers every new or changed wiring between an entry point and the code it
@@ -1202,8 +1311,8 @@ failing pass's output and drops a passing one's.
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
 PR with failing quality checks — fix the failures first.
 
-**The agent's own run of the gate is conditional on the run budget (Issue
-#1138).** The gate's median observed run is 17 minutes inside a budget of
+**The agent's own run of the gate is conditional on the run budget
+(Issue #1138).** The gate's median observed run is 17 minutes inside a budget of
 roughly an hour, and the same checks arrive twice more for free — the worker
 runs the gate itself before the PR, and CI runs it on the PR. So an agent
 starts the gate only when the runway left covers it plus the time to fix,
@@ -1827,6 +1936,8 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+  The rule's own restatements in this diff are held to the same standard:
+  see **Every restatement of a rule gives the same answer** below.
 - **Apply a new rule to your own diff.** After writing or changing a rule,
   read it literally, as a reviewer would, and apply it to this PR's own
   diff: the rule's own examples and model sentences, the code and tests the
@@ -1848,6 +1959,29 @@ gate if a model-generation name reappears in this document.
   reaching for `flatWholeFile` a finding while its own drift tests called
   it on pinned-phrase literals and the helper's own doc comment allowed
   exactly that (#3240).
+- **Every restatement of a rule gives the same answer.** After writing or
+  changing a rule, list every place this diff states or illustrates it: the
+  rule itself, its examples and parentheticals, its restatement in each other
+  prompt or `CODING-STANDARDS.md` bullet, the operator-doc row, the PR
+  summary, and any helper doc comment or test the rule names. Name the edge
+  case the rule decides, then read each place for that case: every place
+  must give the same answer. Whenever the diff adds an exception, fallback or
+  scope limit in one place — on a review-fix round above all — apply it to
+  every restatement, then search the diff for the old wording
+  (`git diff <base>...HEAD | grep -n '<old phrase>'`) and fix each hit that
+  still gives the old answer. An example or parenthetical that contradicts
+  its own rule is the same defect as two contradictory rules, and is fixed
+  before the PR is raised. Three fleet PRs were sent back for this after
+  **Check the existing rules before you add one** landed (#3077): one called
+  any drift test reaching for `flatWholeFile` a finding while its own drift
+  tests called it and the helper's doc comment it relied on allowed it
+  (#3240); one told the agent to re-allow a hidden path in the repository's
+  own `.gitignore` while `prompts/coding_guidelines/prompt.md`, which the
+  same PR edited, still said never to add such a re-allow rule (#3308); one
+  review-fix round added a fallback for the retro's effort cause in
+  `prompts/retro/prompt.md`, and in the same round a parenthetical, repeated
+  in `CODING-STANDARDS.md` and `docs/RETRO-SCAN.md`, counted that same case
+  as ruled out, so the fallback could never apply (#3550).
 - **Scope a rule to the runs it is true for.**
   `prompts/coding_guidelines/prompt.md` is rendered into every phase that
   `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)

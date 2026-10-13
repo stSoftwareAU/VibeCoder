@@ -7,10 +7,15 @@
  * author / author-mail into a GitHub login via
  * {@link loginFromGitIdentity}.
  *
- * Per-line blame is the preferred provenance check: a fork PR that
- * writes `author=<allowlisted-login>` still blames as the attacker, so
- * the marker is rejected. When blame cannot run, callers must fail
- * closed rather than treat the self-asserted field as authorised.
+ * Per-line blame is the preferred provenance check. A fork PR that writes
+ * `author=<allowlisted-login>` is rejected only when the merge strategy
+ * rewrites authorship (a squash merge is authored by the PR author's
+ * GitHub account, set by GitHub rather than by the contributor's commit);
+ * under merge-commit or rebase merge the commit's self-set
+ * author fields reach main, so blame reports whatever noreply address the
+ * contributor chose. The author name is never used (Issue #3519). When
+ * blame cannot run, callers must fail closed rather than treat the
+ * self-asserted field as authorised.
  *
  * Australian English spelling throughout.
  */
@@ -90,7 +95,7 @@ async function ensureFullHistory(
  * Parse `git blame --porcelain` output into a line → login map.
  *
  * Each hunk starts with `<sha> <orig> <final> [num]` and carries
- * `author` / `author-mail` headers. The login is derived with
+ * `author-mail` headers. The login is derived from the email alone with
  * {@link loginFromGitIdentity}; hunks that yield no login are skipped.
  * A `boundary` commit (the edge of a shallow or limited history) is not
  * the line's real author, so its hunks are skipped too — unknown identity
@@ -100,7 +105,7 @@ export function parseBlamePorcelain(stdout: string): Record<number, string> {
   const logins: Record<number, string> = {};
   const bySha = new Map<
     string,
-    { name: string; email: string; boundary: boolean }
+    { email: string; boundary: boolean }
   >();
   let currentSha = "";
   let pendingLine: number | undefined;
@@ -108,14 +113,11 @@ export function parseBlamePorcelain(stdout: string): Record<number, string> {
   const flush = (): void => {
     if (pendingLine === undefined || currentSha.length === 0) return;
     const identity = bySha.get(currentSha);
-    if (identity?.boundary) {
+    if (!identity || identity.boundary) {
       pendingLine = undefined;
       return;
     }
-    const login = loginFromGitIdentity(
-      identity?.name ?? "",
-      identity?.email ?? "",
-    );
+    const login = loginFromGitIdentity(identity.email);
     if (login) logins[pendingLine] = login;
     pendingLine = undefined;
   };
@@ -127,7 +129,7 @@ export function parseBlamePorcelain(stdout: string): Record<number, string> {
       currentSha = header[1] ?? "";
       pendingLine = Number(header[2]);
       if (currentSha && !bySha.has(currentSha)) {
-        bySha.set(currentSha, { name: "", email: "", boundary: false });
+        bySha.set(currentSha, { email: "", boundary: false });
       }
       continue;
     }
@@ -135,10 +137,6 @@ export function parseBlamePorcelain(stdout: string): Record<number, string> {
     if (!identity) continue;
     if (raw === "boundary") {
       identity.boundary = true;
-      continue;
-    }
-    if (raw.startsWith("author ")) {
-      identity.name = raw.slice("author ".length);
       continue;
     }
     if (raw.startsWith("author-mail ")) {

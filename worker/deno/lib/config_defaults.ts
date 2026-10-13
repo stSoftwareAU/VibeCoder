@@ -308,6 +308,15 @@ export const OPERATIONAL_DEFAULTS = {
   quotaPollParkNice: 99,
   quotaPollIdleFloor: 500,
   /**
+   * Nice-derived poll cadence (Issue #3667): the per-repo Priority 1.x
+   * passes poll a `0 < nice < quotaPollParkNice` repo every
+   * `pollCadenceLowCycles` cycles and a `nice >= quotaPollParkNice` repo
+   * every `pollCadenceParkCycles` cycles. `nice <= 0` repos are polled every
+   * cycle; 1 turns a tier's cadence off.
+   */
+  pollCadenceLowCycles: 3,
+  pollCadenceParkCycles: 10,
+  /**
    * Self-scheduling for auto-filed worker diagnostics (Issue #505).
    *
    * **On by default.** The worker diagnoses its own faults accurately and
@@ -1568,6 +1577,9 @@ export function buildDefaultWorkerConfig(
     quotaPollParkFloor: OPERATIONAL_DEFAULTS.quotaPollParkFloor,
     quotaPollParkNice: OPERATIONAL_DEFAULTS.quotaPollParkNice,
     quotaPollIdleFloor: OPERATIONAL_DEFAULTS.quotaPollIdleFloor,
+    // Issue #3667: nice-derived poll cadence.
+    pollCadenceLowCycles: OPERATIONAL_DEFAULTS.pollCadenceLowCycles,
+    pollCadenceParkCycles: OPERATIONAL_DEFAULTS.pollCadenceParkCycles,
     // Issue #505: self-scheduling for auto-filed worker diagnostics.
     selfScheduleDiagnosticsEnabled:
       OPERATIONAL_DEFAULTS.selfScheduleDiagnosticsEnabled,

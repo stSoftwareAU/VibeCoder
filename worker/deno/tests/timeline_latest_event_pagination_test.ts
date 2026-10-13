@@ -17,6 +17,8 @@ import {
   fetchTimelineWithCache,
   getLabelLastAddInfo,
   getLabelLastRemoveInfo,
+  latestAssignedAtFromTimeline,
+  latestReopenedAtFromTimeline,
 } from "../lib/issue_query.ts";
 import { isNonWorkerRemovalAfterRound } from "../lib/grill_me_processor.ts";
 import { cleanStaleLabels } from "../lib/issue_filter.ts";
@@ -303,3 +305,62 @@ Deno.test(
     assertEquals(edits.length, 1);
   },
 );
+
+Deno.test("latestAssignedAtFromTimeline - returns the latest assignment for a login, or null (Issue #3476)", () => {
+  const timeline: TimelineLabelEventJson[] = [
+    {
+      event: "assigned",
+      actor: { login: "bot" },
+      assignee: { login: "bot" },
+      created_at: "2026-10-04T22:49:00Z",
+    },
+    {
+      event: "assigned",
+      actor: { login: "bot" },
+      assignee: { login: "bot" },
+      created_at: "2026-10-09T06:27:00Z",
+    },
+    {
+      event: "assigned",
+      actor: { login: "alice" },
+      assignee: { login: "alice" },
+      created_at: "2026-10-10T00:00:00Z",
+    },
+  ];
+  assertEquals(
+    latestAssignedAtFromTimeline(timeline, "bot"),
+    "2026-10-09T06:27:00Z",
+    "the last matching event is the latest",
+  );
+  assertEquals(latestAssignedAtFromTimeline(timeline, "nobody"), null);
+  assertEquals(latestAssignedAtFromTimeline([], "bot"), null);
+});
+
+Deno.test("latestReopenedAtFromTimeline - returns the latest reopen, or null (Issue #3476)", () => {
+  const timeline: TimelineLabelEventJson[] = [
+    {
+      event: "reopened",
+      actor: { login: "nleck" },
+      created_at: "2026-10-05T18:00:00Z",
+    },
+    {
+      event: "reopened",
+      actor: { login: "nleck" },
+      created_at: "2026-10-07T09:00:00Z",
+    },
+  ];
+  assertEquals(
+    latestReopenedAtFromTimeline(timeline),
+    "2026-10-07T09:00:00Z",
+  );
+  assertEquals(
+    latestReopenedAtFromTimeline([
+      {
+        event: "commented",
+        actor: { login: "bot" },
+        created_at: "2026-10-01T00:00:00Z",
+      },
+    ]),
+    null,
+  );
+});

@@ -946,6 +946,42 @@ async function runWorkflowHygieneCheck(
 }
 
 /**
+ * Build the bash script the config integration smoke test runs.
+ */
+export function configSmokeScript(scriptDir: string, denoCmd: string): string {
+  // Issue #97: the retired `config_defaults.sh` shim used to seed these arrays
+  // before the load-config output was eval'd. Initialise them inline instead.
+  // The invariant is that load-config *populates* REPOS and *assigns*
+  // ALLOWED_AUTHORS, possibly to `()` because `allowed_authors` is optional
+  // since #1066. So ALLOWED_AUTHORS is seeded with a sentinel and the check
+  // fails only if the sentinel survives (Issue #3490).
+  const unsetSentinel = "__vibe_unset_sentinel__";
+  return `
+    set -euo pipefail
+    REPOS=()
+    ALLOWED_AUTHORS=(${posixSingleQuote(unsetSentinel)})
+    ISSUE_LABELS=()
+    _output=$(cd ${posixSingleQuote(scriptDir)} && ${
+    posixSingleQuote(denoCmd)
+  } run --allow-read --allow-env worker/deno/mod.ts load-config 2>/dev/null) || true
+    if [[ -n "$_output" ]]; then
+        eval "$_output"
+    fi
+    if [[ \${#REPOS[@]} -eq 0 ]]; then
+        echo 'FAIL: REPOS is empty after loading config — load-config output did not populate REPOS'
+        exit 1
+    fi
+    if [[ \${#ALLOWED_AUTHORS[@]} -eq 1 && "\${ALLOWED_AUTHORS[0]}" == ${
+    posixSingleQuote(unsetSentinel)
+  } ]]; then
+        echo 'FAIL: ALLOWED_AUTHORS was not assigned after loading config — load-config output did not set ALLOWED_AUTHORS'
+        exit 1
+    fi
+    echo "OK: \${#REPOS[@]} repo(s), \${#ALLOWED_AUTHORS[@]} author(s)"
+  `;
+}
+
+/**
  * Run the config integration smoke test.
  */
 async function runConfigSmokeTest(
@@ -966,32 +1002,7 @@ async function runConfigSmokeTest(
     };
   }
 
-  // Issue #97: the retired `config_defaults.sh` shim used to seed these empty
-  // arrays before the load-config output was eval'd. Initialise them inline
-  // instead — the check's invariant is that load-config *populates* REPOS and
-  // ALLOWED_AUTHORS, and starting them empty is exactly what proves the
-  // override (mirroring load_config_test.ts's own harness).
-  const script = `
-    set -euo pipefail
-    REPOS=()
-    ALLOWED_AUTHORS=()
-    ISSUE_LABELS=()
-    _output=$(cd ${posixSingleQuote(config.scriptDir)} && ${
-    posixSingleQuote(denoCmd)
-  } run --allow-read --allow-env worker/deno/mod.ts load-config 2>/dev/null) || true
-    if [[ -n "$_output" ]]; then
-        eval "$_output"
-    fi
-    if [[ \${#REPOS[@]} -eq 0 ]]; then
-        echo 'FAIL: REPOS is empty after loading config — load-config output did not populate REPOS'
-        exit 1
-    fi
-    if [[ \${#ALLOWED_AUTHORS[@]} -eq 0 ]]; then
-        echo 'FAIL: ALLOWED_AUTHORS is empty after loading config'
-        exit 1
-    fi
-    echo "OK: \${#REPOS[@]} repo(s), \${#ALLOWED_AUTHORS[@]} author(s)"
-  `;
+  const script = configSmokeScript(config.scriptDir, denoCmd);
 
   const result = await runCommand(["bash", "-c", script]);
   if (result.exitCode === 0) {

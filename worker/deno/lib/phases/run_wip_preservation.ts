@@ -227,10 +227,14 @@ export interface PreserveRunWipOptions {
   };
 }
 
-/** Commit subject when the handover note is the only thing to commit. */
+/**
+ * Commit subject when the handover note is the only thing to commit. It cites
+ * only the run's own issue, no fixed VibeCoder number, because it lands in the
+ * target repo (Issue #3499).
+ */
 function buildHandoverOnlyWipCommitMessage(issueNumber: number): string {
   return `wip: handover note for the interrupted run on issue ` +
-    `#${issueNumber} (Issue #769)`;
+    `#${issueNumber}`;
 }
 
 /**
