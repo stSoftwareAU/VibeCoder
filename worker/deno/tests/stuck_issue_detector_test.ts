@@ -347,6 +347,10 @@ Deno.test("stuck issue detector - detectAssignedWithClosedPr processes non-plann
           baseRefName: "main",
         });
       }
+      if (args[0] === "api" && args.join(" ").includes("/timeline?")) {
+        // A readable, event-free timeline: no assignment and no reopen.
+        return "[]";
+      }
       if (args[0] === "api" && args.join(" ").includes("/compare/")) {
         return JSON.stringify({ status: "behind" });
       }
@@ -382,7 +386,7 @@ Deno.test("stuck issue detector - detectAssignedWithClosedPr processes non-plann
 Deno.test("stuck issue detector - hasOpenLinkedPR returns true when open PR exists", async () => {
   const ghFn = async (args: string[]): Promise<string> => {
     if (args[0] === "pr" && args[1] === "list" && args.includes("open")) {
-      return JSON.stringify([{ number: 42 }]);
+      return JSON.stringify([{ number: 42, title: "Fix (#10)" }]);
     }
     return "";
   };

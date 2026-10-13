@@ -235,6 +235,8 @@ Deno.test("fetchPRsForIssueByTitle - keeps a PR whose head branch is in the repo
     (m) => lines.push(m),
   );
   assertEquals(prs.length, 1);
+  assertEquals(prs[0]?.title, "Fix bug (#42)");
+  assertEquals(prs[0]?.headRefName, "issue-42-fix-bug");
   assertEquals(prs[0]?.author, "vibe-coder-bot");
   assertEquals(prs[0]?.isCrossRepository, false);
   assertEquals(lines, []);
@@ -340,4 +342,60 @@ Deno.test("fetchPRsForIssueByTitle - a row without the field reads as same-repos
   assertEquals(prs.length, 1);
   assertEquals(prs[0]?.author, "");
   assertEquals(prs[0]?.isCrossRepository, false);
+});
+
+Deno.test("fetchPRsForIssueByTitle - drops a hit whose title lacks the delimited issue form (Issue #3476)", async () => {
+  // Issue #3476: GitHub's `in:title` search can match an issue number that
+  // appears inside a milestone branch name (e.g. `Sync main into
+  // milestone/42-foo`). Only the fleet's own delimited title form is
+  // evidence the PR delivers this issue.
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 9,
+        title: "Sync main into milestone/42-foo",
+        headRefName: "sync/milestone-42-foo",
+        baseRefName: "milestone/42-foo",
+        mergedAt: "2026-02-01T00:00:00Z",
+      },
+    ]));
+  const lines: string[] = [];
+  const prs = await fetchPRsForIssueByTitle(
+    "o/r",
+    42,
+    "merged",
+    undefined,
+    mockGh,
+    (m) => lines.push(m),
+  );
+  assertEquals(prs, []);
+  assertEquals(lines.length, 1);
+  assertEquals(lines[0]?.includes("does not carry"), true);
+});
+
+Deno.test("fetchPRsForIssueByTitle - drops a milestone sync PR even when its title carries the issue number (Issue #3476)", async () => {
+  // Issue #3476: a milestone sync PR never delivers an individual sub-issue,
+  // even when its title happens to carry the delimited issue form.
+  const mockGh = (_args: string[]): Promise<string> =>
+    Promise.resolve(JSON.stringify([
+      {
+        number: 9,
+        title: "Fix (#42)",
+        headRefName: "sync/milestone-42-foo",
+        baseRefName: "main",
+        mergedAt: "2026-02-01T00:00:00Z",
+      },
+    ]));
+  const lines: string[] = [];
+  const prs = await fetchPRsForIssueByTitle(
+    "o/r",
+    42,
+    "merged",
+    undefined,
+    mockGh,
+    (m) => lines.push(m),
+  );
+  assertEquals(prs, []);
+  assertEquals(lines.length, 1);
+  assertEquals(lines[0]?.includes("milestone sync branch"), true);
 });
