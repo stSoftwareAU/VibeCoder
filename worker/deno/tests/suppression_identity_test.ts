@@ -31,26 +31,26 @@ function markerLine(): string {
 
 Deno.test("loginFromGitIdentity - extracts a login from a GitHub noreply email", () => {
   assertEquals(
-    loginFromGitIdentity("Nigel Leck", "nigel@users.noreply.github.com"),
+    loginFromGitIdentity("nigel@users.noreply.github.com"),
     "nigel",
   );
   assertEquals(
-    loginFromGitIdentity("Nigel Leck", "12345+nigel@users.noreply.github.com"),
+    loginFromGitIdentity("12345+nigel@users.noreply.github.com"),
     "nigel",
   );
 });
 
-Deno.test("loginFromGitIdentity - treats a login-shaped author name as the login", () => {
-  assertEquals(loginFromGitIdentity("nigel", "nigel@example.com"), "nigel");
-  assertEquals(loginFromGitIdentity("Nigel", "dev@example.com"), "nigel");
+Deno.test("loginFromGitIdentity - ignores a login-shaped author name with an unrelated email (Issue #3519)", () => {
+  assertEquals(loginFromGitIdentity("attacker@example.com"), null);
+  assertEquals(loginFromGitIdentity("dev@example.com"), null);
 });
 
 Deno.test("loginFromGitIdentity - returns null when no login can be derived", () => {
   assertEquals(
-    loginFromGitIdentity("Nigel Leck", "nigel@example.com"),
+    loginFromGitIdentity("nigel@example.com"),
     null,
   );
-  assertEquals(loginFromGitIdentity("", ""), null);
+  assertEquals(loginFromGitIdentity(""), null);
 });
 
 async function runGit(
@@ -160,6 +160,27 @@ Deno.test("findSuppressions - a marker whose author= matches blame still suppres
   }
 });
 
+Deno.test("findSuppressions - a self-set author name of an allowlisted login does not bind (Issue #3519)", async () => {
+  const { dir, file } = await repoWithMarker({
+    name: "nigel",
+    email: "attacker@example.com",
+  });
+  try {
+    const blamed = await blameFileLineLogins(dir, file);
+    assertEquals(blamed[1], undefined);
+    const source = await Deno.readTextFile(`${dir}/${file}`);
+    const records = findSuppressions(source, "ts", {
+      today: TODAY,
+      allowedAuthors: ["nigel"],
+      commitAuthors: Object.values(blamed),
+    });
+    assertEquals(records[0]?.valid, false);
+    assertEquals(isSuppressed("SEC-abc123", records, 1), false);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 const NIGEL = { name: "nigel", email: "nigel@users.noreply.github.com" };
 const MALLORY = { name: "mallory", email: "mallory@users.noreply.github.com" };
 
@@ -224,6 +245,26 @@ Deno.test("blameFileLineLogins - a full history still attributes root-commit lin
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("parseBlamePorcelain - a hunk without an author-mail header is unknown identity", () => {
+  const sha = "c".repeat(40);
+  const other = "d".repeat(40);
+  const stdout = [
+    `${sha} 1 1 1`,
+    "author nigel",
+    "summary no mail",
+    "filename src.ts",
+    "\tline one",
+    `${other} 2 2 1`,
+    "author mallory",
+    "author-mail <mallory@users.noreply.github.com>",
+    "summary new",
+    "filename src.ts",
+    "\tline two",
+    "",
+  ].join("\n");
+  assertEquals(parseBlamePorcelain(stdout), { 2: "mallory" });
 });
 
 Deno.test("parseBlamePorcelain - a boundary hunk is unknown identity", () => {

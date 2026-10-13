@@ -354,29 +354,24 @@ export function _resetSuppressionCommitAuthors(): void {
 }
 
 /**
- * Derive a GitHub login from a git author name and email (Issue #269).
+ * Derive a GitHub login from a git author email (Issue #269).
  *
- * Prefers the login in a `users.noreply.github.com` address
- * (`login@…` or `id+login@…`). Otherwise, when the author name is itself
- * a legal GitHub login, that name is normalised with
- * {@link normaliseLogin}. Returns `null` when neither yields an identity
- * — callers must fail closed rather than treat an unverified `author=`
- * as authorised.
+ * Only a `users.noreply.github.com` address yields a login (`login@…` or
+ * `id+login@…`). The author name is never used: any committer sets it
+ * freely (Issue #3519). The noreply email is self-set too, so the binding
+ * only proves who authored the commit that reached main when the
+ * repository's merge strategy rewrites authorship (a squash merge is
+ * authored by the PR author's GitHub account, set by GitHub rather than by
+ * the contributor's commit); under merge-commit or
+ * rebase merge the contributor's own author fields reach main. Returns
+ * `null` otherwise — callers must fail closed rather than treat an
+ * unverified `author=` as authorised.
  */
-export function loginFromGitIdentity(
-  name: string,
-  email = "",
-): string | null {
+export function loginFromGitIdentity(email: string): string | null {
   const mail = email.trim().toLowerCase();
   const noreply = /^(?:\d+\+)?([a-z0-9][a-z0-9-]*)@users\.noreply\.github\.com$/
     .exec(mail);
-  if (noreply?.[1]) return noreply[1];
-
-  const trimmed = name.trim();
-  if (/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(trimmed)) {
-    return normaliseLogin(trimmed);
-  }
-  return null;
+  return noreply?.[1] ?? null;
 }
 
 /** Split the marker trailer into its `author`, `expiry` and reason parts. */
