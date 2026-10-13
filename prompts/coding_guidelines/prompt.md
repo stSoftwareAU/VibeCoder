@@ -330,6 +330,18 @@ not after a reviewer finds it weeks later.
   must itself pass the rule, checked against the code it describes. Say in
   the PR body that you applied the rule to the PR's own diff, and name what
   you found or say you found nothing.
+- **Every restatement of a rule gives the same answer.** After writing or
+  changing such a rule, list every place this diff states or illustrates it:
+  the rule itself, its examples and parentheticals, its restatement in each
+  other prompt or `CODING-STANDARDS.md` bullet, the operator-doc row, the PR
+  summary, and any helper doc comment or test the rule names. Name the edge
+  case the rule decides, then read each place for that case: every place must
+  give the same answer. Whenever the diff adds an exception, fallback or scope
+  limit in one place — on a review-fix round above all — apply it to every
+  restatement, then search the diff for the old wording (`git diff
+  <base>...HEAD | grep -n '<old phrase>'`) and fix each hit that still gives
+  the old answer. An example or parenthetical that contradicts its own rule is
+  the same blocking self-review finding as two contradictory rules.
 - **Adding a member owes a docs change too.** When you add a field, enum
   variant, kind, flag, column or row element to an existing set, grep for one
   or two **existing sibling members**, not the new one — the new name is in no
