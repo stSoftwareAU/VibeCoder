@@ -39,6 +39,7 @@ function preconditionParagraph(
 }
 
 const KEY_PHRASES = [
+  "the same holds for any precondition a change adds before existing logic",
   "a git repository, a git identity, a config value, the network or the clock",
   "confirm each one still reaches the logic it asserts on",
   "they stay green when the path is skipped",
