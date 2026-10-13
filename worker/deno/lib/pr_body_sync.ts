@@ -3,9 +3,10 @@
  *
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
- * sections — evidence, milestone, the leading degraded-run section, bump
- * note, footer). The degraded-run section is re-derived at sync time from the
- * current issue and summary, never copied forward (Issue #3350). A
+ * sections — evidence, milestone, the leading degraded-run or
+ * partial-delivery section, bump note, footer). That leading section is
+ * re-derived at sync time from the current issue and summary, never copied
+ * forward (Issue #3350, #3506). A
  * review-fix run that rewrites that summary file and pushes new commits never
  * touched the PR body again, so a reviewer reading the description kept
  * seeing the original summary while the diff underneath it changed.
