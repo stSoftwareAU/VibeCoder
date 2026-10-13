@@ -6,10 +6,14 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildDeclaredHandoffWipCommitMessage,
+  buildInterruptedWipCommitMessage,
+  buildUncommittedWorkWipCommitMessage,
   preserveTimedOutWip,
   startWipCheckpoints,
   WIP_CHECKPOINT_COMMIT_MESSAGE,
   type WipCheckpointOutcome,
+  type WipPreservationCause,
 } from "../lib/wip_checkpoint.ts";
 import type { Result } from "../types.ts";
 import type { CommitAndPushPendingResult } from "../lib/git_push.ts";
@@ -375,4 +379,42 @@ Deno.test("wip_checkpoint - checkpoint message cites no issue number, old-shape 
       "WIP checkpoint: periodic agent progress snapshot (Issue #4170)",
     ),
   );
+});
+
+Deno.test("wip_checkpoint - interrupted, uncommitted-work and hand-off subjects cite no issue number, old-shape subjects still read as WIP (Issue #3499)", () => {
+  // These subjects land in target repos, where a fixed VibeCoder `#<n>`
+  // links to whatever unrelated issue holds that number there.
+  const causes: WipPreservationCause[] = [
+    "timed-out",
+    "killed",
+    "external-sigterm",
+    "scheduled-release",
+    "usage-limit",
+  ];
+  for (const cause of causes) {
+    const msg = buildInterruptedWipCommitMessage({
+      cause,
+      elapsedSeconds: 3600,
+      dirtyFiles: 4,
+    });
+    assertEquals(/#\d+/.test(msg), false, msg);
+    assert(isWipCommitSubject(msg), msg);
+  }
+  const uncommitted = buildUncommittedWorkWipCommitMessage({ dirtyFiles: 2 });
+  assertEquals(/#\d+/.test(uncommitted), false, uncommitted);
+  assert(isWipCommitSubject(uncommitted), uncommitted);
+  const handoff = buildDeclaredHandoffWipCommitMessage({ dirtyFiles: 1 });
+  assertEquals(/#\d+/.test(handoff), false, handoff);
+  assert(isWipCommitSubject(handoff), handoff);
+  // Subjects already pushed carry the old suffix; they must still read as WIP.
+  for (
+    const old of [
+      "wip: execute timed out after 3600s — preserving 4 uncommitted file(s) (Issue #47)",
+      "wip: preserving 2 uncommitted file(s) left by a run that raised no PR (Issue #218)",
+      "wip: preserving 1 uncommitted file(s) before a declared hand-off (Issue #3088)",
+      "wip: handover note for the interrupted run on issue #732 (Issue #769)",
+    ]
+  ) {
+    assert(isWipCommitSubject(old), old);
+  }
 });
