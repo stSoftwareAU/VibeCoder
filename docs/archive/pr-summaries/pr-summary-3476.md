@@ -41,7 +41,11 @@ Seven changes, all behind the one issue:
   closed-issue batch), so an unchanged issue's timeline is not re-paged each
   scan; an unreadable timeline and a "sync-pr-only" flag are never cached. The
   incomplete path finds its candidate PRs in the cached all-state branch list
-  instead of an uncached `gh pr list --head` per milestone. An empty closed list
+  (which now carries each PR's `state`) instead of an uncached `gh pr list
+  --head` per milestone, and carries on only those the list shows `OPEN` or
+  shows no state for: a milestone whose only final PR is merged or closed (the
+  state after an automated roll-back) makes no closed-issue classification and
+  no live `gh pr view`, and the live read stays the guard before any edit. An empty closed list
   (indistinguishable from a failed read) leaves the body alone.
 - **The fleet's own tracker is not rollup content.** `getClosedIssues` removes
   the milestone's tracking issues (title + body marker + fleet author, via
@@ -62,12 +66,15 @@ Closes #3476.
 Backend change — no web interface to screenshot. After the PR #3640 review
 fixes (the per-scan cost finding) the targeted checks were run on the head:
 `deno fmt --check`, `deno lint` and `deno check` on the five lib/test files
-changed by the review fixes, the unit tests for the 11 files that name
-`milestone_completion`, `fetchAllClosedIssues` or `issues_closed_all` (450
-passed, 0 failed), and the `milestone_*`, `stuck_*`, `issue_lifecycle_*` and
-`claim_lock_integrity_214` unit tests (1306 passed in the parallel pass, 71 in
-the serial pass, 0 failed). `tests/milestone_completion_test.ts` alone: 136
-passed, 0 failed. Cost reproduced from the review's example: before this fix an
+changed by the review fixes, the unit tests for the 12 files that name
+`milestone_completion`, `fetchAllClosedIssues`, `issues_closed_all`,
+`fetchAllStatePRsByBranch` or `prs_all_branch` (463 passed, 0 failed), and the
+`milestone_*`, `stuck_*`, `issue_lifecycle_*` and `claim_lock_integrity_214`
+unit tests (1307 passed in the parallel pass, 71 in the serial pass, 0 failed).
+`tests/milestone_completion_test.ts` alone: 137 passed, 0 failed;
+`tests/issue_query_all_state_cache_test.ts` alone: 12 passed, 0 failed. The
+second PR #3640 review round (a non-open candidate still cost a classification
+and a live read) re-ran the same checks on the head. Cost reproduced from the review's example: before this fix an
 open rollup's unchanged scan issued `gh pr edit` plus the timeline, dependency
 and not-planned reads; the new `a second scan with unchanged GitHub state` case
 asserts zero `pr edit` and zero timeline reads on scan 2 (and fewer paginated
@@ -122,7 +129,10 @@ reads than scan 1).
   two cases (cached open list sees the reopen / only the authoritative GitHub
   count does) where an `OPEN` summary PR whose listed issue #21 reopened gets a
   rebuilt body with no #21 and no new PR, tracker or close; a case where a
-  `CLOSED` summary PR is not edited; and a case where an empty closed list
+  `CLOSED` or `MERGED` summary PR is not edited and costs no `pr view`, no
+  `in:title` search and no `/timeline` read (the cached list already says it is
+  not open); a case where a cached all-state row with no `state` (an entry
+  written before the field existed) is still read live and refreshed; and a case where an empty closed list
   leaves the body alone. The per-scan-cost review round added (all `PR #3640
   review`): `a second scan with unchanged GitHub state does not edit the summary
   PR or re-read the timelines` (scan 1 edits once and stamps the fingerprint;
@@ -141,6 +151,10 @@ reads than scan 1).
   timeline; a failed merged-PR read retried rather than pinned; an unreadable
   timeline never cached). The existing exists-path and incomplete-path cases
   now stub `gh pr view`, since the refresh reads the live PR first.
+- **Extended** `worker/deno/tests/issue_query_all_state_cache_test.ts` —
+  `fetchAllStatePRsByBranch - requests and keeps each PR's state, dropping a
+  non-string one`: the `--json` fields include `state`, and a non-string value
+  is dropped rather than stored.
 - **Extended** `worker/deno/tests/issue_query_test.ts` — `fetchClosedIssuesByMilestone
   carries updatedAt and still reads an old-shape cache entry`: the batch asks
   for `updatedAt`, an empty timestamp is dropped, and a seeded
@@ -160,12 +174,12 @@ reads than scan 1).
 
 ### Branch outcomes
 
-- `worker/deno/lib/issue_query.ts:1567` — `!prTitleMatchesIssue` drops the hit.
+- `worker/deno/lib/issue_query.ts:1574` — `!prTitleMatchesIssue` drops the hit.
   Reached by `worker/deno/tests/issue_query_title_search_cache_test.ts` (the
   "lacks the delimited issue form" case). Flipping the guard (removing the
   `continue`) leaves that case green only if the drop is retained, so the test
   is the red run.
-- `worker/deno/lib/issue_query.ts:1577` — `isMilestoneSyncBranch` drops the hit.
+- `worker/deno/lib/issue_query.ts:1584` — `isMilestoneSyncBranch` drops the hit.
   Reached by the "drops a milestone sync PR even when its title carries the
   issue number" case in the same file.
 - `worker/deno/lib/stuck_recovery.ts:1159` — `mergedAt && reopenedAt &&
@@ -191,52 +205,52 @@ reads than scan 1).
   claimProblem case; the empty arm (section omitted) is exercised by every
   existing `buildMilestoneSummaryBody` test whose fixtures carry no
   `claimProblem`.
-- `worker/deno/lib/milestone_completion.ts:1483` — `existingPrNumber !== null`
+- `worker/deno/lib/milestone_completion.ts:1481` — `existingPrNumber !== null`
   refreshes an already-existing summary PR through `refreshExistingSummaryPr`
   and returns `outcome: "exists"`. Reached by
   `worker/deno/tests/milestone_completion_test.ts::checkAndHandleMilestoneCompletions
   - refreshes the existing summary PR body with freshly classified closed
   issues`; the `null` arm creates the PR and is exercised by every existing
   `createMilestoneSummaryPr` test that raises a new PR.
-- `worker/deno/lib/milestone_completion.ts:1368` — `!live.ok` (unreadable live
+- `worker/deno/lib/milestone_completion.ts:1366` — `!live.ok` (unreadable live
   PR) logs and returns without editing. Reached by `an unreadable live summary
   PR is not edited and the fault is logged`; forcing the branch off made it
   (and two existing exists-path cases) red.
-- `worker/deno/lib/milestone_completion.ts:1375` — `state !== "OPEN" ||
+- `worker/deno/lib/milestone_completion.ts:1373` — `state !== "OPEN" ||
   isCrossRepository || headRefName !== milestoneBranch`, one operand each:
   `state !== "OPEN"` by the `merged` and `closed` exists-path cases and the
   incomplete-path `not open untouched` case (deleting the operand turned all
   three red); `isCrossRepository` by the `a fork's` case, and `headRefName !==
   milestoneBranch` by the `headed by another branch` case (deleting either
   operand turned its case red).
-- `worker/deno/lib/milestone_completion.ts:1387` — the live body already carries
+- `worker/deno/lib/milestone_completion.ts:1385` — the live body already carries
   the current fingerprint → return before any build or edit. Reached by the
   `second scan with unchanged GitHub state` case (exists path) and the
   incomplete-path `second scan` case; deleting the line turned the first red
   (scan 2 re-read the paginated milestone issues). The fall-through arm (stale
   or marker-less body → rebuild and edit) is every first-scan case.
-- `worker/deno/lib/milestone_completion.ts:1776` — `mergedPrs.length === 0`
+- `worker/deno/lib/milestone_completion.ts:1774` — `mergedPrs.length === 0`
   flags `sync-pr-only` before the timeline is read. Reached by
   `worker/deno/tests/milestone_completion_test.ts::classifyClosedIssues - flags
   sync-pr-only and predates-reopen, claims otherwise` (issue 1) and, for the
   "no timeline read" part, `an issue with no merged PR is flagged without paging
   its timeline` (moving the timeline read back above it turned that case red).
-- `worker/deno/lib/milestone_completion.ts:1789` — `timeline === null` flags
+- `worker/deno/lib/milestone_completion.ts:1787` — `timeline === null` flags
   `timeline-unreadable`. Reached by `classifyClosedIssues - flags an issue whose
   timeline cannot be read rather than claiming it`; restoring the old
   claim-on-null made it red. `never caches an unreadable timeline` reaches the
   not-cached half. The readable arm is every other `classifyClosedIssues` case.
-- `worker/deno/lib/milestone_completion.ts:1794` — `reopenedAt !== null &&
+- `worker/deno/lib/milestone_completion.ts:1792` — `reopenedAt !== null &&
   mergedPrs.every(…)` flags `predates-reopen`: `reopenedAt !== null` false for
   issue 2 of the flags/claims case; `every` false for issue 4 (re-merged after
   reopen); both true only for issue 3, the flagged case.
-- `worker/deno/lib/milestone_completion.ts:1748` — `if (cache)` guards the
+- `worker/deno/lib/milestone_completion.ts:1746` — `if (cache)` guards the
   verdict read: the cache-less arm is every `classifyClosedIssues` case that
   passes no cache; the cache arm is `serves an unchanged issue's verdict from
   cache…`, whose two `run()` calls with no `updatedAt` must read the timeline
   each time (an absent `updatedAt` never equals a stored one). Disabling the
   read turned that case and the exists-path `second scan` case red.
-- `worker/deno/lib/milestone_completion.ts:1750` — `isCachedClaimVerdict(hit) &&
+- `worker/deno/lib/milestone_completion.ts:1748` — `isCachedClaimVerdict(hit) &&
   hit.updatedAt === issue.updatedAt`: operand `hit.updatedAt === issue.updatedAt`
   by the `a newer updatedAt must miss` step and `a changed classification
   rewrites the body once…` (deleting the operand turned both red); operand
@@ -250,7 +264,7 @@ reads than scan 1).
   The flagged arm by `serves a cached predates-reopen verdict`; deleting the
   `claimProblem` spread turned it red; the claimable arm by `serves an unchanged
   issue's verdict from cache`.
-- `worker/deno/lib/milestone_completion.ts:1798` — the verdict write, guarded by
+- `worker/deno/lib/milestone_completion.ts:1797` — the verdict write, guarded by
   `cache && issue.updatedAt !== undefined`. Operand `cache`: every cache-less
   case. Operand `issue.updatedAt !== undefined` only narrows the type for the
   stored `updatedAt: string`; a write without it would be dropped by
@@ -267,26 +281,40 @@ reads than scan 1).
   fetchClosedIssuesByMilestone carries updatedAt and still reads an old-shape
   cache entry` (row 1 kept, row 3 with `""` dropped); dropping the `!== ""`
   operand turned it red.
-- `worker/deno/lib/milestone_completion.ts:1860` — the tracker filter
+- `worker/deno/lib/milestone_completion.ts:1858` — the tracker filter
   `!trackerNumbers.has(issue.number)`. Reached by the refresh case in
   `worker/deno/tests/milestone_completion_test.ts` (closed list holds tracker
   #600); passing `closed` unfiltered made it red. The keep arm is issue #20 in
   the same case.
-- `worker/deno/lib/milestone_completion.ts:1902` — `candidates.length === 0`
+- `worker/deno/lib/milestone_completion.ts:1902` — the candidate filter
+  `pr.headRefName === milestoneBranch && (pr.state === undefined || pr.state ===
+  "OPEN")`, one operand each. `pr.state === "OPEN"` by `an incomplete milestone
+  with only a non-open summary PR makes no live read, title search or timeline
+  read` (CLOSED and MERGED): forcing the operand to `true` turned it red
+  (`AssertionError: Values are not equal: CLOSED`). `pr.state === undefined` by
+  `a cached all-state row with no state is still read live before any edit`:
+  replacing the pair with `pr.state === "OPEN"` alone turned it red. The
+  `headRefName` operand is unchanged by this round.
+- `worker/deno/lib/issue_query.ts:1688` — `typeof item.state === "string" &&
+  item.state !== ""` keeps a row's state, one operand each. `typeof item.state
+  === "string"` by the `fetchAllStatePRsByBranch - requests and keeps each PR's
+  state` row with `state: 7`; `item.state !== ""` by its row with `state: ""`
+  (deleting either operand turned the case red).
+- `worker/deno/lib/milestone_completion.ts:1906` — `candidates.length === 0`
   returns before any classification. Reached by `an incomplete milestone with no
   summary PR makes no uncached PR read`; deleting the line turned it red (the
   timeline of issue #20 was read). The non-empty arm is the two `refreshes an
   open summary PR body when a listed issue reopens` cases.
-- `worker/deno/lib/milestone_completion.ts:1914` — `closedIssues.length === 0`
+- `worker/deno/lib/milestone_completion.ts:1918` — `closedIssues.length === 0`
   returns without editing. Reached by `worker/deno/tests/milestone_completion_test.ts::an
   incomplete milestone does not publish an empty body over a summary PR when the
   closed list reads empty`; deleting the guard made it red.
-- `worker/deno/lib/milestone_completion.ts:2168` and `:2238` — the two
+- `worker/deno/lib/milestone_completion.ts:2172` and `:2242` — the two
   `await refreshWhileIncomplete()` calls (cached list incomplete; authoritative
   open count > 0). Each is reached by one of the two `refreshes an open summary
   PR body when a listed issue reopens` cases; removing either call alone made
   exactly its case red.
-- `worker/deno/lib/milestone_completion.ts:1931` — `tracker.ok ? tracker.value :
+- `worker/deno/lib/milestone_completion.ts:1935` — `tracker.ok ? tracker.value :
   null`: the `ok` arm (`Closes #600` asserted) is reached by the same two cases;
   the `null` arm is `exempt (untestable)`: `hasExistingMilestoneTrackingIssue`
   only returns `ok: false` when `partitionMilestoneTrackers` throws, which the

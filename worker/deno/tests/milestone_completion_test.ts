@@ -2222,7 +2222,7 @@ function reopenedListedIssueGhFn(
       return JSON.stringify([{
         number: 601,
         title: "Milestone: v3.0",
-        state: "OPEN",
+        state: liveState,
         headRefName: "milestone/v3-0",
         isCrossRepository: false,
       }]);
@@ -2302,20 +2302,58 @@ Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone does not
   assertEquals(editedBodies, []);
 });
 
-Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone leaves a summary PR that is not open untouched (PR #3640 review)", async () => {
-  const editedBodies: string[] = [];
-  const result = await checkAndHandleMilestoneCompletions(
-    createMockDeps({
-      ghCommandFn: reopenedListedIssueGhFn(
-        editedBodies,
-        true,
-        () => "stale body",
-        "CLOSED",
-      ),
-    }),
-  );
-  assertEquals(result.ok, true);
-  assertEquals(editedBodies, []);
+Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone with only a non-open summary PR makes no live read, title search or timeline read (PR #3640 review)", async () => {
+  for (const state of ["CLOSED", "MERGED"]) {
+    const editedBodies: string[] = [];
+    const calls: string[] = [];
+    const inner = reopenedListedIssueGhFn(
+      editedBodies,
+      true,
+      () => "stale body",
+      state,
+    );
+    const result = await checkAndHandleMilestoneCompletions(
+      createMockDeps({
+        ghCommandFn: (args: string[]) => {
+          calls.push(args.join(" "));
+          return inner(args);
+        },
+      }),
+    );
+    assertEquals(result.ok, true);
+    assertEquals(editedBodies, []);
+    // The cached all-state list already says the PR is not open, so nothing is
+    // classified and the PR is never read live.
+    assertEquals(calls.filter((c) => c.includes("pr view")), [], state);
+    assertEquals(calls.filter((c) => c.includes("in:title")), [], state);
+    assertEquals(calls.filter((c) => c.includes("/timeline")), [], state);
+  }
+});
+
+Deno.test("checkAndHandleMilestoneCompletions - a cached all-state row with no state is still read live before any edit (PR #3640 review)", async () => {
+  await withTempCache(async (cache) => {
+    const editedBodies: string[] = [];
+    const calls: string[] = [];
+    const inner = reopenedListedIssueGhFn(editedBodies, true);
+    // A cache entry written before `state` joined the row.
+    await cache.write("owner/repo", "prs_all_branch_milestone/v3-0", [{
+      number: 601,
+      title: "Milestone: v3.0",
+      headRefName: "milestone/v3-0",
+    }]);
+    const result = await checkAndHandleMilestoneCompletions(
+      createMockDeps({
+        ghCommandFn: (args: string[]) => {
+          calls.push(args.join(" "));
+          return inner(args);
+        },
+        cache,
+      }),
+    );
+    assertEquals(result.ok, true);
+    assertEquals(calls.filter((c) => c.includes("pr view")).length >= 1, true);
+    assertEquals(editedBodies.length, 1);
+  });
 });
 
 /**

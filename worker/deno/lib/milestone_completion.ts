@@ -1875,11 +1875,14 @@ async function getClosedIssues(
  *
  * The scan stays cheap for the common milestone, which has no summary PR at
  * all (PR #3640 review): candidates come from the cached all-state branch list,
- * so such a milestone costs no extra read. Each candidate is then read live by
- * {@link refreshExistingSummaryPr}, which edits only an `OPEN` same-repository
- * PR headed by the milestone branch whose body is stale — a merged, abandoned
- * or absent one is left alone, as is one whose closed-issue list reads empty —
- * and logs a fault rather than throwing.
+ * and only those that list shows `OPEN` (or shows no state, as a cache entry
+ * from before the field existed does) are carried on. A milestone whose only
+ * final PR is merged or closed — the normal state after an automated roll-back
+ * — therefore costs no closed-issue classification and no live read. Each
+ * remaining candidate is then read live by {@link refreshExistingSummaryPr},
+ * which edits only an `OPEN` same-repository PR headed by the milestone branch
+ * whose body is stale — the cached state may be old — and leaves a closed-issue
+ * list that reads empty alone, logging a fault rather than throwing.
  */
 async function refreshOpenSummaryPrBodyWhileIncomplete(
   repo: string,
@@ -1896,7 +1899,10 @@ async function refreshOpenSummaryPrBodyWhileIncomplete(
     milestoneBranch,
     cache,
     ghCommandFn,
-  )).filter((pr) => pr.headRefName === milestoneBranch);
+  )).filter((pr) =>
+    pr.headRefName === milestoneBranch &&
+    (pr.state === undefined || pr.state === "OPEN")
+  );
   if (candidates.length === 0) return;
 
   const closedIssues = await getClosedIssues(

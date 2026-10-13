@@ -1316,6 +1316,13 @@ export interface BranchPR {
   number: number;
   title: string;
   headRefName: string;
+  /**
+   * GitHub PR state (`OPEN`, `MERGED`, `CLOSED`) as of the read that filled the
+   * cache (PR #3640 review). Optional: a cache entry written before this field
+   * existed lacks it, and a reader must treat that as "unknown" and read the
+   * PR live rather than assume a state.
+   */
+  state?: string;
 }
 
 /**
@@ -1622,6 +1629,11 @@ export async function invalidatePRsForIssueByTitle(
  * distinct from the per-state branch helper so an all-state lookup
  * does not poison or get poisoned by single-state caches.
  *
+ * Each row carries the PR `state` when the read provided it (PR #3640
+ * review), so a caller can drop non-open PRs without a per-PR read; a row from
+ * a cache entry written before that field existed has none. The state is as of
+ * the cached read, so a caller that acts on a PR still confirms it live.
+ *
  * Returns an empty array on parse failure rather than throwing.
  */
 export async function fetchAllStatePRsByBranch(
@@ -1649,7 +1661,7 @@ export async function fetchAllStatePRsByBranch(
       "--head",
       branchName,
       "--json",
-      "number,title,headRefName",
+      "number,title,headRefName,state",
       "--limit",
       "100",
     ]);
@@ -1673,6 +1685,9 @@ export async function fetchAllStatePRsByBranch(
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
+      ...(typeof item.state === "string" && item.state !== ""
+        ? { state: item.state }
+        : {}),
     });
   }
 
