@@ -147,7 +147,7 @@ Branch outcomes:
 - SY:501 — digest input includes the facts — TS `sync - a facts-only change refreshes the body (Issue #3535)` — flip went red
 - SY:506 — valid facts → list rendered — TS `sync - valid facts render the Branch outcomes list into the rebuilt body` — flip went red
 
-- `./quality.sh < /dev/null` on the final head: QUALITY_RESULT_PLACEHOLDER
+- `./quality.sh < /dev/null` on the final head: `Result: PASSED (with skipped checks)` — exit 0; deno tests, lint, type check and fmt all passed; only config integration was skipped
 
 ## Acceptance Criteria
 
