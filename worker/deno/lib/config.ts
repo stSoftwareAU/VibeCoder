@@ -772,6 +772,26 @@ export async function loadConfig(
         `Set both floors to 0 to turn the polling gate off.`,
     );
   }
+  // Nice-derived poll cadence (Issue #3667). On by default; a cadence that
+  // is not a whole number of cycles of at least 1 is refused loudly — 1 is
+  // "every cycle", the way to turn a tier's cadence off.
+  const pollCadenceLowCycles = file.poll_cadence_low_cycles ??
+    OPERATIONAL_DEFAULTS.pollCadenceLowCycles;
+  const pollCadenceParkCycles = file.poll_cadence_park_cycles ??
+    OPERATIONAL_DEFAULTS.pollCadenceParkCycles;
+  for (
+    const [key, value] of [
+      ["poll_cadence_low_cycles", pollCadenceLowCycles],
+      ["poll_cadence_park_cycles", pollCadenceParkCycles],
+    ] as const
+  ) {
+    if (!Number.isInteger(value) || value < 1) {
+      throw new Error(
+        `${key} must be a whole number of cycles at or above 1, got ` +
+          `${value}. Set it to 1 to poll that tier every cycle.`,
+      );
+    }
+  }
   // Self-scheduling for auto-filed worker diagnostics (Issue #505). On by
   // default; `false` restores the wait-for-a-human behaviour exactly. The
   // in-flight cap is refused loudly when it is not a whole number — a
@@ -1166,6 +1186,8 @@ export async function loadConfig(
     quotaPollParkFloor,
     quotaPollParkNice,
     quotaPollIdleFloor,
+    pollCadenceLowCycles,
+    pollCadenceParkCycles,
     selfScheduleDiagnosticsEnabled,
     selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout,

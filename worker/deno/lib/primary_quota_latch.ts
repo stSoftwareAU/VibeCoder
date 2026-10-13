@@ -47,6 +47,18 @@ export type PrimaryQuotaLatchKind = "primary" | "secondary";
 /** The kind of the current latch; meaningless while not latched. */
 let latchKind: PrimaryQuotaLatchKind = "primary";
 
+/**
+ * How many secondary (burst) latches this process has taken (Issue #3667).
+ * History, not state: the latch clears itself within a minute, so the poll
+ * cadence compares this count across cycles to learn that a burst happened.
+ */
+let secondaryLatches = 0;
+
+/** The number of secondary (burst) latches taken so far in this process. */
+export function secondaryLatchCount(): number {
+  return secondaryLatches;
+}
+
 /** Current wall-clock in Unix seconds. */
 function nowSeconds(): number {
   return Math.floor(Date.now() / 1000);
@@ -147,6 +159,7 @@ export function latchPrimaryQuota(
     ? resetEpoch
     : Math.max(latchedUntilEpoch, resetEpoch);
   latchKind = kind;
+  if (kind === "secondary") secondaryLatches++;
 }
 
 /** Clear the latch (on a confirmed reset, or between tests). */

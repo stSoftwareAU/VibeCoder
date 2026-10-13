@@ -883,6 +883,8 @@ Deno.test(
 
     assertEquals(result.status, "early_exit");
     assertEquals(isWipCommitSubject(subject), true, subject);
+    // Issue #3499: no fixed VibeCoder issue number in a target-repo subject.
+    assertEquals(/#\d+/.test(subject), false, subject);
     assertStringIncludes(subject, "1 uncommitted file(s)");
     assertStringIncludes(subject, "declared hand-off");
   },
