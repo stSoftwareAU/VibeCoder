@@ -42,9 +42,15 @@ gate on the structured form").
 - A facts problem is folded into the existing `Branch outcomes:` gate result.
   It gets the gate's single in-run recovery and blocks PR creation like any
   other gate finding.
-- With a valid facts file, named tests come from `namedTestPathsFromFacts`
-  rather than from scraping the prose. Only the declared test paths are looked
-  up at HEAD.
+- With a valid facts file, the HEAD lookup still takes its paths from
+  `namedTestPaths(parseBranchOutcomes(prBody))` over the assembled body: the
+  same paths `validateBranchOutcomes` checks. That covers each declared test
+  in the rendered list, a test-shaped entry `path`, and a test named in the
+  text after the list's header, so every path the validator checks was asked
+  of git. That lookup line is unchanged from the base.
+- The Branch-outcomes gate's own block posts `branchOutcomesVerdict.comment()`,
+  so the posted comment names the facts problem first. Before this fix it was
+  built from the bare validator result and left the facts problem out.
 - In the sync, an invalid facts file returns `ok: false` with the facts reason
   rather than publishing a body without the list.
 
@@ -68,19 +74,26 @@ Backend-only change: no UI files are touched, so no screenshot.
   summary facts structured data"; #3535, "Render branch outcomes from the facts
   file into the PR body and gate on the structured form".
 
-**Docs sweep** — grep: `facts.json`, `vibe-branch-outcomes`, `prSummaryDigest`, `Branch outcomes:`, `pr_body_sync`; section: `docs/workflows/issue-processing.md` "A branch outcome with no recorded test blocks the summary (Issue #3147)"; siblings: `pr_body_sync.ts`, `pr_summary_loader.ts`; updated: `docs/USAGE.md`, `docs/INTERNALS.md`, `docs/workflows/issue-processing.md`
+**Docs sweep** — grep: `facts.json`, `vibe-branch-outcomes`, `prSummaryDigest`, `Branch outcomes:`, `pr_body_sync`; section: `docs/workflows/issue-processing.md` "A branch outcome with no recorded test blocks the summary (Issue #3147)"; siblings: `pr_body_sync.ts`, `pr_summary_loader.ts`; updated: `docs/USAGE.md`, `docs/INTERNALS.md`, `docs/workflows/issue-processing.md`, `docs/workflows/pr-feedback.md`
 
 Where each hit stands:
 
 - **`docs/INTERNALS.md`.** The module table gains a `pr_summary_facts.ts` row
   next to its siblings `pr_body_sync.ts` and `pr_summary_loader.ts`. The
-  `pr_body_sync.ts` row now says the facts file is part of the digest.
+  `pr_body_sync.ts` row now says it rebuilds the body from the summary and the
+  optional facts file, whose Branch outcomes list it renders. It does not
+  mention the digest input.
 - **`docs/workflows/issue-processing.md`.** The Issue #3147 Branch outcomes section now
-  describes the facts file, the marker and the three blocking cases.
+  describes the facts file, the marker and the three blocking cases. It also
+  says which test paths are looked up at HEAD for a valid file: every path the
+  prose parser names in the assembled body, not only the declared tests.
 - **`docs/USAGE.md`.** The PR-summary paragraph names the optional facts file.
-- **`docs/workflows/pr-feedback.md` L508–526.** This passage describes the
-  body refresh on a review-fix push. It is still true, because the digest now
-  covers the facts file too, so it is unchanged.
+- **`docs/workflows/pr-feedback.md` L205–210.** This passage describes the
+  digest-based body refresh after a review-fix push. It now says the digest
+  also covers the optional facts file, and that the legacy rule fires on a
+  change to the summary file or its facts file. L508–526 describe the Branch
+  outcomes `path:line` citation drift check, not the body refresh, and are
+  unchanged.
 - No prompt under `prompts/` mentions the facts file or the marker yet.
   Teaching agents to write the facts file is a later part of #3396.
 
@@ -109,7 +122,14 @@ Paths are relative to the repository root:
 
 Results:
 
-- The 8 tests in TC, the 8 in TF and the new sync tests in TS pass.
+- The 8 tests in TC, the 10 in TF and the new sync tests in TS pass.
+- The `ls-tree` mock in TC reports only the requested paths that exist, as
+  git does.
+- Mutation check: each of the 13 changed-line mutants the gate listed was
+  applied on its own and TC, TF and TS run. All 13 went red. The 14th,
+  `valid: false` in the facts-aware gate comment, was a dead property
+  (`buildBranchOutcomesGateComment` never reads `valid`), so the line was
+  removed.
 - The existing `worker/deno/tests/completion_phase_branch_outcomes_test.ts`
   and `worker/deno/tests/branch_outcomes_gate_test.ts` pass unchanged.
 - Each branch below was reverted on its own, and at least one test went red.
@@ -124,6 +144,11 @@ Red-checks:
 | Facts path removed from the legacy pathspec | TS `sync - a legacy body's before-push diff includes the facts file path (Issue #3535)` |
 | `applyBranchOutcomesFacts` call removed in the sync | TS `sync - valid facts render the Branch outcomes list into the rebuilt body` |
 | Error return removed in the sync | TS `sync - an invalid facts file fails loud` |
+| HEAD lookup restored to the facts' declared tests only | TC `completion facts - every test path the validator checks is looked up at HEAD (Issue #3535)` |
+| Gate block comment built from the bare validator result | TC `completion facts - malformed JSON blocks, naming the facts file (Issue #3535)` |
+| `diff` pathspec or args trimmed in the sync | TS `sync - a legacy body's before-push diff includes the facts file path (Issue #3535)` |
+| `relativePath` or `content` dropped from an `error` outcome, or `ok: false` dropped from a read error | TF `resolveBranchOutcomesFacts names the file and has no content when it is unreadable`, TF `resolveBranchOutcomesFacts keeps the file name and raw content when it is invalid`, TF `loadPrSummaryFacts reports an unreadable path, naming it` |
+| Facts log `source` / `error` fields dropped, or the warning condition negated | TC `completion facts - valid facts render in place of the marker (Issue #3535)`, TC `completion facts - malformed JSON blocks, naming the facts file (Issue #3535)` |
 
 Branch outcomes:
 
@@ -131,17 +156,16 @@ Branch outcomes:
 - PSF:62 — marker found → replaced — TF `applyBranchOutcomesFacts replaces the first marker only` — flip went red
 - PSF:66 — empty summary → just the list — TF `applyBranchOutcomesFacts returns just the list for an empty summary` — flip went red
 - PSF:78 — no facts → digest input is the summary — TF `prSummaryDigestInput leaves the summary unchanged without facts` — flip went red
-- PSF:107 — read error → error naming the file — TF `loadPrSummaryFacts reports an unreadable path, naming it` — flip went red
+- PSF:107 — read error → error naming the file, no content — TF `resolveBranchOutcomesFacts names the file and has no content when it is unreadable` — flip went red
 - PSF:116 — no file → absent — TC `completion facts - valid facts render in place of the marker (Issue #3535)` — flip went red
-- PSF:119 — parse or schema error → error — TC `completion facts - schema-invalid facts block, naming the facts file (Issue #3535)` — flip went red
-- CP:2125 — valid facts → rendered into the body — TC `completion facts - valid facts without a marker are appended (Issue #3535)` — flip went red
-- CP:2133 — unusable facts → warning, then blocked — TC `completion facts - malformed JSON blocks, naming the facts file (Issue #3535)` — flip went red
-- CP:2191 — digest input includes the facts — TS `sync - a facts-only change refreshes the body (Issue #3535)` — flip went red
-- CP:2699 — valid facts → declared tests looked up at HEAD — TC `completion facts - only the declared test paths are looked up at HEAD (Issue #3535)` — flip went red
-- CP:2712 — facts error → gate problem — TC `completion facts - an unreadable facts file blocks rather than reading as absent (Issue #3535)` — flip went red
-- CP:2715 — valid facts plus prose list → blocked — TC `completion facts - a facts file beside a hand-written Branch outcomes list blocks (Issue #3535)` — flip went red
-- CP:2721 — facts problem → blocked — TC `completion facts - a cited test absent at HEAD blocks, naming it (Issue #3535)` — flip went red
-- CP:2897 — facts problem folded into the gate result — TC `completion facts - malformed JSON blocks, naming the facts file (Issue #3535)` — flip went red
+- PSF:119 — parse or schema error → error keeping the raw content — TF `resolveBranchOutcomesFacts keeps the file name and raw content when it is invalid` — flip went red
+- CP:2124 — valid facts → rendered into the body, logged with its source — TC `completion facts - valid facts without a marker are appended (Issue #3535)` — flip went red
+- CP:2132 — unusable facts → warning naming the file — TC `completion facts - malformed JSON blocks, naming the facts file (Issue #3535)` — flip went red
+- CP:2190 — digest input includes the facts — TS `sync - a facts-only change refreshes the body (Issue #3535)` — flip went red
+- CP:2711 — facts error → gate problem — TC `completion facts - an unreadable facts file blocks rather than reading as absent (Issue #3535)` — flip went red
+- CP:2714 — valid facts plus prose list → blocked — TC `completion facts - a facts file beside a hand-written Branch outcomes list blocks (Issue #3535)` — flip went red
+- CP:2720 — facts problem → blocked — TC `completion facts - a cited test absent at HEAD blocks, naming it (Issue #3535)` — flip went red
+- CP:2896 — facts problem → named first in the gate comment — TC `completion facts - malformed JSON blocks, naming the facts file (Issue #3535)` — flip went red
 - SY:449 — facts path in the legacy diff pathspec — TS `sync - a legacy body's before-push diff includes the facts file path (Issue #3535)` — flip went red
 - SY:496 — invalid facts → `ok: false` — TS `sync - an invalid facts file fails loud` — flip went red
 - SY:501 — digest input includes the facts — TS `sync - a facts-only change refreshes the body (Issue #3535)` — flip went red

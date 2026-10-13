@@ -1755,11 +1755,15 @@ Deno.test("sync - a legacy body's before-push diff includes the facts file path 
     });
     assert(result.ok, `expected ok, got ${JSON.stringify(result)}`);
     const diff = gitCalls.find((c) => c[0] === "diff");
-    assert(diff, "expected a git diff call");
-    assert(diff.includes(prSummaryFactsPath(ISSUE_NUMBER)));
-    assert(
-      diff.includes(`docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`),
-    );
+    assertEquals(diff, [
+      "diff",
+      "--name-only",
+      BEFORE_SHA,
+      "HEAD",
+      "--",
+      `docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
+      prSummaryFactsPath(ISSUE_NUMBER),
+    ]);
   } finally {
     await Deno.remove(repoPath, { recursive: true });
   }

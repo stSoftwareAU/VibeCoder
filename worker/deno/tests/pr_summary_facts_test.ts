@@ -11,6 +11,7 @@ import {
   loadPrSummaryFacts,
   prSummaryDigestInput,
   prSummaryFactsPath,
+  resolveBranchOutcomesFacts,
 } from "../lib/pr_summary_facts.ts";
 
 Deno.test("applyBranchOutcomesFacts replaces the first marker only", () => {
@@ -67,8 +68,38 @@ Deno.test("loadPrSummaryFacts reports an unreadable path, naming it", async () =
   try {
     await Deno.mkdir(`${dir}/${prSummaryFactsPath(7)}`, { recursive: true });
     const result = await loadPrSummaryFacts(dir, 7);
+    assertEquals(result.ok, false);
     assert(!result.ok);
     assert(result.error.message.includes(prSummaryFactsPath(7)));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolveBranchOutcomesFacts names the file and has no content when it is unreadable", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/${prSummaryFactsPath(7)}`, { recursive: true });
+    const outcome = await resolveBranchOutcomesFacts(dir, 7);
+    assert(outcome.kind === "error");
+    assertEquals(outcome.relativePath, prSummaryFactsPath(7));
+    assertEquals(outcome.content, null);
+    assert(outcome.reason.includes("could not be read"));
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("resolveBranchOutcomesFacts keeps the file name and raw content when it is invalid", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/docs/archive/pr-summaries`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/${prSummaryFactsPath(7)}`, "{ not json");
+    const outcome = await resolveBranchOutcomesFacts(dir, 7);
+    assert(outcome.kind === "error");
+    assertEquals(outcome.relativePath, prSummaryFactsPath(7));
+    assertEquals(outcome.content, "{ not json");
+    assert(outcome.reason.includes("is invalid"));
   } finally {
     await Deno.remove(dir, { recursive: true });
   }

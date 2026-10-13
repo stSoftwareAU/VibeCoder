@@ -39,7 +39,6 @@ import {
   prSummaryDigestInput,
   resolveBranchOutcomesFacts,
 } from "../pr_summary_facts.ts";
-import { namedTestPathsFromFacts } from "../summary_facts.ts";
 import {
   buildSummaryClaimGateComment,
   runSummaryClaimCheck,
@@ -2686,8 +2685,10 @@ async function completionBody(
   // record with no named tests.
   //
   // Issue #3535: when a facts file is valid, the list in `prBody` was
-  // rendered from it, so the HEAD lookup uses the facts' declared test paths
-  // rather than the prose parser's. A facts file that cannot be read or does
+  // rendered from it, and the HEAD lookup still takes its paths from the
+  // prose parser over `prBody` — the same paths `validateBranchOutcomes`
+  // checks, so a test-shaped entry `path` or a test named in prose after the
+  // marker is looked up too. A facts file that cannot be read or does
   // not validate, or that sits beside a hand-written Branch outcomes list in
   // the summary, blocks whether or not the gate is otherwise applicable: a
   // broken facts file is a fault, not an absent list.
@@ -2696,9 +2697,7 @@ async function completionBody(
   // left the suite green when removed. `lookupTestsAtHead` already returns
   // an empty set without calling git when there is nothing to confirm, and
   // a docs-only diff is not applicable inside `validateBranchOutcomes`.
-  const branchOutcomesNamedTests = branchOutcomesFacts.kind === "valid"
-    ? namedTestPathsFromFacts(branchOutcomesFacts.facts)
-    : namedTestPaths(parseBranchOutcomes(prBody));
+  const branchOutcomesNamedTests = namedTestPaths(parseBranchOutcomes(prBody));
   const testsAtHead = await lookupTestsAtHead(
     branchOutcomesNamedTests,
     (args) => deps.git.runGitCommand(args, { cwd: state.repoPath }),
@@ -2896,7 +2895,6 @@ async function completionBody(
       buildBranchOutcomesGateComment(
         branchOutcomesFactsProblem === null ? branchOutcomes : {
           ...branchOutcomes,
-          valid: false,
           problems: [branchOutcomesFactsProblem, ...branchOutcomes.problems],
         },
       ),
@@ -3362,7 +3360,7 @@ async function completionBody(
     });
     const folded = foldInLateSummaryVerdicts(
       branchOutcomesReason,
-      buildBranchOutcomesGateComment(branchOutcomes),
+      branchOutcomesVerdict.comment(),
       [
         docsSweepVerdict,
         removedAssertionsVerdict,

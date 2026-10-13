@@ -28,6 +28,7 @@ const PR_URL = `https://github.com/${REPO}/pull/4311`;
 const EXISTING_TEST =
   "worker/deno/tests/completion_phase_branch_outcomes_facts_3396_test.ts";
 const MISSING_TEST = "worker/deno/tests/does_not_exist_test.ts";
+const OTHER_TEST = "worker/deno/tests/pr_summary_facts_test.ts";
 const FACTS_FILE = `pr-summary-${ISSUE}.facts.json`;
 const CHANGED = "crates/report/src/decisions.rs";
 
@@ -122,6 +123,7 @@ interface Outcome {
   prBodies: string[];
   lsTreeArgs: string[][];
   comments: string[];
+  logs: { level: string; message: string; context: unknown }[];
 }
 
 /** Drive the live completion phase over a (possibly) blocked branch-outcomes gate. */
@@ -145,6 +147,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let claudeCalls = 0;
   const prBodies: string[] = [];
   const lsTreeArgs: string[][] = [];
+  const logs: Outcome["logs"] = [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -172,6 +175,14 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      info: (message: string, context?: unknown) => {
+        logs.push({ level: "info", message, context });
+      },
+      warn: (message: string, context?: unknown) => {
+        logs.push({ level: "warn", message, context });
+      },
+    },
     github: {
       createClient: () => stubClient(comments),
       runGhCommand: (args: string[]) => {
@@ -207,7 +218,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "--literal-pathspecs" && cmdArgs[1] === "ls-tree") {
           if (scenario.lsTreeFails) return ok("", 1);
           lsTreeArgs.push(cmdArgs);
-          const existing = scenario.existingTestsAtHead ?? [];
+          // Like git, report only the requested paths that exist.
+          const existing = (scenario.existingTestsAtHead ?? []).filter((p) =>
+            cmdArgs.includes(p)
+          );
           return ok(existing.join("\n"));
         }
         return ok("");
@@ -267,6 +281,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     prBodies,
     lsTreeArgs,
     comments,
+    logs,
   };
 }
 
@@ -289,6 +304,20 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 1);
     assertStringIncludes(outcome.prBodies[0]!, renderBranchOutcomes(facts));
     assertEquals(outcome.prBodies[0]!.includes(BRANCH_OUTCOMES_MARKER), false);
+    assert(
+      outcome.logs.some((log) =>
+        log.level === "info" &&
+        log.message === "Loaded PR summary facts file" &&
+        JSON.stringify(log.context) ===
+          JSON.stringify({ source: `docs/archive/pr-summaries/${FACTS_FILE}` })
+      ),
+    );
+    assertEquals(
+      outcome.logs.some((log) =>
+        log.message === "PR summary facts file is unusable"
+      ),
+      false,
+    );
   },
 );
 
@@ -339,6 +368,17 @@ Deno.test(
     assertEquals(outcome.prCreateCalls, 0);
     assertStringIncludes(blockedText(outcome), FACTS_FILE);
     assertStringIncludes(blockedText(outcome), "invalid JSON");
+    // The gate comment itself names the facts problem, not only the reason.
+    assert(outcome.comments.some((c) => c.includes(FACTS_FILE)));
+    const warning = outcome.logs.find((log) =>
+      log.level === "warn" &&
+      log.message === "PR summary facts file is unusable"
+    );
+    assert(warning, "expected the unusable-facts warning");
+    assertStringIncludes(
+      (warning.context as { error: string }).error,
+      FACTS_FILE,
+    );
   },
 );
 
@@ -396,21 +436,23 @@ Deno.test(
 );
 
 Deno.test(
-  "completion facts - only the declared test paths are looked up at HEAD (Issue #3535)",
+  "completion facts - every test path the validator checks is looked up at HEAD (Issue #3535)",
   async () => {
     const facts = factsFor(EXISTING_TEST);
-    // A test-shaped `path` is not a declared test, so it is not looked up.
-    const entry = facts.branchOutcomes.entries[0]!;
-    entry.path = MISSING_TEST;
+    // A test-shaped `path` is checked by the validator too, so it must be
+    // asked of git; it exists here, so the PR is raised.
+    facts.branchOutcomes.entries[0]!.path = OTHER_TEST;
     const outcome = await runCompletion({
       summary: summaryWith(BRANCH_OUTCOMES_MARKER),
       facts: JSON.stringify(facts),
       changedFiles: CHANGED,
-      existingTestsAtHead: [EXISTING_TEST],
+      existingTestsAtHead: [EXISTING_TEST, OTHER_TEST],
     });
 
     const looked = outcome.lsTreeArgs.flat();
     assert(looked.includes(EXISTING_TEST));
-    assertEquals(looked.includes(MISSING_TEST), false);
+    assert(looked.includes(OTHER_TEST));
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
   },
 );

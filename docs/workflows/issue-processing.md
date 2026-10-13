@@ -2079,11 +2079,14 @@ unreadable file (any read error other than not-found), malformed JSON or a
 schema-invalid file blocks PR creation with a reason naming the facts file,
 as a summary-rule block that shares the single in-run recovery. A facts file
 alongside a hand-written `Branch outcomes` header in the summary also blocks.
-A valid file has every test path it names existence-checked at HEAD with the
-same `git ls-tree` lookup (an absent test blocks), and its list is rendered
-by `renderBranchOutcomes` into the summary, at the
-`<!-- vibe-branch-outcomes -->` marker or appended when the marker is
-absent, before the PR body is assembled. The PR-body resync applies the same
+A valid file's list is rendered by `renderBranchOutcomes` into the summary,
+at the `<!-- vibe-branch-outcomes -->` marker or appended when the marker is
+absent, before the PR body is assembled. The gate then reads the assembled
+body as it reads a prose list: every test path the prose parser names there —
+each entry's declared test, a test-shaped entry `path`, and a test named in
+the text that follows the list's header — is existence-checked at HEAD with the same
+`git ls-tree` lookup, and an absent one blocks. A facts-file block's comment
+names the facts problem first. The PR-body resync applies the same
 rendering, digests the facts content with the summary (a PR with no facts file
 digests the summary alone, so older digests stay valid), counts a change to the
 facts file in the legacy no-digest diff rule, and fails with an error naming
