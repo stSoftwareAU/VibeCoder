@@ -218,9 +218,9 @@ reads than scan 1).
   (and two existing exists-path cases) red.
 - `worker/deno/lib/milestone_completion.ts:1373` — `state !== "OPEN" ||
   isCrossRepository || headRefName !== milestoneBranch`, one operand each:
-  `state !== "OPEN"` by the `merged` and `closed` exists-path cases and the
-  incomplete-path `not open untouched` case (deleting the operand turned all
-  three red); `isCrossRepository` by the `a fork's` case, and `headRefName !==
+  `state !== "OPEN"` by the `merged` and `closed` exists-path cases (deleting
+  the operand turned both red; the incomplete path drops non-open candidates at
+  the cache filter before this operand, so it does not reach it); `isCrossRepository` by the `a fork's` case, and `headRefName !==
   milestoneBranch` by the `headed by another branch` case (deleting either
   operand turned its case red).
 - `worker/deno/lib/milestone_completion.ts:1385` — the live body already carries
