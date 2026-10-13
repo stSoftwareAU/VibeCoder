@@ -2330,7 +2330,10 @@ assertions, the placeholder-token gate, the branch-outcomes gate, the
 summary claim check and the pre-PR verifier (#3395) — still pre-empts the guard: a follow-up filed there
 would promise "that run's PR still completes #N on merge" for a PR any of
 those gates can still prevent from ever being raised, so whichever gate
-blocks first fails the run and the guard never runs. On an existing-PR
+blocks first fails the run and the guard never runs. The one stopper that
+runs after the guard is the claim-freshness re-check (Issue #344); the
+follow-up the guard filed before it is retracted when it stops the PR (see
+"A stale claim retracts a follow-up this run filed" below). On an existing-PR
 branch the guard instead runs from inside `reportSummaryRuleBlock` itself
 (Issue #3092), after whichever gate's own comment is posted but before that
 gate's recovery finalises the PR. Before Issue #3092, only the docs-sweep

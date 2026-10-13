@@ -157,17 +157,21 @@ true because it names the guard, which still runs for degraded runs:
     `tests/degraded_delivery_test.ts`, `tests/pr_body_sync_test.ts` and
     `tests/claim_freshness_phase_test.ts`: 152 passed, 0 failed on the head of this push; `deno lint`, `deno check` and `deno fmt --check` passed.
 - Earlier head: `./quality.sh < /dev/null` passed (`Result: PASSED (with skipped checks)`;
-  `config integration` is skipped as usual). Later commits changed only a doc
-  comment, two log messages and test assertions, and the targeted fmt, lint,
+  `config integration` is skipped as usual). Later commits changed behaviour as
+  well as docs, log messages and tests: the PR #3676 review fix adds the
+  best-effort `abortStaleClaim` close of a newly filed follow-up
+  (`completion_phase.ts`) and the `--milestone` argument in
+  `fileDegradedFollowUp` (`degraded_delivery.ts`). The targeted fmt, lint,
   check and test runs passed after each of them. The mutation-check fix changed only
   tests and one manual sentence.
-- Added to `worker/deno/tests/degraded_delivery_test.ts` (17 tests; the file
-  now has 64): `assessReportedGaps`, the healthy and degraded follow-up
+- Added to `worker/deno/tests/degraded_delivery_test.ts` (18 tests; the file
+  now has 65): `assessReportedGaps`, the healthy and degraded follow-up
   bodies, `buildReportedGapPrSection`, `rederiveReportedGapSection` (empty
   when met; gaps the section was raised with stay as they are; changed gaps
   keep the number and say the follow-up may not list them; a hostile bullet
   and a 50,000-digit run are not read as a number) and
-  `buildReportedGapStaleFollowUpSection` (exact layout and throw).
+  `buildReportedGapStaleFollowUpSection` (exact layout and throw), and
+  `fileDegradedFollowUp - a parent's milestone is passed to gh issue create`.
 - Added to `worker/deno/tests/pr_body_sync_test.ts` (8 tests; the file now
   has 47): the section is kept while a gap remains, dropped when every
   criterion is met, logged on drop, not logged when unchanged, and the sync
