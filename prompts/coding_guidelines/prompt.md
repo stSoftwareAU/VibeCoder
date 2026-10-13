@@ -1198,7 +1198,10 @@ This project uses `set -euo pipefail` and must run on **macOS (bash 3.2)**,
 - **`timeout` command**: macOS has no native `timeout`. Use `$TIMEOUT_CMD`
   (resolved to `gtimeout` on macOS by `check_dependencies()`).
 - **GNU vs BSD tools**: prefer POSIX-compatible flags. Document the dependency
-  when GNU-specific flags are needed.
+  when GNU-specific flags are needed, and give any GNU-only form in shell code a
+  test runs a portable fallback: fleet hosts run the quality gate on macOS too,
+  where GNU-only forms such as `date +%N` and `stat -c` fail or behave
+  differently.
 
 ## Testing Best Practices
 
