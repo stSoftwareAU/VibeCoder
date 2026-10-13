@@ -36,6 +36,10 @@ A new drift test pins both. Closes #3524.
 - The optional guardrail from the issue (a grep of new or edited test files
   for `/tmp/` and for `TMPDIR` used outside a temp-dir call) is written as a
   self-check step in `CODING-STANDARDS.md`. It is not a new automated gate.
+  It moves only a hit that the test or the code under test reads, writes or
+  lists; a `/tmp/...` string that never touches the filesystem (a config
+  placeholder, a path given to an in-memory fake, an escaping payload) is left
+  alone, which matches the prompt's wording (PR #3686 review).
 
 ### Undiscoverable Facts
 
@@ -95,11 +99,11 @@ a private fleet PR).
   Test 2 reported ``section is missing pin "uses a fixed path under `/tmp` or
   `$TMPDIR`, or reads that directory's listing"``.
 - `deno task drift-pins-on-base origin/main …` reported every pinned phrase
-  (5 in `CODING-STANDARDS.md`, 3 in `prompts/issue/prompt.md`) as
+  (6 in `CODING-STANDARDS.md`, 3 in `prompts/issue/prompt.md`) as
   "absent on base" for its section.
 - `deno task test:unit tests/shared_temp_dir_3524_test.ts
   tests/os_branch_bypasses_stub_3475_test.ts tests/gnu_only_shell_3504_test.ts`:
-  7 passed, 0 failed.
+  7 passed, 0 failed (re-run on the review-fix head).
 - The 129 test files that reference `CODING-STANDARDS.md` or
   `prompts/issue/prompt.md` passed. That run used an earlier rewrapped version
   of the prompt edit; the final prompt edit is a strict subset of the same

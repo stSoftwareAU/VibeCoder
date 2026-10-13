@@ -426,8 +426,11 @@ listed the shared `TMPDIR` before and after one call reported a leak whenever a
 parallel test or another gate run created the same kind of directory in between
 (Issue #3524). Both fail on Linux too. Before raising the PR, grep new or edited
 test files for a literal `/tmp/`, or for `Deno.env.get("TMPDIR")` or `$TMPDIR`
-used outside a `makeTempDir` or `mktemp` call, and move each hit into the test's
-own directory.
+used outside a `makeTempDir` or `mktemp` call, and move each hit that the test
+or the code under test actually reads, writes or lists into the test's own
+directory. A `/tmp/...` string that never touches the filesystem (a config
+placeholder, a path handed to an in-memory fake, an escaping payload a test
+asserts on) is not a hit: leave it as it is.
 
 The same rule covers an OS-specific branch in the code under test. A test that
 runs a real shell script with a stubbed tool, binary or measurement — a stub

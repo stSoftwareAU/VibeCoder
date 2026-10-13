@@ -27,6 +27,7 @@ Deno.test("CODING-STANDARDS.md host-state section treats the shared temp directo
       "never assert on what the shared temp directory contains",
       "give the code a temp-root parameter that production leaves unset",
       "grep new or edited test files for a literal `/tmp/`",
+      "A `/tmp/...` string that never touches the filesystem",
     ],
   );
 });
