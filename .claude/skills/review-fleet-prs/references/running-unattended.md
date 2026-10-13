@@ -54,9 +54,16 @@ subscription the worker's Claude credential pool ranks first
 (`worker/deno/lib/review_round.ts`). When a round ends with the CLI's
 usage-limit refusal, it logs
 `round hit the usage limit on subscription <label>`, and runs the round once
-more on the next subscription with budget left, or says
-`no other subscription has budget; the round stays failed`. Subscriptions are
-logged by label (`provider`, `provider-2`, …), never by value.
+more on the next subscription with budget left. When the whole pool is
+exhausted — no subscription has budget, or the rotated retry hits the limit
+too — the round runs once more on the worker's **DeepSeek** provider
+(`deepseek-v4-pro`, in the worker's own pinned child environment: no Claude
+credential reaches the third-party endpoint), and logs
+`round fell back to provider deepseek` so a DeepSeek review is never
+presented as an Opus one (Issue #3632). With no DeepSeek credential the
+round says `no other subscription has budget; the round stays failed`.
+Subscriptions are logged by label (`provider`, `provider-2`, …), never by
+value.
 
 The round is given container paths: the skill at
 `/workspace/.claude/skills/review-fleet-prs`, and this state directory under

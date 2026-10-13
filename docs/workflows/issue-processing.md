@@ -1492,6 +1492,38 @@ operation, calling an existing sibling guard rather than writing a new
 one, a refusal test whose fixture holds that state, and the inventory
 in the PR summary.
 
+**State recorded on a failure path is cleared on the path that recovers
+(Issue #3430).** Two private fleet PRs wrote a persistent record of a bad
+condition on the failure path and never cleared it on a later healthy run. A
+self-healing step recorded a degraded streak when its repair failed and
+cleared it only after a repair succeeded, so a run that measured the state
+healthy, below threshold or switched off left a stale `first_seen` that would
+trip an absolute "off for too long" limit on the next failure. A "this host
+cannot run this suite" outcome wrote an ineligible ledger entry that nothing
+cleared when a later run fitted, so the next report would claim the host had
+been ineligible since days earlier. Both PRs' tests stubbed the record helper.
+The guidelines and the issue prompt's Test Plan step now require listing every
+path on which a later run finds the condition gone, clearing the record on
+each (or saying why it should outlive a healthy run), following an existing
+set/clear pair, a lifecycle test through the real helper that goes red when
+the clear is deleted, and the set/clear pairs in the PR summary.
+
+**Nothing exists only for a test to read (Issue #3455).** Three private
+fleet PRs in one week added a production member that only tests used: an
+optional preset prop on a web UI component that no production caller
+passed, there only so tests could server-render the component; a field on a
+chart data record whose only production caller read just the label and
+value; and a public field on an API client's error class whose data the UI
+already showed through the error message. Each test checked the member
+instead of what a user or caller sees, so it could stay green while that
+output was wrong. `CODING-STANDARDS.md`, the guidelines and the issue
+prompt's Test Plan step now require one production reader or setter for each
+field, prop, parameter, type or export the diff adds to non-test code, found
+with `git grep -n -w <name>` outside test code; with none, the member is
+removed and the assertion moves onto the returned value, error message or
+rendered text. A member the issue asks for as public API is exempt, and the
+PR summary says so.
+
 **Changing the shape of persisted data bumps its key or reads the old shape
 (Issue #3328).** Fleet PRs changed the type of a value that outlives a
 deployment or relaunch and kept its versioned key, so the previous release's
@@ -2325,8 +2357,9 @@ flowchart TD
 ```
 
 - **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
-  refined by grill-me — its `### Accepted scope so far` list. An issue stating
-  neither is named whole as the one unverified item.
+  refined by grill-me — its `### Accepted scope so far` list, or its
+  `## Done when` list (Issue #3486). An issue stating none of these is named
+  whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
   is a shortfall. Entries are matched to scope items by their words, not by

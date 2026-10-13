@@ -73,6 +73,18 @@ const ISSUE_WITHOUT_SCOPE = `## Problem
 The parser mishandles a leap year.
 `;
 
+/** An issue whose criteria sit under a `## Done when` heading (Issue #3486). */
+const ISSUE_WITH_DONE_WHEN = `## Problem
+
+Finish the switch.
+
+## Done when
+
+- [ ] The router sends planning to opus.
+- [ ] The docs table lists opus for planning.
+- [ ] The release floor is 1.9.0.
+`;
+
 /** One met, one missing, one partial — in criterion order. */
 const SUMMARY_PARTIAL = `## Summary
 
@@ -122,6 +134,14 @@ Deno.test("extractAcceptedScope - reads a grill-me 'Accepted scope so far' list 
 
 Deno.test("extractAcceptedScope - an issue stating neither yields no scope", () => {
   assertEquals(extractAcceptedScope(ISSUE_WITHOUT_SCOPE), []);
+});
+
+Deno.test("extractAcceptedScope - reads a 'Done when' list (Issue #3486)", () => {
+  assertEquals(extractAcceptedScope(ISSUE_WITH_DONE_WHEN), [
+    "The router sends planning to opus.",
+    "The docs table lists opus for planning.",
+    "The release floor is 1.9.0.",
+  ]);
 });
 
 // ---------------------------------------------------------------------------
@@ -719,6 +739,23 @@ Deno.test("buildDegradedNoFollowUpSection - (b) says no criterion was assessed p
   );
   assertStringIncludes(section, "Raise the Claude Code pin.");
   assertStringIncludes(section, "unassessed");
+  assert(!section.includes("states no acceptance criteria"));
+  assert(!/#\d/.test(section), "no follow-up number is referenced");
+});
+
+Deno.test("buildDegradedNoFollowUpSection - (c) does not claim a 'Done when' issue states no criteria", () => {
+  const verdict = assessDegradedDelivery({
+    claudeResults: HAIKU_FALLBACK,
+    issueBody: ISSUE_WITH_DONE_WHEN,
+    prBody: MINIMAL_BODY,
+  });
+  const section = buildDegradedNoFollowUpSection(verdict);
+  assertStringIncludes(section, "`haiku`");
+  assertStringIncludes(
+    section,
+    "no acceptance criterion was assessed `partial` or `missing`",
+  );
+  assertStringIncludes(section, "The release floor is 1.9.0.");
   assert(!section.includes("states no acceptance criteria"));
   assert(!/#\d/.test(section), "no follow-up number is referenced");
 });
