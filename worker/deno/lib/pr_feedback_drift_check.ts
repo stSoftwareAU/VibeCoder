@@ -44,6 +44,10 @@
  * line that moved, or an entry left unchanged apart from whitespace
  * although its cited lines were changed or removed by this push — carrying
  * a stale verdict forward rather than re-reading the code at the head.
+ * Issue #3536: a ref with a `pr-summary-<N>.facts.json` file contributes its
+ * structured `path`/`line`/`endLine` entries instead of its prose list; a
+ * malformed or unreadable facts file at either ref is reported as not
+ * checked, never read as "no citations".
  *
  * Issue #3347 found that a fix push which only rewrites a manual or prompt
  * sentence was never questioned. The model pass now also runs when the push
@@ -89,6 +93,8 @@ import {
   findStaleCitations,
   parseDiffHunks,
 } from "./branch_outcome_citations.ts";
+import { loadPrSummaryFacts, prSummaryFactsPath } from "./pr_summary_facts.ts";
+import { parseSummaryFacts, type SummaryFacts } from "./summary_facts.ts";
 import { CLOSURE_VERDICT_DISALLOWED_TOOLS } from "./closure_verdict_recovery.ts";
 import {
   type ChangeRequestFinding,
@@ -902,8 +908,14 @@ async function checkStaleQuotes(
  * summary list, never parsed out of the untrusted summary text itself, so a
  * `--` separator before each path is enough defence against an option-like
  * value.
+ *
+ * Issue #3536: each summary's facts file is read at the before-run head (via
+ * git) and at the head (from disk). Facts present at a ref supply that ref's
+ * citations; a facts file that cannot be read or parsed at either ref makes
+ * the summary unchecked rather than reading as "no citations".
  */
 async function checkLineCitations(
+  repoPath: string,
   deps: DriftCheckDeps,
   beforeSha: string,
   summaries: readonly LoadedSummary[],
@@ -942,7 +954,64 @@ async function checkLineCitations(
     }
     const previous = show.stdout;
 
-    const cited = changedFilesCitedBy(previous, pushFiles);
+    // `loadSummaries` only yields `pr-summary-<N>.md` paths (`isPrSummaryPath`).
+    const issueNumber = Number(/pr-summary-(\d+)\.md$/.exec(s.path)![1]);
+    const factsPath = prSummaryFactsPath(issueNumber);
+    const notChecked = `${s.path}: Branch outcomes citations not checked: `;
+
+    let previousFacts: SummaryFacts | null = null;
+    const factsLsTree = await deps.runGit([
+      "ls-tree",
+      "--name-only",
+      beforeSha,
+      "--",
+      factsPath,
+    ]);
+    if (factsLsTree === null || factsLsTree.code !== 0) {
+      unchecked.push(
+        `${notChecked}could not read ${factsPath} at the before-run head`,
+      );
+      continue;
+    }
+    if (factsLsTree.stdout.trim() !== "") {
+      const factsShow = await deps.runGit([
+        "show",
+        `${beforeSha}:${factsPath}`,
+      ]);
+      if (factsShow === null || factsShow.code !== 0) {
+        unchecked.push(
+          `${notChecked}could not read ${factsPath} at the before-run head`,
+        );
+        continue;
+      }
+      const parsed = parseSummaryFacts(factsShow.stdout);
+      if (!parsed.ok) {
+        unchecked.push(
+          `${notChecked}${factsPath} at the before-run head does not parse — ${parsed.error.message}`,
+        );
+        continue;
+      }
+      previousFacts = parsed.value;
+    }
+
+    let currentFacts: SummaryFacts | null = null;
+    const loaded = await loadPrSummaryFacts(repoPath, issueNumber);
+    if (!loaded.ok) {
+      unchecked.push(`${notChecked}${loaded.error.message}`);
+      continue;
+    }
+    if (loaded.value !== null) {
+      const parsed = parseSummaryFacts(loaded.value.content);
+      if (!parsed.ok) {
+        unchecked.push(
+          `${notChecked}${factsPath} at the head does not parse — ${parsed.error.message}`,
+        );
+        continue;
+      }
+      currentFacts = parsed.value;
+    }
+
+    const cited = changedFilesCitedBy(previous, pushFiles, previousFacts);
     const hunksByPath = new Map<string, readonly DiffHunk[]>();
     for (const path of cited) {
       const diff = await deps.runGit([
@@ -965,6 +1034,8 @@ async function checkLineCitations(
       summaryPath: s.path,
       previousSummary: previous,
       currentSummary: s.content,
+      previousFacts,
+      currentFacts,
       changedFiles: pushFiles,
       hunksByPath,
     });
@@ -1156,6 +1227,7 @@ export async function runPrFeedbackDriftCheck(
   // on every non-skipped push, not gated on `changesBehaviour` or the model
   // pass — a citation can go stale on a docs-only push too.
   const initialCitations = await checkLineCitations(
+    repoPath,
     deps,
     beforeSha,
     summaries,
@@ -1335,6 +1407,7 @@ export async function runPrFeedbackDriftCheck(
     changeRequestFindings,
   );
   const freshCitations = await checkLineCitations(
+    repoPath,
     deps,
     beforeSha,
     freshSummaries,

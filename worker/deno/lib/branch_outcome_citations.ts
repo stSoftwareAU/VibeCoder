@@ -17,6 +17,10 @@
  * hardcoded against untrusted (agent-authored, issue-steered) text, and
  * `pr_feedback_drift_check.ts` is the caller that gathers the git state and
  * posts the findings.
+ *
+ * Issue #3536: when a ref carries a PR summary facts file
+ * (`pr-summary-<N>.facts.json`), its structured `path`/`line`/`endLine`
+ * entries are that ref's citations and the prose list is not read for it.
  */
 
 import {
@@ -25,6 +29,7 @@ import {
   MAX_SCAN_CHARS,
   parseBranchOutcomes,
 } from "./branch_outcomes_gate.ts";
+import { renderBranchOutcomes, type SummaryFacts } from "./summary_facts.ts";
 
 /** One `path:N` or `path:N-M` citation in a Branch-outcomes entry. */
 export interface LineCitation {
@@ -173,6 +178,13 @@ export function extractLineCitations(
   return { citations, malformed };
 }
 
+/** The citations found at one ref, with what could not be read. */
+export interface CitationSet {
+  citations: LineCitation[];
+  malformed: MalformedCitation[];
+  truncated: boolean;
+}
+
 /** Whitespace-normalise an entry for exact comparison across pushes. */
 function normaliseEntry(entry: string): string {
   return entry.replace(/\s+/g, " ").trim();
@@ -186,13 +198,7 @@ function normaliseEntry(entry: string): string {
  * same list `branch_outcomes_gate.ts` itself requires and verifies test
  * paths against.
  */
-export function branchOutcomeCitations(
-  summary: string,
-): {
-  citations: LineCitation[];
-  malformed: MalformedCitation[];
-  truncated: boolean;
-} {
+export function branchOutcomeCitations(summary: string): CitationSet {
   const record = parseBranchOutcomes(summary);
   const citations: LineCitation[] = [];
   const malformed: MalformedCitation[] = [];
@@ -214,6 +220,42 @@ export function branchOutcomeCitations(
     record.entries.some((entry) => entry.length >= MAX_ENTRY_CHARS);
 
   return { citations, malformed, truncated };
+}
+
+/**
+ * The citations of a validated facts file (Issue #3536): one per entry.
+ * Nothing is malformed or truncated, since `parseSummaryFacts` rejects line 0
+ * and inverted ranges and caps the entry count. Each citation's `entry` is
+ * what the prose parse of the worker-rendered list yields, so a prose list
+ * rendered from these facts and the facts themselves compare equal.
+ */
+export function factsCitations(facts: SummaryFacts): CitationSet {
+  const rendered = parseBranchOutcomes(renderBranchOutcomes(facts)).entries;
+  const citations: LineCitation[] = facts.branchOutcomes.entries.map(
+    (item, i) => {
+      const start = item.line;
+      const end = item.endLine ?? item.line;
+      return {
+        path: item.path,
+        start,
+        end,
+        text: end === start
+          ? `${item.path}:${start}`
+          : `${item.path}:${start}-${end}`,
+        // The render/parse round-trip is guaranteed by summary_facts.ts.
+        entry: normaliseEntry(rendered[i]!),
+      };
+    },
+  );
+  return { citations, malformed: [], truncated: false };
+}
+
+/** A ref's citations: its facts when it has a facts file, else its prose list. */
+function citationsOf(
+  summary: string,
+  facts: SummaryFacts | null | undefined,
+): CitationSet {
+  return facts ? factsCitations(facts) : branchOutcomeCitations(summary);
 }
 
 /** One hunk from `git diff -U0` output. */
@@ -330,8 +372,9 @@ export function resolveCitedPath(
 export function changedFilesCitedBy(
   previousSummary: string,
   changedFiles: readonly string[],
+  previousFacts?: SummaryFacts | null,
 ): string[] {
-  const { citations } = branchOutcomeCitations(previousSummary);
+  const { citations } = citationsOf(previousSummary, previousFacts);
   const seen = new Set<string>();
   const result: string[] = [];
   for (const citation of citations) {
@@ -349,6 +392,19 @@ export interface CitationCheckInput {
   summaryPath: string;
   previousSummary: string;
   currentSummary: string;
+  /**
+   * The parsed facts file at the previous head. When given, its structured
+   * entries are that ref's citations and its prose list is not read; null or
+   * absent means no facts file there, so the prose `Branch outcomes:` list is
+   * read.
+   */
+  previousFacts?: SummaryFacts | null;
+  /**
+   * The parsed facts file now. When given, its structured entries are the
+   * current citations and the current prose list is not read; null or absent
+   * means no facts file, so the prose `Branch outcomes:` list is read.
+   */
+  currentFacts?: SummaryFacts | null;
   changedFiles: readonly string[];
   hunksByPath: ReadonlyMap<string, readonly DiffHunk[]>;
 }
@@ -442,12 +498,16 @@ function overlapsRemoval(
  * it is not a usable line reference either way. A previous list longer than
  * the gate's own parser reads is reported as unchecked in its own right,
  * since citations past the cap were never even extracted.
+ *
+ * Either ref's citations come from its facts file when it has one (Issue
+ * #3536) and from its prose list otherwise, so a transition from prose to
+ * facts (or back) compares the two forms.
  */
 export function findStaleCitations(
   input: CitationCheckInput,
 ): { stale: string[]; unchecked: string[] } {
-  const old = branchOutcomeCitations(input.previousSummary);
-  const cur = branchOutcomeCitations(input.currentSummary);
+  const old = citationsOf(input.previousSummary, input.previousFacts);
+  const cur = citationsOf(input.currentSummary, input.currentFacts);
 
   // Every entry's exact (whitespace-normalised) text found anywhere in the
   // current summary — the additive signal (2) in the doc comment above.
