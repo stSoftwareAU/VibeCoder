@@ -875,10 +875,8 @@ async function applyDegradedDeliveryGuard(
       // Raising the PR now would close the issue with the residue recorded
       // nowhere — the exact silent loss this guard exists to stop.
       logger.error(
-        verdict.degraded
-          ? "Degraded run: could not file the follow-up for its undelivered scope — failing the run without finalising a PR"
-          : "Run reported partial or missing criteria — could not file the follow-up for its reported gaps — failing the run without finalising a PR",
-        { error: followUp.error.message },
+        "Could not file the follow-up for this run's undelivered scope — failing the run without finalising a PR",
+        { degraded: verdict.degraded, error: followUp.error.message },
       );
       return {
         ok: false,
@@ -893,11 +891,10 @@ async function applyDegradedDeliveryGuard(
       };
     }
     logger.warn(
-      verdict.degraded
-        ? "Degraded run delivered partial scope — residue recorded in a follow-up"
-        : "Run reported partial or missing criteria — residue recorded in a follow-up",
+      "Run delivered partial scope — residue recorded in a follow-up",
       {
-        reason: verdict.degraded ? verdict.reason : "reported gaps",
+        degraded: verdict.degraded,
+        reason: verdict.reason,
         shortfalls: verdict.shortfalls.length,
         followUp: followUp.value.number,
         reused: followUp.value.reused,
