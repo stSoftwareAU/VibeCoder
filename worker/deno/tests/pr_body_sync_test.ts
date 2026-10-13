@@ -1468,6 +1468,7 @@ async function syncWithDegradedLive(opts: {
   summary: string;
   live: string;
   issueView: () => string;
+  logger?: Logger;
 }) {
   const repoPath = await makeRepo();
   try {
@@ -1486,7 +1487,7 @@ async function syncWithDegradedLive(opts: {
         return record(args);
       },
       runGitCommand: stubGit([], { diffChanged: true }),
-      logger,
+      logger: opts.logger ?? logger,
     };
     const result = await syncPrBodyFromSummary({
       repo: REPO,
@@ -1620,6 +1621,60 @@ Deno.test("sync - drops the partial-delivery section when the rebuilt summary ma
     "";
   assert(synced.length > 0, "expected a pr edit");
   assertEquals(synced.includes("Partial delivery"), false);
+});
+
+/** A logger that records each `info` call, for the re-derivation log. */
+function recordingLogger() {
+  const infos: { message: string; context: unknown }[] = [];
+  const recording: Logger = {
+    ...logger,
+    info: (message, context) => infos.push({ message, context }),
+  };
+  return { infos, recording };
+}
+
+Deno.test("sync - logs the dropped partial-delivery section with the PR it belongs to (Issue #3506)", async () => {
+  const { infos, recording } = recordingLogger();
+  const { result } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+    logger: recording,
+  });
+  assert(result.ok);
+  assertEquals(
+    infos.filter((i) => i.message.includes("partial-delivery section")),
+    [{
+      message: "Re-derived the partial-delivery section (Issue #3506)",
+      context: {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        issueNumber: ISSUE_NUMBER,
+        dropped: true,
+      },
+    }],
+  );
+});
+
+Deno.test("sync - logs no re-derivation when the partial-delivery section is unchanged (Issue #3506)", async () => {
+  const { infos, recording } = recordingLogger();
+  const { result } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+    logger: recording,
+  });
+  assert(result.ok);
+  assertEquals(
+    infos.filter((i) => i.message.startsWith("Re-derived")),
+    [],
+  );
 });
 
 Deno.test("sync - fails loudly when the issue cannot be read to re-derive the partial-delivery section (Issue #3506)", async () => {

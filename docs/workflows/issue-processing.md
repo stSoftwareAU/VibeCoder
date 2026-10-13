@@ -2473,8 +2473,9 @@ run:
 - **Re-sync.** A later `syncPrBodyFromSummary` re-derives a leading
   `Partial delivery — follow-up filed` section from the issue's current body
   and the rebuilt summary (`rederiveReportedGapSection`). It is dropped when
-  no gap remains; otherwise it is rebuilt, keeping only the follow-up number
-  read from its opening line.
+  no gap remains. When a gap remains and the follow-up number can be read
+  from its opening line, it is rebuilt, keeping only that number; when the
+  number cannot be read there, the live section is kept unchanged.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 

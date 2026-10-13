@@ -1059,6 +1059,41 @@ Deno.test("buildDegradedFollowUpIssue - a healthy verdict gets the reported-gap 
   assertEquals(issue.body.includes("**degraded**"), false);
 });
 
+Deno.test("buildDegradedFollowUpIssue - the healthy body is laid out exactly, blank lines and headings included (Issue #3506)", () => {
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 77,
+    parentTitle: "Add the importer",
+    verdict: assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    runId: "run-1",
+  });
+  assertEquals(
+    issue.body,
+    [
+      `<!-- finding-id: ${degradedFollowUpFindingId(77)} -->`,
+      "",
+      "Auto-filed by the Vibe Coder (Issue #3506): the implementation run for " +
+      "#77 closed out one or more acceptance criteria as `partial` or " +
+      "`missing` in its PR summary. The outstanding scope continues here so " +
+      "it survives that PR's merge.",
+      "",
+      "## Acceptance Criteria",
+      "",
+      "Outstanding from that run (status as its PR summary reported it):",
+      "",
+      "- **partial** — the import works",
+      "",
+      "## Already delivered by that run",
+      "",
+      "- the export works",
+      "",
+      "Check each outstanding item against the merged code before changing " +
+      "anything: the run may have done more than its summary claimed.",
+      "",
+      "_Run id: `run-1`_",
+    ].join("\n"),
+  );
+});
+
 Deno.test("buildDegradedFollowUpIssue - a degraded verdict keeps the degraded body (Issue #3506)", () => {
   const issue = buildDegradedFollowUpIssue({
     parentNumber: 77,
@@ -1084,6 +1119,25 @@ Deno.test("buildReportedGapPrSection - names the follow-up and the shortfall (Is
   assert(section.startsWith(REPORTED_GAP_SECTION_HEADING));
   assertStringIncludes(section, "continue in #77:");
   assertStringIncludes(section, "- **partial** — the import works");
+});
+
+Deno.test("buildReportedGapPrSection - is laid out exactly, blank lines included (Issue #3506)", () => {
+  assertEquals(
+    buildReportedGapPrSection(
+      assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+      77,
+    ),
+    [
+      REPORTED_GAP_SECTION_HEADING,
+      "",
+      "This run's PR summary closed out the criteria below as `partial` or " +
+      "`missing`. The outstanding items continue in #77:",
+      "",
+      "- **partial** — the import works",
+      "",
+      "",
+    ].join("\n"),
+  );
 });
 
 Deno.test("buildReportedGapPrSection - throws on a degraded verdict or one without a gap (Issue #3506)", () => {

@@ -236,6 +236,8 @@ interface Outcome {
   prUrl?: string;
   prNumber?: number;
   outcome: RunOutcome;
+  /** Every `logger.warn` call the run made, with its context. */
+  warnings: { message: string; context: unknown }[];
 }
 
 const EXISTING_PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/777";
@@ -265,6 +267,7 @@ async function runCompletion(opts: {
   const prBodies: string[] = [];
   let recoverCalls = 0;
   let prCreateCalls = 0;
+  const warnings: { message: string; context: unknown }[] = [];
 
   const ctx: IssueContext = {
     repo: "stSoftwareAU/VibeCoder",
@@ -290,6 +293,10 @@ async function runCompletion(opts: {
   };
 
   const deps = createMockDeps({
+    logger: {
+      warn: (message: string, context?: unknown) =>
+        warnings.push({ message, context }),
+    },
     github: {
       createClient: () => stubClient(),
       ensureLabelExists: () =>
@@ -375,6 +382,7 @@ async function runCompletion(opts: {
     prCreateCalls,
     prUrl: state.prUrl,
     prNumber: state.prNumber,
+    warnings,
     // Issue #3121: the composition `workOnIssue` performs — the failed
     // result, plus whatever PR fields the phase recorded on its state.
     outcome: deriveRunOutcome({
@@ -470,6 +478,42 @@ Deno.test("completion - a healthy run whose summary closes out one criterion as 
     !section.includes("The docs table lists opus for planning."),
     "met items are not listed in the section",
   );
+});
+
+Deno.test("completion - the follow-up log names whether the run was degraded, its reason and its shortfall count (Issue #3506)", async () => {
+  const healthy = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+  assertEquals(
+    healthy.warnings.filter((w) =>
+      w.message ===
+        "Run delivered partial scope — residue recorded in a follow-up"
+    ),
+    [{
+      message: "Run delivered partial scope — residue recorded in a follow-up",
+      context: {
+        degraded: false,
+        reason: undefined,
+        shortfalls: 1,
+        followUp: 900,
+        reused: false,
+      },
+    }],
+  );
+
+  const degraded = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+  });
+  const logged = degraded.warnings.find((w) =>
+    w.message ===
+      "Run delivered partial scope — residue recorded in a follow-up"
+  )?.context as Record<string, unknown> | undefined;
+  assertEquals(logged?.degraded, true);
+  assertStringIncludes(String(logged?.reason), "haiku");
 });
 
 Deno.test("completion - a healthy run whose gap follow-up cannot be filed raises no PR (Issue #3506)", async () => {

@@ -122,13 +122,15 @@ true because it names the guard, which still runs for degraded runs:
 
 ## Test Plan
 
-- `deno task test:unit` from `worker/deno` passed on the final head: 535
-  passed, 0 failed. It ran every test file that drives `workOnIssueCompletion`
+- `deno task test:unit` from `worker/deno` passed on the final head, after
+  the mutation-check tests were added: 27568 passed and 969 passed in its two
+  runs, 0 failed. It ran every test file that drives `workOnIssueCompletion`
   or `syncPrBodyFromSummary`, plus `worker/deno/tests/degraded_delivery_test.ts`.
 - `./quality.sh < /dev/null` passed (`Result: PASSED (with skipped checks)`;
   `config integration` is skipped as usual). Later commits changed only a doc
   comment, two log messages and test assertions, and the targeted fmt, lint,
-  check and test runs passed after each of them.
+  check and test runs passed after each of them. The mutation-check fix changed only
+  tests and one manual sentence.
 - Added to `worker/deno/tests/degraded_delivery_test.ts`: 11 tests for
   `assessReportedGaps`, the healthy and degraded follow-up bodies,
   `buildReportedGapPrSection` and `rederiveReportedGapSection`.
@@ -149,13 +151,30 @@ true because it names the guard, which still runs for degraded runs:
     Proposed change 1: a healthy `missing` entry now files one follow-up. It
     becomes `1`, and every other assertion is kept.
   - "a healthy run blocked by the independent-review gate on an existing-PR
-    branch carries no Degraded run section": the expectation `0,` with message
-    `"a healthy run files no follow-up",` becomes `1` for the same
-    requirement. Its other assertions are kept, and a section assertion is
-    added.
+    branch carries no Degraded run section": its other assertions are kept,
+    and a section assertion is added. The removed assertion is listed below.
   - "a degraded run whose follow-up cannot be filed raises no PR" gains
     `assertStringIncludes(outcome.reason ?? "", "Degraded run (");` and
     removes nothing.
+- Removed from `worker/deno/tests/completion_phase_degraded_delivery_test.ts`: `assertEquals( outcome.issueCreates.length, 0, "a healthy run files no follow-up", );` — #3506 (Proposed change 1) makes a healthy run's own `missing` entry file one follow-up, so "a healthy run files no follow-up" is untrue. The test now asserts `1` with the message "a healthy run's own missing entry files the follow-up before the gate's recovery".
+- Added after the mutation check, to pin changed lines no test noticed:
+  - `worker/deno/tests/degraded_delivery_test.ts`: "buildDegradedFollowUpIssue
+    - the healthy body is laid out exactly, blank lines and headings included
+    (Issue #3506)" and "buildReportedGapPrSection - is laid out exactly, blank
+    lines included (Issue #3506)" compare the whole string.
+  - `worker/deno/tests/pr_body_sync_test.ts`: "sync - logs the dropped
+    partial-delivery section with the PR it belongs to (Issue #3506)" and
+    "sync - logs no re-derivation when the partial-delivery section is
+    unchanged (Issue #3506)". `syncWithDegradedLive` gained an optional
+    `logger`.
+  - `worker/deno/tests/completion_phase_degraded_delivery_test.ts`:
+    "completion - the follow-up log names whether the run was degraded, its
+    reason and its shortfall count (Issue #3506)". `runCompletion` now records
+    `logger.warn` calls.
+  - Each of the 22 listed mutants was applied in turn and its test file run:
+    all 22 went red (`degraded_delivery.ts:297`–`315` and `:499`–`505`,
+    `completion_phase.ts:896`–`898`, `pr_body_sync.ts:630` and `:636`–`638`).
+    The three test files then passed in full: 127 passed, 0 failed.
 - Red checks (each break applied, the tests run, then the code restored):
   - Healthy wiring in `applyDegradedDeliveryGuard`: replacing
     `assessReportedGaps(issueBody, prBody)` with `degradedDelivery` turned 4
