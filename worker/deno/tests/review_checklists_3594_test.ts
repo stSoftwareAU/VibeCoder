@@ -136,6 +136,19 @@ Deno.test("matchesPathGlob: .. , // and leading / evasions never match", () => {
   assert(matchesPathGlob("src/**", "src/..a/b.rs"));
 });
 
+Deno.test("matchesPathGlob: unsafe globs never match a safe path", () => {
+  // Positive control, so the test cannot pass by everything being false.
+  assert(matchesPathGlob("src/*.ts", "src/x.ts"));
+  // A trailing empty segment is only reachable by a safe path because `**/`
+  // matches zero directories: "src**/" would match "src" without the glob guard.
+  assertFalse(matchesPathGlob("src**/", "src"));
+  // Literal `..`, `//` and leading `/` cannot match a safe path anyway, so these
+  // only pin the outcome rather than isolate the guard.
+  assertFalse(matchesPathGlob("a/../b/*.ts", "b/x.ts"));
+  assertFalse(matchesPathGlob("src//*.ts", "src/x.ts"));
+  assertFalse(matchesPathGlob("/src/*.ts", "src/x.ts"));
+});
+
 Deno.test("matchesPathGlob: prefix-only and suffix-only patterns", () => {
   assert(matchesPathGlob("Cargo*", "Cargo.toml"));
   assertFalse(matchesPathGlob("Cargo*", "xCargo.toml"));
