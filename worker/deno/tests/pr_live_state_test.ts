@@ -12,11 +12,11 @@ import { assert, assertEquals } from "@std/assert";
 import {
   guardPrStillOpen,
   isPrLiveStateRead,
+  OPEN_CONFLICTING_PR_PAYLOAD,
   prLiveSkipReason,
   readPrLiveState,
 } from "../lib/pr_live_state.ts";
 import { PR_LIVE_STATE_JSON_FIELDS } from "../lib/pr_branch_update.ts";
-import { OPEN_CONFLICTING_PR_PAYLOAD } from "../lib/pr_live_state.ts";
 import type { Logger } from "../types.ts";
 
 /** Collecting logger — the skip line is part of the contract. */
