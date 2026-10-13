@@ -1038,7 +1038,15 @@ When creating the PR, include evidence based on the type of change:
   callee's documented contract — the inputs it actually reads and its exit
   codes on failure. A stub more permissive than the real callee is a finding:
   run against a real checkout of the callee, or name the contract the stub
-  mirrors in the PR summary with a source link. When the change relies on how
+  mirrors in the PR summary with a source link. When a test runs a real script
+  with a stubbed tool, binary or measurement, also check that the script
+  reaches the stub on every platform the fleet runs: read the script and
+  everything it sources for OS-specific branches (`OSTYPE`, `uname`, `darwin`,
+  `/opt/homebrew`, `osascript`, `sw_vers`, `diskutil`) and, for each one, pin
+  the override the code provides or set the test up so the real tool and the
+  stub give the same result (see **Never let a unit test inherit the host's
+  state** in `CODING-STANDARDS.md`). CI runs on Linux, so it never exercises a
+  branch only macOS takes. When the change relies on how
   git, `gh`, the GitHub API or another external tool behaves in a particular
   case, run the real tool on that case first and build the fake's fixture
   from the observed output (see **Observe the real tool before you rely on
@@ -1046,17 +1054,22 @@ When creating the PR, include evidence based on the type of change:
   ran and the part of the output the code depends on, or cites the tool's
   documentation or source when the case cannot be observed safely. A fake
   built from the behaviour you expected rather than the behaviour you
-  observed is a blocking self-review finding. When the change relies on a
-  property of one of the repository's own ports — a broker, database or
-  store client with a production implementation — and its tests run on an
-  in-repo fake, read the production implementation first and confirm it has
-  that property: which rows a read returns, its filter, ordering or paging,
-  the value types a write accepts, or whether a conditional write can lose
-  (see **A fake mirrors the production implementation it stands in for** in
-  the guidelines). The PR summary's Evidence names the production
-  implementation each load-bearing fake stands in for and the property
-  relied on. A change whose only proof is a fake more permissive than its
-  production implementation is a blocking self-review finding.
+  observed is a blocking self-review finding. When the change adds or changes a
+  recorded failure or degradation reason that quotes a tool's output, the reason
+  quotes the line that names the cause and its test asserts that cause text, not
+  only the prefix (see **A failure reason names the cause, not just the
+  failure** and **A failure-reason test asserts the cause** in the guidelines).
+  When the change relies on a property of one of the repository's own ports —
+  a broker, database or store client with a production implementation — and
+  its tests run on an in-repo fake, read the production implementation first
+  and confirm it has that property: which rows a read returns, its filter,
+  ordering or paging, the value types a write accepts, or whether a
+  conditional write can lose (see **A fake mirrors the production
+  implementation it stands in for** in the guidelines). The PR summary's
+  Evidence names the production implementation each load-bearing fake stands
+  in for and the property relied on. A change whose only proof is a fake more
+  permissive than its production implementation is a blocking self-review
+  finding.
 
 **Path invariant — the Markdown path MUST resolve in the committed tree.**
 Whatever path you write inside `![Description](path)` MUST point at the file
@@ -1365,7 +1378,23 @@ The file MUST contain:
    the inventory of what the old copy holds, with what is guarded and what
    is accepted as lost, and name a test per refusal whose fixture holds that
    state and asserts it survives; a destructive operation that deletes state
-   it never checked is a blocking self-review finding
+   it never checked is a blocking self-review finding. Likewise, a persistent
+   record of a bad condition the diff writes — a health or capability ledger
+   entry, a degraded or failure streak, a marker or lock file, a `first_seen`
+   or count carried between runs — is cleared on every path where a later run
+   finds the condition gone (see **State recorded on a failure path is cleared
+   on the path that recovers** in the guidelines): list the set/clear pairs
+   checked, and name a test that uses the real record helper, drives the
+   failure and then a healthy run, asserts the record is gone, and goes red
+   when the clear is deleted; a record with no clear on a healthy path is a
+   blocking self-review finding. Likewise, each field, prop, parameter, type
+   or export the diff adds to non-test code has a production reader or
+   setter (see **Nothing exists only for a test to read** in the
+   guidelines): find one with `git grep -n -w <name>` outside test code, or
+   remove the member and move the assertion onto the observable output; a
+   member the issue explicitly asks for as public API is exempt and the
+   summary says so, and a new member only a test reads or sets is a
+   blocking self-review finding
 
 For PRs that change architecture, workflows, or sequence of events, include a
 **Mermaid** diagram in the Evidence section so reviewers can grasp the change at
