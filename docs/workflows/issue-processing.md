@@ -2465,8 +2465,8 @@ run:
   `partial`/`missing` items plus the delivered (`met`) ones.
 - **The PR body** opens with a `## ⚠️ Partial delivery — follow-up filed`
   section naming each gap and the follow-up number. The PR keeps its closing
-  keyword (Issue #520), except that a `missing` entry still turns `Closes`
-  into `Part of` (Issue #3177).
+  keyword (as on the degraded path), except that a `missing` entry still turns
+  `Closes` into `Part of` (Issue #3177).
 - **Fails loud.** If the follow-up cannot be filed or updated, the run fails
   exactly as the degraded path does: no PR is raised, or an existing PR is
   left unfinalised.
