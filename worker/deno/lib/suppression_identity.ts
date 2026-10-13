@@ -113,11 +113,11 @@ export function parseBlamePorcelain(stdout: string): Record<number, string> {
   const flush = (): void => {
     if (pendingLine === undefined || currentSha.length === 0) return;
     const identity = bySha.get(currentSha);
-    if (identity?.boundary) {
+    if (!identity || identity.boundary) {
       pendingLine = undefined;
       return;
     }
-    const login = loginFromGitIdentity(identity?.email ?? "");
+    const login = loginFromGitIdentity(identity.email);
     if (login) logins[pendingLine] = login;
     pendingLine = undefined;
   };

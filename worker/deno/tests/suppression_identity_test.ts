@@ -247,6 +247,26 @@ Deno.test("blameFileLineLogins - a full history still attributes root-commit lin
   }
 });
 
+Deno.test("parseBlamePorcelain - a hunk without an author-mail header is unknown identity", () => {
+  const sha = "c".repeat(40);
+  const other = "d".repeat(40);
+  const stdout = [
+    `${sha} 1 1 1`,
+    "author nigel",
+    "summary no mail",
+    "filename src.ts",
+    "\tline one",
+    `${other} 2 2 1`,
+    "author mallory",
+    "author-mail <mallory@users.noreply.github.com>",
+    "summary new",
+    "filename src.ts",
+    "\tline two",
+    "",
+  ].join("\n");
+  assertEquals(parseBlamePorcelain(stdout), { 2: "mallory" });
+});
+
 Deno.test("parseBlamePorcelain - a boundary hunk is unknown identity", () => {
   const sha = "a".repeat(40);
   const other = "b".repeat(40);

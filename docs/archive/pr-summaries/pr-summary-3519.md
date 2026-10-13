@@ -45,7 +45,9 @@ instead of claiming the binding is unconditional.
   name-derived login, and `null` already fails closed at every caller.
 - `loginFromGitIdentity` takes only `email`, so a caller cannot pass a name by
   mistake; both call sites (`suppression_identity.ts:120` and the tests) were
-  updated.
+  updated. `flush` now reads `identity.email` directly instead of
+  `identity?.email ?? ""`: the entry is always created with `email: ""`, so the
+  fallback was redundant and hid that initialiser from the tests.
 - The issue's optional stronger fix — resolve the login from the PR author or a
   verified commit signature — is out of scope here (it needs GitHub API access
   in the blame path); R15 names it as the stronger fix.
@@ -105,6 +107,39 @@ archived record unrelated to blame binding.
   `null`). With the final one-argument call on the base lib it is not red (the
   email lands in the base `name` parameter and is not login-shaped), so the
   real-git test above is the guard that goes red without the change.
+- **Added** `worker/deno/tests/suppression_identity_test.ts` —
+  "parseBlamePorcelain - a hunk without an author-mail header is unknown
+  identity": a hunk carrying only an `author` name yields no login. It pins
+  `worker/deno/lib/suppression_identity.ts:132` — deleting the `email`
+  initialiser there makes it throw, now that `flush` no longer masks a missing
+  email with `?? ""` (the redundant fallback was dropped).
+- Removed from `worker/deno/tests/suppression_identity_test.ts`:
+  `assertEquals( loginFromGitIdentity("Nigel Leck", "nigel@users.noreply.github.com"), "nigel", );`
+  — #3519 drops the author-name parameter, so the two-argument call no longer
+  exists; the one-argument `loginFromGitIdentity("nigel@users.noreply.github.com")`
+  assertion in the same test keeps the coverage.
+- Removed from `worker/deno/tests/suppression_identity_test.ts`:
+  `assertEquals( loginFromGitIdentity("Nigel Leck", "12345+nigel@users.noreply.github.com"), "nigel", );`
+  — #3519 drops the author-name parameter; the one-argument
+  `loginFromGitIdentity("12345+nigel@users.noreply.github.com")` assertion in
+  the same test keeps the coverage.
+- Removed from `worker/deno/tests/suppression_identity_test.ts`:
+  `assertEquals(loginFromGitIdentity("nigel", "nigel@example.com"), "nigel");`
+  — #3519 requires that a login-shaped author name with an unrelated email no
+  longer binds, so the old value is untrue.
+- Removed from `worker/deno/tests/suppression_identity_test.ts`:
+  `assertEquals(loginFromGitIdentity("Nigel", "dev@example.com"), "nigel");`
+  — #3519 requires that the author name is never used, so the old value is
+  untrue; `loginFromGitIdentity("dev@example.com")` now asserts `null`.
+- Removed from `worker/deno/tests/suppression_identity_test.ts`:
+  `assertEquals( loginFromGitIdentity("Nigel Leck", "nigel@example.com"), null, );`
+  — #3519 drops the author-name parameter; the one-argument
+  `loginFromGitIdentity("nigel@example.com")` assertion in the same test keeps
+  the coverage.
+- Removed from `worker/deno/tests/suppression_identity_test.ts`:
+  `assertEquals(loginFromGitIdentity("", ""), null);` — #3519 drops the
+  author-name parameter; `loginFromGitIdentity("")` in the same test keeps the
+  coverage.
 - **Unchanged** "extracts a login from a GitHub noreply email", "returns null
   when no login can be derived", the Issue #269 fork-forgery and matching-author
   `findSuppressions` cases and the boundary/shallow-clone blame cases all pass.
@@ -120,10 +155,14 @@ archived record unrelated to blame binding.
   email (Issue #3519)" and "findSuppressions - a self-set author name of an
   allowlisted login does not bind (Issue #3519)"; restoring the name fallback
   turns the real-git test red.
-- `worker/deno/lib/suppression_identity.ts:120` missing identity → `""` →
-  `null` — reached by "blameFileLineLogins - a shallow clone that cannot be
-  deepened leaves boundary lines unknown" and "parseBlamePorcelain - a boundary
-  hunk is unknown identity"; existing behaviour, unchanged.
+- `worker/deno/lib/suppression_identity.ts:115` boundary hunk → skipped —
+  reached by "blameFileLineLogins - a shallow clone that cannot be deepened
+  leaves boundary lines unknown" and "parseBlamePorcelain - a boundary hunk is
+  unknown identity"; existing behaviour, unchanged.
+- `worker/deno/lib/suppression_identity.ts:120` hunk with no `author-mail` →
+  the `""` initialiser from line 132 → `null` — reached by "parseBlamePorcelain
+  - a hunk without an author-mail header is unknown identity"; deleting the
+  `email` property at line 132 turns it red.
 
 ## Pre-PR Security Self-Check
 
