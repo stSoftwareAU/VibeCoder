@@ -125,6 +125,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "quota_poll_park_floor",
   "quota_poll_park_nice",
   "quota_poll_idle_floor",
+  // Nice-derived poll cadence (Issue #3667)
+  "poll_cadence_low_cycles",
+  "poll_cadence_park_cycles",
   // Agent transcript tee (Issue #1141) — off by default; the only operator
   // switch for the raw agent stream-json transcript.
   "agent_transcript_enabled",

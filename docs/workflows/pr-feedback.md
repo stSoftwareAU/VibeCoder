@@ -509,8 +509,16 @@ Five checks run, each only when it applies:
    summary as it stood at the before-run head is read with `git show`, and
    its `Branch outcomes:` list entries — plus the header's own inline body,
    not a table under the header — are parsed for `path:N` / `path:N-M`
-   citations. A citation naming a file this push changed (an exact path
-   match, or a unique `/`-boundary suffix match such as a bare basename) is
+   citations. Where the facts file
+   `docs/archive/pr-summaries/pr-summary-<N>.facts.json` exists at a ref
+   (the before-run head, read with `git ls-tree` / `git show`, or the head
+   working tree), its structured entries' `path`, `line` and `endLine` are
+   that ref's citations and the summary's prose `Branch outcomes:` list at
+   that ref is not read (Issue #3536); with no facts file at a ref, the
+   prose list is read as above, so a transition from one form to the other
+   compares citations from the two. A citation naming a file this push
+   changed (an exact path match, or a unique `/`-boundary suffix match
+   such as a bare basename) is
    mapped through this push's diff of that file (`git diff -U0
    <before-run head> -- <path>`, the working tree against the before-run
    head). Two things count as a hit: the cited line(s) moved and the
@@ -524,13 +532,19 @@ Five checks run, each only when it applies:
    reports, as not-checked rather than a hit, a cited name matching more
    than one changed file, a diff it cannot read as text (`git` failed, or a
    binary file), a malformed citation (line `0`, a reversed range) of a
-   changed file, a before-run summary it could not read, and a before-run
-   `Branch outcomes:` list longer than the parser reads.
+   changed file, a before-run summary it could not read, a before-run
+   `Branch outcomes:` list longer than the parser reads, and a facts file
+   it cannot read or that fails to parse or validate at either ref (never
+   read as "no citations"). A hit whose head citations came from the facts
+   file names that facts file, not the `.md` summary, and asks for the
+   entry's `line`/`endLine` to be renumbered there.
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
 rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
 line, rewrite or remove each stale quoted sentence, and renumber each
-listed line citation to the head — re-running the flip for any entry whose
+listed line citation to the head, in the file each hit names (a facts
+entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
+re-running the flip for any entry whose
 cited code this push changed rather than carrying the old result over —
 without changing code. The checks are then re-run; a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn
@@ -710,6 +724,13 @@ intervene.
   and the repo supports it and the PR **is mergeable**: enable auto-merge. This
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.
+- **Standing-violation hold** (Issue #3517) — a PR carrying the
+  `standing-violation` label (Issue #3382) is skipped: the sweep never arms
+  or branch-updates it, and one already armed is disarmed (`gh pr merge
+  --disable-auto`) on every sweep until that succeeds. It runs after the live
+  read confirms the PR is open and before the base-integrity check and any
+  attempt. The label comes from that same per-PR live read, and the hold is
+  logged once per process.
 - **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
   its base gets one `update-branch` request per pass, since GitHub never
   updates it under the strict up-to-date rule. Not when a reviewer has

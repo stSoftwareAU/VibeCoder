@@ -1339,6 +1339,23 @@ legal is accepted, by both sides for a comparison test), and a re-run of
 the existing later-refusal tests whenever a change adds an earlier
 refusal.
 
+**A new precondition must not stop existing tests short (Issue #3530).**
+That later-refusal re-run covered only refusals. Fleet PRs added an
+earlier precondition that refused nothing, or that the author did not read
+as a refusal, and left unedited negative tests that no longer reached
+their guard: VibeCoder#3388 made suppression markers need a verified
+commit identity from `git blame`, so an expired-waiver test in a non-git
+temporary directory was rejected before `expires=` was read; and
+VibeCoder#3522 put the working-tree digest into the `deno check` cache
+key, which is null outside a git repository, so `runDenoCheck - a FAILED
+result is never cached` ran with caching off. `CODING-STANDARDS.md` and
+the guidelines now widen the re-run to any precondition a change adds
+before existing logic — a check, an early return, a null or disabled
+result, or an environment requirement such as a git repository or
+identity — and require the fixture to meet it, a positive control
+asserting it holds, and a Test Plan line naming the existing tests that
+needed fixture changes.
+
 **Every outcome of a branch needs a test (Issue #3069).** Fleet PRs were
 also sent back for a new branch with one outcome no test reached: a
 stale-remote guard whose stubs all returned `ls-remote` exit 0, so
@@ -2709,10 +2726,12 @@ changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
 still standing, the worker does not arm auto-merge on that PR and labels it
 `standing-violation` instead, logging a warning; the rest of finalisation is
-unchanged. Known gap: the Priority 1.65 auto-merge sweep does not read PR
-labels, so it can still arm a held PR on a later cycle (follow-up
-[VibeCoder#3517](https://github.com/stSoftwareAU/VibeCoder/issues/3517)). The
-Issue #3196 gate itself is unchanged; it still cannot see the diff.
+unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
+skips a PR carrying `standing-violation` and disarms one that is already armed
+(`gh pr merge --disable-auto`), so the sweep never arms a held PR
+(Issue #3517). Only the sweep checks the label: the CI-fix pass still
+re-arms auto-merge after it pushes a fix, without reading it.
+The Issue #3196 gate itself is unchanged; it still cannot see the diff.
 
 All nine summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test

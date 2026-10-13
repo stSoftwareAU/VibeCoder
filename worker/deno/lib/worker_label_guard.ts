@@ -97,7 +97,8 @@ import { PLANNING_HANDOFF_LABEL } from "./planning_handoff_trust.ts";
  *   - `standing-violation` — the PR label the completion phase applies when
  *     it finalises a PR as `summary_incomplete` with a Standards violation
  *     still standing on the branch's own lines, in place of arming
- *     auto-merge (Issue #3382). Same class as `merge-conflict` and
+ *     auto-merge (Issue #3382). The Priority 1.65 sweep skips and disarms a
+ *     PR carrying it (Issue #3517). Same class as `merge-conflict` and
  *     `blocked`: a worker-owned marker, not a pickup-priority label.
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([

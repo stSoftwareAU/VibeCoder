@@ -32,8 +32,11 @@ import {
   fetchAllIssues,
   fetchClosedPRsByUser,
   fetchPRsForIssueByTitle,
+  fetchTimelineWithCache,
   invalidateClosedPRsByUser,
   invalidatePRsForIssueByTitle,
+  latestAssignedAtFromTimeline,
+  latestReopenedAtFromTimeline,
 } from "./issue_query.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
 import { findOpenLinkedPR } from "./pr_linkage.ts";
@@ -1079,24 +1082,32 @@ export async function detectAssignedWithClosedPr(
           "--json",
           "mergedAt",
         ]);
-        const assignedAtJson = await ghFn([
-          "api",
-          `repos/${repo}/issues/${issue.number}/timeline`,
-          "--jq",
-          `[.[] | select(.event == "assigned" and .assignee.login == "${githubUser}")] | last | .created_at // empty`,
-        ]);
-
-        let isStale = false;
-        if (mergedAtJson && assignedAtJson) {
-          try {
-            const mergedAt = JSON.parse(mergedAtJson).mergedAt || "";
-            if (mergedAt && assignedAtJson && mergedAt < assignedAtJson) {
-              isStale = true;
-            }
-          } catch { /* ignore */ }
+        // Issue #3476: read the whole (paginated) REST timeline once and
+        // derive both the latest assignment and the latest reopen locally, so
+        // the stale-attempt and reopen guards compare the merge against the
+        // current state rather than the first page (30 events).
+        const timeline = await fetchTimelineWithCache(repo, issue.number, ghFn);
+        // An unreadable timeline (gh fault, validation failure, page cap)
+        // cannot rule out a later assignment or reopen, so a close on the
+        // merge could be the wrong close this guard exists to stop. Fail
+        // closed: touch nothing this pass and let the next scan retry.
+        if (timeline === null) {
+          recordFaultEvent(
+            "catch_block_warning",
+            `timeline unreadable for ${repo}#${issue.number} in detectAssignedWithClosedPR — skipping the close this pass (Issue #3476)`,
+          );
+          continue;
         }
+        const assignedAt = latestAssignedAtFromTimeline(timeline, githubUser);
+        const reopenedAt = latestReopenedAtFromTimeline(timeline);
 
-        if (isStale) {
+        let mergedAt = "";
+        try {
+          mergedAt = (mergedAtJson ? JSON.parse(mergedAtJson).mergedAt : "") ||
+            "";
+        } catch { /* ignore */ }
+
+        if (mergedAt && assignedAt && mergedAt < assignedAt) {
           // Stale previous attempt — unassign only
           await ghFn([
             "issue",
@@ -1120,6 +1131,52 @@ export async function detectAssignedWithClosedPr(
           repoMutated = true;
           // Issue #1797: invalidate per-issue title-search caches so a
           // follow-up scan in the same iteration sees the fresh state.
+          if (cache) {
+            await invalidatePRsForIssueByTitle(
+              cache,
+              repo,
+              issue.number,
+              "open",
+            );
+            await invalidatePRsForIssueByTitle(
+              cache,
+              repo,
+              issue.number,
+              "merged",
+            );
+            await invalidatePRsForIssueByTitle(
+              cache,
+              repo,
+              issue.number,
+              "closed",
+            );
+          }
+          continue;
+        }
+
+        // Issue #3476: a reopen after the merge means that merge was already
+        // judged not to deliver — never close on it, just release the claim.
+        if (mergedAt && reopenedAt && mergedAt < reopenedAt) {
+          await ghFn([
+            "issue",
+            "comment",
+            String(issue.number),
+            "--repo",
+            repo,
+            "--body",
+            `Self-healing: found merged PR #${mergedPrNumber} but it predates the issue's latest reopen — treating it as not delivered. Unassigning so this issue can be picked up again.\n\n---\n\nClosed-PR self-healing (Issue #787)`,
+          ]);
+          await ghFn([
+            "issue",
+            "edit",
+            String(issue.number),
+            "--repo",
+            repo,
+            "--remove-assignee",
+            githubUser,
+          ]);
+          recoveredCount++;
+          repoMutated = true;
           if (cache) {
             await invalidatePRsForIssueByTitle(
               cache,

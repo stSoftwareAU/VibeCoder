@@ -24,12 +24,17 @@
  *    read is skipped only for an unarmed, non-fix PR on a milestone base); a
  *    milestone-fix PR off its milestone branch, or a PR moved onto the default branch, is disarmed and
  *    held, so a retarget cannot land a milestone's work unreviewed.
+ * 4. **A standing violation is never armed** (Issue #3517, follow-up to
+ *    #3382/#3196) — a PR carrying the `standing-violation` label is skipped
+ *    before any base check, arming or branch update, and one that is already
+ *    armed is disarmed, every sweep, until the disarm succeeds.
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */
 
 import { RepoLoopQuotaStop } from "./repo_loop_quota_stop.ts";
 import { logPrLiveSkip, type PrLiveStateReading } from "./pr_live_state.ts";
+import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import type { Logger, Result } from "../types.ts";
 import {
   AutoMergeResult,
@@ -62,9 +67,16 @@ export interface SweepablePr {
  */
 const announcedDrafts = new Set<string>();
 
-/** Reset the announced-draft registry. Tests only. */
+/**
+ * Standing-violation PRs already announced by this process, keyed `repo#pr`
+ * (Issue #3517). The hold is logged once; the disarm is retried every sweep.
+ */
+const announcedHolds = new Set<string>();
+
+/** Reset the announced-draft and announced-hold registries. Tests only. */
 export function resetAnnouncedDraftsForTest(): void {
   announcedDrafts.clear();
+  announcedHolds.clear();
 }
 
 /** Dependencies for {@link sweepAutoMerge}. */
@@ -113,6 +125,11 @@ export interface SweepAutoMergeOptions {
     | { action: "hold"; outcome: EnableAutoMergeResult }
     | { action: "proceed"; disarmed: boolean }
   >;
+  /**
+   * Disarm native auto-merge on a PR (Issue #3517). Returns true on success
+   * and never throws; it logs its own warning on failure.
+   */
+  disarmAutoMerge: (repo: string, prNumber: number) => Promise<boolean>;
   /** Attempt the merge for one PR. */
   attemptMerge: (
     repo: string,
@@ -169,6 +186,7 @@ export async function sweepAutoMerge(
     prLiveState,
     updateBranchFn,
     checkBaseIntegrity,
+    disarmAutoMerge,
     attemptMerge,
     recordOutcome,
     invalidateOpenPrCache,
@@ -259,6 +277,28 @@ export async function sweepAutoMerge(
         if (!reading.open) {
           summary.prsSkippedNotOpen++;
           logPrLiveSkip(logger, "Auto-merge sweep", repo, pr.number, reading);
+          continue;
+        }
+
+        // Issue #3517 (follow-up to #3382/#3196): a standing-violation PR is
+        // never armed, and an armed one is disarmed. No attempt, no outcome
+        // and no branch update; a failed disarm is retried next sweep.
+        if (reading.labels?.includes(STANDING_VIOLATION_LABEL)) {
+          const armedHold = reading.armed === true;
+          const holdKey = `${repo}#${pr.number}`;
+          if (!announcedHolds.has(holdKey)) {
+            announcedHolds.add(holdKey);
+            logger.info(
+              `Auto-merge sweep: ${holdKey} carries the ` +
+                `'${STANDING_VIOLATION_LABEL}' label — not arming` +
+                (armedHold ? ", disarming auto-merge" : "") +
+                " (Issue #3517, #3382)",
+              { repo, prNumber: pr.number },
+            );
+          }
+          if (armedHold && await disarmAutoMerge(repo, pr.number)) {
+            mutated = true;
+          }
           continue;
         }
 

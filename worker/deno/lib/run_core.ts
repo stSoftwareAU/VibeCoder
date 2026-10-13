@@ -1400,6 +1400,14 @@ export interface RunCoreDeps {
   resetIterationCaches?: () => void;
 
   /**
+   * Pick the repos this cycle's per-repo Priority 1.x passes poll
+   * (Issue #3667): `nice > 0` repos every few cycles, the rest every cycle.
+   * Called once per main-loop iteration, before any pass runs. Optional so
+   * test deps can omit it; without it every pass polls every repo.
+   */
+  selectCyclePollRepos?: () => unknown;
+
+  /**
    * Prefetch the fleet's open-PR listings cross-repo (Issue #1486).
    *
    * One GitHub search per repository owner replaces the per-repo per-author
@@ -1855,7 +1863,9 @@ export function sleepWithJitter(baseSeconds: number): number {
  * #2775). An open PR in a high-`nice` (deprioritised) repo must still be
  * serviced here so it does not rot; deprioritising a repo slows down picking up
  * *new* work there, never the upkeep of work already started. Regression test:
- * `tests/run_core_nice_scope_test.ts`.
+ * `tests/run_core_nice_scope_test.ts`. Upkeep there is polled less often, not
+ * never: the per-repo passes see the cycle's `selectCyclePollRepos` pick, in
+ * which a `nice > 0` repo appears every few cycles (Issue #3667).
  */
 export function buildPriorityDispatchTable(
   deps: RunCoreDeps,
@@ -6106,6 +6116,7 @@ export async function runCoreLoop(
           // entries so the next iteration starts with a clean in-memory
           // map. Production wiring sets this; test deps may omit it.
           deps.resetIterationCaches?.();
+          deps.selectCyclePollRepos?.();
           tracker.resetScanProgress();
           cycleStartedAtMs = deps.now();
           cycleFleetStart = getFleetTelemetry(cycleStartedAtMs);

@@ -14,7 +14,7 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   createDefaultRunCoreConfig,
   type RunCoreDeps,
@@ -389,5 +389,38 @@ Deno.test(
       1,
       "start-up recoverStuckIssues should still run once",
     );
+  },
+);
+
+Deno.test(
+  "run_core - picks the cycle's poll repos once per cycle, before stale recovery reads them (Issue #3667)",
+  async () => {
+    const nowRef = { value: 0 };
+    const events: string[] = [];
+    const deps = createMockDeps({
+      now: () => nowRef.value,
+      sleep: makeCycleLimitedSleep(3, nowRef),
+      selectCyclePollRepos: () => {
+        events.push("select");
+      },
+      recoverStaleAssignments: () => {
+        events.push("recover");
+        return Promise.resolve();
+      },
+    });
+    const config = createDefaultRunCoreConfig();
+    config.runDurationSeconds = 3600;
+
+    await runCoreLoop(config, deps);
+
+    const selects = events.filter((e) => e === "select").length;
+    const recovers = events.filter((e) => e === "recover").length;
+    assert(recovers >= 2, `expected several cycles, saw ${recovers}`);
+    assertEquals(selects, recovers, "exactly one pick per cycle");
+    events.forEach((e, i) => {
+      if (e === "recover") {
+        assertEquals(events[i - 1], "select", `cycle order: ${events}`);
+      }
+    });
   },
 );

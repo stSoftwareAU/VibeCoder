@@ -351,8 +351,10 @@ export async function ensureIssueClosedIfPrMerged(
         ok: true,
         value: {
           closed: false,
+          // The reason reaches the claim-release comment on the worked issue,
+          // which may be in a target repo, so it carries no VibeCoder #N (Issue #3501).
           reason:
-            `PR #${prNumber} merged but its change did not land (${landing.reason}): ${landing.detail} — issue left open (Issue #4396)`,
+            `PR #${prNumber} merged but its change did not land (${landing.reason}): ${landing.detail} — issue left open`,
           // Issue #175: hand the verdict back so the caller can self-heal an
           // orphaned milestone merge rather than bouncing on it every cycle.
           unlanded: landing,

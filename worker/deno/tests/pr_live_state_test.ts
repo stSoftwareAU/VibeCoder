@@ -12,9 +12,11 @@ import { assert, assertEquals } from "@std/assert";
 import {
   guardPrStillOpen,
   isPrLiveStateRead,
+  OPEN_CONFLICTING_PR_PAYLOAD,
   prLiveSkipReason,
   readPrLiveState,
 } from "../lib/pr_live_state.ts";
+import { PR_LIVE_STATE_JSON_FIELDS } from "../lib/pr_branch_update.ts";
 import type { Logger } from "../types.ts";
 
 /** Collecting logger — the skip line is part of the contract. */
@@ -40,6 +42,7 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     mergeable: "CONFLICTING",
     armed: false,
     behind: false,
+    labels: [],
   });
   assertEquals(calls, [[
     "pr",
@@ -48,7 +51,7 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     "--repo",
     "owner/repo",
     "--json",
-    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
+    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
   ]]);
 });
 
@@ -64,6 +67,7 @@ Deno.test("readPrLiveState - a PR that merges cleanly reads as open and MERGEABL
       mergeable: "MERGEABLE",
       armed: false,
       behind: false,
+      labels: [],
     },
   );
 });
@@ -86,6 +90,7 @@ Deno.test("readPrLiveState - an unreadable mergeable is unknown, never mergeable
         mergeable: "UNKNOWN",
         armed: false,
         behind: false,
+        labels: [],
       },
       `raw payload ${raw} must read as an unknown mergeable`,
     );
@@ -160,7 +165,7 @@ Deno.test("isPrLiveStateRead - recognises this read's own argv, and nothing else
       "view",
       "7",
       "--json",
-      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
+      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
     ]),
   );
   assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state"]));
@@ -204,6 +209,7 @@ Deno.test("guardPrStillOpen - an open PR is not logged as a skip", async () => {
     mergeable: "MERGEABLE",
     armed: false,
     behind: false,
+    labels: [],
   });
   assertEquals(infos.length, 0);
   assertEquals(warns.length, 0);
@@ -281,6 +287,7 @@ Deno.test("readPrLiveState - an armed, behind PR reads as armed and behind", asy
     mergeable: "MERGEABLE",
     armed: true,
     behind: true,
+    labels: [],
   });
 });
 
@@ -317,6 +324,7 @@ Deno.test("readPrLiveState - a legacy payload reads unarmed and not behind", asy
     mergeable: "MERGEABLE",
     armed: false,
     behind: false,
+    labels: [],
   });
 });
 
@@ -332,6 +340,7 @@ Deno.test("readPrLiveState - a null autoMergeRequest reads unarmed even when beh
     mergeable: "MERGEABLE",
     armed: false,
     behind: true,
+    labels: [],
   });
 });
 
@@ -351,6 +360,7 @@ Deno.test("readPrLiveState - a CHANGES_REQUESTED review decision rides the same 
     mergeable: "MERGEABLE",
     armed: true,
     behind: true,
+    labels: [],
     changesRequested: true,
   });
 
@@ -370,4 +380,47 @@ Deno.test("readPrLiveState - a CHANGES_REQUESTED review decision rides the same 
       decision,
     );
   }
+});
+
+// ---------------------------------------------------------------------------
+// Labels (Issue #3517)
+// ---------------------------------------------------------------------------
+
+Deno.test("readPrLiveState - an open PR surfaces its label names (Issue #3517)", async () => {
+  const reading = await readPrLiveState("owner/repo", 12, () =>
+    Promise.resolve(
+      JSON.stringify({
+        state: "OPEN",
+        mergeable: "MERGEABLE",
+        labels: [
+          {
+            id: "1",
+            name: "standing-violation",
+            description: "",
+            color: "f00",
+          },
+          { id: "2", name: "work-on", description: "", color: "0f0" },
+        ],
+      }),
+    ));
+  assert(reading.open === true);
+  assertEquals(reading.labels, ["standing-violation", "work-on"]);
+});
+
+Deno.test("readPrLiveState - a payload without labels reads as no labels, so no hold (Issue #3517)", async () => {
+  const reading = await readPrLiveState(
+    "owner/repo",
+    12,
+    () => Promise.resolve(OPEN_CONFLICTING_PR_PAYLOAD),
+  );
+  assert(reading.open === true);
+  assertEquals(reading.labels ?? [], []);
+  assertEquals(reading.labels?.includes("standing-violation") ?? false, false);
+});
+
+Deno.test("readPrLiveState - the live read asks gh for labels (Issue #3517)", () => {
+  assertEquals(
+    PR_LIVE_STATE_JSON_FIELDS,
+    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
+  );
 });

@@ -1339,7 +1339,12 @@ The native pre-filers honour a marker only when its `author=` matches the GitHub
 login `git blame` attributes to the marker's own line (the same binding
 `orphan_deps_suppression_scan.ts` applies), so the marker must be committed by
 the login it names. A marker written by someone else, or on a line blame cannot
-attribute, suppresses nothing. The blame happens in `readWorkflowFiles` in
+attribute, suppresses nothing. Blame's login comes only from a
+`users.noreply.github.com` author email (the author name is ignored). Author
+fields are self-set, so the binding holds only when the repository
+squash-merges; under merge-commit or rebase merge a contributor can forge it
+([THREAT-MODEL.md R15](THREAT-MODEL.md#%EF%B8%8F-residual-risks)).
+The blame happens in `readWorkflowFiles` in
 `worker/deno/lib/workflow_scan_common.ts`.
 
 ## No PR, ever

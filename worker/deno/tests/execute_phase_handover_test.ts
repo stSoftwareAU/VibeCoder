@@ -334,6 +334,9 @@ Deno.test("execute_phase #769 - a clean tree with checkpoint commits still commi
   );
   assertEquals(run.commits.length, 1);
   assertStringIncludes(run.commits[0] ?? "", "handover note");
+  // Issue #3499: the subject lands in the target repo, so the only `#<n>` it
+  // may carry is the run's own issue, never a fixed VibeCoder number.
+  assertEquals(run.commits[0]?.match(/#\d+/g), [`#${ISSUE}`], run.commits[0]);
   assertStringIncludes(run.reason, "checkpoint commit");
   assertStringIncludes(run.reason, NOTE);
 });
