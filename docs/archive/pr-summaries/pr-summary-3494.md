@@ -51,7 +51,7 @@ Applying the new rule to this PR's own diff found nothing to fix. The only test 
   - With one bullet's wording changed in the guidelines only, the "identical" test fails.
 - Pin check: `deno task drift-pins-on-base origin/main …` reports every pin in both sections as `absent on base`. That covers the 11 pins in the guidelines' Testing Best Practices section and the 4 pins plus `setupRepo` in the new standards section.
 - The new test and the coding-guidelines and standards drift suites pass under `deno task test:unit`: 64 passed, 0 failed.
-- `./quality.sh` result is recorded below.
+- `./quality.sh` passed on the head: every check passed, and `deno tests` passed in 507s. An earlier run under heavy host load hit the 900s timeout and reported `deno tests` FAILED with no detail. Running both unit passes separately right after that gave 27486 passed and 969 passed, with 0 failed.
 - No existing test was edited.
 - Branch outcomes: none added
 
