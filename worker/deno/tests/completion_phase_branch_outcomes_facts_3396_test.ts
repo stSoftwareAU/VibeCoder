@@ -97,7 +97,6 @@ interface Scenario {
   changedFiles: string;
   /** Test paths `ls-tree` reports as existing at HEAD. */
   existingTestsAtHead?: string[];
-  /** Test paths `ls-tree` reports as existing at HEAD, for the retry's lookup. */
   /** Facts file text; omitted, no facts file is written. */
   facts?: string;
   /** Create a directory at the facts path so it cannot be read. */
