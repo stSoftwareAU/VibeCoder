@@ -22,6 +22,7 @@ import {
 } from "../lib/pr_auto_merge.ts";
 import { checkPrBaseIntegrity } from "../lib/pr_base_integrity.ts";
 import type { PrLiveStateReading } from "../lib/pr_live_state.ts";
+import { STANDING_VIOLATION_LABEL } from "../lib/standing_violation_routing.ts";
 import type { Logger, Result } from "../types.ts";
 
 const REPOS = [
@@ -53,6 +54,8 @@ interface Harness {
   invalidated: string[];
   /** Base-integrity checks (Issue #3433). */
   baseChecks: { repo: string; prNumber: number; armed: boolean }[];
+  /** Auto-merge disarm requests (Issue #3517). */
+  disarmed: { repo: string; prNumber: number }[];
 }
 
 function harness(
@@ -74,6 +77,7 @@ function harness(
       repo: string,
       pr: SweepablePr,
     ) => Promise<PrLiveStateReading>;
+    disarmAutoMerge?: (repo: string, prNumber: number) => Promise<boolean>;
     checkBaseIntegrity?: (
       repo: string,
       pr: SweepablePr,
@@ -92,6 +96,7 @@ function harness(
     recorded: [],
     invalidated: [],
     baseChecks: [],
+    disarmed: [],
   };
 
   const options = {
@@ -117,6 +122,12 @@ function harness(
       return overrides.checkBaseIntegrity
         ? overrides.checkBaseIntegrity(repo, pr, armed)
         : Promise.resolve({ action: "proceed" as const, disarmed: false });
+    },
+    disarmAutoMerge: (repo: string, prNumber: number) => {
+      state.disarmed.push({ repo, prNumber });
+      return overrides.disarmAutoMerge
+        ? overrides.disarmAutoMerge(repo, prNumber)
+        : Promise.resolve(true);
     },
     attemptMerge: (repo: string, pr: SweepablePr) => {
       state.attempted.push({ repo, prNumber: pr.number });
@@ -890,4 +901,192 @@ Deno.test("a human PR moved onto the default branch is never read or touched, wh
     ).length,
     1,
   );
+});
+
+// ---------------------------------------------------------------------------
+// standing-violation hold (Issue #3517)
+// ---------------------------------------------------------------------------
+
+const VC = "stSoftwareAU/VibeCoder";
+
+function liveWithLabels(
+  byPr: Record<number, { labels: string[]; armed?: boolean }>,
+) {
+  return (_repo: string, pr: SweepablePr) => {
+    const entry = byPr[pr.number];
+    return Promise.resolve(
+      {
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: entry?.armed ?? false,
+        behind: false,
+        labels: entry?.labels ?? [],
+      } as PrLiveStateReading,
+    );
+  };
+}
+
+const holdLines = () =>
+  infos.filter((i) => i.message.includes("standing-violation"));
+
+Deno.test("Issue #3517: a standing-violation PR is not attempted while an unlabelled sibling still is", async () => {
+  resetAnnouncedDraftsForTest();
+  infos.length = 0;
+  const { state, options } = harness({
+    [VC]: [{ number: 100 }, { number: 101 }],
+  }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL] },
+      101: { labels: [] },
+    }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.attempted, [{ repo: VC, prNumber: 101 }]);
+  assertEquals(state.recorded.map((r) => r.prNumber), [101]);
+  assertEquals(state.updated, []);
+  assertEquals(result.value.prsAttempted, 1);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: an armed standing-violation PR is disarmed once, never attempted, recorded or branch-updated", async () => {
+  resetAnnouncedDraftsForTest();
+  const { state, options } = harness({ [VC]: [{ number: 100 }] }, {
+    prLiveState: () =>
+      Promise.resolve({
+        open: true,
+        mergeable: "MERGEABLE",
+        armed: true,
+        behind: true,
+        labels: [STANDING_VIOLATION_LABEL],
+      }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.disarmed, [{ repo: VC, prNumber: 100 }]);
+  assertEquals(state.attempted, []);
+  assertEquals(state.recorded, []);
+  assertEquals(state.updated, []);
+  assertEquals(state.invalidated.includes(VC), true);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: an unarmed standing-violation PR is held without a disarm call", async () => {
+  resetAnnouncedDraftsForTest();
+  const { state, options } = harness({ [VC]: [{ number: 100 }] }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL], armed: false },
+    }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.disarmed, []);
+  assertEquals(state.attempted, []);
+  assertEquals(state.recorded, []);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: the hold is logged once per process, while an armed PR is disarmed on each sweep until it succeeds", async () => {
+  resetAnnouncedDraftsForTest();
+  infos.length = 0;
+  warnings.length = 0;
+  let disarmOutcomes = [false, true];
+  const { state, options } = harness({ [VC]: [{ number: 100 }] }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL], armed: true },
+    }),
+    disarmAutoMerge: () => Promise.resolve(disarmOutcomes.shift() ?? true),
+  });
+
+  const first = await sweepAutoMerge(options);
+  assert(first.ok);
+  assertEquals(holdLines().length, 1);
+  assertEquals(holdLines()[0]!.context?.prNumber, 100);
+  assertEquals(state.disarmed.length, 1);
+
+  const second = await sweepAutoMerge(options);
+  assert(second.ok);
+  assertEquals(holdLines().length, 1);
+  assertEquals(state.disarmed.length, 2);
+  assertEquals(state.attempted, []);
+  disarmOutcomes = [];
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: a failed disarm still yields no merge attempt", async () => {
+  resetAnnouncedDraftsForTest();
+  const { state, options } = harness({ [VC]: [{ number: 100 }] }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL], armed: true },
+    }),
+    disarmAutoMerge: () => Promise.resolve(false),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.disarmed.length, 1);
+  assertEquals(state.attempted, []);
+  assertEquals(state.recorded, []);
+  assertEquals(state.updated, []);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: a PR carrying only some other label is still attempted", async () => {
+  resetAnnouncedDraftsForTest();
+  const { state, options } = harness({ [VC]: [{ number: 100 }] }, {
+    prLiveState: liveWithLabels({
+      100: { labels: ["work-on", "standing-violation-ish"], armed: true },
+    }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.disarmed, []);
+  assertEquals(state.attempted, [{ repo: VC, prNumber: 100 }]);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: base integrity is not checked for a held PR", async () => {
+  resetAnnouncedDraftsForTest();
+  const { state, options } = harness({ [VC]: [{ number: 100 }] }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL], armed: true },
+    }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  assertEquals(state.baseChecks, []);
+  resetAnnouncedDraftsForTest();
+});
+
+Deno.test("Issue #3517: the hold line says it is disarming only for an armed PR", async () => {
+  resetAnnouncedDraftsForTest();
+  infos.length = 0;
+  const { options } = harness({
+    [VC]: [{ number: 100 }, { number: 101 }],
+  }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL], armed: true },
+      101: { labels: [STANDING_VIOLATION_LABEL], armed: false },
+    }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  const lineFor = (pr: number) =>
+    holdLines().find((i) => i.context?.prNumber === pr)!.message;
+  assertEquals(lineFor(100).includes("disarming auto-merge"), true);
+  assertEquals(lineFor(101).includes("disarming auto-merge"), false);
+  resetAnnouncedDraftsForTest();
 });

@@ -1013,7 +1013,8 @@ export async function recoverAndFinaliseExistingPr(
     // note on the creation path below.
     if (prNumber > 0 && holdAutoMerge) {
       // Issue #3382: a standing violation on this branch's own lines — hold
-      // the merge and make the hold visible on the PR.
+      // the merge and make the hold visible on the PR. The label is also what
+      // the Priority 1.65 sweep reads to keep it held (Issue #3517).
       logger.warn(
         "Auto-merge NOT armed: a Standards violation is still standing on " +
           "this branch's own lines — PR labelled standing-violation for the " +
