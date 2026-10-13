@@ -202,12 +202,14 @@ recorded it as a limitation is deleted in the same push, so the summary stays
 true to the head (per the existing "keep the PR summary true to the head"
 rule). After a verified push to the PR's own head, the worker re-syncs the
 description from `pr-summary-<N>.md` when the summary at the head differs
-from the SHA-256 digest recorded in the body's hidden marker — whichever push
+from the SHA-256 digest recorded in the body's hidden marker (the digest also
+covers the optional `pr-summary-<N>.facts.json` beside it, Issue #3535) — whichever push
 changed it, this run's or an earlier one. A pr_feedback run also re-syncs
 when it pushed nothing and has no commits left unpushed, so a run that
 answers a finding without a push still refreshes a stale body (Issue #3315).
 A body raised before the digest marker existed keeps the older rule:
-rebuilt only when this run's own push changed the summary file. Fix branches
+rebuilt only when this run's own push changed the summary file or its facts
+file. Fix branches
 for a gated milestone head are skipped, and only a worker-authored PR is
 edited. A failed sync is logged once at warning and does not fail the run
 (Issue #3089).
