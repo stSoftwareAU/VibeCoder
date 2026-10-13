@@ -165,7 +165,7 @@ Branch outcomes:
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **partial** — A Code Change Owes a Docs Change: no prompt under `prompts/` tells agents to write the facts file yet. — evidence: `docs/workflows/issue-processing.md; docs/USAGE.md; docs/INTERNALS.md` — reviewer: partial — reason: the facts file is opt-in and the operator docs describe it; teaching agents to write it is a later part of #3396
+- **clean** — A Code Change Owes a Docs Change: the operator docs describe the facts file. No prompt under `prompts/` tells agents to write it yet; the file is opt-in, and teaching agents to write it is a later part of #3396, outside this issue. — evidence: `docs/workflows/issue-processing.md; docs/USAGE.md; docs/INTERNALS.md` — reviewer: clean
 - **clean** — Fail loud: an unreadable file is an error, not absent. Persisted digest: the old shape is read and pinned by a test. Named tests exist. No test-only members. Australian English. — evidence: `worker/deno/tests/pr_body_sync_test.ts::sync - with no facts file the digest input is the summary alone; worker/deno/tests/completion_phase_branch_outcomes_facts_3396_test.ts::completion facts - an unreadable facts file blocks rather than reading as absent (Issue #3535)` — reviewer: clean
 - **clean** — An orphaned doc comment in the completion facts test was found and removed. — evidence: `worker/deno/tests/completion_phase_branch_outcomes_facts_3396_test.ts` — reviewer: clean
 
