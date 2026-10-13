@@ -408,6 +408,30 @@ counter that restarts at 1 in every consumer serves one test's result to the
 next file in the same worker. Key it by something only its own owner can
 produce.
 
+The same rule covers the system temp directory. `/tmp` and `$TMPDIR` are shared
+host state: the gate's own `--parallel` test workers, another lane's
+`./quality.sh` on the same host and other OS users all write to them. A test
+reads, writes and lists only paths inside a directory it created itself
+(`Deno.makeTempDir`, `mktemp -d`), and removes that directory when it finishes.
+Never use a fixed name directly under `/tmp` or `$TMPDIR`, and never assert on
+what the shared temp directory contains. To prove that code cleans up its temp
+files, give the code a temp-root parameter that production leaves unset, pass
+the test's private directory, and assert that this directory is empty afterwards
+— `computeWorkingTreeDigest` in
+[`quality_gate_cache.ts`](worker/deno/lib/quality_gate_cache.ts) takes its
+`tempRoot` for exactly this. A shell test sent stderr to a fixed file directly
+in `/tmp` that another OS user on the host already owned, so the redirect failed
+with "Permission denied" before the command under test ran; and a test that
+listed the shared `TMPDIR` before and after one call reported a leak whenever a
+parallel test or another gate run created the same kind of directory in between
+(Issue #3524). Both fail on Linux too. Before raising the PR, grep new or edited
+test files for a literal `/tmp/`, or for `Deno.env.get("TMPDIR")` or `$TMPDIR`
+used outside a `makeTempDir` or `mktemp` call, and move each hit that the test
+or the code under test actually reads, writes or lists into the test's own
+directory. A `/tmp/...` string that never touches the filesystem (a config
+placeholder, a path handed to an in-memory fake, an escaping payload a test
+asserts on) is not a hit: leave it as it is.
+
 The same rule covers an OS-specific branch in the code under test. A test that
 runs a real shell script with a stubbed tool, binary or measurement — a stub
 binary first on `PATH`, a faked `df` — reaches the stub only where the script
@@ -1287,8 +1311,8 @@ failing pass's output and drops a passing one's.
 `./quality.sh` before creating any PR; CI re-runs the same checks. Never raise a
 PR with failing quality checks — fix the failures first.
 
-**The agent's own run of the gate is conditional on the run budget (Issue
-#1138).** The gate's median observed run is 17 minutes inside a budget of
+**The agent's own run of the gate is conditional on the run budget
+(Issue #1138).** The gate's median observed run is 17 minutes inside a budget of
 roughly an hour, and the same checks arrive twice more for free — the worker
 runs the gate itself before the PR, and CI runs it on the PR. So an agent
 starts the gate only when the runway left covers it plus the time to fix,
