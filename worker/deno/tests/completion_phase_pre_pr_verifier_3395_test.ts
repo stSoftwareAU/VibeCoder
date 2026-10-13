@@ -103,6 +103,7 @@ function checked(findings: ReviewFinding[]): PrePrVerifierResult {
       testChanges: "none",
       testChangeNotes: [],
       unrelatedIssues: [],
+      checklist: [],
     },
   };
 }

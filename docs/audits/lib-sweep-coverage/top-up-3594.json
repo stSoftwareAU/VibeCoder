@@ -1,0 +1,12 @@
+{
+  "issue": 3594,
+  "chunk": "top-up-3594",
+  "title": "top-up: repository-owned review checklists loader",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3594",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/review_checklists.ts, the shared loader for repository-declared review checklists (#3594)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/review_checklists.ts"
+  ],
+  "sweptAt": "7638942f380cabff8505d3a0a129849f45875937"
+}
