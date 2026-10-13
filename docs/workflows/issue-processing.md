@@ -1188,7 +1188,10 @@ raised. The agent dispatches nothing for it.
   which `.claude/skills/review-fleet-prs/SKILL.md` also uses. It is one shared
   template, and `pr_review_brief_shared_3395_test.ts` fails if the two diverge.
   The reply has the fleet reviewer's JSON shape: `summary`, `findings`,
-  `testChanges`, `testChangeNotes` and `unrelatedIssues`.
+  `testChanges`, `testChangeNotes` and `unrelatedIssues`, plus a `checklist`
+  array when the repository's
+  [review checklists](../review-checklists.md) apply to the changed files (a
+  `missing` item or a checklist load failure is a blocking finding).
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a

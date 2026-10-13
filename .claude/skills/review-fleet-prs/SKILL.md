@@ -203,7 +203,7 @@ at `xhigh` effort (Issue #2976) — and the brief in
 [`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),
 shared with the worker's pre-PR verifier
 (`worker/deno/lib/pre_pr_verifier.ts`, Issue #3395), so change the review
-rules there, never in a copy here. Drop its HTML comment and fill in its four
+rules there, never in a copy here. Drop its HTML comment and fill in its five
 fields as follows:
 
 - `{{REVIEW_CONTEXT}}` — this paragraph, with the gate entry's fields filled
@@ -227,6 +227,11 @@ fields as follows:
   "An earlier review of this PR asked for these fixes: {previousFindings}.
   Check each one is fixed; one that is not is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
+- `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
+  (the repo's `review-checklists.json` at the base ref, matched against the
+  PR's changed files, Issue #3594); the empty string when it is empty. The
+  reviewer's reply then carries a `checklist` array with a verdict per item,
+  and any `missing` item sends the PR back.
 
 If an agent fails or returns something that isn't the JSON the brief asks
 for, post nothing for that PR; the next gate run reports it again.

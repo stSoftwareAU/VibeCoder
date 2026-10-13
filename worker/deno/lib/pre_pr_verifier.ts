@@ -47,6 +47,14 @@ import {
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import {
+  type ChecklistLoad,
+  type ChecklistVerdict,
+  loadChecklistsFromText,
+  parseChecklistVerdicts,
+  renderChecklistSection,
+  REVIEW_CHECKLISTS_FILE,
+} from "./review_checklists.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 
 /** Prompt directory name of the review brief shared with the fleet reviewer. */
@@ -58,6 +66,7 @@ export const REVIEW_BRIEF_FIELDS = [
   "NO_TEST_ADDED_NOTE",
   "TEST_CHANGES",
   "PREVIOUS_FINDINGS",
+  "REVIEW_CHECKLISTS",
 ] as const;
 export type ReviewBriefField = typeof REVIEW_BRIEF_FIELDS[number];
 export type ReviewBriefFields = Record<ReviewBriefField, string>;
@@ -108,6 +117,8 @@ export interface ReviewReply {
   testChanges: ReviewTestChanges;
   testChangeNotes: ReviewTestChangeNote[];
   unrelatedIssues: ReviewUnrelatedIssue[];
+  /** Per-item verdicts for the repo's review checklists; [] when none apply. */
+  checklist: ChecklistVerdict[];
 }
 
 /** At most this many unrelated issues are kept from one review. */
@@ -134,6 +145,7 @@ export function parseReviewReply(text: string): ReviewReply {
     testChanges: r.testChanges,
     testChangeNotes: r.testChangeNotes ?? [],
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
+    checklist: parseChecklistVerdicts(r.checklist),
   };
 }
 
@@ -261,6 +273,8 @@ export function buildPrePrVerifierPrompt(opts: {
   headSha: string;
   summaryPath: string;
   changedFiles: readonly string[] | null;
+  /** Rendered checklist section; "" when none applies. */
+  reviewChecklists: string;
   boundaryId?: string;
 }): string {
   if (!Number.isInteger(opts.issueNumber) || opts.issueNumber <= 0) {
@@ -319,6 +333,7 @@ export function buildPrePrVerifierPrompt(opts: {
     NO_TEST_ADDED_NOTE: noTestNote,
     TEST_CHANGES: testChanges,
     PREVIOUS_FINDINGS: "No earlier review of this change asked for fixes.",
+    REVIEW_CHECKLISTS: opts.reviewChecklists,
   });
 
   return [
@@ -515,6 +530,7 @@ export async function runPrePrVerifier(
           testChanges: "none",
           testChangeNotes: [],
           unrelatedIssues: [],
+          checklist: [],
         },
         ...(outcome.run ? { run: outcome.run } : {}),
       };
@@ -561,6 +577,38 @@ async function summaryEscapesCheckout(
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
   return false;
+}
+
+/**
+ * Read `review-checklists.json` at the base ref, so a PR cannot weaken its own
+ * checklist. A file missing at the base is absent; any other failure is
+ * unreadable, which the reviewer must report rather than skip.
+ */
+export async function readBaseChecklists(
+  runGit: PrePrVerifierDeps["runGit"],
+  cwd: string,
+  baseSha: string,
+): Promise<ChecklistLoad> {
+  const r = await runGit(
+    ["show", `${baseSha}:${REVIEW_CHECKLISTS_FILE}`],
+    cwd,
+  );
+  if (r === null) {
+    return loadChecklistsFromText(null, "git could not be spawned");
+  }
+  if (r.code === 0) return loadChecklistsFromText(r.stdout);
+  if (
+    r.stderr.includes("does not exist") ||
+    r.stderr.includes("exists on disk, but not in")
+  ) {
+    return loadChecklistsFromText(null);
+  }
+  const cause = r.stderr.split("\n").map((l) => l.trim()).find((l) => l) ??
+    `git exited ${r.code}`;
+  return loadChecklistsFromText(
+    null,
+    `git show failed: ${clip(cause, 200)}`,
+  );
 }
 
 async function verifyInCheckout(
@@ -610,6 +658,10 @@ async function verifyInCheckout(
   });
   await Deno.writeTextFile(summaryFile, input.summaryContent);
 
+  const reviewChecklists = renderChecklistSection(
+    await readBaseChecklists(deps.runGit, checkout, baseSha),
+    input.changedFiles,
+  );
   const prompt = buildPrePrVerifierPrompt({
     template,
     repo: input.repo,
@@ -621,6 +673,7 @@ async function verifyInCheckout(
     headSha,
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
+    reviewChecklists,
   });
 
   const asked = await deps.ask({

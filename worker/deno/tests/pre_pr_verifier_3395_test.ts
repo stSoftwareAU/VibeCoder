@@ -21,6 +21,7 @@ import {
   prePrVerifierBlockReason,
   type PrePrVerifierDeps,
   type PrePrVerifierInput,
+  readBaseChecklists,
   renderReviewBrief,
   type ReviewBriefFields,
   runPrePrVerifier,
@@ -40,9 +41,10 @@ const FIELDS: ReviewBriefFields = {
   NO_TEST_ADDED_NOTE: "NOTE-VALUE",
   TEST_CHANGES: "TESTS-VALUE",
   PREVIOUS_FINDINGS: "PREV-VALUE",
+  REVIEW_CHECKLISTS: "CHECKLIST-VALUE",
 };
 
-Deno.test("renderReviewBrief fills all four fields and strips the leading comment", () => {
+Deno.test("renderReviewBrief fills all five fields and strips the leading comment", () => {
   const out = renderReviewBrief(TEMPLATE, FIELDS);
   for (const v of Object.values(FIELDS)) assertStringIncludes(out, v);
   assert(!out.includes("<!--"));
@@ -458,6 +460,7 @@ const PROMPT_BASE = {
   headSha: "h".repeat(40),
   summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
   boundaryId: "0123456789ab",
+  reviewChecklists: "",
 };
 const NO_TEST_NOTE = "The change touches code but adds no test";
 
@@ -839,6 +842,7 @@ Deno.test("the fleet reviewer's parser and audit send-back survive the shared pa
       file: "worker/deno/lib/y.ts",
       line: 3,
     }],
+    checklist: [],
   };
   assertEquals(parseFableReview(JSON.stringify(reply)), reply);
   assertEquals(parseFableReview(`Review:\n${JSON.stringify(reply)}\n`), reply);
@@ -864,5 +868,231 @@ Deno.test("createDefaultDeps wires the real pre-PR verifier (an absolute summary
   assertEquals(result.status, "not_checked");
   if (result.status === "not_checked") {
     assertStringIncludes(result.reason, "absolute");
+  }
+});
+
+// ---- review checklists (Issue #3594) ---------------------------------------
+
+Deno.test("parseReviewReply parses a checklist array, defaults to [] and rejects a bad verdict", () => {
+  const base = { summary: "ok", findings: [], testChanges: "none" };
+  const withList = parseReviewReply(JSON.stringify({
+    ...base,
+    checklist: [
+      { checklist: "Money", item: "Uses Decimal", verdict: "met", note: "yes" },
+      { checklist: "Money", item: "No f64", verdict: "not applicable" },
+    ],
+  }));
+  assertEquals(withList.checklist.map((c) => c.verdict), [
+    "met",
+    "not applicable",
+  ]);
+  assertEquals(withList.checklist[1]!.note, "");
+  assertEquals(parseReviewReply(JSON.stringify(base)).checklist, []);
+  assertThrows(
+    () =>
+      parseReviewReply(JSON.stringify({
+        ...base,
+        checklist: [{ checklist: "M", item: "i", verdict: "probably" }],
+      })),
+    Error,
+    "verdict",
+  );
+  assertThrows(
+    () => parseReviewReply(JSON.stringify({ ...base, checklist: "nope" })),
+    Error,
+    "checklist",
+  );
+});
+
+const MONEY_CHECKLISTS = JSON.stringify({
+  checklists: [{
+    name: "Money handling",
+    paths: ["src/money/**"],
+    items: ["Every money figure uses the Decimal type", "Rounding is tested"],
+  }],
+});
+
+/** A repo whose BASE commit carries `baseFile` (when given) and whose head commit writes `headFiles`. */
+async function makeChecklistRepo(
+  baseFile: string | null,
+  headFiles: Record<string, string>,
+): Promise<Fixture> {
+  const repo = await Deno.makeTempDir({ prefix: "pre-pr-3594-repo-" });
+  const g = (args: string[]) => gitOk(args, repo);
+  await g(["init", "--quiet", "-b", "main"]);
+  await g(["config", "user.email", "t@example.com"]);
+  await g(["config", "user.name", "T"]);
+  await g(["config", "commit.gpgsign", "false"]);
+  await Deno.writeTextFile(`${repo}/README.md`, "base\n");
+  if (baseFile !== null) {
+    await Deno.writeTextFile(`${repo}/review-checklists.json`, baseFile);
+  }
+  await g(["add", "."]);
+  await g(["commit", "--quiet", "-m", "base"]);
+  const baseSha = (await g(["rev-parse", "HEAD"])).trim();
+  await g(["checkout", "--quiet", "-b", "feature"]);
+  for (const [path, text] of Object.entries(headFiles)) {
+    const dir = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+    if (dir) await Deno.mkdir(`${repo}/${dir}`, { recursive: true });
+    await Deno.writeTextFile(`${repo}/${path}`, text);
+  }
+  await g(["add", "."]);
+  await g(["commit", "--quiet", "-m", "head"]);
+  const headSha = (await g(["rev-parse", "HEAD"])).trim();
+  return {
+    repo,
+    baseSha,
+    headSha,
+    cleanup: () => Deno.remove(repo, { recursive: true }),
+  };
+}
+
+async function promptFor(
+  f: Fixture,
+  over: Partial<PrePrVerifierInput> = {},
+  depsOver: Partial<PrePrVerifierDeps> = {},
+): Promise<string> {
+  let prompt = "";
+  const tmps: string[] = [];
+  const deps = {
+    ...makeDeps((o) => {
+      prompt = o.prompt;
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, tmps),
+    ...depsOver,
+  };
+  await runPrePrVerifier(inputFor(f, over), deps);
+  assert(prompt !== "", "the model was never asked");
+  assert(!prompt.includes("{{"));
+  return prompt;
+}
+
+Deno.test("verifier prompt lists a matching base-ref checklist's name and every item", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const p = await promptFor(f, { changedFiles: ["src/money/fees.ts"] });
+    assertStringIncludes(p, "Money handling");
+    assertStringIncludes(p, "1. Every money figure uses the Decimal type");
+    assertStringIncludes(p, "2. Rounding is tested");
+    assertStringIncludes(p, "src/money/fees.ts");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("verifier prompt has no checklist section when the diff matches no checklist path", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, { "README.md": "new\n" });
+  try {
+    const p = await promptFor(f, { changedFiles: ["README.md"] });
+    assert(!p.includes("Money handling"));
+    assert(!p.includes("Rounding is tested"));
+    assert(!p.includes("Review checklist"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("verifier prompt reports a malformed base checklist as a loud blocking section", async () => {
+  const f = await makeChecklistRepo("{not json", { "README.md": "new\n" });
+  try {
+    const p = await promptFor(f, { changedFiles: ["README.md"] });
+    assertStringIncludes(p, "Review checklist file problem");
+    assertStringIncludes(p, "not valid JSON");
+    assertStringIncludes(p, "BLOCKING");
+    assertStringIncludes(p, "review-checklists.json");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a checklist added only in the head commit is not applied (read at the base)", async () => {
+  const f = await makeChecklistRepo(null, {
+    "review-checklists.json": MONEY_CHECKLISTS,
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const p = await promptFor(f, { changedFiles: ["src/money/fees.ts"] });
+    assert(!p.includes("Money handling"));
+    assert(!p.includes("Rounding is tested"));
+    assert(!p.includes("Review checklist"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a checklist weakened in the head commit is still enforced as at the base", async () => {
+  const weakened = JSON.stringify({
+    checklists: [{ name: "Weak", paths: ["nothing/**"], items: ["x"] }],
+  });
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "review-checklists.json": weakened,
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const p = await promptFor(f, { changedFiles: ["src/money/fees.ts"] });
+    assertStringIncludes(p, "Rounding is tested");
+    assert(!p.includes("Weak"));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("an unreadable base checklist (git show fails otherwise) is a loud section", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, { "README.md": "new\n" });
+  try {
+    const real = defaultPrePrVerifierDeps.runGit;
+    const p = await promptFor(f, { changedFiles: ["README.md"] }, {
+      runGit: (args, cwd) =>
+        args[0] === "show"
+          ? Promise.resolve({
+            code: 128,
+            stdout: "",
+            stderr: "fatal: unable to read tree object\n",
+          })
+          : real(args, cwd),
+    });
+    assertStringIncludes(p, "could not be read");
+    assertStringIncludes(p, "unable to read tree object");
+    assertStringIncludes(p, "BLOCKING");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("readBaseChecklists: spawn failure is unreadable; missing file variants are absent", async () => {
+  const none = await readBaseChecklists(() => Promise.resolve(null), "/x", "s");
+  assertEquals(none.kind, "unreadable");
+  const run = (stderr: string) =>
+    readBaseChecklists(
+      () => Promise.resolve({ code: 128, stdout: "", stderr }),
+      "/x",
+      "s",
+    );
+  assertEquals(
+    (await run("fatal: path 'review-checklists.json' does not exist in 'abc'"))
+      .kind,
+    "absent",
+  );
+  assertEquals(
+    (await run(
+      "fatal: path 'review-checklists.json' exists on disk, but not in 'abc'",
+    )).kind,
+    "absent",
+  );
+  assertEquals((await run("fatal: bad object")).kind, "unreadable");
+});
+
+Deno.test("verifier prompt says the checklists were not checked when the changed-file list is unknown", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    "src/money/fees.ts": "export const fee = 1;\n",
+  });
+  try {
+    const p = await promptFor(f, { changedFiles: null });
+    assertStringIncludes(p, "Review checklists NOT checked");
+    assertStringIncludes(p, "BLOCKING");
+  } finally {
+    await f.cleanup();
   }
 });

@@ -23,6 +23,7 @@ const review = (over: Partial<FableReview> = {}): FableReview => ({
   testChanges: "none",
   testChangeNotes: [],
   unrelatedIssues: [],
+  checklist: [],
   ...over,
 });
 const finding = { file: "a.ts", line: 3, problem: "off by one", fix: "use <=" };

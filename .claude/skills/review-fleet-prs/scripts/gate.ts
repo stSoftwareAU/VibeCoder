@@ -55,6 +55,13 @@ import {
   needsBranchUpdate,
   updateBranch,
 } from "./branch_update.ts";
+import {
+  CHECKLIST_FILE_LIST_LIMIT,
+  type ChecklistLoad,
+  loadChecklistsFromText,
+  renderChecklistSection,
+  REVIEW_CHECKLISTS_FILE,
+} from "../../../../worker/deno/lib/review_checklists.ts";
 import { isDependencyAuditCheck } from "../../../../worker/deno/lib/dependency_audit_check.ts";
 import {
   type CiFixMarkerComment,
@@ -109,6 +116,10 @@ export interface ReadyPr {
   // Findings of this PR's last review when it was sent back: the re-review
   // checks each one was fixed.
   previousFindings: Finding[];
+  // The repo's review checklists (base-branch `review-checklists.json`) that
+  // apply to this diff, rendered for the brief's {{REVIEW_CHECKLISTS}} field;
+  // "" when none applies (Issue #3594).
+  reviewChecklists: string;
 }
 
 // A PR whose dependency audit is still red after CI-fix replied at its head
@@ -502,6 +513,7 @@ export function auditSendBack(check: string): FableReview {
     testChanges: "none",
     testChangeNotes: [],
     unrelatedIssues: [],
+    checklist: [],
   };
 }
 
@@ -858,6 +870,8 @@ export async function pass(
         testChanges: { removed: [], edited: [] },
         noTestAdded: false,
         previousFindings: previousFindings(log, repo, pr.number),
+        // No model review runs for an audit send-back, so no checklist.
+        reviewChecklists: "",
         check: auditCheck,
         review: auditSendBack(auditCheck),
       });
@@ -881,6 +895,7 @@ export async function pass(
         "--paginate",
       ]),
     );
+    const checklists = await loadBaseChecklists(callGh, repo, pr.baseRefName);
     ready.push({
       repo,
       number: pr.number,
@@ -893,6 +908,7 @@ export async function pass(
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),
       previousFindings: previousFindings(log, repo, pr.number),
+      reviewChecklists: renderChecklistSection(checklists, changedPaths(files)),
     });
   }
   // A single --repo run sees only part of the fleet, so it leaves the
@@ -902,6 +918,63 @@ export async function pass(
   await writeMemory(dir, BRANCH_UPDATE_FILE, updateAsked);
   await writeMemory(dir, FAILED_FILE, failed);
   return { ready, auditBlocked, skipped, upkeep };
+}
+
+// Reads the repo's `review-checklists.json` at the PR's base ref (so a PR
+// cannot weaken its own checklist). Not found is absent; any other failure or
+// an undecodable response is unreadable, which the brief makes the reviewer
+// report rather than skip (Issue #3594).
+export async function loadBaseChecklists(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  baseRef: string,
+): Promise<ChecklistLoad> {
+  // Refs may contain `/`, which stays valid in a query string.
+  const ref = encodeURIComponent(baseRef).replaceAll("%2F", "/");
+  let raw: string;
+  try {
+    raw = await gh([
+      "api",
+      `repos/${repo}/contents/${REVIEW_CHECKLISTS_FILE}?ref=${ref}`,
+    ]);
+  } catch (e) {
+    const message = (e as Error).message ?? String(e);
+    if (/HTTP 404|Not Found/i.test(message)) {
+      return loadChecklistsFromText(null);
+    }
+    const cause = message.split("\n").map((l) => l.trim()).find((l) => l) ??
+      "gh failed";
+    return loadChecklistsFromText(null, `gh api failed: ${cause}`);
+  }
+  try {
+    const body = JSON.parse(raw);
+    if (
+      typeof body?.content !== "string" || body.content === "" ||
+      (body.encoding !== undefined && body.encoding !== "base64")
+    ) {
+      throw new Error("no base64 content in the response");
+    }
+    const bin = atob(body.content.replace(/\s/g, ""));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return loadChecklistsFromText(text);
+  } catch (e) {
+    return loadChecklistsFromText(
+      null,
+      `could not decode the gh api response: ${
+        firstLine((e as Error).message ?? String(e))
+      }`,
+    );
+  }
+}
+
+// The changed paths (a rename counts at both names) for checklist matching;
+// null when the list is long enough to be truncated by GitHub.
+function changedPaths(files: PrFile[]): string[] | null {
+  if (files.length >= CHECKLIST_FILE_LIST_LIMIT) return null;
+  return files.flatMap((f) =>
+    f.previous_filename ? [f.filename, f.previous_filename] : [f.filename]
+  );
 }
 
 // The red audit check to send this PR back over, or undefined to leave it

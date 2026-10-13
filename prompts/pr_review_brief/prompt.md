@@ -3,7 +3,7 @@ The review brief shared by the fleet reviewer (.claude/skills/review-fleet-prs,
 "Reviewing the ready PRs") and the worker's pre-PR verifier
 (worker/deno/lib/pre_pr_verifier.ts), Issue #3395. One source, so the two
 cannot drift: change the review rules here, never in a copy. Each caller fills
-the four {{FIELDS}}; the fleet's values are listed in SKILL.md and the
+the five {{FIELDS}}; the fleet's values are listed in SKILL.md and the
 verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
 -->
 ## Review Mode — one change against its linked issue
@@ -45,10 +45,18 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    Report it under `testChanges` as **meaningful** only when the issue
    requires the change.
 6. {{PREVIOUS_FINDINGS}}
-7. For Dependabot: check the changelog or release notes for breaking
+7. Repo review checklists: {{REVIEW_CHECKLISTS}}
+   When that is empty, the repo has no checklist that applies to this
+   change; do nothing more for this step. Otherwise follow it: report every
+   listed item in the reply `checklist` array as `met`, `missing` or
+   `not applicable` with a short note. Every `missing` item is also a
+   blocking **finding**. If the section says the checklist file is
+   malformed, unreadable or was not checked, report that as a blocking
+   **finding** as it instructs; never treat it as "no checklist".
+8. For Dependabot: check the changelog or release notes for breaking
    changes that affect how this repo uses the dependency, and that a major
    bump is reflected in the code where needed.
-8. If, while reading, you notice an important **pre-existing** problem the
+9. If, while reading, you notice an important **pre-existing** problem the
    change did not cause and is not meant to fix (a bug, a security gap,
    data loss, a broken workflow in code it passes by), report it under
    `unrelatedIssues`, not as a finding: it is recorded separately and does
@@ -74,4 +82,5 @@ diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}]}`
+`{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}]}`
+Use `[]` for `checklist` when there is no checklist section.

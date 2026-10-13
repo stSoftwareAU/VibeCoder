@@ -1,0 +1,323 @@
+/**
+ * Repo-owned, path-scoped review checklists (Issue #3594): the file parser,
+ * the path-glob matcher, the reviewer section renderer and the reply-verdict
+ * parser.
+ */
+
+import {
+  assert,
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import {
+  CHECKLIST_FILE_LIST_LIMIT,
+  loadChecklistsFromText,
+  matchesPathGlob,
+  parseChecklistVerdicts,
+  parseReviewChecklists,
+  renderChecklistSection,
+  REVIEW_CHECKLISTS_FILE,
+} from "../lib/review_checklists.ts";
+
+const GOOD = {
+  checklists: [{ name: "Money", paths: ["src/money/**"], items: ["Decimal"] }],
+};
+
+// ---- parser ----------------------------------------------------------------
+
+Deno.test("parseReviewChecklists accepts the documented shape", () => {
+  assertEquals(parseReviewChecklists(JSON.stringify(GOOD)), GOOD);
+  assertEquals(REVIEW_CHECKLISTS_FILE, "review-checklists.json");
+  assert(CHECKLIST_FILE_LIST_LIMIT > 0);
+});
+
+Deno.test("parseReviewChecklists rejects each invalid shape with a descriptive message", () => {
+  const withList = (c: unknown) => JSON.stringify({ checklists: [c] });
+  const cases: Array<[string, string, string]> = [
+    ["{not json", "not valid JSON", "bad JSON"],
+    ["[]", "must be a JSON object", "array top level"],
+    ['"x"', "must be a JSON object", "string top level"],
+    ["null", "must be a JSON object", "null top level"],
+    ["{}", '"checklists" array', "missing checklists"],
+    ['{"checklists":{}}', '"checklists" array', "checklists not array"],
+    [withList("x"), "checklists[0] must be an object", "entry not object"],
+    [withList({ paths: ["a"], items: ["i"] }), '"name"', "missing name"],
+    [withList({ name: " ", paths: ["a"], items: ["i"] }), '"name"', "blank"],
+    [withList({ name: "n", paths: [], items: ["i"] }), '"paths"', "no paths"],
+    [withList({ name: "n", paths: ["a"], items: [] }), '"items"', "no items"],
+    [withList({ name: "n", paths: ["a"] }), '"items"', "items missing"],
+    [withList({ name: "n", paths: [1], items: ["i"] }), "paths[0]", "path num"],
+    [withList({ name: "n", paths: ["a"], items: [""] }), "items[0]", "item ''"],
+    [withList({ name: "n", paths: ["a"], items: [null] }), "items[0]", "null"],
+  ];
+  for (const [text, message, label] of cases) {
+    const err = assertThrows(
+      () => parseReviewChecklists(text),
+      Error,
+      "",
+      label,
+    );
+    assertStringIncludes(err.message, message, label);
+  }
+});
+
+Deno.test("parseReviewChecklists names the offending checklist", () => {
+  const err = assertThrows(() =>
+    parseReviewChecklists(
+      JSON.stringify({
+        checklists: [
+          GOOD.checklists[0],
+          { name: "Release", paths: ["Cargo.toml"], items: [] },
+        ],
+      }),
+    ), Error);
+  assertStringIncludes(err.message, "checklists[1]");
+  assertStringIncludes(err.message, "Release");
+});
+
+// ---- glob ------------------------------------------------------------------
+
+Deno.test("matchesPathGlob: ** crosses directories, * does not", () => {
+  assert(matchesPathGlob("src/**", "src/a/b/c.rs"));
+  assert(matchesPathGlob("src/**", "src/a.rs"));
+  assert(matchesPathGlob("src/*.rs", "src/a.rs"));
+  assertFalse(matchesPathGlob("src/*.rs", "src/a/b.rs"));
+  assertFalse(matchesPathGlob("*.rs", "src/a.rs"));
+  assert(matchesPathGlob("**/*.rs", "src/a/b.rs"));
+  assert(matchesPathGlob("src/a*/c.rs", "src/abc/c.rs"));
+  assertFalse(matchesPathGlob("src/a*/c.rs", "src/ab/x/c.rs"));
+});
+
+Deno.test("matchesPathGlob: **/ also matches zero directories", () => {
+  assert(matchesPathGlob("**/foo.rs", "foo.rs"));
+  assert(matchesPathGlob("**/foo.rs", "a/foo.rs"));
+  assert(matchesPathGlob("**/foo.rs", "a/b/foo.rs"));
+  assertFalse(matchesPathGlob("**/foo.rs", "afoo.rs"));
+  assertFalse(matchesPathGlob("**/foo.rs", "a/bfoo.rs"));
+});
+
+Deno.test("matchesPathGlob: ? is exactly one non-slash character", () => {
+  assert(matchesPathGlob("a?c", "abc"));
+  assertFalse(matchesPathGlob("a?c", "ac"));
+  assertFalse(matchesPathGlob("a?c", "abbc"));
+  assertFalse(matchesPathGlob("a?c", "a/c"));
+});
+
+Deno.test("matchesPathGlob is case sensitive and treats other characters literally", () => {
+  assertFalse(matchesPathGlob("CHANGELOG.md", "changelog.md"));
+  assert(matchesPathGlob("CHANGELOG.md", "CHANGELOG.md"));
+  assertFalse(matchesPathGlob("CHANGELOG.md", "CHANGELOGxmd"));
+  assert(matchesPathGlob("a+b(c).rs", "a+b(c).rs"));
+  assertFalse(matchesPathGlob("[ab].rs", "a.rs"));
+  assert(matchesPathGlob("[ab].rs", "[ab].rs"));
+});
+
+Deno.test("matchesPathGlob normalises a leading ./ on the path", () => {
+  assert(matchesPathGlob("src/**", "./src/a.rs"));
+  assert(matchesPathGlob("Cargo.toml", "././Cargo.toml"));
+});
+
+Deno.test("matchesPathGlob: .. , // and leading / evasions never match", () => {
+  // Each would match if the guard were absent.
+  assertFalse(matchesPathGlob("src/**", "src/../etc/passwd"));
+  assertFalse(matchesPathGlob("**/*.rs", "../outside/a.rs"));
+  assertFalse(matchesPathGlob("**", "a/../b"));
+  assertFalse(matchesPathGlob("src/**", "src//a.rs"));
+  assertFalse(matchesPathGlob("**", "/etc/passwd"));
+  assertFalse(matchesPathGlob("**", "./../x"));
+  assertFalse(matchesPathGlob("src/**", "src/a/.."));
+  // Unsafe globs match nothing either.
+  assertFalse(matchesPathGlob("../**", "../a.rs"));
+  assertFalse(matchesPathGlob("/src/**", "/src/a.rs"));
+  assertFalse(matchesPathGlob("src//**", "src//a.rs"));
+  // A name merely containing dots is fine.
+  assert(matchesPathGlob("src/**", "src/..a/b.rs"));
+});
+
+Deno.test("matchesPathGlob: prefix-only and suffix-only patterns", () => {
+  assert(matchesPathGlob("Cargo*", "Cargo.toml"));
+  assertFalse(matchesPathGlob("Cargo*", "xCargo.toml"));
+  assert(matchesPathGlob("*.toml", "Cargo.toml"));
+  assertFalse(matchesPathGlob("*.toml", "Cargo.toml.bak"));
+  assert(matchesPathGlob("**/*price*.rs", "src/x/unit_price_v2.rs"));
+});
+
+Deno.test("matchesPathGlob finishes hostile inputs and answers false", () => {
+  const text = "a".repeat(5000);
+  assertFalse(matchesPathGlob("*a*a*a*b", text));
+  assertFalse(matchesPathGlob("**a**a**a**b", text));
+  assertFalse(matchesPathGlob("**/a**/a**/a*b", text));
+  assertFalse(matchesPathGlob("*a*a*a*a*a*a*a*a*b", text));
+  // And still answers true when it should.
+  assert(matchesPathGlob("*a*a*a*b", text + "b"));
+});
+
+// ---- loading ---------------------------------------------------------------
+
+Deno.test("loadChecklistsFromText maps text, null and read errors", () => {
+  assertEquals(loadChecklistsFromText(null), { kind: "absent" });
+  assertEquals(loadChecklistsFromText(JSON.stringify(GOOD)), {
+    kind: "loaded",
+    config: GOOD,
+  });
+  const bad = loadChecklistsFromText("{nope");
+  assertEquals(bad.kind, "malformed");
+  assertEquals(loadChecklistsFromText(null, "disk on fire"), {
+    kind: "unreadable",
+    reason: "disk on fire",
+  });
+  // A read error wins over any text.
+  assertEquals(
+    loadChecklistsFromText(JSON.stringify(GOOD), "boom").kind,
+    "unreadable",
+  );
+});
+
+// ---- rendering -------------------------------------------------------------
+
+const POLICY = loadChecklistsFromText(JSON.stringify({
+  checklists: [
+    {
+      name: "Money handling",
+      paths: ["src/money/**", "**/*price*.rs", "**/*order*.rs"],
+      items: [
+        "Every money figure uses the Decimal/cents type, never f64",
+        "Rounding is explicit and tested",
+      ],
+    },
+    {
+      name: "Release",
+      paths: [".github/workflows/release*.yml", "Cargo.toml", "CHANGELOG.md"],
+      items: ["CHANGELOG.md has an entry", "Version in Cargo.toml is bumped"],
+    },
+  ],
+}));
+
+Deno.test("renderChecklistSection lists name, matched files and every item for a matching path", () => {
+  const out = renderChecklistSection(POLICY, [
+    "src/money/fees.rs",
+    "README.md",
+  ]);
+  assertStringIncludes(out, "Money handling");
+  assertStringIncludes(out, "src/money/fees.rs");
+  assertStringIncludes(
+    out,
+    "1. Every money figure uses the Decimal/cents type",
+  );
+  assertStringIncludes(out, "2. Rounding is explicit and tested");
+  assertStringIncludes(out, "met");
+  assertStringIncludes(out, "not applicable");
+  assertStringIncludes(out, "`findings`");
+  assertStringIncludes(out, "`checklist`");
+  assertFalse(out.includes("README.md"));
+  assertFalse(out.includes("Release"));
+});
+
+Deno.test("renderChecklistSection: GRQ-AutoTrader policy paths select the right checklists", () => {
+  const has = (files: string[], name: string) =>
+    renderChecklistSection(POLICY, files).includes(name);
+  assert(has(["src/money/fees.rs"], "Money handling"));
+  assert(has(["src/engine/unit_price.rs"], "Money handling"));
+  assert(has(["crates/x/order_book.rs"], "Money handling"));
+  assertFalse(has(["src/ui/button.rs"], "Money handling"));
+  assertFalse(has(["src/ui/button.rs"], "Release"));
+  assert(has([".github/workflows/release-prod.yml"], "Release"));
+  assertFalse(has([".github/workflows/ci.yml"], "Release"));
+  assert(has(["Cargo.toml"], "Release"));
+  assert(has(["CHANGELOG.md"], "Release"));
+  assertFalse(has(["docs/CHANGELOG.md"], "Release"));
+  assertEquals(renderChecklistSection(POLICY, ["src/ui/button.rs"]), "");
+});
+
+Deno.test("renderChecklistSection caps the matched files shown at ten", () => {
+  const files = Array.from({ length: 14 }, (_, i) => `src/money/f${i}.rs`);
+  const out = renderChecklistSection(POLICY, files);
+  assertStringIncludes(out, "src/money/f9.rs");
+  assertFalse(out.includes("src/money/f10.rs"));
+  assertStringIncludes(out, "and 4 more");
+});
+
+Deno.test("renderChecklistSection is empty when absent or when nothing matches", () => {
+  assertEquals(renderChecklistSection({ kind: "absent" }, ["src/a.rs"]), "");
+  assertEquals(renderChecklistSection({ kind: "absent" }, null), "");
+  assertEquals(renderChecklistSection(POLICY, []), "");
+});
+
+Deno.test("renderChecklistSection: malformed and unreadable files are loud blocking sections", () => {
+  for (const kind of ["malformed", "unreadable"] as const) {
+    const out = renderChecklistSection(
+      { kind, reason: "the-specific-reason" },
+      ["README.md"],
+    );
+    assertStringIncludes(out, "the-specific-reason");
+    assertStringIncludes(out, "BLOCKING");
+    assertStringIncludes(out, "review-checklists.json");
+    assertStringIncludes(out, "line 1");
+    assertStringIncludes(out, '"no checklist"');
+    // Same loudness whatever the changed files, even unknown.
+    assertStringIncludes(
+      renderChecklistSection({ kind, reason: "r" }, null),
+      "BLOCKING",
+    );
+  }
+});
+
+Deno.test("renderChecklistSection never lets a reason break out of its line or code span", () => {
+  const hostile = `line1\nline2\r\n\`\`\`\n## injected heading\n${
+    "x".repeat(900)
+  }`;
+  for (const kind of ["malformed", "unreadable"] as const) {
+    const out = renderChecklistSection({ kind, reason: hostile }, null);
+    const reasonLine = out.split("\n").find((l) => l.includes("line1"))!;
+    assert(reasonLine.includes("line2"));
+    assertFalse(reasonLine.includes("```"));
+    assertFalse(out.split("\n").some((l) => l.startsWith("## injected")));
+    assert(reasonLine.length < 500);
+  }
+});
+
+Deno.test("renderChecklistSection: a loaded config with an unknown changed-file list is not-checked and blocking", () => {
+  const out = renderChecklistSection(POLICY, null);
+  assertStringIncludes(out, "NOT checked");
+  assertStringIncludes(out, "BLOCKING");
+  assertStringIncludes(out, "review-checklists.json");
+  assertFalse(out.includes("Every money figure"));
+});
+
+// ---- verdicts --------------------------------------------------------------
+
+Deno.test("parseChecklistVerdicts accepts valid entries and defaults", () => {
+  assertEquals(parseChecklistVerdicts(undefined), []);
+  assertEquals(parseChecklistVerdicts(null), []);
+  assertEquals(parseChecklistVerdicts([]), []);
+  assertEquals(
+    parseChecklistVerdicts([
+      { checklist: "M", item: "i", verdict: "met", note: "n" },
+      { checklist: "M", item: "j", verdict: "missing" },
+      { checklist: "M", item: "k", verdict: "not applicable", note: "" },
+    ]).map((v) => [v.verdict, v.note]),
+    [["met", "n"], ["missing", ""], ["not applicable", ""]],
+  );
+});
+
+Deno.test("parseChecklistVerdicts rejects each bad shape naming the problem", () => {
+  const ok = { checklist: "M", item: "i", verdict: "met", note: "n" };
+  const bad: Array<[unknown, string]> = [
+    ["nope", "not an array"],
+    [{}, "not an array"],
+    [["x"], "not an object"],
+    [[null], "not an object"],
+    [[{ ...ok, checklist: "" }], '"checklist"'],
+    [[{ ...ok, item: 3 }], '"item"'],
+    [[{ ...ok, verdict: "maybe" }], "verdict"],
+    [[{ ...ok, verdict: undefined }], "verdict"],
+    [[{ ...ok, verdict: "MET" }], "verdict"],
+    [[ok, { ...ok, note: 5 }], "note"],
+  ];
+  for (const [value, message] of bad) {
+    const err = assertThrows(() => parseChecklistVerdicts(value), Error);
+    assertStringIncludes(err.message, message);
+  }
+});
