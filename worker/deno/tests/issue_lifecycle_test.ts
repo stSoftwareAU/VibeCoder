@@ -910,6 +910,12 @@ Deno.test("ensureIssueClosedIfPrMerged - a merged PR whose change did not land l
     assertEquals(result.value.closed, false);
     assert(result.value.reason?.includes("did not land"), result.value.reason);
     assert(result.value.reason?.includes("#3125"), result.value.reason);
+    // Issue #3501: the reason is posted to the worked issue, possibly in a
+    // target repo, so it must not cite a VibeCoder issue as `(Issue #N)`.
+    assert(
+      !/\(Issue #\d+\)/.test(result.value.reason ?? ""),
+      result.value.reason,
+    );
     // Issue #175: the verdict is handed back structurally so the caller can
     // self-heal the orphaned milestone merge instead of parsing `reason`.
     assertEquals(result.value.unlanded?.reason, "orphaned");
