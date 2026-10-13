@@ -62,6 +62,6 @@ This change touches documentation and prompts only. No UI is affected.
 - Pins absent on base: `deno task drift-pins-on-base origin/main …` reported "absent on base" for every pin in all four sections.
 - No existing test edited, so no assertions removed.
 - Executors also ran these existing suites, which passed: coding_guidelines twin, layer and run-scope tests; the issue-prompt tests; and all `tests/pr_feedback*`.
-- `./quality.sh` full gate: result below.
+- `./quality.sh` full gate on the head: "Result: PASSED (with skipped checks)". Only "config integration" was skipped. deno tests, lint, type check, fmt, markdownlint and semgrep all passed.
 
 Branch outcomes: none added
