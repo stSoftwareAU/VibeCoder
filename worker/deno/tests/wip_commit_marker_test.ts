@@ -97,7 +97,7 @@ Deno.test("wip_commit_marker - the subject names the cause, never a timeout the 
       dirtyFiles: 4,
     }),
     "wip: execute timed out after 3600s — preserving 4 uncommitted " +
-      "file(s) (Issue #47)",
+      "file(s)",
   );
 });
 

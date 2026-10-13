@@ -1771,7 +1771,9 @@ unless explicitly overridden.
 | Call-storm window | `call_storm_window_seconds` | `300` | Sliding window the calls are counted over. Must be positive and no wider than the tracker's 900 s of tool-call history, and is best left equal to `progress_extension_check_seconds` — the window judged is the window observed. |
 | Call-storm novel share | `call_storm_novel_share` | `0.25` | Distinct normalised tool calls over total calls in the window below which a busy window reads as a storm (Issue #2773). A poll loop repeats itself; a read-heavy investigation such as a security sweep is nearly all novel and is not stopped. Must be above 0 and at most 1; lower it if an investigation that revisits files is being stopped. |
 | Quota-poll park floor | `quota_poll_park_floor` | `1500` | GraphQL points remaining below which the polling gate parks repos with `nice` at or above `quota_poll_park_nice` for the cycle (Issue #3628): no PR fetches, no timeline batch, no candidate collectors. Whole number of points, at least `0`; `0` disables the park tier. |
-| Quota-poll park nice | `quota_poll_park_nice` | `99` | The `nice` tier at or above which a repo is parked under the park floor (Issue #3628). Any integer — it is a `nice` comparison, so negative values are legal. |
+| Quota-poll park nice | `quota_poll_park_nice` | `99` | The `nice` tier at or above which a repo is parked under the park floor (Issue #3628), and polled every `poll_cadence_park_cycles` cycles by the poll cadence (Issue #3667). Any integer — it is a `nice` comparison, so negative values are legal. |
+| Poll cadence, low tier | `poll_cadence_low_cycles` | `3` | Cycles between polls of a repo with `0 < nice < quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle. |
+| Poll cadence, park tier | `poll_cadence_park_cycles` | `10` | Cycles between polls of a repo with `nice >= quota_poll_park_nice` by the per-repo Priority 1.x passes (Issue #3667). Whole number, at least `1`; `1` polls the tier every cycle. |
 | Quota-poll idle floor | `quota_poll_idle_floor` | `500` | GraphQL points remaining below which idle-task collection is deferred fleet-wide for the cycle — the scan's idle collector and the idle-task filer's repo walk both stand down (Issue #3628). Whole number of points, at least `0` and no greater than `quota_poll_park_floor`; `0` disables the idle tier. |
 | Screenshot retry timeout | `screenshot_retry_timeout_seconds` | `600` | Seconds allowed for the one extra agent turn the completion phase gives a run whose UI change lacks screenshot evidence, before it fails with `needs-screenshot` (Issue #2960). Must be positive. |
 | Self-scheduled diagnostics | `self_schedule_diagnostics_enabled` | `true` | Let the worker schedule its **own** auto-filed diagnostics without a human `work-on` (Issue #505). Only an issue the worker filed, in the worker's own repo, carrying a recognised provenance marker **and a filing attestation the worker's own filer wrote to the audit chain** (Issue #1277) qualifies; no label is ever self-applied. `false` restores the wait-for-a-human behaviour exactly. See [Self-scheduled worker diagnostics](workflows/issue-processing.md#-self-scheduled-worker-diagnostics-tier-2b). |
@@ -2856,6 +2858,37 @@ cycle records the decision:
 
 ```text
 polling-quota-gate: GraphQL quota remaining=1203/5000 below park_floor=1500 — parked 3 repo(s) with nice >= 99 this cycle; they resume next cycle
+```
+
+#### Poll cadence — poll low-priority repos less often (Issue #3667)
+
+The quota gate above only engages once the hourly quota runs low, and only
+for the issue scan. The fleet's shared account was meanwhile tripping
+GitHub's **secondary** (burst) limit with most of its hourly quota unspent,
+because every Priority 1.x pass — PR feedback, spelling and CI fixes, branch
+updates, CI nudges, stall repair, closing issues for merged PRs, milestone
+sync, completions and housekeeping, failure-detection resume, stale-workflow
+detection and stale-assignment recovery — walked every monitored repo on
+every two-to-three-minute cycle.
+
+Those passes now poll each repo on a cadence set by its `nice`, always:
+
+| Repo `nice` | Polled by the Priority 1.x passes |
+| --- | --- |
+| `nice <= 0` (the default) | every cycle |
+| `0 < nice < quota_poll_park_nice` | every `poll_cadence_low_cycles` cycles (default `3`) |
+| `nice >= quota_poll_park_nice` | every `poll_cadence_park_cycles` cycles (default `10`) |
+
+Upkeep of a deprioritised repo slows down but never stops: an open PR there
+is still serviced, just later. First polls are staggered so the low-priority
+tier never lands on one cycle, and a burst refusal since the last cycle holds
+due low-priority repos one more cycle — never beyond twice their cadence, so
+a recurring burst limit cannot starve them. The issue scan, auto-merge,
+conflict repair and the idle hooks still see every repo. Set both cadences to
+`1` to turn the cadence off. One log line per cycle names what was deferred:
+
+```text
+poll-cadence: polling 19 of 22 repo(s) this cycle — deferred 3 low-priority repo(s) (nice > 0) to a later cycle: stSoftwareAU/GRQ-extract-score, stSoftwareAU/TagsTS, stSoftwareAU/template-rust
 ```
 
 #### Why did this run take three hours?
@@ -4433,7 +4466,10 @@ semantics:
 - **New-work selection only.** `nice` tiers the next-issue / label / planning
   **new-work** scans. It does **not** reorder Priority 1.x in-flight
   maintenance (PR feedback, CI fixes, revisions) — once a piece of work is in
-  flight it is finished regardless of its repo's tier.
+  flight it is finished regardless of its repo's tier. A `nice > 0` repo's
+  in-flight work is polled less often, though (the
+  [poll cadence](#poll-cadence--poll-low-priority-repos-less-often-issue-3667),
+  Issue #3667): later, never not at all.
 
 Within a single tier the worker rotates fairly across repos, so a busy tier
 never starves its peers.
