@@ -114,7 +114,12 @@ async function commitsAhead(
   return Number.isFinite(aheadBy) ? aheadBy : null;
 }
 
-/** The body of a self-healed rollup PR. */
+/**
+ * The body of a self-healed rollup PR. It is raised in the target repo, so it
+ * carries no VibeCoder issue reference — GitHub would autolink a bare `#N` to
+ * an unrelated issue there (Issue #3501). Only the orphaned PR's own number,
+ * which belongs to that repo, is cited.
+ */
 export function buildOrphanedRollupBody(options: {
   milestoneBranch: string;
   defaultBranch: string;
@@ -128,13 +133,13 @@ export function buildOrphanedRollupBody(options: {
 PR #${orphanedPrNumber} merged into \`${milestoneBranch}\` **after** that
 milestone's rollup PR had already merged into \`${defaultBranch}\`, so its
 merge commit is not reachable from \`${defaultBranch}\` and the work has not
-landed (Issue #4396).
+landed.
 
 \`${milestoneBranch}\` is ${aheadBy} commit(s) ahead of \`${defaultBranch}\`.
 This PR merges them so the orphaned work lands and the issues behind it close
 on merge in the ordinary way.
 
-Raised automatically by the Vibe Coder (Issue #175).`;
+Raised automatically by the Vibe Coder.`;
 }
 
 /**

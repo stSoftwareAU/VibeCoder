@@ -1745,7 +1745,8 @@ export function buildSweepIssueBody(
   const lines: string[] = [
     `<!-- finding-id: ${row.id} -->`,
     "",
-    `**Whole-tree security sweep finding** \`${row.id}\` (Issue #4193).`,
+    // No VibeCoder #N here: this body is filed in the swept repo, where GitHub would autolink it (Issue #3501).
+    `**Whole-tree security sweep finding** \`${row.id}\`.`,
     "",
     `- **Family:** \`${row.family}\``,
     `- **Severity:** ${row.severity} · **Confidence:** ${row.confidence}`,
