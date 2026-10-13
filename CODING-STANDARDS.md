@@ -408,6 +408,27 @@ counter that restarts at 1 in every consumer serves one test's result to the
 next file in the same worker. Key it by something only its own owner can
 produce.
 
+The same rule covers the system temp directory. `/tmp` and `$TMPDIR` are shared
+host state: the gate's own `--parallel` test workers, another lane's
+`./quality.sh` on the same host and other OS users all write to them. A test
+reads, writes and lists only paths inside a directory it created itself
+(`Deno.makeTempDir`, `mktemp -d`), and removes that directory when it finishes.
+Never use a fixed name directly under `/tmp` or `$TMPDIR`, and never assert on
+what the shared temp directory contains. To prove that code cleans up its temp
+files, give the code a temp-root parameter that production leaves unset, pass
+the test's private directory, and assert that this directory is empty afterwards
+— `computeWorkingTreeDigest` in
+[`quality_gate_cache.ts`](worker/deno/lib/quality_gate_cache.ts) takes its
+`tempRoot` for exactly this. A shell test sent stderr to a fixed file directly
+in `/tmp` that another OS user on the host already owned, so the redirect failed
+with "Permission denied" before the command under test ran; and a test that
+listed the shared `TMPDIR` before and after one call reported a leak whenever a
+parallel test or another gate run created the same kind of directory in between
+(Issue #3524). Both fail on Linux too. Before raising the PR, grep new or edited
+test files for a literal `/tmp/`, or for `Deno.env.get("TMPDIR")` or `$TMPDIR`
+used outside a `makeTempDir` or `mktemp` call, and move each hit into the test's
+own directory.
+
 The same rule covers an OS-specific branch in the code under test. A test that
 runs a real shell script with a stubbed tool, binary or measurement — a stub
 binary first on `PATH`, a faked `df` — reaches the stub only where the script
