@@ -221,8 +221,9 @@ true because it names the guard, which still runs for degraded runs:
   ordering for a healthy run is covered by the edited independent-review-gate
   test.
 - Callers checked: `assessReportedGaps` is called by
-  `applyDegradedDeliveryGuard` and `rederiveReportedGapSection`.
-  `buildReportedGapPrSection` is called by both of those too.
+  `applyDegradedDeliveryGuard`, `rederiveReportedGapSection` and
+  `syncPrBodyFromSummary`. `buildReportedGapPrSection` is called by all three
+  too.
   `REPORTED_GAP_SECTION_HEADING` is used by `buildReportedGapPrSection` and
   `syncPrBodyFromSummary`. All are production readers.
 - Applied the new prompt sentence to this PR's own diff and summary: each

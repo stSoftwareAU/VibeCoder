@@ -107,7 +107,10 @@ creation, for as long as that run's conditions are met. A re-sync
 re-derives a leading `Degraded run` section from the issue's current body and
 the rebuilt summary rather than copying it, keeping only the original run's
 reason and follow-up number (Issue #3350). A leading `Partial delivery —
-follow-up filed` section is re-derived the same way (Issue #3506); see the
+follow-up filed` section is re-derived from the same inputs (Issue #3506), but
+when the re-derived section changes, the re-sync first files or reuses the
+follow-up through `fileDegradedFollowUp` and names the number it returns, which
+is a new one if the old follow-up was closed; see the
 degraded-run section of
 [issue-processing.md](workflows/issue-processing.md).
 
