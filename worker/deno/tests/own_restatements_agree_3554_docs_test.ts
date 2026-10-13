@@ -3,7 +3,7 @@
  * Issue #3554 — after #3077 added "Check the existing rules before you add
  * one", three fleet PRs still left their own restatements of a new rule
  * contradicting it (#3240, #3308, #3550); CODING-STANDARDS.md, the
- * coding-guidelines prompt and the issue prompt must require every
+ * coding-guidelines prompt, the issue prompt and the pr_feedback prompt must require every
  * restatement in the diff to give the same answer for the rule's edge case,
  * and carry an exception added in one place to every restatement.
  *
@@ -61,5 +61,21 @@ Deno.test("issue prompt Instructions requires every restatement of a new rule to
   assertPins(
     section(await readRepoDoc("prompts/issue/prompt.md"), "Instructions"),
     ISSUE_PROMPT_PINS,
+  );
+});
+
+const PR_FEEDBACK_PINS = [
+  "Every restatement of the rule gives the same answer",
+  "list every place this PR states or illustrates it",
+  "When the fix adds an exception, fallback or scope limit in one place, apply it to every restatement",
+];
+
+Deno.test("pr_feedback prompt Making Changes requires every restatement of a reworded rule to agree (Issue #3554)", async () => {
+  assertPins(
+    section(
+      await readRepoDoc("prompts/pr_feedback/prompt.md"),
+      "Making Changes",
+    ),
+    PR_FEEDBACK_PINS,
   );
 });
