@@ -330,6 +330,18 @@ not after a reviewer finds it weeks later.
   must itself pass the rule, checked against the code it describes. Say in
   the PR body that you applied the rule to the PR's own diff, and name what
   you found or say you found nothing.
+- **Every restatement of a rule gives the same answer.** After writing or
+  changing such a rule, list every place this diff states or illustrates it:
+  the rule itself, its examples and parentheticals, its restatement in each
+  other prompt or `CODING-STANDARDS.md` bullet, the operator-doc row, the PR
+  summary, and any helper doc comment or test the rule names. Name the edge
+  case the rule decides, then read each place for that case: every place must
+  give the same answer. Whenever the diff adds an exception, fallback or scope
+  limit in one place — on a review-fix round above all — apply it to every
+  restatement, then search the diff for the old wording (`git diff
+  <base>...HEAD | grep -n '<old phrase>'`) and fix each hit that still gives
+  the old answer. An example or parenthetical that contradicts its own rule is
+  the same blocking self-review finding as two contradictory rules.
 - **Adding a member owes a docs change too.** When you add a field, enum
   variant, kind, flag, column or row element to an existing set, grep for one
   or two **existing sibling members**, not the new one — the new name is in no
@@ -1375,6 +1387,27 @@ refusal that runs before an existing one (a new boundary check, a
 retired-field list, a stricter parse, a fake that throws), re-run the
 existing tests that expect the later refusal and confirm each still
 reaches it; one that now stops earlier is a blocking self-review finding.
+
+**A new precondition must not stop existing tests short.** The re-run in the
+refusal-test rule above covers a refusal; the same holds for any
+precondition a change adds before existing logic: a check, an early return,
+a null or disabled result, or an environment requirement such as a git
+repository, a git identity, a config value, the network or the clock. Find
+the existing tests of the changed function and confirm each one still
+reaches the logic it asserts on. Pay most attention to negative tests (not
+cached, not suppressed, not called), because they stay green when the path
+is skipped. A test that now stops at the new precondition is a blocking
+self-review finding. Fix it by giving the fixture what the precondition
+needs (for example `git init -q` in the temporary directory), and add a
+positive control: an assertion that the precondition holds, such as
+`assert(await denoCheckDigest(config) !== null)`, or the same fixture with
+only the probed value changed reaching the other outcome, so a later
+precondition cannot silently disable the test again. When the precondition
+is a new environment requirement, the Test Plan names the existing tests
+that needed fixture changes, or says that none did and how that was checked.
+stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
+a plain temporary directory that no longer reached the guard it pins
+(Issue #3530).
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
