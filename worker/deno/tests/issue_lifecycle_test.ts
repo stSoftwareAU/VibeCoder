@@ -346,7 +346,7 @@ Deno.test("handlePrClosedAfterCreation - closes issue when another PR was merged
       args.includes("pr") && args.includes("list") && args.includes("merged")
     ) {
       return Promise.resolve(JSON.stringify([
-        { number: 99, mergedAt: "2026-01-01T00:00:00Z" },
+        { number: 99, title: "Fix (#42)", mergedAt: "2026-01-01T00:00:00Z" },
       ]));
     }
     if (args.includes("issue") && args.includes("close")) {
