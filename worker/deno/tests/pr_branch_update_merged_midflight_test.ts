@@ -190,6 +190,18 @@ Deno.test("parsePrLiveFields - absent labels read as an empty list (Issue #3517)
   assertEquals(parsePrLiveFields("not json {").labels, []);
 });
 
+Deno.test("Issue #3517: parsePrLiveFields - unparseable JSON reads as all-unknown with no labels", () => {
+  const unknown = {
+    state: "UNKNOWN",
+    mergeable: "UNKNOWN",
+    armed: false,
+    behind: false,
+    labels: [],
+  };
+  assertEquals(parsePrLiveFields("{not json"), unknown);
+  assertEquals(parsePrLiveFields(""), unknown);
+});
+
 Deno.test("parsePrLiveFields - malformed labels are tolerated, keeping only valid names (Issue #3517)", () => {
   const withLabels = (labels: unknown) =>
     parsePrLiveFields(JSON.stringify({ state: "OPEN", labels })).labels;

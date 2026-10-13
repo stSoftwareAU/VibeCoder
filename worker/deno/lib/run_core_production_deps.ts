@@ -630,6 +630,13 @@ export interface ProductionDepsOptions {
   fleetPrefetchGhCommandFn?: (args: string[]) => Promise<string>;
 
   /**
+   * Overrides the `gh` runner used by the auto-merge sweep (list, live read,
+   * branch update, base-integrity, disarm). Defaults to {@link runGhCommand}
+   * (Issue #3517).
+   */
+  autoMergeGhCommandFn?: (args: string[]) => Promise<string>;
+
+  /**
    * The weekly-pace gate (Issue #1885). Production leaves it unset and gets
    * one judging the whole Claude credential pool on a pooled host (Issue
    * #2647), or the held token on a single-token host; a wiring test injects a
@@ -3393,6 +3400,7 @@ export async function createProductionRunCoreDeps(
       // the same set the blocking guard defers `work-on` issues to. A
       // single-login sweep left a sibling account's PR unattended, and with
       // it every issue that PR blocked.
+      const gh = options.autoMergeGhCommandFn ?? runGhCommand;
       const refreshOpenPrs = opts?.refreshOpenPrs === true;
       // Issue #2662: the post-scan pass names the repos it claimed from;
       // only those are listed live, the rest read the prefetch-served cache.
@@ -3410,7 +3418,7 @@ export async function createProductionRunCoreDeps(
             repo,
             [...authors],
             issueCache,
-            runGhCommand,
+            gh,
             undefined,
             refreshesRepoLive(opts, repo),
           ),
@@ -3420,18 +3428,18 @@ export async function createProductionRunCoreDeps(
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
         prLiveState: (repo, pr) =>
-          readPrLiveState(repo, pr.number, runGhCommand),
+          readPrLiveState(repo, pr.number, gh),
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>
-          requestBranchUpdate(repo, prNumber, runGhCommand),
+          requestBranchUpdate(repo, prNumber, gh),
         // Issue #3433: auto-merge follows the base — re-read it first.
         checkBaseIntegrity: (repo, pr, armed) =>
           checkPrBaseIntegrity({
             repo,
             pr,
             armed,
-            gh: runGhCommand,
+            gh,
             log: (m: string) => logger.warn(m),
           }),
         // Issue #3517: a standing-violation PR is disarmed, never armed.
@@ -3439,7 +3447,7 @@ export async function createProductionRunCoreDeps(
           disarmAutoMerge(
             repo,
             prNumber,
-            runGhCommand,
+            gh,
             (m: string) => logger.warn(m),
           ),
         attemptMerge: (repo, pr) =>

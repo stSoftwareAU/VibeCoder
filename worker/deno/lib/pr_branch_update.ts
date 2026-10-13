@@ -180,15 +180,6 @@ export function parsePrLiveFields(raw: string): PrLiveFields {
       labels: [],
     };
   }
-  if (typeof parsed !== "object" || parsed === null) {
-    return {
-      state: "UNKNOWN",
-      mergeable: "UNKNOWN",
-      armed: false,
-      behind: false,
-      labels: [],
-    };
-  }
   const fields = parsed as Record<string, unknown>;
   return {
     state: classifyState(
