@@ -110,6 +110,9 @@ export function describeWipCause(cause: WipPreservationCause): string {
  * truncation that produced it (Issue #420); the gate matches on the `wip:`
  * prefix, so branches still carrying either older subject are recognised
  * unchanged.
+ *
+ * The subject carries no fixed `#<n>` because it lands in target repos,
+ * where a bare number links to an unrelated issue (Issue #3499).
  */
 export function buildInterruptedWipCommitMessage(options: {
   /** What stopped the run. */
@@ -121,7 +124,7 @@ export function buildInterruptedWipCommitMessage(options: {
 }): string {
   return `wip: execute ${WIP_CAUSE_PHRASE[options.cause]} after ` +
     `${options.elapsedSeconds}s — preserving ${options.dirtyFiles} ` +
-    `uncommitted file(s) (Issue #47)`;
+    `uncommitted file(s)`;
 }
 
 /**
@@ -131,13 +134,16 @@ export function buildInterruptedWipCommitMessage(options: {
  * The `wip:` prefix is deliberate: the completion phase's WIP-only gate
  * (Issue #148) must recognise this commit as parked work, so a later run
  * cannot raise a "finished" PR built from it alone.
+ *
+ * The subject carries no fixed `#<n>` because it lands in target repos,
+ * where a bare number links to an unrelated issue (Issue #3499).
  */
 export function buildUncommittedWorkWipCommitMessage(options: {
   /** Uncommitted files the run left behind. */
   dirtyFiles: number;
 }): string {
   return `wip: preserving ${options.dirtyFiles} uncommitted file(s) left by ` +
-    `a run that raised no PR (Issue #218)`;
+    `a run that raised no PR`;
 }
 
 /**
@@ -149,13 +155,16 @@ export function buildUncommittedWorkWipCommitMessage(options: {
  * commits ahead of base are worker placeholders. A subject that does not
  * match lets the next claim raise a `Closes` PR over work the earlier run
  * declared blocked.
+ *
+ * The subject carries no fixed `#<n>` because it lands in target repos,
+ * where a bare number links to an unrelated issue (Issue #3499).
  */
 export function buildDeclaredHandoffWipCommitMessage(options: {
   /** Uncommitted files the hand-off is about to commit. */
   dirtyFiles: number;
 }): string {
   return `wip: preserving ${options.dirtyFiles} uncommitted file(s) before ` +
-    `a declared hand-off (Issue #3088)`;
+    `a declared hand-off`;
 }
 
 /** What a single checkpoint attempt did. */
