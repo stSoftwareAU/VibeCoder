@@ -54,7 +54,7 @@ Deno.test("coding guidelines GNU vs BSD bullet requires a portable fallback in s
     ),
     [
       "give any GNU-only form in shell code a test runs a portable fallback",
-      "fleet hosts run the quality gate on macOS too",
+      "macOS fleet hosts run the same tests too",
     ],
   );
 });
