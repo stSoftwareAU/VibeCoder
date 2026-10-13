@@ -829,8 +829,13 @@ async function reportSummaryRuleBlock(
  * added the mutation check as the fifth and Issue #3257 the summary claim
  * check as the sixth) pass, whether the PR is then raised or recovered.
  *
+ * PR #3676 review: the follow-up joins the parent's milestone when it has
+ * one, so the fleet works it on the milestone branch. `followUp` on the
+ * success result lets `completionBody` retract a follow-up this call newly
+ * filed when the claim-freshness check then stops the PR (`abortStaleClaim`).
+ *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
- *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
+ *   success (plus `followUp` when one was filed or reused), or `{ ok: false, result }` carrying the failure `PhaseResult`
  *   when the follow-up could not be filed.
  */
 async function applyDegradedDeliveryGuard(
@@ -838,8 +843,16 @@ async function applyDegradedDeliveryGuard(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-): Promise<{ ok: true; prBody: string } | { ok: false; result: PhaseResult }> {
-  const { repo, issueNumber, issueTitle, issueBody } = ctx;
+): Promise<
+  | {
+    ok: true;
+    prBody: string;
+    /** The follow-up this call filed or reused, when it filed any. */
+    followUp?: { number: number; reused: boolean };
+  }
+  | { ok: false; result: PhaseResult }
+> {
+  const { repo, issueNumber, issueTitle, issueBody, milestoneTitle } = ctx;
   const logger = deps.logger;
 
   const degradedDelivery = assessDegradedDelivery({
@@ -870,6 +883,7 @@ async function applyDegradedDeliveryGuard(
       runId: getRunId(),
       gh: deps.github.runGhCommand,
       dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
+      ...(milestoneTitle ? { milestoneTitle } : {}),
     });
     if (!followUp.ok) {
       // Raising the PR now would close the issue with the residue recorded
@@ -905,6 +919,7 @@ async function applyDegradedDeliveryGuard(
       prBody: (verdict.degraded
         ? buildDegradedPrSection(verdict, followUp.value.number)
         : buildReportedGapPrSection(verdict, followUp.value.number)) + prBody,
+      followUp: followUp.value,
     };
   } else if (degradedDelivery.shortfalls.length > 0) {
     logger.warn(
@@ -1515,6 +1530,7 @@ async function abortStaleClaim(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
+  newFollowUp?: number,
 ): Promise<PhaseResult> {
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
@@ -1548,6 +1564,35 @@ async function abortStaleClaim(
           err instanceof Error ? err.message : String(err)
         }`,
     );
+  }
+
+  // PR #3676 review: a follow-up this run newly filed names a PR that will
+  // now never be raised, so close it rather than leave the fleet to work an
+  // `idle-task` for a stale claim. Best-effort, like the comment above.
+  if (newFollowUp !== undefined) {
+    try {
+      await deps.github.runGhCommand([
+        "issue",
+        "close",
+        String(newFollowUp),
+        "--repo",
+        repo,
+        "--reason",
+        "not planned",
+        "--comment",
+        `Closed by the worker: the claim on #${issueNumber} went stale ` +
+        `(${stale.reason}) before the run raised its PR, so this ` +
+        `follow-up has no PR to continue from. Reopen it if the scope ` +
+        `listed here still stands.`,
+      ]);
+    } catch (err) {
+      logger.warn(
+        `Could not close the stale-claim follow-up ${repo}#${newFollowUp} ` +
+          `— it stays open: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
   }
 
   return {
@@ -3488,6 +3533,9 @@ async function completionBody(
   // body gains the partial-delivery section. `unassessed` items file nothing;
   // otherwise a healthy run is untouched.
   //
+  // PR #3676 review: the follow-up joins the parent's milestone, and the
+  // claim-freshness check below retracts one this run newly filed.
+  //
   // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
   // Issue #3092: extracted to `applyDegradedDeliveryGuard` so this same
   // chokepoint logic also runs from `reportSummaryRuleBlock`'s existing-PR
@@ -3598,7 +3646,17 @@ async function completionBody(
     },
   });
   if (freshness.kind === "stale") {
-    return await abortStaleClaim(freshness, ctx, state, deps);
+    // Retract only a follow-up this run newly filed — a reused one predates
+    // the run and is not ours to close.
+    return await abortStaleClaim(
+      freshness,
+      ctx,
+      state,
+      deps,
+      guarded.followUp && !guarded.followUp.reused
+        ? guarded.followUp.number
+        : undefined,
+    );
   }
 
   // Opening a PR for this branch even though something else references the

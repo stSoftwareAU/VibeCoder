@@ -16,7 +16,10 @@
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { REPORTED_GAP_SECTION_HEADING } from "../lib/degraded_delivery.ts";
+import {
+  degradedFollowUpFindingId,
+  REPORTED_GAP_SECTION_HEADING,
+} from "../lib/degraded_delivery.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -229,6 +232,8 @@ interface Outcome {
   status: string;
   reason?: string;
   issueCreates: string[][];
+  /** Every `gh issue close` the run issued (PR #3676 review). */
+  issueCloses: string[][];
   prBodies: string[];
   recoverCalls: number;
   prCreateCalls: number;
@@ -251,6 +256,14 @@ async function runCompletion(opts: {
   prExistsForBranch?: boolean;
   /** Issue #3121: override the URL `findExistingPrForBranch` reports. */
   prUrl?: string;
+  /** PR #3676 review: what `gh issue view` reports for the parent issue. */
+  parentState?: "OPEN" | "CLOSED";
+  /** PR #3676 review: the parent's milestone, which routes its base branch. */
+  milestoneTitle?: string;
+  /** PR #3676 review: an open follow-up for the parent that a run would reuse. */
+  existingFollowUp?: number;
+  /** PR #3676 review: make `gh issue close` reject. */
+  failIssueClose?: boolean;
 }): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   if (opts.summary !== null) {
@@ -264,6 +277,7 @@ async function runCompletion(opts: {
   }
 
   const issueCreates: string[][] = [];
+  const issueCloses: string[][] = [];
   const prBodies: string[] = [];
   let recoverCalls = 0;
   let prCreateCalls = 0;
@@ -278,6 +292,7 @@ async function runCompletion(opts: {
     issueComments: "",
     githubUser: "testbot",
     config: buildDefaultWorkerConfig(),
+    ...(opts.milestoneTitle ? { milestoneTitle: opts.milestoneTitle } : {}),
   };
   const state: PhaseState = {
     branchName: `issue-${ISSUE}-switch`,
@@ -303,7 +318,26 @@ async function runCompletion(opts: {
         Promise.resolve({ ok: true as const, value: undefined }),
       runGhCommand: (args: string[]) => {
         if (args[0] === "issue" && args[1] === "list") {
-          return Promise.resolve("[]");
+          return Promise.resolve(
+            opts.existingFollowUp
+              ? JSON.stringify([{
+                number: opts.existingFollowUp,
+                body: `<!-- finding-id: ${
+                  degradedFollowUpFindingId(ISSUE)
+                } -->`,
+                author: { login: "testbot" },
+              }])
+              : "[]",
+          );
+        }
+        if (args[0] === "issue" && args[1] === "view" && opts.parentState) {
+          return Promise.resolve(JSON.stringify({ state: opts.parentState }));
+        }
+        if (args[0] === "issue" && args[1] === "close") {
+          issueCloses.push(args);
+          return opts.failIssueClose
+            ? Promise.reject(new Error("HTTP 403 close"))
+            : Promise.resolve("");
         }
         if (args[0] === "issue" && args[1] === "create") {
           issueCreates.push(args);
@@ -377,6 +411,7 @@ async function runCompletion(opts: {
     status: result.status,
     reason,
     issueCreates,
+    issueCloses,
     prBodies,
     recoverCalls,
     prCreateCalls,
@@ -529,6 +564,124 @@ Deno.test("completion - a healthy run whose gap follow-up cannot be filed raises
   assertStringIncludes(outcome.reason ?? "", "partial or missing");
   assert(!(outcome.reason ?? "").includes("Degraded run"));
   assertStringIncludes(outcome.reason ?? "", "HTTP 502");
+});
+
+Deno.test("completion - a healthy run's follow-up is closed when the parent closes mid-run and no PR is raised (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.prCreateCalls, 0, "no PR is raised for a stale claim");
+  assertEquals(outcome.issueCreates.length, 1, "the follow-up was filed");
+  assertEquals(outcome.issueCloses.length, 1, "and is retracted");
+  const close = outcome.issueCloses[0]!;
+  assertEquals(close[2], "900", "the follow-up is closed, not the parent");
+  assertEquals(close[close.indexOf("--reason") + 1], "not planned");
+  assertStringIncludes(
+    close[close.indexOf("--comment") + 1]!,
+    "issue_closed",
+  );
+});
+
+Deno.test("completion - a degraded run's follow-up is closed when the parent closes mid-run (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    parentState: "CLOSED",
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCreates.length, 1);
+  assertEquals(outcome.issueCloses.length, 1);
+});
+
+Deno.test("completion - a follow-up that cannot be closed warns and the stale-claim abort stands (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+    failIssueClose: true,
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCloses.length, 1);
+  const warned = outcome.warnings.find((w) =>
+    w.message.includes("Could not close the stale-claim follow-up")
+  );
+  assert(warned, "a failed close is warned about");
+  assertStringIncludes(warned.message, "HTTP 403 close");
+});
+
+Deno.test("completion - a reused follow-up is never closed when the claim goes stale (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+    existingFollowUp: 70,
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCreates.length, 0, "the open one is reused");
+  assertEquals(outcome.issueCloses.length, 0, "a reused one predates the run");
+});
+
+Deno.test("completion - a stale claim with no gap files and closes no follow-up (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_COMPLETE,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCreates.length, 0);
+  assertEquals(outcome.issueCloses.length, 0);
+});
+
+Deno.test("completion - an open parent keeps its new follow-up and closes nothing (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "OPEN",
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(outcome.issueCloses.length, 0);
+});
+
+Deno.test("completion - a milestone child's follow-up is filed into the parent's milestone (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+    milestoneTitle: "Q4 Launch",
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--milestone") + 1], "Q4 Launch");
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+});
+
+Deno.test("completion - a follow-up for a parent with no milestone carries no --milestone (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.issueCreates.length, 1);
+  assert(!outcome.issueCreates[0]!.includes("--milestone"));
 });
 
 Deno.test("completion - a degraded run that met every criterion raises the PR with no follow-up", async () => {

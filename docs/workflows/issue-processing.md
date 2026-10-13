@@ -2400,6 +2400,20 @@ flowchart TD
   before they are copied (Issue #2778): only the worker's own marker is live,
   and a `finding-id` hidden in a criterion or a closure entry cannot suppress
   an unrelated finding.
+- **A milestone child's follow-up joins its milestone** (PR #3676 review). When
+  the parent belongs to a milestone, a newly filed follow-up is created with
+  `--milestone <title>`, so the fleet works it on the milestone branch where
+  the delivered half lives rather than on the default branch. A reused
+  follow-up keeps the milestone it was filed with.
+- **A stale claim retracts a follow-up this run filed** (PR #3676 review). The
+  guard files the follow-up before the claim-freshness re-check
+  (the Claim-freshness re-check section of [INTERNALS.md](../INTERNALS.md)).
+  If that re-check then finds the claim stale (the parent closed, or a merged PR
+  already carries the branch), `abortStaleClaim` closes the follow-up as "not
+  planned" with a comment saying why, best-effort: a failed close is warned
+  about and the abort stands. Only a follow-up the run newly filed is closed; a
+  reused one predates the run and is left open. This applies to degraded and
+  healthy runs alike.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
   survives the merge in the follow-up instead. The one exception is a summary

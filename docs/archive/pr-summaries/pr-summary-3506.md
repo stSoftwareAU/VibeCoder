@@ -87,8 +87,8 @@ flowchart TD
 `docs/workflows/issue-processing.md#️-a-degraded-run-never-closes-an-issue-as-complete`;
 siblings: `buildDegradedNoFollowUpSection`, `buildDegradedPrSection` — the
 leading-section set gained the partial-delivery section, and the re-sync docs
-and `pr_body_sync.ts` module doc now name it; the PR #3676 review fix (the re-sync never writes to the follow-up) re-read the `Re-sync` bullet of the same section, the `rederiveReportedGapSection` doc comment, the `pr_body_sync.ts` module doc and the `docs/USAGE.md` re-sync sentence, and rewrote each to the conditions `rederiveReportedGapSection` checks (no gap: dropped with no follow-up call; number unreadable: live section kept; gaps changed: stale-follow-up wording); updated:
-`docs/workflows/issue-processing.md`, `docs/USAGE.md`,
+and `pr_body_sync.ts` module doc now name it; the PR #3676 review fix (the re-sync never writes to the follow-up) re-read the `Re-sync` bullet of the same section, the `rederiveReportedGapSection` doc comment, the `pr_body_sync.ts` module doc and the `docs/USAGE.md` re-sync sentence, and rewrote each to the conditions `rederiveReportedGapSection` checks (no gap: dropped with no follow-up call; number unreadable: live section kept; gaps changed: stale-follow-up wording); the PR #3676 stale-claim and milestone fix (grep: "claim-freshness", "abortStaleClaim", `--milestone`, "idle-task follow-up"; siblings: the `The follow-up carries the idle-task label` and `The PR is still raised` bullets of the same section) added a bullet for each to `docs/workflows/issue-processing.md` and a paragraph to the claim-freshness section of `docs/INTERNALS.md`; updated:
+`docs/workflows/issue-processing.md`, `docs/INTERNALS.md`, `docs/USAGE.md`,
 `prompts/issue/prompt.md`, plus doc comments in
 `worker/deno/lib/degraded_delivery.ts`, `worker/deno/lib/pr_body_sync.ts` and
 `worker/deno/lib/phases/completion_phase.ts`. Hits left in place, each still
@@ -136,6 +136,26 @@ true because it names the guard, which still runs for degraded runs:
   `tests/pr_feedback_processor_test.ts` and `tests/pr_ci_processor_test.ts`
   passed (218 passed, 0 failed); `markdownlint-cli2` passed on the changed
   docs. The full gate was not re-run on this push.
+- PR #3676 review push (third round, stale claim and milestone), in
+  `worker/deno/tests/completion_phase_degraded_delivery_test.ts` (8 added) and
+  `worker/deno/tests/degraded_delivery_test.ts` (1 added):
+  - A healthy run's new follow-up is closed (`gh issue close 900 --reason
+    "not planned"`) when the parent reads CLOSED at the pre-PR check and no PR
+    is raised; the same for a degraded run; a reused follow-up is never closed;
+    a stale claim with no gap files and closes nothing; an OPEN parent keeps
+    its follow-up and raises the PR.
+  - A parent with `milestoneTitle` "Q4 Launch" gets `--milestone Q4 Launch` on
+    the follow-up's `gh issue create`; a parent without one carries no
+    `--milestone`. `fileDegradedFollowUp` has the same pair as a unit test.
+  - Red checks on the final head: disabling the close in `abortStaleClaim`
+    turned 2 tests red (healthy and degraded); dropping the `--milestone`
+    argument turned the milestone completion test red; changing
+    `guarded.followUp && !guarded.followUp.reused` to `guarded.followUp` turned
+    "a reused follow-up is never closed when the claim goes stale" red;
+    changing the close-failure warning text turned the failed-close test red.
+  - `deno test -A` over `tests/completion_phase_degraded_delivery_test.ts`,
+    `tests/degraded_delivery_test.ts`, `tests/pr_body_sync_test.ts` and
+    `tests/claim_freshness_phase_test.ts`: 152 passed, 0 failed on the head of this push; `deno lint`, `deno check` and `deno fmt --check` passed.
 - Earlier head: `./quality.sh < /dev/null` passed (`Result: PASSED (with skipped checks)`;
   `config integration` is skipped as usual). Later commits changed only a doc
   comment, two log messages and test assertions, and the targeted fmt, lint,
@@ -241,6 +261,11 @@ true because it names the guard, which still runs for degraded runs:
   Nothing else was found.
 
 **Branch outcomes:**
+
+- `worker/deno/lib/phases/completion_phase.ts` `abortStaleClaim` `newFollowUp !== undefined` — closed: "a healthy run's follow-up is closed when the parent closes mid-run and no PR is raised (PR #3676 review)" and the degraded twin; absent: "a stale claim with no gap files and closes no follow-up (PR #3676 review)". Disabling the close went red.
+- `worker/deno/lib/phases/completion_phase.ts` stale branch `guarded.followUp && !guarded.followUp.reused` — `followUp` operand: the no-gap test above (no follow-up, nothing closed); `!reused` operand: "a reused follow-up is never closed when the claim goes stale (PR #3676 review)". Dropping `!reused` went red.
+- `worker/deno/lib/phases/completion_phase.ts` `abortStaleClaim` close failure (`catch`) — "completion - a follow-up that cannot be closed warns and the stale-claim abort stands (PR #3676 review)": the abort result stays `early_exit` and the warning carries the cause (`HTTP 403 close`). Changing the warning text went red.
+- `worker/deno/lib/degraded_delivery.ts` `args.milestoneTitle ? ["--milestone", …] : []` — set: "completion - a milestone child's follow-up is filed into the parent's milestone (PR #3676 review)" and "fileDegradedFollowUp - a parent's milestone is passed to gh issue create"; unset: "completion - a follow-up for a parent with no milestone carries no --milestone". Dropping the argument went red.
 
 - `worker/deno/lib/phases/completion_phase.ts` `verdict = degradedDelivery.degraded ? …` — degraded arm: the existing degraded tests (for example "a degraded run delivering one of two criteria files the residue and says so in the PR"). Healthy arm: "a healthy run whose summary closes out one criterion as partial files exactly one idle-task follow-up (Issue #3506)". Flipping it to always use `degradedDelivery` went red.
 - `worker/deno/lib/phases/completion_phase.ts` failure `reason: verdict.degraded ? …` — degraded arm: "a degraded run whose follow-up cannot be filed raises no PR". Healthy arm: "a healthy run whose gap follow-up cannot be filed raises no PR (Issue #3506)". Each forced flip went red.

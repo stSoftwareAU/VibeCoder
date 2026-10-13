@@ -624,6 +624,13 @@ export async function fileDegradedFollowUp(args: {
   runId: string;
   gh: (args: string[]) => Promise<string>;
   dedupAuthors?: FindingIdDedupOptions;
+  /**
+   * The parent's milestone title, when it has one. A newly filed follow-up
+   * joins it so the fleet works it on the milestone branch where the
+   * parent's delivered half lives, not on the default branch (PR #3676
+   * review). A reused follow-up keeps the milestone it was filed with.
+   */
+  milestoneTitle?: string;
 }): Promise<Result<{ number: number; reused: boolean }>> {
   const findingId = degradedFollowUpFindingId(args.parentNumber);
   const issue = buildDegradedFollowUpIssue(args);
@@ -648,6 +655,7 @@ export async function fileDegradedFollowUp(args: {
             [IDLE_TASK_LABEL],
             "worker/deno/lib/degraded_delivery.ts",
           ),
+          ...(args.milestoneTitle ? ["--milestone", args.milestoneTitle] : []),
         ])).trim();
         const number = Number(url.split("/").pop());
         return Number.isInteger(number) && number > 0

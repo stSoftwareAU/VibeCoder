@@ -438,6 +438,33 @@ Deno.test("fileDegradedFollowUp - files one idle-task issue when none is open", 
   assertEquals(create[create.indexOf("--label") + 1], "idle-task");
 });
 
+Deno.test("fileDegradedFollowUp - a parent's milestone is passed to gh issue create (PR #3676 review)", async () => {
+  const create = async (milestoneTitle?: string) => {
+    const calls: string[][] = [];
+    await fileDegradedFollowUp({
+      repo: "o/r",
+      parentNumber: 42,
+      parentTitle: "Finish the switch",
+      verdict: degradedVerdict(),
+      runId: "vibe-test-ms",
+      dedupAuthors: FLEET,
+      ...(milestoneTitle ? { milestoneTitle } : {}),
+      gh: (args) => {
+        calls.push(args);
+        if (args[1] === "list") return Promise.resolve("[]");
+        return Promise.resolve("https://github.com/o/r/issues/77\n");
+      },
+    });
+    return calls.find((c) => c[0] === "issue" && c[1] === "create")!;
+  };
+  const withMilestone = await create("Q4 Launch");
+  assertEquals(
+    withMilestone[withMilestone.indexOf("--milestone") + 1],
+    "Q4 Launch",
+  );
+  assert(!(await create()).includes("--milestone"));
+});
+
 Deno.test("fileDegradedFollowUp - reuses the open follow-up for the same parent", async () => {
   const calls: string[][] = [];
   const existing = JSON.stringify([{
