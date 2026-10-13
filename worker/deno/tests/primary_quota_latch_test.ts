@@ -12,6 +12,7 @@ import {
   isQuotaExemptGhCall,
   latchPrimaryQuota,
   primaryQuotaLatchedUntil,
+  secondaryLatchCount,
 } from "../lib/primary_quota_latch.ts";
 
 function reset() {
@@ -120,4 +121,27 @@ Deno.test("clearPrimaryQuotaLatch - lifts an active latch", () => {
   assert(isPrimaryQuotaLatched(1000));
   clearPrimaryQuotaLatch();
   assertEquals(isPrimaryQuotaLatched(1000), false);
+});
+
+Deno.test("secondaryLatchCount - counts secondary (burst) latches only, and survives the latch expiring (Issue #3667)", () => {
+  reset();
+  const before = secondaryLatchCount();
+  latchPrimaryQuota(2000, 1000, "primary");
+  assertEquals(secondaryLatchCount(), before, "a primary latch is not a burst");
+  latchPrimaryQuota(2060, 2000, "secondary");
+  assertEquals(secondaryLatchCount(), before + 1);
+  assert(!isPrimaryQuotaLatched(3000), "the latch itself expires");
+  clearPrimaryQuotaLatch();
+  assertEquals(
+    secondaryLatchCount(),
+    before + 1,
+    "the count is history the next cycle reads, not the live latch",
+  );
+  latchPrimaryQuota(1000, 2000, "secondary");
+  assertEquals(
+    secondaryLatchCount(),
+    before + 1,
+    "a stale reset latches nothing",
+  );
+  reset();
 });

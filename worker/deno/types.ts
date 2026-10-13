@@ -679,6 +679,14 @@ export interface WorkerConfig {
   quotaPollParkNice: number;
   quotaPollIdleFloor: number;
   /**
+   * Nice-derived poll cadence (Issue #3667): cycles between polls of a
+   * low-priority (`0 < nice < quotaPollParkNice`) repo and of a park-tier
+   * (`nice >= quotaPollParkNice`) repo by the per-repo Priority 1.x passes.
+   * Whole numbers at or above 1; 1 is every cycle.
+   */
+  pollCadenceLowCycles: number;
+  pollCadenceParkCycles: number;
+  /**
    * Graft repo-context injection (Issue #2098, part of #2060).
    *
    * Off unless the host's `.config.json` says otherwise, so a host that never
@@ -1363,6 +1371,10 @@ export interface ConfigFile {
   quota_poll_park_nice?: number;
   /** Quota-aware polling gate: idle-tier deferral floor (Issue #3628) */
   quota_poll_idle_floor?: number;
+  /** Cycles between polls of a `nice > 0` repo (Issue #3667) */
+  poll_cadence_low_cycles?: number;
+  /** Cycles between polls of a park-tier repo (Issue #3667) */
+  poll_cadence_park_cycles?: number;
   /** Hard timeout in seconds for the PR feedback phase (Issue #1824) */
   pr_feedback_timeout?: number;
   /** Hard timeout in seconds for the CI fix phase (Issue #1824) */
