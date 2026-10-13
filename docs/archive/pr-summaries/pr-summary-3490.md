@@ -89,8 +89,8 @@ Persisted data: unchanged. Nothing is stored or cached by this change.
 
 ## Test Plan
 
-- `deno task test:unit` on the new test file and `quality_gate` tests: 44
-  passed, 0 failed. `deno fmt --check`, `deno lint` and `deno check`: clean.
+- `deno test` over every `tests/quality_gate*_test.ts` file, including the
+  new test file: 169 passed, 0 failed (the new test file alone: 6 passed). `deno fmt --check`, `deno lint` and `deno check`: clean.
 - Red checks. Each mutation was applied, turned the named test red, and was
   restored:
   - Base seed and `-eq 0` check restored: the empty-ALLOWED_AUTHORS test.
@@ -98,9 +98,13 @@ Persisted data: unchanged. Nothing is stored or cached by this change.
   - `REPOS` check neutralised: "empty REPOS fails".
   - `-eq 1` operand removed: the empty-ALLOWED_AUTHORS test, via `set -u`.
   - Sentinel-compare operand removed: "a single real author passes".
+  - `|| true` on the load-config capture swapped to `|| false`: "a failing
+    load-config reports a FAIL message instead of aborting silently" (the
+    script aborted under `set -e` with no output).
 
 Branch outcomes:
 
+- `worker/deno/lib/quality_gate.ts:966` — `|| true` after a failing load-config — "configSmokeScript - a failing load-config reports a FAIL message instead of aborting silently" — flip went red.
 - `worker/deno/lib/quality_gate.ts:970` — `REPOS` empty fails — "configSmokeScript - empty REPOS fails" — flip went red.
 - `worker/deno/lib/quality_gate.ts:974` — operand `-eq 1` — "configSmokeScript - empty ALLOWED_AUTHORS assigned by load-config passes" — flip went red.
 - `worker/deno/lib/quality_gate.ts:974` — operand sentinel compare — "configSmokeScript - a single real author passes" — flip went red.

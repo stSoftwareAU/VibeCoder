@@ -11,16 +11,20 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { configSmokeScript } from "../lib/quality_gate.ts";
 
-/** Run the smoke script against a fake deno that prints `loadConfigOutput`. */
+/**
+ * Run the smoke script against a fake deno that prints `loadConfigOutput`
+ * and exits with `loadConfigExit`.
+ */
 async function runSmoke(
   loadConfigOutput: string,
+  loadConfigExit = 0,
 ): Promise<{ code: number; stdout: string }> {
   const tmpDir = await Deno.makeTempDir({ prefix: "config-smoke-" });
   try {
     const fakeDeno = `${tmpDir}/fake-deno`;
     await Deno.writeTextFile(
       fakeDeno,
-      `#!/usr/bin/env bash\ncat <<'EOF'\n${loadConfigOutput}\nEOF\n`,
+      `#!/usr/bin/env bash\ncat <<'EOF'\n${loadConfigOutput}\nEOF\nexit ${loadConfigExit}\n`,
     );
     await Deno.chmod(fakeDeno, 0o755);
     const out = await new Deno.Command("bash", {
@@ -74,4 +78,10 @@ Deno.test("configSmokeScript - a single real author passes", async () => {
   );
   assertEquals(code, 0, stdout);
   assertStringIncludes(stdout, "OK: 1 repo(s), 1 author(s)");
+});
+
+Deno.test("configSmokeScript - a failing load-config reports a FAIL message instead of aborting silently", async () => {
+  const { code, stdout } = await runSmoke("", 1);
+  assertEquals(code, 1, stdout);
+  assertStringIncludes(stdout, "REPOS is empty");
 });
