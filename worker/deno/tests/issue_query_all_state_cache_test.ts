@@ -59,6 +59,35 @@ Deno.test("fetchAllStatePRsByBranch - cold cache fetches and parses JSON", async
   }
 });
 
+Deno.test("fetchAllStatePRsByBranch - requests and keeps each PR's state, dropping a non-string or empty one (PR #3640 review)", async () => {
+  const calls: string[][] = [];
+  const mockGh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.resolve(JSON.stringify([
+      { number: 1, title: "A", headRefName: "milestone/v1", state: "CLOSED" },
+      { number: 2, title: "B", headRefName: "milestone/v1", state: "OPEN" },
+      { number: 3, title: "C", headRefName: "milestone/v1", state: 7 },
+      { number: 4, title: "D", headRefName: "milestone/v1", state: "" },
+    ]));
+  };
+  const prs = await fetchAllStatePRsByBranch(
+    "o/r",
+    "milestone/v1",
+    undefined,
+    mockGh,
+  );
+  assertEquals(prs.map((p) => p.state), [
+    "CLOSED",
+    "OPEN",
+    undefined,
+    undefined,
+  ]);
+  assertEquals(
+    calls[0]![calls[0]!.indexOf("--json") + 1]!.split(",").includes("state"),
+    true,
+  );
+});
+
 Deno.test("fetchAllStatePRsByBranch - warm cache avoids gh call", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {

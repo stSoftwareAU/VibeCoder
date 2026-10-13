@@ -15,7 +15,11 @@ import {
 } from "./pr_body.ts";
 import { findMissingCriteria } from "./missing_criterion_close_guard.ts";
 import { runGhCommand } from "./github.ts";
-import { prTitleReferencesIssue } from "./pr_title_issue_ref.ts";
+import {
+  prTitleMatchesIssue,
+  prTitleReferencesIssue,
+} from "./pr_title_issue_ref.ts";
+import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
 // Issue #2900: re-export the single canonical milestone-branch namer from
 // git_branch.ts so PR-blocking uses the same branch name the feature PR
 // actually targets (50-char slug cap + trailing-hyphen strip).
@@ -684,6 +688,12 @@ interface ClosedIssueAll {
   number: number;
   title: string;
   milestone: string | null;
+  /**
+   * Last-update timestamp (PR #3640 review). Optional: a cache entry written
+   * before this field existed lacks it, and a reader must treat that as
+   * "unknown" rather than assume a value.
+   */
+  updatedAt?: string;
 }
 
 /**
@@ -729,7 +739,7 @@ export async function fetchAllClosedIssues(
       "--state",
       "closed",
       "--json",
-      "number,title,milestone",
+      "number,title,milestone,updatedAt",
       "--limit",
       String(limit),
     ]);
@@ -760,6 +770,9 @@ export async function fetchAllClosedIssues(
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
       milestone,
+      ...(typeof item.updatedAt === "string" && item.updatedAt !== ""
+        ? { updatedAt: item.updatedAt }
+        : {}),
     });
   }
   if (cache) await cache.write(repo, cacheKey, issues);
@@ -777,14 +790,16 @@ export async function fetchAllClosedIssues(
  * milestone scans within a single iteration share one round-trip.
  *
  * The shape returned (`number, title`) matches the pre-#1908 contract,
- * so callers do not need to change.
+ * so callers do not need to change. `updatedAt` is added only when the batch
+ * carries it (PR #3640 review), so a row read from an older cache entry keeps
+ * the original two-field shape.
  */
 export async function fetchClosedIssuesByMilestone(
   repo: string,
   milestoneTitle: string,
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
-): Promise<Array<{ number: number; title: string }>> {
+): Promise<Array<{ number: number; title: string; updatedAt?: string }>> {
   const all = await fetchAllClosedIssues(
     repo,
     cache,
@@ -793,7 +808,11 @@ export async function fetchClosedIssuesByMilestone(
   );
   return all
     .filter((issue) => issue.milestone === milestoneTitle)
-    .map((issue) => ({ number: issue.number, title: issue.title }));
+    .map((issue) => ({
+      number: issue.number,
+      title: issue.title,
+      ...(issue.updatedAt !== undefined ? { updatedAt: issue.updatedAt } : {}),
+    }));
 }
 
 /**
@@ -1297,6 +1316,13 @@ export interface BranchPR {
   number: number;
   title: string;
   headRefName: string;
+  /**
+   * GitHub PR state (`OPEN`, `MERGED`, `CLOSED`) as of the read that filled the
+   * cache (PR #3640 review). Optional: a cache entry written before this field
+   * existed lacks it, and a reader must treat that as "unknown" and read the
+   * PR live rather than assume a state.
+   */
+  state?: string;
 }
 
 /**
@@ -1528,6 +1554,10 @@ export async function fetchPRsForIssueByTitle(
       isRecord(item.author) && typeof item.author.login === "string"
         ? item.author.login
         : "";
+    const title = typeof item.title === "string" ? item.title : "";
+    const headRefName = typeof item.headRefName === "string"
+      ? item.headRefName
+      : "";
     if (item.isCrossRepository === true) {
       log(
         `[title-search] ${repo}#${issueNumber}: ignoring PR #${item.number} ` +
@@ -1537,11 +1567,33 @@ export async function fetchPRsForIssueByTitle(
       );
       continue;
     }
+    // Issue #3476: GitHub's `in:title` search can match an issue number that
+    // appears inside a milestone branch name (e.g. `Sync main into
+    // milestone/42-foo`). Only the fleet's own delimited title form is
+    // evidence the PR delivers this issue.
+    if (!prTitleMatchesIssue(title, issueNumber)) {
+      log(
+        `[title-search] ${repo}#${issueNumber}: ignoring PR #${item.number} ` +
+          `"${title}" — its title does not carry "(#${issueNumber})" or ` +
+          `"(Issue #${issueNumber})", so it is not this issue's PR ` +
+          `(Issue #3476).`,
+      );
+      continue;
+    }
+    // A milestone sync PR never delivers an individual sub-issue.
+    if (isMilestoneSyncBranch(headRefName)) {
+      log(
+        `[title-search] ${repo}#${issueNumber}: ignoring PR #${item.number} ` +
+          `"${title}" — its head '${headRefName}' is a milestone sync branch ` +
+          `(Issue #3476).`,
+      );
+      continue;
+    }
     prs.push({
       number: item.number,
-      title: typeof item.title === "string" ? item.title : "",
+      title,
       baseRefName: typeof item.baseRefName === "string" ? item.baseRefName : "",
-      headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
+      headRefName,
       mergedAt: typeof item.mergedAt === "string" ? item.mergedAt : null,
       closedAt: typeof item.closedAt === "string" ? item.closedAt : null,
       author,
@@ -1577,6 +1629,11 @@ export async function invalidatePRsForIssueByTitle(
  * distinct from the per-state branch helper so an all-state lookup
  * does not poison or get poisoned by single-state caches.
  *
+ * Each row carries the PR `state` when the read provided it (PR #3640
+ * review), so a caller can drop non-open PRs without a per-PR read; a row from
+ * a cache entry written before that field existed has none. The state is as of
+ * the cached read, so a caller that acts on a PR still confirms it live.
+ *
  * Returns an empty array on parse failure rather than throwing.
  */
 export async function fetchAllStatePRsByBranch(
@@ -1604,7 +1661,7 @@ export async function fetchAllStatePRsByBranch(
       "--head",
       branchName,
       "--json",
-      "number,title,headRefName",
+      "number,title,headRefName,state",
       "--limit",
       "100",
     ]);
@@ -1628,6 +1685,9 @@ export async function fetchAllStatePRsByBranch(
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
       headRefName: typeof item.headRefName === "string" ? item.headRefName : "",
+      ...(typeof item.state === "string" && item.state !== ""
+        ? { state: item.state }
+        : {}),
     });
   }
 
@@ -2465,6 +2525,34 @@ export function lastRemoveInfoFromTimeline(
     removedAt: Math.floor(ms / 1000),
     removedBy: lastEvent.actor.login,
   };
+}
+
+/**
+ * The most recent `assigned` event for `login` in a chronological timeline
+ * (oldest first), or null when absent (Issue #3476). The last matching event
+ * is the latest, matching {@link lastRemoveInfoFromTimeline}.
+ */
+export function latestAssignedAtFromTimeline(
+  timeline: TimelineLabelEventJson[],
+  login: string,
+): string | null {
+  const assigned = timeline.filter(
+    (e) => e.event === "assigned" && e.assignee?.login === login,
+  );
+  const last = assigned[assigned.length - 1];
+  return last?.created_at ?? null;
+}
+
+/**
+ * The most recent `reopened` event in a chronological timeline (oldest
+ * first), or null when absent (Issue #3476).
+ */
+export function latestReopenedAtFromTimeline(
+  timeline: TimelineLabelEventJson[],
+): string | null {
+  const reopened = timeline.filter((e) => e.event === "reopened");
+  const last = reopened[reopened.length - 1];
+  return last?.created_at ?? null;
 }
 
 /**

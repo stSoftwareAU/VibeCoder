@@ -422,6 +422,43 @@ the stub, and a disk library that swapped in the free space AppleScript
 reported read the host's disk instead of the faked `df` (Issue #3475). The test
 itself must neutralise the branch; a green Linux CI run says nothing about it.
 
+### Never assume history the worker's shallow checkout lacks
+
+The worker clones every monitored repository with
+`gh repo clone -- --depth=1 --no-single-branch` (`setupRepo` in
+[`git_operations.ts`](worker/deno/commands/git_operations.ts)). In that
+checkout every branch tip is a shallow boundary: it has no parents, `git blame`
+credits every line to the boundary commit, and ancestry questions have no
+answer. CI usually checks out with `fetch-depth: 0`, so a change that assumes
+history passes CI and then breaks in the fleet's own checkout — the quality
+gate goes red on unrelated work, or production logic gives a wrong answer. A
+test's shallow-clone guard checked whether an object existed rather than
+whether history was reachable, so its ancestor test failed in grafted fleet
+worktrees (Issue #2893); suppression-marker blame credited every marker older
+than the clone to the author of the boundary commit (Issue #3398). Issue #3494
+collected those cases, with a third from a private fleet repository, into this
+rule:
+
+- **Assume nothing beyond a branch tip.** The worker's checkout of every
+  repository is `--depth=1 --no-single-branch`, so code and tests must not
+  assume history beyond a branch tip. That rules out `HEAD~N` or `<ref>^`,
+  `git log` ranges, `merge-base`, `blame` attribution and ancestry checks
+  against the real checkout.
+- **A test that needs history builds its own.** It runs `git init` in a
+  temporary directory and makes the commits it needs, or it uses a ref that
+  always resolves, such as `HEAD`. If a skip guard is unavoidable, it checks
+  for reachable history (`git rev-parse --is-shallow-repository`), not whether
+  an object exists (Issue #2893).
+- **Production code that needs history deepens first.** It deepens explicitly
+  through the repository's existing helper — in the Vibe Coder worker,
+  `ensureHistoryDepth` in `worker/deno/lib/git_history.ts` or
+  `mergeWithUnshallowRetry` in `worker/deno/lib/git_merge_unshallow_retry.ts`
+  — or it treats an unanswerable result as unknown rather than as an answer
+  (Issue #3398).
+- **"Cannot run here" is a defect, not a caveat.** A PR summary that says a
+  new test cannot run in the worker's checkout because it is shallow names a
+  defect to fix before the PR is raised, not a caveat to report.
+
 ### Rendezvous, never sleep, to prove concurrency
 
 "N ran at once" is not provable with `await new Promise((r) => setTimeout(r,

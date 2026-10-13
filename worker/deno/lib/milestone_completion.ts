@@ -54,8 +54,11 @@ import {
   fetchAllStatePRsByBranch,
   fetchClosedIssuesByMilestone,
   fetchOpenIssuesByMilestone,
+  fetchPRsForIssueByTitle,
+  fetchTimelineWithCache,
   invalidateAllStateIssuesByMilestone,
   invalidateAllStatePRsByBranch,
+  latestReopenedAtFromTimeline,
 } from "./issue_query.ts";
 // Issue #3014: the summary PR body states which declared sub-issue
 // dependencies have not merged yet, so the merge gate's hold is explained.
@@ -156,7 +159,21 @@ export interface MilestoneCompletionResult {
 interface ClosedIssue {
   number: number;
   title: string;
+  /**
+   * Last-update timestamp from the closed-issue batch, when it carries one.
+   * Keys the claim-classification cache: a reopen or re-close bumps it, so a
+   * cached verdict is never applied to an issue that has changed since.
+   */
+  updatedAt?: string;
+  /**
+   * Why this closed issue must be flagged rather than claimed in the
+   * rollup body (Issue #3476). Absent = claimed normally.
+   */
+  claimProblem?: ClaimProblem;
 }
+
+/** Why a closed issue is flagged rather than claimed (Issue #3476). */
+type ClaimProblem = "sync-pr-only" | "predates-reopen" | "timeline-unreadable";
 
 /**
  * Build a {@link DefaultBranchFn} that resolves via the injected
@@ -823,6 +840,14 @@ export async function hasNothingToMerge(
 // buildMilestoneSummaryBody
 // ---------------------------------------------------------------------------
 
+/** Flag text per {@link ClaimProblem}, rendered under "Flagged — not claimed". */
+const CLAIM_PROBLEM_REASONS: Record<ClaimProblem, string> = {
+  "predates-reopen": "merged PR predates a later reopen",
+  "sync-pr-only": "no fleet-titled merged PR — possibly a milestone sync PR",
+  "timeline-unreadable":
+    "issue timeline could not be read, so a later reopen cannot be ruled out",
+};
+
 /**
  * Build the PR body for a milestone summary PR.
  *
@@ -844,12 +869,34 @@ export function buildMilestoneSummaryBody(
   trackingIssueNumber?: number,
   extraSections?: string,
 ): string {
+  // Issue #3476: a closed issue with a `claimProblem` must be flagged for
+  // review, not claimed as addressed. Split before rendering so the claimed
+  // list holds only issues whose work is genuinely on the milestone branch.
+  const claimed = closedIssues.filter((issue) => !issue.claimProblem);
+  const flagged = closedIssues.filter((issue) => Boolean(issue.claimProblem));
+
   // Closed-issue titles are attacker-writable text quoted into a PR body the
   // worker signs, so they are scrubbed before interpolation (Issue #1249,
   // finding 8).
-  const issuesList = closedIssues
+  const issuesList = claimed
     .map((issue) => `- #${issue.number}: ${scrubUntrustedText(issue.title)}`)
     .join("\n");
+
+  // Issue #3476: rendered only when at least one closed issue cannot be
+  // claimed, so the rollup lists it for review instead of asserting its work
+  // landed on the milestone branch. Byte-identical (absent) otherwise.
+  const flaggedSection = flagged.length > 0
+    ? `\n### Flagged — not claimed\n${
+      flagged
+        .map((issue) => {
+          const reason = CLAIM_PROBLEM_REASONS[issue.claimProblem!];
+          return `- #${issue.number}: ${
+            scrubUntrustedText(issue.title)
+          } (${reason})`;
+        })
+        .join("\n")
+    }\n`
+    : "";
 
   const trackingRef = trackingIssueNumber
     ? `\nCloses #${trackingIssueNumber}`
@@ -867,7 +914,7 @@ This PR merges the completed milestone branch into ${defaultBranch}.${trackingRe
 
 ### Issues addressed
 ${issuesList || "_No issues found_"}
-${dependencySection}
+${flaggedSection}${dependencySection}
 ### Review notes
 All individual issues were reviewed and merged into the milestone branch via separate PRs.
 This final PR consolidates all changes for a comprehensive review before merging to ${defaultBranch}.`;
@@ -1100,15 +1147,12 @@ async function armSummaryPrAutoMerge(
 }
 
 /**
- * Create the final PR from milestone branch to default branch.
- * Performs idempotent checks first.
- *
- * Issue #1133: Returns a discriminated result so the caller can distinguish
- * "created", "exists" (should close tracking issue), and "failed" (leave open).
- *
- * @returns Discriminated SummaryPrOutcome
+ * Build the summary PR body for a milestone: the closed-issue rollup plus the
+ * Issue #3014 pending-dependency hold and Issue #3223 not-planned-docs notes.
+ * Shared by PR creation and by every body refresh (Issue #3476) so a refreshed
+ * body is byte-for-byte what a fresh PR would carry.
  */
-async function createMilestoneSummaryPr(
+async function buildSummaryPrBody(
   repo: string,
   milestoneTitle: string,
   milestoneNumber: number,
@@ -1118,41 +1162,7 @@ async function createMilestoneSummaryPr(
   closedIssues: ClosedIssue[],
   ghCommandFn: GhCommandFn,
   log: (message: string) => void,
-  cache?: IssueCache,
-  arming: SummaryPrArmingInputs = { skipAutoMerge: false },
-  supersededPrNumbers: readonly number[] = [],
-): Promise<SummaryPrOutcome> {
-  // Idempotent check — do not create duplicate PRs
-  const existingResult = await hasExistingMilestoneSummaryPr(
-    repo,
-    milestoneTitle,
-    milestoneBranch,
-    ghCommandFn,
-    cache,
-    supersededPrNumbers,
-  );
-  if (existingResult.ok && existingResult.value !== null) {
-    log(
-      `Summary PR for milestone '${milestoneTitle}' already exists (#${existingResult.value}) in ${repo} — skipping`,
-    );
-    return { outcome: "exists", prNumber: existingResult.value };
-  }
-
-  // Check that the milestone branch exists on the remote (Issue #570)
-  try {
-    await ghCommandFn([
-      "api",
-      `repos/${repo}/branches/${milestoneBranch}`,
-      "--jq",
-      ".name",
-    ]);
-  } catch {
-    log(
-      `WARNING: Milestone branch '${milestoneBranch}' does not exist in ${repo} — cannot create summary PR`,
-    );
-    return { outcome: "failed", reason: "branch_missing" };
-  }
-
+): Promise<string> {
   // Issue #3014: state which declared sub-issue dependencies have not
   // merged yet, so the PR body explains the hold the merge gate enforces.
   // A lookup failure never blocks PR creation — it only swaps in a note
@@ -1224,12 +1234,275 @@ async function createMilestoneSummaryPr(
     .filter((note): note is string => Boolean(note))
     .join("\n\n");
 
-  const prBody = buildMilestoneSummaryBody(
+  const body = buildMilestoneSummaryBody(
     milestoneTitle,
     defaultBranch,
     closedIssues,
     trackingIssueNumber ?? undefined,
     extraSections || undefined,
+  );
+  const fingerprint = await summaryPrFingerprint(
+    milestoneTitle,
+    defaultBranch,
+    trackingIssueNumber,
+    closedIssues,
+  );
+  return `${body}\n\n${fingerprintMarker(fingerprint)}`;
+}
+
+function fingerprintMarker(fingerprint: string): string {
+  return `<!-- vibe-rollup-fingerprint value="${fingerprint}" -->`;
+}
+
+/**
+ * Fingerprint of the inputs a rollup body is built from that a scan can read
+ * cheaply: milestone title, default branch, tracker and the classified closed
+ * issues. It is stamped into the body (PR #3640 review) so a later scan that
+ * computes the same value knows the body is current and skips the dependency
+ * and not-planned-docs reads and the edit. The pending-dependency and
+ * not-planned sections are deliberately not part of it: they are advisory, the
+ * merge gate re-checks them before merging, and they refresh whenever the
+ * fingerprint changes or the PR is raised.
+ */
+async function summaryPrFingerprint(
+  milestoneTitle: string,
+  defaultBranch: string,
+  trackingIssueNumber: number | null,
+  closedIssues: ClosedIssue[],
+): Promise<string> {
+  const payload = JSON.stringify([
+    milestoneTitle,
+    defaultBranch,
+    trackingIssueNumber,
+    closedIssues.map((i) => [i.number, i.title, i.claimProblem ?? null]),
+  ]);
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(payload),
+  );
+  return Array.from(new Uint8Array(digest).slice(0, 16))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+/** The live state of a summary PR, read just before a refresh decides. */
+interface LiveSummaryPr {
+  state: string;
+  body: string;
+  headRefName: string;
+  isCrossRepository: boolean;
+}
+
+async function readLiveSummaryPr(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: GhCommandFn,
+): Promise<Result<LiveSummaryPr>> {
+  try {
+    const parsed: unknown = JSON.parse(
+      await ghCommandFn([
+        "pr",
+        "view",
+        String(prNumber),
+        "--repo",
+        repo,
+        "--json",
+        "state,body,headRefName,isCrossRepository",
+      ]),
+    );
+    const v = parsed as Record<string, unknown> | null;
+    if (
+      v === null || typeof v !== "object" || typeof v.state !== "string" ||
+      typeof v.body !== "string" || typeof v.headRefName !== "string" ||
+      typeof v.isCrossRepository !== "boolean"
+    ) {
+      throw new Error("unexpected `gh pr view` payload");
+    }
+    return {
+      ok: true,
+      value: {
+        state: v.state,
+        body: v.body,
+        headRefName: v.headRefName,
+        isCrossRepository: v.isCrossRepository,
+      },
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+}
+
+/** Inputs for {@link refreshExistingSummaryPr}. */
+interface SummaryPrRefresh {
+  repo: string;
+  prNumber: number;
+  milestone: { title: string; number: number };
+  milestoneBranch: string;
+  defaultBranch: string;
+  trackingIssueNumber: number | null;
+  closedIssues: ClosedIssue[];
+  ghCommandFn: GhCommandFn;
+  log: (message: string) => void;
+}
+
+/**
+ * Bring an existing summary PR's body up to date (Issue #3476), writing only
+ * when something changed (PR #3640 review).
+ *
+ * Reads the live PR first: one that is not `OPEN` (merged, closed), is a
+ * fork's, or is not headed by the milestone branch is left alone, and so is
+ * one whose live body already carries the current fingerprint — the common
+ * scan, which costs this one read. Otherwise the body is rebuilt — it carries
+ * the fingerprint, so a body that reaches this point always differs from the
+ * live one — and `gh pr edit` runs. A fault is logged and never thrown: the next scan retries, and the PR keeps its previous body
+ * meanwhile.
+ */
+async function refreshExistingSummaryPr(p: SummaryPrRefresh): Promise<void> {
+  const { repo, prNumber, milestone, ghCommandFn, log } = p;
+  const live = await readLiveSummaryPr(repo, prNumber, ghCommandFn);
+  if (!live.ok) {
+    log(
+      `WARNING: could not read summary PR #${prNumber} for milestone '${milestone.title}' in ${repo}: ${live.error.message} — its body is left as it is (Issue #3476)`,
+    );
+    return;
+  }
+  if (
+    live.value.state !== "OPEN" || live.value.isCrossRepository ||
+    live.value.headRefName !== p.milestoneBranch
+  ) {
+    return;
+  }
+
+  const fingerprint = await summaryPrFingerprint(
+    milestone.title,
+    p.defaultBranch,
+    p.trackingIssueNumber,
+    p.closedIssues,
+  );
+  if (live.value.body.includes(fingerprintMarker(fingerprint))) return;
+
+  const prBody = await buildSummaryPrBody(
+    repo,
+    milestone.title,
+    milestone.number,
+    p.milestoneBranch,
+    p.defaultBranch,
+    p.trackingIssueNumber,
+    p.closedIssues,
+    ghCommandFn,
+    log,
+  );
+  try {
+    await ghCommandFn([
+      "pr",
+      "edit",
+      String(prNumber),
+      "--repo",
+      repo,
+      "--body",
+      prBody,
+    ]);
+    log(
+      `Summary PR #${prNumber} body refreshed for milestone '${milestone.title}' in ${repo} (Issue #3476)`,
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: could not refresh summary PR #${prNumber} body for milestone '${milestone.title}' in ${repo}: ${message} — the stale body may still claim a reopened issue (Issue #3476)`,
+    );
+  }
+}
+
+/**
+ * Create the final PR from milestone branch to default branch.
+ * Performs idempotent checks first.
+ *
+ * Issue #1133: Returns a discriminated result so the caller can distinguish
+ * "created", "exists" (should close tracking issue), and "failed" (leave open).
+ *
+ * @returns Discriminated SummaryPrOutcome
+ */
+async function createMilestoneSummaryPr(
+  repo: string,
+  milestoneTitle: string,
+  milestoneNumber: number,
+  milestoneBranch: string,
+  defaultBranch: string,
+  trackingIssueNumber: number | null,
+  closedIssues: ClosedIssue[],
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+  cache?: IssueCache,
+  arming: SummaryPrArmingInputs = { skipAutoMerge: false },
+  supersededPrNumbers: readonly number[] = [],
+): Promise<SummaryPrOutcome> {
+  // Idempotent check — do not create duplicate PRs
+  const existingResult = await hasExistingMilestoneSummaryPr(
+    repo,
+    milestoneTitle,
+    milestoneBranch,
+    ghCommandFn,
+    cache,
+    supersededPrNumbers,
+  );
+  const existingPrNumber = existingResult.ok && existingResult.value !== null
+    ? existingResult.value
+    : null;
+
+  // Check that the milestone branch exists on the remote (Issue #570). Only
+  // needed on the creation path — an existing summary PR already references
+  // the branch, so its absence would show up as a retarget, not a missing
+  // branch here.
+  if (existingPrNumber === null) {
+    try {
+      await ghCommandFn([
+        "api",
+        `repos/${repo}/branches/${milestoneBranch}`,
+        "--jq",
+        ".name",
+      ]);
+    } catch {
+      log(
+        `WARNING: Milestone branch '${milestoneBranch}' does not exist in ${repo} — cannot create summary PR`,
+      );
+      return { outcome: "failed", reason: "branch_missing" };
+    }
+  }
+
+  // Issue #3476: a summary PR raised on an earlier scan carries a body built
+  // from the closed issues as they were classified *then*. A listed issue that
+  // has since reopened would stay under "Issues addressed" and be claimed by
+  // the merge, so the body is refreshed against the freshly classified closed
+  // issues — but only when the PR is open and the content changed (PR #3640
+  // review), and before any body is built so an unchanged scan costs one read.
+  if (existingPrNumber !== null) {
+    await refreshExistingSummaryPr({
+      repo,
+      prNumber: existingPrNumber,
+      milestone: { title: milestoneTitle, number: milestoneNumber },
+      milestoneBranch,
+      defaultBranch,
+      trackingIssueNumber,
+      closedIssues,
+      ghCommandFn,
+      log,
+    });
+    return { outcome: "exists", prNumber: existingPrNumber };
+  }
+
+  const prBody = await buildSummaryPrBody(
+    repo,
+    milestoneTitle,
+    milestoneNumber,
+    milestoneBranch,
+    defaultBranch,
+    trackingIssueNumber,
+    closedIssues,
+    ghCommandFn,
+    log,
   );
 
   let prUrl: string;
@@ -1425,24 +1698,245 @@ async function closeMilestoneTrackingIssue(
 // getClosedIssues (internal)
 // ---------------------------------------------------------------------------
 
-async function getClosedIssues(
+/** Cache-entry name prefix for a closed issue's claim verdict (PR #3640 review). */
+const CLAIM_VERDICT_ENTRY_PREFIX = "milestone_claim_verdict_v1_";
+
+/** A cached claim verdict: valid only for the `updatedAt` it was read at. */
+interface CachedClaimVerdict {
+  updatedAt: string;
+  claimProblem: ClaimProblem | null;
+}
+
+function isCachedClaimVerdict(value: unknown): value is CachedClaimVerdict {
+  if (value === null || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return typeof v.updatedAt === "string" &&
+    (v.claimProblem === null ||
+      (typeof v.claimProblem === "string" &&
+        Object.hasOwn(CLAIM_PROBLEM_REASONS, v.claimProblem)));
+}
+
+/**
+ * Classify each closed issue as claimable or flaggable (Issue #3476).
+ *
+ * A closed issue is only claimed when it has at least one genuine merged PR
+ * (a fleet-titled PR that `fetchPRsForIssueByTitle` keeps) whose merge is not
+ * predated by the issue's latest reopen. Anything else is flagged so the
+ * rollup lists it for review instead of claiming its work is on the branch.
+ *
+ * With a `cache`, the verdict for an issue is kept under its number and
+ * `updatedAt` (PR #3640 review), so a scan that finds the issue unchanged does
+ * not re-page its timeline. A reopen or re-close bumps `updatedAt` and misses.
+ * The cache's own TTL bounds how long a verdict survives a change that leaves
+ * `updatedAt` alone (a PR merged against the issue by title). Only a verdict
+ * reached from a merged PR and a readable timeline is cached; a "sync-pr-only"
+ * flag is not (its merged-PR read has its own cache) and neither is an
+ * unreadable timeline, so the next scan retries both. An issue without an
+ * `updatedAt` (an older closed-batch cache entry) is classified live.
+ */
+export async function classifyClosedIssues(
   repo: string,
-  milestoneTitle: string,
+  issues: ClosedIssue[],
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+): Promise<ClosedIssue[]> {
+  const classified: ClosedIssue[] = [];
+  for (const issue of issues) {
+    const key = `${CLAIM_VERDICT_ENTRY_PREFIX}${issue.number}`;
+    if (cache) {
+      const hit = await cache.read<unknown>(repo, key);
+      if (isCachedClaimVerdict(hit) && hit.updatedAt === issue.updatedAt) {
+        classified.push(
+          hit.claimProblem === null
+            ? issue
+            : { ...issue, claimProblem: hit.claimProblem },
+        );
+        continue;
+      }
+    }
+
+    // Merged PRs first: with none, the issue is flagged whatever its timeline
+    // says, so the timeline is not paged. `fetchPRsForIssueByTitle` caches an
+    // empty answer only when the read succeeded, so a failed read is retried
+    // next scan rather than pinned here as "sync-pr-only".
+    let mergedPrs: Awaited<ReturnType<typeof fetchPRsForIssueByTitle>> = [];
+    try {
+      mergedPrs = await fetchPRsForIssueByTitle(
+        repo,
+        issue.number,
+        "merged",
+        cache,
+        ghCommandFn,
+      );
+    } catch {
+      mergedPrs = [];
+    }
+    if (mergedPrs.length === 0) {
+      classified.push({ ...issue, claimProblem: "sync-pr-only" });
+      continue;
+    }
+
+    const timeline = await fetchTimelineWithCache(
+      repo,
+      issue.number,
+      ghCommandFn,
+    );
+    // An unreadable timeline (gh fault, validation failure, page cap) cannot
+    // rule out a later reopen, so the issue is flagged, never claimed — and
+    // never cached, so the next scan retries it.
+    if (timeline === null) {
+      classified.push({ ...issue, claimProblem: "timeline-unreadable" });
+      continue;
+    }
+    const reopenedAt = latestReopenedAtFromTimeline(timeline);
+    const claimProblem: ClaimProblem | null = reopenedAt !== null &&
+        mergedPrs.every((pr) => !pr.mergedAt || pr.mergedAt < reopenedAt)
+      ? "predates-reopen"
+      : null;
+    if (cache && issue.updatedAt !== undefined) {
+      await cache.write(
+        repo,
+        key,
+        {
+          updatedAt: issue.updatedAt,
+          claimProblem,
+        } satisfies CachedClaimVerdict,
+      );
+    }
+    classified.push(claimProblem === null ? issue : { ...issue, claimProblem });
+  }
+  return classified;
+}
+
+/**
+ * The milestone's closed issues, minus its own tracking issues, classified
+ * for the rollup body (Issue #3476).
+ *
+ * The fleet's tracker is filed with `--milestone` and closed in the same scan
+ * that raises the summary PR, so it sits in the closed list on every later
+ * scan. It is not sub-issue work: left in, it is flagged `sync-pr-only` (no
+ * `(#N)`-titled merged PR) right beside `Closes #N`. Trackers are identified by
+ * the same title + marker + fleet-author check every other tracker decision
+ * uses, over the milestone's all-state list (which carries body and author).
+ */
+async function getClosedIssues(
+  repo: string,
+  milestone: { title: string; number: number },
+  ghCommandFn: GhCommandFn,
+  cache?: IssueCache,
+  verification: MilestoneTrackerVerification = {},
 ): Promise<ClosedIssue[]> {
   // Issue #1786: routes through the cached helper so duplicate
   // closed-issue lookups across the milestone helpers within a single
   // iteration share a payload.
   try {
-    return await fetchClosedIssuesByMilestone(
+    const closed = await fetchClosedIssuesByMilestone(
       repo,
-      milestoneTitle,
+      milestone.title,
       cache,
       ghCommandFn,
     );
+    const allStates = await fetchAllStateIssuesByMilestone(
+      repo,
+      milestone.number,
+      cache,
+      ghCommandFn,
+    );
+    const { trackers } = await partitionMilestoneTrackers(
+      allStates,
+      `closed-issue rollup for milestone '${milestone.title}' in ${repo}`,
+      {
+        ...verification,
+        unverifiedOutcome:
+          "the candidate is treated as ordinary closed work and flagged " +
+          "if no fleet-titled merged PR claims it",
+      },
+    );
+    const trackerNumbers = new Set(trackers.map((t) => t.number));
+    return await classifyClosedIssues(
+      repo,
+      closed.filter((issue) => !trackerNumbers.has(issue.number)),
+      ghCommandFn,
+      cache,
+    );
   } catch {
     return [];
+  }
+}
+
+/**
+ * Refresh the body of a still-open summary PR while its milestone has an open
+ * child again (Issue #3476).
+ *
+ * The completion path only reaches `createMilestoneSummaryPr` once nothing is
+ * open, so an issue reopened after the rollup was raised would otherwise stay
+ * under "Issues addressed" for as long as it is open. The body is rebuilt from
+ * the issues that are still closed, which drops the reopened one.
+ *
+ * The scan stays cheap for the common milestone, which has no summary PR at
+ * all (PR #3640 review): candidates come from the cached all-state branch list,
+ * and only those that list shows `OPEN` (or shows no state, as a cache entry
+ * from before the field existed does) are carried on. A milestone whose only
+ * final PR is merged or closed — the normal state after an automated roll-back
+ * — therefore costs no closed-issue classification and no live read. Each
+ * remaining candidate is then read live by {@link refreshExistingSummaryPr},
+ * which edits only an `OPEN` same-repository PR headed by the milestone branch
+ * whose body is stale — the cached state may be old — and leaves a closed-issue
+ * list that reads empty alone, logging a fault rather than throwing.
+ */
+async function refreshOpenSummaryPrBodyWhileIncomplete(
+  repo: string,
+  milestone: { title: string; number: number },
+  milestoneBranch: string,
+  defaultBranch: string,
+  ghCommandFn: GhCommandFn,
+  log: (message: string) => void,
+  cache: IssueCache | undefined,
+  verification: MilestoneTrackerVerification,
+): Promise<void> {
+  const candidates = (await fetchAllStatePRsByBranch(
+    repo,
+    milestoneBranch,
+    cache,
+    ghCommandFn,
+  )).filter((pr) =>
+    pr.headRefName === milestoneBranch &&
+    (pr.state === undefined || pr.state === "OPEN")
+  );
+  if (candidates.length === 0) return;
+
+  const closedIssues = await getClosedIssues(
+    repo,
+    milestone,
+    ghCommandFn,
+    cache,
+    verification,
+  );
+  // An empty list is indistinguishable from a failed read (the fetchers swallow
+  // gh faults into []), and publishing "_No issues found_" over a good body
+  // would be worse than leaving it stale — so leave it for a later scan.
+  if (closedIssues.length === 0) return;
+  const tracker = await hasExistingMilestoneTrackingIssue(
+    repo,
+    milestone.title,
+    milestone.number,
+    defaultBranch,
+    ghCommandFn,
+    cache,
+    verification,
+  );
+  for (const candidate of candidates) {
+    await refreshExistingSummaryPr({
+      repo,
+      prNumber: candidate.number,
+      milestone,
+      milestoneBranch,
+      defaultBranch,
+      trackingIssueNumber: tracker.ok ? tracker.value : null,
+      closedIssues,
+      ghCommandFn,
+      log,
+    });
   }
 }
 
@@ -1661,7 +2155,21 @@ async function processRepoMilestones(
       cache,
       verification,
     );
+    const refreshWhileIncomplete = () =>
+      refreshOpenSummaryPrBodyWhileIncomplete(
+        repo,
+        milestone,
+        milestoneBranch,
+        defaultBranch,
+        ghCommandFn,
+        log,
+        cache,
+        verification,
+      );
     if (!completeResult.ok || !completeResult.value) {
+      // Issue #3476: a listed issue that reopened must leave an existing
+      // summary PR's "Issues addressed" now, not once the milestone completes.
+      await refreshWhileIncomplete();
       // Issue #3214 (scope item 4): the milestone is NOT complete but carries
       // an open tracking-shaped issue — a premature tracker filed when the
       // milestone momentarily hit 0 open before new issues were added. Close
@@ -1731,6 +2239,7 @@ async function processRepoMilestones(
       );
     }
     if (authority.openCount > 0) {
+      await refreshWhileIncomplete();
       log(
         `Milestone '${milestone.title}' in ${repo} is NOT complete — GitHub ` +
           `reports ${authority.openCount} open non-tracking child ` +
@@ -1868,9 +2377,10 @@ async function processRepoMilestones(
     // just created.
     const closedIssues = await getClosedIssues(
       repo,
-      milestone.title,
+      milestone,
       ghCommandFn,
       cache,
+      verification,
     );
     // PR #3592 review: planning POSTs the milestone and only then assigns its
     // sub-issues, so for a moment it has no items and no branch. Leave a young

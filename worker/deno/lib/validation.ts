@@ -1051,6 +1051,7 @@ export interface TimelineLabelEventJson {
   event: string;
   label?: { name: string };
   actor?: { login: string };
+  assignee?: { login: string };
   /** ISO-8601 timestamp when the event occurred (Issue #1561). */
   created_at?: string;
 }
@@ -1088,6 +1089,14 @@ export function validateTimelineLabelEventsJson(
       if (!isObject(item.actor) || typeof item.actor.login !== "string") {
         return fail(
           `timeline[${i}].actor.login`,
+          "Expected object with string 'login' field",
+        );
+      }
+    }
+    if (item.assignee !== undefined && item.assignee !== null) {
+      if (!isObject(item.assignee) || typeof item.assignee.login !== "string") {
+        return fail(
+          `timeline[${i}].assignee.login`,
           "Expected object with string 'login' field",
         );
       }
