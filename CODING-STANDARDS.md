@@ -422,6 +422,33 @@ the stub, and a disk library that swapped in the free space AppleScript
 reported read the host's disk instead of the faked `df` (Issue #3475). The test
 itself must neutralise the branch; a green Linux CI run says nothing about it.
 
+### Shell code a test runs must behave the same on macOS
+
+Linux CI does not prove the quality gate passes. Fleet hosts also run
+`./quality.sh` on macOS: BSD coreutils, bash 3.2, and temp directories under
+`/var/folders`, which is a symlink to `/private/var`. The last paragraph of
+**Never let a unit test inherit the host's state** covers a script that takes a
+different path on macOS; this rule covers shell code with no OS branch at all
+that assumes GNU/Linux behaviour throughout, so a grep for `OSTYPE` or `darwin`
+finds nothing. Two private fleet PRs went green on Linux CI and red on every
+macOS host: a test compared a `mktemp -d` path as a string with one its helper
+had resolved with `pwd -P`, which differ on macOS because `/var` resolves to
+`/private/var`; and a script its tests ran end to end timed itself with
+`date +%N`, which BSD `date` prints as literal letters, so the script's
+arithmetic failed (Issue #3504).
+
+- **Avoid GNU-only forms, or guard each with a portable fallback**, in any shell
+  code a test runs: `date +%N` / `%3N` (sub-second time), `date -d`, `stat -c`,
+  `readlink -f`, `sed -i` with no suffix argument, `grep -P`, `find -printf`,
+  `xargs -r`, a bare `timeout`, and bash 4+ features (`declare -A`, `mapfile`,
+  `${var,,}`).
+- **Resolve both sides of a path comparison the same way** — `pwd -P` on each,
+  for example — never a raw `mktemp -d` path against a resolved one.
+- **Check before you raise the PR.** Grep the shell files that a new or edited
+  test runs, and everything they source, for the forms listed above. If you
+  cannot run the code on macOS, check every external command it runs against BSD
+  behaviour.
+
 ### Never assume history the worker's shallow checkout lacks
 
 The worker clones every monitored repository with

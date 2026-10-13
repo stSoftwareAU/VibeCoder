@@ -1046,14 +1046,19 @@ When creating the PR, include evidence based on the type of change:
   the override the code provides or set the test up so the real tool and the
   stub give the same result (see **Never let a unit test inherit the host's
   state** in `CODING-STANDARDS.md`). CI runs on Linux, so it never exercises a
-  branch only macOS takes. When the change relies on how
-  git, `gh`, the GitHub API or another external tool behaves in a particular
-  case, run the real tool on that case first and build the fake's fixture
-  from the observed output (see **Observe the real tool before you rely on
-  it** in the guidelines). The PR summary's Evidence gives the command you
-  ran and the part of the output the code depends on, or cites the tool's
-  documentation or source when the case cannot be observed safely. A fake
-  built from the behaviour you expected rather than the behaviour you
+  branch only macOS takes. Shell code a test runs must also behave the same
+  under macOS's BSD userland and bash 3.2: before raising the PR, check it for
+  GNU-only forms (`date +%N`, `stat -c`, `readlink -f`, `sed -i` with no
+  suffix, `grep -P`, bash 4+ features) and give each a portable fallback, and
+  resolve both sides of a path comparison the same way (see **Shell code a test
+  runs must behave the same on macOS** in `CODING-STANDARDS.md`). When the
+  change relies on how git, `gh`, the GitHub API or another external tool
+  behaves in a particular case, run the real tool on that case first and build
+  the fake's fixture from the observed output (see **Observe the real tool
+  before you rely on it** in the guidelines). The PR summary's Evidence gives
+  the command you ran and the part of the output the code depends on, or cites
+  the tool's documentation or source when the case cannot be observed safely. A
+  fake built from the behaviour you expected rather than the behaviour you
   observed is a blocking self-review finding. When the change adds or changes a
   recorded failure or degradation reason that quotes a tool's output, the reason
   quotes the line that names the cause and its test asserts that cause text, not
