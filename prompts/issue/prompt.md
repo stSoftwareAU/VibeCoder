@@ -1051,7 +1051,14 @@ When creating the PR, include evidence based on the type of change:
   GNU-only forms (`date +%N`, `stat -c`, `readlink -f`, `sed -i` with no
   suffix, `grep -P`, bash 4+ features) and give each a portable fallback, and
   resolve both sides of a path comparison the same way (see **Shell code a test
-  runs must behave the same on macOS** in `CODING-STANDARDS.md`). When the
+  runs must behave the same on macOS** in `CODING-STANDARDS.md`). Also check,
+  before raising the PR, whether a new or edited test uses a fixed path under
+  `/tmp` or `$TMPDIR`, or reads that directory's listing: the system temp
+  directory is shared with parallel test workers, other lanes and other OS
+  users, so keep every path the test reads, writes or lists inside a directory
+  it created itself (`Deno.makeTempDir`, `mktemp -d`), and prove cleanup through
+  a temp-root parameter pointed at that directory (see **Never let a unit test
+  inherit the host's state** in `CODING-STANDARDS.md`). When the
   change relies on how git, `gh`, the GitHub API or another external tool
   behaves in a particular case, run the real tool on that case first and build
   the fake's fixture from the observed output (see **Observe the real tool
