@@ -1253,6 +1253,31 @@ the observable output. A member the issue explicitly asks for as public API
 member with no production reader or setter is a blocking self-review finding
 (Issue #3455).
 
+**Never assume history the worker's shallow checkout lacks.** CI usually
+checks out with `fetch-depth: 0`, so a change that assumes history passes CI
+and then breaks in the fleet's own checkout: the quality gate goes red on
+unrelated work, or production logic gives a wrong answer (Issue #3494).
+
+- **Assume nothing beyond a branch tip.** The worker's checkout of every
+  repository is `--depth=1 --no-single-branch`, so code and tests must not
+  assume history beyond a branch tip. That rules out `HEAD~N` or `<ref>^`,
+  `git log` ranges, `merge-base`, `blame` attribution and ancestry checks
+  against the real checkout.
+- **A test that needs history builds its own.** It runs `git init` in a
+  temporary directory and makes the commits it needs, or it uses a ref that
+  always resolves, such as `HEAD`. If a skip guard is unavoidable, it checks
+  for reachable history (`git rev-parse --is-shallow-repository`), not whether
+  an object exists (Issue #2893).
+- **Production code that needs history deepens first.** It deepens explicitly
+  through the repository's existing helper — in the Vibe Coder worker,
+  `ensureHistoryDepth` in `worker/deno/lib/git_history.ts` or
+  `mergeWithUnshallowRetry` in `worker/deno/lib/git_merge_unshallow_retry.ts`
+  — or it treats an unanswerable result as unknown rather than as an answer
+  (Issue #3398).
+- **"Cannot run here" is a defect, not a caveat.** A PR summary that says a
+  new test cannot run in the worker's checkout because it is shallow names a
+  defect to fix before the PR is raised, not a caveat to report.
+
 ## Test Coverage Expectations
 
 For supported public behaviour lacking a useful safety net, add tests as
