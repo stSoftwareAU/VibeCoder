@@ -364,3 +364,15 @@ fingerprint-gated rewrite and the `updatedAt`-keyed verdict cache;
 optional `updatedAt`; an old-shape entry is read as it is); siblings:
 `issues_all`, `prs_all_branch_*` (the cached branch list now also feeds the
 incomplete-path candidate lookup); updated: `docs/workflows/milestones.md`.
+
+**Docs sweep** — grep: `fetchAllStatePRsByBranch`, `BranchPR`, `prs_all_branch`,
+`refreshOpenSummaryPrBodyWhileIncomplete`, `not open`; section:
+`docs/workflows/milestones.md` ("Final PR already exists", line 692) — extended
+with the OPEN-only candidate filter on the incomplete path; the doc comments of
+`fetchAllStatePRsByBranch`, `BranchPR` and `refreshOpenSummaryPrBodyWhileIncomplete`
+were updated in the same push; `hasExistingMilestoneSummaryPr` (the other
+reader of the shared `prs_all_branch_*` entry) reads only `number` and
+`headRefName`, so the added optional `state` changes nothing there; siblings:
+`number`, `title`, `headRefName` (the existing `BranchPR` members; `state` is
+optional so an old cache entry reads as unknown); updated:
+`docs/workflows/milestones.md`.
