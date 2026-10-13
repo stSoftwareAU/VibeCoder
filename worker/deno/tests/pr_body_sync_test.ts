@@ -23,6 +23,8 @@ import {
 import {
   assessReportedGaps,
   buildReportedGapStaleFollowUpSection,
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
 } from "../lib/degraded_delivery.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 import type {
@@ -1777,4 +1779,56 @@ Deno.test("sync - a section already marked as possibly stale is re-derived under
   );
   assertStringIncludes(synced, "- **partial** — the export works");
   assertEquals(synced.includes("the import works\n"), false);
+});
+
+// --- chain-stop section on a partial-delivery follow-up (PR #3676 review) ---
+
+const LIVE_CHAIN_STOP = [
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  "",
+  "This run's PR summary closed out the criteria below as `partial` or " +
+  "`missing`.",
+  "",
+  "- **partial** — the export works",
+  "",
+  "",
+].join("\n");
+
+Deno.test("sync - keeps the chain-stop section and its marker while a gap remains (PR #3676 review)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_CHAIN_STOP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assert(synced.startsWith(FOLLOW_UP_CHAIN_STOP_SECTION_HEADING));
+  assertStringIncludes(synced, FOLLOW_UP_CHAIN_STOP_MARKER);
+  assertStringIncludes(synced, "**partial** — the export works");
+  assert(!synced.includes(`Closes #${ISSUE_NUMBER}`), "never closes it");
+  assertEquals(
+    ghCalls.some((c) => c.args[0] === "issue" && c.args[1] !== "view"),
+    false,
+    "a re-sync never writes to the issue",
+  );
+});
+
+Deno.test("sync - drops the chain-stop section once no gap remains (PR #3676 review)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${LIVE_CHAIN_STOP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assertEquals(synced.includes(FOLLOW_UP_CHAIN_STOP_MARKER), false);
 });

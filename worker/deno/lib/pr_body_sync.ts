@@ -62,7 +62,9 @@ import {
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
 import {
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
   rederiveDegradedSection,
+  rederiveFollowUpChainStopSection,
   rederiveReportedGapSection,
   REPORTED_GAP_SECTION_HEADING,
 } from "./degraded_delivery.ts";
@@ -593,10 +595,20 @@ export async function syncPrBodyFromSummary(
     view.body ?? "",
     REPORTED_GAP_SECTION_HEADING,
   );
-  const liveSection = liveDegraded || liveReportedGap;
+  // PR #3676 review: a run on a partial-delivery follow-up carries the
+  // chain-stop section instead, re-derived from the current gaps.
+  const liveChainStop = liveDegraded || liveReportedGap
+    ? ""
+    : extractLeadingSection(
+      view.body ?? "",
+      FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+    );
+  const liveSection = liveDegraded || liveReportedGap || liveChainStop;
   if (liveSection) {
     const sectionName = liveDegraded
       ? "degraded-run section"
+      : liveChainStop
+      ? "chain-stop section"
       : "partial-delivery section";
     let issueBody: string;
     try {
@@ -624,8 +636,13 @@ export async function syncPrBodyFromSummary(
         ),
       };
     }
-    const rederived =
-      (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
+    const rederived = liveChainStop
+      ? rederiveFollowUpChainStopSection({
+        issueNumber,
+        issueBody,
+        prBody: body,
+      })
+      : (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
         liveSection,
         issueBody,
         prBody: body,
@@ -634,6 +651,8 @@ export async function syncPrBodyFromSummary(
       logger.info(
         liveDegraded
           ? "Re-derived the degraded-run section (Issue #3350)"
+          : liveChainStop
+          ? "Re-derived the chain-stop section (PR #3676 review)"
           : "Re-derived the partial-delivery section (Issue #3506)",
         {
           repo: input.repo,
@@ -643,7 +662,12 @@ export async function syncPrBodyFromSummary(
         },
       );
     }
-    body = rederived + body;
+    // PR #3676 review: a kept chain-stop section keeps the PR from closing
+    // the follow-up it hands to a human.
+    body = rederived +
+      (liveChainStop && rederived !== ""
+        ? withholdIssueClose(body, issueNumber)
+        : body);
   }
 
   if (body.trim() === (view.body ?? "").trim()) {

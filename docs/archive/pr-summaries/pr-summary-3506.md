@@ -36,6 +36,15 @@ re-sync re-derives that section. Closes #3506.
   residue recorded nowhere.
 - On a healthy run whose issue states no criteria, nothing is filed: entries
   are matched to the issue's criteria, and there are none to match.
+- A healthy run on an issue that is itself a partial-delivery follow-up (its
+  body carries a `degraded-follow-up-<N>` marker) files no nested follow-up
+  (PR #3676 review). It labels the issue `needs-human` and comments naming
+  the gaps, and its PR opens with a `## ⚠️ Partial delivery — handed to a
+  human` section carrying a `vibe-follow-up-chain-stop` marker, with the
+  closing keyword for the issue turned into `Part of`. Both merged-PR closers
+  leave such an issue open. Without this, an item no run can deliver chained
+  `Finish #F: Finish #N: …` fleet runs without end. Marker authorship is not
+  checked, because a planted marker only sends the gaps to a human.
 
 ### Undiscoverable Facts
 
@@ -156,6 +165,19 @@ true because it names the guard, which still runs for degraded runs:
   - `deno test -A` over `tests/completion_phase_degraded_delivery_test.ts`,
     `tests/degraded_delivery_test.ts`, `tests/pr_body_sync_test.ts` and
     `tests/claim_freshness_phase_test.ts`: 152 passed, 0 failed on the head of this push; `deno lint`, `deno check` and `deno fmt --check` passed.
+- PR #3676 review push (fourth round, follow-up chain): 3 tests added to
+  `worker/deno/tests/completion_phase_degraded_delivery_test.ts` (a healthy
+  run on a follow-up files no `idle-task` issue, labels it `needs-human`,
+  comments, and its PR body opens with the chain-stop section and does not
+  close it; a failed label raises no PR and posts no comment; a degraded run
+  on a follow-up still files one), 2 to `worker/deno/tests/pr_body_sync_test.ts`
+  (the re-sync keeps the section while a gap remains and drops it once none
+  does) and the new `worker/deno/tests/follow_up_chain_stop_test.ts` (8 tests:
+  the helpers, and both closers leaving a chain-stop PR's issue open). The
+  related suites (689 tests) passed, with `deno fmt --check`, `deno lint` and
+  `deno check`. Red check: forcing the chain-stop condition in the guard turned
+  9 completion tests red; disabling the closer branch in `pr_issue_linking.ts`
+  turned 2 closer tests red. The full gate was not re-run on this push.
 - Earlier head: `./quality.sh < /dev/null` passed (`Result: PASSED (with skipped checks)`;
   `config integration` is skipped as usual). Later commits changed behaviour as
   well as docs, log messages and tests: the PR #3676 review fix adds the

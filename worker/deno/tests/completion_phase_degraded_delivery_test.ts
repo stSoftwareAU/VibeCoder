@@ -17,7 +17,10 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  buildDegradedFollowUpIssue,
   degradedFollowUpFindingId,
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
   REPORTED_GAP_SECTION_HEADING,
 } from "../lib/degraded_delivery.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
@@ -234,6 +237,9 @@ interface Outcome {
   issueCreates: string[][];
   /** Every `gh issue close` the run issued (PR #3676 review). */
   issueCloses: string[][];
+  /** Every `gh issue edit` and `gh issue comment` the run issued. */
+  issueEdits: string[][];
+  issueComments: string[][];
   prBodies: string[];
   recoverCalls: number;
   prCreateCalls: number;
@@ -264,6 +270,8 @@ async function runCompletion(opts: {
   existingFollowUp?: number;
   /** PR #3676 review: make `gh issue close` reject. */
   failIssueClose?: boolean;
+  /** PR #3676 review: make `gh issue edit` reject. */
+  failIssueEdit?: boolean;
 }): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   if (opts.summary !== null) {
@@ -278,6 +286,8 @@ async function runCompletion(opts: {
 
   const issueCreates: string[][] = [];
   const issueCloses: string[][] = [];
+  const issueEdits: string[][] = [];
+  const issueComments: string[][] = [];
   const prBodies: string[] = [];
   let recoverCalls = 0;
   let prCreateCalls = 0;
@@ -338,6 +348,16 @@ async function runCompletion(opts: {
           return opts.failIssueClose
             ? Promise.reject(new Error("HTTP 403 close"))
             : Promise.resolve("");
+        }
+        if (args[0] === "issue" && args[1] === "edit") {
+          issueEdits.push(args);
+          return opts.failIssueEdit
+            ? Promise.reject(new Error("HTTP 403 edit"))
+            : Promise.resolve("");
+        }
+        if (args[0] === "issue" && args[1] === "comment") {
+          issueComments.push(args);
+          return Promise.resolve("");
         }
         if (args[0] === "issue" && args[1] === "create") {
           issueCreates.push(args);
@@ -412,6 +432,8 @@ async function runCompletion(opts: {
     reason,
     issueCreates,
     issueCloses,
+    issueEdits,
+    issueComments,
     prBodies,
     recoverCalls,
     prCreateCalls,
@@ -513,6 +535,83 @@ Deno.test("completion - a healthy run whose summary closes out one criterion as 
     !section.includes("The docs table lists opus for planning."),
     "met items are not listed in the section",
   );
+});
+
+/** Issue body of a partial-delivery follow-up the worker filed for #517. */
+const FOLLOW_UP_ISSUE_BODY = buildDegradedFollowUpIssue({
+  parentNumber: 517,
+  parentTitle: "Finish the switch",
+  verdict: {
+    degraded: false,
+    delivered: ["The docs table lists opus for planning."],
+    shortfalls: [{
+      criterion: "The router sends planning to opus.",
+      status: "partial",
+    }],
+  },
+  runId: "run-1",
+}).body;
+
+Deno.test("completion - a healthy run on a partial-delivery follow-up files no nested follow-up and hands it to a human (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: FOLLOW_UP_ISSUE_BODY,
+    summary: SUMMARY_PARTIAL_AND_MET.replace(
+      "Did a little.",
+      `Did a little. Closes #${ISSUE}.`,
+    ),
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates, [], "no nested idle-task follow-up");
+  assertEquals(outcome.issueEdits.filter((e) => e.includes("--add-label")), [[
+    "issue",
+    "edit",
+    String(ISSUE),
+    "--repo",
+    "stSoftwareAU/VibeCoder",
+    "--add-label",
+    "needs-human",
+  ]]);
+  assertEquals(outcome.issueComments.length, 1);
+  const comment = outcome.issueComments[0]!;
+  assertStringIncludes(
+    comment[comment.indexOf("--body") + 1]!,
+    "**partial** — The router sends planning to opus.",
+  );
+  const pr = outcome.prBodies[0]!;
+  assert(pr.startsWith(FOLLOW_UP_CHAIN_STOP_SECTION_HEADING));
+  assertStringIncludes(pr, FOLLOW_UP_CHAIN_STOP_MARKER);
+  assert(!pr.includes(REPORTED_GAP_SECTION_HEADING));
+  assert(!pr.includes(`Closes #${ISSUE}`), "the PR does not close it");
+  assertStringIncludes(pr, `Part of #${ISSUE}`);
+});
+
+Deno.test("completion - a follow-up that cannot be handed to a human raises no PR (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: FOLLOW_UP_ISSUE_BODY,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    failIssueEdit: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+  assertEquals(outcome.issueCreates, []);
+  assertEquals(outcome.issueComments, [], "no comment without the label");
+  assertStringIncludes(outcome.reason ?? "", "HTTP 403 edit");
+});
+
+Deno.test("completion - a degraded run on a partial-delivery follow-up still files its follow-up (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: FOLLOW_UP_ISSUE_BODY,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 1);
+  assertEquals(outcome.issueEdits.filter((e) => e.includes("--add-label")), []);
 });
 
 Deno.test("completion - the follow-up log names whether the run was degraded, its reason and its shortfall count (Issue #3506)", async () => {

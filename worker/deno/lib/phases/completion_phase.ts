@@ -64,7 +64,10 @@ import {
   buildClosureGateComment,
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
-import { findMissingCriteria } from "../missing_criterion_close_guard.ts";
+import {
+  findMissingCriteria,
+  withholdIssueClose,
+} from "../missing_criterion_close_guard.ts";
 import {
   buildIndependentReviewComment,
   validateIndependentReview,
@@ -223,9 +226,12 @@ import {
   assessReportedGaps,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  buildFollowUpChainStopSection,
   buildReportedGapPrSection,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
+  handFollowUpToHuman,
+  isPartialDeliveryFollowUp,
 } from "../degraded_delivery.ts";
 import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
 
@@ -829,6 +835,11 @@ async function reportSummaryRuleBlock(
  * added the mutation check as the fifth and Issue #3257 the summary claim
  * check as the sixth) pass, whether the PR is then raised or recovered.
  *
+ * PR #3676 review: a healthy run on an issue that is itself a
+ * partial-delivery follow-up files no nested one. It labels the issue
+ * `needs-human`, comments naming the gaps, and its PR body carries the
+ * chain-stop section, so the merge leaves the issue open.
+ *
  * PR #3676 review: the follow-up joins the parent's milestone when it has
  * one, so the fleet works it on the milestone branch. `followUp` on the
  * success result lets `completionBody` retract a follow-up this call newly
@@ -864,6 +875,46 @@ async function applyDegradedDeliveryGuard(
   const verdict = degradedDelivery.degraded
     ? degradedDelivery
     : assessReportedGaps(issueBody, prBody);
+  if (
+    degradedNeedsFollowUp(verdict) && !verdict.degraded &&
+    isPartialDeliveryFollowUp(issueBody)
+  ) {
+    // PR #3676 review: this issue is itself a partial-delivery follow-up.
+    // Filing `Finish #F: Finish #N: …` would chain fleet runs without end on
+    // an item no run can deliver, so the gaps go to a human instead.
+    const handed = await handFollowUpToHuman({
+      repo,
+      issueNumber,
+      verdict,
+      runId: getRunId(),
+      gh: deps.github.runGhCommand,
+    });
+    if (!handed.ok) {
+      logger.error(
+        "Could not hand this partial-delivery follow-up to a human — failing the run without finalising a PR",
+        { error: handed.error.message },
+      );
+      return {
+        ok: false,
+        result: {
+          status: "failure",
+          reason:
+            `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing on a partial-delivery follow-up, and it could not be handed to a human: ${handed.error.message}`,
+        },
+      };
+    }
+    logger.warn(
+      "Run on a partial-delivery follow-up left gaps — handed to a human, no nested follow-up filed",
+      { shortfalls: verdict.shortfalls.length },
+    );
+    // The PR must not close the follow-up natively either: a merge into the
+    // default branch would otherwise close it with its closing keyword.
+    return {
+      ok: true,
+      prBody: buildFollowUpChainStopSection(verdict, issueNumber) +
+        withholdIssueClose(prBody, issueNumber),
+    };
+  }
   if (degradedNeedsFollowUp(verdict)) {
     const labelled = await deps.github.ensureLabelExists(
       repo,

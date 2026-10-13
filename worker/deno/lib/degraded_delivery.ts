@@ -93,6 +93,7 @@ import { buildDegradationReport } from "./planning_run_stats.ts";
 import type { EnvLookup } from "./env_lookup.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import { IDLE_TASK_LABEL } from "./idle_task_issue.ts";
+import { LABEL_DEFAULTS } from "./config_defaults.ts";
 import {
   fileFindingOnce,
   type FindingIdDedupOptions,
@@ -566,6 +567,150 @@ export function rederiveReportedGapSection(args: {
   return args.liveSection === heldSection
     ? args.liveSection
     : buildReportedGapStaleFollowUpSection(verdict, n);
+}
+
+/**
+ * Opening heading of the PR-body section a healthy run gets instead of a
+ * nested follow-up when its issue is itself a partial-delivery follow-up
+ * (PR #3676 review).
+ */
+export const FOLLOW_UP_CHAIN_STOP_SECTION_HEADING =
+  "## ⚠️ Partial delivery — handed to a human";
+
+/**
+ * Marker the chain-stop section carries, so the merged-PR closers leave the
+ * follow-up open (`hasFollowUpChainStop` in `missing_criterion_close_guard.ts`).
+ */
+export const FOLLOW_UP_CHAIN_STOP_MARKER = "<!-- vibe-follow-up-chain-stop -->";
+
+/** A live `degraded-follow-up-<N>` finding-id marker, as the filer writes it. */
+const FOLLOW_UP_FINDING_ID_RE = new RegExp(
+  `<!--\\s*finding-id:\\s*${DEGRADED_FOLLOW_UP_ID_PREFIX}\\d+\\s*-->`,
+);
+
+/**
+ * Whether an issue body is a partial-delivery follow-up the worker filed: it
+ * carries a live `degraded-follow-up-<N>` finding-id marker (PR #3676 review).
+ *
+ * A run on such an issue must not file a nested `Finish #F: Finish #N: …`
+ * follow-up: an item no run can deliver would otherwise chain fleet runs
+ * without end. Authorship is not checked. A planted marker only routes a
+ * run's gaps to a human instead of to a fleet follow-up, which fails toward
+ * a person, never toward silence.
+ */
+export function isPartialDeliveryFollowUp(issueBody: string): boolean {
+  return FOLLOW_UP_FINDING_ID_RE.test(issueBody);
+}
+
+/**
+ * Build the PR-body section a healthy run on a partial-delivery follow-up
+ * carries in place of a nested follow-up (PR #3676 review). The closers read
+ * its {@link FOLLOW_UP_CHAIN_STOP_MARKER} and leave the issue open on merge.
+ * Throws without a healthy verdict carrying a gap.
+ */
+export function buildFollowUpChainStopSection(
+  verdict: DegradedDeliveryVerdict,
+  issueNumber: number,
+): string {
+  if (verdict.degraded || !degradedNeedsFollowUp(verdict)) {
+    throw new Error(
+      "buildFollowUpChainStopSection: needs a healthy verdict with a partial or missing shortfall",
+    );
+  }
+  return [
+    FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+    FOLLOW_UP_CHAIN_STOP_MARKER,
+    "",
+    `This run's PR summary closed out the criteria below as \`partial\` or ` +
+    `\`missing\`. #${issueNumber} is itself a partial-delivery follow-up, so ` +
+    `the worker files no further one: it is labelled ` +
+    `\`${LABEL_DEFAULTS.needsHumanLabel}\`, and when this PR merges the ` +
+    `worker leaves #${issueNumber} open for a human:`,
+    "",
+    ...shortfallLines(verdict.shortfalls),
+    "",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Hand a partial-delivery follow-up whose own run left gaps to a human (PR
+ * #3676 review): label it `needs-human` and comment naming the gaps. The
+ * label goes on first, so a failed comment never leaves an unlabelled issue
+ * that reads as handed over.
+ *
+ * Fails loud: the caller must not raise a PR that would close the follow-up
+ * with its gaps recorded nowhere a person will look.
+ */
+export async function handFollowUpToHuman(args: {
+  repo: string;
+  issueNumber: number;
+  verdict: DegradedDeliveryVerdict;
+  runId: string;
+  gh: (args: string[]) => Promise<string>;
+}): Promise<Result<void>> {
+  const comment = [
+    `⚠️ **Handed to a human — this run closed out ` +
+    `${args.verdict.shortfalls.length} criteri${
+      args.verdict.shortfalls.length === 1 ? "on" : "a"
+    } as \`partial\` or \`missing\`:**`,
+    "",
+    ...shortfallLines(args.verdict.shortfalls),
+    "",
+    `This issue is itself a partial-delivery follow-up, so the worker files ` +
+    `no further one (PR #3676 review). It is labelled ` +
+    `\`${LABEL_DEFAULTS.needsHumanLabel}\` and stays open when the run's PR ` +
+    `merges. Finish the items by hand, or close this issue if the gap is ` +
+    `acceptable.`,
+    "",
+    `_Run id: \`${args.runId}\`_`,
+  ].join("\n");
+  try {
+    await args.gh([
+      "issue",
+      "edit",
+      String(args.issueNumber),
+      "--repo",
+      args.repo,
+      "--add-label",
+      LABEL_DEFAULTS.needsHumanLabel,
+    ]);
+    await args.gh([
+      "issue",
+      "comment",
+      String(args.issueNumber),
+      "--repo",
+      args.repo,
+      "--body",
+      comment,
+    ]);
+    return { ok: true, value: undefined };
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: new Error(
+        `could not hand partial-delivery follow-up #${args.issueNumber} to ` +
+          `a human: ${cause}`,
+      ),
+    };
+  }
+}
+
+/**
+ * Re-derive a live chain-stop section from the current issue body and PR
+ * summary (PR #3676 review). Returns "" when no gap remains, so the merged PR
+ * then closes the follow-up as usual.
+ */
+export function rederiveFollowUpChainStopSection(args: {
+  issueNumber: number;
+  issueBody: string;
+  prBody: string;
+}): string {
+  const verdict = assessReportedGaps(args.issueBody, args.prBody);
+  return degradedNeedsFollowUp(verdict)
+    ? buildFollowUpChainStopSection(verdict, args.issueNumber)
+    : "";
 }
 
 /**

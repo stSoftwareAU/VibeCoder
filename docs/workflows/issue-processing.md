@@ -2518,6 +2518,22 @@ run:
   lists the follow-up, because it would copy freshly fetched, unverified issue
   text into an `idle-task` issue the fleet works as trusted (PR #3676
   review; THREAT-MODEL AP-7).
+- **No nested follow-up.** When the issue being worked is itself a
+  partial-delivery follow-up (its body carries a `degraded-follow-up-<N>`
+  `finding-id` marker), a healthy run with a gap files no `Finish #F: Finish
+  #N: …` follow-up, because an item no run can deliver would otherwise chain
+  fleet runs without end (PR #3676 review). Instead it labels the issue
+  `needs-human`, comments naming the gaps (`handFollowUpToHuman`), and the PR
+  body opens with a `## ⚠️ Partial delivery — handed to a human` section
+  carrying a `vibe-follow-up-chain-stop` marker, and its closing keyword for
+  the issue becomes `Part of`. Both merged-PR closers read
+  that marker and leave the issue open, labelled `needs-human`, even when its
+  gaps are only `partial`. If the label or comment cannot be applied, the run
+  fails as above and raises no PR. A re-sync rebuilds this section from the
+  current gaps and drops it when none remains, so the merge then closes the
+  issue as usual. Authorship of the marker is not checked: a planted marker
+  only sends a run's gaps to a human instead of to a fleet follow-up. A
+  degraded run on a follow-up still files one, as before.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 

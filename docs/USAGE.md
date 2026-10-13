@@ -112,8 +112,10 @@ dropped, with no call to the follow-up, when no gap remains; kept as it is when
 the follow-up number cannot be read from its opening line; and, when a gap
 remains and the rebuilt section differs from the live one, rewritten to name the
 same follow-up while saying it was filed when the PR was raised and may not list
-every item. A re-sync only reads the issue; it never edits or files the
-follow-up. See the
+every item. A leading `Partial delivery — handed to a human` section, which a
+run on a partial-delivery follow-up carries instead of filing a nested one (PR
+#3676 review), is rebuilt from the current gaps and dropped when none remains.
+A re-sync only reads the issue; it never edits or files the follow-up. See the
 degraded-run section of
 [issue-processing.md](workflows/issue-processing.md).
 
