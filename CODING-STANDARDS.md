@@ -1915,6 +1915,8 @@ gate if a model-generation name reappears in this document.
   what `.vibe-run-budget.md` says (#3066); one called a test the summary
   cites but the diff lacks a violation while the named-test rule accepts a
   test already tracked at the head (#3075).
+  The rule's own restatements in this diff are held to the same standard:
+  see **Every restatement of a rule gives the same answer** below.
 - **Apply a new rule to your own diff.** After writing or changing a rule,
   read it literally, as a reviewer would, and apply it to this PR's own
   diff: the rule's own examples and model sentences, the code and tests the
@@ -1936,6 +1938,29 @@ gate if a model-generation name reappears in this document.
   reaching for `flatWholeFile` a finding while its own drift tests called
   it on pinned-phrase literals and the helper's own doc comment allowed
   exactly that (#3240).
+- **Every restatement of a rule gives the same answer.** After writing or
+  changing a rule, list every place this diff states or illustrates it: the
+  rule itself, its examples and parentheticals, its restatement in each other
+  prompt or `CODING-STANDARDS.md` bullet, the operator-doc row, the PR
+  summary, and any helper doc comment or test the rule names. Name the edge
+  case the rule decides, then read each place for that case: every place
+  must give the same answer. Whenever the diff adds an exception, fallback or
+  scope limit in one place — on a review-fix round above all — apply it to
+  every restatement, then search the diff for the old wording
+  (`git diff <base>...HEAD | grep -n '<old phrase>'`) and fix each hit that
+  still gives the old answer. An example or parenthetical that contradicts
+  its own rule is the same defect as two contradictory rules, and is fixed
+  before the PR is raised. Three fleet PRs were sent back for this after
+  **Check the existing rules before you add one** landed (#3077): one called
+  any drift test reaching for `flatWholeFile` a finding while its own drift
+  tests called it and the helper's doc comment it relied on allowed it
+  (#3240); one told the agent to re-allow a hidden path in the repository's
+  own `.gitignore` while `prompts/coding_guidelines/prompt.md`, which the
+  same PR edited, still said never to add such a re-allow rule (#3308); one
+  review-fix round added a fallback for the retro's effort cause in
+  `prompts/retro/prompt.md`, and in the same round a parenthetical, repeated
+  in `CODING-STANDARDS.md` and `docs/RETRO-SCAN.md`, counted that same case
+  as ruled out, so the fallback could never apply (#3550).
 - **Scope a rule to the runs it is true for.**
   `prompts/coding_guidelines/prompt.md` is rendered into every phase that
   `CODING_GUIDELINES_LAYER_BY_PHASE` (`worker/deno/lib/prompt_builder.ts`)

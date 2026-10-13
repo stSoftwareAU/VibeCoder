@@ -360,7 +360,20 @@ guessing — the analysis-only hand-off then routes it to a human.
    way must itself pass the rule, checked against the code it describes.
    The PR summary says you applied the rule to the PR's own diff and names
    what you found, or says you found nothing (see **Apply a new rule to
-   your own diff** in `CODING-STANDARDS.md`). When the change involves
+   your own diff** in `CODING-STANDARDS.md`).
+   Then list every place this diff states or illustrates the rule — the
+   rule itself, its examples and parentheticals, its restatement in each
+   other prompt or `CODING-STANDARDS.md` bullet, the operator-doc row, the
+   PR summary, and any helper doc comment or test the rule names — name
+   the edge case the rule decides, and read each place for that case:
+   every place must give the same answer. Whenever the diff adds an
+   exception, fallback or scope limit in one place — on a review-fix round
+   above all — apply it to every restatement, then grep
+   `git diff <base>...HEAD` for the old wording and fix each hit that
+   still gives the old answer. An example or parenthetical that
+   contradicts its own rule is the same blocking self-review finding as
+   two contradictory rules (see **Every restatement of a rule gives the
+   same answer** in `CODING-STANDARDS.md`). When the change involves
    architecture, data flow, state transitions, or sequence of events,
    include a **Mermaid**
    diagram (e.g. `flowchart`, `sequenceDiagram`, `stateDiagram`,
