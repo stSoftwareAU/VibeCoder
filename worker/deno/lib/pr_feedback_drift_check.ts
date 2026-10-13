@@ -579,10 +579,13 @@ export function buildDriftRecoveryPrompt(opts: {
   }
   if (staleCitations.length > 0) {
     steps.push(
-      "Renumber each listed `path:line` citation in the `Branch outcomes:` " +
-        "list to the line its code sits on at the head — re-read it there " +
-        "— and re-run the flip for any entry whose cited code this push " +
-        "changed rather than carrying the old result over.",
+      "Renumber each listed `path:line` citation, in the file its finding " +
+        "names, to the line its code sits on at the head — re-read it " +
+        "there — and re-run the flip for any entry whose cited code this " +
+        "push changed rather than carrying the old result over. In a " +
+        "`pr-summary-<N>.facts.json` file, set that entry's `line` (and " +
+        "`endLine` for a range); in a `pr-summary-<N>.md` summary, edit " +
+        "its `Branch outcomes:` list.",
     );
   }
   steps.push(
@@ -1036,6 +1039,7 @@ async function checkLineCitations(
       currentSummary: s.content,
       previousFacts,
       currentFacts,
+      currentFactsPath: factsPath,
       changedFiles: pushFiles,
       hunksByPath,
     });

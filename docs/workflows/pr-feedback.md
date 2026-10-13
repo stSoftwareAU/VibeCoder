@@ -535,12 +535,16 @@ Five checks run, each only when it applies:
    changed file, a before-run summary it could not read, a before-run
    `Branch outcomes:` list longer than the parser reads, and a facts file
    it cannot read or that fails to parse or validate at either ref (never
-   read as "no citations").
+   read as "no citations"). A hit whose head citations came from the facts
+   file names that facts file, not the `.md` summary, and asks for the
+   entry's `line`/`endLine` to be renumbered there.
 
 Any hit gets **one** recovery turn: the agent, with full tools, is asked to
 rewrite the listed sentences, recount the Test Plan, fix the Docs sweep
 line, rewrite or remove each stale quoted sentence, and renumber each
-listed line citation to the head — re-running the flip for any entry whose
+listed line citation to the head, in the file each hit names (a facts
+entry's `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list) —
+re-running the flip for any entry whose
 cited code this push changed rather than carrying the old result over —
 without changing code. The checks are then re-run; a prose finding counts
 as fixed only when its quoted sentence was present before the recovery turn

@@ -13,6 +13,11 @@ lost its coverage without saying why.
   reverse), the check compares the two forms.
 - A facts file that cannot be read or parsed at either ref is reported as
   `Branch outcomes citations not checked: <reason>`, never as "no citations".
+- When the head's citations come from the facts file, a stale finding names
+  `pr-summary-<N>.facts.json` (not the `.md` summary) and asks for that
+  entry's `line`/`endLine` to be renumbered. The one recovery turn is told to
+  fix each citation in the file its finding names: a facts entry's
+  `line`/`endLine`, or the `.md` summary's `Branch outcomes:` list.
 
 Closes #3536.
 
@@ -38,6 +43,10 @@ Closes #3536.
   `changedFilesCitedBy`. The issue requires `branch_outcome_citations_3341_test.ts`
   to pass untouched, and that file calls both without facts. The one
   production caller, `checkLineCitations`, always passes both.
+- `CitationCheckInput.currentFactsPath` tells `findStaleCitations` where the
+  head's facts came from. It is used only when `currentFacts` is set, so a
+  head that still uses prose keeps the `.md` path in its findings.
+  `checkLineCitations` always passes it.
 
 ### Undiscoverable Facts
 
@@ -46,9 +55,9 @@ Closes #3536.
 ## Evidence
 
 Backend only. The changes are covered by
-`worker/deno/tests/branch_outcome_citations_facts_3396_test.ts`, which has six
-pure tests and six integration tests. The integration tests run against real
-temporary git repositories.
+`worker/deno/tests/branch_outcome_citations_facts_3396_test.ts`, which has
+seven pure tests and eight integration tests. The integration tests run against
+real temporary git repositories.
 
 ```mermaid
 flowchart TD
@@ -64,9 +73,12 @@ flowchart TD
     H -- no --> HP["current citations = prose list"]
     HF --> C["findStaleCitations: map through the push's diff"]
     HP --> C
+    C --> L{"head citations from facts?"}
+    L -- yes --> LF["finding names pr-summary-N.facts.json: renumber line/endLine"]
+    L -- no --> LP["finding names pr-summary-N.md: renumber the prose list"]
 ```
 
-**Docs sweep** — grep: `findStaleCitations`, `changedFilesCitedBy`, `branch_outcome_citations`, "line-citation check", "3341", "facts.json"; section: `docs/workflows/pr-feedback.md` item 5 "Deterministic line-citation check (Issue #3341)"; siblings: none — no existing set gained a member; updated: `docs/workflows/pr-feedback.md`, `docs/INTERNALS.md`, and the module and function doc comments in `worker/deno/lib/branch_outcome_citations.ts` and `worker/deno/lib/pr_feedback_drift_check.ts`; `docs/INTERNALS.md:5326` — still true because `pr_summary_facts.ts` itself is unchanged
+**Docs sweep** — grep: `findStaleCitations`, `changedFilesCitedBy`, `branch_outcome_citations`, "line-citation check", "3341", "facts.json"; section: `docs/workflows/pr-feedback.md` item 5 "Deterministic line-citation check (Issue #3341)" and the recovery-turn paragraph below it; siblings: none — no existing set gained a member; updated: `docs/workflows/pr-feedback.md`, `docs/INTERNALS.md`, and the module and function doc comments in `worker/deno/lib/branch_outcome_citations.ts` and `worker/deno/lib/pr_feedback_drift_check.ts`; `docs/INTERNALS.md:5326` — still true because `pr_summary_facts.ts` itself is unchanged
 
 Provenance numbers cited: #3536: Read branch-outcome citations from the facts
 file in the review-fix drift check; #3341: Review-fix pushes leave Branch
@@ -96,34 +108,45 @@ learning loop … make summary facts structured data.
 
 ## Test Plan
 
-- Added `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts`, 12 tests:
+- Added `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts`, 15 tests:
   - Pure: facts at both refs, prose then facts, facts win over the same ref's
     prose list, a replaced cited line, `changedFilesCitedBy` from previous
-    facts, and `factsCitations` ranges and `noneAdded`.
+    facts, `factsCitations` ranges and `noneAdded`, and a stale facts
+    citation naming the facts file and `line`/`endLine` (the `.md` path when
+    the head uses prose).
   - Integration: both heads facts, prose then facts (stale and clean), facts
     malformed at the before-run head, facts malformed at the head, facts
-    unreadable at the head, and the facts `ls-tree`/`show` returning 128 or
-    `null`.
-- `deno test -A tests/branch_outcome_citations_facts_3396_test.ts tests/branch_outcome_citations_3341_test.ts tests/pr_feedback_drift_check_3341_test.ts < /dev/null` from `worker/deno` on the final code: `ok | 85 passed | 0 failed`.
+    unreadable at the head, the facts `ls-tree`/`show` returning 128 or
+    `null`, a recovery turn that renumbers the facts entry (`recovered`, and
+    the recovery prompt names the facts file), and the exact facts `ls-tree`
+    argv (`--name-only`, path after `--`).
+- `deno test -A tests/branch_outcome_citations_facts_3396_test.ts tests/branch_outcome_citations_3341_test.ts tests/pr_feedback_drift_check_3341_test.ts < /dev/null` from `worker/deno` on the final code: `ok | 88 passed | 0 failed`.
 - `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`.
 - Existing tests: no assertion removed and no expectation edited.
-- Red check: making `citationsOf` always read prose turned 7 tests red. These
-  were the five pure facts tests, plus both integration tests "facts at both
-  heads …" and "prose at the before-run head and facts at the head …".
+- Red check: making `citationsOf` always read prose turned 9 tests red. These
+  were the six pure facts-citation tests, plus the integration tests "facts at
+  both heads …", "prose at the before-run head and facts at the head …" and
+  "a recovery turn that renumbers the facts entry …".
   Treating a previous-head parse failure as "no facts" turned the
   malformed-before-run test red. Treating a head parse failure the same way
   turned the malformed-head test red.
+- Mutation check: deleting `"--name-only"` (`worker/deno/lib/pr_feedback_drift_check.ts:968`)
+  or `"--"` (`:970`) from the facts `ls-tree` call turned the argv test red.
+  Not passing `currentFactsPath` turned the facts recovery test red. Always
+  labelling findings with the `.md` path turned the facts recovery test and
+  the facts-file naming test red.
 
 **Branch outcomes:**
 
-- `worker/deno/lib/branch_outcome_citations.ts:258` — facts given → facts citations / absent → prose list — `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts::findStaleCitations - facts win over the same ref's prose list` (facts side), `worker/deno/tests/branch_outcome_citations_3341_test.ts` (prose side) — forcing prose turned 7 facts tests red
+- `worker/deno/lib/branch_outcome_citations.ts:258` — facts given → facts citations / absent → prose list — `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts::findStaleCitations - facts win over the same ref's prose list` (facts side), `worker/deno/tests/branch_outcome_citations_3341_test.ts` (prose side) — forcing prose turned 9 facts tests red
 - `worker/deno/lib/branch_outcome_citations.ts:237` — `endLine` given → range / absent → single line — `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts::factsCitations - endLine gives a range; noneAdded gives nothing` — dropping `endLine` fails its `path:3-5` assertion
-- `worker/deno/lib/pr_feedback_drift_check.ts:970` — facts `ls-tree` returns `null` (operand 1) / non-zero (operand 2) → not checked — `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts::runPrFeedbackDriftCheck - a failed git read of the facts file at the before-run head is not checked` (ls-tree/null and ls-tree/128 cases)
-- `worker/deno/lib/pr_feedback_drift_check.ts:976` — facts present at the before-run head / absent — `::runPrFeedbackDriftCheck - facts at both heads with the line moved and not renumbered is reported stale` (present), `::runPrFeedbackDriftCheck - prose at the before-run head and facts at the head are compared` (absent)
-- `worker/deno/lib/pr_feedback_drift_check.ts:981` — facts `show` returns `null` (operand 1) / non-zero (operand 2) → not checked — `::runPrFeedbackDriftCheck - a failed git read of the facts file at the before-run head is not checked` (show/null and show/128 cases)
-- `worker/deno/lib/pr_feedback_drift_check.ts:988` — before-run facts do not parse → not checked — `::runPrFeedbackDriftCheck - malformed facts at the before-run head are not checked` — treating it as "no facts" turned it red
-- `worker/deno/lib/pr_feedback_drift_check.ts:999` — head facts read error → not checked — `::runPrFeedbackDriftCheck - a facts path that cannot be read at the head is not checked`
-- `worker/deno/lib/pr_feedback_drift_check.ts:1003` — head facts present / absent — `::runPrFeedbackDriftCheck - prose at the before-run head and facts at the head are compared` (present), `worker/deno/tests/pr_feedback_drift_check_3341_test.ts` (absent)
-- `worker/deno/lib/pr_feedback_drift_check.ts:1005` — head facts do not parse → not checked — `::runPrFeedbackDriftCheck - malformed facts at the head are not checked, with the parse error` — treating it as "no facts" turned it red
+- `worker/deno/lib/branch_outcome_citations.ts:628` — head citations from facts with a facts path → finding names the facts file / otherwise → names the `.md` summary — `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts::findStaleCitations - a stale facts citation names the facts file and its line/endLine` (both sides), `::runPrFeedbackDriftCheck - a recovery turn that renumbers the facts entry reports recovered` — always using the `.md` path turned both red
+- `worker/deno/lib/pr_feedback_drift_check.ts:973` — facts `ls-tree` returns `null` (operand 1) / non-zero (operand 2) → not checked — `worker/deno/tests/branch_outcome_citations_facts_3396_test.ts::runPrFeedbackDriftCheck - a failed git read of the facts file at the before-run head is not checked` (ls-tree/null and ls-tree/128 cases)
+- `worker/deno/lib/pr_feedback_drift_check.ts:979` — facts present at the before-run head / absent — `::runPrFeedbackDriftCheck - facts at both heads with the line moved and not renumbered is reported stale` (present), `::runPrFeedbackDriftCheck - prose at the before-run head and facts at the head are compared` (absent)
+- `worker/deno/lib/pr_feedback_drift_check.ts:984` — facts `show` returns `null` (operand 1) / non-zero (operand 2) → not checked — `::runPrFeedbackDriftCheck - a failed git read of the facts file at the before-run head is not checked` (show/null and show/128 cases)
+- `worker/deno/lib/pr_feedback_drift_check.ts:991` — before-run facts do not parse → not checked — `::runPrFeedbackDriftCheck - malformed facts at the before-run head are not checked` — treating it as "no facts" turned it red
+- `worker/deno/lib/pr_feedback_drift_check.ts:1002` — head facts read error → not checked — `::runPrFeedbackDriftCheck - a facts path that cannot be read at the head is not checked`
+- `worker/deno/lib/pr_feedback_drift_check.ts:1006` — head facts present / absent — `::runPrFeedbackDriftCheck - prose at the before-run head and facts at the head are compared` (present), `worker/deno/tests/pr_feedback_drift_check_3341_test.ts` (absent)
+- `worker/deno/lib/pr_feedback_drift_check.ts:1008` — head facts do not parse → not checked — `::runPrFeedbackDriftCheck - malformed facts at the head are not checked, with the parse error` — treating it as "no facts" turned it red
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

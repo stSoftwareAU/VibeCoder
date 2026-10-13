@@ -498,3 +498,124 @@ Deno.test("runPrFeedbackDriftCheck - a failed git read of the facts file at the 
     }
   }
 });
+
+Deno.test("findStaleCitations - a stale facts citation names the facts file and its line/endLine", () => {
+  const moved = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: "",
+    currentSummary: "",
+    previousFacts: facts(2),
+    currentFacts: facts(2),
+    currentFactsPath: FACTS_PATH,
+    changedFiles: ["lib/rule.ts"],
+    hunksByPath: INSERT_HUNKS,
+  });
+  assertEquals(moved.stale.length, 1);
+  assert(moved.stale[0]!.startsWith(`${FACTS_PATH}: `));
+  assertStringIncludes(moved.stale[0]!, "`line`/`endLine`");
+
+  const changed = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: "",
+    currentSummary: "",
+    previousFacts: facts(2),
+    currentFacts: facts(2),
+    currentFactsPath: FACTS_PATH,
+    changedFiles: ["lib/rule.ts"],
+    hunksByPath: REPLACE_HUNKS,
+  });
+  assertEquals(changed.stale.length, 1);
+  assert(changed.stale[0]!.startsWith(`${FACTS_PATH}: `));
+  assertStringIncludes(changed.stale[0]!, "`line`/`endLine`");
+
+  // With prose citations now, the prose summary is the file to edit.
+  const prose = findStaleCitations({
+    summaryPath: SUMMARY_PATH,
+    previousSummary: "",
+    currentSummary: proseCiting("lib/rule.ts:2"),
+    previousFacts: facts(2),
+    currentFacts: null,
+    currentFactsPath: FACTS_PATH,
+    changedFiles: ["lib/rule.ts"],
+    hunksByPath: INSERT_HUNKS,
+  });
+  assertEquals(prose.stale.length, 1);
+  assert(prose.stale[0]!.startsWith(`${SUMMARY_PATH}: `));
+  assert(!prose.stale[0]!.includes("`line`/`endLine`"));
+});
+
+Deno.test("runPrFeedbackDriftCheck - a recovery turn that renumbers the facts entry reports recovered", async () => {
+  const { dir, beforeSha } = await setupBaseline(
+    proseCiting("lib/other.ts:9"),
+    factsJson(2),
+  );
+  try {
+    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    const calls: AgentCall[] = [];
+    const runAgent = makeRunAgent(
+      [
+        { ok: true, output: verdictBlock([]) },
+        (call) => {
+          // The recovery turn is pointed at the facts file, not the prose list.
+          assertStringIncludes(
+            call.prompt,
+            `${FACTS_PATH}: Branch outcomes still cites \`lib/rule.ts:2\``,
+          );
+          assertStringIncludes(call.prompt, "set that entry's `line`");
+          return { ok: true, output: "fixed" };
+        },
+      ],
+      calls,
+    );
+    const outcome = await runPrFeedbackDriftCheck(
+      { ...DEFAULT_INPUT, repoPath: dir, beforeSha },
+      {
+        runGit: makeRunGit(dir),
+        runGh: makeRunGh(),
+        runAgent: async (req) => {
+          const result = await runAgent(req);
+          if (!req.readOnly) await writeFile(dir, FACTS_PATH, factsJson(4));
+          return result;
+        },
+        logger: noopLogger(),
+      },
+    );
+    assertEquals(calls.length, 2);
+    assertEquals(calls[1]!.readOnly, false);
+    assertEquals(outcome.status, "recovered");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("runPrFeedbackDriftCheck - the facts file is looked up by name only, with the path after --", async () => {
+  const { dir, beforeSha } = await setupBaseline(
+    proseCiting("lib/other.ts:9"),
+    factsJson(2),
+  );
+  try {
+    await writeFile(dir, "lib/rule.ts", RULE_TS_V2);
+    const real = makeRunGit(dir);
+    const gitCalls: string[][] = [];
+    const runGit: DriftCheckDeps["runGit"] = async (args) => {
+      gitCalls.push(args);
+      return await real(args);
+    };
+    await run(dir, beforeSha, runGit);
+    const factsLsTree = gitCalls.filter((a) =>
+      a[0] === "ls-tree" && a.at(-1) === FACTS_PATH
+    );
+    assert(factsLsTree.length > 0, "the facts file was looked up");
+    for (const args of factsLsTree) {
+      assertEquals(args, [
+        "ls-tree",
+        "--name-only",
+        beforeSha,
+        "--",
+        FACTS_PATH,
+      ]);
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

@@ -405,6 +405,12 @@ export interface CitationCheckInput {
    * means no facts file, so the prose `Branch outcomes:` list is read.
    */
   currentFacts?: SummaryFacts | null;
+  /**
+   * Where `currentFacts` was read from. When the current citations come from
+   * facts, stale findings name this file and ask for its `line`/`endLine` to
+   * be renumbered, since the prose summary then holds no list to edit.
+   */
+  currentFactsPath?: string;
   changedFiles: readonly string[];
   hunksByPath: ReadonlyMap<string, readonly DiffHunk[]>;
 }
@@ -617,6 +623,14 @@ export function findStaleCitations(
     }
   }
 
+  // A stale citation is fixed where the current citations live: the facts
+  // file when there is one, else the prose summary's list.
+  const factsSource = input.currentFacts ? input.currentFactsPath : undefined;
+  const staleLabel = factsSource ?? input.summaryPath;
+  const renumber = factsSource
+    ? "set its `line`/`endLine` in that facts entry"
+    : "renumber it";
+
   const stale: string[] = [];
   const unchecked: string[] = [];
   const staleSeen = new Set<string>();
@@ -690,16 +704,16 @@ export function findStaleCitations(
       const newText = newCitationText(path, ms, me);
       const plural = citation.start !== citation.end;
       pushStale(
-        `${input.summaryPath}: Branch outcomes still cites \`${citation.text}\`, but this push moved ${
+        `${staleLabel}: Branch outcomes still cites \`${citation.text}\`, but this push moved ${
           plural ? "those lines" : "that line"
-        } to ${newText} — renumber it to the head`,
+        } to ${newText} — ${renumber} to the head`,
       );
       continue;
     }
 
     if (removedInRange && curEntries.has(citation.entry)) {
       pushStale(
-        `${input.summaryPath}: this push changed or removed the code at \`${citation.text}\`, but its Branch outcomes entry is unchanged from the previous head — re-read the line at the head, renumber it, and re-run its flip rather than carrying the old result over`,
+        `${staleLabel}: this push changed or removed the code at \`${citation.text}\`, but its Branch outcomes entry is unchanged from the previous head — re-read the line at the head, ${renumber}, and re-run its flip rather than carrying the old result over`,
       );
       continue;
     }
