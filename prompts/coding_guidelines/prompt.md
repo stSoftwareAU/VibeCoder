@@ -1388,6 +1388,27 @@ retired-field list, a stricter parse, a fake that throws), re-run the
 existing tests that expect the later refusal and confirm each still
 reaches it; one that now stops earlier is a blocking self-review finding.
 
+**A new precondition must not stop existing tests short.** The re-run in the
+refusal-test rule above covers a refusal; the same holds for any
+precondition a change adds before existing logic: a check, an early return,
+a null or disabled result, or an environment requirement such as a git
+repository, a git identity, a config value, the network or the clock. Find
+the existing tests of the changed function and confirm each one still
+reaches the logic it asserts on. Pay most attention to negative tests (not
+cached, not suppressed, not called), because they stay green when the path
+is skipped. A test that now stops at the new precondition is a blocking
+self-review finding. Fix it by giving the fixture what the precondition
+needs (for example `git init -q` in the temporary directory), and add a
+positive control: an assertion that the precondition holds, such as
+`assert(await denoCheckDigest(config) !== null)`, or the same fixture with
+only the probed value changed reaching the other outcome, so a later
+precondition cannot silently disable the test again. When the precondition
+is a new environment requirement, the Test Plan names the existing tests
+that needed fixture changes, or says that none did and how that was checked.
+stSoftwareAU/VibeCoder#3388 and #3522 each left an unedited negative test in
+a plain temporary directory that no longer reached the guard it pins
+(Issue #3530).
+
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
 diff, list its outcomes (success, absent/empty, error, fail-closed default)
