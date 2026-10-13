@@ -728,6 +728,32 @@ Deno.test("dedupeFindings keeps unlocated worker findings apart (Issue #1473)", 
   );
 });
 
+Deno.test("buildSweepIssueBody - carries no bare #N issue reference (Issue #3501)", () => {
+  // No `#digits` anywhere in the fixture, so only the template is under test.
+  const body = buildSweepIssueBody({
+    id: "SWEEP-0123456789ab",
+    family: "command-injection",
+    path: "src/app.ts",
+    lineStart: 10,
+    lineEnd: 10,
+    severity: "high",
+    confidence: "high",
+    sources: ["semgrep"],
+    findings: [{
+      source: "semgrep",
+      ruleId: "rules.exec-injection",
+      path: "src/app.ts",
+      line: 10,
+      severity: "high",
+      confidence: "high",
+      message: "Unsanitised input reaches exec",
+    }],
+  }, ".github/security-tree-sweep-baseline.json");
+  // The body is filed in the swept repo, where GitHub autolinks `#N`.
+  const match = body.match(/(^|[^\w&/])#\d+\b/);
+  assertEquals(match, null, `bare issue reference in body: ${match?.[0]}`);
+});
+
 Deno.test("baselining one unlocated finding leaves the others reported (Issue #1473)", async () => {
   const clusters = await dedupeFindings(
     parseWorkerScanIssues(UNLOCATED_WORKER_ISSUES_JSON),

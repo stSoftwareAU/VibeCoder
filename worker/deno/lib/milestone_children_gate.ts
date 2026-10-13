@@ -1237,7 +1237,12 @@ export interface HoldOrphanBoundPrOptions {
   authorOptions?: AlertDedupAuthorOptions;
 }
 
-/** The comment left on the PR when it is held. */
+/**
+ * The comment left on the PR when it is held. It is posted in the target
+ * repo, so it carries no VibeCoder issue reference — GitHub would autolink a
+ * bare `#N` to an unrelated issue there (Issue #3501). The design history
+ * (Issue #4396, Issue #3433) stays in these comments and the local log line.
+ */
 export function renderRouteClosedHoldComment(
   gate: Extract<MilestoneBaseMergeDecision, { decision: "block" }>,
 ): string {
@@ -1251,9 +1256,9 @@ export function renderRouteClosedHoldComment(
   return [
     ROUTE_CLOSED_HOLD_MARKER,
     `⚠️ **Not merged into \`${gate.milestoneBranch}\`** — ${why}, so that branch has no route to the default branch any more. ` +
-    "Merging there would orphan this work while the issue closed as completed (Issue #4396).",
+    "Merging there would orphan this work while the issue closed as completed.",
     "",
-    "The fleet does not move this PR to the default branch: a PR off a milestone branch carries the milestone's work onto the default branch without the milestone's final review (Issue #3433). " +
+    "The fleet does not move this PR to the default branch: a PR off a milestone branch carries the milestone's work onto the default branch without the milestone's final review. " +
     "Auto-merge has been disarmed. A human decides — retarget it by hand or close it.",
   ].join("\n");
 }

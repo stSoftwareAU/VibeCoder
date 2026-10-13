@@ -255,3 +255,17 @@ Deno.test("orphaned-rollup - body states the branch, default branch and commit c
   assertStringIncludes(body, "7 commit(s)");
   assertStringIncludes(body, "#4211");
 });
+
+Deno.test("orphaned-rollup - body cites no bare #N apart from the orphaned PR (Issue #3501)", () => {
+  // The PR is raised in the target repo, where GitHub autolinks a bare `#N`
+  // to that repo's own issue — a VibeCoder issue number would point at an
+  // unrelated one.
+  const body = buildOrphanedRollupBody({
+    milestoneBranch: BRANCH,
+    defaultBranch: "Develop",
+    orphanedPrNumber: 4211,
+    aheadBy: 7,
+  });
+
+  assertEquals(body.match(/#\d+/g), ["#4211"]);
+});
