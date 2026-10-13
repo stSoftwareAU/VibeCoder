@@ -611,7 +611,7 @@ work that raises PRs, so it can never see a PR its own cycle created; the
 post-scan pass does, and lists live rather than from the cache 1.65 filled.
 It is skipped, with a logged reason, on a cycle that did no work — see
 [Merge Enforcement — hands-off landing](MERGE.md#hands-off-landing--precedence-and-loud-failure)
-(Issue #1136).
+(Issue #1136). Every swept PR passes the base check before any arming or branch update (the GraphQL read is skipped only for an unarmed, non-fix PR on a milestone base), and a mistargeted or retargeted PR is disarmed and held ([Milestones](workflows/milestones.md), Issue #3433).
 
 #### 🚦 Primary GraphQL quota exhaustion
 
@@ -2691,7 +2691,8 @@ the run retires the review (Issue #3383):
    `<!-- PR_REVIEW_FAILED_ONCE:<reviewId> -->` marker; the review is left
    undismissed, so it is retried once its claim lease lapses.
 2. **Second failure** (the marker found, fleet-authored) — dismisses the
-   review; posts "Permanently Failed". No further retries.
+   review (with a "Not addressed after two automated attempts" message, not
+   "addressed"); posts "Permanently Failed". No further retries.
 
 No reaction is ever posted for a review — the old code reacted on
 `issues/comments/<reviewId>`, the wrong resource for a review id. Any other
@@ -4604,7 +4605,11 @@ ledger entry either has an attempt **open on this host** or has **spent its
 conflict budget** (Issue #2305), logging
 `skipped: milestone behind default branch (<reason>)` and recording the
 `milestone-behind` skip reason. Without it a paced milestone was claimed,
-deferred and commented on again on every scan cycle. A branch with one
+deferred and commented on again on every scan cycle. The idle-decision
+census reads the same ledger through the same `milestonePacedUntil` and counts
+a paced milestone's issues as `run_local_hold` rather than claimable
+(Issue #3464), so a persistently paced milestone no longer raises a false
+`inversion_signal`. A branch with one
 charged failure and an attempt still in hand is *not* paced: its children may
 be claimed, and the next child run's own pre-cut sync is what tries again.
 
@@ -4938,6 +4943,35 @@ head of the comment is `summary-incomplete` (`isSummaryGateFailureRecord` in
 `failure_diagnosis.ts`). A quoted `ignoring broken ref` or milestone `GH013`
 rejection in a refused summary cannot strip `failed-once` or `failed`.
 
+#### `security_fix_gate` is its own failure category (Issue #3454)
+
+The security-fix gate's refusal reason quotes agent-authored test declarations
+(scrubbed, code-fenced, via `formatMatchedTestDeclarations`). A declaration such
+as `Deno.test("rejects a forged token with TypeError: invalid signature after
+timeout", ...)` was read by the catch-all `Error:` rule as `internal_error`,
+classed `worker-crash` / `code_fixable`, and a false diagnostic issue was
+auto-filed; a quoted "timeout", "SIGTERM" or "rate limit" gave `timeout`,
+`killed` or `rate_limit`. The shared mechanism is the one described under
+"`summary_incomplete` is its own failure category" above, with
+`SECURITY_FIX_GATE_MARKER` ("the security fix did not pass the worker's
+security-fix gate") opening only the run-ending reason: the twice-blocked report
+from the in-run retry (`reportBlock` in `security_fix_gate_retry.ts` with
+`countsAsBlockedRun` true). The completion phase's first-block reason
+(`completion_phase.ts`) stays unmarked, because `recoverFromSecurityGateBlock`
+always replaces it, so it never ends a run.
+`detectFailureCategory` matches it with `startsWith`, right after the
+summary-gate marker, giving `security_fix_gate` (display `security-fix-gate`),
+which is `not_code_fixable` (class `agent-outcome`), not infrastructure, and
+follows the normal retry and `failed-once` rules. `classifyCodingFailure`
+returns a `ladder` decision with cooldown `non_transient` for it,
+`classifyRunFailure` answers it before the free-text rules, and
+`detectHostFault` returns `null` for a marked reason. A message that merely
+quotes the marker later keeps its own category. A retry that could not be
+launched at all (a rate limit, a failed spawn) is deliberately not marked: that
+is a real launch fault and its own error text must still be classified. The
+posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
+`isSummaryGateFailureRecord`-style record check for the label-release sweeps.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a
@@ -4947,7 +4981,9 @@ really the worker's host — a corrupt clone, a clone that could not be made, a
 full disk, a container image that failed to build — the failure comment gains a
 **Host fault:** line naming the kind and a final marker
 (`<!-- vibe-host-fault kind="<kind>" -->`), detected by
-[host_fault.ts](../worker/deno/lib/host_fault.ts):
+[host_fault.ts](../worker/deno/lib/host_fault.ts). A quality-gate failure
+never gains the Host fault line or marker, because its error output is the
+repository's own test output, not host output (Issue #3445):
 
 | Kind                     | Fault                                                                                                       |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------- |
@@ -4971,7 +5007,9 @@ Escalation to Planning Mode". Only an "Automated Processing Failed" record can b
 a host fault: either it carries the marker, or — for failures made before this
 change had no marker to write — its body matches the `clone-corrupt` git
 broken-ref, bad-object, bad `.git/config` line, or "not in a git directory"
-signature (Issue #2953). Any issue carrying even one non-host-fault record (an
+signature (Issue #2953). A quality-gate record (its head carries the
+`**Source:** quality gate` line) is never one, even on that legacy body match
+(Issue #3445). Any issue carrying even one non-host-fault record (an
 agent failure, claim churn, an ordinary setup error such as an invalid base
 branch) keeps its label. `failed` is released only when a host-fault "Second
 Attempt" record, the run that applies it, explains it; otherwise the issue keeps
@@ -5285,12 +5323,13 @@ All business logic lives here. Shell tooling invokes them directly with
 | **PR management**           |                                                                                                                   |                                                                                                                                                                                                                                 |
 |                             | [pr_body.ts](../worker/deno/lib/pr_body.ts)                                                                       | PR body construction                                                                                                                                                                                                            |
 |                             | [pr_body_sync.ts](../worker/deno/lib/pr_body_sync.ts)                                                             | Rebuilds a PR body from its pr-summary file after a fix run when the summary differs from the digest recorded in the body (Issues #3089, #3315)                                                                                 |
-|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143); given the change request, flags quoted summary sentences still present (Issue #3244); maps Branch-outcomes `path:line` citations through the push's diff and flags stale ones (Issue #3341) |
-|                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257)                                                                                                                            |
-|                             | [summary_claim_correction.ts](../worker/deno/lib/summary_claim_correction.ts)                                     | Summary-only correction turn when the claim check alone blocks a later block in the run: file-writing tools and Bash denied, carries corrected claims forward on the re-run (Issue #3324)                                       |
+|                             | [pr_feedback_drift_check.ts](../worker/deno/lib/pr_feedback_drift_check.ts)                                       | Post-agent drift check on review-fix runs: model pass, Test Plan recount and docs-sweep re-check, one recovery turn (Issue #3143); given the change request, flags quoted summary sentences still present (Issue #3244); maps Branch-outcomes `path:line` citations through the push's diff and flags stale ones (Issue #3341); also runs the model pass on a push that edits manual or prompt Markdown, asking the shared doc-prose question (Issue #3347) |
+|                             | [summary_claim_check.ts](../worker/deno/lib/summary_claim_check.ts)                                               | First-run PR-summary claim check: model pass and Test Plan backstop, one recovery turn (Issue #3257); also questions the manual and prompt Markdown the branch changes (Issue #3347)                                                |
+|                             | [summary_claim_correction.ts](../worker/deno/lib/summary_claim_correction.ts)                                     | Summary-only correction turn when the claim check alone blocks a later block on the summary's own sentences: file-writing tools and Bash denied, carries corrected claims forward on the re-run (Issue #3324)                                       |
+|                             | [doc_prose_claims.ts](../worker/deno/lib/doc_prose_claims.ts)                                                     | Which changed Markdown files are manual or prompt prose, and the shared question both prose-against-code checks ask of the lines a change adds or edits (Issue #3347)                                                                               |
 |                             | [change_request_quotes.ts](../worker/deno/lib/change_request_quotes.ts)                                           | Parses a change request's findings and quoted spans; flags quoted PR-summary sentences still present in a summary; called by the drift check (Issue #3244)                                                                      |
 |                             | [branch_outcome_citations.ts](../worker/deno/lib/branch_outcome_citations.ts)                                     | Parses Branch-outcomes `path:line` citations and maps them through a `git diff -U0` to flag ones left at the previous head's numbers; called by the drift check (Issue #3341)                                                   |
-|                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143)                                                                                                                                             |
+|                             | [test_plan_recount.ts](../worker/deno/lib/test_plan_recount.ts)                                                   | Counts test declarations at the head and flags stale Test Plan counts (Issue #3143), including a paired `N passed, M failed` result checked as N + M (Issue #3381); several counts over several files are compared file by file or reported unchecked (Issue #3356)                                                              |
 |                             | [pr_comments.ts](../worker/deno/lib/pr_comments.ts)                                                               | PR comment/feedback detection and processing                                                                                                                                                                                    |
 |                             | [pr_evidence.ts](../worker/deno/lib/pr_evidence.ts)                                                               | Screenshot processing and evidence validation                                                                                                                                                                                   |
 |                             | [pr_issue_linking.ts](../worker/deno/lib/pr_issue_linking.ts)                                                     | Ensure PRs reference closing issues                                                                                                                                                                                             |
@@ -5464,6 +5503,7 @@ All business logic lives here. Shell tooling invokes them directly with
 |                             | [execute_claude_phase.ts](../worker/deno/lib/execute_claude_phase.ts)                                             | Claude execution phase                                                                                                                                                                                                          |
 |                             | [quality_gate_phase.ts](../worker/deno/lib/quality_gate_phase.ts)                                                 | Quality gate phase                                                                                                                                                                                                              |
 |                             | [phases/completion_phase.ts](../worker/deno/lib/phases/completion_phase.ts)                                       | PR completion phase — push, PR creation, screenshot and security-fix gates                                                                                                                                                      |
+|                             | [standing_violation_routing.ts](../worker/deno/lib/standing_violation_routing.ts)                                 | Finds standing Standards violations on the branch's own diff lines; routes them to a code-capable recovery turn and holds auto-merge on a PR finalised with one (Issue #3382)                                                   |
 |                             | [pr_summary_loader.ts](../worker/deno/lib/pr_summary_loader.ts)                                                   | PR summary file loading                                                                                                                                                                                                         |
 |                             | [screenshot_validation.ts](../worker/deno/lib/screenshot_validation.ts)                                           | Screenshot evidence validation                                                                                                                                                                                                  |
 |                             | [imgbb_upload.ts](../worker/deno/lib/imgbb_upload.ts)                                                             | ImgBB screenshot upload client                                                                                                                                                                                                  |

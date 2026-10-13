@@ -225,6 +225,33 @@ export async function ensureLaneWorktree(
     );
   }
 
+  // Issue #3630: `HEAD` resolves through the clone's symref. Milestone sync
+  // checks the milestone branch out of the main clone and leaves it there;
+  // when that branch later goes — cleanup, a recreated clone, a sibling's
+  // sync — HEAD dangles, and every worktree add fails with
+  // `fatal: invalid reference: HEAD`. Nothing rewrites the symref on its
+  // own, so the lane wedged permanently: every cycle died in phase `setup`
+  // inside a minute (the stSoftwareAU/GRQ-AutoTrader#3184 tally). Heal the
+  // clone to its default branch and retry once; any other failure keeps
+  // today's behaviour, and a failed heal names both faults.
+  if (isInvalidHeadReference(added)) {
+    const healed = await healDanglingHead(repoPath);
+    if (!healed.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Could not create a ${laneId} worktree for ${repo} at ${path}: ` +
+            `the clone's HEAD is invalid and the heal failed: ` +
+            `${healed.error.message}`,
+        ),
+      };
+    }
+    added = await runGitCommand(
+      ["worktree", "add", "--detach", "--force", path, "HEAD"],
+      { cwd: repoPath },
+    );
+  }
+
   if (!added.ok || added.value.code !== 0) {
     return {
       ok: false,
@@ -275,6 +302,96 @@ export function worktreeAddFailureDetail(added: WorktreeAddOutcome): string {
     .join("\n")
     .trim();
   return meaningful || `exit ${added.value.code}`;
+}
+
+/**
+ * True when `git worktree add` refused because the clone's `HEAD` symref
+ * points at a branch that no longer exists (Issue #3630).
+ *
+ * Matched on git's own wording — `fatal: invalid reference: HEAD`, or the
+ * `HEAD points to an invalid (or orphaned) reference` warning newer git
+ * versions print for the same condition — the same way
+ * {@link isPathAlreadyExists} matches the orphan-path refusal.
+ */
+export function isInvalidHeadReference(outcome: WorktreeAddOutcome): boolean {
+  const detail = worktreeAddFailureDetail(outcome);
+  return detail.includes("invalid reference: HEAD") ||
+    detail.includes("HEAD points to an invalid");
+}
+
+/**
+ * Rewrite the clone's dangling `HEAD` symref to its default branch
+ * (Issue #3630).
+ *
+ * The default branch is resolved from the clone itself —
+ * `git symbolic-ref refs/remotes/origin/HEAD`, the same local resolution
+ * `setupRepo()` relies on (`resolveLocalDefaultBranch` in `git_push.ts`;
+ * inlined here because `git_push` imports this module's root constant and an
+ * import would cycle) — so no network call is made. When the local default
+ * branch exists the symref is rewritten in place; otherwise the branch is
+ * recreated from the remote-tracking ref first. Fails loud rather than
+ * guessing when `origin/HEAD` is unset.
+ */
+export async function healDanglingHead(
+  repoPath: string,
+): Promise<Result<void>> {
+  const originHead = await runGitCommand(
+    ["symbolic-ref", "refs/remotes/origin/HEAD"],
+    { cwd: repoPath },
+  );
+  if (!originHead.ok || originHead.value.code !== 0) {
+    const detail = originHead.ok
+      ? originHead.value.stderr.trim() || `exit ${originHead.value.code}`
+      : originHead.error.message;
+    return {
+      ok: false,
+      error: new Error(`origin/HEAD is unset (${detail})`),
+    };
+  }
+  const target = originHead.value.stdout.trim();
+  const branch = target.replace(/^refs\/remotes\/origin\//, "");
+  if (branch === target || branch === "") {
+    return {
+      ok: false,
+      error: new Error(`origin/HEAD resolved to "${target}", not a branch`),
+    };
+  }
+
+  const local = await runGitCommand(
+    ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`],
+    { cwd: repoPath },
+  );
+  if (local.ok && local.value.code === 0) {
+    const rewrote = await runGitCommand(
+      ["symbolic-ref", "HEAD", `refs/heads/${branch}`],
+      { cwd: repoPath },
+    );
+    if (!rewrote.ok || rewrote.value.code !== 0) {
+      const detail = rewrote.ok
+        ? rewrote.value.stderr.trim() || `exit ${rewrote.value.code}`
+        : rewrote.error.message;
+      return {
+        ok: false,
+        error: new Error(`could not rewrite HEAD to ${branch} (${detail})`),
+      };
+    }
+    return { ok: true, value: undefined };
+  }
+
+  const recreated = await runGitCommand(
+    ["checkout", "-B", branch, `origin/${branch}`],
+    { cwd: repoPath },
+  );
+  if (!recreated.ok || recreated.value.code !== 0) {
+    const detail = recreated.ok
+      ? recreated.value.stderr.trim() || `exit ${recreated.value.code}`
+      : recreated.error.message;
+    return {
+      ok: false,
+      error: new Error(`could not recreate ${branch} (${detail})`),
+    };
+  }
+  return { ok: true, value: undefined };
 }
 
 /**

@@ -1477,6 +1477,17 @@ export interface RunCoreDeps {
   weekPaceEngaged?: () => boolean;
 
   /**
+   * Quota deferral verdict for the idle-task filer (Issue #3628).
+   *
+   * Resolves a short reason — `remaining=N/limit below idle_floor=F` —
+   * while the GraphQL quota is below the idle floor and the filer's repo
+   * walk must be deferred; null to file as usual. Production probes the
+   * free GraphQL quota (one call); tests inject a fixed verdict. Optional;
+   * omitted reads as off.
+   */
+  idleFilerQuotaDeferred?: () => Promise<string | null>;
+
+  /**
    * Idle-detection audit hook (Issue #2106).
    *
    * Invoked at the same gate as `runIdleTaskFiler` — i.e. only when
@@ -5318,6 +5329,25 @@ function runIdleWorkHooks(
         `[idle-hooks] ${flagFragment} skipping=idle-task-filer reason=week_pace_engaged — pace guard engaged, idle-task filing deferred`,
       );
       return outcome;
+    }
+    // Issue #3628: below the idle floor the scan already deferred idle-task
+    // collection, so nothing the filer could raise would be claimable before
+    // the window resets — and the filer's decision walk costs ~800 of the
+    // fleet's shared GraphQL points a cycle (the Issue #1915 measurement).
+    // Deferred here, exactly like the week-pace gate above: a deliberate
+    // deferral clears the disagreement run rather than accumulating toward
+    // the #2475 bound. The week-pace check stays first (free) so the quota
+    // probe is only paid when pace is not engaged.
+    if (deps.idleFilerQuotaDeferred) {
+      const quotaIdleReason = await deps.idleFilerQuotaDeferred();
+      if (quotaIdleReason !== null) {
+        await state.disagreement.clear(req.observerId);
+        req.log(
+          `[idle-hooks] ${flagFragment} skipping=idle-task-filer ` +
+            `reason=graphql_quota_below_idle_floor — ${quotaIdleReason}`,
+        );
+        return outcome;
+      }
     }
     const nowMs = deps.now();
     const auditDisagrees = auditClaimableTotal !== null &&

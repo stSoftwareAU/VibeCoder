@@ -16,9 +16,9 @@ import {
 import { fileUnrelatedIssues } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 
 const fromFileUrl = (u: URL) => decodeURIComponent(u.pathname);
-const SKILL = fromFileUrl(
+const BRIEF = fromFileUrl(
   new URL(
-    "../../../.claude/skills/review-fleet-prs/SKILL.md",
+    "../../../prompts/pr_review_brief/prompt.md",
     import.meta.url,
   ),
 );
@@ -166,8 +166,8 @@ Deno.test("reviewBody names an issue the instance was added to, apart from newly
   assert(/- #3568 Umbrella \(added as a new instance\)/.test(body));
 });
 
-Deno.test("SKILL.md tells the reviewer to search by file and defect class and to name an open issue in existingIssue (Issue #3598)", async () => {
-  const skill = (await Deno.readTextFile(SKILL)).replace(/\s+/g, " ");
+Deno.test("the shared review brief tells the reviewer to search by file and defect class and to name an open issue in existingIssue (Issue #3598)", async () => {
+  const skill = (await Deno.readTextFile(BRIEF)).replace(/\s+/g, " ");
   assert(
     skill.includes('"existingIssue"'),
     "the JSON contract names existingIssue",

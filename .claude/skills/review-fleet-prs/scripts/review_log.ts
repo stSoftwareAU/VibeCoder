@@ -11,6 +11,10 @@ import {
   readConfiguredLogDirSync,
   resolveLogDir,
 } from "../../../../worker/deno/lib/log_dir.ts";
+import {
+  MAX_UNRELATED_ISSUES,
+  parseReviewReply,
+} from "../../../../worker/deno/lib/pre_pr_verifier.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
@@ -66,8 +70,9 @@ export interface FiledIssue {
   addedTo?: true;
 }
 
-export const MAX_UNRELATED_ISSUES = 3;
+export { MAX_UNRELATED_ISSUES };
 
+// Structurally the same shape as the pre-PR verifier's ReviewReply (Issue #3395).
 export interface FableReview {
   summary: string;
   findings: Finding[];
@@ -187,40 +192,21 @@ export const sameLogin = (a: string | undefined, b: string) =>
 export const prKey = (repo: string, number: number) => `${repo}#${number}`;
 
 // Throws on anything that is not the JSON the review prompt asks for, so a
-// malformed reply posts nothing and the PR is retried next pass.
+// malformed reply posts nothing and the PR is retried next pass. The parser
+// is shared with the pre-PR verifier (Issue #3395).
 export function parseFableReview(text: string): FableReview {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end < start) throw new Error("no JSON object in review");
-  const r = JSON.parse(text.slice(start, end + 1));
-  if (typeof r.summary !== "string" || !Array.isArray(r.findings)) {
-    throw new Error("review JSON lacks summary or findings");
-  }
-  if (!["none", "trivial", "tightened", "meaningful"].includes(r.testChanges)) {
-    throw new Error(`review JSON has testChanges=${r.testChanges}`);
-  }
-  return {
-    ...r,
-    testChangeNotes: r.testChangeNotes ?? [],
-    unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
-  };
+  const r = parseReviewReply(text);
+  return { ...r, unrelatedIssues: r.unrelatedIssues.map(keepValidExisting) };
 }
 
-// A malformed unrelated issue is dropped, never a reason to reject the review.
-function parseUnrelatedIssues(raw: unknown): UnrelatedIssue[] {
-  if (!Array.isArray(raw)) return [];
-  return raw.filter((i): i is UnrelatedIssue =>
-    typeof i === "object" && i !== null &&
-    typeof i.title === "string" && i.title.trim() !== "" &&
-    typeof i.body === "string" && i.body.trim() !== ""
-  ).slice(0, MAX_UNRELATED_ISSUES).map((i) => {
-    // Only a positive whole number names an issue; anything else is dropped,
-    // so the finding is filed as new rather than commented somewhere wrong.
-    const { existingIssue, ...rest } = i;
-    return Number.isInteger(existingIssue) && existingIssue! > 0
-      ? { ...rest, existingIssue }
-      : rest;
-  });
+// The shared parser keeps `existingIssue` as the reviewer wrote it. Only a
+// positive whole number names an issue; anything else is dropped, so the
+// finding is filed as new rather than commented somewhere wrong (Issue #3598).
+function keepValidExisting(i: UnrelatedIssue): UnrelatedIssue {
+  const { existingIssue, ...rest } = i;
+  return Number.isInteger(existingIssue) && existingIssue! > 0
+    ? { ...rest, existingIssue }
+    : rest;
 }
 
 const normTitle = (t: string) =>

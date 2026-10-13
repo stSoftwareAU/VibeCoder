@@ -94,6 +94,11 @@ import { PLANNING_HANDOFF_LABEL } from "./planning_handoff_trust.ts";
  *     that skipped this guard entirely, so the allowlist did not describe
  *     what the worker actually did. Same class as `merge-conflict` — a
  *     worker-owned queue marker, not a pickup-priority label.
+ *   - `standing-violation` — the PR label the completion phase applies when
+ *     it finalises a PR as `summary_incomplete` with a Standards violation
+ *     still standing on the branch's own lines, in place of arming
+ *     auto-merge (Issue #3382). Same class as `merge-conflict` and
+ *     `blocked`: a worker-owned marker, not a pickup-priority label.
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "failed",
@@ -111,6 +116,7 @@ export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([
   "merge-conflict",
   "needs-failure-detection-repair",
   "blocked",
+  "standing-violation",
 ]);
 
 /**

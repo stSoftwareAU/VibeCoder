@@ -9,6 +9,7 @@
  * Use setup.sh to configure via .config.json.
  */
 
+import { registerAgentPreFlightConfigs } from "./agent_pre_flight.ts";
 import type { ConfigFile, RepoConfig, WorkerConfig } from "../types.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
 import {
@@ -196,6 +197,9 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   skip_reviewer_request: "skipReviewerRequest",
   skip_screenshot_check: "skipScreenshotCheck",
   skip_security_fix_check: "skipSecurityFixCheck",
+  // Diff-scoped mutation gate (Issue #3393).
+  skip_mutation_check: "skipMutationCheck",
+  mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",
@@ -732,6 +736,42 @@ export async function loadConfig(
         `threshold could never be reached, so the guard would never fire.`,
     );
   }
+  // Quota-aware polling gate (Issue #3628). On by default; the floors are
+  // refused loudly rather than silently disabling a tier — a non-integer or
+  // negative floor is not a number of points, and an idle floor above the
+  // park floor would never be reached so the idle tier could never defer.
+  const quotaPollParkFloor = file.quota_poll_park_floor ??
+    OPERATIONAL_DEFAULTS.quotaPollParkFloor;
+  const quotaPollParkNice = file.quota_poll_park_nice ??
+    OPERATIONAL_DEFAULTS.quotaPollParkNice;
+  const quotaPollIdleFloor = file.quota_poll_idle_floor ??
+    OPERATIONAL_DEFAULTS.quotaPollIdleFloor;
+  if (!Number.isInteger(quotaPollParkFloor) || quotaPollParkFloor < 0) {
+    throw new Error(
+      `quota_poll_park_floor must be a whole number of points at or above ` +
+        `0, got ${quotaPollParkFloor}. Set it to 0 to turn the park tier off.`,
+    );
+  }
+  if (!Number.isInteger(quotaPollParkNice)) {
+    throw new Error(
+      `quota_poll_park_nice must be a whole number (it is a nice ` +
+        `comparison), got ${quotaPollParkNice}.`,
+    );
+  }
+  if (!Number.isInteger(quotaPollIdleFloor) || quotaPollIdleFloor < 0) {
+    throw new Error(
+      `quota_poll_idle_floor must be a whole number of points at or above ` +
+        `0, got ${quotaPollIdleFloor}. Set it to 0 to turn the idle tier off.`,
+    );
+  }
+  if (quotaPollIdleFloor > quotaPollParkFloor) {
+    throw new Error(
+      `quota_poll_idle_floor must not exceed quota_poll_park_floor, got ` +
+        `${quotaPollIdleFloor} above ${quotaPollParkFloor}. The idle tier ` +
+        `could then never defer, because the park floor is crossed first. ` +
+        `Set both floors to 0 to turn the polling gate off.`,
+    );
+  }
   // Self-scheduling for auto-filed worker diagnostics (Issue #505). On by
   // default; `false` restores the wait-for-a-human behaviour exactly. The
   // in-flight cap is refused loudly when it is not a whole number — a
@@ -1123,6 +1163,9 @@ export async function loadConfig(
     callStormCalls,
     callStormWindowSeconds,
     callStormNovelShare,
+    quotaPollParkFloor,
+    quotaPollParkNice,
+    quotaPollIdleFloor,
     selfScheduleDiagnosticsEnabled,
     selfScheduleDiagnosticsMaxInFlight,
     prFeedbackTimeout,
@@ -1226,6 +1269,8 @@ export async function loadConfig(
   // Issue #3577: reject a malformed pre-flight gate loudly at config load,
   // rather than silently ignoring it and running the repo unguarded.
   validatePreFlightConfigs(config.repoConfig);
+  // Issue #3394: make the pre-flight commands available to agent spawns.
+  registerAgentPreFlightConfigs(config.repoConfig);
 
   // Issue #630: Optionally validate required fields at load time
   if (options?.validate) {

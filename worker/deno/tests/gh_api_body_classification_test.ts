@@ -385,6 +385,26 @@ Deno.test("evaluateGhCommand - refuses an unreadable graphql document", () => {
     ctx,
   );
   assertEquals(decision.allowed, false);
+  // PR #3514 review: with no reader the document may hold an
+  // `updatePullRequest`, so the PR base rule (which runs ahead of the
+  // allowlist and applies with it inactive too) refuses it first.
+  assertEquals(decision.marker, "PR_BASE_CHANGE_REFUSED");
+});
+
+Deno.test("evaluateGhCommand - a readable graphql document of unknown target still meets the allowlist", () => {
+  // PR #3514 review: the base rule only takes a document that may carry
+  // `updatePullRequest`. A readable one without it still reaches the
+  // allowlist, which cannot tell its target and refuses it as before.
+  const decision = evaluateGhCommand(
+    ["api", "graphql", "-F", "query=@/tmp/q.graphql"],
+    {
+      active: true,
+      allowedRepos: ["me/target"],
+      readBodyFile: () =>
+        'mutation { addStar(input: {starrableId: "x"}) { clientMutationId } }',
+    },
+  );
+  assertEquals(decision.allowed, false);
   assertEquals(decision.marker, "WRITE_TARGET_UNDETERMINABLE");
 });
 

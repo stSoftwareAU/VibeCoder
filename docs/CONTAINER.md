@@ -88,6 +88,7 @@ calls it. Its row says so, and it is deliberately absent from
 | -------------------------------------------------- | ----------------------------------------- | --------------------------------------------------------------------------------------------- |
 | `rust` 1.99.0 (standalone rust-lang distribution)   | `cargo`, `rustc`, `cargo-clippy`, `rustfmt` | The Rust crates: FLEET-GTC, FLEET-taxation, FLEET-validation, NEAT-AI-core/-scorer/-Discovery/-Lamarck/-Backpropagation/-Forests |
 | `cargo-deny`                                        | `cargo-deny`                              | The Rust crates whose gate runs `cargo deny check` — not optional; NEAT-AI-core exits non-zero without it |
+| `cargo-mutants` 27.1.0 (arm64 built from source)    | `cargo-mutants`                           | The Rust crates' diff-scoped mutation check (`cargo mutants --in-diff`, Issue #3393)              |
 | `shellcheck`                                        | `shellcheck`                              | Every repo with a committed shell gate (`quality/shellcheck.sh`)                                |
 | `actionlint`                                        | `actionlint`                              | NEAT-AI-scorer                                                                                  |
 | `gitleaks` 8.30.1                                   | `gitleaks`                                | GRQ-AutoTrader and NEAT-AI-Explore, whose CI enforces a secret scan on every PR                  |
@@ -102,7 +103,7 @@ calls it. Its row says so, and it is deliberately absent from
 | `semgrep` 1.173.0 (wheel in a `/opt/semgrep` venv)  | `semgrep`                                 | This repo's `semgrep` gate stage — without it that stage `SKIP`ped on every fleet run           |
 | `graft` 0.18.0 (npm tarball, then seven native modules compiled in the image) | `graft`                 | This repo's worker **runtime**, not a gate: Graft builds the tree-sitter code graph the repo-context injection reads |
 
-`rust`, `cargo-deny`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
+`rust`, `cargo-deny`, `cargo-mutants`, `shellcheck`, `actionlint`, `gitleaks`, `pwsh`,
 `bats-core`, `codespell`, `pyyaml`, `codegraph`, `rtk`, `floci` and `brief` are installed by per-toolchain **fragments** — `container/toolchains/<id>.sh`, run by
 `container/install-toolchains.sh` with the ids the Containerfile names
 (Issue #1594). Each fragment reads its own version and per-architecture

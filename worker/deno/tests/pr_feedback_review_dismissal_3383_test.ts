@@ -196,8 +196,12 @@ function makePrSpies(
       _repo: string,
       commentType: string,
       commentId: string,
+      _prNumber: number | undefined,
+      outcome: string,
     ) => {
-      events.push(`markCommentProcessed:${commentType}:${commentId}`);
+      events.push(
+        `markCommentProcessed:${commentType}:${commentId}:${outcome}`,
+      );
       if (markBehaviour === "throw") {
         return Promise.reject(new Error("dismissal transport blew up"));
       }
@@ -371,6 +375,13 @@ const REMOTE_CONFIRMS_PUSH = () =>
     reason: "verified in test",
   });
 
+/** The outcome each `markCommentProcessed` call was made with (Issue #3409). */
+function dismissalOutcomes(events: string[]): string[] {
+  return events
+    .filter((e) => e.startsWith("markCommentProcessed:pr_review:"))
+    .map((e) => e.split(":")[3] ?? "");
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -438,6 +449,7 @@ Deno.test("pr_review dismissal: verified push dismisses once, after commitAndPus
     e.startsWith("markCommentProcessed")
   );
   assertEquals(pushIdx < dismissIdx, true, "dismissal must follow the push");
+  assertEquals(dismissalOutcomes(events), ["addressed"]);
 });
 
 Deno.test("pr_review dismissal: a verified push whose reply fails to post charges a failed attempt, never dismisses (Issue #3408 review)", async () => {
@@ -517,6 +529,7 @@ Deno.test("pr_review dismissal: rebuttal with no changes dismisses exactly once"
     captured.comments.some((c) => c.includes("Rebuttal for rv-555")),
     true,
   );
+  assertEquals(dismissalOutcomes(events), ["rebuttal"]);
 });
 
 Deno.test("pr_review dismissal: a rebuttal that fails to post charges a failed attempt, never dismisses (Issue #3408 review)", async () => {
@@ -560,6 +573,7 @@ Deno.test("pr_review dismissal: no fix, no rebuttal after in-run retry — escal
     0,
   );
   assertEquals(captured.labelsAdded.includes("needs-human"), true);
+  assertEquals(dismissalOutcomes(events), ["escalated"]);
 });
 
 Deno.test("pr_review dismissal: no fix, no rebuttal, and the escalation itself fails (label + comment) — charges, never dismisses (Issue #3408 review)", async () => {
@@ -630,7 +644,7 @@ Deno.test("pr_review dismissal: an 'issue' comment is unaffected — markComment
   });
 
   assertEquals(result.ok, true);
-  const markIdx = events.indexOf("markCommentProcessed:issue:123");
+  const markIdx = events.indexOf("markCommentProcessed:issue:123:addressed");
   const pushIdx = events.indexOf("commitAndPushPending");
   assertEquals(markIdx >= 0, true);
   assertEquals(markIdx < pushIdx, true, "issue comments mark before the push");
@@ -669,6 +683,7 @@ Deno.test("pr_review dismissal: an escape-hatch hand-off dismisses the review ex
     events.filter((e) => e.startsWith("handlePrCommentFailure")).length,
     0,
   );
+  assertEquals(dismissalOutcomes(events), ["handed_off"]);
 });
 
 Deno.test("pr_review dismissal: an escape-hatch hand-off whose reply fails to post charges a failed attempt, never dismisses (Issue #3408 review)", async () => {

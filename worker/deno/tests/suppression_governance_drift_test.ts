@@ -24,6 +24,15 @@
  * later cannot honour a bare marker.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
+ *
+ * The all-prompts loops below (every marker reader; no prompt claims to be
+ * the only reader) and the deterministic-check mirror are filesystem- or
+ * module-derived invariants, so they stay whole-file (CODING-STANDARDS.md §
+ * Documentation-drift tests, condition 4). The single-doc positive pins for
+ * retro's governance wording moved to
+ * `suppression_governance_drift_drift_test.ts`, scoped to their section
+ * (Issue #3309); the absence check beside them stays here, whole-file, per
+ * condition 3.
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
@@ -92,8 +101,12 @@ Deno.test("suppression governance - retro no longer drops on an id match alone (
     false,
     "retro still drops a candidate on an id match alone",
   );
-  assertStringIncludes(collapsed, "check all three governance fields");
-  assertStringIncludes(collapsed, "Never silently honour an ungoverned marker");
+  // The two positive pins that used to sit here — "check all three
+  // governance fields" and "Never silently honour an ungoverned marker" —
+  // moved to `suppression_governance_drift_drift_test.ts` (Issue #3309),
+  // scoped to retro's Phase 4 — Triage section. This absence check stays
+  // whole-file per CODING-STANDARDS.md § Documentation-drift tests,
+  // condition 3.
 });
 
 Deno.test("suppression governance - no prompt claims to be the only marker reader (Issue #789)", async () => {

@@ -233,6 +233,35 @@ export function milestonePacedUntil(
   return undefined;
 }
 
+/**
+ * The issues whose milestone the claim scan paces (`milestone-behind`) —
+ * Issue #3464.
+ *
+ * Reads the ledger through {@link milestonePacedUntil}, the very function the
+ * scan's `applyMilestonePacing` gate calls, so the idle-decision census
+ * models exactly the issues the scan refuses. An issue with no milestone is
+ * never paced.
+ *
+ * @param streaks - The loaded ledger
+ * @param repo - Repository in `owner/repo` form
+ * @param issues - The repository's issues, each with its milestone title
+ *   ("" for none)
+ * @returns The numbers of the issues whose milestone is paced
+ */
+export function pacedMilestoneIssueNumbers(
+  streaks: SyncStreaks,
+  repo: string,
+  issues: ReadonlyArray<{ number: number; milestone: string }>,
+): Set<number> {
+  return new Set(
+    issues
+      .filter((i) =>
+        milestonePacedUntil(streaks, repo, i.milestone) !== undefined
+      )
+      .map((i) => i.number),
+  );
+}
+
 /** `deferred: …` with the reason appended, so every deferral reads the same. */
 function deferral(
   detail: string,

@@ -22,6 +22,10 @@ import {
   MAX_REPORTED_TEST_DECLARATIONS,
 } from "../lib/security_fix_gate.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
+import {
+  detectFailureCategory,
+  SECURITY_FIX_GATE_MARKER,
+} from "../lib/failure_diagnosis.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -49,7 +53,7 @@ Fixed the injection flaw. Closes #${ISSUE}.
 - The original attack input is now rejected by the allowlist, so the original
   trigger is closed with no trivial bypass.
 
-**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits
+**Docs sweep** — grep: \`sanitise\`; section: \`docs/SECURITY.md#input-sanitisation\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 `;
@@ -111,6 +115,8 @@ interface Scenario {
   workDir: string;
   /** Make the retry invocation itself fail (a rate limit, a spawn failure). */
   retryInvocationFails?: boolean;
+  /** Replace the declared test name in the branch diff. */
+  testName?: string;
 }
 
 interface Outcome {
@@ -190,7 +196,13 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
               .join("\n"),
           );
         }
-        if (cmdArgs[0] === "diff") return ok(TEST_DIFF);
+        if (cmdArgs[0] === "diff") {
+          return ok(
+            scenario.testName === undefined
+              ? TEST_DIFF
+              : TEST_DIFF.replace("rejects_injection", scenario.testName),
+          );
+        }
         return ok("");
       },
     },
@@ -430,6 +442,48 @@ Deno.test(
       assertEquals(
         (await readSecurityFixGateBlock(stateDir, REPO, ISSUE))?.blockCount,
         0,
+      );
+    });
+  },
+);
+
+Deno.test(
+  "completion - a second block quoting TypeError and timeout is marked as the security-fix gate (Issue #3454)",
+  async () => {
+    await withWorkDir(async (workDir) => {
+      const outcome = await runCompletion({
+        summary: BARE_SUMMARY,
+        workDir,
+        testName: "rejects TypeError: bad input after timeout",
+      });
+
+      assertEquals(outcome.status, "failure");
+      const reason = outcome.reason ?? "";
+      // The comment really does quote the hostile-looking text.
+      assertStringIncludes(reason, "TypeError: bad input after timeout");
+      assertEquals(reason.startsWith(SECURITY_FIX_GATE_MARKER), true);
+      assertEquals(detectFailureCategory(reason), "security_fix_gate");
+    });
+  },
+);
+
+Deno.test(
+  "completion - a launch failure is not marked as the security-fix gate (Issue #3454)",
+  async () => {
+    await withWorkDir(async (workDir) => {
+      const outcome = await runCompletion({
+        summary: BARE_SUMMARY,
+        workDir,
+        retryInvocationFails: true,
+      });
+
+      assertEquals(outcome.status, "failure");
+      const reason = outcome.reason ?? "";
+      assertEquals(reason.startsWith(SECURITY_FIX_GATE_MARKER), false);
+      assertStringIncludes(reason, "could not be launched (rate limited)");
+      assertEquals(
+        detectFailureCategory(reason) === "security_fix_gate",
+        false,
       );
     });
   },

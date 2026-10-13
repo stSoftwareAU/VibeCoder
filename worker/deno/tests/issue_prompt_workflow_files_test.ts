@@ -10,56 +10,38 @@
  * action SHA written from memory, which resolves nowhere and fails later in
  * someone else's CI.
  *
- * The assertions below read the shipped `issue` template through the real
- * `loadPrompt()` and hold the section to the exported check table, so the two
+ * The assertions below read the shipped `issue` template from the repo and
+ * hold the Workflow Files section to the exported check table, so the two
  * cannot drift: a check added to the table that the prompt does not name
  * fails here, and so does a label dropped from the prompt.
  *
  * Uses Australian English throughout (behaviour, catalogue, recognised).
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
-import { loadPrompt } from "../lib/prompt_manager.ts";
+import { assert, assertStringIncludes } from "@std/assert";
 import { WORKFLOW_FILE_CHECKS } from "../lib/workflow_file_checks.ts";
-
-const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
+import { flat, readRepoDoc, section } from "./support/markdown_docs.ts";
 
 /** The H2 the rule lives under. */
-const SECTION_HEADING = "## Workflow Files — `.github/workflows/`";
-
-async function loadIssue(): Promise<string> {
-  const result = await loadPrompt("issue", PROMPTS_DIR);
-  assertEquals(result.ok, true, "issue failed to load");
-  if (!result.ok) throw new Error("issue failed to load");
-  return result.value;
-}
+const SECTION_HEADING = "Workflow Files — `.github/workflows/`";
 
 /**
- * The section's body, from its heading to the next H2.
- *
- * Hard wraps are joined so a rule split across two lines is still one
- * phrase — the template wraps at 80 columns and a check label is longer.
+ * The section's body, from its heading to the next heading at the same or a
+ * higher level.
  */
-function workflowFilesSection(template: string): string {
-  const start = template.indexOf(SECTION_HEADING);
-  assert(
-    start >= 0,
-    `the issue prompt has no "${SECTION_HEADING}" section`,
-  );
-  const rest = template.slice(start + SECTION_HEADING.length);
-  const next = rest.search(/\n## /);
-  const body = next === -1 ? rest : rest.slice(0, next);
-  return body.replace(/\s+/g, " ").trim();
+async function workflowFilesSection(): Promise<string> {
+  const doc = await readRepoDoc("prompts/issue/prompt.md");
+  return flat(section(doc, SECTION_HEADING));
 }
 
 Deno.test("issue prompt - carries a workflow-files section naming the directory", async () => {
-  const section = workflowFilesSection(await loadIssue());
+  const section = await workflowFilesSection();
   assert(section.length > 0, "the workflow-files section is empty");
   assertStringIncludes(section, "`.github/workflows/`");
 });
 
 Deno.test("issue prompt - names every workflow file check with its rule", async () => {
-  const section = workflowFilesSection(await loadIssue());
+  const section = await workflowFilesSection();
   assert(
     WORKFLOW_FILE_CHECKS.length > 0,
     "WORKFLOW_FILE_CHECKS is empty, so this test would assert nothing",
@@ -79,7 +61,7 @@ Deno.test("issue prompt - names every workflow file check with its rule", async 
 });
 
 Deno.test("issue prompt - a workflow-sync template is committed verbatim", async () => {
-  const section = workflowFilesSection(await loadIssue());
+  const section = await workflowFilesSection();
   // The tag that marks the YAML as catalogue-supplied, and the one section
   // whose entries may differ from the issue's YAML.
   assertStringIncludes(section, "vibe-coder:workflow-sync");
@@ -89,7 +71,7 @@ Deno.test("issue prompt - a workflow-sync template is committed verbatim", async
 });
 
 Deno.test("issue prompt - resolved pins are copied as given, never re-resolved", async () => {
-  const section = workflowFilesSection(await loadIssue());
+  const section = await workflowFilesSection();
   const lower = section.toLowerCase();
   // Whole phrases, not bare words: prose saying the opposite of the rule must
   // not satisfy the assertion.
@@ -106,7 +88,7 @@ Deno.test("issue prompt - resolved pins are copied as given, never re-resolved",
 });
 
 Deno.test("issue prompt - an action SHA is resolved in the run, never recalled", async () => {
-  const section = workflowFilesSection(await loadIssue());
+  const section = await workflowFilesSection();
   const lower = section.toLowerCase();
   assertStringIncludes(lower, "never write an action sha from memory");
   // The resolution step itself, and the tag recorded beside the pin.

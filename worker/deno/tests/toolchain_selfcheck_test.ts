@@ -281,6 +281,9 @@ const REAL_IMAGE_OUTPUT: Record<
       "built with go1.26.1 compiler for linux/arm64\n",
   },
   "cargo-deny": { command: "cargo-deny 0.20.2\n" },
+  // Unverified against the binary on this arm64 host; upstream prints
+  // "cargo-mutants <version>" for `cargo mutants --version`.
+  "cargo-mutants": { command: "cargo-mutants 27.1.0\n" },
   gitleaks: { command: "gitleaks version 8.30.1\n" },
   pwsh: { command: "PowerShell 7.6.5\n" },
   "bats-core": { command: "Bats 1.14.0\n" },

@@ -67,7 +67,7 @@ Recovered in-run. Closes #${ISSUE}.
 
 - **clean** — Australian English, TDD, fail-loud error handling
 
-**Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits
+**Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -97,7 +97,7 @@ Fixed the fault. Closes #${ISSUE}.
 - **status** — \`verified\` — the regression test failed against the unfixed code and passes after the fix
 - **regression test** — \`worker/deno/tests/completion_phase_summary_rule_retry_test.ts::completion - a first summary-rule block re-invokes the agent once and the PR is raised\`
 
-**Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits
+**Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -138,6 +138,8 @@ interface Scenario {
   retryInvocationFails?: boolean;
   /** Whether the run's branch already carries an open PR. */
   prExistsForBranch?: boolean;
+  /** Output of `git diff --unified=0 <base>...HEAD`, when a scenario needs it. */
+  diffUnified0?: string;
 }
 
 interface Outcome {
@@ -216,6 +218,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           return ok("worker/deno/lib/summary_rule_gate_retry.ts");
+        }
+        if (cmdArgs.includes("diff") && cmdArgs.includes("--unified=0")) {
+          return ok(scenario.diffUnified0 ?? "");
         }
         return ok("");
       },
@@ -579,5 +584,57 @@ Deno.test(
     assertStringIncludes(reason, SUMMARY_RULE_GATE_MARKER);
     assertStringIncludes(reason, "AppError::EvaluationSummaryUnavailable");
     assertEquals(detectFailureCategory(reason), "summary_incomplete");
+  },
+);
+
+/** A Standards `violation` on a line this branch adds, with the given reason. */
+function summaryWithViolation(reason: string): string {
+  return SUMMARY_WITH_BLOCK.replace(
+    "- **clean** — Australian English, TDD, fail-loud error handling",
+    "- **violation** — American spelling in the new code — evidence: " +
+      `\`worker/deno/lib/run_outcome.ts:12\` — reason: ${reason}`,
+  );
+}
+
+/** A unified=0 diff whose added lines are 10-15 of run_outcome.ts. */
+const DIFF_ADDS_LINES_10_TO_15 =
+  `diff --git a/worker/deno/lib/run_outcome.ts b/worker/deno/lib/run_outcome.ts
+--- a/worker/deno/lib/run_outcome.ts
++++ b/worker/deno/lib/run_outcome.ts
+@@ -9,0 +10,6 @@
++a
++b
++c
++d
++e
++f
+`;
+
+Deno.test(
+  "completion - an own-line standing violation reaches the recovery prompt as a CODE FIX item (Issue #3382)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: summaryWithViolation("not fixed"),
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+    });
+
+    const prompt = outcome.claudePrompts[0] ?? "";
+    assertStringIncludes(prompt, "CODE FIX 1 of 1");
+    assertStringIncludes(prompt, "MAY change code");
+    assertStringIncludes(prompt, "worker/deno/lib/run_outcome.ts:12");
+  },
+);
+
+Deno.test(
+  "completion - a violation marked fixed in this diff yields no CODE FIX item and no recovery (Issue #3382)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: summaryWithViolation("fixed in this diff"),
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+    });
+
+    assertEquals(outcome.claudePrompts.length, 0);
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
   },
 );

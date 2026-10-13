@@ -70,6 +70,22 @@ the fault immediately rather than swallowing it into a green result.
   when success is positively confirmed.
 - **Prefer loud, early failure** over continuing in a degraded or partial state
   that hides the problem downstream.
+- **A failure reason names the cause, not just the failure** — when a recorded
+  error, log or degradation reason quotes an external tool's output, quote the
+  line that names the cause (or a classification of it, where the repository has
+  a classifier), and redact any credential the line carries. Never take the last
+  line blindly: over SSH or a local path, git ends a failed fetch or clone with
+  `fatal: Could not read from remote repository.` and the advice sentence
+  "Please make sure you have the correct access rights and the repository
+  exists." whatever the cause. The cause is on an earlier line — in each of
+  these observed cases the first line of stderr:
+  `fatal: '<path>' does not appear to be a git repository`,
+  `ssh: Could not resolve hostname <host>: Name or service not known`, or, over
+  HTTPS, `remote: Repository not found.` When a retry or wrapper re-runs the
+  command, carry the cause from the attempt that failed, not the wrapper's
+  summary. Observe the real tool's output for each failure class the reason
+  claims to tell apart (see **Observe the real tool before you rely on it**),
+  and test it as **A failure-reason test asserts the cause** says.
 
 ## Changing the Shape of Persisted Data
 
@@ -172,7 +188,11 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    covers the behaviour and say where. The worker enforces this at PR
    creation (`removed_assertion_gate.ts`, Issue #3131): the removed
    assertion must be named in the summary's Test Plan, and the Standards
-   reviewer is asked to judge each one.
+   reviewer is asked to judge each one. The requirement shows the new value
+   is right, not that the edited test still checks anything: each edited
+   expectation also owes the red-check in **An edited expectation must
+   still go red without its guard** under **Test coverage expectations**
+   below.
 4. Every test must exercise real code: source a module, call a function with
    test data, and assert on results, exit codes, or side effects. Tests should
    continue to pass when the implementation is refactored without changing its
@@ -183,6 +203,25 @@ evidence that supported behaviour, an invariant, or a contract regressed.
    rather than faking a test with grep. Documentation is the one narrow
    exception, and it carries its own conditions — see **Documentation-drift
    tests** below.
+
+**Nothing exists only for a test to read.** A field, prop, parameter, type or
+export that only a test reads or sets does not belong in production code: the
+test checks the member instead of what a user or caller sees, so it stays
+green while that output is wrong. Assert on what production does with it
+instead — the returned value, the error message, the rendered text — or
+inject through a seam the code already has. Before raising the PR, run
+`git grep -n -w <name>` for each field, prop, parameter, type or export the
+diff adds to non-test code, and find one hit outside test code (a test file,
+a `#[cfg(test)]` module, a fixture or a test double) that reads or sets it. A
+production default that passes the real dependency through an injected seam
+(a clock, a scheduler, a process runner) counts as its setter. Do not filter
+with `':!*test*'`: that pathspec also drops production files whose path
+contains `test`, such as `latest.ts` or `attestation.ts`. If there is no
+production reader or setter, remove the member and move the assertion onto
+the observable output. A member the issue explicitly asks for as public API
+(for example, a library export) is exempt, and the PR summary says so. A new
+member with no production reader or setter is a blocking self-review finding
+(Issue #3455).
 
 ### Examples
 
@@ -369,6 +408,20 @@ counter that restarts at 1 in every consumer serves one test's result to the
 next file in the same worker. Key it by something only its own owner can
 produce.
 
+The same rule covers an OS-specific branch in the code under test. A test that
+runs a real shell script with a stubbed tool, binary or measurement — a stub
+binary first on `PATH`, a faked `df` — reaches the stub only where the script
+takes the stubbed path. Read the script and everything it sources for
+OS-specific branches (`OSTYPE`, `uname`, `darwin`, Homebrew prefixes such as
+`/opt/homebrew`, `osascript`, `sw_vers`, `diskutil`), and for each one pin the
+override the code provides, or set the test up so the real tool and the stub
+give the same result. CI runs on Linux but the fleet also runs `./quality.sh`
+on macOS hosts, so CI never exercises a branch only macOS takes: a script that
+prepended the Homebrew prefix to `PATH` ran the host's real binary instead of
+the stub, and a disk library that swapped in the free space AppleScript
+reported read the host's disk instead of the faked `df` (Issue #3475). The test
+itself must neutralise the branch; a green Linux CI run says nothing about it.
+
 ### Rendezvous, never sleep, to prove concurrency
 
 "N ran at once" is not provable with `await new Promise((r) => setTimeout(r,
@@ -426,7 +479,23 @@ each moved check in its own section instead. A test that only pins current
 behaviour — the fault was unreproduced or already fixed, and no production
 change was made — is expected green on base, and the Test Plan says so.
 **A negative test must be able to fail** below is this rule for an
-assertion that something does *not* happen.
+assertion that something does *not* happen, and **An edited expectation
+must still go red without its guard** below is this rule for a test the
+diff edits rather than adds.
+
+**An edited expectation must still go red without its guard.** When an
+issue changes an expected value or expected behaviour in an existing test,
+the edited test must still fail when the code its name says it guards is
+broken. The issue requirement that justifies the new value does not show
+this: a new value the code produces either way — a de-duplicated list, an
+action taken with or without the bound, an earlier refusal — leaves the
+test green with that code gone, and nothing replaces the check it made.
+Break that code on purpose (delete the check, invert the condition, drop
+the stop), run the edited test, confirm it goes red, then restore the code.
+If it stays green, add an assertion that does go red, or move the lost
+check to a test that still covers it and name that test. Record the
+red-check result per edited expectation in the Test Plan. An edited test
+that stays green without its guard is a blocking self-review finding.
 
 **A negative test must be able to fail.** An assertion that something does
 *not* happen — not leaked, not carried over, not exported, not called, null
@@ -467,7 +536,10 @@ does it) and assert what it sends or changes; when the linked issue states
 an acceptance criterion as a user action ("pressing X requests Y"), a test
 of the helper behind X does not cover that criterion. A test double that
 bypasses the production path (for example, a stub that ignores the filter
-it is passed, or forcing a fallback path) does not count for that path.
+it is passed, or forcing a fallback path) does not count for that path. In a
+Deno repository the mutation gate now performs this revert itself for object
+properties, array elements and renamed property values (Issue #3601): a
+surviving mutant of that kind is this rule's finding at that call site.
 List each entry point checked in the PR summary. A changed call site
 whose revert leaves the suite green is a blocking self-review finding: add
 a test through that caller, ideally at the level the linked issue's
@@ -525,24 +597,42 @@ helper with no callers-checked list is a blocking self-review finding
 new condition, match arm, exit-code check or trait/interface default in the
 diff, list its outcomes (success, absent/empty, error, fail-closed default)
 and name the test that drives each one. A test double that overrides the
-default, or a stub that always returns the same code, does not reach the
-other outcomes. Flip each outcome on purpose (return the lenient value
-instead of the error, treat "absent" as "failed"), run the tests, confirm at
-least one goes red, then restore it. An outcome with no test, or one whose
-flip leaves the suite green, is a blocking self-review finding: add a test
-for it. When the run writes or refreshes a PR summary, record the
-enumeration as a `Branch outcomes:` list in its Test Plan — one line per
-outcome naming `path:line`, the outcome, the test that reaches it, and that
-flipping it went red — or `Branch outcomes: none added` when the diff adds
-no branch; every test it names must exist at the head (see **A named test
-must exist**). An entry that admits no test reaches its outcome is work
-still to do, not a record: add the test that goes red, or remove the
-branch. Only an outcome the issue puts out of scope, or one no test can
-reach, may stand, written `exempt (out of scope): <reason>` or `exempt
-(untestable): <reason>`; an issue run's branch-outcomes gate blocks PR
-creation on any other admission (Issue #3288). A fix to an existing PR
-re-enumerates every branch its own commits add, not only those a review
-finding named, and refreshes the list to the head.
+default, or a stub that always returns the same code, does not reach the other
+outcomes. Flip each outcome on purpose (return the lenient value instead of
+the error, treat "absent" as "failed"), run the tests, confirm at least one
+goes red, then restore it. A compound condition (`a || b`, `a && b`, a chained
+`?:`) has one outcome per operand: flip each operand on its own, by deleting
+it or forcing it to the value that lets the other operands decide, and name a
+test that goes red for each one. Reverting the whole change, or deleting the
+whole condition, does not show which operand a test reaches. An outcome with
+no test, or one whose flip leaves the suite green, is a blocking self-review
+finding: add a test for it. When the run writes or refreshes a PR summary,
+record the enumeration as a `Branch outcomes:` list in its Test Plan — one
+line per outcome naming `path:line`, the outcome, the test that reaches it,
+and that flipping it went red — or `Branch outcomes: none added` when the diff
+adds no branch; every test it names must exist at the head (see **A named test
+must exist**). A `Branch outcomes:` line for a compound condition names the
+operand it covers, and its flip is that operand's flip (Issue #3376). An entry
+that admits no test reaches its outcome is work still to do, not a record: add
+the test that goes red, or remove the branch. Only an outcome the issue puts
+out of scope, or one production can reach but a test cannot stage, may stand,
+written `exempt (out of scope): <reason>` or `exempt (untestable): <reason>`;
+an issue run's branch-outcomes gate blocks PR creation on any other admission
+(Issue #3288). An outcome no input can reach is dead code: remove it, never
+exempt it. `exempt (untestable)` is for an outcome production can reach but a
+test cannot stage, such as a permission or I/O fault the suite cannot stage
+portably; its reason names what blocks staging and the harness search — the
+test files that already call the enclosing function or script (a grep of the
+test tree for its name), each with why it cannot reach the outcome. "No
+existing harness" with no search named is not a reason. An outcome the linked
+issue asks a test for, in its acceptance criteria or Definition of done,
+cannot be `exempt (untestable)`. The gate checks only that an exemption gives
+a reason of three or more words, so the search must be named for a reviewer to
+check it (Issue #3428). The diff-scoped mutation check (Issue #3393, `docs/mutation-check.md`) blocks
+the PR on any added line whose mutation the tests do not catch, exempt only by
+the same `exempt (untestable): <reason>` record naming `path:line`. A fix to an existing PR re-enumerates every branch its
+own commits add, not only those a review finding named, and refreshes the list
+to the head.
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
@@ -591,6 +681,23 @@ rather than copying it. Add a test per refusal whose fixture holds that state
 and asserts it survives. List the inventory in the PR summary, with what is
 guarded and what is accepted as lost. A destructive operation that deletes
 state it never checked is a blocking self-review finding (Issue #3107).
+
+**State recorded on a failure path is cleared on the path that recovers.**
+When a change writes a persistent record of a bad condition (a health or
+capability ledger entry, a degraded or failure streak, a marker or lock file,
+any `first_seen` or count carried between runs), list every path on which a
+later run finds the condition gone. That includes a repair that succeeds and
+also a run that measures and finds nothing wrong, is below a threshold, or is
+switched off. Each of those paths must clear the record, or the PR summary
+must say why the record should outlive a healthy run. Search the repo for an
+existing set/clear pair on a sibling path and follow it. A record held in
+shared GitHub state (a label, a marker comment) is cleared only as **Remove
+only what you can prove you added** allows. Add a test that uses the real
+record helper against a temporary store, not a stub: drive the failure, then
+a healthy run, and assert the record is gone. Then delete the clear and
+confirm the test goes red. List the set/clear pairs checked in the PR summary.
+A record with no clear on a healthy path is a blocking self-review finding
+(Issue #3430).
 
 **A named test must exist.** Every test the PR summary names under Evidence or
 Test Plan, and every code comment or anchor that points at a test, must be a
@@ -660,6 +767,16 @@ the command you ran and the part of the output the code depends on. If the
 case cannot be observed safely, cite the tool's documentation or source for
 that behaviour.
 
+**A failure-reason test asserts the cause.** A test of a recorded error, log or
+ledger reason triggers a realistic failure of the real tool, or of a fake built
+from its observed output, and asserts that the cause text appears in the reason
+(for example `does not appear to be a git repository`). Asserting only the fixed
+prefix, the exit code or a wrapper's own text is not enough: such a test stays
+green when the quoted cause is dropped or replaced by boilerplate. Remove the
+cause from the reason on purpose and confirm the test goes red (see **A new test
+must go red without its change**). A failure-reason test that passes with the
+cause missing is a blocking self-review finding.
+
 **A workflow behaviour change extends the workflow validator.** When a change
 alters what a `.github/workflows/*` file does — a new or changed flag, step,
 trigger or setting the job's correctness depends on — extend the repository's
@@ -692,7 +809,15 @@ stale. Before calling a gate done (Issue #3149):
    nearby variant an agent or human would plausibly produce — commented out,
    wrapped in a condition (`if (false)`), loosened, re-wrapped across lines,
    escaped, indented, moved to another file, deleted with its file, and
-   renamed — each asserting the gate still blocks. Run the table both ways:
+   renamed — each asserting the gate still blocks. For a guard over another
+   tool's command line or request (`gh`, `git`, a URL), the variants come
+   from that tool's parser and the server's routing, not from the issue's one
+   example: every flag spelling and placement the parser accepts, and every
+   path, method or encoding the server resolves to the same resource. Check
+   each against the real tool (`gh --verbose`, `GH_DEBUG=api`) and register
+   the rule with the shared table in
+   `worker/deno/tests/support/gh_guard_conformance.ts` where one exists
+   (Issue #3568). Run the table both ways:
    for each look-alike the gate must ignore — the pattern inside a string or
    template literal, a skipped or ignored declaration (`Deno.test.ignore`,
    `it.skip`), an example inside a code block — add a test asserting it does
@@ -703,6 +828,13 @@ stale. Before calling a gate done (Issue #3149):
    `maskMarkdownCode` or `stripMarkdownCode`); it never pairs backticks with
    a per-line regex, because a hard-wrapped span continues onto the next line
    (VibeCoder#3132, Issue #3313).
+   A gate over Markdown prose matches per logical unit from the shared helper
+   (`markdownLogicalUnits` in the same module), never per physical line: PR
+   summaries are hard-wrapped, so a phrase or claim often sits on two lines
+   (VibeCoder#3085, #3157, #3312; Issue #3356). The "re-wrapped" evasion test
+   splits the matched phrase or claim itself across a line break, not only a
+   nearby code span, and uses a real wrapped shape from the corpus, not an
+   invented fixture.
 2. **Corpus run.** When a real corpus exists — `docs/archive/pr-summaries/`,
    recent PR diffs, closure-verdict logs, the PR's own test files — run the
    matcher across it and report the false-positive and false-negative counts
@@ -727,10 +859,22 @@ guidance under **Unit tests** below.
 - **UI / PWA:** Prefer real/headless-browser user journeys and visible states
   (loading, empty, error, offline/cache and retry) where practical. Select by
   role, accessible name or label, or an explicit stable product identifier.
-  Avoid exact CSS values, pixel dimensions, class names, DOM hierarchy and
-  framework internals unless that appearance or structure is itself a stated
-  contract. Use visual snapshots deliberately when appearance is the contract
-  and the baseline can be reviewed. A restyle should not break a behaviour test.
+  Avoid DOM hierarchy and framework internals unless that structure is itself a
+  stated contract. Use visual snapshots deliberately when appearance is the
+  contract and the baseline can be reviewed. A restyle should not break a
+  behaviour test. **A style literal is incidental wherever it lives.** An exact
+  colour, length or pixel dimension, `calc()`/`min()` expression, font, z-index,
+  class name or similar style value is incidental whether it sits in a
+  stylesheet, in a TS/JS options object (chart or theme config, an inline
+  `style` prop) or in a computed style a browser test reads (`getComputedStyle`,
+  `toHaveCSS`): it is never a test's expected value unless the issue names that
+  value. Before raising the PR, for every new or edited assertion whose expected
+  value is a style literal, either quote the issue sentence that names it in the
+  Test Plan, or replace the literal with the behaviour it stands for — not
+  transparent, differs from the off state, the panel's box ends above the bar's
+  top, the element is within the viewport. Semantic state the product exposes is
+  not a style literal: an `aria-*` attribute, or the open-only class the
+  closed-state check below relies on.
   A test that reads a stylesheet (`.css`, `.scss`) and matches selectors or
   property values is a source-text grep (rule 5 of **Test-Driven Development
   (TDD)** above), not a layout test, even where appearance is the contract: a
@@ -760,7 +904,9 @@ guidance under **Unit tests** below.
   path to an existing outcome keeps that outcome's guards** above. A test
   for a new branch below existing early exits uses the realistic input for
   its case, including one that trips each earlier exit it now precedes — see
-  **A new branch must be reachable by the input it exists for** above.
+  **A new branch must be reachable by the input it exists for** above. A test
+  of a recorded failure reason asserts the tool's cause text, not only the
+  prefix or exit code — see **A failure-reason test asserts the cause** above.
 
 Before adding an assertion, ask whether it would fail on a legitimate redesign
 or refactor with the supported behaviour intact. If so, justify it as an
@@ -1316,7 +1462,11 @@ not after a reviewer (or an idle-task documentation scan, weeks later) finds it.
   or two **existing sibling members**, not the new one — the new name is in no
   doc yet, so a grep for it comes back clean. Every doc comment, module doc,
   manual page or API description that lists the set names the new member in
-  the same change, or is reworded so it no longer reads as complete.
+  the same change, or is reworded so it no longer reads as complete. Name the
+  siblings you grepped in the Docs sweep line's `siblings:` part, backticked or
+  double-quoted, or write `siblings: none — <why no existing set gained a
+  member>`; fleet PRs that grepped only the new name left a list one short
+  (GRQ-AutoTrader#2460, #2481, #2682, #2792).
 - When a change alters what an existing **state, enum variant, field or value**
   means — even though its name stays — find every place that **renders or
   explains** it: API response strings and labels, reason and stage sentences,
@@ -1395,10 +1545,13 @@ for every PR summary — containing:
    before/after benchmark results for performance changes, or test references
    for bug fixes. If visual evidence cannot be provided, state why.
    Always add a one-line **Docs sweep** — the grep terms searched, the doc
-   files updated, and the manual `section:` read for the changed surface, or
-   `no hits` (see
+   files updated, the manual `section:` read for the changed surface, and the
+   `siblings:` part (the existing sibling members grepped for each set the
+   change adds a member to, or `siblings: none — <why>`), or `no hits` (see
    [A Code Change Owes a Docs Change](#a-code-change-owes-a-docs-change)). The
-   worker refuses to raise a PR whose diff changes code with no such line.
+   worker refuses to raise a PR whose diff changes code with no such line, or
+   whose line has no real `section:` or `siblings:` part. It re-runs the quoted
+   sibling terms as it re-runs the grep terms.
    Re-run the grep on the final head and list each hit you leave in place as
    `file:line — still true because …`, so the worker and the reviewer can
    check it: the worker re-runs the line's quoted terms over the head's docs
@@ -1406,6 +1559,11 @@ for every PR summary — containing:
    diff that the line does not name as an advisory PR comment for the
    reviewer, rather than blocking the PR.
 4. **Test Plan** — Tests added or modified.
+
+In this repository, `deno task pr-summary-check --base <base-branch>
+<summary-file>` from `worker/deno` runs most of the PR-summary gates against a
+draft summary before the PR is raised. A gate it reports as not checked is not
+a pass.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
@@ -1502,6 +1660,19 @@ script's header comments listed "three things" that are deliberately not
 faults when the script skips and allows several more (GRQ-AutoTrader#2479)
 (Issue #3232).
 
+The worker checks this mechanically too (Issue #3347). Whenever a PR summary
+was loaded, the first-run claim check asks a read-only model, before the PR is
+raised, whether the head code agrees with such sentences on the lines the
+branch adds or edits in its manual and prompt Markdown (outside
+`docs/archive/pr-summaries/`), for up to 20 files; files past that cap are
+logged as not checked. A confirmed contradiction is a summary-rule block: on
+the run's first summary-rule block the run gets one recovery turn to rewrite
+the sentence, and a block that survives it fails the run or, when a PR already
+exists, finalises it as `summary_incomplete`. On a review-fix push that edits
+such a file, the drift check asks the same question and gives one recovery turn
+before reporting what remains. This enforces the rule above; it does not
+replace it.
+
 **Behaviour another issue delivers is not described as present.** A doc,
 prompt or code comment may name work that another issue owns — a sibling
 sub-issue of the same epic or milestone, or a follow-up — only as planned
@@ -1513,6 +1684,17 @@ example "written by hand, see Step 1"), not the plan; when #N was closed as
 not planned, the forward reference goes. When the issue's plan says a sibling
 will do X, grep the docs the diff touches for that sibling's `#N`, and make
 each present-tense hit either backed by head code or reworded as planned.
+A setting, flag, field, hook or API the diff adds is held to the same rule
+until something reads it, even when this issue owns the setting itself. Grep
+the head for its **reader**: code outside its own definition, config loading
+and validation, types and tests that acts on its value. When there is none,
+because another issue will add the reader, every doc row, prompt line and
+code comment that describes its effect says it is accepted but not read yet
+and names the open issue that will read it — for example "Accepted and
+validated, but not read yet: #N will use it to …; today X stays Y whatever
+it is set to." The issue that adds the reader switches that text to the
+present tense. Those sentences rarely name #N, so the sibling `#N` grep
+above does not find them; the reader grep does.
 This adds to the rule that every doc assertion must match the head code; it
 does not relax it. Milestone sub-PRs merge into the milestone branch on green
 CI without review, so a sibling dropped later leaves its forward references
@@ -1530,7 +1712,13 @@ by sibling GRQ-AutoTrader#2301 that were not on the branch
 writes the policy after #2303 was closed as not planned
 (GRQ-AutoTrader#2506); two docs called a red dependency audit "never
 deferred" while the refusal that makes it true was still-open sibling #3141
-(VibeCoder#3156) (Issue #3223).
+(VibeCoder#3156) (Issue #3223). Sent back for a setting documented ahead
+of its reader: a code comment said "Issue #3240 makes `flat()` refuse
+whole-file input" while #3240 was still an open PR and `flat()` refused
+nothing (VibeCoder#3252); two `docs/CONFIGURATION.md` rows and a
+`config_defaults.ts` comment described what the new `issue_sub_agent_tier`
+key selects when nothing at the head read it, so an operator who changed
+the tier still got the hard-coded one (VibeCoder#3434) (Issue #3437).
 
 **An issue number cited as provenance is one you looked up.** Every issue
 number the diff adds as the reason a change exists — `Issue #N` or
@@ -1678,6 +1866,13 @@ gate if a model-generation name reappears in this document.
   honoured only when the run leaves no commit, while
   `worker/deno/lib/pr_feedback_processor.ts` runs `detectEscapeHatch` on
   `.pr_response_message` whatever the branch holds (#3095).
+- **Diagnose why a rule was ignored before adding another.** When a run
+  missed a rule that already exists, find out why — too verbose, buried,
+  ambiguous, or the prompt never asked for the effort — and fix that cause; a
+  new rule beside the ignored one fails the same way. The category 3 table in
+  `prompts/retro/prompt.md` maps each cause to its fix; a cause the artefacts
+  do not evidence (including effort, when neither the phase prompt nor the
+  repository's agent instructions show it) counts as ruled out (#3425).
 
 ## Configuration
 

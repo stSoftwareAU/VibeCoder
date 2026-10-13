@@ -73,6 +73,11 @@ import { sweepBrokenRefs } from "./broken_ref_repair.ts";
 import { ensureRepoClone } from "./ensure_repo_clone.ts";
 import { ensureLaneWorktree } from "./lane_worktree.ts";
 import { runGitCommand } from "./git_timeout.ts";
+import {
+  type PrePrVerifierInput,
+  type PrePrVerifierResult,
+  runPrePrVerifier,
+} from "./pre_pr_verifier.ts";
 import { cleanWorkingTree } from "./ignored_path_clean.ts";
 import { restoreSession } from "./session_manager.ts";
 import { branchHeadChanged, captureBranchHead } from "./branch_head_tracker.ts";
@@ -187,6 +192,12 @@ import { evaluateRunGuard } from "./run_entrypoint.ts";
 import { runQualityGate } from "./quality_gate.ts";
 import { formatSummary } from "./quality_helpers.ts";
 import { collectDiffableGateFindings } from "./baseline_gate.ts";
+import type { MutationCheckResult } from "./mutation_gate.ts";
+import {
+  defaultMutationRunnerSeams,
+  type MutationRunInput,
+  runMutationCheck,
+} from "./mutation_runner.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -322,6 +333,13 @@ export interface ClaudeDeps {
    * question counting as an agent turn in tests that count recovery turns.
    */
   runSummaryClaimQuestion: typeof runClaudeWithRetry;
+  /**
+   * The execution-capable pre-PR verifier the completion phase runs after the
+   * summary is written (Issue #3395) — a seam separate from
+   * `runClaudeWithRetry` so a test can script its verdict without real git or
+   * a model, and so tests counting agent turns are unaffected.
+   */
+  runPrePrVerifier: (input: PrePrVerifierInput) => Promise<PrePrVerifierResult>;
   /**
    * Build or refresh the run's CodeGraph index (Issue #2159, part of #2145).
    *
@@ -474,6 +492,14 @@ export interface QualityDeps {
   readBaselineQualityCache: typeof readBaselineQualityCache;
   /** Record a baseline gate outcome for reuse (Issue #4283). */
   writeBaselineQualityCache: typeof writeBaselineQualityCache;
+  /**
+   * Run the diff-scoped mutation check over the PR diff (Issue #3393).
+   * Optional: when absent the mutation gate is not applicable and never
+   * blocks, so fixtures that build their own deps never run real mutants.
+   */
+  runMutationCheck?: (
+    input: MutationRunInput,
+  ) => Promise<MutationCheckResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,6 +698,7 @@ export function createDefaultDeps(
     claude: {
       runClaudeWithRetry,
       runSummaryClaimQuestion: runClaudeWithRetry,
+      runPrePrVerifier: (input) => runPrePrVerifier(input),
       prepareCodegraphContext,
       prepareRtkRun,
       rtkProviderId,
@@ -739,6 +766,8 @@ export function createDefaultDeps(
       fileRedCheckTracker,
       readBaselineQualityCache,
       writeBaselineQualityCache,
+      runMutationCheck: (input) =>
+        runMutationCheck(input, defaultMutationRunnerSeams()),
     },
   };
 }
@@ -1165,6 +1194,22 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
             "summary claim question not scripted in this mock (Issue #3257)",
           ),
         }),
+    ),
+    // Not scripted by default (Issue #3395): a test that says nothing about
+    // the verifier gets a clean, non-blocking verdict and no warning (a
+    // "not checked" result is logged at warn). A test that exercises the
+    // verifier scripts this seam.
+    runPrePrVerifier: mockFn<ClaudeDeps["runPrePrVerifier"]>(() =>
+      Promise.resolve({
+        status: "checked",
+        review: {
+          summary: "pre-PR verifier not scripted in this mock (Issue #3395)",
+          findings: [],
+          testChanges: "none",
+          testChangeNotes: [],
+          unrelatedIssues: [],
+        },
+      })
     ),
     // Off by default (Issue #2159): a test that says nothing about CodeGraph
     // gets the switched-off behaviour and spawns nothing.

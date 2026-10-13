@@ -14,9 +14,18 @@
  * silently reintroducing the contradiction.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
+ *
+ * This file holds only the whole-file absence check, which loops over every
+ * prompt directory's `prompt.md` on disk (no unscoped overflow-tracker
+ * prohibition anywhere in a template). The two section-scoped presence pins
+ * (security_scan's mandate, the six templates' own scoping; Issue #3309) live
+ * in `overflow_tracker_scope_drift_test.ts`, because they import
+ * `markdown_docs.ts`, which spawns git and matches the completeness-check
+ * `HEAVY_RE`; importing it here would silently drop this file from the
+ * `check:manifests` family (Issue #1483).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assertEquals } from "@std/assert";
 
 const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 
@@ -65,40 +74,4 @@ Deno.test("overflow tracker - every prohibition is scoped to its own scan (Issue
     "an unscoped overflow-tracker prohibition reads as a family-wide rule " +
       "that security_scan breaks:\n" + offenders.join("\n"),
   );
-});
-
-Deno.test("overflow tracker - security_scan still mandates one (Issue #790)", async () => {
-  const prompts = await allPrompts();
-  const security = prompts.find(([name]) => name === "security_scan");
-  assert(security, "security_scan template is missing");
-  assert(
-    security[2].includes("security-scan-overflow"),
-    "security_scan must keep the overflow tracker this issue scoped to it",
-  );
-});
-
-Deno.test("overflow tracker - the six rescoped templates name their own scan (Issue #790)", async () => {
-  const expected: Record<string, string> = {
-    github_actions_audit: "github-actions-audit",
-    dead_code: "dead-code",
-    deprecated_api: "deprecated-api",
-    documentation_audit: "documentation-audit",
-    duplicated_knowledge: "duplicated-knowledge",
-    private_repo_reference_audit: "private-repo-reference-audit",
-  };
-  const prompts = await allPrompts();
-  for (const [name, scan] of Object.entries(expected)) {
-    const found = prompts.find(([n]) => n === name);
-    assert(found, `${name} template is missing`);
-    const sentences = overflowSentences(found[2]);
-    assert(
-      sentences.length > 0,
-      `${name}/${found[1]} no longer mentions an overflow tracker`,
-    );
-    assert(
-      sentences.some((s) => s.includes(`for ${scan} runs`)),
-      `${name}/${found[1]} must scope its prohibition to ${scan} runs, got:\n` +
-        sentences.join("\n"),
-    );
-  }
 });

@@ -40,8 +40,15 @@ import {
   summaryClaimCheckBlocked,
 } from "../summary_claim_check.ts";
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
+import {
+  buildPrePrVerifierGateComment,
+  prePrVerifierBlocked,
+  prePrVerifierBlockReason,
+  type PrePrVerifierResult,
+} from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
 import { resolveFleetMaintenanceAuthorSet } from "../fleet_authors.ts";
@@ -144,6 +151,12 @@ import {
   matchedTestDeclarations,
   referencesFindingId,
 } from "../security_fix_gate.ts";
+import {
+  buildMutationGateComment,
+  DEFAULT_MUTATION_BUDGET_SECONDS,
+  evaluateMutationGate,
+  type MutationCheckResult,
+} from "../mutation_gate.ts";
 import { collectSecurityFixDiff } from "../security_fix_diff.ts";
 import { preserveRunWip } from "./run_wip_preservation.ts";
 import {
@@ -190,6 +203,11 @@ import {
 } from "../security_fix_gate_feedback.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
+import {
+  findOwnLineStandingViolations,
+  STANDING_VIOLATION_LABEL,
+  type StandingViolation,
+} from "../standing_violation_routing.ts";
 import {
   carryForwardCorrectedClaims,
   correctSummaryClaimsInRun,
@@ -292,6 +310,35 @@ async function runGitOrThrow(
     );
   }
   return result.value.stdout;
+}
+
+/** Upper bound on `mutation_check_budget_seconds` (Issue #3393). */
+export const MAX_MUTATION_BUDGET_SECONDS = 3600;
+
+/**
+ * Resolve the mutation gate's wall-clock budget from the per-repo
+ * `mutation_check_budget_seconds` value (Issue #3393). A missing value is the
+ * default; a value that is not a positive integer no greater than
+ * {@link MAX_MUTATION_BUDGET_SECONDS} is refused loudly through `warn` and
+ * the default applies, as the other untrusted per-repo numbers do.
+ */
+export function resolveMutationBudgetSeconds(
+  raw: string,
+  warn: (message: string, context?: Record<string, unknown>) => void,
+): number {
+  if (raw === "") return DEFAULT_MUTATION_BUDGET_SECONDS;
+  const parsed = Number(raw);
+  if (
+    !Number.isInteger(parsed) || parsed <= 0 ||
+    parsed > MAX_MUTATION_BUDGET_SECONDS
+  ) {
+    warn(
+      "Ignoring invalid mutation_check_budget_seconds — using the default",
+      { value: raw, default: DEFAULT_MUTATION_BUDGET_SECONDS },
+    );
+    return DEFAULT_MUTATION_BUDGET_SECONDS;
+  }
+  return parsed;
 }
 
 /**
@@ -491,6 +538,18 @@ interface SummaryRuleBlock {
    * nothing folded in passes `[comment]`.
    */
   sections: readonly string[];
+  /**
+   * The Standards `violation`s standing on lines this branch adds or changes
+   * (Issue #3382). Recorded on the verdict so the recovery turn gets a CODE
+   * FIX item for each, and — when one survives to the existing-PR finalise —
+   * the PR is labelled and auto-merge withheld.
+   */
+  standingViolations: readonly StandingViolation[];
+  /**
+   * True when a blocked gate in `sections` is fixed by changing tests (the
+   * mutation gate, Issue #3393), so the recovery prompt allows test changes.
+   */
+  allowsTestChanges?: boolean;
 }
 
 /**
@@ -531,7 +590,10 @@ interface SummaryRuleBlock {
  *   arming auto-merge on it ahead of that guard would close the issue with
  *   any undelivered scope recorded nowhere (Issue #3092). Only once the
  *   guard succeeds is the PR finalised the way the recovery path finalises
- *   it (body, labels, link, auto-merge), and the run reports
+ *   it (body, labels, link, auto-merge — except that auto-merge is withheld
+ *   and the PR labelled `standing-violation` when a Standards violation on
+ *   the branch's own lines survived the recovery turn, Issue #3382), and the
+ *   run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
  *   issue stays attached to its PR instead of going back in the queue. If
  *   the guard itself cannot file its follow-up, this reports `failure`
@@ -578,7 +640,8 @@ async function reportSummaryRuleBlock(
   // comment; the existing-PR finalise below is a path that posts it too.
   docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
-  const { reason, comment, sections } = block;
+  const { reason, comment, sections, standingViolations, allowsTestChanges } =
+    block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
@@ -604,6 +667,8 @@ async function reportSummaryRuleBlock(
         reason,
         comment,
         sections,
+        ...(standingViolations.length > 0 ? { standingViolations } : {}),
+        ...(allowsTestChanges ? { allowsTestChanges } : {}),
         ...(existingPr.ok ? { existingPrUrl: existingPr.value } : {}),
       },
     ];
@@ -714,7 +779,10 @@ async function reportSummaryRuleBlock(
     state,
     guarded.prBody,
     deps,
-    docsSweepHitsComment,
+    {
+      docsSweepHitsComment,
+      holdAutoMerge: block.standingViolations.length > 0,
+    },
   );
   if (recovered.status !== "continue") return recovered;
 
@@ -750,9 +818,9 @@ async function reportSummaryRuleBlock(
  * #3092 only the docs-sweep gate took this guard on an existing-PR branch,
  * because that gate ran after the guard; the closure, independent-review
  * and reproduction-status gates ran ahead of it and skipped it. The call
- * in `completionBody` runs once all five late-summary gates (Issue #3257
- * added the summary claim check as the fifth) pass, whether the PR is then
- * raised or recovered.
+ * in `completionBody` runs once all six late-summary gates (Issue #3393
+ * added the mutation check as the fifth and Issue #3257 the summary claim
+ * check as the sixth) pass, whether the PR is then raised or recovered.
  *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
  *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
@@ -870,8 +938,13 @@ async function postDocsSweepHitsComment(
  * "PR created" link comment and call `ensureIssueClosedIfPrMerged` so the
  * worker does not loop re-picking up an issue whose work is already shipped.
  *
- * Issue #3237: `docsSweepHitsComment`, when non-empty, is posted to the
- * recovered PR once — advisory, best-effort, never affects the result.
+ * Issue #3237: `finalise.docsSweepHitsComment`, when non-empty, is posted to
+ * the recovered PR once — advisory, best-effort, never affects the result.
+ *
+ * Issue #3382: `finalise.holdAutoMerge` is set when a Standards violation is
+ * still standing on the branch's own lines after the recovery turn. Auto-merge
+ * is then NOT armed and the PR is labelled `standing-violation` for the next
+ * run to fix. The flag has no default: every caller states it.
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
@@ -882,8 +955,9 @@ export async function recoverAndFinaliseExistingPr(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-  docsSweepHitsComment = "",
+  finalise: { docsSweepHitsComment: string; holdAutoMerge: boolean },
 ): Promise<PhaseResult> {
+  const { docsSweepHitsComment, holdAutoMerge } = finalise;
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
   const logger = deps.logger;
   const prNumber = prNumberFromUrl(prUrl);
@@ -937,7 +1011,35 @@ export async function recoverAndFinaliseExistingPr(
 
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
-    if (prNumber > 0) {
+    if (prNumber > 0 && holdAutoMerge) {
+      // Issue #3382: a standing violation on this branch's own lines — hold
+      // the merge and make the hold visible on the PR.
+      logger.warn(
+        "Auto-merge NOT armed: a Standards violation is still standing on " +
+          "this branch's own lines — PR labelled standing-violation for the " +
+          "next run to fix (Issue #3382)",
+        { repo, prNumber },
+      );
+      const ensured = await deps.github.ensureLabelExists(
+        repo,
+        STANDING_VIOLATION_LABEL,
+      );
+      if (!ensured.ok) {
+        logger.warn("Could not ensure the standing-violation label exists", {
+          error: ensured.error.message,
+        });
+      }
+      const held = await deps.pr.updatePrLabels(repo, prNumber, [
+        STANDING_VIOLATION_LABEL,
+      ]);
+      if (!held.ok) {
+        logger.error(
+          "Could not label the PR standing-violation — the auto-merge hold " +
+            "is not visible on the PR (Issue #3382)",
+          { repo, prNumber, error: held.error.message },
+        );
+      }
+    } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
     }
 
@@ -2443,9 +2545,9 @@ async function completionBody(
   // blocks — this is the comment body for that advisory post, built below.
   let docsSweepHitsComment = "";
 
-  // Issue #3172: once the line itself passes, re-run the grep terms it
-  // quotes over the head's docs, and over the comment lines of its source
-  // files (Issue #3219). A hit outside every line the diff changed,
+  // Issue #3172: once the line itself passes, re-run the grep and sibling
+  // terms it quotes (Issue #3371) over the head's docs, and over the comment
+  // lines of its source files (Issue #3219). A hit outside every line the diff changed,
   // and not named in the line as `file:line`, is a sentence the sweep found
   // and left — Issue #3237 made this advisory only: it is named in a PR
   // comment, not blocked, and costs no recovery turn. A grep or diff that
@@ -2587,6 +2689,9 @@ async function completionBody(
   // run is logged as not checked (by `runSummaryClaimCheck` itself), never
   // read as clean, and does not block.
   //
+  // Issue #3347: the question also covers the manual and prompt Markdown in
+  // the branch's changed-file list (`changedFiles`), not just the summary.
+  //
   // Skipped entirely when no summary file with content was loaded — with no
   // summary there are no claims about named code to check.
   // ---------------------------------------------------------------------
@@ -2600,6 +2705,7 @@ async function completionBody(
         baseRef: comparableBase.ok ? comparableBase.value : null,
         summaryPath: summarySource,
         summaryContent,
+        changedFiles: changedFilesKnown ? changedFiles : null,
       },
       {
         runGit: async (args) => {
@@ -2648,11 +2754,59 @@ async function completionBody(
     );
   }
 
+  // ---------------------------------------------------------------------
+  // Pre-PR verifier (Issue #3395).
+  //
+  // Runs the fleet reviewer's own brief, with execution rights, in a
+  // disposable checkout once the summary exists. Computed here, with the
+  // other late verdicts, so it folds into whichever summary gate blocks
+  // first and shares the one recovery turn. It runs whether or not the issue
+  // carries acceptance criteria. A pass that cannot run is "not checked": it
+  // is logged, never read as clean, and does not block.
+  // ---------------------------------------------------------------------
+  let prePrVerifier: PrePrVerifierResult | null = null;
+  if (summarySource === null) {
+    logger.info(
+      "Pre-PR verifier skipped: no PR summary file loaded (Issue #3395)",
+    );
+  } else if (!comparableBase.ok) {
+    logger.warn(
+      "Pre-PR verifier not checked — no comparable base ref (Issue #3395)",
+      { baseBranch, error: comparableBase.error.message },
+    );
+  } else {
+    prePrVerifier = await deps.claude.runPrePrVerifier({
+      repo,
+      issueNumber,
+      issueTitle: ctx.issueTitle,
+      issueBody: ctx.issueBody,
+      repoPath: state.repoPath,
+      baseRef: comparableBase.value,
+      summaryPath: summarySource,
+      summaryContent,
+      changedFiles: changedFilesKnown ? changedFiles : null,
+      timeoutSeconds: config.claudeTimeout,
+      killAfterSeconds: config.claudeKillAfter,
+      model: config.claudeModel || undefined,
+      maxRetries: config.maxRateLimitRetries,
+      logger,
+    });
+    if (prePrVerifier.run) recordClaudeRunStats(state, prePrVerifier.run);
+    if (prePrVerifier.status === "not_checked") {
+      logger.warn(
+        "Pre-PR verifier not checked — not read as clean, does not block (Issue #3395)",
+        { reason: prePrVerifier.reason },
+      );
+    }
+  }
+
   /**
    * The late summary-rule verdicts, in the fixed order they are folded into
    * an earlier gate's block: docs sweep, removed assertions, result
-   * placeholder, branch outcomes, then the summary claim check (Issue #3147
-   * added branch outcomes; Issue #3257 added the claim check last). One
+   * placeholder, branch outcomes, mutation check, the summary claim check,
+   * then the pre-PR verifier (Issue #3147 added branch outcomes; Issue #3393
+   * the mutation check; Issue #3257 the claim check; Issue #3395 added the
+   * verifier last). One
    * source of truth for both the ordered fold below and the gates' own
    * standalone blocks further down.
    */
@@ -2660,6 +2814,8 @@ async function completionBody(
     blocked: boolean;
     reason: string;
     comment: () => string;
+    /** Only a test change satisfies this verdict (the mutation gate). */
+    needsTestChanges?: boolean;
   }
   const docsSweepVerdict: LateSummaryVerdict = {
     blocked: docsSweepBlocked,
@@ -2684,41 +2840,215 @@ async function completionBody(
     reason: branchOutcomesReason,
     comment: () => buildBranchOutcomesGateComment(branchOutcomes),
   };
+  // ---------------------------------------------------------------------
+  // Diff-scoped mutation verdict (Issue #3393), computed once alongside the
+  // other late-summary verdicts so a summary that fails an earlier gate AND
+  // leaves a changed line's mutant surviving is told about both in the one
+  // recovery turn. Mutants are generated only for the lines this PR changed;
+  // a survivor is a changed line no test notices, and blocks unless the
+  // summary exempts it. A diff or runner that cannot answer fails closed
+  // (`error`); a runner that is not wired, or a repo that opts out, never
+  // blocks.
+  // ---------------------------------------------------------------------
+  let mutationVerdict: LateSummaryVerdict;
+  {
+    let mutationResult: MutationCheckResult | null = null;
+    if (
+      getRepoConfig(config.repoConfig, repo, "skipMutationCheck") === "true"
+    ) {
+      logger.info("mutation check skipped by skip_mutation_check", { repo });
+      mutationResult = {
+        kind: "not_applicable",
+        reason: "skipped by skip_mutation_check",
+      };
+    } else if (!deps.quality.runMutationCheck) {
+      logger.warn("Mutation runner not wired — mutation check not applicable");
+      mutationResult = {
+        kind: "not_applicable",
+        reason: "mutation runner not wired",
+      };
+    } else {
+      const budgetSeconds = resolveMutationBudgetSeconds(
+        getRepoConfig(config.repoConfig, repo, "mutationCheckBudgetSeconds"),
+        (message, context) => logger.warn(message, context),
+      );
+      let mutationDiff: string | null = null;
+      if (comparableBase.ok) {
+        try {
+          mutationDiff = await runGitOrThrow(
+            ["diff", "--unified=0", `${comparableBase.value}...HEAD`],
+            state.repoPath,
+            deps,
+          );
+        } catch (error) {
+          logger.warn("Could not collect the PR diff for the mutation check", {
+            base: comparableBase.value,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (mutationDiff === null) {
+        mutationResult = {
+          kind: "error",
+          reason: `could not collect the PR diff against ${baseBranch}`,
+        };
+      } else {
+        // The quality gate's child gets the credentials this repository
+        // declared, and its tests need them here too or the baseline fails
+        // before mutation. A failed mint is not run without them: that would
+        // block the PR on a fault that is not its code.
+        const credentials = await resolveRepoCredentials(
+          repo,
+          config.repoConfig?.[repo]?.qualityCredentials,
+        );
+        if (!credentials.ok) {
+          logger.warn(
+            "Could not resolve quality_credentials for the mutation check",
+            { repo, error: credentials.error.message },
+          );
+          mutationResult = {
+            kind: "not_applicable",
+            reason:
+              `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+          };
+        } else {
+          try {
+            mutationResult = await deps.quality.runMutationCheck({
+              repoPath: state.repoPath,
+              diff: mutationDiff,
+              budgetSeconds,
+              credentialEnv: credentials.value.env,
+            });
+          } catch (error) {
+            mutationResult = {
+              kind: "error",
+              reason: `mutation runner failed: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            };
+          }
+        }
+      }
+    }
+    const gate = evaluateMutationGate(mutationResult, prBody);
+    if (gate.budgetExhausted) {
+      logger.warn(gate.note, { repo, issueNumber });
+    } else if (gate.note !== "") {
+      // "Not applicable" and "N of M killed" are logged too, so a gate that
+      // never ran (no Deno project above the changed files) is visible.
+      logger.info(gate.note, { repo, issueNumber });
+    }
+    if (gate.survivors.length > 0 || gate.blocked) {
+      logger.warn("Mutation check found changed lines no test notices", {
+        survivors: gate.survivors.map((m) => `${m.file}:${m.line}`),
+        exempted: gate.exempted.map((m) => `${m.file}:${m.line}`),
+        reason: gate.reason,
+      });
+    }
+    mutationVerdict = {
+      blocked: gate.blocked,
+      reason: gate.reason,
+      comment: () => buildMutationGateComment(gate),
+      needsTestChanges: true,
+    };
+  }
   const claimCheckVerdict: LateSummaryVerdict = {
     blocked: claimCheck !== null && summaryClaimCheckBlocked(claimCheck),
     reason: claimCheck !== null ? summaryClaimBlockReason(claimCheck) : "",
     comment: () =>
       claimCheck !== null ? buildSummaryClaimGateComment(claimCheck) : "",
   };
+  const prePrVerifierVerdict: LateSummaryVerdict = {
+    blocked: prePrVerifier !== null && prePrVerifierBlocked(prePrVerifier),
+    reason: prePrVerifier?.status === "checked"
+      ? prePrVerifierBlockReason(prePrVerifier.review)
+      : "",
+    comment: () =>
+      prePrVerifier?.status === "checked"
+        ? buildPrePrVerifierGateComment(prePrVerifier.review)
+        : "",
+  };
   const lateSummaryVerdicts: LateSummaryVerdict[] = [
     docsSweepVerdict,
     removedAssertionsVerdict,
     placeholderVerdict,
     branchOutcomesVerdict,
+    mutationVerdict,
     claimCheckVerdict,
+    prePrVerifierVerdict,
   ];
+
+  // Issue #3382: the #3196 gate refuses a Standards violation left standing,
+  // but the recovery turn used to be forbidden from changing code, so the
+  // refusal could only ever be a documentary retry that could not succeed.
+  // Find the violations on this branch's own lines once, here, so every block
+  // below carries them: the recovery turn gets a CODE FIX item for each, and
+  // a violation that survives it holds auto-merge rather than shipping.
+  const standing = await findOwnLineStandingViolations({
+    issueBody: ctx.issueBody,
+    prSummaryContent: prBody,
+    base: comparableBase.ok ? comparableBase.value : null,
+    runGit: async (args) => {
+      const result = await deps.git.runGitCommand(args, {
+        cwd: state.repoPath,
+      });
+      if (!result.ok) throw result.error;
+      return result.value;
+    },
+  });
+  if (standing.notChecked !== null) {
+    logger.error(
+      "Standing violations could not be placed against the diff — every one " +
+        "is treated as on the branch's own lines (Issue #3382)",
+      {
+        reason: standing.notChecked,
+        violations: standing.violations.length,
+      },
+    );
+  }
+  if (standing.violations.length > 0) {
+    logger.warn(
+      `${standing.violations.length} Standards violation(s) standing on the ` +
+        "branch's own lines (Issue #3382)",
+      { violations: standing.violations.length },
+    );
+  }
+  const standingViolations = standing.violations;
 
   /**
    * Fold every blocked late verdict (docs sweep, removed assertions, result
-   * placeholder, branch outcomes, summary claim check — in that order) other
-   * than those in `skip` into an earlier gate's block.
+   * placeholder, branch outcomes, mutation check, summary claim check, pre-PR
+   * verifier — in that order) other than those in `skip` into an earlier
+   * gate's block.
+   * `allowsTestChanges` is set on the result when the block, or any verdict
+   * folded in, is one that only a test change satisfies (the mutation check).
    */
   function foldInLateSummaryVerdicts(
     reason: string,
     comment: string,
     skip: readonly LateSummaryVerdict[] = [],
-  ): { reason: string; comment: string; sections: readonly string[] } {
+  ): SummaryRuleBlock {
     let foldedReason = reason;
     let foldedComment = comment;
     const sections = [comment];
+    // `skip` names the verdicts already represented by `reason`/`comment`, so a
+    // blocked mutation verdict there still means the recovery turn must test.
+    let allowsTestChanges = skip.some((v) => v.blocked && v.needsTestChanges);
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
+      if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
       foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
       sections.push(verdictComment);
     }
-    return { reason: foldedReason, comment: foldedComment, sections };
+    return {
+      reason: foldedReason,
+      comment: foldedComment,
+      sections,
+      standingViolations,
+      ...(allowsTestChanges ? { allowsTestChanges } : {}),
+    };
   }
 
   // ---------------------------------------------------------------------
@@ -2833,8 +3163,8 @@ async function completionBody(
   // ---------------------------------------------------------------------
   // Late summary gates: docs sweep (Issue #3073), removed assertions
   // (Issue #3131), result placeholder (Issue #3124), branch outcomes
-  // (Issue #3147), and the summary claim check (Issue #3257) — in that
-  // order.
+  // (Issue #3147), the mutation check (Issue #3393), the summary claim check
+  // (Issue #3257), and the pre-PR verifier (Issue #3395) — in that order.
   //
   // The PR-summary contract already asked for a one-line Docs sweep entry
   // and now also a `Branch outcomes:` list, but nothing checked either: a
@@ -2843,11 +3173,11 @@ async function completionBody(
   // went unaccounted for, and fleet PRs shipped a new branch with no test
   // reaching it (or named a test that did not exist), and a first-run
   // summary described named code wrongly. When the diff changes a
-  // non-test, non-doc file, the summary must name the manual `section:`
-  // that documents the surface, account for every removed assertion, carry
-  // no unfilled result placeholder, carry a `Branch outcomes:` list whose
-  // every named test exists at the head, and get its claims about named
-  // code right.
+  // non-test, non-doc file, the summary must name the manual `section:` that
+  // documents the surface and the `siblings:` it grepped (Issue #3371),
+  // account for every removed assertion, carry no unfilled result placeholder,
+  // carry a `Branch outcomes:` list whose every named test exists at the head,
+  // and get its claims about named code right.
   //
   // Issue #3092: `reportSummaryRuleBlock` now applies the degraded-run
   // delivery guard itself, against the existing PR, before it recovers and
@@ -2958,7 +3288,8 @@ async function completionBody(
   // list naming, for every new branch, the test that reaches it — but
   // nothing checked it: fleet PRs shipped a new branch with no test
   // reaching it, or named a test that did not exist at the head. Folds in
-  // the summary claim check (Issue #3257), the one late verdict still named
+  // the mutation check (Issue #3393), the summary claim check (Issue #3257)
+  // and the pre-PR verifier (Issue #3395), the late verdicts still named
   // below it.
   // ---------------------------------------------------------------------
   if (branchOutcomesBlocked) {
@@ -2989,29 +3320,75 @@ async function completionBody(
   }
 
   // ---------------------------------------------------------------------
+  // Mutation gate (Issue #3393).
+  //
+  // A changed line whose mutant survives the repository's own tests is a
+  // change nothing checks. Blocked like the other summary-rule gates so the
+  // single recovery turn is told the `file:line` and the mutation and either
+  // adds a test that kills it or records an exemption in the summary. Folds
+  // in the summary claim check and the pre-PR verifier (Issue #3395), the late
+  // verdicts still named below it.
+  // ---------------------------------------------------------------------
+  if (mutationVerdict.blocked) {
+    logger.warn("Mutation gate blocked PR creation", {
+      reason: mutationVerdict.reason,
+    });
+    const folded = foldInLateSummaryVerdicts(
+      mutationVerdict.reason,
+      mutationVerdict.comment(),
+      [
+        docsSweepVerdict,
+        removedAssertionsVerdict,
+        placeholderVerdict,
+        branchOutcomesVerdict,
+        mutationVerdict,
+      ],
+    );
+    return await reportSummaryRuleBlock(
+      folded,
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
   // Summary claim check gate (Issue #3257).
   //
   // A first-run PR summary that quotes a function, file, test, regex or
   // pattern and gets it wrong (VibeCoder#3252, #3132) — the one the #3143
   // drift check cannot reach because it only runs on a review-fix push.
-  // Last in the late-summary chain, so there is nothing further to fold in.
+  // Second to last in the late-summary chain: only the pre-PR verifier
+  // (Issue #3395) can fold into its block.
   // ---------------------------------------------------------------------
   if (claimCheckVerdict.blocked && claimCheck !== null) {
     logger.warn("Summary claim check blocked PR creation", {
       findings: claimCheck.findings.length,
+      docFindings: claimCheck.docFindings.length,
       testPlanProblems: claimCheck.testPlanProblems.length,
       notChecked: claimCheck.notChecked.length,
     });
     // This gate is reached only when every earlier summary-rule gate has
-    // passed, so the claim check is the only verdict blocking here — never a
-    // fold-in target. A later block of this same gate (the recovery turn
+    // passed, so the claim check and (Issue #3395) the pre-PR verifier are
+    // the only verdicts that can block here; the verifier folds into this
+    // gate's block below. A later block of this same gate (the recovery turn
     // already spent) gets one summary-only correction turn
     // (`summary_claim_correction.ts`, Issue #3324) instead of failing the run
     // immediately: the state is recorded as `pending` and no comment is
     // posted yet, because the correction turn may yet clear the finding
     // before anything reaches the thread. The re-run posts the comment via
     // this same gate if the sentence survives.
-    if (summarySource !== null && shouldOfferClaimCorrection(state)) {
+    //
+    // Issue #3347: the correction turn rewrites only the PR summary, so a
+    // block that carries a finding in a changed manual or prompt
+    // (`docFindings`) can never be cleared by it — that goes to
+    // `reportSummaryRuleBlock` like any other later block.
+    if (
+      summarySource !== null && shouldOfferClaimCorrection(state) &&
+      claimCheck.docFindings.length === 0
+    ) {
       state.summaryClaimCorrection = {
         status: "pending",
         reason: claimCheckVerdict.reason,
@@ -3027,10 +3404,48 @@ async function completionBody(
       return { status: "failure", reason: claimCheckVerdict.reason };
     }
     return await reportSummaryRuleBlock(
+      foldInLateSummaryVerdicts(
+        claimCheckVerdict.reason,
+        claimCheckVerdict.comment(),
+        [
+          docsSweepVerdict,
+          removedAssertionsVerdict,
+          placeholderVerdict,
+          branchOutcomesVerdict,
+          claimCheckVerdict,
+        ],
+      ),
+      ctx,
+      state,
+      prBody,
+      deps,
+      docsSweepHitsComment,
+    );
+  }
+
+  // ---------------------------------------------------------------------
+  // Pre-PR verifier gate (Issue #3395).
+  //
+  // The pre-PR Spec and Standards reviewers are read-only and diff-only and
+  // run before the summary exists, so a claim the head contradicts, a test
+  // that passes for the wrong reason or a regex that backtracks on hostile
+  // input used to surface only once the fleet reviewer saw the raised PR.
+  // This runs the fleet reviewer's own brief with execution rights after the
+  // summary is written. Its findings reach the single recovery turn and, if
+  // still present on the re-run, are reported like any other summary-rule
+  // block. Last in the late-summary chain, so nothing further folds in.
+  // ---------------------------------------------------------------------
+  if (prePrVerifierVerdict.blocked && prePrVerifier?.status === "checked") {
+    logger.warn("Pre-PR verifier blocked PR creation (Issue #3395)", {
+      findings: prePrVerifier.review.findings.length,
+    });
+    const comment = prePrVerifierVerdict.comment();
+    return await reportSummaryRuleBlock(
       {
-        reason: claimCheckVerdict.reason,
-        comment: claimCheckVerdict.comment(),
-        sections: [claimCheckVerdict.comment()],
+        reason: prePrVerifierVerdict.reason,
+        comment,
+        sections: [comment],
+        standingViolations,
       },
       ctx,
       state,
@@ -3138,7 +3553,7 @@ async function completionBody(
       state,
       prBody,
       deps,
-      docsSweepHitsComment,
+      { docsSweepHitsComment, holdAutoMerge: false },
     );
   }
 
@@ -3273,7 +3688,7 @@ async function completionBody(
           state,
           prBody,
           deps,
-          docsSweepHitsComment,
+          { docsSweepHitsComment, holdAutoMerge: false },
         );
       } else if (isSecondaryRateLimitMessage(errorMsg)) {
         // The latch's own cool-down names both limits (Issue #1456), so it

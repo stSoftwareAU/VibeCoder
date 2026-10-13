@@ -44,7 +44,7 @@ async function makeRepo(): Promise<string> {
   await Deno.mkdir(`${root}/docs/archive/pr-summaries`, { recursive: true });
   await Deno.writeTextFile(
     `${root}/docs/archive/pr-summaries/pr-summary-463.md`,
-    "## Summary\n\nProve the execution role holds every permission the resource schemas name. Closes #463.\n\n**Docs sweep** — grep: `execution role`; section: `docs/SECURITY.md#execution-role`; no hits\n\n**Branch outcomes:** none added\n",
+    "## Summary\n\nProve the execution role holds every permission the resource schemas name. Closes #463.\n\n**Docs sweep** — grep: `execution role`; section: `docs/SECURITY.md#execution-role`; no hits; siblings: none — no existing set gained a member\n\n**Branch outcomes:** none added\n",
   );
   return root;
 }

@@ -1,0 +1,12 @@
+{
+  "issue": 3628,
+  "chunk": "top-up-3628",
+  "title": "top-up: quota-aware polling gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3628",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: polling_quota_gate.ts (#3628)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/polling_quota_gate.ts"
+  ],
+  "sweptAt": "c9747e91ff176b5834ef48d6b597ae1ddd2a6bfb"
+}

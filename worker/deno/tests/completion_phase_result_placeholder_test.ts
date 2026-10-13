@@ -35,7 +35,7 @@ const SUMMARY_WITH_BARE_TOKEN = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -51,7 +51,7 @@ const SUMMARY_WITH_GATE_OUTCOME_PENDING = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -67,7 +67,7 @@ const SUMMARY_WITH_TOKEN_RESOLVED = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -83,7 +83,7 @@ const SUMMARY_WITH_BACKTICK_ONLY_TOKEN = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -115,7 +115,7 @@ const SUMMARY_BUG_MISSING_REPRO_WITH_TOKEN = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -131,7 +131,7 @@ const SUMMARY_BUG_BOTH_FIXED = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 
@@ -153,7 +153,7 @@ const SUMMARY_WITH_BOTH_FIXED = `## Summary
 
 Changed the broker balance card. Closes #${ISSUE}.
 
-**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits
+**Docs sweep** — grep: \`BrokerBalance\`; section: \`docs/reporting-api.md#decisions-report\`; no hits; siblings: none — no existing set gained a member
 
 **Branch outcomes:** none added
 

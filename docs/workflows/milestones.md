@@ -622,6 +622,30 @@ A branch named `issue-<n>-…` is not evidence — people use that shape too —
 
 A fleet PR is also **not** retargeted when merging its head onto the milestone branch would conflict. The worker dry-runs the merge in its clone (`git merge-tree --write-tree`) first; a conflicting result leaves the PR where it is, and a dry run that cannot answer allows the retarget as before and says so. The pass exists to stop work landing outside the milestone, not to manufacture conflicts for the merge-conflict lane to spend an hour on.
 
+### Milestone-fix PRs only target their milestone branch (Issue #3433)
+
+A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch.
+
+- **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head to anything but its own milestone branch, or any other PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH` or `POST …/pulls/N` (or `repositories/<id>/pulls/N`) with `base`, including `gh api`'s default POST when a field is given without `-X`, and any GraphQL request (`graphql`, `/graphql` or the absolute `api.github.com/graphql` URL) that may carry an `updatePullRequest` mutation, including a document read from a file or stdin that cannot be read, and an `--input` JSON body that spells the name with `\uXXXX` escapes), whether or not the write-repo allowlist is active.
+
+  The REST base-change guard splits the endpoint path on literal `/` before
+  decoding each segment on its own, because GitHub's router treats an encoded
+  slash (`%2F`) as part of the PR-number segment. It reads the PR number as
+  the decoded segment's leading digits after any whitespace, so `%2012`,
+  `12%2F`, `12%2Fcomments`, `12.json` and `12;x` all name PR 12, on both
+  repository routes. Malformed percent-encoding, and a base change whose
+  number segment has no readable number, fail closed. Literal child routes
+  such as `pulls/N/comments` are not PR base-change requests.
+
+- **A closed route holds the PR.** A PR whose milestone route has closed (rollup merged or milestone closed) is held on its milestone branch instead of being retargeted: not merged, auto-merge disarmed (best effort), one comment per PR (marker-deduplicated; a failed comment is logged). A human retargets or closes it (result `held_route_closed`, returned by the arming path in `pr_auto_merge.ts`).
+- **Auto-merge follows the base.** On every Auto-Merge sweep pass, before any arming or branch update, the worker re-reads each listed fleet PR's base (one GraphQL read: default branch, head, base, `autoMergeRequest`, latest base-change event; [`pr_base_integrity.ts`](../../worker/deno/lib/pr_base_integrity.ts)). An unarmed, non-fix PR on a milestone base skips the read, as there is nothing to disarm. The read then decides, in order:
+  - a PR whose head is `milestone-fix/**` and whose base is not a `milestone/**` branch is disarmed, never armed, and flagged with one comment on it (plus one on the milestone's final PR #N when the head parses as `milestone-fix/<milestone>/pr-<N>-…`); a `[MILESTONE_FIX_RETARGETED]` warning is logged, and a failed comment is logged but does not change the outcome;
+  - a PR moved onto the default branch after it was opened is disarmed and left for a human, with one comment. A milestone sync PR is excluded: the Issue #1967 close path handles it;
+  - an armed PR whose base changed after it was armed is disarmed and re-evaluated on the same pass, so the normal arming path decides afresh for its current base. If the disarm fails, the PR is held with `deferred` instead and is re-checked next pass.
+
+  The first two return `held_base_retargeted`. An unreadable PR (or a failed disarm in the third case) returns `deferred` and is not armed that pass (it fails closed and is re-read next pass). The arming path in `pr_auto_merge.ts` also returns `held_base_retargeted` for a `milestone-fix/**` PR on a non-milestone base. The sweep lists fleet-authored PRs only, so a human's PR is never checked. Comments are de-duplicated by marker among fleet-authored comments.
+- **Human retargets are untouched.** A human's retarget of a PR the fleet did not raise is left alone; the Issue #2022 rule above still applies to the self-heal.
+
 ## 🏷️ Issue ordering within milestones
 
 By default, issues within a milestone are processed oldest-first (by creation date). You can override this order using **priority labels** to control which milestone issue the worker picks next.
@@ -665,6 +689,8 @@ Priority extraction is implemented in `worker/deno/lib/milestone_priority.ts`. T
 
 - **Milestone branch sync conflict:** Merge from default into milestone fails; worker logs and aborts; user may need to resolve on milestone branch manually.
 - **Final PR already exists:** Worker should not create a duplicate; ensure idempotent behaviour (create or update/find existing).
+- **Final PR closed without merging (Issue #3474):** Once no milestone issue is open, the worker reads the same-repository PRs from the milestone branch (up to 100; a fork-headed PR reusing the branch name is ignored). If one has merged, the milestone is closed as merged. If one is open, the milestone stays open. If every one was closed unmerged, the worker comments on the tracking issue (or on the closed PR when there is no tracker) naming the closed PR, closes the tracker and the milestone, and raises no new final PR. A final PR closed by the fleet's own milestone roll-back is not abandoned: it is ignored, any open sync PR is retired first, and a fresh final PR is raised. The roll-back is recognised by its close comment (`<!-- vibe-final-pr-rollback-close -->`, or the earlier "Closed by a milestone roll-back of" prose) **only when a fleet login authored that comment** — a comment from any other account is ignored and the PR stays abandoned. When the fleet logins cannot be resolved, the PR is classed neither abandoned nor superseded: the worker logs a warning and the milestone is left as it was.
+- **Nothing to merge (Issues #3214, #3474):** When the milestone branch is missing or 0 commits ahead of the default branch, the milestone is closed directly with no tracker or final PR — even when it has no closed issues. An empty milestone whose branch has commits ahead is still skipped, as is an empty milestone created in the last 15 minutes (or with no usable `created_at`), which planning may still be assigning issues to; a later scan closes it once it is older.
 - **Milestone closed on GitHub:** Worker should not pick new issues from closed milestones; in-progress work on already-claimed issues may complete.
 
 ## 📚 Further reading

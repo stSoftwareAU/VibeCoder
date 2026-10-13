@@ -1,0 +1,191 @@
+# PR Summary — Issue #3603
+
+## Summary
+
+The issue-run cost estimate now prices every model that served a split run,
+not just the Opus manager. On a split run the result `usage` covers only the
+main session, or is zero. Each sub-agent model's counts live in the result's
+`modelUsage`, and `attributeUsageByModel` used to discard that breakdown
+whenever it was larger than the totals.
+
+`attributeUsageByModel` (`worker/deno/lib/cost_estimate.ts`) now trusts any
+breakdown it reads cleanly. When the totals are larger than the breakdown on a
+counter, the difference (`max(0, total − Σ)`) is charged to the fallback
+model. Results:
+
+- the run-stats comment shows one sub-bullet per model, with a total equal to
+  their sum;
+- Haiku 5.5 is priced through `lookupModelPricing`, which applies the banded
+  rates from #3399;
+- a multi-model run with no readable `modelUsage` gets
+  `sub-agents: not costed`;
+- the per-tier fleet telemetry (`measureIssuePhaseRun` →
+  `recordIssuePhaseRun`) and the run-callback telemetry use the same figure.
+
+Closes #3603
+
+## Spec
+
+### Intent and Rationale
+
+- The Haiku vs Sonnet sub-agent trial (#3473) compares runs by cost. The cost
+  must include the sub-agents being compared, or the trial only measures the
+  Opus manager.
+
+### Essential Design Decisions
+
+- **One owner.** The comment, `estimatePhaseRunUsd` and
+  `run_callback_telemetry.ts` all attribute usage through
+  `attributeUsageByModel`, so they cannot disagree.
+- **Trust a clean breakdown; add only a residual.** A breakdown larger than the
+  totals is the normal split-run case, so it is no longer discarded. Per
+  counter, any amount by which the totals exceed the breakdown goes to the
+  fallback model, so no recorded usage is lost.
+- **Fall back loudly, not silently.** `readModelUsageBreakdown` rejects an
+  absent or empty breakdown, and any entry with a non-numeric counter, rather
+  than reading it as zero. The caller then falls back to the whole usage. When
+  that invocation served more than one real model (excluding `<synthetic>`),
+  the comment adds `sub-agents: not costed` and marks the total
+  `(partial — see below)`.
+- **Callback telemetry's dominant model stays per invocation.** Invocations
+  are ranked by their attributed token total (sub-agents included) and
+  `model` is that invocation's `servedModels[0] ?? requestedModel`, so it
+  still pairs with that invocation's `stats.effort` (PR #3611 review). Token
+  sums come from the attributed entries.
+
+### Undiscoverable Facts
+
+- `modelUsage` keys its counters in camelCase (`inputTokens`,
+  `cacheReadInputTokens`, …), unlike the snake_case result `usage`. Its own
+  `costUSD` is ignored: pricing stays with `lookupModelPricing` so that the
+  Haiku 5.5 bands apply.
+- **Telemetry limitation.** Telemetry records have no not-costed flag. A
+  multi-model run with no readable breakdown is recorded at the whole usage
+  under the fallback model, and only the comment flags it.
+- **No persisted key bumped.** The change alters computed figures only; no
+  stored shape changes. As `docs/MODEL-AND-CACHING.md` now states, cost data
+  recorded before #3603 is advisor-only.
+
+## Evidence
+
+```mermaid
+flowchart LR
+    MU["result.modelUsage<br/>(camelCase, per model)"] --> R[readModelUsageBreakdown]
+    R -->|clean entries| A[attributeUsageByModel]
+    R -->|absent / empty / unreadable| W["whole usage → fallback model"]
+    W --> A
+    T["result.usage<br/>(main session or 0)"] -->|"residual max(0, total − Σ)"| A
+    A --> C["planning_run_stats<br/>run-stats comment<br/>(sub-bullet per model)"]
+    A --> P["estimatePhaseRunUsd → measureIssuePhaseRun<br/>→ recordIssuePhaseRun (per-tier telemetry)"]
+    A --> K[run_callback_telemetry]
+```
+
+- #3399: Banded Claude Haiku 5.5 pricing in token_usage (≤100k / >100k prompt tokens)
+- #3403: Per-tier issue-run telemetry and PR-body sub-agent tier marker
+- #3404: Per-tier PR outcomes and cost per merged PR in fleet telemetry
+- #2346: Run-stats comment: split on/off, executor counts and executor Sonnet spend in the run cost
+- #3473: Make Haiku the default issue_sub_agent_tier if the Haiku vs Sonnet trial meets #3385's decision rule
+- #3385: Adopt Claude Haiku 5.5: pricing tables, trial key for cheaper sub-agent tiers
+
+**Docs sweep** — grep: `attributeUsageByModel`, `modelUsage`, `issue_executor_split`, `sub-agent\w* .*cost\w*`, `breakdown`, `estimatePhaseRunUsd`; section: `docs/MODEL-AND-CACHING.md` run-cost bullets, `docs/CONFIGURATION.md#issue_executor_split`; updated: `docs/CONFIGURATION.md:457`, `docs/MODEL-AND-CACHING.md` (new bullet "A split run's sub-agent tokens are costed at their own model's rates.")
+
+- `docs/MODEL-AND-CACHING.md:2742` ("breakdown reconciles") is about the
+  cache-write column and is still true.
+- `docs/audits/security-sweep-2757-lib-delta-12d-12f.md:184` is a dated audit
+  snapshot and was left unchanged.
+
+## Reproduction
+
+- **Symptom:** a split run that used Opus plus Haiku 5.5 or Sonnet
+  sub-agents showed only the Opus cost in the run-stats comment, and fed the
+  same figure to the per-tier telemetry.
+- **Status:** reproduced with synthetic stream fixtures. The new tests fail
+  against base: the base test file fails to import the new exports, and the
+  mutation check below shows each new branch going red when its change is
+  removed.
+- **Regression test:** `worker/deno/tests/planning_run_stats_test.ts`
+  "buildPlanningStatsSection - split run with Opus, Haiku 5.5 and Sonnet usage
+  shows a sub-bullet per model and a total equal to their sum (Issue #3603)".
+
+## Test Plan
+
+- `./quality.sh < /dev/null`: **PASSED** on `0db2daab`. The "config
+  integration" step was SKIPPED because no deno or `.config.json` was
+  available.
+- Named tests are tracked (`git ls-files`, run from the repo root):
+  - `worker/deno/tests/cost_estimate_test.ts`
+  - `worker/deno/tests/issue_run_stats_comment_test.ts`
+  - `worker/deno/tests/phase_run_usd_test.ts`
+  - `worker/deno/tests/planning_run_stats_test.ts`
+  - `worker/deno/tests/run_callback_telemetry_test.ts`
+- Removed from `worker/deno/tests/cost_estimate_test.ts`: `assertEquals( attributeUsageByModel( usage(100, 0), { "claude-sonnet-5": { input_tokens: 999 } }, "claude-opus-5", ), [{ model: "claude-opus-5", usage: usage(100, 0) }], );` — #3603 requires the comment to cost every model of a split run, whose `usage` covers only the main session, so a breakdown larger than the totals must be trusted rather than discarded; the old expectation (charge only the fallback model) is now untrue. The test is renamed "…trusts a breakdown exceeding the run totals without a residual" and now expects `[{ model: "claude-sonnet-5", usage: usage(999, 0) }]`.
+- Branch outcomes:
+  - `worker/deno/lib/cost_estimate.ts:128` — unreadable counter →
+    `undefined`. Test: "readModelUsageBreakdown rejects absent, empty and
+    unreadable breakdowns" and "attributeUsageByModel never fabricates a zero
+    for an unusable counter". Flip (read as 0) went red.
+  - `worker/deno/lib/cost_estimate.ts:183` — empty breakdown → `undefined`.
+    Test: "readModelUsageBreakdown rejects absent, empty and unreadable
+    breakdowns". Flip (return `[]`) went red.
+  - `worker/deno/lib/cost_estimate.ts:242` — per-counter residual clamped at
+    0. Tests: "trusts a breakdown exceeding the run totals without a
+    residual", "prices all models when the totals are zero", "adds a residual
+    only for counters where totals exceed the breakdown", the phase_run_usd
+    split test, the AC1 and main-session-only planning tests, and the
+    telemetry zero and main-session tests. Flip (remove clamps) went red.
+  - `worker/deno/lib/cost_estimate.ts:247` — non-zero residual appended /
+    zero residual omitted. Tests: "attributes any shortfall rather than
+    losing it" and "adds a residual only for counters where totals exceed the
+    breakdown". Flip (never append) went red.
+  - `worker/deno/lib/cost_estimate.ts:339` — not-costed flag on / off. Tests:
+    "formatCostEstimateLines flags sub-agents not costed" and the planning
+    not-costed test. Flip (`false`) went red.
+  - `worker/deno/lib/cost_estimate.ts:343` — nothing priced and not costed →
+    a single not-costed heading. Test: "formatCostEstimateLines flags
+    sub-agents not costed". Covered by the `:339` flip, which went red.
+  - `worker/deno/lib/cost_estimate.ts:349` — `(partial — see below)` suffix.
+    Tests: "marks unknown pricing rather than $0", the flag test and the
+    planning not-costed test. Flip (drop suffix) went red.
+  - `worker/deno/lib/planning_run_stats.ts:626` — `<synthetic>` excluded from
+    the model count. Test: the planning not-costed test. Flip (remove filter)
+    went red.
+  - `worker/deno/lib/planning_run_stats.ts:629` — more than one real model →
+    not costed; one model → unflagged. Tests: the planning not-costed test
+    and "…a run on one model is unchanged". Flip (`> 0`) went red.
+  - `worker/deno/lib/planning_run_stats.ts:726` — the flag is passed to the
+    formatter. Test: the planning not-costed test. Flip (pass `{}`) went red.
+  - `worker/deno/lib/run_callback_telemetry.ts:89` — the breakdown feeds the
+    attribution. Tests: the split-run telemetry tests. Flip (pass
+    `undefined`) went red.
+  - `worker/deno/lib/run_callback_telemetry.ts:111` — the invocation with the
+    largest attributed total wins, with its main model and effort, and ties go
+    to invocation order. Tests: "a split run's model and effort stay the
+    invocation's main model and its effort" and "invocations are ranked by
+    their attributed token total". Test: "an equal-token tie is broken
+    deterministically by invocation order". Flip (`>=`) went red.
+  - `worker/deno/lib/cost_estimate.ts:218` — attribution used rather than
+    `whole`. Tests: the AC3 measureIssuePhaseRun test and three #2346 tests.
+    Flip (always return `whole`) went red.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — For a split run whose stream records Opus, Haiku 5.5 and Sonnet usage, the comment shows a sub-bullet for each model and a total that is their sum (test with a recorded or synthetic fixture). — evidence: `worker/deno/tests/planning run stats test.ts::buildPlanningStatsSection - split run with Opus, Haiku 5.5 and Sonnet usage shows a sub-bullet per model and a total equal to their sum (Issue #3603); worker/deno/tests/cost estimate test.ts::cost estimate - formatCostEstimateLines renders every model of` — reviewer: met
+- **met** — A run on one model is unchanged. — evidence: `worker/deno/tests/planning run stats test.ts::buildPlanningStatsSection - a run on one model is unchanged (Issue #3603)` — reviewer: met
+- **met** — The per-tier fleet telemetry from #3403/#3404 uses the same corrected figure. — evidence: `worker/deno/tests/issue run stats comment test.ts::measureIssuePhaseRun - a split run's spend covers every served model, as the comment does (Issue #3603); worker/deno/tests/phase run usd test.ts::phase run usd - prices a split run from modelUsage when tokenUsage is all zero (Issue #3603)` — reviewer: met
+- **unrequested** — readModelUsageBreakdown exported from worker/deno/lib/cost estimate.ts — reviewer: unrequested — reason: justified — planning run stats needs the same breakdown-readable check to raise the not-costed flag, and sharing it avoids a second parser
+- **unrequested** — Tokens line in planning run stats and token sums in run callback telemetry taken from the attributed entries — reviewer: unrequested — reason: justified — otherwise the token counts would cover only the main session while the cost covers every model; it does change what the published telemetry. Tokens fields mean
+- **unrequested** — Callback telemetry ranks invocations by their attributed token total (sub-agents included); `model` and `effort` still come from the same invocation (`worker/deno/lib/run_callback_telemetry.ts:111-115`) — reviewer: unrequested — reason: justified — keeps the ranking consistent with the attributed sums, and `docs/CALLBACKS.md` and `run_callbacks.ts` doc comments now say sub-agent tokens count
+- **unrequested** — docs/MODEL-AND-CACHING.md run-cost bullet rewrite — reviewer: unrequested — reason: justified — the old text described the reconcile-or-discard rule this change removes
+- **unrequested** — #2346 test rewritten in worker/deno/tests/cost estimate test.ts (discard rule → trusts a breakdown exceeding the run totals without a residual) — reviewer: unrequested — reason: justified — the discard rule is exactly what dropped sub-agent usage; the trade-off is that a readable but inflated breakdown is now trusted
+- **unrequested** — Per-counter residual clamped at zero, the formatCostEstimateLines options parameter, and modelUsage added to TelemetrySource — reviewer: unrequested — reason: justified — these are what trusting a larger breakdown, the not-costed flag and the corrected callback cost need to work
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — A Code Change Owes a Docs Change: `docs/CALLBACKS.md` (VIBECODER_MODEL row and `telemetry.model` prose) and the `CallbackRunTelemetry.model` doc comment now state that sub-agent tokens count toward the invocation's total
+- **clean** — A Contract a Deployed Extension Reads Is Additive-Only: `telemetry.model` is still the main model of one invocation and `telemetry.effort` that invocation's effort, so the pair is one call's (`worker/deno/lib/run_callback_telemetry.ts:111-115`)
+- **violation** — Never Fail Silently: callback and per-tier telemetry record a multi-model run with no readable breakdown as a full cost with no not-costed flag, and docs/CONFIGURATION.md:457 does not say the flag appears only in the comment — evidence: `worker/deno/lib/run callback telemetry.ts:88-93` — reason: NOT fixed in this diff and not pre-existing (the changed lines cause it) — outstanding; neither permitted reason applies truthfully, so the PR should not be raised until it is fixed
+- **clean** — Australian English spelling, TDD (a failing test per criterion added alongside the change), KISS/DRY (one shared attributeUsageByModel / readModelUsageBreakdown path for comment, callback and fleet telemetry), Deno/TypeScript strict-index conventions

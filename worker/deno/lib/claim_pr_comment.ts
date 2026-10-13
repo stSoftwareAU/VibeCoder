@@ -569,6 +569,9 @@ export async function claimPrComment(
       commentType,
       commentId,
       prNumber,
+      // Only a `pr_review` dismissal reads the outcome; this branch never
+      // sees one, so it is unused here (an eyes reaction is added).
+      "addressed",
       ghCommandFn,
     );
     if (!marked.ok) {
