@@ -15,8 +15,18 @@ the diff gets a per-item verdict: `met`, `missing` or `not applicable`. A
   changed files. `review_log.ts` turns a `missing` item into `changes_requested`
   and renders a "Repository review checklists" section.
 - **Pre-PR verifier.** `pre_pr_verifier.ts` adds `REVIEW_CHECKLISTS` to the
-  brief (step 7 of `prompts/pr_review_brief/prompt.md`) and requires a
-  `checklist` array in the reply.
+  brief (step 7 of `prompts/pr_review_brief/prompt.md`) and reads a `checklist`
+  array from the reply. An absent or null array is read as `[]`, and nothing
+  checks that every rendered item got a verdict. `prePrVerifierBlocked` blocks
+  on any finding or any `missing` verdict, so a `missing` item blocks even when
+  the reply has no finding. `prePrVerifierBlockReason` and
+  `buildPrePrVerifierGateComment` name the missing items.
+- **Unsafe globs rejected.** `parseReviewChecklists` drops a leading `./` from
+  each `paths` glob and then rejects it if it starts with `/` or has an empty
+  (`//`, trailing `/`) or `..` segment. The error names the checklist and index,
+  so the file loads as malformed and renders the BLOCKING section. Before this,
+  such a glob loaded and the checklist was silently never applied.
+  `matchesPathGlob` now drops a leading `./` from the glob as well as the path.
 - **Visible failures.** A malformed or unreadable file, or a changed-file list
   at or above 3000 (`CHECKLIST_FILE_LIST_LIMIT`), renders a BLOCKING instruction
   into the brief. An absent file or no matching path renders nothing.
@@ -32,7 +42,7 @@ flowchart LR
     L -->|"malformed / unreadable / list ≥ 3000"| B["BLOCKING instruction"]
     L -->|"matched"| V["per-item verdicts"]
     V --> G["gate.ts → review_log.ts<br/>missing ⇒ changes_requested"]
-    V --> P["pre_pr_verifier.ts<br/>checklist[] in reply"]
+    V --> P["pre_pr_verifier.ts<br/>missing ⇒ blocked"]
 ```
 
 Closes #3594
@@ -51,10 +61,12 @@ base ref stops a PR from weakening its own checklist.
 - One loader for both reviewers, so the file format, glob semantics and failure
   rendering cannot drift apart.
 - The glob matcher is hand-written DP over tokens with no dynamic `RegExp`. It
-  rejects `..`, `//` and a leading `/` on both the glob and the path, and
-  normalises a leading `./`.
+  refuses to match when the glob or the path has a `..` segment, an empty
+  segment or a leading `/`, after dropping a leading `./` from both. The parser
+  rejects such a glob up front, so it fails loudly instead of matching nothing.
 - A malformed, unreadable or truncated input never reads as "no checklist": it
-  renders a BLOCKING instruction and the model must report it.
+  renders a BLOCKING instruction that tells the model to report a finding. The
+  code does not add that finding itself.
 - An absent file is quiet by design, as documented in
   `docs/review-checklists.md`.
 
@@ -68,17 +80,20 @@ base ref stops a PR from weakening its own checklist.
 
 ## Evidence
 
-- Targeted, on this head: `deno task test:unit` over the seven touched test
-  files (the two new files, `pre_pr_verifier_3395_test.ts`,
-  `pr_review_brief_shared_3395_test.ts`,
+- Targeted, on this head: `deno test -A` from `worker/deno` with `< /dev/null`
+  over the seven touched test files (the two new files,
+  `pre_pr_verifier_3395_test.ts`, `pr_review_brief_shared_3395_test.ts`,
   `completion_phase_pre_pr_verifier_3395_test.ts`,
   `review_fleet_prs_log_2678_test.ts`,
-  `review_fleet_prs_needs_human_2927_test.ts`) — 111 passed, 0 failed.
-  `deno lint` and `deno fmt --check` are clean on the new files.
+  `review_fleet_prs_needs_human_2927_test.ts`) plus `lib_sweep_coverage_test.ts`
+  — 158 passed, 0 failed. `deno lint` is clean on the changed lib and test
+  files, and `deno fmt --check` is clean on the changed lib files and
+  `docs/review-checklists.md`.
 - `./quality.sh < /dev/null` — PASSED, exit 0, with the config integration step
-  SKIPPED as usual. This is a historical run: it predates the unsafe-glob test
-  and the `:241` red-check, both of which were re-run on this head with their
-  test file (22 passed, 0 failed).
+  SKIPPED as usual. This is a historical run from before the verifier-review
+  fixes (missing verdicts block, unsafe globs rejected, mutation-killing tests).
+  Those were checked with the targeted run above; the worker re-runs the quality
+  gate on this head.
 
 Docs sweep: grep `review-checklists`, `REVIEW_CHECKLISTS`,
 `Repository review checklists`, `reviewChecklists`; section:
@@ -135,10 +150,21 @@ updated: `README.md:519`, `docs/workflows/issue-processing.md:1193`,
 
 Added:
 
-- `worker/deno/tests/review_checklists_3594_test.ts` (22 tests): parse shape and
+- `worker/deno/tests/review_checklists_3594_test.ts` (26 tests): parse shape and
   rejections, `matchesPathGlob` cases including evasion and hostile input,
-  loader, `renderChecklistSection`, `parseChecklistVerdicts`, and the
-  unsafe-glob test.
+  loader, `renderChecklistSection`, `parseChecklistVerdicts`, the unsafe-glob
+  test, and four tests added after the verifier review:
+  `parseReviewChecklists reports the JSON parser's own message for bad JSON`,
+  `parseReviewChecklists rejects a path glob that can never match, naming the checklist and index`,
+  `parseReviewChecklists accepts a leading ./ on a glob, and the matcher applies it`,
+  and
+  ``matchesPathGlob: `**/` matches only after a position the prefix reached``.
+- In `worker/deno/tests/pre_pr_verifier_3395_test.ts`:
+  `a missing checklist verdict blocks even with no findings, and is named in the reason and comment`,
+  `met and not-applicable checklist verdicts alone do not block`,
+  `runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist`,
+  and
+  `createMockDeps' unscripted pre-PR verifier is clean with an empty checklist`.
 - `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` (9 tests): gate
   applicable path, base-ref read with slash refs, non-matching or absent file,
   malformed file, non-404 failure, changed-file list at the limit,
@@ -146,28 +172,60 @@ Added:
 
 Replaced: none.
 
-Removed: none; no assertions were removed.
+Removed:
+
+- Removed from `worker/deno/tests/pr_review_brief_shared_3395_test.ts`:
+  `assertThrows( () => renderReviewBrief(extra, { REVIEW_CONTEXT: "c", NO_TEST_ADDED_NOTE: "n", TEST_CHANGES: "t", PREVIOUS_FINDINGS: "p", }), Error, "EXTRA_FIELD", );`
+  — #3594 adds `REVIEW_CHECKLISTS` as a required fifth `ReviewBriefFields` key,
+  so the four-field call no longer type-checks. The same test
+  (`an extra placeholder in the template is caught`) now makes the call with all
+  five fields and still asserts the `EXTRA_FIELD` throw.
 
 Extended: `worker/deno/tests/pre_pr_verifier_3395_test.ts`,
 `worker/deno/tests/pr_review_brief_shared_3395_test.ts`.
 
+Mutation check (the four surviving mutants, each applied alone, then restored;
+RED both with type checking and with `--no-check`):
+
+- `worker/deno/lib/issue_worker_wiring.ts:1211` delete `checklist` — killed by
+  `createMockDeps' unscripted pre-PR verifier is clean with an empty checklist`.
+- `worker/deno/lib/pre_pr_verifier.ts:533` delete `checklist` — killed by
+  `runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist`.
+- `worker/deno/lib/review_checklists.ts:76` negate the ternary condition —
+  killed by
+  `parseReviewChecklists reports the JSON parser's own message for bad JSON`,
+  which asserts the exact message (`String(error)` would add a `SyntaxError:`
+  prefix).
+- `worker/deno/lib/review_checklists.ts:194` (was `:176`) `let seen = false` to
+  `true` — killed by
+  ``matchesPathGlob: `**/` matches only after a position the prefix reached``
+  (`x**/y` against `a/y`).
+
 Branch outcomes:
 
-- `worker/deno/lib/review_checklists.ts:148` path operand `hasUnsafeSegment(p)`
+- `worker/deno/lib/pre_pr_verifier.ts:729` a `missing` verdict with no findings
+  → blocked — `worker/deno/tests/pre_pr_verifier_3395_test.ts:1105` — flipped to
+  `false`, went RED.
+- `worker/deno/lib/review_checklists.ts:97` unsafe `paths` glob → malformed —
+  `worker/deno/tests/review_checklists_3594_test.ts:355` — flipped to
+  `if (false)`, went RED.
+- `worker/deno/lib/review_checklists.ts:165` leading `./` dropped from the glob
+  — `worker/deno/tests/review_checklists_3594_test.ts:380` — flipped to
+  `const g = glob;`, went RED.
+- `worker/deno/lib/review_checklists.ts:166` path operand `hasUnsafeSegment(p)`
   true → no match — `worker/deno/tests/review_checklists_3594_test.ts:122` —
   flipped (glob operand kept alone), went RED.
-- `worker/deno/lib/review_checklists.ts:148` glob operand
-  `hasUnsafeSegment(glob)` true → no match —
-  `worker/deno/tests/review_checklists_3594_test.ts:139` — flipped (operand
-  removed), went RED.
+- `worker/deno/lib/review_checklists.ts:166` glob operand `hasUnsafeSegment(g)`
+  true → no match — `worker/deno/tests/review_checklists_3594_test.ts:139` —
+  flipped (operand removed), went RED.
 - `worker/deno/lib/review_checklists.ts:55` empty list → rejected —
   `worker/deno/tests/review_checklists_3594_test.ts:36` and `:66` — flipped,
   went RED.
-- `worker/deno/lib/review_checklists.ts:219` malformed or unreadable → BLOCKING
+- `worker/deno/lib/review_checklists.ts:236` malformed or unreadable → BLOCKING
   instruction — `worker/deno/tests/review_checklists_3594_test.ts:261` (asserts
   `:268`, `:275`) — flipped, went RED.
-- `worker/deno/lib/review_checklists.ts:241` changed-file list null → "NOT
-  checked" BLOCKING section (`:245`) —
+- `worker/deno/lib/review_checklists.ts:259` changed-file list null → "NOT
+  checked" BLOCKING section (`:263`) —
   `worker/deno/tests/review_checklists_3594_test.ts:294` — flipped to
   `return "";`, went RED.
 - `.claude/skills/review-fleet-prs/scripts/gate.ts:942` HTTP 404 → absent, empty
@@ -192,11 +250,11 @@ then restored with `git checkout -- <file>`):
 | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | `review_log.ts:215` guard to `if (false)`                     | RED, 2 failed (`worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:199`, `:232`)                                      |
 | `gate.ts:942` to `if (false) {`                               | RED, 1 failed (`worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:131`)                                              |
-| `review_checklists.ts:148` keep only `hasUnsafeSegment(glob)` | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:122`)                                                        |
-| `review_checklists.ts:148` remove `hasUnsafeSegment(glob)`    | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:139`)                                                        |
+| `review_checklists.ts:166` keep only `hasUnsafeSegment(g)`    | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:122`)                                                        |
+| `review_checklists.ts:166` remove `hasUnsafeSegment(g)`       | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:139`)                                                        |
 | `gate.ts:974` to `if (false) return null;`                    | RED, 1 failed (`worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:160`)                                              |
-| `review_checklists.ts:219` `blockingInstruction` returns `""` | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:261`)                                                        |
-| `review_checklists.ts:241` null-list branch returns `""`      | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:294`)                                                        |
+| `review_checklists.ts:236` `blockingInstruction` returns `""` | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:261`)                                                        |
+| `review_checklists.ts:259` null-list branch returns `""`      | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:294`)                                                        |
 | `review_checklists.ts:55` drop `\|\| value.length === 0`      | RED, 2 failed (`worker/deno/tests/review_checklists_3594_test.ts:36`, `:66`); also affects `paths`, so not an items-only flip |
 
 The glob-side guard test pins `src**/` against `src`, which would match only
@@ -207,8 +265,10 @@ isolating the guard. The test has a positive control, `src/*.ts` against
 
 Callers and siblings:
 
-- `worker/deno/lib/pre_pr_verifier.ts` (required `reviewChecklists` option and
-  `checklist` in the reply).
+- `worker/deno/lib/pre_pr_verifier.ts`: `buildPrePrVerifierPrompt` takes a
+  required `reviewChecklists` option. The reply's `checklist` is optional:
+  `parseChecklistVerdicts` reads an absent or null value as `[]`
+  (`worker/deno/lib/review_checklists.ts:303`).
 - `worker/deno/lib/issue_worker_wiring.ts` mock reply: `checklist: []`.
 - `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts`,
   `worker/deno/tests/review_fleet_prs_log_2678_test.ts`,
@@ -225,15 +285,19 @@ re-read against the issue body.
 
 Pre-PR Security Self-Check:
 
-- [x] Input validation: `parseReviewChecklists` and `matchesPathGlob` reject
-      `..`, `//` and a leading `/`.
+- [x] Input validation: `parseReviewChecklists` rejects a `paths` glob with a
+      `..` segment, an empty segment (`//` or a trailing `/`) or a leading `/`,
+      after dropping a leading `./`. `matchesPathGlob` refuses to match such a
+      glob or changed path.
 - [x] Secrets: no key or token files staged.
 - [x] Injection surface: no shell interpolation and no dynamic `RegExp`; the
       glob matcher is hand-written DP.
-- [x] Output encoding: `plain()` in `review_log.ts` neutralises markdown and
-      mention characters in the posted review; `inlineSafe()` only flattens
-      whitespace, swaps backticks and bounds length for text placed inside a
-      code span in the brief.
+- [x] Output encoding: `plain()` in `review_log.ts` flattens whitespace, bounds
+      length, and replaces only a backtick (with `'`), `<` and `>` (with a
+      space) and `@` (with `@` plus a zero-width space) in the posted review.
+      Other markdown characters such as `*`, `_`, `[`, `]` and `#` pass through.
+      `inlineSafe()` only flattens whitespace, swaps backticks and bounds length
+      for text placed inside a code span in the brief.
 - [x] Authorisation: the checklist is read from the base ref, so a PR cannot
       weaken its own checklist.
 - [x] Error handling: non-404 failures are reported with their cause line, not
@@ -250,5 +314,9 @@ Pre-PR Security Self-Check:
 - Docs pointers in `docs/workflows/issue-processing.md` and
   `docs/MODEL-AND-CACHING.md`, and the `README.md` docs-table row.
 - The unsafe-glob test added during the red-check, listed above.
-- The code and test edits were made by executor sub-agents; the lead edited only
-  this summary.
+- `matchesPathGlob` now drops a leading `./` from the glob too. Without it, a
+  `./src/**` glob would pass the new parse check but never match.
+- The original code and test edits were made by executor sub-agents. The fixes
+  after the pre-PR verifier review (missing verdicts block, unsafe globs
+  rejected, the mutation-killing tests and the doc corrections) were made by the
+  lead.

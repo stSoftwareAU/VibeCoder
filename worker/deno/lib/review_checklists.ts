@@ -91,10 +91,21 @@ export function parseReviewChecklists(text: string): ReviewChecklistConfig {
     if (typeof c.name !== "string" || c.name.trim() === "") {
       throw new Error(`${where}: "name" must be a non-empty string`);
     }
+    const label = `${where} ("${c.name}")`;
+    const paths = stringList(c.paths, label, "paths");
+    paths.forEach((glob, j) => {
+      if (hasUnsafeSegment(stripDotSlash(glob))) {
+        throw new Error(
+          `${label}: "paths[${j}]" ${
+            JSON.stringify(glob)
+          } can never match: a path glob must be repo-relative, with no leading "/", empty segment, trailing "/" or ".." segment`,
+        );
+      }
+    });
     return {
       name: c.name,
-      paths: stringList(c.paths, `${where} ("${c.name}")`, "paths"),
-      items: stringList(c.items, `${where} ("${c.name}")`, "items"),
+      paths,
+      items: stringList(c.items, label, "items"),
     };
   });
   return { checklists };
@@ -130,6 +141,12 @@ function tokenise(glob: string): Token[] {
   return out;
 }
 
+function stripDotSlash(s: string): string {
+  let out = s;
+  while (out.startsWith("./")) out = out.slice(2);
+  return out;
+}
+
 function hasUnsafeSegment(s: string): boolean {
   if (s === "" || s.startsWith("/")) return true;
   return s.split("/").some((seg) => seg === ".." || seg === "");
@@ -138,16 +155,17 @@ function hasUnsafeSegment(s: string): boolean {
 /**
  * Glob match for repo-relative paths. `**` crosses `/` (`**` followed by `/`
  * also matches zero directories), `*` does not, `?` is one non-`/` character,
- * everything else is literal and case-sensitive. Paths or globs with a `..`
- * segment, an empty segment or a leading `/` never match. Runs a pattern x
+ * everything else is literal and case-sensitive. A leading `./` is dropped
+ * from both. Paths or globs with a `..` segment, an empty segment or a
+ * leading `/` never match. Runs a pattern x
  * text dynamic programme, so hostile input cannot backtrack exponentially.
  */
 export function matchesPathGlob(glob: string, path: string): boolean {
-  let p = path;
-  while (p.startsWith("./")) p = p.slice(2);
-  if (hasUnsafeSegment(p) || hasUnsafeSegment(glob)) return false;
+  const p = stripDotSlash(path);
+  const g = stripDotSlash(glob);
+  if (hasUnsafeSegment(p) || hasUnsafeSegment(g)) return false;
 
-  const toks = tokenise(glob);
+  const toks = tokenise(g);
   const n = p.length;
   const on = (a: boolean[], i: number) => a[i] === true;
   let cur = new Array<boolean>(n + 1).fill(false);

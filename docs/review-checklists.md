@@ -1,10 +1,10 @@
 # Repository review checklists
 
-A repository can own a short, path-scoped list of things every change to part
-of it must satisfy, and have both the fleet PR reviewer and the worker's
-pre-PR verifier hold each PR to it (Issue #3594). It is for rules a generic
-reviewer cannot know: "money figures are never `f64`", "a release change bumps
-the changelog".
+A repository can own a short, path-scoped list of things every change to part of
+it must satisfy, and have both the fleet PR reviewer and the worker's pre-PR
+verifier hold each PR to it (Issue #3594). It is for rules a generic reviewer
+cannot know: "money figures are never `f64`", "a release change bumps the
+changelog".
 
 ## Where it lives
 
@@ -45,8 +45,10 @@ effect once it merges.
 }
 ```
 
-Each checklist needs a non-empty `name`, a non-empty `paths` array of globs and a
-non-empty `items` array of strings. Anything else is a schema error (see
+Each checklist needs a non-empty `name`, a non-empty `paths` array of globs and
+a non-empty `items` array of strings. A glob that can never match is rejected
+too: after a leading `./` is dropped, it must not start with `/`, contain `//`,
+end with `/` or have a `..` segment. Anything else is a schema error (see
 [Failure behaviour](#failure-behaviour)).
 
 ## How it is applied
@@ -72,41 +74,48 @@ at all.
 
 ## Glob rules
 
-| Rule | Behaviour |
-| --- | --- |
-| `**` | Crosses `/`. `**/` also matches zero directories, so `**/*price*.rs` matches `price.rs` at the root |
-| `*` | Matches any run of characters except `/` |
-| `?` | Matches exactly one character that is not `/` |
-| Case | Case-sensitive |
-| Leading `./` | Stripped before matching |
-| Unsafe paths | A path or glob with a `..` segment, a `//`, or a leading `/` never matches |
+| Rule         | Behaviour                                                                                                                                               |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `**`         | Crosses `/`. `**/` also matches zero directories, so `**/*price*.rs` matches `price.rs` at the root                                                     |
+| `*`          | Matches any run of characters except `/`                                                                                                                |
+| `?`          | Matches exactly one character that is not `/`                                                                                                           |
+| Case         | Case-sensitive                                                                                                                                          |
+| Leading `./` | Stripped from the path and the glob before matching                                                                                                     |
+| Unsafe paths | A changed path with a `..` segment, an empty segment (`//` or a trailing `/`), or a leading `/` never matches; such a glob in `paths` is a schema error |
 
 ## Failure behaviour
 
-Nothing is silently ignored: apart from the two quiet rows, every failure is a
-loud blocking finding in the review output.
+Apart from the two quiet rows, every failure renders a BLOCKING instruction into
+the brief in place of the checklist, telling the reviewer to report a blocking
+finding on `review-checklists.json`. The code does not add that finding itself:
+neither reviewer checks the load state, so the finding appears in the review
+output only when the model follows the instruction.
 
-| Situation | Result |
-| --- | --- |
-| File absent (not found at the base ref) | Nothing happens; no checklist section |
-| Present, but no changed file matches any checklist | Nothing happens; no checklist section |
-| Malformed JSON or invalid schema | Blocking finding naming the problem |
-| Unreadable (any fetch error other than not-found) | Blocking finding |
-| Changed-file list unavailable or truncated | Blocking finding, because matching cannot be trusted |
+| Situation                                          | Result                                                   |
+| -------------------------------------------------- | -------------------------------------------------------- |
+| File absent (not found at the base ref)            | Nothing happens; no checklist section                    |
+| Present, but no changed file matches any checklist | Nothing happens; no checklist section                    |
+| Malformed JSON or invalid schema                   | BLOCKING instruction naming the problem                  |
+| Unreadable (any fetch error other than not-found)  | BLOCKING instruction                                     |
+| Changed-file list unavailable or truncated         | BLOCKING instruction, because matching cannot be trusted |
 
 ## Who consumes it
 
 Both consumers share one loader,
 [`worker/deno/lib/review_checklists.ts`](../worker/deno/lib/review_checklists.ts)
 (parse, glob match, render the section, parse the verdict), and one brief,
-[`prompts/pr_review_brief/prompt.md`](../prompts/pr_review_brief/prompt.md), which
-takes the rendered section as its fifth field, `{{REVIEW_CHECKLISTS}}`.
+[`prompts/pr_review_brief/prompt.md`](../prompts/pr_review_brief/prompt.md),
+which takes the rendered section as its fifth field, `{{REVIEW_CHECKLISTS}}`.
 
 - **Pre-PR verifier**
   ([`worker/deno/lib/pre_pr_verifier.ts`](../worker/deno/lib/pre_pr_verifier.ts);
-  see [issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395)).
-  A `missing` item or a checklist load failure is a blocking finding that
-  reaches the in-run recovery turn like any other verifier finding.
+  see
+  [issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395)).
+  A `missing` verdict blocks the PR even when the reply has no matching finding
+  (`prePrVerifierBlocked`), and is listed in the block reason and in the gate
+  comment that reaches the in-run recovery turn. A reply with no `checklist`
+  array is read as `[]`. A checklist load failure blocks only through the
+  finding the brief tells the model to report.
 - **Fleet reviewer** (the `review-fleet-prs` skill under
   `.claude/skills/review-fleet-prs/`). The review comment gains a "Repository
   review checklists" section listing each item with its verdict, on approved

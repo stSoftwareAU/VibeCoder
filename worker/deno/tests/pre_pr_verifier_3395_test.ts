@@ -26,7 +26,10 @@ import {
   type ReviewBriefFields,
   runPrePrVerifier,
 } from "../lib/pre_pr_verifier.ts";
-import { createDefaultDeps } from "../lib/issue_worker_wiring.ts";
+import {
+  createDefaultDeps,
+  createMockDeps,
+} from "../lib/issue_worker_wiring.ts";
 import { auditSendBack } from "../../../.claude/skills/review-fleet-prs/scripts/gate.ts";
 import { parseFableReview } from "../../../.claude/skills/review-fleet-prs/scripts/review_log.ts";
 import { git, gitOk } from "./support/git_repo_fixture.ts";
@@ -1095,4 +1098,88 @@ Deno.test("verifier prompt says the checklists were not checked when the changed
   } finally {
     await f.cleanup();
   }
+});
+
+// ---- missing checklist verdicts block (Issue #3594) ------------------------
+
+Deno.test("a missing checklist verdict blocks even with no findings, and is named in the reason and comment", () => {
+  const review = parseReviewReply(JSON.stringify({
+    summary: "checklist gap",
+    findings: [],
+    testChanges: "none",
+    checklist: [
+      { checklist: "Money", item: "Uses Decimal", verdict: "met" },
+      {
+        checklist: "Money",
+        item: "No f64",
+        verdict: "missing",
+        note: "f64 at a.rs:3",
+      },
+    ],
+  }));
+  assert(prePrVerifierBlocked({ status: "checked", review }));
+  const reason = prePrVerifierBlockReason(review);
+  assertStringIncludes(reason, "0 blocking finding(s)");
+  assertStringIncludes(reason, "1 missing checklist item(s)");
+  assertStringIncludes(reason, "checklist Money — No f64");
+  const comment = buildPrePrVerifierGateComment(review);
+  assertStringIncludes(
+    comment,
+    "- Checklist `Money` item missing: No f64 — f64 at a.rs:3",
+  );
+  assert(!comment.includes("Uses Decimal"));
+});
+
+Deno.test("met and not-applicable checklist verdicts alone do not block", () => {
+  const review = parseReviewReply(JSON.stringify({
+    summary: "fine",
+    findings: [],
+    testChanges: "none",
+    checklist: [
+      { checklist: "Money", item: "Uses Decimal", verdict: "met" },
+      { checklist: "Money", item: "No f64", verdict: "not applicable" },
+    ],
+  }));
+  assert(!prePrVerifierBlocked({ status: "checked", review }));
+  assertEquals(
+    prePrVerifierBlockReason(review),
+    "Pre-PR verifier found 0 blocking finding(s)",
+  );
+});
+
+Deno.test("runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist", async () => {
+  const f = await makeRepo();
+  try {
+    const result = await runPrePrVerifier(
+      inputFor(f),
+      makeDeps(async () => {
+        await Deno.writeTextFile(`${f.repo}/stray.txt`, "oops\n");
+        return { ok: false as const, error: new Error("boom") };
+      }, []),
+    );
+    assertEquals(result.status, "checked");
+    if (result.status === "checked") {
+      assertEquals(
+        result.review.summary,
+        "verifier changed the issue checkout",
+      );
+      assertEquals(result.review.checklist, []);
+      assertEquals(result.review.unrelatedIssues, []);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("createMockDeps' unscripted pre-PR verifier is clean with an empty checklist", async () => {
+  const deps = createMockDeps();
+  const result = await deps.claude.runPrePrVerifier(
+    {} as PrePrVerifierInput,
+  );
+  assertEquals(result.status, "checked");
+  if (result.status === "checked") {
+    assertEquals(result.review.checklist, []);
+    assertEquals(result.review.findings, []);
+  }
+  assert(!prePrVerifierBlocked(result));
 });

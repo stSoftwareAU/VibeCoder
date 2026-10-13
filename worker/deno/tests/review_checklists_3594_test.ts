@@ -334,3 +334,59 @@ Deno.test("parseChecklistVerdicts rejects each bad shape naming the problem", ()
     assertStringIncludes(err.message, message);
   }
 });
+
+// ---- added after the pre-PR verifier review of #3594 -------------------------
+
+Deno.test("parseReviewChecklists reports the JSON parser's own message for bad JSON", () => {
+  const text = "{not json";
+  let expected = "";
+  try {
+    JSON.parse(text);
+  } catch (error) {
+    expected = (error as Error).message;
+  }
+  const err = assertThrows(() => parseReviewChecklists(text), Error);
+  assertEquals(
+    err.message,
+    `${REVIEW_CHECKLISTS_FILE} is not valid JSON: ${expected}`,
+  );
+});
+
+Deno.test("parseReviewChecklists rejects a path glob that can never match, naming the checklist and index", () => {
+  for (const glob of ["/src/money/**", "src/money/", "src//a", "../x/**", ""]) {
+    const text = JSON.stringify({
+      checklists: [{ name: "Money", paths: ["src/ok/**", glob], items: ["i"] }],
+    });
+    const err = assertThrows(() => parseReviewChecklists(text), Error);
+    assertStringIncludes(err.message, '("Money")');
+    assertStringIncludes(err.message, "paths[1]");
+  }
+  // Loaded as malformed, so the brief carries the BLOCKING section instead of
+  // silently skipping the checklist.
+  const load = loadChecklistsFromText(JSON.stringify({
+    checklists: [{
+      name: "Money",
+      paths: ["/src/money/**", "src/money/"],
+      items: ["i"],
+    }],
+  }));
+  assertEquals(load.kind, "malformed");
+  assertStringIncludes(
+    renderChecklistSection(load, ["src/money/a.rs"]),
+    "BLOCKING",
+  );
+});
+
+Deno.test("parseReviewChecklists accepts a leading ./ on a glob, and the matcher applies it", () => {
+  const config = parseReviewChecklists(JSON.stringify({
+    checklists: [{ name: "Money", paths: ["./src/money/**"], items: ["i"] }],
+  }));
+  assertEquals(config.checklists[0]!.paths, ["./src/money/**"]);
+  assert(matchesPathGlob("./src/money/**", "src/money/a.rs"));
+});
+
+Deno.test("matchesPathGlob: `**/` matches only after a position the prefix reached", () => {
+  // The prefix `x` never matches, so a later `/` must not let `**/` start.
+  assertFalse(matchesPathGlob("x**/y", "a/y"));
+  assert(matchesPathGlob("a**/y", "a/b/y"));
+});

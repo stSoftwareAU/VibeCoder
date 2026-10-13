@@ -714,18 +714,38 @@ async function verifyInCheckout(
   }
 }
 
-/** Whether the verifier's result must stop the PR from being raised. */
-export function prePrVerifierBlocked(result: PrePrVerifierResult): boolean {
-  return result.status === "checked" && result.review.findings.length > 0;
+/** Checklist items the verifier reported as `missing` (Issue #3594). */
+function missingChecklistItems(review: ReviewReply): ChecklistVerdict[] {
+  return review.checklist.filter((c) => c.verdict === "missing");
 }
 
-/** One-line reason naming the count and the first finding. */
+/**
+ * Whether the verifier's result must stop the PR from being raised: any
+ * finding, or any repo checklist item reported `missing` (Issue #3594).
+ */
+export function prePrVerifierBlocked(result: PrePrVerifierResult): boolean {
+  return result.status === "checked" &&
+    (result.review.findings.length > 0 ||
+      missingChecklistItems(result.review).length > 0);
+}
+
+/** One-line reason naming the count and the first finding or missing item. */
 export function prePrVerifierBlockReason(review: ReviewReply): string {
   const n = review.findings.length;
+  const missing = missingChecklistItems(review);
   const first = review.findings[0];
-  const head = `Pre-PR verifier found ${n} blocking finding(s)`;
-  if (!first) return head;
-  return clip(`${head}: ${first.file}:${first.line} — ${first.problem}`, 300);
+  const head = missing.length > 0
+    ? `Pre-PR verifier found ${n} blocking finding(s) and ${missing.length} missing checklist item(s)`
+    : `Pre-PR verifier found ${n} blocking finding(s)`;
+  if (first) {
+    return clip(
+      `${head}: ${first.file}:${first.line} — ${first.problem}`,
+      300,
+    );
+  }
+  const m = missing[0];
+  if (m) return clip(`${head}: checklist ${m.checklist} — ${m.item}`, 300);
+  return head;
 }
 
 export const PRE_PR_VERIFIER_COMMENT_HEADING =
@@ -739,6 +759,12 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
       clip(f.problem, 500)
     }${fix}`;
   });
+  const missing = missingChecklistItems(review).map((c) => {
+    const note = c.note ? ` — ${clip(c.note, 500)}` : "";
+    return `- Checklist \`${clip(c.checklist, 200)}\` item missing: ${
+      clip(c.item, 500)
+    }${note}`;
+  });
   return [
     PRE_PR_VERIFIER_COMMENT_HEADING,
     "",
@@ -747,6 +773,7 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
     clip(review.summary, 500),
     "",
     ...bullets,
+    ...missing,
     "",
     "Procedure:",
     "1. Reproduce each finding at the head.",
