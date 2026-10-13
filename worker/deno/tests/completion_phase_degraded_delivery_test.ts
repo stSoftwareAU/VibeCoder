@@ -483,6 +483,7 @@ Deno.test("completion - a healthy run whose gap follow-up cannot be filed raises
   assertEquals(outcome.status, "failure");
   assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
   assertStringIncludes(outcome.reason ?? "", "partial or missing");
+  assert(!(outcome.reason ?? "").includes("Degraded run"));
   assertStringIncludes(outcome.reason ?? "", "HTTP 502");
 });
 
@@ -576,6 +577,7 @@ Deno.test("completion - a degraded run whose follow-up cannot be filed raises no
 
   assertEquals(outcome.status, "failure");
   assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertStringIncludes(outcome.reason ?? "", "Degraded run (");
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
 });
 
