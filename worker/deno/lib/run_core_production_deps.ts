@@ -3427,8 +3427,7 @@ export async function createProductionRunCoreDeps(
         // Issue #2462: the same read carries `autoMergeRequest` and
         // `mergeStateStatus`, so the sweep can see an armed PR whose head
         // has fallen behind its base.
-        prLiveState: (repo, pr) =>
-          readPrLiveState(repo, pr.number, gh),
+        prLiveState: (repo, pr) => readPrLiveState(repo, pr.number, gh),
         // Issue #2462: the REST update-branch call the merge ladder already
         // uses — reused as-is, never re-implemented here.
         updateBranchFn: (repo, prNumber) =>

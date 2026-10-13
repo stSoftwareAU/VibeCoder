@@ -197,7 +197,7 @@ Deno.test("Issue #3517: parsePrLiveFields - unparseable JSON reads as all-unknow
     armed: false,
     behind: false,
     labels: [],
-  };
+  } as const;
   assertEquals(parsePrLiveFields("{not json"), unknown);
   assertEquals(parsePrLiveFields(""), unknown);
 });
