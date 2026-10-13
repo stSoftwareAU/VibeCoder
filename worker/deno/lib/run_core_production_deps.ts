@@ -117,6 +117,7 @@ import {
   resolveFleetPrSlots,
 } from "./issue_query.ts";
 import { sweepAutoMerge } from "./auto_merge_sweep.ts";
+import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { checkPrBaseIntegrity } from "./pr_base_integrity.ts";
 import { requestBranchUpdate } from "./merge_block_escalation.ts";
 import { readPrLiveState } from "./pr_live_state.ts";
@@ -3433,6 +3434,14 @@ export async function createProductionRunCoreDeps(
             gh: runGhCommand,
             log: (m: string) => logger.warn(m),
           }),
+        // Issue #3517: a standing-violation PR is disarmed, never armed.
+        disarmAutoMerge: (repo, prNumber) =>
+          disarmAutoMerge(
+            repo,
+            prNumber,
+            runGhCommand,
+            (m: string) => logger.warn(m),
+          ),
         attemptMerge: (repo, pr) =>
           enableAutoMerge({
             repo,

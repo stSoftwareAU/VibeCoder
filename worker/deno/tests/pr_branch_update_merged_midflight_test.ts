@@ -21,6 +21,7 @@ import {
   executePrBranchUpdates,
   makeGhPrStateFetcher,
   parsePrLiveFields,
+  PR_LIVE_STATE_JSON_FIELDS,
   type PrBranchExecutionDeps,
   type PrBranchUpdateAction,
   resetPrConflictWarnings,
@@ -132,6 +133,7 @@ Deno.test("parsePrLiveFields - both fields, in either payload shape", () => {
       mergeable: "CONFLICTING",
       armed: false,
       behind: false,
+      labels: [],
     },
   );
   assertEquals(parsePrLiveFields('{"mergeable":"mergeable","state":"OPEN"}'), {
@@ -139,25 +141,66 @@ Deno.test("parsePrLiveFields - both fields, in either payload shape", () => {
     mergeable: "MERGEABLE",
     armed: false,
     behind: false,
+    labels: [],
   });
   assertEquals(parsePrLiveFields('{"mergeable":null,"state":"OPEN"}'), {
     state: "OPEN",
     mergeable: "UNKNOWN",
     armed: false,
     behind: false,
+    labels: [],
   });
   assertEquals(parsePrLiveFields("CLOSED\n"), {
     state: "CLOSED",
     mergeable: "UNKNOWN",
     armed: false,
     behind: false,
+    labels: [],
   });
   assertEquals(parsePrLiveFields("[]"), {
     state: "UNKNOWN",
     mergeable: "UNKNOWN",
     armed: false,
     behind: false,
+    labels: [],
   });
+});
+
+Deno.test("parsePrLiveFields - reads label names from the gh labels shape (Issue #3517)", () => {
+  const raw = JSON.stringify({
+    state: "OPEN",
+    mergeable: "MERGEABLE",
+    labels: [
+      { id: "a", name: "standing-violation", description: "", color: "f00" },
+      { id: "b", name: "work-on", description: "x", color: "0f0" },
+    ],
+  });
+  assertEquals(parsePrLiveFields(raw).labels, [
+    "standing-violation",
+    "work-on",
+  ]);
+});
+
+Deno.test("parsePrLiveFields - absent labels read as an empty list (Issue #3517)", () => {
+  assertEquals(
+    parsePrLiveFields('{"state":"OPEN","mergeable":"MERGEABLE"}').labels,
+    [],
+  );
+  assertEquals(parsePrLiveFields("OPEN").labels, []);
+  assertEquals(parsePrLiveFields("not json {").labels, []);
+});
+
+Deno.test("parsePrLiveFields - malformed labels are tolerated, keeping only valid names (Issue #3517)", () => {
+  const withLabels = (labels: unknown) =>
+    parsePrLiveFields(JSON.stringify({ state: "OPEN", labels })).labels;
+  assertEquals(withLabels("standing-violation"), []);
+  assertEquals(withLabels({ name: "standing-violation" }), []);
+  assertEquals(withLabels(null), []);
+  assertEquals(withLabels([{ id: "x" }, { name: 7 }, null, "bare", 3]), []);
+  assertEquals(
+    withLabels([null, { name: 7 }, { name: "standing-violation" }]),
+    ["standing-violation"],
+  );
 });
 
 Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns the payload raw", async () => {
@@ -174,12 +217,9 @@ Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns t
   assertEquals(calls.length, 1);
   assertEquals(calls[0]!.includes("381"), true);
   assertEquals(calls[0]!.includes("org/repo"), true);
-  assertEquals(
-    calls[0]!.includes(
-      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision",
-    ),
-    true,
-  );
+  assertEquals(calls[0]!.includes(PR_LIVE_STATE_JSON_FIELDS), true);
+  // Issue #3517: the label list rides the same round trip.
+  assertEquals(PR_LIVE_STATE_JSON_FIELDS.split(",").includes("labels"), true);
 });
 
 // =============================================================================

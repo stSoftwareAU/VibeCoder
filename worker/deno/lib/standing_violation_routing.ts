@@ -26,7 +26,8 @@ import {
 
 /**
  * The PR label the worker applies when it finalises a PR with an own-line
- * standing violation instead of arming auto-merge.
+ * standing violation instead of arming auto-merge. The Priority 1.65 sweep
+ * skips and disarms a PR carrying it (Issue #3517).
  */
 export const STANDING_VIOLATION_LABEL = "standing-violation";
 

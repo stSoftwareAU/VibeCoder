@@ -1889,7 +1889,10 @@ VibeCoder#1732 was closed as superseded and, eight minutes later, the CI-fix
 pass claimed it from the cached listing and started writing to it. All four PR
 passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge**
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
-before the first write: one `gh pr view --json state,mergeable`, no cache. The
+before the first write: one `gh pr view --json` call, no cache, for the six
+fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`
+(the last is what the auto-merge sweep reads for the `standing-violation` hold,
+Issue #3517; still one round trip). The
 two processors call it directly through `guardPrStillOpen`; the drain and the
 sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or
@@ -1910,7 +1913,7 @@ the agent, and both counted in the `merge_conflict_pass=` summary.
 
 ```mermaid
 flowchart LR
-    L["🗂️ Cached listing<br/>(≤10 min old)"] --> V{"🔎 gh pr view<br/>--json state,mergeable"}
+    L["🗂️ Cached listing<br/>(≤10 min old)"] --> V{"🔎 gh pr view<br/>--json (six fields)"}
     V -->|OPEN| M{"🔀 mergeable?<br/>(merge-conflict drain)"}
     V -->|CLOSED / MERGED| S["⏭️ skipped: PR closed/merged"]
     V -->|unreadable| U["⚠️ skipped: PR state unknown<br/>(retry next cycle, budget intact)"]
