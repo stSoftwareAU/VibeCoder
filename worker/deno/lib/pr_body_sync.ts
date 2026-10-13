@@ -58,7 +58,11 @@ import {
 } from "./pr_evidence.ts";
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
-import { rederiveDegradedSection } from "./degraded_delivery.ts";
+import {
+  rederiveDegradedSection,
+  rederiveReportedGapSection,
+  REPORTED_GAP_SECTION_HEADING,
+} from "./degraded_delivery.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
@@ -309,15 +313,16 @@ function extractBumpSkipNote(body: string): string {
 }
 
 /**
- * The leading degraded-run section PR creation prepends (Issue #2562).
+ * The leading section PR creation prepends under `heading`: the degraded-run
+ * section (Issue #2562) or a healthy run's partial-delivery section
+ * (Issue #3506).
  *
  * It exists only on the live body — the summary file does not carry it — so
  * this only locates it; the caller re-derives its content from current state
  * rather than copying it forward (Issue #3350). Only a block that opens the
  * body counts; a later mention is the summary quoting the phrase.
  */
-function extractDegradedRunSection(body: string): string {
-  const heading = "## ⚠️ Degraded run —";
+function extractLeadingSection(body: string, heading: string): string {
   const start = body.indexOf(heading);
   if (start === -1) return "";
   if (body.slice(0, start).trim().length > 0) return "";
@@ -574,9 +579,21 @@ export async function syncPrBodyFromSummary(
 
   // Issue #3350: re-derive the degraded-run section from the current issue and
   // summary. Copying the live one forward left a banner that had become false
-  // (for example "states no acceptance criteria") uncorrectable.
-  const liveDegraded = extractDegradedRunSection(view.body ?? "");
-  if (liveDegraded) {
+  // (for example "states no acceptance criteria") uncorrectable. A healthy
+  // run's partial-delivery section is re-derived the same way (Issue #3506).
+  const liveDegraded = extractLeadingSection(
+    view.body ?? "",
+    "## ⚠️ Degraded run —",
+  );
+  const liveReportedGap = liveDegraded ? "" : extractLeadingSection(
+    view.body ?? "",
+    REPORTED_GAP_SECTION_HEADING,
+  );
+  const liveSection = liveDegraded || liveReportedGap;
+  if (liveSection) {
+    const sectionName = liveDegraded
+      ? "degraded-run section"
+      : "partial-delivery section";
     let issueBody: string;
     try {
       const raw = await deps.runGhCommand([
@@ -597,24 +614,30 @@ export async function syncPrBodyFromSummary(
       return {
         ok: false,
         error: new Error(
-          `Failed to read issue #${issueNumber} to re-derive the degraded-run section of PR #${input.prNumber}: ${
+          `Failed to read issue #${issueNumber} to re-derive the ${sectionName} of PR #${input.prNumber}: ${
             (err as Error).message
           }`,
         ),
       };
     }
-    const rederived = rederiveDegradedSection({
-      liveSection: liveDegraded,
-      issueBody,
-      prBody: body,
-    });
-    if (rederived !== liveDegraded) {
-      logger.info("Re-derived the degraded-run section (Issue #3350)", {
-        repo: input.repo,
-        prNumber: input.prNumber,
-        issueNumber,
-        dropped: rederived === "",
+    const rederived =
+      (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
+        liveSection,
+        issueBody,
+        prBody: body,
       });
+    if (rederived !== liveSection) {
+      logger.info(
+        liveDegraded
+          ? "Re-derived the degraded-run section (Issue #3350)"
+          : "Re-derived the partial-delivery section (Issue #3506)",
+        {
+          repo: input.repo,
+          prNumber: input.prNumber,
+          issueNumber,
+          dropped: rederived === "",
+        },
+      );
     }
     body = rederived + body;
   }

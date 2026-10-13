@@ -220,8 +220,10 @@ import {
 } from "../screenshot_gate_retry.ts";
 import {
   assessDegradedDelivery,
+  assessReportedGaps,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  buildReportedGapPrSection,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
 } from "../degraded_delivery.ts";
@@ -807,9 +809,14 @@ async function reportSummaryRuleBlock(
  * (the work is kept, and a PR that does not close its issue loops — #520),
  * but every accepted scope item not shown `met`, and any unmatched
  * `partial` or `missing` closure entry, is filed as an `idle-task`
- * follow-up the fleet picks up, and the PR body names the gap. A healthy
- * run is untouched. A degraded run that met every scope item is left alone
- * only when it reported no unmatched `partial` or `missing` entry.
+ * follow-up the fleet picks up, and the PR body names the gap. A degraded
+ * run that met every scope item is left alone only when it reported no
+ * unmatched `partial` or `missing` entry.
+ *
+ * Issue #3506: a healthy run whose own summary closes out a criterion as
+ * `partial` or `missing` files the same follow-up (same finding-id key, so a
+ * re-run reuses it) and its PR body gains the partial-delivery section.
+ * `unassessed` items file nothing; otherwise a healthy run is untouched.
  *
  * Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
  *
@@ -840,14 +847,18 @@ async function applyDegradedDeliveryGuard(
     issueBody,
     prBody,
   });
-  if (degradedNeedsFollowUp(degradedDelivery)) {
+  // Issue #3506: a healthy run's own `partial`/`missing` closure entries file the same follow-up.
+  const verdict = degradedDelivery.degraded
+    ? degradedDelivery
+    : assessReportedGaps(issueBody, prBody);
+  if (degradedNeedsFollowUp(verdict)) {
     const labelled = await deps.github.ensureLabelExists(
       repo,
       IDLE_TASK_LABEL,
     );
     if (!labelled.ok) {
       logger.warn(
-        "Could not ensure the idle-task label for the degraded-run follow-up; filing anyway",
+        "Could not ensure the idle-task label for the follow-up; filing anyway",
         { error: labelled.error.message },
       );
     }
@@ -855,7 +866,7 @@ async function applyDegradedDeliveryGuard(
       repo,
       parentNumber: issueNumber,
       parentTitle: issueTitle,
-      verdict: degradedDelivery,
+      verdict,
       runId: getRunId(),
       gh: deps.github.runGhCommand,
       dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
@@ -864,33 +875,39 @@ async function applyDegradedDeliveryGuard(
       // Raising the PR now would close the issue with the residue recorded
       // nowhere — the exact silent loss this guard exists to stop.
       logger.error(
-        "Degraded run: could not file the follow-up for its undelivered scope — failing the run without finalising a PR",
+        verdict.degraded
+          ? "Degraded run: could not file the follow-up for its undelivered scope — failing the run without finalising a PR"
+          : "Run reported partial or missing criteria — could not file the follow-up for its reported gaps — failing the run without finalising a PR",
         { error: followUp.error.message },
       );
       return {
         ok: false,
         result: {
           status: "failure",
-          reason:
-            `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
-            `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
-            `could not be filed or brought up to date: ${followUp.error.message}`,
+          reason: verdict.degraded
+            ? `Degraded run (${verdict.reason}) left ${verdict.shortfalls.length} ` +
+              `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
+              `could not be filed or brought up to date: ${followUp.error.message}`
+            : `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing, and the follow-up recording them could not be filed or brought up to date: ${followUp.error.message}`,
         },
       };
     }
     logger.warn(
-      "Degraded run delivered partial scope — residue recorded in a follow-up",
+      verdict.degraded
+        ? "Degraded run delivered partial scope — residue recorded in a follow-up"
+        : "Run reported partial or missing criteria — residue recorded in a follow-up",
       {
-        reason: degradedDelivery.reason,
-        shortfalls: degradedDelivery.shortfalls.length,
+        reason: verdict.degraded ? verdict.reason : "reported gaps",
+        shortfalls: verdict.shortfalls.length,
         followUp: followUp.value.number,
         reused: followUp.value.reused,
       },
     );
     return {
       ok: true,
-      prBody: buildDegradedPrSection(degradedDelivery, followUp.value.number) +
-        prBody,
+      prBody: (verdict.degraded
+        ? buildDegradedPrSection(verdict, followUp.value.number)
+        : buildReportedGapPrSection(verdict, followUp.value.number)) + prBody,
     };
   } else if (degradedDelivery.shortfalls.length > 0) {
     logger.warn(
@@ -3464,9 +3481,14 @@ async function completionBody(
   // (the work is kept, and a PR that does not close its issue loops — #520),
   // but every accepted scope item not shown `met`, and any unmatched
   // `partial` or `missing` closure entry, is filed as an `idle-task`
-  // follow-up the fleet picks up, and the PR body names the gap. A healthy
-  // run is untouched. A degraded run that met every scope item is left alone
-  // only when it reported no unmatched `partial` or `missing` entry.
+  // follow-up the fleet picks up, and the PR body names the gap. A degraded
+  // run that met every scope item is left alone only when it reported no
+  // unmatched `partial` or `missing` entry.
+  //
+  // Issue #3506: a healthy run whose summary has a `partial` or `missing`
+  // closure entry files the same follow-up (same finding-id key) and its PR
+  // body gains the partial-delivery section. `unassessed` items file nothing;
+  // otherwise a healthy run is untouched.
   //
   // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
   // Issue #3092: extracted to `applyDegradedDeliveryGuard` so this same

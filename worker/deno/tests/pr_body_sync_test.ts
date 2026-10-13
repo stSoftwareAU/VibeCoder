@@ -1575,3 +1575,64 @@ Deno.test("sync - fails when the issue view carries no string body (Issue #3350)
   assertEquals(result.ok, false);
   assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
 });
+
+// --- healthy run's partial-delivery section re-derivation (Issue #3506) ----
+
+const LIVE_REPORTED_GAP = [
+  "## ⚠️ Partial delivery — follow-up filed",
+  "",
+  "This run's PR summary closed out the criteria below as `partial` or " +
+  "`missing`. The outstanding items continue in #77:",
+  "",
+  "- **partial** — the export works",
+  "",
+  "",
+].join("\n");
+
+Deno.test("sync - re-derives a live partial-delivery section and keeps the follow-up number while a gap remains (Issue #3506)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assert(synced.startsWith("## ⚠️ Partial delivery — follow-up filed"));
+  assertStringIncludes(synced, "continue in #77:");
+  assertStringIncludes(synced, "- **partial** — the export works");
+});
+
+Deno.test("sync - drops the partial-delivery section when the rebuilt summary marks every criterion met (Issue #3506)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assert(synced.length > 0, "expected a pr edit");
+  assertEquals(synced.includes("Partial delivery"), false);
+});
+
+Deno.test("sync - fails loudly when the issue cannot be read to re-derive the partial-delivery section (Issue #3506)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => {
+      throw new Error("gh issue view boom");
+    },
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "partial-delivery section");
+  }
+  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+});

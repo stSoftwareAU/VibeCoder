@@ -17,7 +17,9 @@
  * ```mermaid
  * flowchart TD
  *     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(same verdict as the<br/>run-stats comment)"}
- *     D -- no --> P["PR as today"]
+ *     D -- no --> H{"Any closure entry<br/>partial or missing?"}
+ *     H -- no --> P["PR as today"]
+ *     H -- yes --> F2["File (or reuse) the same follow-up;<br/>PR body gains a 'Partial delivery'<br/>section pointing at it"]
  *     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
  *     S -- yes --> P
  *     S -- no --> G{"Any shortfall<br/>partial or missing?"}
@@ -50,6 +52,13 @@
  * is `unassessed`, the PR still opens with a degraded section naming the
  * served model and reason and saying why nothing was filed.
  *
+ * A healthy run is not exempt from its own report (Issue #3506): when its PR
+ * summary closes an acceptance criterion out as `partial` or `missing`,
+ * {@link assessReportedGaps} yields those entries and the same follow-up is
+ * filed (or reused, keyed on the parent) with a body for a healthy run, and the
+ * PR body gains a section from {@link buildReportedGapPrSection}. `unassessed`
+ * items file nothing (Issue #2695).
+ *
  * The follow-up carries the `idle-task` label — the one work-trigger label the
  * worker may apply itself — so a later run picks the residue up without a
  * human, and a `finding-id` marker keyed on the parent, so a second degraded
@@ -60,7 +69,8 @@
  * A PR-body re-sync (Issue #3350) re-derives this section from the current
  * issue body and summary via {@link rederiveDegradedSection}, keeping only the
  * original run's reason and follow-up number, because model routing cannot be
- * re-judged after the run.
+ * re-judged after the run. A healthy run's section is re-derived the same way
+ * by {@link rederiveReportedGapSection}.
  *
  * The verdict and the rendering are pure; {@link fileDegradedFollowUp} is the
  * one I/O step, with `gh` injected.
@@ -110,9 +120,9 @@ export interface DegradedDeliveryVerdict {
   degraded: boolean;
   /** The degradation reason, as the run-stats comment states it. */
   reason?: string;
-  /** Scope items the summary marks `met`. Empty on a healthy run. */
+  /** Scope items the summary marks `met`. Empty on the verdict {@link assessDegradedDelivery} gives a healthy run; {@link assessReportedGaps} fills it. */
   delivered: string[];
-  /** Scope items short of `met`, plus unmatched `partial` or `missing` gaps. Always empty on a healthy run. */
+  /** Scope items short of `met`, plus unmatched `partial` or `missing` gaps. Always empty on the verdict {@link assessDegradedDelivery} gives a healthy run; {@link assessReportedGaps} fills only the `partial`/`missing` ones. */
   shortfalls: DegradedShortfall[];
 }
 
@@ -159,6 +169,29 @@ export function assessScopeShortfalls(
   }
 
   return { delivered, shortfalls };
+}
+
+/** Opening heading of the PR-body section a healthy run's reported gaps get (Issue #3506). */
+export const REPORTED_GAP_SECTION_HEADING =
+  "## ⚠️ Partial delivery — follow-up filed";
+
+/**
+ * A healthy run's own gaps (Issue #3506): the closure entries its PR summary
+ * marks `partial` or `missing`, matched exactly as assessScopeShortfalls does.
+ * `unassessed` items are dropped — the run said nothing about them (Issue #2695).
+ */
+export function assessReportedGaps(
+  issueBody: string,
+  prBody: string,
+): DegradedDeliveryVerdict {
+  const { delivered, shortfalls } = assessScopeShortfalls(issueBody, prBody);
+  return {
+    degraded: false,
+    delivered,
+    shortfalls: shortfalls.filter((s) =>
+      s.status === "partial" || s.status === "missing"
+    ),
+  };
 }
 
 /**
@@ -233,7 +266,10 @@ function shortfallLines(shortfalls: readonly DegradedShortfall[]): string[] {
 }
 
 /**
- * Build the follow-up issue a degraded run files for its shortfalls.
+ * Build the follow-up issue a run files for its shortfalls: a degraded
+ * verdict gets the degraded-run body (Issue #2562), a healthy one the body for
+ * a run's reported gaps (Issue #3506). Both share one finding id, so a healthy
+ * and a degraded run on one parent share one follow-up.
  *
  * The parent is mentioned but never with a closing keyword, and the body
  * carries the {@link degradedFollowUpFindingId} marker for dedup. The
@@ -252,33 +288,60 @@ export function buildDegradedFollowUpIssue(args: {
   const delivered = verdict.delivered.length > 0
     ? verdict.delivered.map((c) => `- ${neutraliseAgentMarkers(c).text}`)
     : ["- nothing the PR summary marks `met`"];
-  const body = [
-    `<!-- finding-id: ${degradedFollowUpFindingId(parentNumber)} -->`,
-    "",
-    `Auto-filed by the Vibe Coder (Issue #2562): the implementation run for ` +
-    `#${parentNumber} was **degraded** — ${
-      verdict.reason ?? "served by a fallback model"
-    } — and did not show every accepted scope item as met, or reported a ` +
-    `gap of its own. That run's PR ` +
-    `still completes #${parentNumber} on merge; the outstanding scope ` +
-    `continues here so it is not lost with it.`,
-    "",
-    "## Acceptance Criteria",
-    "",
-    "Outstanding from the degraded run (status as that run's PR summary " +
-    "reported it — `unassessed` means it said nothing):",
-    "",
-    ...shortfallLines(verdict.shortfalls),
-    "",
-    "## Already delivered by the degraded run",
-    "",
-    ...delivered,
-    "",
-    `Check each outstanding item against the merged code before changing ` +
-    `anything: a degraded run may have done more than its summary claimed.`,
-    "",
-    `_Run id: \`${args.runId}\`_`,
-  ].join("\n");
+  const marker = `<!-- finding-id: ${
+    degradedFollowUpFindingId(parentNumber)
+  } -->`;
+  const body = !verdict.degraded
+    ? [
+      marker,
+      "",
+      `Auto-filed by the Vibe Coder (Issue #3506): the implementation run for ` +
+      `#${parentNumber} closed out one or more acceptance criteria as ` +
+      `\`partial\` or \`missing\` in its PR summary. The outstanding scope ` +
+      `continues here so it survives that PR's merge.`,
+      "",
+      "## Acceptance Criteria",
+      "",
+      "Outstanding from that run (status as its PR summary reported it):",
+      "",
+      ...shortfallLines(verdict.shortfalls),
+      "",
+      "## Already delivered by that run",
+      "",
+      ...delivered,
+      "",
+      `Check each outstanding item against the merged code before changing ` +
+      `anything: the run may have done more than its summary claimed.`,
+      "",
+      `_Run id: \`${args.runId}\`_`,
+    ].join("\n")
+    : [
+      marker,
+      "",
+      `Auto-filed by the Vibe Coder (Issue #2562): the implementation run for ` +
+      `#${parentNumber} was **degraded** — ${
+        verdict.reason ?? "served by a fallback model"
+      } — and did not show every accepted scope item as met, or reported a ` +
+      `gap of its own. That run's PR ` +
+      `still completes #${parentNumber} on merge; the outstanding scope ` +
+      `continues here so it is not lost with it.`,
+      "",
+      "## Acceptance Criteria",
+      "",
+      "Outstanding from the degraded run (status as that run's PR summary " +
+      "reported it — `unassessed` means it said nothing):",
+      "",
+      ...shortfallLines(verdict.shortfalls),
+      "",
+      "## Already delivered by the degraded run",
+      "",
+      ...delivered,
+      "",
+      `Check each outstanding item against the merged code before changing ` +
+      `anything: a degraded run may have done more than its summary claimed.`,
+      "",
+      `_Run id: \`${args.runId}\`_`,
+    ].join("\n");
   return {
     title: `Finish #${parentNumber}: ${args.parentTitle}`.slice(0, 250),
     body,
@@ -286,7 +349,8 @@ export function buildDegradedFollowUpIssue(args: {
 }
 
 /**
- * Whether a degraded verdict warrants a follow-up: at least one shortfall the
+ * Whether a verdict (degraded, or a healthy run's {@link assessReportedGaps})
+ * warrants a follow-up: at least one shortfall the
  * PR summary itself marked `partial` or `missing` (Issue #2695). `unassessed`
  * items alone never do.
  */
@@ -417,6 +481,54 @@ export function buildDegradedUnfiledGapSection(
 }
 
 /**
+ * Build the PR-body section a healthy run's PR carries when its summary closed
+ * out criteria as `partial` or `missing` (Issue #3506), pointing at the
+ * follow-up that holds them. Throws without a healthy verdict carrying one.
+ */
+export function buildReportedGapPrSection(
+  verdict: DegradedDeliveryVerdict,
+  followUpNumber: number,
+): string {
+  if (verdict.degraded || !degradedNeedsFollowUp(verdict)) {
+    throw new Error(
+      "buildReportedGapPrSection: needs a healthy verdict with a partial or missing shortfall",
+    );
+  }
+  return [
+    REPORTED_GAP_SECTION_HEADING,
+    "",
+    `This run's PR summary closed out the criteria below as \`partial\` or ` +
+    `\`missing\`. The outstanding items continue in #${followUpNumber}:`,
+    "",
+    ...shortfallLines(verdict.shortfalls),
+    "",
+    "",
+  ].join("\n");
+}
+
+/**
+ * Re-derive a live partial-delivery section from the current issue body and PR
+ * summary (Issue #3506). Returns "" when no gap remains. The follow-up number
+ * is read only from the single opening line, never from the untrusted
+ * shortfall bullets; when it cannot be read the live section is kept as is.
+ */
+export function rederiveReportedGapSection(args: {
+  liveSection: string;
+  issueBody: string;
+  prBody: string;
+}): string {
+  const verdict = assessReportedGaps(args.issueBody, args.prBody);
+  if (verdict.shortfalls.length === 0) return "";
+  const line = args.liveSection.split("\n").find((l) =>
+    l.startsWith("This run's PR summary closed out")
+  );
+  const match = line?.match(/continue in #(\d{1,9}):/);
+  const n = match ? Number(match[1]) : NaN;
+  if (!Number.isSafeInteger(n) || n <= 0) return args.liveSection;
+  return buildReportedGapPrSection(verdict, n);
+}
+
+/**
  * Re-derive a live degraded-run section from the current issue body and PR
  * summary (Issue #3350). Only the original run's reason and follow-up number
  * are kept from the live section. Returns "" when nothing is outstanding, as
@@ -448,7 +560,8 @@ export function rederiveDegradedSection(args: {
 }
 
 /**
- * File the degraded run's follow-up, or reuse the open one for this parent
+ * File the follow-up of a degraded run, or of a healthy run's reported gaps
+ * (Issue #3506), or reuse the open one for this parent
  * (Issue #2562).
  *
  * On reuse the open follow-up's body is rewritten to this run's verdict —

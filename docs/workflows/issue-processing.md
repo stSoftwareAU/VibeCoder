@@ -2344,12 +2344,15 @@ or recovered:
 ```mermaid
 flowchart TD
     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
-    D -- no --> P["PR as today"]
+    D -- no --> H{"Any closure entry<br/>partial or missing?<br/>(Issue #3506)"}
+    H -- no --> P["PR as today"]
+    H -- yes --> F
     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse and update)<br/>one idle-task follow-up<br/>naming each shortfall"]
-    F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
+    F -- "filed (degraded)" --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
+    F -- "filed (healthy)" --> W["PR body opens with a<br/>'Partial delivery — follow-up filed'<br/>section linking the follow-up"]
     F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
     Q -- no --> X["Run fails, no PR raised"]
     Q -- yes --> Y["Run fails, PR left unfinalised<br/>(auto-merge not armed);<br/>outcome pr + blocked"]
@@ -2424,10 +2427,11 @@ flowchart TD
   the issue states criteria. If the issue cannot be read, the re-sync fails
   (logged by the caller) rather than copying the old section. It still runs
   only when the summary changed, so an issue edit alone does not trigger it.
-- **A healthy run is untouched**, whatever its summary says. A degraded run
-  that showed every scope item `met` is left alone only when it reported no
-  unmatched `partial` or `missing` entry. An unmatched entry like that is
-  still a shortfall, and the follow-up is filed.
+- **A healthy run is untouched unless the issue states criteria and its
+  summary reports a `partial` or `missing` entry** (Issue #3506; see the next
+  subsection). A degraded run that showed every scope item `met` is left alone
+  only when it reported no unmatched `partial` or `missing` entry. An
+  unmatched entry like that is still a shortfall, and the follow-up is filed.
 - **The "gh failed" branch still fails loud.** When the guard runs from
   `completionBody` after every summary gate has passed, the outcome is
   `pr` plus the block when the branch lookup succeeds and the URL yields a
@@ -2439,6 +2443,38 @@ flowchart TD
   (Issue #3136). Issue #3121 is the regression coverage for the
   `completionBody` cases. See "An exception still has to report the PR it
   blocked" below.
+
+### A healthy run's own gaps get a follow-up too (Issue #3506)
+
+A run on its primary model used to be left alone whatever its summary said, so
+a PR whose closure block honestly marked a criterion `partial` still closed the
+issue with the residue recorded only in a PR line nobody tracked. The same
+`applyDegradedDeliveryGuard`, at the same two call sites, now handles a healthy
+run:
+
+- **Trigger.** Any `partial` or `missing` entry in the PR summary's closure
+  block. Entries are matched to criteria by words exactly as on the degraded
+  path (`assessReportedGaps` calls `assessScopeShortfalls`); an unmatched
+  `partial` or `missing` entry is named by its own subject. `unassessed` items
+  file nothing and add nothing to the PR body. An issue that states no criteria
+  files nothing on a healthy run.
+- **One shared follow-up.** The worker files (or reuses and rewrites) one
+  `idle-task` follow-up keyed on the parent with the same `finding-id` marker
+  as the degraded follow-up (`degraded-follow-up-<N>`), so a healthy and a
+  degraded run on one parent share a single follow-up. It lists only the
+  `partial`/`missing` items plus the delivered (`met`) ones.
+- **The PR body** opens with a `## ⚠️ Partial delivery — follow-up filed`
+  section naming each gap and the follow-up number. The PR keeps its closing
+  keyword (Issue #520), except that a `missing` entry still turns `Closes`
+  into `Part of` (Issue #3177).
+- **Fails loud.** If the follow-up cannot be filed or updated, the run fails
+  exactly as the degraded path does: no PR is raised, or an existing PR is
+  left unfinalised.
+- **Re-sync.** A later `syncPrBodyFromSummary` re-derives a leading
+  `Partial delivery — follow-up filed` section from the issue's current body
+  and the rebuilt summary (`rederiveReportedGapSection`). It is dropped when
+  no gap remains; otherwise it is rebuilt, keeping only the follow-up number
+  read from its opening line.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -2483,10 +2519,11 @@ survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
 
-A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
-When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
-The outcome is `pr` + `blocked` naming that PR, so the release comment does not
-report the run as having delivered nothing.
+A degraded run, or a healthy run with its own `partial`/`missing` gaps
+(Issue #3506), on an existing-PR branch is the exception to
+`summary_incomplete`. When its follow-up cannot be filed, the run fails and the
+PR is left unfinalised. The outcome is `pr` + `blocked` naming that PR, so the
+release comment does not report the run as having delivered nothing.
 
 An existing-PR branch whose URL cannot be numbered is a second exception: even
 once the degraded-run guard succeeds, `reportSummaryRuleBlock` fails the run
@@ -2521,7 +2558,8 @@ PR-then-later-step failure, not only this gate's.
 
 The degraded-run guard (see "A degraded run never closes an issue as
 complete" above) follows the same rule when it cannot file the follow-up
-that records a degraded run's undelivered scope (Issue #3092, #3119). The
+that records a degraded run's undelivered scope, or a healthy run's own
+`partial`/`missing` gaps (Issue #3092, #3119, #3506). The
 run still fails, and the PR is neither finalised nor auto-merged. When the
 guard runs from `completionBody` after every summary gate has passed, the
 outcome is `pr` with `prNumber` plus the block when the branch lookup

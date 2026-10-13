@@ -106,7 +106,9 @@ file. So the description never drifts from a summary rewritten after
 creation, for as long as that run's conditions are met. A re-sync
 re-derives a leading `Degraded run` section from the issue's current body and
 the rebuilt summary rather than copying it, keeping only the original run's
-reason and follow-up number (Issue #3350); see the degraded-run section of
+reason and follow-up number (Issue #3350). A leading `Partial delivery —
+follow-up filed` section is re-derived the same way (Issue #3506); see the
+degraded-run section of
 [issue-processing.md](workflows/issue-processing.md).
 
 The summary must describe the **final** state of the branch: it is rewritten,

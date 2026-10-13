@@ -23,16 +23,20 @@ import { extractAcceptedScope } from "../lib/acceptance_criteria_gate.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
 import {
   assessDegradedDelivery,
+  assessReportedGaps,
   assessScopeShortfalls,
   buildDegradedFollowUpIssue,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
   buildDegradedUnfiledGapSection,
+  buildReportedGapPrSection,
   degradedFollowUpFindingId,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
   parseDegradedSection,
   rederiveDegradedSection,
+  rederiveReportedGapSection,
+  REPORTED_GAP_SECTION_HEADING,
   UNSTATED_SCOPE_ITEM,
 } from "../lib/degraded_delivery.ts";
 
@@ -976,4 +980,172 @@ Deno.test("parseDegradedSection - hostile follow-up digits are not read as a num
     "as met. The outstanding items continue in #" + "1".repeat(100_000) +
     "x";
   assertEquals(parseDegradedSection(section), { reason: "x" });
+});
+
+// ---------------------------------------------------------------------------
+// A healthy run's reported gaps (Issue #3506)
+// ---------------------------------------------------------------------------
+
+const TWO_CRITERIA_ISSUE =
+  "## Acceptance Criteria\n\n- the export works\n- the import works\n";
+const EXPORT_MET_IMPORT_PARTIAL = `## Acceptance Criteria
+
+- **met** — the export works — evidence: \`x_test.ts\` — reviewer: met
+- **partial** — the import works — evidence: \`y_test.ts\` — reviewer: partial — reason: no retry
+`;
+
+Deno.test("assessReportedGaps - a partial entry is a shortfall and a met one is delivered (Issue #3506)", () => {
+  assertEquals(
+    assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    {
+      degraded: false,
+      delivered: ["the export works"],
+      shortfalls: [{ criterion: "the import works", status: "partial" }],
+    },
+  );
+});
+
+Deno.test("assessReportedGaps - every entry met leaves no shortfall (Issue #3506)", () => {
+  assertEquals(assessReportedGaps(EXPORT_ISSUE, MET_SUMMARY), {
+    degraded: false,
+    delivered: ["the export works"],
+    shortfalls: [],
+  });
+});
+
+Deno.test("assessReportedGaps - unassessed items are dropped but an unassigned partial gap is kept (Issue #3506)", () => {
+  const unassessed = assessReportedGaps(
+    TWO_CRITERIA_ISSUE,
+    "## Acceptance Criteria\n\n- **met** — the export works — evidence: \`x_test.ts\` — reviewer: met\n",
+  );
+  assertEquals(unassessed.shortfalls, []);
+
+  const gap = assessReportedGaps(
+    EXPORT_ISSUE,
+    MET_SUMMARY +
+      "- **partial** — quarterly invoice emailer — reviewer: partial — reason: not started\n",
+  );
+  assertEquals(gap.shortfalls, [
+    { criterion: "quarterly invoice emailer —", status: "partial" },
+  ]);
+});
+
+Deno.test("assessReportedGaps - an issue stating no criteria yields no shortfall (Issue #3506)", () => {
+  assertEquals(
+    assessReportedGaps(ISSUE_WITHOUT_SCOPE, PARTIAL_SUMMARY).shortfalls,
+    [],
+  );
+});
+
+Deno.test("buildDegradedFollowUpIssue - a healthy verdict gets the reported-gap body under the same finding id (Issue #3506)", () => {
+  const verdict = assessReportedGaps(
+    TWO_CRITERIA_ISSUE,
+    EXPORT_MET_IMPORT_PARTIAL,
+  );
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 77,
+    parentTitle: "Add the importer",
+    verdict,
+    runId: "run-1",
+  });
+  assertEquals(issue.title, "Finish #77: Add the importer");
+  assertStringIncludes(
+    issue.body,
+    `<!-- finding-id: ${degradedFollowUpFindingId(77)} -->`,
+  );
+  assertStringIncludes(issue.body, "Issue #3506");
+  assertStringIncludes(issue.body, "- **partial** — the import works");
+  assertStringIncludes(issue.body, "- the export works");
+  assertEquals(issue.body.includes("**degraded**"), false);
+});
+
+Deno.test("buildDegradedFollowUpIssue - a degraded verdict keeps the degraded body (Issue #3506)", () => {
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 77,
+    parentTitle: "Add the importer",
+    verdict: {
+      degraded: true,
+      reason: "served by a fallback model",
+      delivered: [],
+      shortfalls: [...PARTIAL_SHORTFALL],
+    },
+    runId: "run-1",
+  });
+  assertStringIncludes(issue.body, "Issue #2562");
+  assertStringIncludes(issue.body, "was **degraded**");
+  assertEquals(issue.body.includes("Issue #3506"), false);
+});
+
+Deno.test("buildReportedGapPrSection - names the follow-up and the shortfall (Issue #3506)", () => {
+  const section = buildReportedGapPrSection(
+    assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    77,
+  );
+  assert(section.startsWith(REPORTED_GAP_SECTION_HEADING));
+  assertStringIncludes(section, "continue in #77:");
+  assertStringIncludes(section, "- **partial** — the import works");
+});
+
+Deno.test("buildReportedGapPrSection - throws on a degraded verdict or one without a gap (Issue #3506)", () => {
+  assertThrows(
+    () =>
+      buildReportedGapPrSection({
+        degraded: true,
+        delivered: [],
+        shortfalls: [...PARTIAL_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+  assertThrows(
+    () =>
+      buildReportedGapPrSection({
+        degraded: false,
+        delivered: [],
+        shortfalls: [...UNASSESSED_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+});
+
+Deno.test("rederiveReportedGapSection - empty when everything is now met (Issue #3506)", () => {
+  const liveSection = buildReportedGapPrSection(
+    assessReportedGaps(EXPORT_ISSUE, PARTIAL_SUMMARY),
+    77,
+  );
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection,
+      issueBody: EXPORT_ISSUE,
+      prBody: MET_SUMMARY,
+    }),
+    "",
+  );
+});
+
+Deno.test("rederiveReportedGapSection - keeps the follow-up number while a gap remains (Issue #3506)", () => {
+  const liveSection = buildReportedGapPrSection(
+    assessReportedGaps(EXPORT_ISSUE, PARTIAL_SUMMARY),
+    77,
+  );
+  const out = rederiveReportedGapSection({
+    liveSection,
+    issueBody: TWO_CRITERIA_ISSUE,
+    prBody: EXPORT_MET_IMPORT_PARTIAL,
+  });
+  assert(out.startsWith(REPORTED_GAP_SECTION_HEADING));
+  assertStringIncludes(out, "continue in #77:");
+  assertStringIncludes(out, "the import works");
+});
+
+Deno.test("rederiveReportedGapSection - never reads the number from a hostile shortfall bullet (Issue #3506)", () => {
+  const hostile =
+    `${REPORTED_GAP_SECTION_HEADING}\n\n- **partial** — see continue in #12345: here\n\n`;
+  const out = rederiveReportedGapSection({
+    liveSection: hostile,
+    issueBody: TWO_CRITERIA_ISSUE,
+    prBody: EXPORT_MET_IMPORT_PARTIAL,
+  });
+  assertEquals(out, hostile);
 });

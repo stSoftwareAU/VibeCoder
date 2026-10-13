@@ -8,12 +8,15 @@
  * runs — and assert on what reaches `gh`: whether a follow-up issue is filed,
  * and what the PR body says. Both directions are pinned: a degraded partial run
  * files the residue and says so; the same run healthy, or degraded but
- * complete, raises the PR exactly as before.
+ * complete, raises the PR exactly as before only when it reports no gap.
+ * Issue #3506: a healthy run whose summary closes out a criterion as `partial`
+ * or `missing` files one follow-up too, and its PR body says so.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { REPORTED_GAP_SECTION_HEADING } from "../lib/degraded_delivery.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -419,7 +422,7 @@ Deno.test("completion - the same run, healthy and complete, raises the PR with n
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
 });
 
-Deno.test("completion - a healthy run is unaffected even when its summary reports a gap", async () => {
+Deno.test("completion - a healthy run whose summary reports a missing criterion files one follow-up and says so in the PR (Issue #3506)", async () => {
   const outcome = await runCompletion({
     issueBody: ISSUE_WITH_CRITERIA,
     summary: SUMMARY_PARTIAL,
@@ -427,8 +430,60 @@ Deno.test("completion - a healthy run is unaffected even when its summary report
   });
 
   assertEquals(outcome.status, "continue");
-  assertEquals(outcome.issueCreates.length, 0);
+  assertEquals(outcome.issueCreates.length, 1);
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
+  const create = outcome.issueCreates[0]!;
+  const labelAt = create.indexOf("--label");
+  assertEquals(create[labelAt + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(body, "The docs table lists opus for planning.");
+  assertStringIncludes(body, `#${ISSUE}`);
+  assert(!body.includes("**degraded**"));
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, REPORTED_GAP_SECTION_HEADING);
+  assertStringIncludes(pr, "#900");
+  assertStringIncludes(pr, "The docs table lists opus for planning.");
+});
+
+Deno.test("completion - a healthy run whose summary closes out one criterion as partial files exactly one idle-task follow-up (Issue #3506)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(
+    body,
+    "**partial** — The router sends planning to opus.",
+  );
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, REPORTED_GAP_SECTION_HEADING);
+  assertStringIncludes(pr, "#900");
+  const section = pr.slice(0, pr.indexOf("## Summary"));
+  assertStringIncludes(section, "The router sends planning to opus.");
+  assert(
+    !section.includes("The docs table lists opus for planning."),
+    "met items are not listed in the section",
+  );
+});
+
+Deno.test("completion - a healthy run whose gap follow-up cannot be filed raises no PR (Issue #3506)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    failIssueCreate: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+  assertStringIncludes(outcome.reason ?? "", "partial or missing");
+  assertStringIncludes(outcome.reason ?? "", "HTTP 502");
 });
 
 Deno.test("completion - a degraded run that met every criterion raises the PR with no follow-up", async () => {
@@ -709,11 +764,12 @@ Deno.test("completion - a healthy run blocked by the independent-review gate on 
   assertEquals(outcome.status, "early_exit", outcome.reason);
   assertEquals(
     outcome.issueCreates.length,
-    0,
-    "a healthy run files no follow-up",
+    1,
+    "a healthy run's own missing entry files the follow-up before the gate's recovery",
   );
   assertEquals(outcome.prBodies.length, 1);
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
+  assertStringIncludes(outcome.prBodies[0]!, REPORTED_GAP_SECTION_HEADING);
 });
 
 Deno.test("completion - a degraded run blocked by the independent-review gate whose follow-up cannot be filed fails the run without finalising the PR", async () => {
