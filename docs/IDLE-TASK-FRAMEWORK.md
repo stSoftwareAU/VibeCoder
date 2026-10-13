@@ -997,7 +997,13 @@ cycle for #622 and #623 — both handed back earlier that day, neither carrying 
 single GitHub-visible blocker — and filed VibeCoder#655 against a scan that was
 right. `run_core_production_deps.ts` now resolves the hold set **once** and
 hands the same set to all three readers, and excluded issues are reported as
-`run_local_hold=<n>`. The per-cycle adaptive-floor deferral (Issue #245) is the
+`run_local_hold=<n>`. Issue #3464 adds a third source, in the census only: the
+issues whose milestone the persisted pacing ledger
+(`milestone_sync_failures.json`, Issue #1780) holds, which the scan skips as
+`milestone-behind`. The census reads that ledger through the scan's own
+`milestonePacedUntil`, so a persistently paced milestone no longer raises a
+false `inversion_signal`. `idle_detect_diagnostics.ts` and
+`repo_busy_for_idle_task.ts` do not read the ledger yet. The per-cycle adaptive-floor deferral (Issue #245) is the
 one source still unmodelled; it is rebuilt every cycle, so it cannot hold a
 streak open the way the registry did.
 
@@ -1066,9 +1072,12 @@ than reporting a repo as having nothing to do. The audit also reports
 back to when every refused issue was blocked on an open `Depends on` issue or
 open sub-issues, or deferred to a future `Deferred until` date — a label
 filter was never the reason. Both rank below the PR gates and
-`pace_suppressed`/`run_local_hold`, and above `stream_occupied`;
+`pace_suppressed`/`quota_idle_deferred`/`run_local_hold`, and above
+`stream_occupied`;
 `dependency_blocked` outranks `time_deferred` because `classifyIssues` applies
-it later, and the later gate is the more specific one.
+it later, and the later gate is the more specific one. `quota_idle_deferred`
+(Issue #3628) ranks directly below `pace_suppressed`, its application point in
+`classifyIssues`.
 
 That incident also exposed the other half of the fault, in the scan's own
 reporting: the cooldown filters logged their skip and recorded nothing in
@@ -1408,7 +1417,12 @@ Both halves are now told about the guard:
   refusal still wins, exactly as it does for `pr_blocked` and `run_local_hold`.
   The verdict is read from `ClaudeWeekPaceGate.lastEngaged()` — the value the
   scan already computed, so asking costs no probe and no log line, and it is
-  the same reading the census uses for its own tier-3 suppression.
+  the same reading the census uses for its own tier-3 suppression. The quota
+  polling gate's `quotaIdleDeferred` verdict (Issue #3628) is applied the same
+  way, right after the pace gate: an issue whose only discovery label is
+  `idle-task` is excluded as `quota_idle_deferred` while the GraphQL quota is
+  below the idle floor, and an issue that also carries a higher discovery
+  label stays claimable because its collector still ran.
 - The **idle hooks** defer filing outright while the guard holds, above the
   disagreement chain, so none of its cost is paid:
 

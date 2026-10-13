@@ -286,6 +286,16 @@ Deno.test("planning_processor - every spawn of the round carries the hook and th
   });
 });
 
+Deno.test("planning_processor - every spawn of the round carries the repo for the agent's pre-push hook (PR #3584 review)", async () => {
+  const observed = await runPlanning(false, rtkSeam([]));
+
+  assertEverySpawnRan(observed);
+  // The pre-push hook resolves the repo's pre-flight from `repo` alone.
+  for (const [index, spawn] of observed.runOptions.entries()) {
+    assertEquals(spawn.repo, "org/repo", `the ${observed.kinds[index]} spawn`);
+  }
+});
+
 Deno.test("planning_processor - a host without rtk plans unfiltered rather than failing (Issue #2384)", async () => {
   const seam = rtkSeam([rtkMissing()]);
   const observed = await runPlanning(true, seam);

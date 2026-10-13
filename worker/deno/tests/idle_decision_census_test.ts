@@ -1836,6 +1836,10 @@ Deno.test("#655 - the cooldown gate is modelled, not silently over-counted", () 
   );
 });
 
+Deno.test("#3464 - the milestone-behind gate is modelled, not silently over-counted", () => {
+  assertEquals(CENSUS_SCAN_GATE_COVERAGE["milestone-behind"], "modelled");
+});
+
 // --- The selector's own account set (Issues #753, #1071) -------------------
 //
 // The selector refuses a stream held by an account **the fleet operates**

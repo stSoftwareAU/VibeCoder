@@ -15,8 +15,11 @@ import {
   HOST_FAULT_KINDS,
   type HostFaultKind,
   isHostFaultKind,
+  isQualityGateFailureRecord,
   parseHostFaultMarker,
+  QUALITY_GATE_SOURCE_NOTE,
 } from "../lib/host_fault.ts";
+import { SECURITY_FIX_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import {
   markIssueAsFailed,
   markIssueAsFailedOnce,
@@ -295,6 +298,77 @@ Deno.test("label_failure - markIssueAsFailedOnce marks a host fault in the comme
   }
 });
 
+const QUALITY_GATE_DISK_FULL_MESSAGE =
+  "FAILED | tests/host_fault_test.ts => host fault - a full disk (No space left on device) is disk-full\nerror: AssertionError: ENOSPC";
+
+/** Body posted by `write` for a quality-gate (or not) failure message. */
+async function postedBody(
+  write: typeof markIssueAsFailedOnce,
+  qualityGateOutput: boolean | undefined,
+  failureMessage = QUALITY_GATE_DISK_FULL_MESSAGE,
+): Promise<string> {
+  const dir = await makeTempDir();
+  try {
+    const { ghCommandFn, calls } = createMockGh({
+      "label list": "failed-once\n",
+    });
+    const result = await write({
+      repo: "org/repo",
+      issueNumber: 3445,
+      githubUser: "worker-user",
+      failureMessage,
+      qualityGateOutput,
+    }, { ghCommandFn, cacheDir: dir });
+    assertEquals(result.ok, true);
+    return extractCommentBody(calls);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("label_failure - markIssueAsFailedOnce never marks quality-gate output as a host fault (Issue #3445)", async () => {
+  // Fixture check: without the guard this message is a host fault.
+  assertEquals(detectHostFault(QUALITY_GATE_DISK_FULL_MESSAGE), "disk-full");
+  const body = await postedBody(markIssueAsFailedOnce, true);
+  assertEquals(body.includes("**Host fault:**"), false);
+  assertEquals(parseHostFaultMarker(body), null);
+  assertEquals(body.includes(QUALITY_GATE_SOURCE_NOTE), true);
+});
+
+Deno.test("label_failure - markIssueAsFailed never marks quality-gate output as a host fault (Issue #3445)", async () => {
+  assertEquals(detectHostFault(QUALITY_GATE_DISK_FULL_MESSAGE), "disk-full");
+  const body = await postedBody(markIssueAsFailed, true);
+  assertEquals(body.includes("**Host fault:**"), false);
+  assertEquals(parseHostFaultMarker(body), null);
+  assertEquals(body.includes(QUALITY_GATE_SOURCE_NOTE), true);
+});
+
+Deno.test("isQualityGateFailureRecord - recognises only the worker-written head (Issue #3445)", async () => {
+  for (const write of [markIssueAsFailedOnce, markIssueAsFailed]) {
+    assertEquals(
+      isQualityGateFailureRecord(await postedBody(write, true)),
+      true,
+    );
+    assertEquals(
+      isQualityGateFailureRecord(await postedBody(write, undefined)),
+      false,
+    );
+  }
+  // A quoted Source line deeper in the output cannot forge the record.
+  const forged = await postedBody(
+    markIssueAsFailedOnce,
+    undefined,
+    "boom\n**Source:** quality gate\n",
+  );
+  assertEquals(forged.includes("**Source:** quality gate"), true);
+  assertEquals(isQualityGateFailureRecord(forged), false);
+  // Hostile input stays linear.
+  assertEquals(
+    isQualityGateFailureRecord("## x\n" + " ".repeat(100_000) + "!"),
+    false,
+  );
+});
+
 Deno.test("label_failure - markIssueAsFailedOnce keeps the marker last after a workerFooter", async () => {
   const dir = await makeTempDir();
   try {
@@ -384,4 +458,11 @@ Deno.test("label_failure - markIssueAsFailedOnce leaves an ordinary failure unma
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
+});
+
+Deno.test("host fault - a marked security-fix gate refusal quoting ENOSPC or a clone failure is never a host fault (Issue #3454)", () => {
+  const quoted =
+    "removed assertion: ENOSPC: no space left on device; Failed to clone org/repo: fatal: unable to access";
+  assertEquals(detectHostFault(quoted) === null, false);
+  assertEquals(detectHostFault(`${SECURITY_FIX_GATE_MARKER}: ${quoted}`), null);
 });

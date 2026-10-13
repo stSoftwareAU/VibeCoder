@@ -18,6 +18,7 @@ import {
 import {
   detachLaneWorktreeHead,
   ensureLaneWorktree,
+  isInvalidHeadReference,
   LANE_WORKTREE_ROOT,
   laneWorktreeHoldingBranch,
   laneWorktreePath,
@@ -48,6 +49,13 @@ async function setupClone(): Promise<{ workDir: string; repoPath: string }> {
   await runGitCommand(["add", "."], { cwd: repoPath });
   await runGitCommand(["commit", "-m", "initial"], { cwd: repoPath });
   await runGitCommand(["push", "origin", "main"], { cwd: repoPath });
+  // A clone of a non-empty remote gets `origin/HEAD` from `git clone`; this
+  // fixture cloned while the remote was still empty, so set it the same way
+  // a real clone has it — the default-branch resolver reads it (Issue #3630).
+  await runGitCommand(
+    ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"],
+    { cwd: repoPath },
+  );
 
   return { workDir, repoPath };
 }
@@ -481,4 +489,84 @@ Deno.test("detachLaneWorktreeHead - detaches through the runner it is given (Iss
   assertEquals(calls, [
     { args: ["checkout", "--detach"], cwd: "/work/worktrees/s1/demo" },
   ]);
+});
+
+Deno.test("ensureLaneWorktree - heals a clone whose HEAD dangles and retries once (Issue #3630)", async () => {
+  const { workDir, repoPath } = await setupClone();
+  try {
+    // Milestone sync leaves the clone's HEAD on a branch that later goes;
+    // the symref then dangles and every worktree add fails permanently.
+    await runGitCommand(
+      ["symbolic-ref", "HEAD", "refs/heads/gone-branch"],
+      { cwd: repoPath },
+    );
+
+    const result = await ensureLaneWorktree({
+      workDir,
+      repo: "owner/demo",
+      laneId: "s2",
+      repoPath,
+    });
+
+    assertEquals(result.ok, true, JSON.stringify(result));
+    if (result.ok) {
+      const inside = await runGitCommand(
+        ["rev-parse", "--is-inside-work-tree"],
+        { cwd: result.value },
+      );
+      assert(inside.ok && inside.value.stdout.trim() === "true");
+      // The clone's HEAD is healed to the default branch, not left dangling.
+      const healed = await runGitCommand(["symbolic-ref", "HEAD"], {
+        cwd: repoPath,
+      });
+      assert(healed.ok);
+      assertEquals(healed.value.stdout.trim(), "refs/heads/main");
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("ensureLaneWorktree - a worktree add failure that is not a dangling HEAD is not healed (Issue #3630)", async () => {
+  const { workDir, repoPath } = await setupClone();
+  try {
+    const result = await ensureLaneWorktree({
+      workDir,
+      repo: "owner/demo",
+      laneId: "s2",
+      repoPath: `${repoPath}/missing`,
+    });
+
+    assertEquals(result.ok, false);
+    if (!result.ok) {
+      // The failure is reported as today; nothing about the clone is healed.
+      assert(
+        !result.error.message.includes("heal"),
+        `a non-HEAD failure must not claim a heal: ${result.error.message}`,
+      );
+    }
+  } finally {
+    await Deno.remove(workDir, { recursive: true });
+  }
+});
+
+Deno.test("isInvalidHeadReference - matches both git wordings for a dangling HEAD (Issue #3630)", () => {
+  const refused = (stderr: string) => ({
+    ok: true as const,
+    value: { code: 1, stdout: "", stderr },
+  });
+  // The container's git: a fatal refusal naming the ref.
+  assert(isInvalidHeadReference(refused(
+    "Preparing worktree (detached HEAD)\nfatal: invalid reference: HEAD\n",
+  )));
+  // Newer git versions: a warning with the exit still failing.
+  assert(isInvalidHeadReference(refused(
+    "Preparing worktree (detached HEAD)\nwarning: HEAD points to an invalid (or orphaned) reference.\n",
+  )));
+  // An unrelated refusal is not a dangling HEAD.
+  assert(
+    !isInvalidHeadReference(refused(
+      "fatal: 'owner/demo' is already checked out at '/other/path'\n",
+    )),
+  );
 });

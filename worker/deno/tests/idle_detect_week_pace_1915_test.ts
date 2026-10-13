@@ -46,6 +46,82 @@ Deno.test(
 );
 
 Deno.test(
+  "classifyIssues - quota idle deferral excludes only idle-task-only work (Issue #3628)",
+  () => {
+    const verdicts = classifyIssues(
+      [
+        { number: 1, labels: ["idle-task"], assignees: [], milestone: "" },
+        {
+          number: 2,
+          labels: ["idle-task", "work-on"],
+          assignees: [],
+          milestone: "",
+        },
+        { number: 3, labels: ["work-on"], assignees: [], milestone: "" },
+      ],
+      { workerUser: "vibebot", quotaIdleDeferred: true },
+    );
+    assertEquals(
+      verdicts.map((v) => v.claimable),
+      [false, true, true],
+      "the idle collector never ran, but the work-on collector did",
+    );
+    assertEquals(
+      verdicts.map((v) => v.excludedBy),
+      ["quota_idle_deferred", undefined, undefined],
+    );
+  },
+);
+
+Deno.test(
+  "classifyIssues - quota idle deferral off leaves every count unchanged (Issue #3628)",
+  () => {
+    const verdicts = classifyIssues(
+      [{ number: 1, labels: ["idle-task"], assignees: [], milestone: "" }],
+      { workerUser: "vibebot" },
+    );
+    assertEquals(verdicts.map((v) => v.claimable), [true]);
+  },
+);
+
+Deno.test(
+  "pickDominantReason - pace_suppressed outranks quota_idle_deferred (Issue #3628)",
+  () => {
+    // The pace gate is applied before the quota gate, so a pace-refused
+    // issue keeps its more fundamental reason — the dominance ladder must
+    // read the same order it was applied in.
+    assertEquals(
+      pickDominantReason([
+        {
+          number: 1,
+          claimable: false,
+          excludedBy: "pace_suppressed",
+          milestone: "",
+        },
+        {
+          number: 2,
+          claimable: false,
+          excludedBy: "quota_idle_deferred",
+          milestone: "",
+        },
+      ]),
+      "pace_suppressed",
+    );
+    assertEquals(
+      pickDominantReason([
+        {
+          number: 2,
+          claimable: false,
+          excludedBy: "quota_idle_deferred",
+          milestone: "",
+        },
+      ]),
+      "quota_idle_deferred",
+    );
+  },
+);
+
+Deno.test(
   "classifyIssues - pace engaged leaves top-priority and work-on claimable (Issue #1915)",
   () => {
     const verdicts = classifyIssues(

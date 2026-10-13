@@ -26,6 +26,7 @@ import {
   formatCostEstimateLines,
   mergeUsageByModel,
   type ModelUsageEntry,
+  readModelUsageBreakdown,
 } from "./cost_estimate.ts";
 import {
   computeCacheHitRate,
@@ -587,15 +588,15 @@ export function buildPlanningStatsSection(args: {
   // run (e.g. Fable→Opus fallback across invocations) is costed per model
   // (Issue #3557). A single invocation that served two models — an Opus
   // advisor and its Sonnet executors — is split by its own per-model breakdown
-  // (Issue #2346). Falls back to the expected model when the API reported no
+  // (Issue #2346), even when the CLI's result usage covers only the main
+  // session or is zero (Issue #3603). A multi-model invocation with no readable
+  // breakdown is flagged `sub-agents: not costed` rather than shown as the
+  // run's cost. Falls back to the expected model when the API reported no
   // served model for the invocation.
   const costEntries: ModelUsageEntry[] = [];
   let effort: string | undefined;
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let cacheCreationTokens = 0;
-  let cacheReadTokens = 0;
   let haveTokens = false;
+  let subAgentsNotCosted = false;
   let numTurns = 0;
   let haveTurns = false;
   let durationMs = 0;
@@ -621,10 +622,15 @@ export function buildPlanningStatsSection(args: {
     if (!effort && stats.effort) effort = stats.effort;
     if (stats.tokenUsage) {
       haveTokens = true;
-      inputTokens += stats.tokenUsage.inputTokens;
-      outputTokens += stats.tokenUsage.outputTokens;
-      cacheCreationTokens += stats.tokenUsage.cacheCreationTokens;
-      cacheReadTokens += stats.tokenUsage.cacheReadTokens;
+      const realModels = new Set(
+        stats.servedModels.filter((m) => m !== "<synthetic>"),
+      );
+      if (
+        realModels.size > 1 &&
+        readModelUsageBreakdown(stats.modelUsage) === undefined
+      ) {
+        subAgentsNotCosted = true;
+      }
       costEntries.push(
         ...attributeUsageByModel(
           stats.tokenUsage,
@@ -656,6 +662,18 @@ export function buildPlanningStatsSection(args: {
   if (effort) lines.push(`- **Effort:** \`${effort}\``);
   lines.push(`- **${displayPhase} invocations:** ${planning.length}`);
   if (haveTokens) {
+    // Summed from the attributed entries so the tokens agree with the cost
+    // even when the result usage covers only the main session (Issue #3603).
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let cacheCreationTokens = 0;
+    let cacheReadTokens = 0;
+    for (const { usage } of costEntries) {
+      inputTokens += usage.inputTokens;
+      outputTokens += usage.outputTokens;
+      cacheCreationTokens += usage.cacheCreationTokens;
+      cacheReadTokens += usage.cacheReadTokens;
+    }
     lines.push(
       `- **Tokens:** input ${formatCount(inputTokens)} · output ${
         formatCount(outputTokens)
@@ -705,7 +723,7 @@ export function buildPlanningStatsSection(args: {
   }
   // Estimate-only API cost, priced from the shared MODEL_PRICING table
   // (Issue #3557). Omitted entirely when no priced tokens were recorded.
-  lines.push(...formatCostEstimateLines(costEntries));
+  lines.push(...formatCostEstimateLines(costEntries, { subAgentsNotCosted }));
   lines.push(
     verdict.degraded
       ? `- **Degraded:** ⚠️ yes — ${verdict.reason}`

@@ -7,6 +7,7 @@
 import {
   assertAlmostEquals,
   assertEquals,
+  assertExists,
   assertStringIncludes,
 } from "@std/assert";
 import {
@@ -15,8 +16,14 @@ import {
   formatCostEstimateLines,
   formatUsd,
   mergeUsageByModel,
+  type ModelUsageEntry,
+  readModelUsageBreakdown,
 } from "../lib/cost_estimate.ts";
-import type { TokenUsage } from "../lib/token_usage.ts";
+import {
+  estimateCost,
+  lookupModelPricing,
+  type TokenUsage,
+} from "../lib/token_usage.ts";
 
 function usage(
   input: number,
@@ -305,17 +312,135 @@ Deno.test("cost_estimate - attributeUsageByModel omits an all-zero residual", ()
   ]);
 });
 
-Deno.test("cost_estimate - attributeUsageByModel discards a breakdown claiming more than the run recorded", () => {
-  // Trusting it would charge 999 input tokens against a 100-token run, and
-  // over-report the pilot's spend and the issue's cumulative total with it.
+Deno.test("cost_estimate - attributeUsageByModel trusts a breakdown exceeding the run totals without a residual", () => {
+  // On a split run the CLI's `usage` covers only the main session, so a
+  // breakdown larger than the totals is the normal case (Issue #3603).
   assertEquals(
     attributeUsageByModel(
       usage(100, 0),
       { "claude-sonnet-5": { input_tokens: 999 } },
       "claude-opus-5",
     ),
-    [{ model: "claude-opus-5", usage: usage(100, 0) }],
+    [{ model: "claude-sonnet-5", usage: usage(999, 0) }],
   );
+});
+
+const THREE_MODEL_USAGE = {
+  "claude-opus-5-5": {
+    inputTokens: 1_200,
+    outputTokens: 34_000,
+    cacheCreationInputTokens: 560_000,
+    cacheReadInputTokens: 23_030_670,
+    costUSD: 99,
+  },
+  "claude-haiku-5-5": {
+    inputTokens: 7_000,
+    outputTokens: 8_100,
+    cacheCreationInputTokens: 90_000,
+    cacheReadInputTokens: 1_500_000,
+    costUSD: 98,
+  },
+  "claude-sonnet-5-5": {
+    inputTokens: 3_300,
+    outputTokens: 41_000,
+    cacheCreationInputTokens: 210_000,
+    cacheReadInputTokens: 4_400_000,
+    costUSD: 97,
+  },
+};
+
+const THREE_ENTRIES: ModelUsageEntry[] = [
+  {
+    model: "claude-opus-5-5",
+    usage: usage(1_200, 34_000, 560_000, 23_030_670),
+  },
+  {
+    model: "claude-haiku-5-5",
+    usage: usage(7_000, 8_100, 90_000, 1_500_000),
+  },
+  {
+    model: "claude-sonnet-5-5",
+    usage: usage(3_300, 41_000, 210_000, 4_400_000),
+  },
+];
+
+Deno.test("cost_estimate - attributeUsageByModel prices all models when the totals are zero (Issue #3603)", () => {
+  assertEquals(
+    attributeUsageByModel(usage(0, 0), THREE_MODEL_USAGE, "claude-opus-5-5"),
+    THREE_ENTRIES,
+  );
+});
+
+Deno.test("cost_estimate - attributeUsageByModel adds a residual only for counters where totals exceed the breakdown", () => {
+  // Main-thread-only totals: below the breakdown everywhere except output.
+  const totals = usage(500, 100_000, 100_000, 503_323);
+  assertEquals(
+    attributeUsageByModel(totals, THREE_MODEL_USAGE, "claude-opus-5-5"),
+    [
+      ...THREE_ENTRIES,
+      { model: "claude-opus-5-5", usage: usage(0, 100_000 - 83_100, 0, 0) },
+    ],
+  );
+});
+
+Deno.test("cost_estimate - formatCostEstimateLines renders every model of a split run", () => {
+  const lines = formatCostEstimateLines(THREE_ENTRIES);
+  assertEquals(lines.length, 4);
+  assertEquals(lookupModelPricing("claude-haiku-5-5") !== undefined, true);
+  let total = 0;
+  for (const { model, usage: u } of THREE_ENTRIES) {
+    total += estimateCost(u, model)!.totalCost;
+  }
+  assertEquals(
+    lines[0],
+    `- **Estimated cost (USD, estimate only):** ~${formatUsd(total)}`,
+  );
+  for (const [i, { model }] of THREE_ENTRIES.entries()) {
+    assertStringIncludes(lines[i + 1] ?? "", `\`${model}\``);
+  }
+});
+
+Deno.test("cost_estimate - readModelUsageBreakdown rejects absent, empty and unreadable breakdowns", () => {
+  assertEquals(readModelUsageBreakdown(undefined), undefined);
+  assertEquals(readModelUsageBreakdown({}), undefined);
+  assertEquals(
+    readModelUsageBreakdown({
+      "claude-sonnet-5": { input_tokens: 1, output_tokens: "2" },
+    }),
+    undefined,
+  );
+  assertEquals(readModelUsageBreakdown(THREE_MODEL_USAGE), THREE_ENTRIES);
+});
+
+Deno.test("cost_estimate - formatCostEstimateLines flags sub-agents not costed", () => {
+  const opus: ModelUsageEntry[] = [
+    { model: "claude-opus-5-5", usage: usage(1_000, 500) },
+  ];
+  const plain = formatCostEstimateLines(opus);
+  const flagged = formatCostEstimateLines(opus, { subAgentsNotCosted: true });
+  assertStringIncludes(flagged[0] ?? "", " (partial — see below)");
+  assertEquals(
+    flagged[flagged.length - 1],
+    "  - sub-agents: not costed — the run served more than one model but recorded no usable per-model usage, so only the main session is priced",
+  );
+  assertEquals(
+    formatCostEstimateLines(opus, { subAgentsNotCosted: false }),
+    plain,
+  );
+  assertEquals(
+    formatCostEstimateLines(
+      [{ model: "claude-opus-5-5", usage: usage(0, 0) }],
+      {
+        subAgentsNotCosted: true,
+      },
+    ),
+    [
+      "- **Estimated cost (USD, estimate only):** sub-agents: not costed — the run served more than one model but recorded no usable per-model usage",
+    ],
+  );
+  assertEquals(plain.length, 2);
+  assertExists(plain[0]);
+  assertEquals(plain[0].endsWith("(partial — see below)"), false);
 });
 
 Deno.test("cost_estimate - attributeUsageByModel never fabricates a zero for an unusable counter", () => {

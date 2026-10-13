@@ -56,7 +56,7 @@ list a maintainer must remember to update.
 | Family | Membership rule | Directories |
 | --- | --- | --- |
 | **Scan** | Its latest template carries a `Stable finding ID recipe` section — it sweeps a repository, dedupes findings against filed issues, and files one issue per surviving finding | `prompts/best_practices/`, `prompts/dead_code/`, `prompts/deprecated_api/`, `prompts/doc_coverage/`, `prompts/documentation_audit/`, `prompts/duplicated_knowledge/`, `prompts/format_drift/`, `prompts/github_actions_audit/`, `prompts/orphan_deps/`, `prompts/private_repo_reference_audit/`, `prompts/retro/`, `prompts/security_scan/`, `prompts/supply_chain_detection/`, `prompts/supply_chain_readiness/`, `prompts/test_audit/` |
-| **Interactive** | It drives one worker turn against one named target — an issue, a PR, or a repository set-up task — and produces changes or a reply rather than a sweep of findings | `prompts/ci_fix/`, `prompts/grill-me/`, `prompts/issue/`, `prompts/merge_conflict/`, `prompts/planning/`, `prompts/planning_critique/`, `prompts/pr_feedback/`, `prompts/question/`, `prompts/quorum/`, `prompts/quorum_judge/`, `prompts/spelling_fix/`, `prompts/workflow_setup/` |
+| **Interactive** | It drives one worker turn against one named target — an issue, a PR, or a repository set-up task — and produces changes or a reply rather than a sweep of findings | `prompts/ci_fix/`, `prompts/grill-me/`, `prompts/issue/`, `prompts/merge_conflict/`, `prompts/planning/`, `prompts/planning_critique/`, `prompts/pr_feedback/`, `prompts/pr_review_brief/`, `prompts/question/`, `prompts/quorum/`, `prompts/quorum_judge/`, `prompts/spelling_fix/`, `prompts/workflow_setup/` |
 | **Injected fragment** | It is substituted into another template rather than run on its own | `prompts/coding_guidelines/`, `prompts/coding_guidelines_claude/` |
 | **Lightweight audit** | It reports on a narrow surface and files nothing, so it owns none of the filing sections | `prompts/alert_feed/`, `prompts/bash_script_refs/`, `prompts/bash_syntax_audit/`, `prompts/gate_skip_drift/`, `prompts/workflow_annotation_scan/` |
 
@@ -97,7 +97,7 @@ a filed issue body, and it stays.
 
 ## Shared headings — interactive family
 
-Applies to the twelve interactive directories in [Families](#families).
+Applies to the thirteen interactive directories in [Families](#families).
 
 | Section | House form | Banned variants | Why |
 | --- | --- | --- | --- |

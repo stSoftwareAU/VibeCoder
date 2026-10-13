@@ -73,6 +73,8 @@ export interface ReviewEntry {
   hasEvidence: boolean;
   /** Whether the entry carries a reason. */
   hasReason: boolean;
+  /** The entry's `evidence:` text, `null` when absent (Issue #3382). */
+  evidence: string | null;
   /** The entry's `reason:` text, `null` when absent. */
   reason: string | null;
   /** The entry text, for failure messages. */
@@ -173,6 +175,18 @@ export function violationReasonSettles(reason: string): boolean {
   return FIXED_OUTCOME_RE.test(text) || ISSUE_REFERENCE_RE.test(text);
 }
 
+/**
+ * Whether a Standards entry is a `violation` left standing — no reason, or a
+ * reason that neither records a fix nor links a filed issue (Issues #3196,
+ * #3382). The gate refuses each one; `standing_violation_routing.ts` reads
+ * the same predicate to route the ones on the branch's own lines to a
+ * code-capable recovery turn.
+ */
+export function isStandingViolation(entry: ReviewEntry): boolean {
+  return entry.status === "violation" &&
+    (entry.reason === null || !violationReasonSettles(entry.reason));
+}
+
 /** The provenance markers each axis's reviewer stamps on its block. */
 const PROVENANCE_PATTERNS = {
   spec: /<!--\s*vibe-spec-review\s+inputs\s*=\s*"([^"]*)"[^>]*-->/i,
@@ -252,6 +266,7 @@ function toEntry(
   if (!status || !vocabulary.includes(status)) return null;
 
   const reason = labelValue(text, "reason");
+  const evidence = labelValue(text, "evidence");
   const reviewerRaw = labelValue(text, "reviewer")?.toLowerCase() ?? null;
   const reviewerVerdict = SPEC_STATUSES.includes(reviewerRaw as SpecStatus)
     ? reviewerRaw as SpecStatus
@@ -261,7 +276,8 @@ function toEntry(
     status: status as SpecStatus | StandardsStatus,
     reviewerVerdict,
     departsFromReviewer: reviewerVerdict !== null && reviewerVerdict !== status,
-    hasEvidence: labelValue(text, "evidence") !== null,
+    hasEvidence: evidence !== null,
+    evidence,
     hasReason: reason !== null,
     reason,
     text,

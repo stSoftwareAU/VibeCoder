@@ -610,6 +610,7 @@ function buildQuorumInvoker(
         noOutputTimeout: config.claudeNoOutputTimeout,
         phase: invocation.phase,
         agentProvider: invocation.agentProvider,
+        repo: ctx.repo,
         cwd: config.workDir,
         logger,
         ...(accelerated ? accel.spawnOptions() : {}),

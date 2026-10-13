@@ -121,6 +121,10 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   "call_storm_window_seconds",
   // Call-storm novelty share (Issue #2773)
   "call_storm_novel_share",
+  // Quota-aware polling gate floors (Issue #3628)
+  "quota_poll_park_floor",
+  "quota_poll_park_nice",
+  "quota_poll_idle_floor",
   // Agent transcript tee (Issue #1141) — off by default; the only operator
   // switch for the raw agent stream-json transcript.
   "agent_transcript_enabled",

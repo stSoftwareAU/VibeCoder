@@ -246,6 +246,33 @@ Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct ciFixTimeout (Issu
   assertEquals(OPERATIONAL_DEFAULTS.ciFixTimeout, 1800);
 });
 
+Deno.test("config_defaults - OPERATIONAL_DEFAULTS has correct quotaPollParkFloor (Issue #3628)", () => {
+  // Park tier: below 1500 points remaining, nice >= 99 repos are skipped
+  // whole for the cycle.
+  assertEquals(OPERATIONAL_DEFAULTS.quotaPollParkFloor, 1500);
+  assertEquals(OPERATIONAL_DEFAULTS.quotaPollParkNice, 99);
+  assertEquals(OPERATIONAL_DEFAULTS.quotaPollIdleFloor, 500);
+});
+
+Deno.test("config_defaults - buildDefaultWorkerConfig carries the quota poll floors (Issue #3628)", async () => {
+  const { buildDefaultWorkerConfig } = await import(
+    "../lib/config_defaults.ts"
+  );
+  const config = buildDefaultWorkerConfig();
+  assertEquals(
+    config.quotaPollParkFloor,
+    OPERATIONAL_DEFAULTS.quotaPollParkFloor,
+  );
+  assertEquals(
+    config.quotaPollParkNice,
+    OPERATIONAL_DEFAULTS.quotaPollParkNice,
+  );
+  assertEquals(
+    config.quotaPollIdleFloor,
+    OPERATIONAL_DEFAULTS.quotaPollIdleFloor,
+  );
+});
+
 Deno.test("config_defaults - NUMERIC_DEFAULTS mirrors OPERATIONAL_DEFAULTS", () => {
   assertEquals(
     NUMERIC_DEFAULTS.claudeTimeout,

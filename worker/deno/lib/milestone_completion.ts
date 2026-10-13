@@ -30,7 +30,10 @@ import {
   fetchAuthoritativeOpenChildren,
   formatChildNumbers,
 } from "./milestone_open_children.ts";
-import type { AlertDedupAuthorOptions } from "./alert_dedup_authors.ts";
+import {
+  type AlertDedupAuthorOptions,
+  resolveAlertDedupAuthors,
+} from "./alert_dedup_authors.ts";
 import {
   autoMergeOutcomeNeedsComment,
   AutoMergeResult,
@@ -38,6 +41,7 @@ import {
   finalisePr,
 } from "./pr_auto_merge.ts";
 import { retireMilestoneSyncPrs } from "./milestone_sync_pr_retirement.ts";
+import { isFleetRollbackCloseComment } from "./milestone_rollback_marker.ts";
 import { raiseDeadlockPartialRollups } from "./milestone_deadlock_rollup.ts";
 import {
   isMilestoneTrackingTitle,
@@ -191,6 +195,22 @@ interface GitHubMilestone {
    * is safe to auto-close — only fire when no in-flight work remains.
    */
   open_issues?: number;
+  /** ISO creation time from the milestone listing (PR #3592 review grace window). */
+  created_at?: string;
+}
+
+/** How long an empty milestone is left alone after creation (planning assigns its items). */
+const EMPTY_MILESTONE_GRACE_MS = 15 * 60_000;
+
+/** True when `createdAt` is missing, unparsable, in the future, or inside the grace window. */
+export function isMilestoneYoung(
+  createdAt: string | undefined,
+  nowMs: number,
+): boolean {
+  if (typeof createdAt !== "string") return true;
+  const created = Date.parse(createdAt);
+  if (Number.isNaN(created)) return true;
+  return nowMs - created < EMPTY_MILESTONE_GRACE_MS;
 }
 
 /**
@@ -305,6 +325,160 @@ export async function checkMilestoneComplete(
 }
 
 // ---------------------------------------------------------------------------
+// classifyMilestoneFinalPrs (Issue #3474)
+// ---------------------------------------------------------------------------
+
+/** Aggregate state of the PRs whose head is a milestone branch. */
+export type MilestoneFinalPrState =
+  | { kind: "merged"; prNumber: number }
+  | { kind: "open"; prNumber: number }
+  | { kind: "abandoned"; prNumber: number }
+  /**
+   * Every PR is closed and the newest was closed by the fleet's own
+   * milestone roll-back (Issue #1781): the work is being redone, so a fresh
+   * final PR is due and the closed ones must not count as existing.
+   */
+  | { kind: "superseded"; closedPrNumbers: number[] }
+  | { kind: "none" };
+
+/**
+ * Classify the final PR(s) of a milestone branch across all states so
+ * close-out can tell merged and closed-unmerged apart (Issue #3474). Uncached
+ * on purpose: the state must be fresh. A missing or unrecognised state is
+ * never classed merged or abandoned (fail safe, returns "none").
+ *
+ * Only same-repository PRs count: `gh pr list --head` matches the ref name
+ * alone, so a fork reusing the (public) milestone branch name would otherwise
+ * decide the outcome, and a fork-headed PR proves nothing (Issue #1124). An
+ * entry whose `isCrossRepository` is not exactly `false` is dropped.
+ *
+ * A closed-unmerged newest PR carrying a roll-back close comment authored by
+ * a fleet login is "superseded", not "abandoned" (PR #3592 review). A comment
+ * from anyone else is ignored — any account can comment on a public PR — and
+ * when the fleet set cannot be resolved the result is an error rather than
+ * either verdict: neither the close-out nor a fresh final PR may rest on a
+ * comment nobody can attribute.
+ *
+ * @param resolveFleetAuthors - Resolves the fleet logins; called only when
+ *   every PR is closed, the one case that reads comments.
+ */
+export async function classifyMilestoneFinalPrs(
+  repo: string,
+  milestoneBranch: string,
+  ghCommandFn: GhCommandFn,
+  resolveFleetAuthors: () => Promise<readonly string[]>,
+): Promise<Result<MilestoneFinalPrState>> {
+  try {
+    const output = await ghCommandFn([
+      "pr",
+      "list",
+      "--repo",
+      repo,
+      "--state",
+      "all",
+      "--head",
+      milestoneBranch,
+      "--json",
+      "number,state,headRefName,isCrossRepository",
+      "--limit",
+      "100",
+    ]);
+    const parsed: unknown = JSON.parse(output);
+    if (!Array.isArray(parsed)) {
+      throw new Error("expected a JSON array");
+    }
+    const entries = (parsed as Array<
+      {
+        number?: unknown;
+        state?: unknown;
+        headRefName?: unknown;
+        isCrossRepository?: unknown;
+      }
+    >).filter((pr) =>
+      pr !== null && typeof pr === "object" &&
+      pr.headRefName === milestoneBranch && typeof pr.number === "number" &&
+      pr.isCrossRepository === false
+    ) as Array<{ number: number; state?: unknown }>;
+
+    if (entries.length === 0) return { ok: true, value: { kind: "none" } };
+    const known = new Set(["MERGED", "OPEN", "CLOSED"]);
+    if (
+      entries.some((pr) => typeof pr.state !== "string" || !known.has(pr.state))
+    ) {
+      return { ok: true, value: { kind: "none" } };
+    }
+    const highest = (state: string): number | null => {
+      const nums = entries.filter((pr) => pr.state === state).map((pr) =>
+        pr.number
+      );
+      return nums.length > 0 ? Math.max(...nums) : null;
+    };
+    const merged = highest("MERGED");
+    if (merged !== null) {
+      return { ok: true, value: { kind: "merged", prNumber: merged } };
+    }
+    const open = highest("OPEN");
+    if (open !== null) {
+      return { ok: true, value: { kind: "open", prNumber: open } };
+    }
+    const closed = highest("CLOSED");
+    if (closed === null) return { ok: true, value: { kind: "none" } };
+    const fleetAuthors = await resolveFleetAuthors();
+    if (fleetAuthors.length === 0) {
+      throw new Error(
+        `fleet author set unresolved — cannot tell whether closed final PR ` +
+          `#${closed} was closed by a milestone roll-back, so it is ` +
+          `classed neither abandoned nor superseded`,
+      );
+    }
+    if (await closedByRollback(repo, closed, ghCommandFn, fleetAuthors)) {
+      return {
+        ok: true,
+        value: {
+          kind: "superseded",
+          closedPrNumbers: entries.map((pr) => pr.number),
+        },
+      };
+    }
+    return { ok: true, value: { kind: "abandoned", prNumber: closed } };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      ok: false,
+      error: new Error(
+        `Failed to classify final PRs for milestone branch ${milestoneBranch} in repo ${repo}: ${message}`,
+      ),
+    };
+  }
+}
+
+/**
+ * Whether a closed PR carries a roll-back's close comment (Issue #1781)
+ * authored by a fleet login.
+ */
+async function closedByRollback(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: GhCommandFn,
+  fleetAuthors: readonly string[],
+): Promise<boolean> {
+  const output = await ghCommandFn([
+    "pr",
+    "view",
+    String(prNumber),
+    "--repo",
+    repo,
+    "--json",
+    "comments",
+  ]);
+  const parsed = JSON.parse(output) as { comments?: unknown };
+  const comments = Array.isArray(parsed.comments) ? parsed.comments : [];
+  return comments.some((c: unknown) =>
+    isFleetRollbackCloseComment(c, fleetAuthors)
+  );
+}
+
+// ---------------------------------------------------------------------------
 // hasExistingMilestoneSummaryPr
 // ---------------------------------------------------------------------------
 
@@ -313,6 +487,10 @@ export async function checkMilestoneComplete(
  *
  * Checks all states (open, merged, closed) to avoid re-creating PRs
  * that have already been merged or handled (Issue #568).
+ *
+ * Issue #3474: merged and closed-unmerged final PRs are now classified
+ * earlier by `classifyMilestoneFinalPrs`; this check stays as the idempotency
+ * guard for the create path.
  *
  * Issue #1133: Returns the existing PR number when found, so it can be
  * logged when closing the tracking issue.
@@ -327,6 +505,9 @@ export async function checkMilestoneComplete(
  * @param milestoneBranch - The milestone branch name
  * @param ghCommandFn - Function to execute gh CLI commands
  * @param cache - Optional iteration-scoped IssueCache
+ * @param ignorePrNumbers - Closed final PRs a roll-back superseded (Issue
+ *   #3474): they must not count as existing, or the fresh final PR is never
+ *   raised
  * @returns Result with the existing PR number, or null if not found
  */
 export async function hasExistingMilestoneSummaryPr(
@@ -335,6 +516,7 @@ export async function hasExistingMilestoneSummaryPr(
   milestoneBranch: string,
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
+  ignorePrNumbers: readonly number[] = [],
 ): Promise<Result<number | null>> {
   try {
     const prs = await fetchAllStatePRsByBranch(
@@ -346,7 +528,9 @@ export async function hasExistingMilestoneSummaryPr(
 
     // Defence in depth: filter by headRefName in case the API returns
     // broader results than expected (Issue #859)
-    const matching = prs.filter((pr) => pr.headRefName === milestoneBranch);
+    const matching = prs.filter((pr) =>
+      pr.headRefName === milestoneBranch && !ignorePrNumbers.includes(pr.number)
+    );
     const first = matching[0];
     return { ok: true, value: first !== undefined ? first.number : null };
   } catch (err) {
@@ -936,6 +1120,7 @@ async function createMilestoneSummaryPr(
   log: (message: string) => void,
   cache?: IssueCache,
   arming: SummaryPrArmingInputs = { skipAutoMerge: false },
+  supersededPrNumbers: readonly number[] = [],
 ): Promise<SummaryPrOutcome> {
   // Idempotent check — do not create duplicate PRs
   const existingResult = await hasExistingMilestoneSummaryPr(
@@ -944,6 +1129,7 @@ async function createMilestoneSummaryPr(
     milestoneBranch,
     ghCommandFn,
     cache,
+    supersededPrNumbers,
   );
   if (existingResult.ok && existingResult.value !== null) {
     log(
@@ -1388,6 +1574,15 @@ async function processRepoMilestones(
     ...(authorOptions !== undefined ? { authorOptions } : {}),
     log,
   };
+  // PR #3592 review: the fleet logins whose roll-back close comments count,
+  // resolved at most once per repo scan by the same rule the tracker author
+  // check uses, and only if a closed-only milestone needs it.
+  let fleetForRollbackCloses: Promise<string[]> | undefined;
+  const resolveFleetForRollbackCloses = (): Promise<string[]> =>
+    fleetForRollbackCloses ??= resolveAlertDedupAuthors(
+      authorOptions ?? {},
+      log,
+    );
   // Resolve default branch via injected function (Issue #1509 — uses the
   // persistent 7-day cache in production so we don't burn a GitHub REST
   // quota slot every run_core cycle).
@@ -1567,14 +1762,131 @@ async function processRepoMilestones(
       }
     }
 
-    // Skip empty milestones (no closed issues means nothing was worked on)
+    // Issue #3474: classify the milestone's final PR(s) before anything else.
+    // A merged final PR closes the milestone; one closed without merging means
+    // no new final PR will be raised, so close out instead of wedging forever.
+    // A "superseded" result (the fleet's roll-back closed it) falls through
+    // to raise a fresh final PR, ignoring the closed ones.
+    const finalPrs = await classifyMilestoneFinalPrs(
+      repo,
+      milestoneBranch,
+      ghCommandFn,
+      resolveFleetForRollbackCloses,
+    );
+    if (!finalPrs.ok) {
+      log(
+        `WARNING: ${finalPrs.error.message} — continuing close-out without ` +
+          `final PR classification (Issue #3474)`,
+      );
+    } else if (finalPrs.value.kind === "merged") {
+      const prNumber = finalPrs.value.prNumber;
+      if (canonicalTracker !== null) {
+        await closeMilestoneTrackingIssue(
+          repo,
+          canonicalTracker,
+          ghCommandFn,
+          log,
+          milestone.number,
+          cache,
+        );
+      }
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason:
+          `the final PR #${prNumber} for milestone '${milestone.title}' ` +
+          `has merged, so '${milestoneBranch}' is being retired`,
+      });
+      await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
+      log(
+        `Milestone '${milestone.title}' in ${repo}: final PR #${prNumber} merged — closed (Issue #3474)`,
+      );
+      continue;
+    } else if (finalPrs.value.kind === "abandoned") {
+      const prNumber = finalPrs.value.prNumber;
+      const body = `Milestone '${milestone.title}' close-out: the final PR ` +
+        `#${prNumber} was closed without merging, so no new final PR will ` +
+        `be raised and the milestone is being closed (Issue #3474).`;
+      try {
+        await ghCommandFn(
+          canonicalTracker !== null
+            ? [
+              "issue",
+              "comment",
+              String(canonicalTracker),
+              "--repo",
+              repo,
+              "--body",
+              body,
+            ]
+            : [
+              "pr",
+              "comment",
+              String(prNumber),
+              "--repo",
+              repo,
+              "--body",
+              body,
+            ],
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log(
+          `WARNING: Could not comment on the close-out of milestone ` +
+            `'${milestone.title}' in ${repo}: ${message} (Issue #3474)`,
+        );
+      }
+      if (canonicalTracker !== null) {
+        await closeMilestoneTrackingIssue(
+          repo,
+          canonicalTracker,
+          ghCommandFn,
+          log,
+          milestone.number,
+          cache,
+        );
+      }
+      await retireMilestoneSyncPrs({
+        repo,
+        milestoneBranch,
+        ghCommandFn,
+        log,
+        reason: `milestone '${milestone.title}' final PR #${prNumber} was ` +
+          `closed unmerged, so '${milestoneBranch}' is being retired`,
+      });
+      await closeGitHubMilestone(repo, milestone.number, ghCommandFn, log);
+      log(
+        `Milestone '${milestone.title}' in ${repo}: final PR #${prNumber} closed unmerged — milestone closed, no new final PR (Issue #3474)`,
+      );
+      continue;
+    }
+
+    // Issue #3474: read the closed items before the nothing-to-merge close
+    // so a milestone with none can be told apart from one planning has only
+    // just created.
     const closedIssues = await getClosedIssues(
       repo,
       milestone.title,
       ghCommandFn,
       cache,
     );
-    if (closedIssues.length === 0) {
+    // PR #3592 review: planning POSTs the milestone and only then assigns its
+    // sub-issues, so for a moment it has no items and no branch. Leave a young
+    // (or undated) empty milestone for a later scan rather than closing it
+    // under the planning run.
+    if (
+      closedIssues.length === 0 &&
+      isMilestoneYoung(milestone.created_at, Date.now())
+    ) {
+      log(
+        `Milestone '${milestone.title}' in ${repo} has no closed items and ` +
+          `was created within the last ${
+            EMPTY_MILESTONE_GRACE_MS / 60_000
+          } minutes (or has no usable created_at) — leaving it for a later ` +
+          `scan (PR #3592 review)`,
+      );
       continue;
     }
 
@@ -1620,6 +1932,15 @@ async function processRepoMilestones(
       continue;
     }
 
+    // Skip empty milestones (no closed issues means nothing was worked on).
+    // Issue #3474: this runs only after the nothing-to-merge check above, so
+    // an empty milestone with no branch (or 0 ahead) is closed rather than
+    // skipped (once past the grace window above); an empty milestone with
+    // commits ahead is still skipped.
+    if (closedIssues.length === 0) {
+      continue;
+    }
+
     // Create tracking issue (idempotent)
     const trackingIssueNumber = await createMilestoneTrackingIssue(
       repo,
@@ -1645,12 +1966,19 @@ async function processRepoMilestones(
     // it endlessly while leaving the milestone branch unable to take the
     // default branch through a PR. The post-merge retirement below is what
     // covers a sync raised after this point.
+    // A final PR a roll-back closed does not count as existing here either,
+    // or the sync PR would stay open while the fresh final PR is raised.
+    const supersededPrNumbers =
+      finalPrs.ok && finalPrs.value.kind === "superseded"
+        ? finalPrs.value.closedPrNumbers
+        : [];
     const existingSummary = await hasExistingMilestoneSummaryPr(
       repo,
       milestone.title,
       milestoneBranch,
       ghCommandFn,
       cache,
+      supersededPrNumbers,
     );
     if (existingSummary.ok && existingSummary.value === null) {
       await retireMilestoneSyncPrs({
@@ -1677,6 +2005,7 @@ async function processRepoMilestones(
       log,
       cache,
       { ...arming, ...(authorOptions !== undefined ? { authorOptions } : {}) },
+      supersededPrNumbers,
     );
     if (prResult.outcome === "created") {
       onPrCreated(1);

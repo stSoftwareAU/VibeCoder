@@ -105,6 +105,10 @@ Deno.test("config_unknown_keys - KNOWN_CONFIG_KEYS includes operational fields",
     "sync_milestone_branches",
     "health_cache_ttl",
     "quality_check_timeout",
+    // Issue #3628: quota-aware polling gate floors.
+    "quota_poll_park_floor",
+    "quota_poll_park_nice",
+    "quota_poll_idle_floor",
   ];
   for (const field of opFields) {
     assertEquals(

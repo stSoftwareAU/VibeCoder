@@ -17,9 +17,11 @@
  * a machine-parseable `clone-corrupt-repeat` payload riding inside the error
  * message, so callers downstream of `setupRepo` (which only ever sees the
  * message, not this module's types) can still recover the structured detail.
+ * The release path reads it only from a setup-phase outcome (Issue #3446).
  */
 
 import type { Result } from "../types.ts";
+import type { RunOutcome } from "./run_outcome.ts";
 import { detectHostFault } from "./host_fault.ts";
 import { atomicWrite } from "./file_utils.ts";
 import { withStateLock } from "./state_mutex.ts";
@@ -59,17 +61,22 @@ export function formatCloneCorruptRepeat(repeat: CloneCorruptRepeat): string {
   return `${CLONE_CORRUPT_REPEAT_MARKER}: ${JSON.stringify(repeat)}`;
 }
 
-/** Matches the single-line `clone-corrupt-repeat: {json}` payload inside any message. */
+/**
+ * Matches only a line that starts with the single-line
+ * `clone-corrupt-repeat: {json}` payload, the line the worker writes (Issue
+ * #3446), so text that merely quotes the payload mid-line is not read.
+ */
 const CLONE_CORRUPT_REPEAT_RE = new RegExp(
-  `${
+  `^${
     CLONE_CORRUPT_REPEAT_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   }: (\\{[^\\n]*\\})`,
+  "m",
 );
 
 /**
- * Parse the payload out of any message containing it; `null` when absent or
- * malformed (validates every field's type; optional fields must be a string
- * when present).
+ * Parse the payload out of a message with it on a line of its own; `null`
+ * when absent or malformed (validates every field's type; optional fields
+ * must be a string when present).
  */
 export function parseCloneCorruptRepeat(
   message: string,
@@ -116,6 +123,20 @@ export function parseCloneCorruptRepeat(
     repeat.aside = obj.aside;
   }
   return repeat;
+}
+
+/**
+ * Read the repeat payload from a run outcome. Only a setup-phase `no_pr`
+ * outcome is read: the setup phase is the only one whose message carries the
+ * cap refusal, and later phases' messages can quote agent- or
+ * repository-controlled text, which must never be trusted as the worker's
+ * signal (Issue #3446).
+ */
+export function cloneCorruptRepeatFromOutcome(
+  outcome: RunOutcome | undefined,
+): CloneCorruptRepeat | null {
+  if (outcome?.kind !== "no_pr" || outcome.phase !== "setup") return null;
+  return parseCloneCorruptRepeat(outcome.message);
 }
 
 /** A repo is only re-cloned once per this many milliseconds, per host. */

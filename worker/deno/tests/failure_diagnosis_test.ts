@@ -18,6 +18,7 @@ import {
   isInfrastructureFailure,
   normaliseFailureCategory,
   parseDiagnosticContext,
+  SECURITY_FIX_GATE_MARKER,
   SUMMARY_RULE_GATE_MARKER,
 } from "../lib/failure_diagnosis.ts";
 import { classifyRunFailure } from "../lib/run_outcome_classifier.ts";
@@ -861,4 +862,62 @@ Deno.test("summary_incomplete category - display, diagnosis, oneliner and valida
     "summary_incomplete",
   );
   assertEquals(isInfrastructureFailure("summary_incomplete"), false);
+});
+
+// ============================================================================
+// security_fix_gate (Issue #3454)
+// ============================================================================
+
+const QUOTED_3454 =
+  'PR creation blocked: the test Deno.test("rejects a forged token with TypeError: invalid signature after timeout", ...) was removed; ' +
+  'Deno.test("survives SIGTERM and rate limit handling", ...) too; ENOSPC: no space left on device';
+
+Deno.test("detectFailureCategory - a marked security-fix gate refusal quoting TypeError and timeout is security_fix_gate (Issue #3454)", () => {
+  const message = `${SECURITY_FIX_GATE_MARKER}: ${QUOTED_3454}`;
+  assertEquals(detectFailureCategory(message), "security_fix_gate");
+  assertEquals(
+    detectFailureCategory(
+      `${SECURITY_FIX_GATE_MARKER}: Deno.test("rejects a forged token with TypeError: invalid signature after timeout", ...)`,
+    ),
+    "security_fix_gate",
+  );
+  assertEquals(
+    detectFailureCategory(
+      `${SECURITY_FIX_GATE_MARKER}: Deno.test("handles SIGTERM", ...) and Deno.test("rate limit", ...)`,
+    ),
+    "security_fix_gate",
+  );
+});
+
+Deno.test("detectFailureCategory - the security-fix gate marker must be a prefix, not merely included (Issue #3454)", () => {
+  assertEquals(
+    detectFailureCategory(
+      `Claude timed out after 3600s: ${SECURITY_FIX_GATE_MARKER}`,
+    ),
+    "timeout",
+  );
+  assertEquals(
+    detectFailureCategory(QUOTED_3454) === "security_fix_gate",
+    false,
+  );
+});
+
+Deno.test("security_fix_gate category - display, diagnosis, oneliner and validation handle it (Issue #3454)", () => {
+  assertEquals(
+    getFailureCategoryDisplay("security_fix_gate"),
+    "security-fix-gate",
+  );
+  for (
+    const text of [
+      getFailureDiagnosis("security_fix_gate"),
+      getFailureDiagnosisOneliner("security_fix_gate"),
+    ]
+  ) {
+    assertStringIncludes(text.toLowerCase(), "security-fix gate");
+  }
+  assertEquals(
+    normaliseFailureCategory("security_fix_gate"),
+    "security_fix_gate",
+  );
+  assertEquals(isInfrastructureFailure("security_fix_gate"), false);
 });

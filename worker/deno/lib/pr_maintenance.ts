@@ -2032,7 +2032,10 @@ async function attemptMerge(
     if (result.result === "closed_retargeted_sync") {
       return { kind: "sync_pr_retired" };
     }
-    if (result.deferral === "sync-base-unreadable") {
+    if (
+      result.deferral === "sync-base-unreadable" ||
+      result.deferral === "fix-base-unreadable"
+    ) {
       return { kind: "milestone_route_unreadable" };
     }
 

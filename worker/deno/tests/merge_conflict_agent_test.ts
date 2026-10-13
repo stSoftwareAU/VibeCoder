@@ -177,6 +177,8 @@ Deno.test("merge conflict agent - the PR run carries the merge_conflict phase an
 
   const options = captured.options[0]!;
   assertEquals(options.phase, "merge_conflict");
+  // Issue #3394: the agent's pre-push hook resolves the repo's pre-flight by repo.
+  assertEquals(options.repo, "stSoftwareAU/VibeCoder");
   assertEquals(options.timeoutSeconds, 111);
   assertEquals(options.noOutputTimeout, 22);
   assertEquals(options.cwd, "/tmp/some-checkout");

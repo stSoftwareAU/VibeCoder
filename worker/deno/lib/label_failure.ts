@@ -35,7 +35,23 @@ import {
   buildHostFaultMarker,
   buildHostFaultNote,
   detectHostFault,
+  type HostFaultKind,
+  QUALITY_GATE_SOURCE_NOTE,
 } from "./host_fault.ts";
+
+/**
+ * Issue #3445: quality-gate output is repository-authored, so it is never a
+ * host fault.
+ */
+function hostFaultFor(options: FailureOptions): HostFaultKind | null {
+  return options.qualityGateOutput
+    ? null
+    : detectHostFault(options.failureMessage);
+}
+
+function qualityGateLine(options: FailureOptions): string {
+  return options.qualityGateOutput ? `\n\n${QUALITY_GATE_SOURCE_NOTE}` : "";
+}
 
 /**
  * Check if an issue already has the failed-once label.
@@ -161,13 +177,14 @@ export async function markIssueAsFailedOnce(
   // Issue #2890: a failure caused by the worker host itself (a corrupt
   // clone, a full disk, a container image that would not build) is not a
   // fault of this issue, so it is called out so a later sweep can release
-  // the label once the host is healthy again.
-  const hostFault = detectHostFault(options.failureMessage);
+  // the label once the host is healthy again. Quality-gate output is the
+  // repository's own, so it is never one (Issue #3445).
+  const hostFault = hostFaultFor(options);
   const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
 
   let commentBody = `## Automated Processing Failed (First Attempt)
 
-**Category:** \`${categoryDisplay}\`${hostFaultLine}
+**Category:** \`${categoryDisplay}\`${hostFaultLine}${qualityGateLine(options)}
 
 The automated worker was unable to complete this issue on the first attempt.
 
@@ -342,13 +359,13 @@ export async function markIssueAsFailed(
   const errorSection = buildErrorSection(options.failureMessage);
 
   // Issue #2890: see the matching note in markIssueAsFailedOnce.
-  const hostFault = detectHostFault(options.failureMessage);
+  const hostFault = hostFaultFor(options);
   const hostFaultLine = hostFault ? `\n\n${buildHostFaultNote(hostFault)}` : "";
 
   let commentBody =
     `## Automated Processing Failed (Second Attempt - Permanently Failed)
 
-**Category:** \`${categoryDisplay}\`${hostFaultLine}
+**Category:** \`${categoryDisplay}\`${hostFaultLine}${qualityGateLine(options)}
 
 The automated worker has failed to complete this issue twice and will not retry automatically.
 

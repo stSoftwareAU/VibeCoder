@@ -1092,6 +1092,12 @@ Deno.test("sync - keeps a leading degraded-run section (Issue #2562)", async () 
         if (args[0] === "pr" && args[1] === "view") {
           return viewJson(live);
         }
+        // Issue #3350: the banner is re-derived from the current issue.
+        if (args[0] === "issue" && args[1] === "view") {
+          return JSON.stringify({
+            body: "## Acceptance Criteria\n\n- the export\n",
+          });
+        }
         const out = await record(args);
         const edited = ghCalls.at(-1)?.bodyFileContent;
         if (args[0] === "pr" && args[1] === "edit" && edited) live = edited;
@@ -1376,4 +1382,196 @@ Deno.test("runPrBodySync - a failed sync warns once and does not fail the caller
   );
   assertEquals(warnings, ["PR body sync failed (Issue #3089)"]);
   assertEquals(errors, []);
+});
+
+// --- degraded-run section re-derivation (Issue #3350) ---------------------
+
+const STALE_NO_FOLLOW_UP = [
+  "## ⚠️ Degraded run — no follow-up filed",
+  "",
+  "This run was degraded (served model `claude-haiku-4-5` does not match " +
+  "expected `opus`). No follow-up was filed because the issue states no " +
+  "acceptance criteria.",
+  "",
+  "",
+].join("\n");
+
+const OLD_SUMMARY_WITH_FOOTER = [
+  `# PR Summary — Issue #${ISSUE_NUMBER}: old title`,
+  "",
+  "## Summary",
+  "",
+  `Original summary. Closes #${ISSUE_NUMBER}.`,
+  "",
+  "---",
+  "",
+  `🤖 Processed by: old-worker\n${marker(ISSUE_NUMBER)}`,
+].join("\n");
+
+async function writeSummary(repoPath: string, text: string): Promise<void> {
+  await Deno.writeTextFile(
+    `${repoPath}/docs/archive/pr-summaries/pr-summary-${ISSUE_NUMBER}.md`,
+    text,
+  );
+}
+
+function criterionSummary(status: string, reviewer: string): string {
+  return `## Summary\n\nDid it. Closes #${ISSUE_NUMBER}.\n\n` +
+    `## Acceptance Criteria\n\n- **${status}** — the export works — ` +
+    `evidence: \`worker/deno/tests/x_test.ts\` — reviewer: ${reviewer}\n`;
+}
+
+Deno.test("sync - re-derives a stale degraded-run section from the current issue and summary (Issue #3350)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    await writeSummary(repoPath, criterionSummary("met", "met"));
+    const live = `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`;
+    const ghCalls: GhCall[] = [];
+    const record = stubGh(ghCalls);
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(live));
+        }
+        if (args[0] === "issue" && args[1] === "view") {
+          return Promise.resolve(JSON.stringify({
+            body: "## Acceptance Criteria\n\n- the export works\n",
+          }));
+        }
+        return record(args);
+      },
+      runGitCommand: stubGit([], { diffChanged: true }),
+      logger,
+    };
+    const result = await syncPrBodyFromSummary({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    }, deps);
+    assert(result.ok);
+    if (result.ok) assertEquals(result.value.status, "updated");
+    const edit = ghCalls.find((c) => c.args[1] === "edit");
+    const synced = edit?.bodyFileContent ?? "";
+    assert(synced.length > 0, "expected a pr edit");
+    assertEquals(synced.startsWith("## ⚠️ Degraded run"), false);
+    assertEquals(synced.includes("states no acceptance criteria"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+/** Runs one sync against `live` with the given issue-view behaviour. */
+async function syncWithDegradedLive(opts: {
+  summary: string;
+  live: string;
+  issueView: () => string;
+}) {
+  const repoPath = await makeRepo();
+  try {
+    await writeSummary(repoPath, opts.summary);
+    const ghCalls: GhCall[] = [];
+    const record = stubGh(ghCalls);
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(opts.live));
+        }
+        if (args[0] === "issue" && args[1] === "view") {
+          ghCalls.push({ args });
+          return Promise.resolve(opts.issueView());
+        }
+        return record(args);
+      },
+      runGitCommand: stubGit([], { diffChanged: true }),
+      logger,
+    };
+    const result = await syncPrBodyFromSummary({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    }, deps);
+    return { result, ghCalls };
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+}
+
+Deno.test("sync - fails loudly when the issue cannot be read to re-derive the degraded-run section (Issue #3350)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => {
+      throw new Error("gh issue view boom");
+    },
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, `#${ISSUE_NUMBER}`);
+  }
+  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+});
+
+Deno.test("sync - makes no issue call when the body carries no degraded-run section (Issue #3350)", async () => {
+  const repoPath = await makeRepo();
+  try {
+    const ghCalls: GhCall[] = [];
+    const record = stubGh(ghCalls);
+    const live = `## Summary\n\nOld.\n\n---\n\n${marker(ISSUE_NUMBER)}`;
+    const deps: SyncPrBodyDeps = {
+      runGhCommand: (args) => {
+        if (args[0] === "pr" && args[1] === "view") {
+          return Promise.resolve(viewJson(live));
+        }
+        return record(args);
+      },
+      runGitCommand: stubGit([], { diffChanged: true }),
+      logger,
+    };
+    const result = await syncPrBodyFromSummary({
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      repoPath,
+      beforeSha: BEFORE_SHA,
+      workerName: "worker-a",
+      githubUser: "ghuser",
+    }, deps);
+    assert(result.ok);
+    assertEquals(ghCalls.length, 1);
+    assertEquals(ghCalls.some((c) => c.args[0] === "issue"), false);
+  } finally {
+    await Deno.remove(repoPath, { recursive: true });
+  }
+});
+
+Deno.test("sync - a summary that now marks the criterion partial replaces the no-follow-up banner (Issue #3350)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assertStringIncludes(synced, "The worker filed no follow-up for these items");
+  assertStringIncludes(synced, "**partial** — the export works");
+  assertEquals(synced.includes("No follow-up was filed because"), false);
+});
+
+Deno.test("sync - fails when the issue view carries no string body (Issue #3350)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${STALE_NO_FOLLOW_UP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => JSON.stringify({}),
+  });
+  assertEquals(result.ok, false);
+  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
 });

@@ -805,6 +805,7 @@ values are guarded down to `0` by `getRepoNice()` in
   spent token beside a fresh one, or one about to reopen, keeps the backlog
   running. See the
   [issue-processing manual](docs/workflows/issue-processing.md#-weekly-claude-quota-pace-gate-tiers-3-and-4).
+- **The GitHub GraphQL quota parks the tail and defers the idle tier (Issue #3628).** Once per scan the worker probes the account's GraphQL quota with a free `{ rateLimit { … } }` query. Below `quota_poll_park_floor` (default 1500) repos with `nice >= quota_poll_park_nice` (default 99) are skipped whole for the cycle — no PR fetches, no timeline batch, no collectors — and below `quota_poll_idle_floor` (default 500) idle-task collection is deferred fleet-wide, the idle-task filer's repo walk included. Both boundaries are strict less-than, each cycle re-probes so recovery is automatic, floors of `0` disable a tier, and an unreadable quota defers nothing — the gate fails open. The scan-only shape matches the pace gate above: Priority 1.x in-flight maintenance is never reordered, and the idle-detect audit models both deferrals as the fleet's own deliberate refusals so neither parks into a `mis_classification` alert. See the [configuration manual](docs/CONFIGURATION.md#quota-poll-gate--park-the-tail-defer-the-idle-tier-issue-3628).
 - **New-work selection only.** The tiering gates the Priority 2 new-issue scan
   (`find_oldest_issue.ts`), the label scan (`find_issues_by_label.ts`), and the
   planning scan (`find_planning_issues.ts`). It does **not** reorder Priority
@@ -3076,8 +3077,13 @@ or not the agent already raised the PR itself from inside the execute phase
 (Issue #3163): a PR the agent raised itself is not finalised or auto-merged
 until that turn has run. A block that survives that turn — the run's
 second — finalises an existing PR as before, unless the claim check alone is
-still blocking: that block first gets one summary-only correction turn
-(Issue #3324), and only a block that survives it finalises the PR.
+still blocking on the summary's own sentences (a doc finding never qualifies,
+since that turn can only rewrite the summary): that block first gets one
+summary-only correction turn (Issue #3324), and only a block that survives it
+finalises the PR. A standing Standards violation on the branch's own lines is
+a defect in the change, not a documentation shortfall, so that recovery turn
+may fix the code for it, and an existing PR finalised with one still standing
+is labelled `standing-violation` rather than auto-merged (Issue #3382).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in
