@@ -51,7 +51,7 @@ Deno.test("readPrLiveState - an open PR reads as open, with its mergeable verdic
     "--repo",
     "owner/repo",
     "--json",
-    PR_LIVE_STATE_JSON_FIELDS,
+    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
   ]]);
 });
 
@@ -165,7 +165,7 @@ Deno.test("isPrLiveStateRead - recognises this read's own argv, and nothing else
       "view",
       "7",
       "--json",
-      PR_LIVE_STATE_JSON_FIELDS,
+      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
     ]),
   );
   assert(isPrLiveStateRead(["pr", "view", "7", "--json", "state"]));
@@ -419,5 +419,8 @@ Deno.test("readPrLiveState - a payload without labels reads as no labels, so no 
 });
 
 Deno.test("readPrLiveState - the live read asks gh for labels (Issue #3517)", () => {
-  assert(PR_LIVE_STATE_JSON_FIELDS.split(",").includes("labels"));
+  assertEquals(
+    PR_LIVE_STATE_JSON_FIELDS,
+    "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
+  );
 });

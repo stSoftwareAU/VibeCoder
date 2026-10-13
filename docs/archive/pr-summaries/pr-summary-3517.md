@@ -21,6 +21,10 @@ The sweep now honours the hold:
   `gh pr merge --disable-auto`. It does this on every sweep until the disarm
   succeeds. A successful disarm marks the sweep as mutated.
 
+Only the sweep checks the label. The CI-fix pass (`pr_ci_processor.ts`) still
+re-arms auto-merge after it pushes a fix, without reading the label. The
+issue asks only for the sweep, and the docs now say so.
+
 Labels are read live and never cached. No persisted shape changes, so no cache
 key needs bumping.
 
@@ -105,7 +109,7 @@ Backend change, so there is no web interface to screenshot.
 worktree. Targeted run at head: `deno test -A tests/auto_merge_sweep_test.ts
 tests/auto_merge_sweep_disarm_wiring_test.ts
 tests/pr_branch_update_merged_midflight_test.ts tests/pr_live_state_test.ts`
-gave 80 passed, 0 failed.
+gave 81 passed, 0 failed.
 
 - **Docs sweep** — grep: "Known gap", `standing-violation`, `#3517`,
   `disable-auto`, `PR_LIVE_STATE_JSON_FIELDS`, `--json state,mergeable`,
@@ -144,9 +148,45 @@ the code (`git status` clean afterwards).
     names"
   - "makeGhPrStateFetcher - asks gh for state and mergeable, and returns the
     payload raw"
+  - "the hold line says it is disarming only for an armed PR". It pins the
+    `armedHold ? ", disarming auto-merge" : ""` ternary in the hold log line
+    (`auto_merge_sweep.ts:294`).
 - `pr_live_state_test.ts`:
   - "readPrLiveState - an open PR surfaces its label names"
-  - "readPrLiveState - the live read asks gh for labels (Issue #3517)"
+  - "readPrLiveState - the live read asks gh for labels (Issue #3517)". It
+    compares `PR_LIVE_STATE_JSON_FIELDS` with the literal
+    `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`.
+
+The existing exact-argv assertions in "readPrLiveState - an open PR reads as
+open, with its mergeable verdict", "isPrLiveStateRead - recognises this read's
+own argv, and nothing else" and "makeGhPrStateFetcher - asks gh for state and
+mergeable, and returns the payload raw" still pin a literal field string. It
+is now the six-field
+`state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`, not
+the production constant, so dropping any field fails a test.
+
+Removed or rewritten assertions. #3517 adds `labels` to the live read's
+`--json` fields and to every parsed reading (`PrLiveFields.labels`,
+`PrLiveStateReading.labels`). Each old assertion below pinned the five-field
+string or a reading shape without `labels`, so it is untrue at the head. Each
+is re-asserted in the same test with `labels: []` added to the expected
+reading, or with `,labels` appended to the literal field string:
+
+- Removed from `worker/deno/tests/pr_branch_update_merged_midflight_test.ts`: `assertEquals( parsePrLiveFields('{"mergeable":"CONFLICTING","state":"OPEN"}'), { state: "OPEN", mergeable: "CONFLICTING", armed: false, behind: false, }, );` — #3517 adds `labels` to every parsed reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_branch_update_merged_midflight_test.ts`: `assertEquals(parsePrLiveFields('{"mergeable":"mergeable","state":"OPEN"}'), { state: "OPEN", mergeable: "MERGEABLE", armed: false, behind: false, });` — #3517 adds `labels` to every parsed reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_branch_update_merged_midflight_test.ts`: `assertEquals(parsePrLiveFields('{"mergeable":null,"state":"OPEN"}'), { state: "OPEN", mergeable: "UNKNOWN", armed: false, behind: false, });` — #3517 adds `labels` to every parsed reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_branch_update_merged_midflight_test.ts`: `assertEquals(parsePrLiveFields("CLOSED\n"), { state: "CLOSED", mergeable: "UNKNOWN", armed: false, behind: false, });` — #3517 adds `labels` to every parsed reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_branch_update_merged_midflight_test.ts`: `assertEquals(parsePrLiveFields("[]"), { state: "UNKNOWN", mergeable: "UNKNOWN", armed: false, behind: false, });` — #3517 adds `labels` to every parsed reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_branch_update_merged_midflight_test.ts`: `assertEquals( calls[0]!.includes( "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision", ), true, );` — #3517 adds `labels` to the `--json` fields, so the five-field argv is untrue; the six-field literal is asserted in its place
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals(reading, { open: true, mergeable: "CONFLICTING", armed: false, behind: false, });` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals(calls, [[ "pr", "view", "12", "--repo", "owner/repo", "--json", "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision", ]]);` — #3517 adds `labels` to the `--json` fields, so the five-field argv is untrue; the six-field literal is asserted in its place
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals( await readPrLiveState( "owner/repo", 12, () => Promise.resolve('{"mergeable":"MERGEABLE","state":"OPEN"}'), ), { open: true, mergeable: "MERGEABLE", armed: false, behind: false, }, );` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `` assertEquals( await readPrLiveState("owner/repo", 12, () => Promise.resolve(raw)), { open: true, mergeable: "UNKNOWN", armed: false, behind: false, }, `raw payload ${raw} must read as an unknown mergeable`, ); `` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assert( isPrLiveStateRead([ "pr", "view", "7", "--json", "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision", ]), );` — #3517 adds `labels` to the `--json` fields, so the five-field argv is no longer this read's own argv; the six-field literal is asserted in its place
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals(reading, { open: true, mergeable: "MERGEABLE", armed: false, behind: false, });` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals(reading, { open: true, mergeable: "MERGEABLE", armed: true, behind: true, });` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals(reading, { open: true, mergeable: "MERGEABLE", armed: false, behind: true, });` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
+- Removed from `worker/deno/tests/pr_live_state_test.ts`: `assertEquals(blocked, { open: true, mergeable: "MERGEABLE", armed: true, behind: true, changesRequested: true, });` — #3517 adds `labels` to every open reading, so the old shape without it is untrue
 
 Red-checks:
 
@@ -155,7 +195,10 @@ Red-checks:
 - Replacing `armedHold &&` with `false &&` failed 3 tests.
 - Dropping `mutated = true` failed "armed standing-violation PR is disarmed
   once…".
-- Removing `,labels` from the fields failed 2 tests.
+- Removing `,labels` from the fields failed 4 tests: the three exact-argv
+  tests and "the live read asks gh for labels".
+- Negating the `armedHold ?` ternary in the hold log line failed "the hold
+  line says it is disarming only for an armed PR".
 - Making `parseLabelNames` return `[]` failed 3 tests.
 - Not passing labels through `readPrLiveState` failed 9 tests.
 - Replacing the production `disarmAutoMerge` with a no-op failed the wiring
@@ -171,6 +214,9 @@ Red-checks:
   is"; this asserts the sibling is attempted.
 - `worker/deno/lib/auto_merge_sweep.ts:289`, first sighting logs, repeat does
   not → "hold is logged once per process…"; forcing the guard true went red.
+- `worker/deno/lib/auto_merge_sweep.ts:294`, armed hold says "disarming
+  auto-merge", unarmed hold does not → "the hold line says it is disarming
+  only for an armed PR"; negating the ternary went red.
 - `worker/deno/lib/auto_merge_sweep.ts:299`, operand `armedHold` false (not
   armed) → "unarmed standing-violation PR is held without a disarm call";
   operand `armedHold` true → "armed standing-violation PR is disarmed once…";

@@ -1068,3 +1068,25 @@ Deno.test("Issue #3517: base integrity is not checked for a held PR", async () =
   assertEquals(state.baseChecks, []);
   resetAnnouncedDraftsForTest();
 });
+
+Deno.test("Issue #3517: the hold line says it is disarming only for an armed PR", async () => {
+  resetAnnouncedDraftsForTest();
+  infos.length = 0;
+  const { options } = harness({
+    [VC]: [{ number: 100 }, { number: 101 }],
+  }, {
+    prLiveState: liveWithLabels({
+      100: { labels: [STANDING_VIOLATION_LABEL], armed: true },
+      101: { labels: [STANDING_VIOLATION_LABEL], armed: false },
+    }),
+  });
+
+  const result = await sweepAutoMerge(options);
+
+  assert(result.ok);
+  const lineFor = (pr: number) =>
+    holdLines().find((i) => i.context?.prNumber === pr)!.message;
+  assertEquals(lineFor(100).includes("disarming auto-merge"), true);
+  assertEquals(lineFor(101).includes("disarming auto-merge"), false);
+  resetAnnouncedDraftsForTest();
+});

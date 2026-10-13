@@ -21,7 +21,6 @@ import {
   executePrBranchUpdates,
   makeGhPrStateFetcher,
   parsePrLiveFields,
-  PR_LIVE_STATE_JSON_FIELDS,
   type PrBranchExecutionDeps,
   type PrBranchUpdateAction,
   resetPrConflictWarnings,
@@ -229,9 +228,13 @@ Deno.test("makeGhPrStateFetcher - asks gh for state and mergeable, and returns t
   assertEquals(calls.length, 1);
   assertEquals(calls[0]!.includes("381"), true);
   assertEquals(calls[0]!.includes("org/repo"), true);
-  assertEquals(calls[0]!.includes(PR_LIVE_STATE_JSON_FIELDS), true);
   // Issue #3517: the label list rides the same round trip.
-  assertEquals(PR_LIVE_STATE_JSON_FIELDS.split(",").includes("labels"), true);
+  assertEquals(
+    calls[0]!.includes(
+      "state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels",
+    ),
+    true,
+  );
 });
 
 // =============================================================================
