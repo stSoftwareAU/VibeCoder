@@ -2071,6 +2071,24 @@ exemption with no reason blocks too (Issue #3288, after
 GRQ-AutoTrader#2682 and VibeCoder#3282 raised with admitted-untested
 entries).
 
+**The facts file (Issue #3535).** The agent may instead record the Branch
+outcomes list as structured JSON in
+`docs/archive/pr-summaries/pr-summary-<N>.facts.json`, validated by
+`parseSummaryFacts`. With no facts file the prose gate above is unchanged. An
+unreadable file (any read error other than not-found), malformed JSON or a
+schema-invalid file blocks PR creation with a reason naming the facts file,
+as a summary-rule block that shares the single in-run recovery. A facts file
+alongside a hand-written `Branch outcomes` header in the summary also blocks.
+A valid file has every test path it names existence-checked at HEAD with the
+same `git ls-tree` lookup (an absent test blocks), and its list is rendered
+by `renderBranchOutcomes` into the summary, at the
+`<!-- vibe-branch-outcomes -->` marker or appended when the marker is
+absent, before the PR body is assembled. The PR-body resync applies the same
+rendering, digests the facts content with the summary (a PR with no facts file
+digests the summary alone, so older digests stay valid), counts a change to the
+facts file in the legacy no-digest diff rule, and fails with an error naming
+the file when it is unreadable or invalid.
+
 It is a summary-rule gate like docs sweep and the placeholder-token gate: its
 verdict is folded into an earlier summary gate's own notice when that one
 blocks first, it shares the single
