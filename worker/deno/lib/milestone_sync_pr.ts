@@ -32,9 +32,16 @@
 import type { Result } from "../types.ts";
 import { PRIMARY_QUOTA_SKIP_PREFIX } from "./primary_quota_latch.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
+import {
+  isMilestoneSyncBranch,
+  syncBranchFor,
+} from "./milestone_sync_branch.ts";
 
-/** Prefix for the branch a sync PR is raised from. No ruleset covers it. */
-export const SYNC_BRANCH_PREFIX = "sync/milestone";
+export {
+  isMilestoneSyncBranch,
+  SYNC_BRANCH_PREFIX,
+  syncBranchFor,
+} from "./milestone_sync_branch.ts";
 
 /**
  * Whether a push failed because a repository rule refused it.
@@ -61,26 +68,6 @@ export function isRuleViolationPush(stderr: string): boolean {
  */
 export function isStaleInfoPush(stderr: string): boolean {
   return /\bstale info\b/i.test(stderr);
-}
-
-/**
- * The branch a sync PR is raised from, for a given milestone branch.
- *
- * Deterministic, so a second run finds the branch the first one pushed and
- * updates it rather than opening a second PR for the same sync.
- */
-export function syncBranchFor(milestoneBranch: string): string {
-  const leaf = milestoneBranch.replace(/^milestone\//, "").replace(
-    /[^A-Za-z0-9._-]+/g,
-    "-",
-  );
-  return `${SYNC_BRANCH_PREFIX}-${leaf}`;
-}
-
-/** Whether a PR head branch is one this module raised. */
-export function isMilestoneSyncBranch(headRefName?: string | null): boolean {
-  return typeof headRefName === "string" &&
-    headRefName.startsWith(`${SYNC_BRANCH_PREFIX}-`);
 }
 
 /**

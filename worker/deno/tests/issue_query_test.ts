@@ -14,6 +14,7 @@ import {
   fetchAllClosedIssues,
   fetchAllIssues,
   fetchAllOpenPRs,
+  fetchClosedIssuesByMilestone,
   fetchMergedPRsByUser,
   fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
@@ -1918,6 +1919,54 @@ Deno.test("issue_query - fetchAllClosedIssues returns [] uncached on empty gh ou
       null,
       "a failed closed-issues call must not poison issues_closed_all",
     );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestone carries updatedAt and still reads an old-shape cache entry (PR #3640 review)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let jsonFields = "";
+    const fresh = await fetchClosedIssuesByMilestone(
+      "org/repo",
+      "v1",
+      cache,
+      (args) => {
+        jsonFields = args[args.indexOf("--json") + 1] ?? "";
+        return Promise.resolve(JSON.stringify([{
+          number: 1,
+          title: "A",
+          milestone: { title: "v1" },
+          updatedAt: "2026-10-05T00:00:00Z",
+        }, {
+          // An empty timestamp is no timestamp: it must not key a cache.
+          number: 3,
+          title: "C",
+          milestone: { title: "v1" },
+          updatedAt: "",
+        }]));
+      },
+    );
+    assertEquals(fresh, [{
+      number: 1,
+      title: "A",
+      updatedAt: "2026-10-05T00:00:00Z",
+    }, { number: 3, title: "C" }]);
+    assertEquals(jsonFields, "number,title,milestone,updatedAt");
+
+    // Seed an entry written before `updatedAt` existed: it is served as it is,
+    // with no updatedAt invented for it.
+    await cache.write("org/repo", "issues_closed_all", [
+      { number: 2, title: "B", milestone: "v1" },
+    ]);
+    const old = await fetchClosedIssuesByMilestone(
+      "org/repo",
+      "v1",
+      cache,
+      () => Promise.reject(new Error("must be served from cache")),
+    );
+    assertEquals(old, [{ number: 2, title: "B" }]);
   } finally {
     await cleanup();
   }

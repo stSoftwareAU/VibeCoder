@@ -440,6 +440,10 @@ Deno.test("stuck_recovery cache - detectAssignedWithClosedPr merged PR closes is
           baseRefName: "main",
         });
       }
+      if (args[0] === "api" && args.join(" ").includes("/timeline?")) {
+        // A readable, event-free timeline: no assignment and no reopen.
+        return "[]";
+      }
       if (args[0] === "api" && args.join(" ").includes("/compare/")) {
         return JSON.stringify({ status: "behind" });
       }
@@ -537,6 +541,10 @@ Deno.test("stuck_recovery cache - detectAssignedWithClosedPr leaves an issue OPE
           title: "Clean up",
           state: "closed",
         }]);
+      }
+      if (args[0] === "api" && args.join(" ").includes("/timeline?")) {
+        // A readable, event-free timeline: no assignment and no reopen.
+        return "[]";
       }
       if (args[0] === "api" && args.join(" ").includes("/compare/")) {
         return JSON.stringify({ status: "diverged" });

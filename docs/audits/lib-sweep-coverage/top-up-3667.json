@@ -1,0 +1,12 @@
+{
+  "issue": 3667,
+  "chunk": "top-up-3667",
+  "title": "top-up: nice-derived poll cadence",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3667",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: repo_poll_cadence.ts (#3667)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/repo_poll_cadence.ts"
+  ],
+  "sweptAt": "66b2200e908312ea000741846a7a55e163a386f0"
+}
