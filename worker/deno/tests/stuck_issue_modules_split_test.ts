@@ -118,7 +118,7 @@ Deno.test("split - stuck_detection parseISODate handles valid and invalid input"
 
 Deno.test("split - stuck_detection hasOpenLinkedPR is independently importable", async () => {
   const ghFn = (_args: string[]): Promise<string> =>
-    Promise.resolve(JSON.stringify([{ number: 1 }]));
+    Promise.resolve(JSON.stringify([{ number: 1, title: "Fix (#1)" }]));
   assertEquals(await hasOpenLinkedPR("org/repo", 1, ghFn), true);
 });
 
