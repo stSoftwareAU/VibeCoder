@@ -38,8 +38,9 @@ PR). Closes #3494.
 Docs and prompt change only, with no backend or UI code. Premises checked
 against the head:
 
-- `setupRepo` clones with `"--depth=1", "--no-single-branch"`
-  (`worker/deno/commands/git_operations.ts:114-115`).
+- `buildShallowCloneArgs` yields `"--depth=1", "--no-single-branch"`
+  (`worker/deno/commands/git_operations.ts:114-115`); `setupRepo` clones with
+  it (line 877).
 - `ensureHistoryDepth` (`worker/deno/lib/git_history.ts:119`) and
   `mergeWithUnshallowRetry` (`worker/deno/lib/git_merge_unshallow_retry.ts:58`)
   exist and deepen a shallow clone.
