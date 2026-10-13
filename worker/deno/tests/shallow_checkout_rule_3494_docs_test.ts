@@ -12,6 +12,10 @@
 
 import { assert, assertEquals } from "@std/assert";
 import {
+  buildShallowCloneArgs,
+  setupRepo,
+} from "../commands/git_operations.ts";
+import {
   assertPins,
   type DocSection,
   excerpt,
@@ -19,6 +23,11 @@ import {
   readRepoDoc,
   section,
 } from "./support/markdown_docs.ts";
+
+// Derived from the live clone, so changing the flags turns the pins red.
+const cloneArgs = buildShallowCloneArgs("owner/repo", "/tmp/r");
+const CLONE_FLAGS = cloneArgs.slice(cloneArgs.indexOf("--") + 1).join(" ");
+const SETUP_REPO = `\`${setupRepo.name}\``;
 
 const RULE_TITLE = "Never assume history the worker's shallow checkout lacks";
 const FIRST_BULLET = "- **Assume nothing beyond a branch tip.**";
@@ -52,7 +61,7 @@ const guidelines = section(
 
 Deno.test("CODING-STANDARDS.md says why the shallow-checkout rule exists (Issue #3494)", () => {
   assertPins(standards, [
-    "`setupRepo`",
+    SETUP_REPO,
     "fetch-depth: 0",
     "grafted fleet worktrees",
     "author of the boundary commit",
@@ -65,7 +74,7 @@ Deno.test("the coding guidelines carry the shallow-checkout rule in Testing Best
 
 Deno.test("both surfaces carry the shallow-checkout bullets, identical (Issue #3494)", () => {
   const pins = [
-    "--depth=1 --no-single-branch",
+    CLONE_FLAGS,
     "`HEAD~N` or `<ref>^`",
     "`merge-base`",
     "`blame` attribution",
