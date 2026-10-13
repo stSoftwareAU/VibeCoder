@@ -45,14 +45,24 @@ adopts each remove a place where a run grades its own security claim. Each
 follow-up also says how its new check must fail closed, so none adds a
 new #3615 instance.
 
+The three follow-ups are open issues in this repository:
+[stSoftwareAU/VibeCoder#3657](https://github.com/stSoftwareAU/VibeCoder/issues/3657)
+(security-fix gate: independent read-only verifier verdict),
+[stSoftwareAU/VibeCoder#3658](https://github.com/stSoftwareAU/VibeCoder/issues/3658)
+(sweep `falsePositives` entries must cite a resolvable `path:line`) and
+[stSoftwareAU/VibeCoder#3659](https://github.com/stSoftwareAU/VibeCoder/issues/3659)
+(security-fix gate: execute the named test red→green). Older code comments
+cite the same numbers from an earlier tracker; those are unrelated. The
+diagram shows the planned flow once all three land; none of it exists yet.
+
 ```mermaid
 flowchart LR
     S[Sweep / code-scanning<br/>finding] --> I[security issue]
     I --> W[worker fix run]
     W --> G{security_fix_gate}
-    G -->|"#3659: test red on base,<br/>green at head"| G2{verifier verdict}
-    G2 -->|"#3657: FIXED only"| PR[PR raised]
-    S -.->|"#3658: false positive must<br/>cite a resolvable path:line"| B[baseline entry]
+    G -->|"planned #3659: test red<br/>on base, green at head"| G2{verifier verdict}
+    G2 -->|"planned #3657: FIXED only"| PR[PR raised]
+    S -.->|"planned #3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
 ```
 
 ## 1. Falsification engine — Skip
@@ -86,11 +96,13 @@ cost of a false positive lands on the worker run that picks the issue up.
 reads its verdict table. In VibeCoder an "eliminated" verdict would be read by
 an autonomous pipeline and would silence a finding no human sees. That gives a
 model a sanctioned way to argue a finding away, which is the #3512 direction,
-not a cure for it. The sweep is also deterministic by design (module header,
-`security_tree_sweep.ts:1-46`), and an LLM pass inside it would end that. The
-part worth taking is "an elimination must cite evidence". Row 3 adopts it at
-the one point VibeCoder records an elimination. **Closes #3512:** no.
-**Closes #3615:** no.
+not a cure for it. The sweep's deduplication, baseline classification and report are
+deterministic code (module header, `security_tree_sweep.ts:28-31`). Its one
+model-driven source, the worker scan, runs before any of them. A model pass
+that could mark a cluster eliminated would put a model's judgement inside that
+classification. The part worth taking is "an elimination must cite evidence".
+Row 3 adopts it where VibeCoder records a finding as a false positive.
+**Closes #3512:** no. **Closes #3615:** no.
 
 ## 2. Independent verifier — Adopt (#3657)
 
@@ -192,8 +204,8 @@ layer. The fixing run derives both itself.
 
 **Verdict: Skip.** The issue run that takes the finding reads the whole
 repository and derives the fix with full context. A remediation map written
-at filing time would put an unchecked model claim into a deterministic report.
-The sweep treats scanner text as untrusted data (module header,
+at filing time would put an unchecked model claim into an issue body the
+sweep otherwise builds deterministically. The sweep treats scanner text as untrusted data (module header,
 `security_tree_sweep.ts:43-44`), and a proposed fix in the issue body would
 steer the fixing agent with text nobody verified. What VulnHunter gets from
 the map is a fix that is proven and a root cause that is swept. Rows 2 and 5
