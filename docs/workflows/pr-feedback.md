@@ -708,6 +708,13 @@ intervene.
   and the repo supports it and the PR **is mergeable**: enable auto-merge. This
   catches PRs where auto-merge was not set due to transient failures during
   creation or where merge issues have since been fixed.
+- **Standing-violation hold** (Issue #3517) — a PR carrying the
+  `standing-violation` label (Issue #3382) is skipped: the sweep never arms
+  or branch-updates it, and one already armed is disarmed (`gh pr merge
+  --disable-auto`) on every sweep until that succeeds. It runs after the live
+  read confirms the PR is open and before the base-integrity check and any
+  attempt. The label comes from that same per-PR live read, and the hold is
+  logged once per process.
 - **Armed and behind** (Issue #2462) — an armed PR whose head has fallen behind
   its base gets one `update-branch` request per pass, since GitHub never
   updates it under the strict up-to-date rule. Not when a reviewer has

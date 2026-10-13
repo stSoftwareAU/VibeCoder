@@ -70,6 +70,9 @@ export type PrNotOpenReading =
  * sweep construct the reading without them; the auto-merge sweep acts on them
  * only when both are explicitly `true`, so an absent field can never arm a
  * write. `readPrLiveState` always sets them from the parsed payload.
+ *
+ * Issue #3517: `labels` rides the same round trip, so the auto-merge sweep can
+ * hold a `standing-violation` PR without a second `gh` call.
  */
 export type PrLiveStateReading =
   | {
@@ -84,6 +87,12 @@ export type PrLiveStateReading =
      * (Issue #2702) — the auto-merge sweep then never updates the branch.
      */
     changesRequested?: true;
+    /**
+     * Names of the labels on the PR at read time (Issue #3517). Always set
+     * by `readPrLiveState`; optional so older constructions still compile,
+     * and an absent list never holds a PR.
+     */
+    labels?: readonly string[];
     unknown?: undefined;
   }
   | PrNotOpenReading;
@@ -146,7 +155,7 @@ export async function readPrLiveState(
     };
   }
 
-  const { state, mergeable, armed, behind, changesRequested } =
+  const { state, mergeable, armed, behind, changesRequested, labels } =
     parsePrLiveFields(raw);
   if (state === "OPEN") {
     return {
@@ -154,6 +163,7 @@ export async function readPrLiveState(
       mergeable,
       armed,
       behind,
+      labels,
       ...(changesRequested ? { changesRequested } : {}),
     };
   }

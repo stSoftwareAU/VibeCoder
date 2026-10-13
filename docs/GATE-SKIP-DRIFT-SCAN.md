@@ -97,7 +97,9 @@ All three fields are mandatory and the check fails closed: a marker missing
 `author=`, `expires=` or reason text — or carrying a past expiry — does not
 suppress, and the drift is reported as normal. `author=` must also match the
 login `git blame` attributes to the marker line in `quality.sh`; otherwise the
-marker does not suppress. See
+marker does not suppress. That binding holds only under squash merge; under
+merge-commit or rebase merge a contributor can forge it ([THREAT-MODEL.md R15](THREAT-MODEL.md#%EF%B8%8F-residual-risks)).
+See
 [operator triage and suppression](IDLE-TASK-FRAMEWORK.md#operator-triage-and-suppression).
 
 ## Cadence
