@@ -4092,7 +4092,12 @@ Deno.test("executeClaude #47 - a deadline timeout with a dirty tree preserves WI
     assertEquals(pushes.length, 1);
     assertEquals(pushes[0]?.branch, state.branchName);
     assertStringIncludes(pushes[0]?.message ?? "", "wip: execute timed out");
-    assertStringIncludes(pushes[0]?.message ?? "", "Issue #47");
+    assertStringIncludes(
+      pushes[0]?.message ?? "",
+      "preserving 2 uncommitted file(s)",
+    );
+    // The subject lands in the target repo, so it cites no issue (Issue #3499).
+    assertEquals(/#\d+/.test(pushes[0]?.message ?? ""), false);
   } finally {
     await Deno.remove(tempWorkDir, { recursive: true });
   }
