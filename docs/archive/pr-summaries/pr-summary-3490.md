@@ -109,4 +109,4 @@ Branch outcomes:
 
 Removed assertions: none.
 
-Quality gate: see the result recorded below.
+Quality gate: `timeout 900 ./quality.sh < /dev/null` from the repo root exited 0, "Result: PASSED (with skipped checks)". All checks passed, including deno tests, lint, type check and fmt. The one skip is config integration ("deno or .config.json not available" on this host).
