@@ -4685,6 +4685,9 @@ commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
 same changed-files check through `runPrePushGate` on the already-committed
 unpushed commits before pushing, and refuses the push on failure (Issue #3689).
 WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
+The completion phase's `gateBeforePush()` also runs this gate before the first
+push and the retry push, and Step 1b is the `commitAndPushPending` path above;
+repos with no pre-flight commands stay ungated at Step 1b.
 
 The hook runs two stages:
 
