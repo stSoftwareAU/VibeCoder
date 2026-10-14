@@ -53,7 +53,9 @@ export interface PreFlightGateSpec {
  *
  * A convenience for the automated-commit call sites: pass the result straight
  * to {@link commitAndPushPending}. Returns `undefined` (not an empty spec) so
- * a repo with no entry runs exactly as it does today. Throws on malformed
+ * a caller that passes it straight through leaves a repo with no entry
+ * ungated; the issue completion phase substitutes `{ commands: [] }` instead,
+ * so it still runs the changed-file checks (Issue #3689). Throws on malformed
  * config via `getPreFlightCommands` — but config is already validated at load
  * (Issue #3577), so this is defence in depth.
  */
