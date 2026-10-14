@@ -122,9 +122,10 @@ flowchart LR
 ### G7 — Incidents — **ADOPT**
 
 - **Article claim:** an incident process.
-- **VibeCoder today:** `SECURITY.md` has no agent-incident runbook. Its sections
-  are Threat Model (`:28`), Process Isolation (`:94`), Guarded Outbound Fetches
-  (`:154`), Secret Redaction (`:301`) and Configuration Security (`:660`).
+- **VibeCoder today:** `SECURITY.md` has no agent-incident runbook. Its nearest
+  sections are the Responsible Disclosure Policy (`:2072`), which covers
+  external vulnerability reports, and the dependency-advisory triage runbook it
+  links (`:286`); neither covers responding to a compromised agent run.
 - **Gap:** no runbook.
 - **Verdict:** ADOPT; a short runbook is cheap and needed once G2, G3 and G6
   land. → **follow-up filed: #3702.**
