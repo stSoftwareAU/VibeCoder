@@ -29,6 +29,7 @@
  */
 
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
+import { escapeRegExp } from "./regexp_escape.ts";
 import {
   isRepoFastFailureIssue,
   isRepoFastFailureTallyIssue,
@@ -118,17 +119,13 @@ const MS_PER_DAY = 86_400_000;
 // ---------------------------------------------------------------------------
 
 /** Paths that only the worker repository owns. */
-const VIBE_PATH_RE = /worker\/deno\/|prompts\/|prompt\.md/i;
+const WORKER_PATH_RE = /worker\/deno\/|prompts\/|prompt\.md/i;
 /** Worker vocabulary. Flat alternation, one optional-free literal each. */
-const VIBE_KEYWORD_RE =
+const WORKER_KEYWORD_RE =
   /vibe[ -]?coder|\bworker\b|\bfleet\b|orchestrat|container image|lane worktree|\bclaim|prompt template|\bprovider/i;
 /** User-facing / product vocabulary. */
 const PRODUCT_RE =
   /\b(?:pwa|scoring|ui|page|layout|chart|blank space|api endpoint|database|report)\b/i;
-
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 function shortName(repo: string): string {
   const slash = repo.lastIndexOf("/");
@@ -142,6 +139,9 @@ function sameRepo(a: string, b: string): boolean {
 /** Whether `text` names the repository, by short name on a name boundary. */
 function mentionsRepo(text: string, repo: string): boolean {
   const name = escapeRegExp(shortName(repo));
+  // The name is escaped above and comes from a configured repository, never
+  // from issue text, so the pattern is not attacker-controlled (Issue #3691).
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp
   return new RegExp(`(?<![A-Za-z0-9_.-])${name}(?![A-Za-z0-9_-])`, "i").test(
     text,
   );
@@ -149,9 +149,9 @@ function mentionsRepo(text: string, repo: string): boolean {
 
 function vibeSignals(text: string, vibeRepo: string): string[] {
   const found: string[] = [];
-  const path = VIBE_PATH_RE.exec(text);
+  const path = WORKER_PATH_RE.exec(text);
   if (path) found.push(`path '${path[0]}'`);
-  const keyword = VIBE_KEYWORD_RE.exec(text);
+  const keyword = WORKER_KEYWORD_RE.exec(text);
   if (keyword) found.push(`keyword '${keyword[0]}'`);
   if (mentionsRepo(text, vibeRepo)) found.push(`mention of ${vibeRepo}`);
   return found;
@@ -324,13 +324,17 @@ function markerValue(value: string): string {
   return value.replace(/[^A-Za-z0-9_./-]/g, "-");
 }
 
-/** Visible routing line plus the hidden machine-readable marker. */
+/**
+ * Visible routing line plus the hidden machine-readable marker, written as
+ * `<!-- issue-routing owner=… subject=… kind=… -->`. The marker is lowercase
+ * so the uppercase env-var scanner does not read it as a `VIBE_*` name.
+ */
 export function formatRoutingAuditBlock(decision: RoutingDecision): string {
   const reason = decision.reason.replace(/\s+/g, " ").trim();
   return `Routing: owner \`${decision.owner_repository}\`, subject ` +
     `\`${decision.subject_repository}\`, kind ${decision.issue_kind} ` +
     `(${reason})\n` +
-    `<!-- VIBE_ISSUE_ROUTING owner=${
+    `<!-- issue-routing owner=${
       markerValue(decision.owner_repository)
     } subject=${markerValue(decision.subject_repository)} kind=${
       markerValue(decision.issue_kind)

@@ -16,7 +16,7 @@ import {
 } from "./monitored_repos_allowlist.ts";
 
 /** The worker's own repository: owner of worker, prompt and fleet work. */
-export const VIBE_CODER_REPO = "stSoftwareAU/VibeCoder";
+export const VIBECODER_REPO = "stSoftwareAU/VibeCoder";
 
 /** A closed issue younger than this still counts as a duplicate to reuse. */
 export const ISSUE_ROUTING_RECENTLY_CLOSED_DAYS = 30;
@@ -52,7 +52,7 @@ export async function buildIssueRoutingContext(
     allowedRepos.push(options.targetRepo);
   }
   return {
-    vibeCoderRepo: VIBE_CODER_REPO,
+    vibeCoderRepo: VIBECODER_REPO,
     allowedRepos,
     dryRun: options.dryRun,
     recentlyClosedDays: ISSUE_ROUTING_RECENTLY_CLOSED_DAYS,

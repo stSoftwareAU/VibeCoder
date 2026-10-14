@@ -6,7 +6,7 @@ import { assertEquals } from "@std/assert";
 import {
   buildIssueRoutingContext,
   ISSUE_ROUTING_RECENTLY_CLOSED_DAYS,
-  VIBE_CODER_REPO,
+  VIBECODER_REPO,
 } from "../lib/issue_routing_context.ts";
 import { createLogger } from "../lib/logger.ts";
 
@@ -27,7 +27,7 @@ Deno.test("issue routing context - monitored repos are allowed and the target re
     nowMs: 42,
   });
   assertEquals(ctx.allowedRepos, ["org/a", "org/b", "org/other"]);
-  assertEquals(ctx.vibeCoderRepo, VIBE_CODER_REPO);
+  assertEquals(ctx.vibeCoderRepo, VIBECODER_REPO);
   assertEquals(ctx.recentlyClosedDays, ISSUE_ROUTING_RECENTLY_CLOSED_DAYS);
   assertEquals(ctx.nowMs, 42);
   assertEquals(ctx.dryRun, false);

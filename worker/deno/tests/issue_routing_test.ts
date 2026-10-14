@@ -317,7 +317,7 @@ Deno.test("audit block: visible line and hidden marker, inert values", () => {
   assertStringIncludes(block, "line one line two");
   assertStringIncludes(
     block,
-    `<!-- VIBE_ISSUE_ROUTING owner=${GRQ} subject=a-b----c kind=implementation -->`,
+    `<!-- issue-routing owner=${GRQ} subject=a-b----c kind=implementation -->`,
   );
 });
 
@@ -378,7 +378,7 @@ Deno.test("route: wrong-repo draft is created in the owner, no labels migrated",
   assert(!create.includes("--label"));
   const body = gh.arg(create, "--body");
   assertStringIncludes(body, "Labels not migrated: bug, enhancement");
-  assertStringIncludes(body, "<!-- VIBE_ISSUE_ROUTING owner=");
+  assertStringIncludes(body, "<!-- issue-routing owner=");
   // Permission is checked before the first write.
   assertEquals(
     gh.calls.findIndex((c) => c[0] === "repo") < gh.calls.indexOf(create),

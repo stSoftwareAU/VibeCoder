@@ -269,6 +269,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).
   "tests/markdown_logical_units_3356_test.ts",
+  // The routing classifier's `mentionsRepo` and keyword scans read issue
+  // titles and bodies an untrusted author writes; only a growth measurement
+  // separates their linear scans from a backtracking pattern (Issue #3691).
+  "tests/issue_routing_test.ts",
 ];
 
 /**
