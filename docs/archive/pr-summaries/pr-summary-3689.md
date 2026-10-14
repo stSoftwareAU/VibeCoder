@@ -54,10 +54,15 @@ weakened: it still runs every required check independently after PR creation.
 
 ### Essential Design Decisions
 
-- **Left to CI, deliberately.** gitleaks, semgrep, Floci, bootstrap drift and
-  GRQ-AutoTrader's `version-bump` job (#3248, the designed enforcer) need
-  network, credentials or GitHub state. They are recorded as such, never as
-  PASS, and no follow-up is filed: no pre-PR gap was demonstrated.
+- **Left to CI, deliberately.** Bootstrap drift (needs the remote bootstrap)
+  and GRQ-AutoTrader's `version-bump` job (#3248, the designed enforcer; needs
+  base-PR state). They are recorded as such, never as PASS, and no follow-up is
+  filed: no pre-PR gap was demonstrated.
+- **Local failures that were not fixed here, each tracked.** gitleaks
+  (run 38201375574) and Floci (run 38033819415) are local checks with no
+  pre-PR stage; the semgrep failure (run 38123883049) ran past an existing
+  local semgrep stage that the logs cannot explain. They are tracked in #3725,
+  #3727 and #3726 respectively, and are not claimed as fixed by this PR.
 - **Fail closed.** A configured cspell with no binary, an unresolvable default
   ref, or a failed gate blocks the push rather than skipping.
 - **Step 1b only when a pre-flight spec exists.** WIP-preservation callers have
@@ -101,11 +106,25 @@ Representative failures (full table, run links and SHAs in
 | cspell | GRQ | 38375639111 (e9a7f8fd), 38462363800 (6b3eeaef), 38030791481 (3e96c55d), 37921633370 (3e313843), 38395012672 (65d0d714), 37865294665 (9e39e325) | unknown words `fsmonitor`, `mawk`, `unthresholded`, `unacted`, `nosemgrep`, `backtester` |
 | sweptAt ancestry | VibeCoder | 38354507478 (45bf3c6f), 38134932391 (1e432ed1), 38060624463 (817e49b5), 38058126021 (1be1b9c0), 38051763868 (a5553ff5) | branch-only `sweptAt` in a top-up file |
 | ungated push | VibeCoder / GRQ-AutoTrader | 38476298053 (035d0353), 38074155287 (5f2a4e7b), 38486741580 (a85026a6) | MD018 in `USAGE.md:117`, MD018 in `mutation-check.md:147`, rustfmt in `handler.rs:67` |
-| left to CI | all | 38201375574, 38123883049, 38033819415, 38407346744, 38455750470, 38357245453 | gitleaks, semgrep, Floci, bootstrap drift, version-bump |
+| left to CI | GRQ-AutoTrader | 38407346744, 38455750470, 38357245453 | bootstrap drift, version-bump |
+| local, tracked as follow-ups | VibeCoder | 38201375574, 38123883049, 38033819415 | gitleaks (#3725), semgrep (#3726), Floci (#3727) |
 | covered by `quality.sh` | VibeCoder / GRQ | 38126786967, 38345577457, 38484707749 | type check/tests, disk, `mermaid_blocks` |
 
 Two GRQ Spelling runs (37770312438, 37687047960) have no recorded unknown word
 and are classified as cspell on the evidence of the failing job only.
+
+Follow-up issues cited as provenance, each looked up with `gh issue view` after
+`gh issue create` returned it:
+
+- #3725: Pre-push gate: scan unpushed commits with gitleaks before the PR exists
+- #3726: Explain why the local semgrep stage missed detect-non-literal-regexp on c384c70e (run 38123883049)
+- #3727: Pre-PR gate: run the Floci CloudFormation deploy test locally for infra changes
+
+Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
+38201375574 `RuleID: generic-api-key`, `leaks found: 1`; semgrep 38123883049
+`SEMGREP_APP_TOKEN:` empty, `1 Blocking Code Finding`
+`detect-non-literal-regexp` at `mutation_gate.ts:627`; Floci 38033819415
+`ValidationException ... PutParameter`.
 
 - Targeted tests: 119 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
@@ -124,7 +143,7 @@ and are classified as cspell on the evidence of the failing job only.
 - `./quality.sh < /dev/null` result is recorded in the PR body.
 
 Docs sweep: grep terms `pre-push gate`, `commitAndPushPending`, `unpushed`,
-`gateBeforePush`, `cspell`, `sweptAt`; section: `docs/CONFIGURATION.md` pre-flight
+`gateBeforePush`, `cspell`, `sweptAt`, `network/credential`, `Left to CI`; section: `docs/CONFIGURATION.md` pre-flight
 gate section; siblings: "markdownlint", "gitleaks"; files updated:
 `docs/CONFIGURATION.md`, `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
@@ -153,8 +172,10 @@ unchanged:
   done and there is no per-PR disposable-checkout reproduction.
 - Missing check coverage is repaired or tracked as specific follow-ups with no
   duplicate of existing issues.
-  reviewer: Met — the three demonstrable gaps are repaired; network/credential
-  and GitHub-exclusive checks are documented as Left to CI with no follow-up
+  reviewer: Met — the three gaps with a local fix in scope are repaired; the
+  gitleaks, semgrep and Floci failures are local and tracked as #3725, #3726
+  and #3727 (searched first; none duplicates an open issue); bootstrap drift
+  and the GitHub-exclusive version-bump check are documented as Left to CI
   because no pre-PR gap was shown; no duplicate of #2945, #2932, #2968 or #3395.
   A systematic mapping of every required check to a local command is not
   included.

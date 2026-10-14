@@ -76,11 +76,11 @@ covered by `quality.sh`.
 | [38051763868](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38051763868) | a5553ff5 | same | top-up-3433 recorded sweptAt 4675510a | local | No | Fixed by #3689 |
 | [38476298053](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38476298053) | 035d0353 | markdownlint MD018 | `docs/USAGE.md:117` | local | No (ungated worker push, Step 2) | Fixed by Step 1b and the completion-phase gate (repos with a pre-flight spec) |
 | [38074155287](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38074155287) | 5f2a4e7b | markdownlint MD018 | `docs/mutation-check.md:147` | local | No (ungated worker push, Step 2) | Fixed by Step 1b and the completion-phase gate (repos with a pre-flight spec) |
-| [38201375574](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38201375574) | 958fc276 | gitleaks | secret scan | network/credential-only | No | Left to CI |
-| [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | static analysis rules | network/credential-only | No | Left to CI |
+| [38201375574](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38201375574) | 958fc276 | gitleaks | `generic-api-key` in `worker/deno/tests/review_round_wiring_test.ts:47` (`leaks found: 1`) | local | No (no pre-PR gitleaks stage exists) | Gap, tracked in #3725 |
+| [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | blocking `detect-non-literal-regexp` at `worker/deno/lib/mutation_gate.ts:627` (`SEMGREP_APP_TOKEN` empty) | local | A semgrep stage exists in `quality.sh` / `lib/quality_gate.ts` (Issue #559); whether it ran on c384c70e is not recorded | Unexplained miss, tracked in #3726 |
 | [38126786967](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38126786967) | 9dfa6301 | type check and tests | compile or test failure | local | Covered by `quality.sh` | No change needed |
 | [38345577457](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38345577457) | 543adc87 | tests | runner disk full | local / runner infrastructure | Covered by `quality.sh` | Infrastructure |
-| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | AWS emulation, needs network | network/credential-only | No | Left to CI |
+| [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Gap, tracked in #3727 |
 
 The sweptAt failures were a feature-branch commit recorded as the sweep
 ledger's `sweptAt`, which is not an ancestor of the base branch. The check
@@ -108,8 +108,7 @@ The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
 
 ## Checks the worker cannot run
 
-- **Network/credential-only**: gitleaks, semgrep, Floci (AWS emulation) and
-  bootstrap drift.
+- **Network/credential-only**: bootstrap drift (against the remote bootstrap).
 - **GitHub-exclusive**: checks that compare against GitHub state, such as the
   base PR's VERSION. This check is left to CI's version-bump job (#3248); no
   pre-PR approximation exists or is claimed.
@@ -124,8 +123,26 @@ The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
   completion phase falls back to an empty spec (`{ commands: [] }`), so on
   that path alone `gateBeforePush()` still runs the changed-file checks for a
   repo with no pre-flight commands.
-- Network/credential-only checks (gitleaks, semgrep, bootstrap drift, Floci)
-  are never reported as PASS locally. They are skipped, not passed.
+- Bootstrap drift is network-only and is never reported as PASS locally. It is
+  skipped, not passed.
+- Three VibeCoder failures (gitleaks, semgrep, Floci) need no secret or remote
+  service, so they are class local and are open gaps, not closed rows:
+  - gitleaks (run 38201375574): the CLI is pinned in the worker image
+    (`container/tools.json`, `docs/CONTAINER.md`) and needs no network or
+    licence, yet no pre-PR stage runs it (`lib/quality_gate.ts`,
+    `lib/pre_push_gate.ts` and `quality.sh` have no gitleaks stage). Tracked in
+    #3725.
+  - semgrep (run 38123883049): the failure was a real blocking finding with no
+    credential involved. The local semgrep stage (`runSemgrepQualityCheck`,
+    `lib/semgrep_check.ts`, Issue #559) runs the same `p/default` ruleset over
+    changed `.ts` files, and semgrep has been in the image since 2026-09-17, so
+    scope does not explain the miss. Whether the stage ran, was SKIPPED
+    (offline registry, deadline) or never ran on c384c70e is not recoverable:
+    the worker's gate output is not retained in the CI log or the PR. The
+    finding was fixed by a later commit (6f256dd8). Tracked in #3726.
+  - Floci (run 38033819415): a deterministic `ValidationException` from
+    `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
+    binary. No pre-PR stage runs it. Tracked in #3727.
 
 CI still runs every required check independently after PR creation. Nothing in
 Issue #3689 weakens or removes a CI, review or security gate.
@@ -146,9 +163,12 @@ Issue #3689 weakens or removes a CI, review or security gate.
 - This evidence is the input #3644 consumes: per-repo tables with one row per
   failing run, giving the check name, first failing SHA, local, network or
   GitHub-exclusive class, and whether pre-flight ran an equivalent.
-- Network/credential-only items (gitleaks, semgrep, bootstrap drift, Floci) have
-  no follow-up filed because CI is their designed enforcer and no pre-PR gap was
-  demonstrated.
+- Only bootstrap drift is left to CI with no follow-up, because it needs the
+  remote bootstrap and no pre-PR gap was demonstrated. The gitleaks, semgrep and
+  Floci rows are local and have follow-ups (#3725, #3726, #3727); they are not
+  fixed by #3689.
+- The cause of the semgrep miss could not be established from the logs (see
+  above), so the semgrep row is an unexplained miss, not a diagnosed one.
 
 ## Out of scope
 
