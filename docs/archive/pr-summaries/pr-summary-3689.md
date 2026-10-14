@@ -16,7 +16,9 @@ Each is fixed with a negative test; the full classification is in
 - **VibeCoder `sweptAt` ancestry.** CI requires every `sweptAt` in
   `docs/audits/lib-sweep-coverage*` to be a commit on the default branch; the
   worker only checked the JSON shape. New `pre_push_sweep_check.ts` runs the
-  same ancestry check on changed ledger/top-up files and fails closed.
+  same ancestry check on the slices the changed ledger/top-up files hold (a
+  changed ledger file contributes every slice in it, including its own in-file
+  `top-up-<n>` slices) and fails closed.
 - **Ungated Step 2 push.** `commitAndPushPending` gated newly staged changes but
   pushed already-committed agent commits unchecked, and the completion phase
   pushed with no gate. Step 1b (`gateUnpushedCommits`) and the completion-phase
@@ -105,11 +107,16 @@ Representative failures (full table, run links and SHAs in
 Two GRQ Spelling runs (37770312438, 37687047960) have no recorded unknown word
 and are classified as cspell on the evidence of the failing job only.
 
-- Targeted tests: 118 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
+- Targeted tests: 119 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
   `worker/deno/tests/git_push_preflight_test.ts`,
   `worker/deno/tests/toolchain_selfcheck_test.ts`,
-  `worker/deno/tests/completeness_checks_test.ts`);
+  `worker/deno/tests/completeness_checks_test.ts`,
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`), run with
+  the worker run's own injected pre-push hook (`core.hooksPath` from
+  `GIT_CONFIG_*`) unset — with it set, the hook blocks the test fixture's
+  deliberate ungated push in "no preFlight spec: bad unpushed commit still
+  pushed";
   `deno fmt --check`, `deno lint`, `deno check` clean.
 - Unattended-path verification is by unit tests of Step 1b and
   `gateBeforePush()` through their real entry points; no live worker run was
@@ -173,18 +180,19 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   changes run pre-flight exactly once (#3689)", "…no preFlight spec: bad
   unpushed commit still pushed (#3689 WIP path)". Red-check: removing Step 1b
   turns the first red.
-- **Added** `worker/deno/tests/pre_push_sweep_check_test.ts` — eight tests
+- **Added** `worker/deno/tests/pre_push_sweep_check_test.ts` — nine tests
   (ledger-file selection, main/top-up pass, branch-only `sweptAt` blocks naming
-  slice and sha, only changed slices checked, shallow clone deepened, unresolvable
-  default ref blocks, `runPrePushGate` blocks on a pushed top-up, no sweep file
-  means no git calls). Red-check: deleting the ancestry comparison turns the
+  slice and sha, only changed slices checked, a branch-only `sweptAt` on the
+  ledger file's own in-file `top-up-<n>` slice blocks, shallow clone deepened,
+  unresolvable default ref blocks, `runPrePushGate` blocks on a pushed top-up,
+  no sweep file means no git calls). Red-check: deleting the ancestry comparison turns the
   blocking cases red.
 - **Added** `worker/deno/tests/pre_push_gate_test.ts` — six cspell tests (root
   operand, nested `--config` operand, no config, configured-but-missing binary,
   non-spell-checked extensions, failing cspell blocks the push). Red-check:
   dropping the cspell plan, or forcing either operand of
   `rootCspell || nestedCspell` false, turns the matching test red.
-- **Added** `worker/deno/tests/phases/completion_phase_pre_push_gate_3689_test.ts`
+- **Added** `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`
   — three tests that the completion phase gates the first push and the retry
   push, and falls back to `{ commands: [] }` without a spec. Red-check:
   removing `gateBeforePush()` turns them red.
@@ -222,6 +230,11 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   block / unchanged slice → skipped / shallow → deepened / ref unresolvable →
   block — one test each under "checkSweptAtAncestry"; flipping the comparison
   turns the block cases red.
+- `worker/deno/lib/pre_push_sweep_check.ts` slice selection when the ledger
+  file changes — every slice the ledger file itself holds (parsed without the
+  top-up directory), including its in-file `top-up-<n>` slices, is checked —
+  "checkSweptAtAncestry: a branch-only sweptAt on the ledger file's own top-up
+  slice blocks"; the earlier chunk-name filter (`!/^top-up-\d+$/`) turns it red.
 - `worker/deno/lib/pre_push_gate.ts` sweep check wired into the gate — tests
   `runPrePushGate: a branch-only sweptAt in a pushed top-up blocks the push` and
   `runPrePushGate: no sweep file changed means no sweep git calls` in
@@ -234,7 +247,10 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
 
 Entry points checked: `commitAndPushPending` (Step 1 and Step 1b), the completion
 phase first and retry push, `runPrePushGate` (cspell and sweep checks). Callers of
-the changed `gateUnpushedCommits`: only `commitAndPushPending`.
+the changed `gateUnpushedCommits`: `commitAndPushPending` (Step 1b, in
+`worker/deno/lib/git_push.ts`) and the completion phase's `gateBeforePush()`
+(`worker/deno/lib/phases/completion_phase.ts`, as `deps.git.gateUnpushedCommits`),
+which `worker/deno/lib/issue_worker_wiring.ts` wires into `GitDeps`.
 
 ## Pre-PR Security Self-Check
 

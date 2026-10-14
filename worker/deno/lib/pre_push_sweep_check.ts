@@ -20,6 +20,7 @@ import type { GitRunner } from "./git_history.ts";
 import {
   LIB_SWEEP_LEDGER_PATH,
   LIB_SWEEP_TOP_UP_DIR,
+  parseCoverageLedger,
   readCoverageLedger,
   type SweepGitRunner,
   SweepLedgerError,
@@ -77,8 +78,17 @@ export async function checkSweptAtAncestry(opts: {
   }
 
   let ledger;
+  let inFileChunks: Set<string>;
   try {
     ledger = await readCoverageLedger(cwd);
+    // The ledger file's own slices, parsed without the top-up directory: by
+    // source file, not by chunk name, since the ledger file also holds
+    // `top-up-<n>` slices of its own (up to LEDGER_FILE_LAST_TOP_UP_ISSUE).
+    inFileChunks = new Set(
+      parseCoverageLedger(
+        await Deno.readTextFile(`${cwd}/${LIB_SWEEP_LEDGER_PATH}`),
+      ).slices.map((slice) => slice.chunk),
+    );
   } catch (error) {
     return {
       ok: false,
@@ -91,7 +101,8 @@ export async function checkSweptAtAncestry(opts: {
   }
 
   // Only the slices the changed files contribute: a changed top-up file is
-  // the slice with its name as chunk; the ledger file holds every other slice.
+  // the slice with its name as chunk; a changed ledger file contributes every
+  // slice it holds itself.
   const changedTopUps = new Set<string>();
   for (const p of opts.changed) {
     const m = TOP_UP_PATH.exec(p);
@@ -100,7 +111,7 @@ export async function checkSweptAtAncestry(opts: {
   const ledgerChanged = opts.changed.includes(LIB_SWEEP_LEDGER_PATH);
   const slices = ledger.slices.filter((slice) =>
     changedTopUps.has(slice.chunk) ||
-    (ledgerChanged && !/^top-up-\d+$/.test(slice.chunk))
+    (ledgerChanged && inFileChunks.has(slice.chunk))
   );
   const filtered = { ...ledger, slices };
 

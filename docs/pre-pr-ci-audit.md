@@ -116,10 +116,14 @@ The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
 
 ## Known remaining limits
 
-- Step 1b is skipped only for callers with no pre-flight spec, such as
-  WIP-preservation pushes; these are the ungated remainder. Repos with no
-  pre-flight commands are still gated by the completion phase's
-  `gateBeforePush()` using the changed-file checks.
+- Step 1b runs only when the caller passes a pre-flight spec. It is skipped
+  for WIP-preservation pushes, and for the PR processors' final-mile pushes
+  (for example `lib/pr_ci_processor.ts`) in repos with no pre-flight
+  commands, because `resolvePreFlightSpec` returns `undefined` for those
+  repos; these pushes are the ungated remainder. Only the issue worker's
+  completion phase falls back to an empty spec (`{ commands: [] }`), so on
+  that path alone `gateBeforePush()` still runs the changed-file checks for a
+  repo with no pre-flight commands.
 - Network/credential-only checks (gitleaks, semgrep, bootstrap drift, Floci)
   are never reported as PASS locally. They are skipped, not passed.
 

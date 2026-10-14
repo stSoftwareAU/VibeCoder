@@ -156,6 +156,40 @@ Deno.test("checkSweptAtAncestry: only changed slices are checked", async () => {
   }
 });
 
+Deno.test("checkSweptAtAncestry: a branch-only sweptAt on the ledger file's own top-up slice blocks", async () => {
+  const f = await makeFixture();
+  try {
+    await git(f.clone, "checkout", "-qb", "feat");
+    await Deno.writeTextFile(`${f.clone}/branch.txt`, "b\n");
+    await git(f.clone, "add", ".");
+    await git(f.clone, "commit", "-qm", "branch only");
+    const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    // The ledger file holds in-file `top-up-<n>` slices for issues up to
+    // LEDGER_FILE_LAST_TOP_UP_ISSUE; a changed one must still be checked.
+    await writeJson(`${f.clone}/${LEDGER}`, {
+      roots: ["worker/deno/lib"],
+      parent: 1,
+      description: "fixture",
+      slices: [
+        slice(1, "12a", f.firstMain),
+        slice(1885, "top-up-1885", branchSha),
+      ],
+    });
+    await git(f.clone, "add", ".");
+    await git(f.clone, "commit", "-qm", "ledger");
+    const result = await checkSweptAtAncestry({
+      cwd: f.clone,
+      changed: [LEDGER],
+      git: defaultPrePushGit,
+    });
+    assert(!result.ok);
+    assert(result.error.includes("top-up-1885"), result.error);
+    assert(result.error.includes(branchSha), result.error);
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
 Deno.test("checkSweptAtAncestry: a shallow clone is deepened and an older main sweptAt passes", async () => {
   const f = await makeFixture();
   const shallow = `${f.root}/shallow`;
