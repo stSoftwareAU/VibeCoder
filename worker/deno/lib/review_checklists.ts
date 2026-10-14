@@ -39,7 +39,29 @@ export type ChecklistLoad =
   | { kind: "absent" }
   | { kind: "loaded"; config: ReviewChecklistConfig }
   | { kind: "malformed"; reason: string }
-  | { kind: "unreadable"; reason: string };
+  // Read, but unusable (an undecodable reply): a persistent problem the
+  // reviewer must report.
+  | { kind: "unreadable"; reason: string }
+  // The fetch itself failed (a timeout, HTTP 5xx, rate limit): possibly
+  // transient and says nothing about the file, so callers retry or skip the
+  // check rather than hand it to a reviewer as a finding.
+  | { kind: "fetch_failed"; reason: string };
+
+/** A checklist item the reviewer was asked to report, as rendered. */
+export interface ChecklistExpectation {
+  checklist: string;
+  item: string;
+}
+/**
+ * What the code (not the model) knows about a checklist load: the problem
+ * that stops the checklist being applied, and the items the brief asked a
+ * verdict for. Carried beside the rendered section so a reply that ignores
+ * the section cannot turn the review into an approval.
+ */
+export interface ChecklistState {
+  problem: string | null;
+  expected: ChecklistExpectation[];
+}
 
 const VERDICTS: readonly string[] = ["met", "missing", "not applicable"];
 
@@ -237,6 +259,71 @@ function blockingInstruction(file: string): string {
   return `Report a BLOCKING finding on \`${file}\` (line 1) saying the checklist file could not be applied and must be fixed. This must not be treated as "no checklist".`;
 }
 
+const NAME_MAX = 200;
+const ITEM_MAX = 500;
+
+function loadProblem(load: ChecklistLoad): string | null {
+  switch (load.kind) {
+    case "malformed":
+      return `\`${REVIEW_CHECKLISTS_FILE}\` is malformed: ${
+        inlineSafe(load.reason)
+      }`;
+    case "unreadable":
+    case "fetch_failed":
+      return `\`${REVIEW_CHECKLISTS_FILE}\` could not be read: ${
+        inlineSafe(load.reason)
+      }`;
+    default:
+      return null;
+  }
+}
+
+/** The checklists with at least one changed file matching their paths. */
+function selectChecklists(
+  config: ReviewChecklistConfig,
+  changedFiles: readonly string[],
+) {
+  return config.checklists
+    .map((c) => ({
+      c,
+      matched: changedFiles.filter((f) =>
+        c.paths.some((g) => matchesPathGlob(g, f))
+      ),
+    }))
+    .filter((s) => s.matched.length > 0);
+}
+
+/**
+ * The problem and expected items for a load, as the brief renders them. A
+ * load that cannot be applied (malformed, unreadable, a changed-file list
+ * that is null) always carries a problem; only an absent file or a diff that
+ * touches no listed path carries neither a problem nor items.
+ */
+export function checklistState(
+  load: ChecklistLoad,
+  changedFiles: readonly string[] | null,
+): ChecklistState {
+  const problem = loadProblem(load);
+  if (problem !== null) return { problem, expected: [] };
+  if (load.kind !== "loaded") return { problem: null, expected: [] };
+  if (changedFiles === null) {
+    return {
+      problem:
+        `the changed-file list was unavailable or truncated, so the checklists in \`${REVIEW_CHECKLISTS_FILE}\` could not be matched to this change and were NOT checked`,
+      expected: [],
+    };
+  }
+  return {
+    problem: null,
+    expected: selectChecklists(load.config, changedFiles).flatMap(({ c }) =>
+      c.items.map((item) => ({
+        checklist: inlineSafe(c.name, NAME_MAX),
+        item: inlineSafe(item, ITEM_MAX),
+      }))
+    ),
+  };
+}
+
 /** Markdown the reviewer brief embeds; empty when no checklist applies. */
 export function renderChecklistSection(
   load: ChecklistLoad,
@@ -244,7 +331,10 @@ export function renderChecklistSection(
 ): string {
   const file = REVIEW_CHECKLISTS_FILE;
   if (load.kind === "absent") return "";
-  if (load.kind === "malformed" || load.kind === "unreadable") {
+  if (
+    load.kind === "malformed" || load.kind === "unreadable" ||
+    load.kind === "fetch_failed"
+  ) {
     const what = load.kind === "malformed"
       ? "is malformed"
       : "could not be read";
@@ -263,20 +353,13 @@ export function renderChecklistSection(
       `The repo declares review checklists in \`${file}\`, but the changed-file list was unavailable or truncated, so they could not be matched to this change and were NOT checked. Report a BLOCKING finding on \`${file}\` (line 1) saying the checklists were not checked; this must not be treated as "no checklist".`,
     ].join("\n");
   }
-  const selected = load.config.checklists
-    .map((c) => ({
-      c,
-      matched: changedFiles.filter((f) =>
-        c.paths.some((g) => matchesPathGlob(g, f))
-      ),
-    }))
-    .filter((s) => s.matched.length > 0);
+  const selected = selectChecklists(load.config, changedFiles);
   if (selected.length === 0) return "";
 
   const lines = [
     `### Review checklists for this change`,
     "",
-    `The repo declares these checklists in \`${file}\` (read at the base ref). Each applies because the change touches matching files. Report EVERY item below in the reply \`checklist\` array with a verdict of \`met\`, \`missing\` or \`not applicable\` and a short note. Any item that is \`missing\` also needs a blocking entry in \`findings\`.`,
+    `The repo declares these checklists in \`${file}\` (read at the base ref). Each applies because the change touches matching files. Report EVERY item below in the reply \`checklist\` array with a verdict of \`met\`, \`missing\` or \`not applicable\` and a short note, copying the checklist name and the item text exactly as written here. Any item that is \`missing\` also needs a blocking entry in \`findings\`. The worker checks that every item got a verdict; an item with none sends the change back.`,
   ];
   for (const { c, matched } of selected) {
     const shown = matched.slice(0, MAX_MATCHED_SHOWN).map((f) =>
@@ -288,14 +371,86 @@ export function renderChecklistSection(
     lines.push(
       "",
       `Checklist \`${
-        inlineSafe(c.name, 200)
+        inlineSafe(c.name, NAME_MAX)
       }\` — matched files: ${shown}${more}`,
     );
     c.items.forEach((item, i) =>
-      lines.push(`${i + 1}. ${inlineSafe(item, 500)}`)
+      lines.push(`${i + 1}. ${inlineSafe(item, ITEM_MAX)}`)
     );
   }
   return lines.join("\n");
+}
+
+/** A blocking finding the worker adds itself. */
+export interface ChecklistGapFinding {
+  file: string;
+  line: number;
+  problem: string;
+  fix: string;
+}
+
+const MAX_GAPS_NAMED = 5;
+
+/** Untrusted text on one line, with mentions and HTML neutralised. */
+function gapText(text: string, max: number): string {
+  return inlineSafe(text, max).replace(
+    /[<>@]/g,
+    (c) => c === "@" ? "@\u200b" : " ",
+  );
+}
+
+/** Same item, ignoring case, spacing, backticks and a leading "1." number. */
+function verdictKey(checklist: string, item: string): string {
+  const flat = (t: string) =>
+    t.replace(/\s+/g, " ").replace(/`/g, "'").trim().toLowerCase();
+  return `${flat(checklist)}\u0000${flat(item).replace(/^\d+[.)] /, "")}`;
+}
+
+/**
+ * Blocking findings for a checklist that was not applied, decided by the code
+ * and not the model: a load problem, and every item the brief asked a verdict
+ * for that the reply left out. Empty only when the checklist was applied in
+ * full or none applied. "No verdict" is never read as a pass.
+ */
+export function checklistGapFindings(
+  state: ChecklistState,
+  verdicts: readonly ChecklistVerdict[],
+): ChecklistGapFinding[] {
+  const out: ChecklistGapFinding[] = [];
+  if (state.problem !== null) {
+    out.push({
+      file: REVIEW_CHECKLISTS_FILE,
+      line: 1,
+      problem: `Repository review checklists were not applied: ${
+        gapText(state.problem, 600)
+      }.`,
+      fix:
+        `The file is read at the base ref, so fix it on the base branch (or reduce the change so its file list is complete); until then the checklist cannot be applied.`,
+    });
+  }
+  const reported = new Set(
+    verdicts.map((v) => verdictKey(v.checklist, v.item)),
+  );
+  const unreported = state.expected.filter((e) =>
+    !reported.has(verdictKey(e.checklist, e.item))
+  );
+  if (unreported.length > 0) {
+    const named = unreported.slice(0, MAX_GAPS_NAMED).map((e) =>
+      `"${gapText(e.checklist, NAME_MAX)}" — "${gapText(e.item, ITEM_MAX)}"`
+    ).join("; ");
+    const more = unreported.length > MAX_GAPS_NAMED
+      ? `; and ${unreported.length - MAX_GAPS_NAMED} more`
+      : "";
+    out.push({
+      file: REVIEW_CHECKLISTS_FILE,
+      line: 1,
+      problem:
+        `Repository review checklists: no verdict was reported for ${unreported.length} of ${state.expected.length} checklist item(s), so they were not checked: ${named}${more}.`,
+      fix:
+        `Report each of these items as met, missing or not applicable, with the checklist name and item text as listed.`,
+    });
+  }
+  return out;
 }
 
 /** Validate the reply's `checklist` array; throws naming the problem. */

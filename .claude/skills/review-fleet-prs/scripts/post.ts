@@ -22,8 +22,8 @@
 // A failed label call leaves the review posted, is not retried, and is
 // reported in `labelError`; a refused branch update likewise in
 // `branchUpdateError` (the next gate pass retries it).
-// Exit 2 when the review is malformed; nothing is posted and the PR comes
-// back on the next gate pass.
+// Exit 2 when the review is malformed or the entry lacks `checklistState`;
+// nothing is posted and the PR comes back on the next gate pass.
 
 import {
   decideOutcome,
@@ -40,8 +40,10 @@ import {
   sameIssueTitle,
   stateDir,
   unrelatedIssueBody,
+  withChecklistGaps,
   writeSummary,
 } from "./review_log.ts";
+import type { ChecklistState } from "../../../../worker/deno/lib/review_checklists.ts";
 import { type LabelError, syncNeedsHumanLabel } from "./needs_human.ts";
 import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
 
@@ -54,8 +56,34 @@ interface Input {
     headSha: string;
     kind?: "dependabot" | "fleet";
     testChanges: { removed: string[]; edited: string[] };
+    // From the gate entry; required, so a stale entry fails loudly rather
+    // than skipping the checklist checks (Issue #3594).
+    checklistState: ChecklistState;
   };
   review: unknown;
+}
+
+// Parses the reviewer's reply and adds the blocking findings the code owes
+// for a checklist that was not applied (Issue #3594). Throws on a malformed
+// reply or a gate entry without `checklistState`.
+export function reviewForPost(
+  raw: unknown,
+  pr: Pick<Input["pr"], "checklistState">,
+): FableReview {
+  const state = pr.checklistState as ChecklistState | undefined;
+  if (
+    typeof state !== "object" || state === null ||
+    !Array.isArray(state.expected) ||
+    (state.problem !== null && typeof state.problem !== "string")
+  ) {
+    throw new Error(
+      "the gate entry has no valid checklistState; re-run gate.ts and pass its entry verbatim",
+    );
+  }
+  return withChecklistGaps(
+    parseFableReview(typeof raw === "string" ? raw : JSON.stringify(raw)),
+    state,
+  );
 }
 
 async function run(cmd: string, args: string[]) {
@@ -181,9 +209,7 @@ export async function main() {
   );
   let review;
   try {
-    review = parseFableReview(
-      typeof raw === "string" ? raw : JSON.stringify(raw),
-    );
+    review = reviewForPost(raw, pr);
   } catch (e) {
     console.log(
       JSON.stringify({ posted: false, reason: (e as Error).message }),

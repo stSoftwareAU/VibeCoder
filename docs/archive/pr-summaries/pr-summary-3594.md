@@ -16,23 +16,39 @@ the diff gets a per-item verdict: `met`, `missing` or `not applicable`. A
   and renders a "Repository review checklists" section.
 - **Pre-PR verifier.** `pre_pr_verifier.ts` adds `REVIEW_CHECKLISTS` to the
   brief (step 7 of `prompts/pr_review_brief/prompt.md`) and reads a `checklist`
-  array from the reply. An absent or null array is read as `[]`, and nothing
-  checks that every rendered item got a verdict. `prePrVerifierBlocked` blocks
-  on any finding or any `missing` verdict, so a `missing` item blocks even when
-  the reply has no finding. `prePrVerifierBlockReason` and
-  `buildPrePrVerifierGateComment` name the missing items.
+  array from the reply; an absent or null array parses as `[]`.
+  `prePrVerifierBlocked` blocks on any finding or any `missing` verdict, so a
+  `missing` item blocks even when the reply has no finding.
+  `prePrVerifierBlockReason` and `buildPrePrVerifierGateComment` name the
+  missing items. `verifyInCheckout` also adds the code-owed findings below.
 - **Unsafe globs rejected.** `parseReviewChecklists` drops a leading `./` from
   each `paths` glob and then rejects it if it starts with `/` or has an empty
   (`//`, trailing `/`) or `..` segment. The error names the checklist and index,
   so the file loads as malformed and renders the BLOCKING section. Before this,
   such a glob loaded and the checklist was silently never applied.
   `matchesPathGlob` now drops a leading `./` from the glob as well as the path.
-- **Visible failures.** A malformed or unreadable file renders a BLOCKING
-  instruction into the brief. So does a changed-file list passed as `null`.
-  `gate.ts` (`changedPaths`) passes `null` when the list has 3000 or more
-  entries (`CHECKLIST_FILE_LIST_LIMIT`). The pre-PR verifier does not use that
-  limit: it passes `null` only when the list is unknown, and matches a list of
-  any length normally. An absent file or no matching path renders nothing.
+- **Visible failures, decided by the code (PR #3695 review).** A malformed or
+  undecodable file, or a changed-file list passed as `null`, still renders a
+  BLOCKING instruction into the brief, and now also sets
+  `ChecklistState.problem`. `checklistState` also lists the `(checklist, item)`
+  pairs the section rendered. `checklistGapFindings` turns a problem, and every
+  expected item the reply gave no verdict, into blocking findings on
+  `review-checklists.json` line 1. The fleet path carries the state in
+  `ReadyPr.checklistState` to `post.ts` (`reviewForPost` → `withChecklistGaps`),
+  so the outcome is `changes_requested` and the body names the problem even for
+  a reply with no findings and no `checklist`. The pre-PR verifier adds the same
+  findings in `verifyInCheckout`, so `prePrVerifierBlocked` and the gate comment
+  see them. `gate.ts` (`changedPaths`) passes `null` when the list has 3000 or
+  more entries (`CHECKLIST_FILE_LIST_LIMIT`). The pre-PR verifier does not use
+  that limit: it passes `null` only when the list is unknown. An absent file or
+  no matching path renders nothing and owes nothing.
+- **A failed fetch is retried, not reviewed.** A gh error other than not-found
+  (timeout, HTTP 5xx, rate limit) is now `fetch_failed`. The fleet gate skips
+  that PR for the pass (`skipped["checklist-unreadable"]`, a line in `upkeep`),
+  so the next pass retries it and a transient error never becomes a send-back in
+  a repo with no checklist file. The pre-PR verifier returns `not_checked` for a
+  failed `git show`, as it does for any run it cannot complete. A read-but-
+  undecodable reply stays a loud, blocking problem.
 - **Docs.** `docs/review-checklists.md` documents the location, format and
   path-glob mapping. Pointers sit in `docs/workflows/issue-processing.md` and
   `docs/MODEL-AND-CACHING.md`.
@@ -42,10 +58,11 @@ flowchart LR
     F["review-checklists.json<br/>(base ref)"] --․> L["review_checklists.ts<br/>loader + matchesPathGlob"]
     D["changed files"] --․> L
     L --․>|"no match"| N["no section"]
-    L --․>|"malformed / unreadable / list ≥ 3000"| B["BLOCKING instruction"]
-    L --․>|"matched"| V["per-item verdicts"]
-    V --․> G["gate.ts → review_log.ts<br/>missing ⇒ changes_requested"]
-    V --․> P["pre_pr_verifier.ts<br/>missing ⇒ blocked"]
+    L --․>|"malformed / undecodable / list ≥ 3000"| B["BLOCKING instruction +<br/>code-added finding"]
+    L --․>|"fetch failed"| R["fleet: skip, retry next pass<br/>pre-PR: not checked"]
+    L --․>|"matched"| V["per-item verdicts<br/>(missing verdict ⇒ finding)"]
+    V --․> G["gate.ts → post.ts → review_log.ts<br/>missing / no verdict ⇒ changes_requested"]
+    V --․> P["pre_pr_verifier.ts<br/>missing / no verdict ⇒ blocked"]
 ```
 
 Closes #3594
@@ -67,9 +84,15 @@ base ref stops a PR from weakening its own checklist.
   refuses to match when the glob or the path has a `..` segment, an empty
   segment or a leading `/`, after dropping a leading `./` from both. The parser
   rejects such a glob up front, so it fails loudly instead of matching nothing.
-- A malformed, unreadable or truncated input never reads as "no checklist": it
-  renders a BLOCKING instruction that tells the model to report a finding. The
-  code does not add that finding itself.
+- A malformed, undecodable or truncated input never reads as "no checklist": it
+  renders a BLOCKING instruction for the model, and the code adds the blocking
+  finding itself, so an obedient or ignoring model gives the same outcome. The
+  same goes for an expected item with no verdict: absence of a verdict is not a
+  pass. A verdict is matched to its item by checklist name and item text,
+  ignoring case, spacing, backticks and a leading `1.`; the section tells the
+  reviewer to copy both verbatim.
+- A fetch failure is not a finding about the file: it is retried (fleet) or
+  not-checked (pre-PR), never a send-back.
 - An absent file is quiet by design, as documented in
   `docs/review-checklists.md`.
 
@@ -77,41 +100,43 @@ base ref stops a PR from weakening its own checklist.
 
 - `gh api repos/{repo}/contents/…?ref=` returns HTTP 404 for a missing file, and
   the 404 branch in `gate.ts` matches `HTTP 404|Not Found` on the error message.
-  Any other failure is reported as unreadable, not absent.
+  Any other gh failure is `fetch_failed` (retried next pass), not absent.
 - Refs containing `/` are passed through literally, so a branch such as
   `milestone/x` is read at the right ref.
 
 ## Evidence
 
-- Targeted, on this head: `deno test -A` from `worker/deno` with `< /dev/null`
-  over the seven touched test files (the two new files,
-  `pre_pr_verifier_3395_test.ts`, `pr_review_brief_shared_3395_test.ts`,
-  `completion_phase_pre_pr_verifier_3395_test.ts`,
-  `review_fleet_prs_log_2678_test.ts`,
-  `review_fleet_prs_needs_human_2927_test.ts`) plus `lib_sweep_coverage_test.ts`
-  — 158 passed, 0 failed. `deno lint` is clean on the changed lib and test
-  files, and `deno fmt --check` is clean on the changed lib files and
-  `docs/review-checklists.md`.
-- `./quality.sh < /dev/null` — PASSED, exit 0, with the config integration step
-  SKIPPED as usual. This is a historical run from before the verifier-review
-  fixes (missing verdicts block, unsafe globs rejected, mutation-killing tests).
-  Those were checked with the targeted run above; the worker re-runs the quality
-  gate on this head.
+- Targeted, on this head: `deno test --allow-all < /dev/null` from `worker/deno`
+  over `tests/review_fleet_prs_*.ts`, `tests/pre_pr_verifier_3395_test.ts`,
+  `tests/review_checklists_3594_test.ts`,
+  `tests/pr_review_brief_shared_3395_test.ts`,
+  `tests/completion_phase_pre_pr_verifier_3395_test.ts` and
+  `tests/lib_sweep_coverage_test.ts` — 296 passed, 0 failed. `deno lint` and
+  `deno fmt --check` are clean on `worker/deno/lib`, the touched tests and
+  `.claude/skills/review-fleet-prs/scripts`.
+- PR #3695 review, new observation: a gh failure other than not-found used to
+  reach the reviewer as a BLOCKING instruction; the test
+  `gate: a non-404 gh failure is retried next pass: the PR is skipped, not handed to the reviewer`
+  feeds HTTP 502, HTTP 403 rate-limit and timeout messages and asserts the PR is
+  not in `ready` and `skipped["checklist-unreadable"]` is 1.
 
 Docs sweep: grep `review-checklists`, `REVIEW_CHECKLISTS`,
 `Repository review checklists`, `reviewChecklists`; section:
 `docs/review-checklists.md` (new); siblings: `testChangeNotes`,
 `unrelatedIssues`, `PREVIOUS_FINDINGS` (the existing reply fields and brief
 placeholders the new `checklist` field and `｛｛REVIEW_CHECKLISTS｝｝` joined);
-updated: `README.md:519`, `docs/workflows/issue-processing.md:1193`,
-`docs/MODEL-AND-CACHING.md:777`, `.claude/skills/review-fleet-prs/SKILL.md:230`,
+updated: `README.md:519`, `docs/workflows/issue-processing.md:1191-1199`,
+`docs/MODEL-AND-CACHING.md:777`, `.claude/skills/review-fleet-prs/SKILL.md` (the
+`{{REVIEW_CHECKLISTS}}` bullet and the step-3 skipped reasons),
+`docs/review-checklists.md` (Failure behaviour, Who consumes it),
 `prompts/pr_review_brief/prompt.md:48`. Remaining hits:
 
 - `docs/workflows/issue-processing.md:1191` — still true: lists the reply fields
-  and now names the `checklist` array beside `testChangeNotes` and
+  and names the `checklist` array beside `testChangeNotes` and
   `unrelatedIssues`.
-- `.claude/skills/review-fleet-prs/SKILL.md:231` — still true: says the value is
-  read at the base ref and matched against the changed files, as `gate.ts` does.
+- `prompts/pr_review_brief/prompt.md:53-55` — still true: it tells the model to
+  report a malformed, unreadable or not-checked file as a blocking finding; the
+  code now adds one too, which the brief does not need to say.
 - `docs/MODEL-AND-CACHING.md:777` — still true: a pointer only.
 
 ## Acceptance Criteria
@@ -129,51 +154,85 @@ updated: `README.md:519`, `docs/workflows/issue-processing.md:1193`,
 - **met** — A diff that doesn't touch the path produces no checklist section. —
   evidence: `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts`
   (non-matching or absent file gives an empty section) — reviewer: met
-- **partial** — A missing or malformed checklist file fails visibly in the
-  review output and is never silently ignored. — evidence:
-  `worker/deno/tests/review_checklists_3594_test.ts` (malformed and unreadable
-  are blocking), `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts`
-  (malformed file is loud and blocking) — reviewer: partial — reason: the code
-  renders a BLOCKING instruction into the brief but does not emit the finding
-  itself, so visibility depends on the model obeying it. An absent file is quiet
-  by design.
+- **met** — A missing or malformed checklist file fails visibly in the review
+  output and is never silently ignored. — evidence:
+  `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts`
+  (`a malformed base file plus a reply with no findings and no checklist is not approved and names the problem`,
+  `post.ts end to end: a malformed base file and a clean reply posts request-changes naming the problem`),
+  `worker/deno/tests/pre_pr_verifier_3395_test.ts`
+  (`a malformed base checklist blocks even when the model replies with no findings and no checklist`)
+  — reviewer: met — reason: the code adds the blocking finding itself, so the
+  outcome does not depend on the model obeying the brief. An absent file is
+  quiet by design.
 
 ## Standards Review
 
 <․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
-- **clean** — Checked: fail loud (malformed, unreadable and truncated inputs
-  render BLOCKING), path confinement (`..`, `//` and leading `/` rejected on
-  glob and path, with negative tests), branch outcomes (each flipped, see
-  below), docs sweep, no test-only members, and regex safety (no dynamic
-  `RegExp`). Two pre-existing `fmt` and `require-await` issues in
-  `review-fleet-prs` were left alone as out of scope.
+- **clean** — Checked: fail loud (malformed, undecodable and truncated inputs
+  render BLOCKING and add a code-owed finding; an item with no verdict is a
+  finding; a fetch failure is retried or not-checked, never read as clean), path
+  confinement (`..`, `//` and leading `/` rejected on glob and path, with
+  negative tests), branch outcomes (each flipped, see below), docs sweep, no
+  test-only members, and regex safety (no dynamic `RegExp`). Two pre-existing
+  `fmt` and `require-await` issues in `review-fleet-prs` were left alone as out
+  of scope.
 
 ## Test Plan
 
 Added:
 
-- `worker/deno/tests/review_checklists_3594_test.ts` (26 tests): parse shape and
+- `worker/deno/tests/review_checklists_3594_test.ts` (33 tests): parse shape and
   rejections, `matchesPathGlob` cases including evasion and hostile input,
   loader, `renderChecklistSection`, `parseChecklistVerdicts`, the unsafe-glob
-  test, and four tests added after the verifier review:
-  `parseReviewChecklists reports the JSON parser's own message for bad JSON`,
-  `parseReviewChecklists rejects a path glob that can never match, naming the checklist and index`,
-  `parseReviewChecklists accepts a leading ./ on a glob, and the matcher applies it`,
-  and
-  ``matchesPathGlob: `**/` matches only after a position the prefix reached``.
-- In `worker/deno/tests/pre_pr_verifier_3395_test.ts`:
+  tests from the verifier review, and seven from PR #3695:
+  `checklistState: every load that cannot be applied carries a problem; absent and non-matching carry none`,
+  `checklistState: expected holds exactly the items the section renders, one per item of each matched checklist`,
+  `renderChecklistSection renders a failed fetch as a blocking problem, never as no checklist`,
+  `checklistGapFindings: none when every expected item has a verdict or nothing applies`,
+  `checklistGapFindings: a problem and unreported items are each a blocking finding on the checklist file`,
+  `checklistGapFindings: a verdict for another checklist's identically worded item does not cover this one, and a long gap list is capped`
+  and `checklistGapFindings: hostile text cannot carry markup or a mention`.
+- In `worker/deno/tests/pre_pr_verifier_3395_test.ts` (51 tests in the file):
   `a missing checklist verdict blocks even with no findings, and is named in the reason and comment`,
   `met and not-applicable checklist verdicts alone do not block`,
   `runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist`,
+  `createMockDeps' unscripted pre-PR verifier is clean with an empty checklist`,
+  and five from PR #3695:
+  `a malformed base checklist blocks even when the model replies with no findings and no checklist`,
+  `an unknown changed-file list blocks a repo that declares checklists, even on a clean reply`,
+  `a reply that omits the checklist, or covers only some items, blocks and names the unreported item`,
+  `a full set of verdicts is not blocked, including a numbered or re-cased item text`
   and
-  `createMockDeps' unscripted pre-PR verifier is clean with an empty checklist`.
-- `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` (9 tests): gate
+  `no checklist file, or no matching path, owes no verdict and does not block`.
+- `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` (17 tests): gate
   applicable path, base-ref read with slash refs, non-matching or absent file,
-  malformed file, non-404 failure, changed-file list at the limit,
-  `decideOutcome`, `reviewBody`, post path.
+  malformed file, changed-file list at the limit, `decideOutcome`, `reviewBody`,
+  post path, and from PR #3695: the non-404 skip (replacing the old
+  non-404-is-unreadable test), the undecodable reply, `checklistState` carried
+  by the gate, malformed state plus a clean reply, omitted and partial verdicts,
+  a full set approved, `reviewForPost` refusing a bad entry, hostile text, and
+  `post.ts end to end: a malformed base file and a clean reply posts request-changes naming the problem`
+  (runs `post.ts` as a subprocess with a fake `gh` on `PATH`).
+- `worker/deno/tests/review_fleet_prs_gate_audit_3116_test.ts`: one added
+  assertion pair in the audit send-back test (entry carries an empty
+  `checklistState` and passes `reviewForPost` with its one finding).
 
-Replaced: none.
+Replaced:
+
+- `worker/deno/tests/pre_pr_verifier_3395_test.ts`
+  `an unreadable base checklist (git show fails otherwise) is a loud section` →
+  `an unreadable base checklist (git show fails otherwise) is not checked, never asked of the model or read as clean`,
+  and `readBaseChecklists: spawn failure is unreadable; …` →
+  `readBaseChecklists: a git failure is fetch_failed; missing file variants are absent`.
+  The expectation changed because a failed `git show` is no longer handed to the
+  model (PR #3695 review). Guard: `a malformed base checklist blocks …` covers
+  the loud path for a file that was read; red-check below.
+- `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts`
+  `gate: a non-404 gh failure or an undecodable reply is a loud unreadable section, not absent`
+  → the skip test and the undecodable-reply test above. A non-404 failure is no
+  longer a loud section, by the same review finding; the undecodable reply keeps
+  its loud, blocking assertions.
 
 Removed:
 
@@ -188,98 +247,139 @@ Extended: `worker/deno/tests/pre_pr_verifier_3395_test.ts`,
 `worker/deno/tests/pr_review_brief_shared_3395_test.ts`.
 
 Mutation check (the four surviving mutants, each applied alone, then restored;
-RED both with type checking and with `--no-check`):
+RED both with type checking and with `--no-check`; code unchanged since, lines
+renumbered on this head):
 
 - `worker/deno/lib/issue_worker_wiring.ts:1211` delete `checklist` — killed by
   `createMockDeps' unscripted pre-PR verifier is clean with an empty checklist`.
-- `worker/deno/lib/pre_pr_verifier.ts:533` delete `checklist` — killed by
+- `worker/deno/lib/pre_pr_verifier.ts:535` delete `checklist` — killed by
   `runPrePrVerifier: a failed run that also changed the issue checkout reports a review with an empty checklist`.
-- `worker/deno/lib/review_checklists.ts:76` negate the ternary condition —
+- `worker/deno/lib/review_checklists.ts:98` negate the ternary condition —
   killed by
   `parseReviewChecklists reports the JSON parser's own message for bad JSON`,
   which asserts the exact message (`String(error)` would add a `SyntaxError:`
   prefix).
-- `worker/deno/lib/review_checklists.ts:194` (was `:176`) `let seen = false` to
-  `true` — killed by
+- `worker/deno/lib/review_checklists.ts:216` `let seen = false` to `true` —
+  killed by
   ``matchesPathGlob: `**/` matches only after a position the prefix reached``
   (`x**/y` against `a/y`).
 
+Every flip below was applied alone, run from `worker/deno` with `< /dev/null`
+over the test files named, then restored. `T` =
+`review_checklists_3594_test.ts`, `F` =
+`review_fleet_prs_checklists_3594_test.ts`, `P` =
+`pre_pr_verifier_3395_test.ts`, all under `worker/deno/tests/`.
+
 Branch outcomes:
 
-- `worker/deno/lib/pre_pr_verifier.ts:729` a `missing` verdict with no findings
-  → blocked — `worker/deno/tests/pre_pr_verifier_3395_test.ts:1105` — flipped to
-  `false`, went RED.
-- `worker/deno/lib/review_checklists.ts:97` unsafe `paths` glob → malformed —
-  `worker/deno/tests/review_checklists_3594_test.ts:355` — flipped to
-  `if (false)`, went RED.
-- `worker/deno/lib/review_checklists.ts:165` leading `./` dropped from the glob
-  — `worker/deno/tests/review_checklists_3594_test.ts:380` — flipped to
-  `const g = glob;`, went RED.
-- `worker/deno/lib/review_checklists.ts:166` path operand `hasUnsafeSegment(p)`
-  true → no match — `worker/deno/tests/review_checklists_3594_test.ts:122` —
-  flipped (glob operand kept alone), went RED.
-- `worker/deno/lib/review_checklists.ts:166` glob operand `hasUnsafeSegment(g)`
-  true → no match — `worker/deno/tests/review_checklists_3594_test.ts:139` —
-  flipped (operand removed), went RED.
-- `worker/deno/lib/review_checklists.ts:55` empty list → rejected —
-  `worker/deno/tests/review_checklists_3594_test.ts:36` and `:66` — flipped,
-  went RED.
-- `worker/deno/lib/review_checklists.ts:236` malformed or unreadable → BLOCKING
-  instruction — `worker/deno/tests/review_checklists_3594_test.ts:261` (asserts
-  `:268`, `:275`) — flipped, went RED.
-- `worker/deno/lib/review_checklists.ts:259` changed-file list null → "NOT
-  checked" BLOCKING section (`:263`) —
-  `worker/deno/tests/review_checklists_3594_test.ts:294` — flipped to
-  `return "";`, went RED.
-- `.claude/skills/review-fleet-prs/scripts/gate.ts:942` HTTP 404 → absent, empty
-  section — `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:131` —
-  flipped, went RED.
-- `.claude/skills/review-fleet-prs/scripts/gate.ts:942` other error → unreadable
-  with cause — `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:149`
-  — reached by the non-404 test.
-- `.claude/skills/review-fleet-prs/scripts/gate.ts:974` list at the limit → null
-  (not checked) —
-  `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:160` — flipped,
-  went RED.
-- `.claude/skills/review-fleet-prs/scripts/review_log.ts:215` a `missing` item →
-  `changes_requested` —
-  `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:199` and `:232` —
-  flipped, went RED.
+- `worker/deno/lib/pre_pr_verifier.ts:745` a `missing` verdict with no findings
+  → blocked — `P:1116` — flipped to `false` in the earlier round, RED; code
+  unchanged.
+- `worker/deno/lib/review_checklists.ts:119` unsafe `paths` glob → malformed —
+  `T:357` — RED (earlier round; code unchanged).
+- `worker/deno/lib/review_checklists.ts:187` leading `./` dropped from the glob
+  — `T:382` — RED (earlier round; code unchanged).
+- `worker/deno/lib/review_checklists.ts:188` path operand `hasUnsafeSegment(p)`
+  → no match — `T:124`; glob operand `hasUnsafeSegment(g)` → no match — `T:141`
+  — each RED (earlier round; code unchanged).
+- `worker/deno/lib/review_checklists.ts:77` empty list → rejected — `T:38`,
+  `T:68` — RED (earlier round; code unchanged).
+- `worker/deno/lib/review_checklists.ts:335` malformed, unreadable or
+  fetch_failed → BLOCKING section — `T:263` — `blockingInstruction` returning
+  `""` went RED (earlier round). This push added the `fetch_failed` operand,
+  reached by `T:432`; removing it fails type checking, so it cannot be a green
+  mutant.
+- `worker/deno/lib/review_checklists.ts:349` changed-file list null → "NOT
+  checked" section — `T:296` — RED (earlier round).
+- `worker/deno/lib/review_checklists.ts:307` a load problem → state carries the
+  problem — `T:398`, `F:191` — `if (problem !== null)` deleted, RED.
+- `worker/deno/lib/review_checklists.ts:308` `load.kind !== "loaded"` → no
+  problem, no items — `T:398` — deleting the line fails type checking (the union
+  is then unnarrowed), so it cannot be a green mutant.
+- `worker/deno/lib/review_checklists.ts:309` changed-file list null → state
+  problem — `T:398`, `F:212` — flipped to `if (false)` (with `--no-check`, since
+  the branch then fails type checking), RED.
+- `worker/deno/lib/review_checklists.ts:420` `state.problem !== null` → problem
+  finding — `T:459`, `F:332`, `P:1237` — flipped to `false`, RED.
+- `worker/deno/lib/review_checklists.ts:437` `unreported.length > 0` →
+  unreported finding — `T:459`, `F:345`, `P:1262` — flipped to `false`, RED.
+- `worker/deno/lib/review_checklists.ts:441`
+  `unreported.length > MAX_GAPS_NAMED` → "and N more" — `T:474` — flipped to
+  `false`, RED.
+- `worker/deno/lib/review_checklists.ts:405` verdict key lower-cases — `T`,
+  `F:368`, `P:1283` — `.toLowerCase()` removed, RED; the leading-number strip
+  removed, RED (same tests).
+- `worker/deno/lib/review_checklists.ts:403` verdict key includes the checklist
+  name — `T:474` — name removed from the key, RED.
+- `.claude/skills/review-fleet-prs/scripts/review_log.ts:221`
+  `gaps.length === 0` → review returned unchanged — `F:332`, `F:345` — flipped
+  to `true`, RED (3 failed, with `F:415`).
+- `.claude/skills/review-fleet-prs/scripts/review_log.ts:233` a `missing` item →
+  `changes_requested` — `F:255`, `F:288` — RED (earlier round; code unchanged).
+- `.claude/skills/review-fleet-prs/scripts/post.ts:212` `post.ts` main calls
+  `reviewForPost` — `F:415` (end to end, subprocess) — call replaced by plain
+  `parseFableReview`, RED.
+- `.claude/skills/review-fleet-prs/scripts/post.ts:75-77` a gate entry without a
+  valid `checklistState` is refused, one operand each:
+  `typeof state !== "object"` (flipped with `--no-check`, since removal fails
+  type checking), `state === null`, `!Array.isArray(state.expected)`,
+  `state.problem !== null &&
+  typeof state.problem !== "string"` (flipped to
+  `false`, and to its first half alone) — `F:384` — each RED.
+- `.claude/skills/review-fleet-prs/scripts/gate.ts:882` audit send-back entry
+  carries an empty `checklistState` — removing it fails type checking; the value
+  is asserted in `worker/deno/tests/review_fleet_prs_gate_audit_3116_test.ts`
+  (the send-back test in the file).
+- `.claude/skills/review-fleet-prs/scripts/gate.ts:907` `fetch_failed` → PR
+  skipped, counted in `skipped["checklist-unreadable"]` — `F:157` — the
+  `continue` removed so the PR falls through to review, RED.
+- `.claude/skills/review-fleet-prs/scripts/gate.ts:964` HTTP 404 → absent, empty
+  section — `F:139` — RED (earlier round; code unchanged).
+- `.claude/skills/review-fleet-prs/scripts/gate.ts:974` and `:986` an
+  undecodable reply → unreadable with cause, checklist problem — `F:181` —
+  reached by the undecodable-reply test.
+- `.claude/skills/review-fleet-prs/scripts/gate.ts:996` list at the limit → null
+  (not checked) — `F:212` — RED (earlier round; code unchanged).
+- `worker/deno/lib/pre_pr_verifier.ts:665` `fetch_failed` → `not_checked`, model
+  never asked — `P:1045` — replaced with a log line, RED.
+- `worker/deno/lib/pre_pr_verifier.ts:715-718` gap findings appended to the
+  parsed review — `P:1237`, `P:1251`, `P:1262` — `review: gaps.length === 0`
+  forced to `true`, RED (3 failed).
+- `worker/deno/lib/pre_pr_verifier.ts:600`, `:612` `readBaseChecklists` git
+  failure → `fetch_failed`, and `:604-605` the not-in-base stderr → absent —
+  `P:1078` — both asserted.
 
-Red-check (each flip applied alone, run from `worker/deno` with `< /dev/null`,
-then restored with `git checkout -- <file>`):
+Callers and siblings checked:
 
-| Flip                                                          | Result                                                                                                                        |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `review_log.ts:215` guard to `if (false)`                     | RED, 2 failed (`worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:199`, `:232`)                                      |
-| `gate.ts:942` to `if (false) {`                               | RED, 1 failed (`worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:131`)                                              |
-| `review_checklists.ts:166` keep only `hasUnsafeSegment(g)`    | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:122`)                                                        |
-| `review_checklists.ts:166` remove `hasUnsafeSegment(g)`       | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:139`)                                                        |
-| `gate.ts:974` to `if (false) return null;`                    | RED, 1 failed (`worker/deno/tests/review_fleet_prs_checklists_3594_test.ts:160`)                                              |
-| `review_checklists.ts:236` `blockingInstruction` returns `""` | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:261`)                                                        |
-| `review_checklists.ts:259` null-list branch returns `""`      | RED, 1 failed (`worker/deno/tests/review_checklists_3594_test.ts:294`)                                                        |
-| `review_checklists.ts:55` drop `\|\| value.length === 0`      | RED, 2 failed (`worker/deno/tests/review_checklists_3594_test.ts:36`, `:66`); also affects `paths`, so not an items-only flip |
-
-The glob-side guard test pins `src**/` against `src`, which would match only
-because `**/` matches zero directories. The `..`, `//` and leading `/` globs are
-literal and cannot match a safe path anyway, so they pin the outcome without
-isolating the guard. The test has a positive control, `src/*.ts` against
-`src/x.ts`.
-
-Callers and siblings:
-
+- `ReadyPr.checklistState` is required (no default). Producers: the `ready` push
+  (`gate.ts:933`) and the `auditBlocked` push (`gate.ts:882`); the only consumer
+  is `post.ts` (`reviewForPost`), which refuses an entry without it. `run.sh`
+  forwards the whole entry (`jq -c '{pr: del(.review), review}'`).
+- `readBaseChecklists` / `loadBaseChecklists` returned `unreadable` for a failed
+  fetch; their callers are `verifyInCheckout` (now `not_checked`) and `pass()`
+  (now skips). `renderChecklistSection` and `checklistState` both handle
+  `fetch_failed`, so a future caller that forgets still gets a blocking problem.
 - `worker/deno/lib/pre_pr_verifier.ts`: `buildPrePrVerifierPrompt` takes a
   required `reviewChecklists` option. The reply's `checklist` is optional:
   `parseChecklistVerdicts` reads an absent or null value as `[]`
-  (`worker/deno/lib/review_checklists.ts:303`).
+  (`worker/deno/lib/review_checklists.ts:458`), and the gap findings then name
+  every expected item.
 - `worker/deno/lib/issue_worker_wiring.ts` mock reply: `checklist: []`.
 - `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts`,
   `worker/deno/tests/review_fleet_prs_log_2678_test.ts`,
   `worker/deno/tests/review_fleet_prs_needs_human_2927_test.ts`: fixtures given
   `checklist: []`.
-- Deviation: the `gate.ts:874` `auditBlocked` push sets `reviewChecklists: ""`
-  and makes no `gh` call. Audit-blocked PRs get no review, so no checklist
-  section is rendered for them. This is intentional.
+- Deviation: the `gate.ts:881` `auditBlocked` push sets `reviewChecklists: ""`
+  and `checklistState` empty and makes no `gh` call. Audit-blocked PRs get no
+  model review, so no checklist section is rendered or owed. This is
+  intentional.
+
+Guards kept by the new paths (the code-added findings reach the same outcomes as
+a model finding): fleet — `post.ts` still re-checks the head commit and the PR
+state before posting, and the `needs-human` label, log record, summary and
+notification follow `decideOutcome` as before; pre-PR — the findings flow
+through `prePrVerifierBlocked`, so the existing block reason, gate comment and
+retry accounting apply unchanged. Nothing is skipped.
 
 Self-review: every test path above was checked with `git ls-files` from the repo
 root; each docs-sweep hit was re-read at the cited line on this head; each

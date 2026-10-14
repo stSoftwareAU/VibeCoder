@@ -85,19 +85,37 @@ at all.
 
 ## Failure behaviour
 
-Apart from the two quiet rows, every failure renders a BLOCKING instruction into
-the brief in place of the checklist, telling the reviewer to report a blocking
-finding on `review-checklists.json`. The code does not add that finding itself:
-neither reviewer checks the load state, so the finding appears in the review
-output only when the model follows the instruction.
+The code, not the model, makes a checklist that was not applied visible. The
+brief still tells the reviewer to report a BLOCKING finding, but both consumers
+also add one themselves, so a reply with no findings and no `checklist` array is
+never an approval:
 
-| Situation                                          | Result                                                   |
-| -------------------------------------------------- | -------------------------------------------------------- |
-| File absent (not found at the base ref)            | Nothing happens; no checklist section                    |
-| Present, but no changed file matches any checklist | Nothing happens; no checklist section                    |
-| Malformed JSON or invalid schema                   | BLOCKING instruction naming the problem                  |
-| Unreadable (any fetch error other than not-found)  | BLOCKING instruction                                     |
-| Changed-file list unavailable or truncated         | BLOCKING instruction, because matching cannot be trusted |
+- the load problem (malformed, undecodable, or an unknown changed-file list)
+  becomes a blocking finding on `review-checklists.json` (line 1);
+- every item the brief rendered that the reply gave no verdict is named in one
+  further blocking finding. An item is matched to its verdict by checklist name
+  and item text, ignoring case, spacing and a leading `1.`.
+
+The fleet reviewer lists the findings in the posted review (`changes_requested`)
+and the pre-PR verifier in its gate comment. Because the file is read at the
+base ref, a broken file must be fixed on the base branch; until then PRs that
+the checklist would apply to cannot pass.
+
+A failed _fetch_ is different: it says nothing about the file and may be
+transient (a timeout, HTTP 5xx, a rate limit). The fleet gate skips that PR for
+the pass (`skipped["checklist-unreadable"]`, with a line in `upkeep`) so the
+next pass retries it; the pre-PR verifier returns "not checked", as it does for
+any run it cannot complete.
+
+| Situation                                          | Result                                                                  |
+| -------------------------------------------------- | ----------------------------------------------------------------------- |
+| File absent (not found at the base ref)            | Nothing happens; no checklist section                                   |
+| Present, but no changed file matches any checklist | Nothing happens; no checklist section                                   |
+| Malformed JSON or invalid schema                   | BLOCKING instruction in the brief and a code-added blocking finding     |
+| Contents reply that cannot be decoded              | The same                                                                |
+| Changed-file list unavailable or truncated         | The same, because matching cannot be trusted                            |
+| Reply leaves an item without a verdict             | Code-added blocking finding naming the item                             |
+| Fetch failed (any gh/git error but not-found)      | Fleet: PR skipped and retried next pass. Pre-PR verifier: "not checked" |
 
 ## Who consumes it
 
@@ -114,12 +132,15 @@ which takes the rendered section as its fifth field, `{{REVIEW_CHECKLISTS}}`.
   A `missing` verdict blocks the PR even when the reply has no matching finding
   (`prePrVerifierBlocked`), and is listed in the block reason and in the gate
   comment that reaches the in-run recovery turn. A reply with no `checklist`
-  array is read as `[]`. A checklist load failure blocks only through the
-  finding the brief tells the model to report.
+  array is parsed as `[]`, and every item it then lacks a verdict for is a
+  blocking finding the verifier adds itself (see
+  [Failure behaviour](#failure-behaviour)).
 - **Fleet reviewer** (the `review-fleet-prs` skill under
   `.claude/skills/review-fleet-prs/`). The review comment gains a "Repository
   review checklists" section listing each item with its verdict, on approved
-  reviews too. A `missing` item makes the outcome `changes_requested`.
+  reviews too. A `missing` item makes the outcome `changes_requested`, as does a
+  load problem or an item with no verdict (`post.ts` adds those findings from
+  the gate entry's `checklistState`).
 
 ## Testing
 

@@ -48,7 +48,9 @@ import {
 } from "./prompt_delimiter.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import {
+  checklistGapFindings,
   type ChecklistLoad,
+  checklistState,
   type ChecklistVerdict,
   loadChecklistsFromText,
   parseChecklistVerdicts,
@@ -581,8 +583,9 @@ async function summaryEscapesCheckout(
 
 /**
  * Read `review-checklists.json` at the base ref, so a PR cannot weaken its own
- * checklist. A file missing at the base is absent; any other failure is
- * unreadable, which the reviewer must report rather than skip.
+ * checklist. A file missing at the base is absent; a git failure is
+ * `fetch_failed`, which makes the pass "not checked" rather than a finding
+ * about a file that may not exist.
  */
 export async function readBaseChecklists(
   runGit: PrePrVerifierDeps["runGit"],
@@ -594,7 +597,7 @@ export async function readBaseChecklists(
     cwd,
   );
   if (r === null) {
-    return loadChecklistsFromText(null, "git could not be spawned");
+    return { kind: "fetch_failed", reason: "git could not be spawned" };
   }
   if (r.code === 0) return loadChecklistsFromText(r.stdout);
   if (
@@ -605,10 +608,10 @@ export async function readBaseChecklists(
   }
   const cause = r.stderr.split("\n").map((l) => l.trim()).find((l) => l) ??
     `git exited ${r.code}`;
-  return loadChecklistsFromText(
-    null,
-    `git show failed: ${clip(cause, 200)}`,
-  );
+  return {
+    kind: "fetch_failed",
+    reason: `git show failed: ${clip(cause, 200)}`,
+  };
 }
 
 async function verifyInCheckout(
@@ -658,10 +661,17 @@ async function verifyInCheckout(
   });
   await Deno.writeTextFile(summaryFile, input.summaryContent);
 
+  const checklists = await readBaseChecklists(deps.runGit, checkout, baseSha);
+  if (checklists.kind === "fetch_failed") {
+    return notChecked(
+      `could not read ${REVIEW_CHECKLISTS_FILE} at the base ref: ${checklists.reason}`,
+    );
+  }
   const reviewChecklists = renderChecklistSection(
-    await readBaseChecklists(deps.runGit, checkout, baseSha),
+    checklists,
     input.changedFiles,
   );
+  const checklistExpected = checklistState(checklists, input.changedFiles);
   const prompt = buildPrePrVerifierPrompt({
     template,
     repo: input.repo,
@@ -699,9 +709,15 @@ async function verifyInCheckout(
     return notChecked("verifier timed out", run);
   }
   try {
+    const parsed = parseReviewReply(run.output ?? "");
+    // The code, not the model, owes a finding for a checklist that was not
+    // applied or an item left without a verdict (Issue #3594).
+    const gaps = checklistGapFindings(checklistExpected, parsed.checklist);
     return {
       status: "checked",
-      review: parseReviewReply(run.output ?? ""),
+      review: gaps.length === 0
+        ? parsed
+        : { ...parsed, findings: [...parsed.findings, ...gaps] },
       run,
     };
   } catch (error) {

@@ -1042,31 +1042,42 @@ Deno.test("a checklist weakened in the head commit is still enforced as at the b
   }
 });
 
-Deno.test("an unreadable base checklist (git show fails otherwise) is a loud section", async () => {
+Deno.test("an unreadable base checklist (git show fails otherwise) is not checked, never asked of the model or read as clean", async () => {
   const f = await makeChecklistRepo(MONEY_CHECKLISTS, { "README.md": "new\n" });
   try {
     const real = defaultPrePrVerifierDeps.runGit;
-    const p = await promptFor(f, { changedFiles: ["README.md"] }, {
-      runGit: (args, cwd) =>
-        args[0] === "show"
-          ? Promise.resolve({
-            code: 128,
-            stdout: "",
-            stderr: "fatal: unable to read tree object\n",
-          })
-          : real(args, cwd),
-    });
-    assertStringIncludes(p, "could not be read");
-    assertStringIncludes(p, "unable to read tree object");
-    assertStringIncludes(p, "BLOCKING");
+    let asked = false;
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["README.md"] }),
+      {
+        ...makeDeps(() => {
+          asked = true;
+          return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+        }, []),
+        runGit: (args, cwd) =>
+          args[0] === "show"
+            ? Promise.resolve({
+              code: 128,
+              stdout: "",
+              stderr: "fatal: unable to read tree object\n",
+            })
+            : real(args, cwd),
+      },
+    );
+    assertEquals(result.status, "not_checked");
+    if (result.status === "not_checked") {
+      assertStringIncludes(result.reason, "review-checklists.json");
+      assertStringIncludes(result.reason, "unable to read tree object");
+    }
+    assert(!asked, "a failed fetch is not handed to the model as a finding");
   } finally {
     await f.cleanup();
   }
 });
 
-Deno.test("readBaseChecklists: spawn failure is unreadable; missing file variants are absent", async () => {
+Deno.test("readBaseChecklists: a git failure is fetch_failed; missing file variants are absent", async () => {
   const none = await readBaseChecklists(() => Promise.resolve(null), "/x", "s");
-  assertEquals(none.kind, "unreadable");
+  assertEquals(none.kind, "fetch_failed");
   const run = (stderr: string) =>
     readBaseChecklists(
       () => Promise.resolve({ code: 128, stdout: "", stderr }),
@@ -1084,7 +1095,7 @@ Deno.test("readBaseChecklists: spawn failure is unreadable; missing file variant
     )).kind,
     "absent",
   );
-  assertEquals((await run("fatal: bad object")).kind, "unreadable");
+  assertEquals((await run("fatal: bad object")).kind, "fetch_failed");
 });
 
 Deno.test("verifier prompt says the checklists were not checked when the changed-file list is unknown", async () => {
@@ -1182,4 +1193,121 @@ Deno.test("createMockDeps' unscripted pre-PR verifier is clean with an empty che
     assertEquals(result.review.findings, []);
   }
   assert(!prePrVerifierBlocked(result));
+});
+
+// ---- the code, not the model, owes the checklist finding (PR #3695) --------
+
+const checkedReview = async (
+  baseFile: string | null,
+  headFiles: Record<string, string>,
+  changedFiles: string[] | null,
+  reply: unknown,
+) => {
+  const f = await makeChecklistRepo(baseFile, headFiles);
+  try {
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles }),
+      makeDeps(
+        () => Promise.resolve(okRun({ output: JSON.stringify(reply) })),
+        [],
+      ),
+    );
+    assertEquals(result.status, "checked");
+    if (result.status !== "checked") throw new Error("not checked");
+    return result;
+  } finally {
+    await f.cleanup();
+  }
+};
+const reply = (checklist?: unknown) => ({
+  summary: "fine",
+  findings: [],
+  testChanges: "none",
+  ...(checklist === undefined ? {} : { checklist }),
+});
+const MONEY_FILES = { "src/money/fees.ts": "export const fee = 1;\n" };
+const verdict = (item: string, v = "met") => ({
+  checklist: "Money handling",
+  item,
+  verdict: v,
+  note: "ok",
+});
+const DECIMAL = "Every money figure uses the Decimal type";
+
+Deno.test("a malformed base checklist blocks even when the model replies with no findings and no checklist", async () => {
+  const result = await checkedReview("{not json", { "README.md": "x\n" }, [
+    "README.md",
+  ], reply());
+  assert(prePrVerifierBlocked(result));
+  const comment = buildPrePrVerifierGateComment(result.review);
+  assertStringIncludes(comment, "review-checklists.json:1");
+  assertStringIncludes(
+    comment,
+    "Repository review checklists were not applied",
+  );
+  assertStringIncludes(comment, "not valid JSON");
+});
+
+Deno.test("an unknown changed-file list blocks a repo that declares checklists, even on a clean reply", async () => {
+  const result = await checkedReview(
+    MONEY_CHECKLISTS,
+    MONEY_FILES,
+    null,
+    reply(),
+  );
+  assert(prePrVerifierBlocked(result));
+  assertStringIncludes(result.review.findings[0]!.problem, "NOT checked");
+});
+
+Deno.test("a reply that omits the checklist, or covers only some items, blocks and names the unreported item", async () => {
+  const omitted = await checkedReview(MONEY_CHECKLISTS, MONEY_FILES, [
+    "src/money/fees.ts",
+  ], reply());
+  assert(prePrVerifierBlocked(omitted));
+  assertStringIncludes(omitted.review.findings[0]!.problem, "2 of 2");
+
+  const partial = await checkedReview(MONEY_CHECKLISTS, MONEY_FILES, [
+    "src/money/fees.ts",
+  ], reply([verdict(DECIMAL)]));
+  assert(prePrVerifierBlocked(partial));
+  const problem = partial.review.findings[0]!.problem;
+  assertStringIncludes(problem, "1 of 2");
+  assertStringIncludes(problem, "Rounding is tested");
+  assert(!problem.includes(DECIMAL), "the reported item is not listed");
+  assertStringIncludes(
+    buildPrePrVerifierGateComment(partial.review),
+    "Rounding is tested",
+  );
+});
+
+Deno.test("a full set of verdicts is not blocked, including a numbered or re-cased item text", async () => {
+  const full = await checkedReview(
+    MONEY_CHECKLISTS,
+    MONEY_FILES,
+    [
+      "src/money/fees.ts",
+    ],
+    reply([
+      verdict(`1. ${DECIMAL.toUpperCase()}`),
+      verdict("Rounding is tested", "not applicable"),
+    ]),
+  );
+  assert(!prePrVerifierBlocked(full));
+  assertEquals(full.review.findings, []);
+});
+
+Deno.test("no checklist file, or no matching path, owes no verdict and does not block", async () => {
+  const absent = await checkedReview(
+    null,
+    MONEY_FILES,
+    ["src/money/fees.ts"],
+    reply(),
+  );
+  assert(!prePrVerifierBlocked(absent));
+  const unmatched = await checkedReview(MONEY_CHECKLISTS, {
+    "README.md": "x\n",
+  }, [
+    "README.md",
+  ], reply());
+  assert(!prePrVerifierBlocked(unmatched));
 });

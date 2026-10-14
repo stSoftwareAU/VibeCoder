@@ -179,8 +179,10 @@ ones behind it.
    (steps below). `run.sh` posts them the same way before its round.
 4. Start step 1 again, adding `--sleep-first`. The PRs just reviewed are now
    `already-reviewed` at their head commit, so the gate does not report them
-   again; one whose review failed, or that was `over-limit`, is reported
-   after the next interval rather than straight away.
+   again; one whose review failed, or that was `over-limit`, or whose
+   checklist file could not be fetched (`checklist-unreadable`, a gh error
+   other than not-found, retried rather than reviewed), is reported after the
+   next interval rather than straight away.
 
 If the gate exits non-zero it could not reach GitHub for an hour; report its
 error and stop.
@@ -231,7 +233,11 @@ fields as follows:
   (the repo's `review-checklists.json` at the base ref, matched against the
   PR's changed files, Issue #3594); the empty string when it is empty. The
   reviewer's reply then carries a `checklist` array with a verdict per item,
-  and any `missing` item sends the PR back.
+  and any `missing` item sends the PR back. Pass the entry to `post.ts`
+  verbatim: its `checklistState` (the load problem and the items owed a
+  verdict) lets `post.ts` add a blocking finding itself for a file that could
+  not be applied or an item the reply left without a verdict, and `post.ts`
+  refuses an entry without it.
 
 If an agent fails or returns something that isn't the JSON the brief asks
 for, post nothing for that PR; the next gate run reports it again.

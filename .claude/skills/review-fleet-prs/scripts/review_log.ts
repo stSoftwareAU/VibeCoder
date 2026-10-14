@@ -11,7 +11,11 @@ import {
   readConfiguredLogDirSync,
   resolveLogDir,
 } from "../../../../worker/deno/lib/log_dir.ts";
-import type { ChecklistVerdict } from "../../../../worker/deno/lib/review_checklists.ts";
+import {
+  checklistGapFindings,
+  type ChecklistState,
+  type ChecklistVerdict,
+} from "../../../../worker/deno/lib/review_checklists.ts";
 import {
   MAX_UNRELATED_ISSUES,
   parseReviewReply,
@@ -203,6 +207,20 @@ export function unrelatedIssueBody(
     "",
     `_${REVIEW_MARKER}._`,
   ].join("\n");
+}
+
+// Adds the blocking findings the code owes for a checklist that was not
+// applied: a load problem, or an item the reply gave no verdict (Issue #3594).
+// Done before decideOutcome, so such a review is never approved and the
+// problem is named in the posted body whatever the model replied.
+export function withChecklistGaps(
+  review: FableReview,
+  state: ChecklistState,
+): FableReview {
+  const gaps = checklistGapFindings(state, review.checklist);
+  return gaps.length === 0
+    ? review
+    : { ...review, findings: [...review.findings, ...gaps] };
 }
 
 export function decideOutcome(

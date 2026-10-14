@@ -13,6 +13,8 @@ import {
 } from "@std/assert";
 import {
   CHECKLIST_FILE_LIST_LIMIT,
+  checklistGapFindings,
+  checklistState,
   loadChecklistsFromText,
   matchesPathGlob,
   parseChecklistVerdicts,
@@ -389,4 +391,114 @@ Deno.test("matchesPathGlob: `**/` matches only after a position the prefix reach
   // The prefix `x` never matches, so a later `/` must not let `**/` start.
   assertFalse(matchesPathGlob("x**/y", "a/y"));
   assert(matchesPathGlob("a**/y", "a/b/y"));
+});
+
+// ---- load state and gap findings (PR #3695 review) -------------------------
+
+Deno.test("checklistState: every load that cannot be applied carries a problem; absent and non-matching carry none", () => {
+  for (const kind of ["malformed", "unreadable", "fetch_failed"] as const) {
+    const st = checklistState({ kind, reason: "boom" }, ["a.rs"]);
+    assertStringIncludes(st.problem ?? "", "boom");
+    assertEquals(st.expected, []);
+  }
+  assertStringIncludes(
+    checklistState(POLICY, null).problem ?? "",
+    "unavailable or truncated",
+  );
+  assertEquals(checklistState({ kind: "absent" }, null), {
+    problem: null,
+    expected: [],
+  });
+  assertEquals(checklistState(POLICY, ["README.md"]), {
+    problem: null,
+    expected: [],
+  });
+});
+
+Deno.test("checklistState: expected holds exactly the items the section renders, one per item of each matched checklist", () => {
+  const st = checklistState(POLICY, ["src/money/fees.rs", "Cargo.toml"]);
+  assertEquals(st.problem, null);
+  assertEquals(st.expected.length, 4);
+  const section = renderChecklistSection(POLICY, [
+    "src/money/fees.rs",
+    "Cargo.toml",
+  ]);
+  for (const e of st.expected) {
+    assertStringIncludes(section, e.item);
+    assertStringIncludes(section, e.checklist);
+  }
+});
+
+Deno.test("renderChecklistSection renders a failed fetch as a blocking problem, never as no checklist", () => {
+  const out = renderChecklistSection(
+    { kind: "fetch_failed", reason: "HTTP 502" },
+    ["a.rs"],
+  );
+  assertStringIncludes(out, "could not be read");
+  assertStringIncludes(out, "BLOCKING");
+});
+
+Deno.test("checklistGapFindings: none when every expected item has a verdict or nothing applies", () => {
+  const verdict = (checklist: string, item: string) => ({
+    checklist,
+    item,
+    verdict: "met" as const,
+    note: "",
+  });
+  const st = checklistState(POLICY, ["src/money/fees.rs"]);
+  assertEquals(
+    checklistGapFindings(
+      st,
+      st.expected.map((e) => verdict(e.checklist, e.item)),
+    ),
+    [],
+  );
+  assertEquals(checklistGapFindings({ problem: null, expected: [] }, []), []);
+});
+
+Deno.test("checklistGapFindings: a problem and unreported items are each a blocking finding on the checklist file", () => {
+  const both = checklistGapFindings({
+    problem: "the file is malformed",
+    expected: [{ checklist: "A", item: "one" }],
+  }, []);
+  assertEquals(both.length, 2);
+  for (const f of both) {
+    assertEquals(f.file, "review-checklists.json");
+    assertEquals(f.line, 1);
+    assert(f.fix.length > 0);
+  }
+  assertStringIncludes(both[0]!.problem, "the file is malformed");
+  assertStringIncludes(both[1]!.problem, "1 of 1");
+});
+
+Deno.test("checklistGapFindings: a verdict for another checklist's identically worded item does not cover this one, and a long gap list is capped", () => {
+  const same = checklistGapFindings({
+    problem: null,
+    expected: [{ checklist: "A", item: "x" }, { checklist: "B", item: "x" }],
+  }, [{ checklist: "A", item: "x", verdict: "met", note: "" }]);
+  assertEquals(same.length, 1);
+  assertStringIncludes(same[0]!.problem, "1 of 2");
+  assertStringIncludes(same[0]!.problem, '"B"');
+
+  const many = checklistGapFindings({
+    problem: null,
+    expected: Array.from(
+      { length: 9 },
+      (_, i) => ({ checklist: "C", item: `i${i}` }),
+    ),
+  }, []);
+  assertStringIncludes(many[0]!.problem, "9 of 9");
+  assertStringIncludes(many[0]!.problem, "and 4 more");
+  assert(!many[0]!.problem.includes("i8"));
+});
+
+Deno.test("checklistGapFindings: hostile text cannot carry markup or a mention", () => {
+  const out = checklistGapFindings({
+    problem: "<b>x</b> @octocat",
+    expected: [{ checklist: "n@me", item: "<script>" }],
+  }, []);
+  for (const f of out) {
+    assert(!/[<>]/.test(f.problem), f.problem);
+    assert(!f.problem.includes("@octocat"), f.problem);
+  }
 });
