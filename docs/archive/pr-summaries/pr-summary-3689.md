@@ -271,7 +271,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   dropping the cspell plan, or forcing either operand of
   `rootCspell || nestedCspell` false, turns the matching test red.
 - **Added** `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`
-  — six tests (four more are described below) that the completion phase gates the first push and the retry
+  — twelve tests (the first six are described here, the later ones under the PR #3716 review entries below): the completion phase gates the first push and the retry
   push, falls back to `{ commands: [] }` without a spec, passes the resolved PR
   base (`origin/main`) to both gate calls, and passes no base when it cannot be
   resolved. Red-check: removing `gateBeforePush()` turns the first three red;
@@ -291,7 +291,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   `pre_push_gate` / `ladder`; the two existing block tests now assert the reason
   starts with the marker and still contains the gate output. Red-check:
   deleting the `startsWith(PRE_PUSH_GATE_MARKER)` rule in
-  `detectFailureCategory` turned 4 of the 17 tests in those two files red (re-run at the head).
+  `detectFailureCategory` turned 4 of the 19 tests in those two files red (re-run at the head).
 - **Added** (PR #3716 third review, Step 1b cap and timed-out lookups):
   `worker/deno/tests/git_push_preflight_test.ts` — a Step 1b block whose
   pre-flight command prints over 100 KB returns a `PrePushGateBlockedError`
@@ -312,7 +312,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   block with over 100 KB of output keeps the marker, names the failing command,
   keeps the trailer and stays under 8,000 characters; a secret in the output is
   redacted before the cut; a lookup failure (`Could not resolve host`) is not
-  marked, classifies as `push_failure` (infrastructure), is retried in-run and
+  marked as a gate block (it gets its own `PRE_PUSH_LOOKUP_FAILED_MARKER` prefix), classifies as `push_failure` (infrastructure), is retried in-run and
   never pushes; a lookup failure with over 100 KB of output is capped too.
   `worker/deno/tests/git_push_preflight_test.ts` — whole-branch mode with no
   tracking ref and an unreachable origin still returns the verdict (the
