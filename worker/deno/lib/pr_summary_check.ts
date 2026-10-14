@@ -22,6 +22,11 @@ import {
   parseBranchOutcomes,
   validateBranchOutcomes,
 } from "./branch_outcomes_gate.ts";
+import {
+  applyBranchOutcomesFacts,
+  BRANCH_OUTCOMES_MARKER,
+  resolveBranchOutcomesFacts,
+} from "./pr_summary_facts.ts";
 
 /** Outcome of one gate. A `not_checked` gate is not a pass. */
 export type GateStatus =
@@ -42,6 +47,12 @@ export interface GateReport {
 /** Input to {@link runPrSummaryCheck}. */
 export interface PrSummaryCheckInput {
   summaryContent: string;
+  /**
+   * Issue number from the `pr-summary-<N>.md` filename, or `null` when the
+   * name carries none. Locates `pr-summary-<N>.facts.json`; `null` skips the
+   * facts file.
+   */
+  issueNumber: number | null;
   baseBranch: string;
   /** The issue body, or `null` when none was supplied. */
   issueBody: string | null;
@@ -75,7 +86,26 @@ function notChecked(gate: string, issueRef: string, note: string): GateReport {
 export async function runPrSummaryCheck(
   input: PrSummaryCheckInput,
 ): Promise<Result<GateReport[], Error>> {
-  const { summaryContent, issueBody, issueLabels, runGit, repoRoot } = input;
+  const { issueBody, issueLabels, runGit, repoRoot } = input;
+  const rawSummary = input.summaryContent;
+
+  // Issue #3535: same facts-file handling as the completion phase, so a
+  // summary holding only the marker is judged on the rendered list.
+  const facts = input.issueNumber === null
+    ? ({ kind: "absent" } as const)
+    : await resolveBranchOutcomesFacts(repoRoot, input.issueNumber);
+  const summaryContent = facts.kind === "valid"
+    ? applyBranchOutcomesFacts(rawSummary, facts.rendered)
+    : rawSummary;
+  let factsProblem: string | null = null;
+  if (facts.kind === "error") {
+    factsProblem = facts.reason;
+  } else if (
+    facts.kind === "valid" && parseBranchOutcomes(rawSummary).present
+  ) {
+    factsProblem =
+      `Branch outcomes facts file ${facts.relativePath} is present, but the PR summary also carries a hand-written \`Branch outcomes\` list — remove the prose list and leave the \`${BRANCH_OUTCOMES_MARKER}\` marker where the rendered list belongs`;
+  }
 
   const base = await resolveComparableBaseRef(runGit, input.baseBranch, {
     cwd: repoRoot,
@@ -175,7 +205,7 @@ export async function runPrSummaryCheck(
     namedTestPaths(parseBranchOutcomes(summaryContent)),
     (args) => runGit(args, { cwd: repoRoot }),
   );
-  reports.push(fromVerdict(
+  const branchOutcomes = fromVerdict(
     "Branch outcomes",
     "#3147",
     validateBranchOutcomes({
@@ -183,7 +213,12 @@ export async function runPrSummaryCheck(
       prSummaryContent: summaryContent,
       testsAtHead,
     }),
-  ));
+  );
+  if (factsProblem !== null) {
+    branchOutcomes.status = "blocked";
+    branchOutcomes.problems.unshift(factsProblem);
+  }
+  reports.push(branchOutcomes);
 
   reports.push(notChecked(
     "Summary claim check",

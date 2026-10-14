@@ -615,6 +615,9 @@ export interface ProductionDepsOptions {
    *
    * Scoped deliberately to the audit: it is one probe, and a factory-wide
    * `gh` override would be a much larger surface for a much smaller reason.
+   * The one other read it answers is the fleet-wide fast-failure diagnostic
+   * lookup (Issue #2955) the audit and census make through `backedOffRepos`,
+   * so a wiring test never spawns a real `gh search issues`.
    */
   idleDetectGhCommandFn?: (args: string[]) => Promise<string>;
 
@@ -1083,7 +1086,9 @@ export async function createProductionRunCoreDeps(
     // repository off on every host, not only the one that filed it.
     fleetDiagnostics: {
       owners: () => ownersOfRepos(config.repos ?? []),
-      ghCommandFn: runGhCommandRaw,
+      // A wiring test's `idleDetectGhCommandFn` stub answers the fleet-wide
+      // diagnostic read too, so no unit test spawns a real `gh search`.
+      ghCommandFn: options.idleDetectGhCommandFn ?? runGhCommandRaw,
       cache: createFleetDiagnosticCache(),
       warn: (message: string) => logger.warn(message),
       error: (message: string) => logger.error(message),
