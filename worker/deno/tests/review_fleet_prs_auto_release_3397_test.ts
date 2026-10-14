@@ -42,6 +42,7 @@ const review = (over: Partial<FableReview> = {}): FableReview => ({
   testChanges: "meaningful",
   testChangeNotes: [],
   unrelatedIssues: [],
+  checklist: [],
   ...over,
 });
 
