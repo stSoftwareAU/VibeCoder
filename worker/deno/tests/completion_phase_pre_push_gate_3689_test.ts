@@ -420,6 +420,43 @@ Deno.test({
   },
 });
 
+for (
+  const [label, git] of [
+    [
+      "a git call the worker's timeout cut off",
+      "TIMEOUT: git rev-list --count --no-merges origin/main..HEAD timed out " +
+      "after 30s (Issue #619)",
+    ],
+    [
+      "an ls-remote that timed out on the network",
+      "fatal: unable to access 'https://github.com/o/r.git/': " +
+      "Failed to connect to github.com port 443: Connection timed out",
+    ],
+  ] as const
+) {
+  Deno.test({
+    name:
+      `completion - ${label} is a push failure, not a timeout, and is retried in-run (PR #3716 review)`,
+    permissions: { read: true, write: true },
+    async fn() {
+      const o = await runCompletion({
+        ...base,
+        pushRefused: false,
+        gateAnswers: Array.from({ length: 5 }, () => new Error(git)),
+      });
+      assertEquals(o.status, "failure");
+      const reason = o.reason ?? "";
+      assertStringIncludes(reason, git);
+      assertEquals(o.pushes, 0, "an unreadable branch state must not push");
+      assert(o.gateCalls > 1, "an infrastructure failure is retried in-run");
+      const category = detectFailureCategory(reason);
+      assertEquals(category, "push_failure");
+      assert(isInfrastructureFailure(category));
+      assertEquals(classifyCodingFailure(reason).category, "push_failure");
+    },
+  });
+}
+
 Deno.test({
   name:
     "completion - a gate lookup failure with ~100 KB of output is capped too (PR #3716 review)",

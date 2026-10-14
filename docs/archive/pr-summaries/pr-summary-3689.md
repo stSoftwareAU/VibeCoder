@@ -38,9 +38,14 @@ fixed with a negative test; the full classification is in
   and test output cannot reclassify the run: it is the `pre_push_gate`
   category, one normal ladder attempt plus a failure comment carrying that
   capped output. A git or remote lookup failure is not a verdict on the
-  branch: it is reported unmarked as `Git push failed: ...`, the `push_failure`
-  infrastructure category, and is retried in-run (PR #3716 review, same
-  mechanism as #3431 and #3454).
+  branch: it is reported under its own worker-written prefix
+  `PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push failed: the pre-push gate could not
+  read the branch state"), which `detectFailureCategory` matches with
+  `startsWith` ahead of the timeout rule, so a quoted `timed out` or `Connection
+  timed out` still gives the `push_failure` infrastructure category, retried
+  in-run (PR #3716 review, same mechanism as #3431 and #3454). The two
+  `commitAndPushPending` blocks that reach PR-processor comments (Step 1b, and
+  the Step 1 pre-flight block) cap the same output in `git_push.ts`.
 
 ```mermaid
 flowchart LR
@@ -157,7 +162,7 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
 `detect-non-literal-regexp` at `mutation_gate.ts:627`; Floci 38033819415
 `ValidationException ... PutParameter`.
 
-- Targeted tests: 142 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
+- Targeted tests: 146 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
   `worker/deno/tests/git_push_preflight_test.ts`,
   `worker/deno/tests/toolchain_selfcheck_test.ts`,
@@ -167,7 +172,7 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
   an agent run with its injected `core.hooksPath` (`GIT_CONFIG_COUNT=1`) set,
   and again with a `pre-push` hook that always exits 1: `git_push_preflight_test.ts`
   passes either way because its git calls set `GIT_CONFIG_COUNT=0`. The wider
-  completion/issue-worker suites (456 tests) also pass;
+  `completion_phase*_test.ts` and `issue_worker*_test.ts` suites (472 tests) also pass;
   `deno fmt --check`, `deno lint`, `deno check` clean.
 - Unattended-path verification is by unit tests of Step 1b and
   `gateBeforePush()` through their real entry points, including a real-git test
@@ -287,6 +292,21 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   starts with the marker and still contains the gate output. Red-check:
   deleting the `startsWith(PRE_PUSH_GATE_MARKER)` rule in
   `detectFailureCategory` turned 4 of the 17 tests in those two files red (re-run at the head).
+- **Added** (PR #3716 third review, Step 1b cap and timed-out lookups):
+  `worker/deno/tests/git_push_preflight_test.ts` — a Step 1b block whose
+  pre-flight command prints over 100 KB returns a `PrePushGateBlockedError`
+  under 6,000 characters that starts with `[PRE_PUSH_BLOCKED]`, names the
+  failing command, keeps the end of the output and ends with `Unpushed commits
+  on <branch> were not pushed.`; a Step 1 pre-flight block with the same output
+  is capped too and keeps the original `PreFlightGateError` as `cause`.
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts` — a
+  `TIMEOUT: git rev-list ... timed out after 30s (Issue #619)` lookup error and
+  an ls-remote `Connection timed out` error each classify as `push_failure`,
+  are infrastructure, are retried in-run (`gateCalls > 1`) and never push.
+  Red-check, reverting `git_push.ts`, `failure_diagnosis.ts` and
+  `completion_phase.ts` to the previous commit: the two cap tests fail with
+  `uncapped: 105235 characters` and `uncapped: 105163 characters`, and the two
+  timeout tests fail with `an infrastructure failure is retried in-run`.
 - **Added** (PR #3716 second review, cap and blame):
   `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts` — a gate
   block with over 100 KB of output keeps the marker, names the failing command,
@@ -408,10 +428,26 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   branch-only `sweptAt` is the verdict control).
 - `worker/deno/lib/phases/completion_phase.ts` `gateBeforePush()`: a
   `PrePushGateBlockedError` → marker plus `redactedHeadTail(…, 2000, 2000)`;
-  anything else → `Git push failed: …` with the same cut — "a gate block with
+  anything else → `PRE_PUSH_LOOKUP_FAILED_MARKER` plus the same cut — "a gate block with
   ~100 KB of output keeps the marker…", "redacts a secret…", "a gate that
   cannot reach the remote is not blamed on the branch…" and "a gate lookup
   failure with ~100 KB of output is capped too".
+- `worker/deno/lib/git_push.ts` `gateUnpushedCommits` blocked arm →
+  `capGateText` cuts the gate output between the `[PRE_PUSH_BLOCKED]` prefix and
+  the trailer — "Step 1b block with ~100 KB of output is capped, keeping the
+  command and the trailer"; removing `capGateText` there turns it red.
+- `worker/deno/lib/git_push.ts` Step 1 pre-flight block, `capped ===
+  gateResult.error.message` → under the cap the original `PreFlightGateError` is
+  returned ("pre-flight non-zero: commit AND push both abort" asserts the
+  instance); over it a plain `Error` with that error as `cause` ("Step 1
+  pre-flight block with ~100 KB of output is capped"); returning the original
+  error always turns the second red, always wrapping turns the first red.
+- `worker/deno/lib/failure_diagnosis.ts` `detectFailureCategory`
+  `startsWith(PRE_PUSH_LOOKUP_FAILED_MARKER)` → `push_failure` — the `TIMEOUT:
+  git rev-list ... timed out` and `Connection timed out` completion tests;
+  deleting the rule turns both red (`an infrastructure failure is retried
+  in-run`), and the `Could not resolve host` test is the control that stays
+  green without it.
 - `worker/deno/lib/pre_push_gate.ts` `listPushedFiles` `baseRef` argument —
   `worker/deno/tests/pre_push_gate_test.ts` "listPushedFiles: baseRef lists
   pushed commits ahead of the base; an option-like baseRef is refused (#3689)":

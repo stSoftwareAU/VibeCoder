@@ -5000,7 +5000,12 @@ always gets one normal attempt and a failure comment carrying the gate output.
 A message that merely quotes the marker later keeps its own category. The final
 mile of `commitAndPushPending` (Step 1b) returns the same unmarked
 `[PRE_PUSH_BLOCKED]` error to its PR-processor callers, which log it and do not
-classify it as a coding-run failure.
+classify it as a coding-run failure. `gateUnpushedCommits` cuts the gate output
+to the same 2,000 + 2,000 characters before adding the `[PRE_PUSH_BLOCKED]`
+prefix and the `Unpushed commits on <branch> were not pushed.` trailer, and the
+Step 1 pre-flight block is cut the same way, because the PR processors copy that
+error into the "fixed locally but failed to push" comment, which GitHub refuses
+over 65,536 characters.
 
 Two limits keep the failure comment postable and the blame accurate (PR #3716
 review). First, the gate's output is redacted whole, then cut to its first 2,000
@@ -5015,10 +5020,13 @@ which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or 
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
 `runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
 the base range) comes back as a plain error or a `PrePushGateInfrastructureError`
-with no marker, and `gateBeforePush()` reports it as `Git push failed: the
-pre-push gate could not read the branch state: ...`. That is the `push_failure`
-infrastructure category, retried in-run, as the push path's own failures are
-(Issue #1550). With a `baseRef` the gate reads no remote head at all, because
+with no gate marker, and `gateBeforePush()` reports it as
+`PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push failed: the pre-push gate could not
+read the branch state") followed by the cut git text. `detectFailureCategory`
+matches that prefix with `startsWith` ahead of its timeout rule, so the quoted
+git text (`TIMEOUT: git rev-list ... timed out after 30s`, `Connection timed
+out`) cannot make it a `timeout`: it is the `push_failure` infrastructure
+category, retried in-run, as the push path's own failures are (Issue #1550). With a `baseRef` the gate reads no remote head at all, because
 the base range is local.
 
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)

@@ -296,6 +296,88 @@ Deno.test("commitAndPushPending - unpushed agent commit failing the gate is not 
   }
 });
 
+/** A failing check that prints ~100 KB, ending in a distinctive last line. */
+const HUGE_FAILURE: PreFlightCommandResult = {
+  started: true,
+  code: 1,
+  stdout: "noisy diff hunk line\n".repeat(5_000) + "THE-LAST-LINE",
+  stderr: "",
+};
+
+Deno.test("commitAndPushPending - Step 1b block with ~100 KB of output is capped, keeping the command and the trailer (PR #3716 review)", async () => {
+  const branch = "issue-3689-huge";
+  const { tmp, downstream } = await makeRepo("preflight_3689_huge_", branch);
+  try {
+    // Clean content, so only the pre-flight command blocks; nothing is dirty,
+    // so Step 1 runs no pre-flight and Step 1b's gate does.
+    await commitLocally(downstream, "good.ts", GOOD_TS);
+    const before = await originSha(downstream, branch);
+    // The gate's own changed-file checks use this runner too: only the repo's
+    // pre-flight command fails.
+    const runner: PreFlightRunner = (command) =>
+      Promise.resolve(
+        command === "./pre-flight.sh"
+          ? HUGE_FAILURE
+          : { started: true, code: 0, stdout: "", stderr: "" },
+      );
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { commands: ["./pre-flight.sh"], runner },
+    );
+
+    assert(!result.ok, "a failing pre-flight must refuse the push");
+    if (!result.ok) {
+      const message = result.error.message;
+      assert(HUGE_FAILURE.stdout.length > 100_000);
+      assert(message.length < 6_000, `uncapped: ${message.length} characters`);
+      assert(result.error instanceof PrePushGateBlockedError);
+      assert(message.startsWith("[PRE_PUSH_BLOCKED]"));
+      assert(message.includes("./pre-flight.sh"), "names the failing command");
+      assert(message.includes("THE-LAST-LINE"), "keeps the end of the output");
+      assert(
+        message.endsWith(`Unpushed commits on ${branch} were not pushed.`),
+        "keeps the trailer",
+      );
+    }
+    assertEquals(await originSha(downstream, branch), before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - Step 1 pre-flight block with ~100 KB of output is capped, keeping the command (PR #3716 review)", async () => {
+  const branch = "issue-3689-huge-step1";
+  const { tmp, downstream } = await makeRepo("preflight_3689_huge1_", branch);
+  try {
+    await Deno.writeTextFile(`${downstream}/broken.txt`, "does not compile\n");
+    const { runner } = failRunner(HUGE_FAILURE);
+
+    const result = await commitAndPushPending(
+      branch,
+      "Auto-commit",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { commands: ["./pre-flight.sh"], runner },
+    );
+
+    assert(!result.ok, "a failing pre-flight must block the commit");
+    if (!result.ok) {
+      const message = result.error.message;
+      assert(message.length < 6_000, `uncapped: ${message.length} characters`);
+      assert(message.includes("./pre-flight.sh"), "names the failing command");
+      assert(message.includes("THE-LAST-LINE"), "keeps the end of the output");
+      // The full record stays reachable for a caller that wants it.
+      assert(result.error.cause instanceof PreFlightGateError);
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 Deno.test("commitAndPushPending - clean unpushed agent commit passes the gate and is pushed (#3689)", async () => {
   const branch = "issue-3689-good";
   const { tmp, downstream } = await makeRepo("preflight_3689_good_", branch);

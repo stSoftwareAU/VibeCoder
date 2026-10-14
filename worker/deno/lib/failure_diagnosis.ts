@@ -266,6 +266,18 @@ export const PRE_PUSH_GATE_MARKER =
   "the branch did not pass the worker's pre-push gate";
 
 /**
+ * The worker-written prefix of the completion phase's reason when the pre-push
+ * gate could not read the branch state (a failed or timed-out git or remote
+ * lookup, PR #3716 review). The branch was not judged, so it is a
+ * `push_failure` (infrastructure, retried in-run). Matched with `startsWith`
+ * ahead of the timeout rule, because the quoted git text legitimately says
+ * `timed out` (`TIMEOUT: git rev-list … timed out after 30s`) or
+ * `Connection timed out`, which would otherwise make it a `timeout`.
+ */
+export const PRE_PUSH_LOOKUP_FAILED_MARKER =
+  "Git push failed: the pre-push gate could not read the branch state";
+
+/**
  * The worker-written head of a posted summary-gate failure record: the
  * `## Automated Processing Failed …` heading line followed by the
  * `**Category:** \`summary-incomplete\`` line `markIssueAsFailedOnce` and
@@ -327,7 +339,8 @@ export function buildScheduledReleaseReason(
  * Order matters: more specific patterns are checked before general ones.
  * The leading worker-written gate markers ({@link SUMMARY_RULE_GATE_MARKER},
  * Issue #3431, {@link SECURITY_FIX_GATE_MARKER}, Issue #3454, then
- * {@link PRE_PUSH_GATE_MARKER}, PR #3716 review) are
+ * {@link PRE_PUSH_GATE_MARKER}, PR #3716 review, then
+ * {@link PRE_PUSH_LOOKUP_FAILED_MARKER}) are
  * `startsWith` rules checked ahead of every other rule.
  */
 export function detectFailureCategory(failureMessage: string): FailureCategory {
@@ -355,6 +368,12 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // worker's prefix ahead of raw formatter, linter and test output.
   if (failureMessage.startsWith(PRE_PUSH_GATE_MARKER)) {
     return "pre_push_gate";
+  }
+
+  // The gate could not read the branch state: an infrastructure fault, never
+  // a timeout or rate limit the quoted git text happens to mention.
+  if (failureMessage.startsWith(PRE_PUSH_LOOKUP_FAILED_MARKER)) {
+    return "push_failure";
   }
 
   // A scheduled release outranks every other pattern (Issue #424, parent

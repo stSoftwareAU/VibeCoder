@@ -23,6 +23,7 @@ import {
 import { assertSafeToCommit, inspectStagedFiles } from "./pre_commit_safety.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
+import { redactedHeadTail } from "./redacted_text.ts";
 import {
   PrePushGateInfrastructureError,
   runPrePushGate,
@@ -519,6 +520,25 @@ export async function unstageWorkerStateFiles(
 }
 
 /**
+ * Head and tail budgets for the gate output carried in a returned error (PR
+ * #3716 review). The head holds the line that names the failing command; the
+ * tail holds the end of its output. The error reaches a PR comment (the
+ * PR-processor "fixed locally but failed to push" reply), and GitHub refuses a
+ * comment body over 65,536 characters; a few KB stays far under it.
+ */
+export const PRE_PUSH_GATE_REASON_HEAD_CHARS = 2000;
+export const PRE_PUSH_GATE_REASON_TAIL_CHARS = 2000;
+
+/** Redact a gate's output, then keep only its head and tail. */
+function capGateText(text: string): string {
+  return redactedHeadTail(
+    text,
+    PRE_PUSH_GATE_REASON_HEAD_CHARS,
+    PRE_PUSH_GATE_REASON_TAIL_CHARS,
+  );
+}
+
+/**
  * The pre-push gate gave a verdict on the branch's content (PR #3716 review):
  * a changed-file or pre-flight command failed, a plan could not be built, or a
  * `sweptAt` is not on the default branch. {@link gateUnpushedCommits} returns
@@ -629,7 +649,7 @@ export async function gateUnpushedCommits(
     return {
       ok: false,
       error: new PrePushGateBlockedError(
-        `[PRE_PUSH_BLOCKED] ${gate.error.message}\n` +
+        `[PRE_PUSH_BLOCKED] ${capGateText(gate.error.message)}\n` +
           `Unpushed commits on ${branchName} were not pushed.`,
         { cause: gate.error },
       ),
@@ -657,7 +677,9 @@ export async function gateUnpushedCommits(
  *      runs when no commit is unpushed). When Step 1 committed nothing it
  *      also re-runs the repo's pre-flight commands; when Step 1 committed,
  *      those commands already ran there and are not repeated. A block
- *      refuses the push.
+ *      refuses the push. The gate output in the
+ *      returned error is cut to a head and a tail (as is Step 1's pre-flight
+ *      block), because PR processors post it in a comment.
  *   2. `pushUnpushedCommits` — push every commit ahead of origin (handles
  *      first-time push and non-fast-forward recovery internally).
  *   3. Re-count unpushed commits against the branch's own remote head —
@@ -783,7 +805,14 @@ export async function commitAndPushPending(
         });
         if (!gateResult.ok) {
           await runGitCommand(["reset", "--"], options);
-          return { ok: false, error: gateResult.error };
+          // Capped like Step 1b's: the message reaches a PR comment.
+          const capped = capGateText(gateResult.error.message);
+          return {
+            ok: false,
+            error: capped === gateResult.error.message
+              ? gateResult.error
+              : new Error(capped, { cause: gateResult.error }),
+          };
         }
       }
 
