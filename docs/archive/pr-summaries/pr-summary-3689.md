@@ -262,7 +262,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   dropping the cspell plan, or forcing either operand of
   `rootCspell || nestedCspell` false, turns the matching test red.
 - **Added** `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`
-  — five tests that the completion phase gates the first push and the retry
+  — five tests (a sixth is described below) that the completion phase gates the first push and the retry
   push, falls back to `{ commands: [] }` without a spec, passes the resolved PR
   base (`origin/main`) to both gate calls, and passes no base when it cannot be
   resolved. Red-check: removing `gateBeforePush()` turns the first three red;
