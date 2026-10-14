@@ -17,8 +17,10 @@
 // worker container passes it (Issue #3293): there the host's log directory is
 // mounted at another path, so the resolution stateDir() makes on the host
 // would point somewhere else.
+// An opted-in repo (`pr_reviewer_auto_release` in .config.json) has an
+// issue-required test-change hold auto-released as an approval (Issue #3397).
 // Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
-// branchUpdated?, branchUpdateError?, reason? }.
+// branchUpdated?, branchUpdateError?, autoReleased?, autoReleaseHeld?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
 // reported in `labelError`; a refused branch update likewise in
 // `branchUpdateError` (the next gate pass retries it).
@@ -39,10 +41,17 @@ import {
   reviewBody,
   sameIssueTitle,
   stateDir,
+  unrelatedInstanceComment,
+  type UnrelatedIssue,
   unrelatedIssueBody,
   writeSummary,
 } from "./review_log.ts";
-import { type LabelError, syncNeedsHumanLabel } from "./needs_human.ts";
+import {
+  type LabelError,
+  type RunGh,
+  syncNeedsHumanLabel,
+} from "./needs_human.ts";
+import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
 import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
 
 interface Input {
@@ -88,15 +97,32 @@ async function notify(title: string, message: string) {
 
 // Best effort: a failure to file one issue never stops the review being
 // posted. An issue already open under the same title is linked, not refiled.
-async function fileUnrelatedIssues(
-  pr: Input["pr"],
+// An issue the reviewer named as covering the same defect class gets the new
+// instance as a comment (Issue #3598); if that issue is closed or cannot be
+// read, the finding is filed as new, never dropped. Exported, with `gh`
+// injectable, for its tests.
+export async function fileUnrelatedIssues(
+  pr: Pick<Input["pr"], "repo" | "number" | "url">,
   review: FableReview,
+  gh: (args: string[]) => Promise<string> = (args) => run("gh", args),
 ): Promise<FiledIssue[]> {
   const filed: FiledIssue[] = [];
   for (const issue of review.unrelatedIssues) {
+    if (issue.existingIssue !== undefined) {
+      const added = await addToExistingIssue(
+        pr,
+        issue,
+        issue.existingIssue,
+        gh,
+      );
+      if (added) {
+        filed.push(added);
+        continue;
+      }
+    }
     try {
       const open: FiledIssue[] = JSON.parse(
-        await run("gh", [
+        await gh([
           "issue",
           "list",
           "-R",
@@ -116,7 +142,7 @@ async function fileUnrelatedIssues(
       }
       const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
       await Deno.writeTextFile(bodyFile, unrelatedIssueBody(issue, pr));
-      const url = await run("gh", [
+      const url = await gh([
         "issue",
         "create",
         "-R",
@@ -139,11 +165,72 @@ async function fileUnrelatedIssues(
   return filed;
 }
 
+/**
+ * Comment a new instance onto the open issue the reviewer named, or return
+ * null so the caller files it as a new issue instead.
+ */
+async function addToExistingIssue(
+  pr: Pick<Input["pr"], "repo" | "number" | "url">,
+  issue: UnrelatedIssue,
+  number: number,
+  gh: (args: string[]) => Promise<string>,
+): Promise<FiledIssue | null> {
+  try {
+    const existing: {
+      number: number;
+      url: string;
+      title: string;
+      state: string;
+    } = JSON.parse(
+      await gh([
+        "issue",
+        "view",
+        String(number),
+        "-R",
+        pr.repo,
+        "--json",
+        "number,url,title,state",
+      ]),
+    );
+    if (existing.state !== "OPEN") return null;
+    const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
+    await Deno.writeTextFile(bodyFile, unrelatedInstanceComment(issue, pr));
+    try {
+      await gh([
+        "issue",
+        "comment",
+        String(number),
+        "-R",
+        pr.repo,
+        "--body-file",
+        bodyFile,
+      ]);
+    } finally {
+      await Deno.remove(bodyFile).catch(() => {});
+    }
+    return {
+      number: existing.number,
+      url: existing.url,
+      title: existing.title,
+      addedTo: true,
+    };
+  } catch (e) {
+    console.error(
+      `could not add "${issue.title}" to #${number}, filing it instead: ${
+        (e as Error).message
+      }`,
+    );
+    return null;
+  }
+}
+
 export function postedResult(
   outcome: Outcome,
   filedIssues: readonly FiledIssue[],
   labelError?: LabelError,
   branchUpdate?: BranchUpdateResult,
+  autoReleased?: boolean,
+  autoReleaseHeld?: readonly string[],
 ) {
   return {
     posted: true,
@@ -153,6 +240,45 @@ export function postedResult(
     ...(branchUpdate?.updated === true ? { branchUpdated: true } : {}),
     ...(branchUpdate?.updated === false
       ? { branchUpdateError: branchUpdate.error }
+      : {}),
+    ...(autoReleased ? { autoReleased: true } : {}),
+    ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
+  };
+}
+
+const isNotOptedIn = (reasons: readonly string[]) =>
+  reasons.length === 1 && reasons[0] === "repo not opted in";
+
+// The outcome, with an issue-required test-change hold released when the repo
+// opted in and every note checks out; any doubt keeps the hold (Issue #3397).
+export async function decidePostOutcome(
+  pr: { repo: string; number: number },
+  review: FableReview,
+  removedTests: readonly string[],
+  repos: readonly string[],
+  runGh: RunGh,
+): Promise<
+  {
+    outcome: Outcome;
+    autoReleased: boolean;
+    autoReleaseReasons: string[];
+    autoReleaseHeld?: string[];
+  }
+> {
+  const { release, reasons } = await resolveAutoRelease(
+    pr,
+    review,
+    removedTests,
+    repos,
+    runGh,
+  );
+  const outcome = decideOutcome(review, removedTests, { autoRelease: release });
+  return {
+    outcome,
+    autoReleased: release && outcome === "approved",
+    autoReleaseReasons: reasons,
+    ...(outcome === "held" && !isNotOptedIn(reasons)
+      ? { autoReleaseHeld: reasons }
       : {}),
   };
 }
@@ -222,7 +348,14 @@ export async function main() {
   }
 
   const removed = pr.testChanges.removed;
-  const outcome = decideOutcome(review, removed);
+  const repos = await loadAutoReleaseRepos();
+  const { outcome, autoReleased, autoReleaseHeld } = await decidePostOutcome(
+    pr,
+    review,
+    removed,
+    repos,
+    (args) => run("gh", args),
+  );
   const dir = Deno.args.find((a) => a.startsWith("--state-dir="))?.slice(12) ??
     stateDir();
   const previous = latestByPr(await readLog(dir)).get(
@@ -231,7 +364,7 @@ export async function main() {
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
   await Deno.writeTextFile(
     bodyFile,
-    reviewBody(outcome, review, removed, filedIssues),
+    reviewBody(outcome, review, removed, filedIssues, { autoReleased }),
   );
   const flag = outcome === "approved"
     ? "--approve"
@@ -286,6 +419,8 @@ export async function main() {
     removedTests: removed,
     filedIssues,
     addedNeedsHuman: label.addedNeedsHuman,
+    ...(autoReleased ? { autoReleased: true as const } : {}),
+    ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
   };
   await Deno.mkdir(dir, { recursive: true });
   await Deno.writeTextFile(
@@ -310,7 +445,14 @@ export async function main() {
   }
   console.log(
     JSON.stringify(
-      postedResult(outcome, filedIssues, label.labelError, branchUpdate),
+      postedResult(
+        outcome,
+        filedIssues,
+        label.labelError,
+        branchUpdate,
+        autoReleased,
+        autoReleaseHeld,
+      ),
     ),
   );
 }
