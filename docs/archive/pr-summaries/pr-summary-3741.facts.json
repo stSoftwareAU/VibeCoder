@@ -1,0 +1,296 @@
+{
+ "version": 1,
+ "branchOutcomes": {
+  "noneAdded": false,
+  "entries": [
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 126,
+    "outcome": "repo argument missing: typeof operand (undefined target) throws 'is missing'",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a missing field throws, naming it",
+    "flipWentRed": "forcing the typeof operand false turned it red: TypeError on undefined.trim()"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 126,
+    "outcome": "repo argument blank: trim operand ('  ' target) throws 'is missing'",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a missing field throws, naming it",
+    "flipWentRed": "forcing the trim operand false turned it red: the throw said 'is not an owner/name' instead"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 130,
+    "outcome": "repo argument not owner/name throws",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a missing field throws, naming it",
+    "flipWentRed": "forcing the check false turned it red: no throw for 'not a repo'"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 157,
+    "outcome": "more than 8 marker candidates returns null (ambiguous)",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - more than eight marker names is ambiguous; eight are checked",
+    "flipWentRed": "replacing the cap with false turned it red: nine names routed to VibeCoder"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 160,
+    "outcome": "back-off marker confirmed by isRepoFastFailureIssue",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a #2592 diagnostic is never reported as belonging to another repository",
+    "flipWentRed": "forcing that operand false turned it red: the back-off marker was not a diagnostic"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 161,
+    "outcome": "tally marker confirmed by isRepoFastFailureTallyIssue",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - GRQ-AutoTrader#3184 tally issue stays in GRQ-AutoTrader as a diagnostic",
+    "flipWentRed": "forcing that operand false turned it red: #3184 was not a diagnostic"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 162,
+    "outcome": "marked operand: an unframed prefix in prose is not counted",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a marker prefix quoted in prose is not a diagnostic",
+    "flipWentRed": "forcing marked true turned it red: the prose quote became a diagnostic"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 162,
+    "outcome": "dedupe operand: one repository in two casings counts once",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a diagnostic drafted against another repository stays in the monitored one",
+    "flipWentRed": "forcing the dedupe operand true turned it red: two casings became 'several repositories'"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 172,
+    "outcome": "a pattern with no match adds no signal",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - #3630 worker fix routes to VibeCoder as implementation",
+    "flipWentRed": "pushing on every pattern turned it red: 'product signals: none' was missing"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 178,
+    "outcome": "empty signal list renders as none",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - #3630 worker fix routes to VibeCoder as implementation",
+    "flipWentRed": "negating the ternary turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 193,
+    "outcome": "title missing: typeof operand throws draft.title is missing",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a missing field throws, naming it",
+    "flipWentRed": "forcing the typeof operand false turned it red: TypeError instead"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 193,
+    "outcome": "title blank: trim operand throws draft.title is missing",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a missing field throws, naming it",
+    "flipWentRed": "forcing the trim operand false turned it red: no throw"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 201,
+    "outcome": "a draft with no body classifies from its title",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a missing field throws, naming it",
+    "flipWentRed": "replacing the default with draft.body! turned it red: TypeError on undefined"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 229,
+    "outcome": "marker for the target: diagnostic in the target",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - GRQ-AutoTrader#3184 tally issue stays in GRQ-AutoTrader as a diagnostic",
+    "flipWentRed": "forcing it false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 238,
+    "outcome": "one foreign marker: diagnostic in the monitored repository",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a diagnostic drafted against another repository stays in the monitored one",
+    "flipWentRed": "forcing it false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 248,
+    "outcome": "markers for several repositories: ambiguous",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - markers for two repositories are ambiguous",
+    "flipWentRed": "forcing it false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 259,
+    "outcome": "VibeCoder never counted as a product repository",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - VibeCoder is never counted as a product repository",
+    "flipWentRed": "forcing the vibe operand true turned it red: #3607 became ambiguous"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 259,
+    "outcome": "product repository named by short name",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a GRQ scoring bug routes to GRQ wherever it is drafted",
+    "flipWentRed": "forcing the mention operand true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 265,
+    "outcome": "worker operand: worker signal with no product signal goes to VibeCoder",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a GRQ-AutoTrader review finding about prompt code routes to VibeCoder",
+    "flipWentRed": "forcing the worker operand true turned it red: no-signal drafts went to VibeCoder"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 265,
+    "outcome": "product operand: a product signal blocks the worker-only route",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a worker and product change drafted in VibeCoder is cross-repo",
+    "flipWentRed": "forcing the product operand true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 268,
+    "outcome": "worker route subject is the one named product repository, else the target",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - #3630 worker fix routes to VibeCoder as implementation",
+    "flipWentRed": "negating the ternary turned it red: subject was VibeCoder"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 275,
+    "outcome": "worker operand: product-only route needs no worker signal",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a worker and product change drafted in VibeCoder is cross-repo",
+    "flipWentRed": "forcing the worker operand true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 275,
+    "outcome": "product operand: product route needs a product signal",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing the product operand true turned it red: the bare mention routed away"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 275,
+    "outcome": "productRepo operand: product route needs an identified repository",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing it true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 284,
+    "outcome": "cross-repo needs an identified product repository",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing it true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 285,
+    "outcome": "cross-repo drafted in VibeCoder",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a worker and product change drafted in VibeCoder is cross-repo",
+    "flipWentRed": "forcing the vibe operand false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 285,
+    "outcome": "cross-repo drafted in the product repository",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a worker and product change drafted in the product repository is cross-repo",
+    "flipWentRed": "forcing the product operand false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 286,
+    "outcome": "cross-repo needs a worker signal",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - #3607 drafted in VibeCoder routes to GRQ-AutoTrader as implementation",
+    "flipWentRed": "forcing the worker operand true turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 289,
+    "outcome": "cross-repo subject is the other codebase",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a worker and product change drafted in the product repository is cross-repo",
+    "flipWentRed": "negating the ternary turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 298,
+    "outcome": "no signal at all: ambiguous",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing it false turned it red: the reason lacked 'no worker or product signal'"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 301,
+    "outcome": "several product repositories: ambiguous",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing it false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 304,
+    "outcome": "product signal with no product repository: ambiguous",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing it false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 307,
+    "outcome": "worker and product signal, target neither codebase: ambiguous",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "the 'neither codebase' case asserts this reason"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 322,
+    "outcome": "several named repositories identify no product repository",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - ambiguous drafts stay in their target with the basis stated",
+    "flipWentRed": "forcing it false turned it red: drafted in GRQ-AutoTrader it routed to GRQ-AutoTrader"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 323,
+    "outcome": "one named repository identifies it",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - a GRQ scoring bug routes to GRQ wherever it is drafted",
+    "flipWentRed": "forcing it false turned it red"
+   },
+   {
+    "path": "worker/deno/lib/issue_routing_classifier.ts",
+    "line": 324,
+    "outcome": "no named repository: the target if it is a product repository, else none",
+    "test": "worker/deno/tests/issue_routing_classifier_test.ts",
+    "testName": "classifyIssueRouting - GRQ-AutoTrader#3242 stays in GRQ-AutoTrader as implementation",
+    "flipWentRed": "negating the ternary turned it red"
+   }
+  ]
+ }
+}
