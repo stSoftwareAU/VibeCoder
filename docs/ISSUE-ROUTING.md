@@ -63,7 +63,7 @@ allowed repos (by short name):
 | Draft | Result |
 | --- | --- |
 | Names exactly one other repo, has a product signal (`pwa`, `scoring`, `ui`, `page`, `layout`, `chart`, `blank space`, `api endpoint`, `database`, `report`) and no worker signal | Routed to that repo |
-| Names exactly one other repo and has worker signals | `cross-repo`, ambiguous: split into one issue per repo, close nothing |
+| Names exactly one other repo and has worker signals | `cross-repo`, ambiguous; the reason says it needs a split. Only a `route-issue --part` call with parts in two or more repos is split (one issue per part); otherwise one issue is filed in VibeCoder (`filed-ambiguous`). Nothing is closed |
 | Names exactly one other repo with neither a product nor a worker signal (a bare repo name) | Ambiguous, stays in VibeCoder |
 | Names two or more other repos | Ambiguous, stays in VibeCoder |
 | Names no other repo | Stays in VibeCoder |
@@ -124,6 +124,18 @@ below shorten that to `route-issue`. It is not installed in the agent's `PATH`
 shim directory, so the agent prompts tell the agent to apply the policy in
 section 2 itself and file with `gh issue create --repo <owner>/<repo>`.
 Agent filings are therefore guidance, not enforced by the classifier.
+
+The agent's `gh` guard limits its writes to the run's own repo: an issue run
+seeds the write allowlist with only the claimed repo
+(`seedWriteRepoAllowlist(ctx.repo)` in
+[`issue_worker.ts`](../worker/deno/lib/issue_worker.ts)). A `gh issue create`
+or `gh issue comment` in any other repo is refused with `WRITE_REPO_BLOCKED`.
+When the owning repo is not the current repo, the prompts therefore tell the
+agent to file in the current repo, name the owning repo and the routing basis
+in the body, and leave the move to an operator running `route-issue`. For a
+wrong-repo duplicate, the agent comments only in the current repo; the comment
+in the other repo and the close are left to an operator running
+`route-issue --resolve-duplicate`.
 
 `--label` takes a comma-separated list (or a JSON array); it is not repeatable.
 Labels are applied only when the issue stays in the same repo, never migrated
@@ -190,17 +202,20 @@ wrong issue whose body carries a fast-failure or tally marker is never closed
 The command acts only on the operator-supplied `--resolve-duplicate` and
 `--correct` arguments. The planning prompt (and the other prompts that carry the
 "Issue routing" paragraph: `coding_guidelines`, `ci_fix`, `pr_feedback` and
-`retro`) says only that closing a wrong-repo duplicate is left to an operator,
-who runs `route-issue --resolve-duplicate`. None of them has `route-issue` on
+`retro`) leaves closing a wrong-repo duplicate, and the linking comment in the
+other repo, to an operator, who runs `route-issue --resolve-duplicate`. None of them has `route-issue` on
 its `PATH`: they apply the policy by prose and file with `gh issue create`, so
-an agent filing is guidance, not enforced. Nothing in the code stops an agent
+an agent filing is guidance, not enforced. Their `gh` writes are limited to the
+current repo (see above), so a filing that belongs elsewhere stays in the
+current repo for an operator to move. Nothing in the code stops an agent
 naming the issue it is working on, because no reliable current-issue signal
 reaches `route-issue` on the planning route and the claimed-issue guard is
 inert there. The `gh` shim does not enforce it either.
 
 Which filings are classified:
 
-- `route-issue` itself and `suggest-improvements` (`createImprovementIssues` in
+- `route-issue` itself and `suggest-improvements`
+  (`createGitHubIssuesWithPartialFailures` in
   [`github.ts`](../worker/deno/lib/github.ts)) call `routeIssueCreation`.
 - Other worker filers call `gh issue create` directly and are **not**
   classified, for example

@@ -1928,7 +1928,10 @@ gate if a model-generation name reappears in this document.
   `lib/audit_failure_notifier.ts`, call `gh issue create` directly and are not
   classified. An agent has no `route-issue` on its `PATH`, so it applies the
   rule itself and files with `gh issue create --repo <owner>/<repo>`; that is
-  guidance, not enforced (see [docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md)).
+  guidance, not enforced. Its `gh` guard refuses writes outside the run's own
+  repo (`WRITE_REPO_BLOCKED`), so an issue owned elsewhere is filed in the
+  current repo, naming the owning repo, for an operator to move with
+  `route-issue` (see [docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md)).
 - **Check the existing rules before you add one.** Before adding or changing a
   rule in `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt
   constant under `worker/deno/lib/`, grep those files for existing rules on

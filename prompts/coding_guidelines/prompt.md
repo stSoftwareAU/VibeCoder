@@ -1044,15 +1044,21 @@ this **instead of looping**:
    `stSoftwareAU/VibeCoder`; a multi-repo change gets one issue per
    independently deployable codebase, each filed in its own repo and linked with
    `Depends on`/`Related`, with no duplicated scope. The worker's deterministic
-   `route-issue` command is not on your PATH, so apply this rule yourself. A
-   repo-scoped diagnostic (setup fast-failure, lock or lease, back-off,
-   escalation anchor) stays in the monitored repo: never treat a live diagnostic
-   as "wrong repo" (#2592), and link a separate Vibe Coder root-cause issue if
-   needed. Search open **and** recently closed issues and PRs in the owning repo
-   before filing, and reuse or link what you find. If the owner is ambiguous,
-   file in the current repo, state the basis and close nothing. For a wrong-repo
-   duplicate, create or verify the correct issue first and comment on both to
-   link them; leave closing the duplicate to an operator, who runs `route-issue
+   `route-issue` command is not on your PATH, so apply this rule yourself. Your
+   `gh` writes are limited to the current repo: the `gh` guard refuses `gh issue
+   create` or `gh issue comment` in any other repo (`WRITE_REPO_BLOCKED`). When
+   the owning repo is not the current repo, file the issue in the current repo
+   instead, name the owning repo and the routing basis in its body, and leave
+   the move to an operator, who runs `route-issue`. A repo-scoped diagnostic
+   (setup fast-failure, lock or lease, back-off, escalation anchor) stays in the
+   monitored repo: never treat a live diagnostic as "wrong repo"
+   (stSoftwareAU/VibeCoder#2592), and link a separate Vibe Coder root-cause
+   issue if needed. Search open **and** recently closed issues and PRs in the
+   owning repo before filing, and reuse or link what you find. If the owner is
+   ambiguous, file in the current repo, state the basis and close nothing. For a
+   wrong-repo duplicate, verify the correct issue exists first and link the two
+   with a comment in the current repo; leave the comment in the other repo and
+   closing the duplicate to an operator, who runs `route-issue
    --resolve-duplicate`. Never delete history or migrate labels or assignees.
    See `docs/ISSUE-ROUTING.md`.
 3. Post **one** message that:

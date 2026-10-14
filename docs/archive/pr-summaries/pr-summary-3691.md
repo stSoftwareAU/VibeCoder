@@ -11,7 +11,7 @@ Deterministic cross-repository issue routing and wrong-repo duplicate prevention
 - `worker/deno/commands/route_issue.ts`: `route-issue` create, resolve and `--part` modes. It is a `mod.ts` subcommand (`deno run --allow-all mod.ts route-issue`), not an executable on the agent's `PATH`.
 - `worker/deno/commands/suggest_improvements.ts`: classifier wired into the suggestion path.
 - `docs/ISSUE-ROUTING.md` (new) and the policy rows in the docs and prompts.
-Scope: 34 files against `2685151f`, +5018/−42.
+Scope: 34 files against `2685151f`, +5063/−42.
 
 Closes #3691.
 
@@ -31,7 +31,10 @@ Closes #3691.
   - `resolveWrongRepoDuplicate` refuses to close a wrong issue that carries any such marker, whatever repo it names, and says why.
   - Only these markers are recognised. A lock, lease, back-off or escalation-anchor diagnostic carries no marker, so the code does not exempt it; `docs/ISSUE-ROUTING.md` §4 says so.
 - **Worker keywords are worker-specific.** The keyword signal is `vibe[ -]?coder`, `fleet`, `orchestrat`, `lane worktree` and `prompt template`, plus the `worker/deno/`, `prompts/` and `prompt.md` paths. Generic words such as `worker`, `provider`, `claim` and `container image` also name product code (a service worker, a price provider), so they are not signals.
-- **Agents file with `gh issue create`.** `route-issue` is not on the agent's `PATH`. The prompts therefore give the routing policy and tell the agent to apply it itself and file with `gh issue create --repo <owner>/<repo>` in the owning repo. Closing a wrong-repo duplicate is left to an operator running `route-issue --resolve-duplicate`.
+- **Agents file with `gh issue create`, in their own repo.** `route-issue` is not on the agent's `PATH`. The prompts therefore give the routing policy and tell the agent to apply it itself and file with `gh issue create --repo <owner>/<repo>` in the owning repo.
+  - The agent's `gh` guard limits its writes to the run's own repo. An issue run seeds the write allowlist with only the claimed repo (`seedWriteRepoAllowlist(ctx.repo)`, `worker/deno/lib/issue_worker.ts:284`), and `gh_guard_decision.ts` refuses a `gh issue create` or `gh issue comment` anywhere else with `WRITE_REPO_BLOCKED`.
+  - So when the owning repo is not the current repo, the prompts tell the agent to file in the current repo, name the owning repo and the routing basis in the body, and leave the move to an operator running `route-issue`. The allowlist is not widened: that would be a security change for its own issue.
+  - For a wrong-repo duplicate, the agent comments only in the current repo. The comment in the other repo and the close are left to an operator running `route-issue --resolve-duplicate`.
 - **Resolve order.** The steps run in this order:
   1. Verify the correct issue.
   2. Read the wrong issue.
@@ -52,7 +55,7 @@ Closes #3691.
 
 ## Evidence
 
-Docs sweep — grep: `route-issue`, `wrong-repo`, `follow-up issue`, `where the code lives`, `gh issue create`, `lock or lease`; section: `docs/ISSUE-ROUTING.md` §2 (policy row), §4 (what the code recognises), §5 (the `mod.ts` invocation note, `--part`, and the diagnostic refusal) and §6 (permission scope), `CODING-STANDARDS.md` "File a follow-up where the code lives", `DESIGN-PRINCIPLES.md` "Follow-up issues are filed where the code lives", `README.md` doc table Issue Routing row; updated: all of the above, plus the follow-up bullet added to `prompts/{ci_fix,planning,pr_feedback,retro}/prompt.md` (+2 each) and `prompts/coding_guidelines/prompt.md` (+26/−3); siblings: "Merge conflicts are the worker's to resolve" (DESIGN-PRINCIPLES.md) and the other doc-table rows in README.md. The retro outcome issue stays in the current repo (carve-out).
+Docs sweep — grep: `route-issue`, `wrong-repo`, `follow-up issue`, `where the code lives`, `gh issue create`, `lock or lease`; section: `docs/ISSUE-ROUTING.md` §2 (policy row, and the classifier-table row for one other repo plus worker signals: only a `--part` call with parts in two or more repos is split, otherwise one `filed-ambiguous` issue is filed in VibeCoder), §4 (what the code recognises), §5 (the `mod.ts` invocation note, the agent's `WRITE_REPO_BLOCKED` refusal outside its own repo, `--part`, the diagnostic refusal, and `createGitHubIssuesWithPartialFailures` as the `suggest-improvements` caller) and §6 (permission scope), `CODING-STANDARDS.md` "File a follow-up where the code lives" (now also names the `WRITE_REPO_BLOCKED` refusal), `DESIGN-PRINCIPLES.md` "Follow-up issues are filed where the code lives", `README.md` doc table Issue Routing row; updated: all of the above, plus the "Issue routing" paragraph added to `prompts/{ci_fix,planning,pr_feedback,retro}/prompt.md` (+2 each) and `prompts/coding_guidelines/prompt.md` (+32/−3), which now carries the `WRITE_REPO_BLOCKED` fallback and the full `stSoftwareAU/VibeCoder#2592` reference; siblings: "Merge conflicts are the worker's to resolve" (DESIGN-PRINCIPLES.md) and the other doc-table rows in README.md. The retro outcome issue stays in the current repo (carve-out).
 
 Issues cited as provenance:
 - #2592: File repo fast-failure diagnostics in the monitored repo, not VibeCoder
@@ -82,6 +85,7 @@ These verdicts come from an independent spec-reviewer that read only the diff an
 - "a documented classifier on the issue-creation path" — reviewer: partial.
   - The code calls the classifier from `createGitHubIssuesWithPartialFailures` (`suggest_improvements`) and from `route-issue`.
   - The agent prompts (`ci_fix`, `planning`, `pr_feedback`, `retro`, `coding_guidelines`) carry the routing policy. `route-issue` is not on the agent's `PATH`, so they tell the agent to apply the policy itself and file with `gh issue create --repo <owner>/<repo>` (changed after the reviewer ran, on the pre-PR verifier's finding). No `gh` guard change refuses a bare `gh issue create`.
+  - The `gh` guard refuses an agent's write to any repo but its own (`WRITE_REPO_BLOCKED`). An issue owned elsewhere is therefore filed in the current repo, naming the owning repo and the routing basis, for an operator to move with `route-issue`. This text was also changed after the reviewer ran, on a later pre-PR verifier finding.
   - The retro outcome issue stays in the current repo.
   - The reviewer found no review-learning filing path named in the diff. Any such filer is an agent prompt, so it gets the prose policy only.
 
@@ -157,6 +161,11 @@ An independent standards-reviewer found no violations.
   | `nowMs` deleted from the context build | `route-issue - a closed duplicate is reused inside the recently-closed window and refiled outside it` |
 
   The create and resolve modes used to build the routing context separately. The resolve copy's `nowMs` was never read, because the resolve path does no duplicate search. Both modes now share one `routingFor` builder in `execute`, so the closed-window test pins `nowMs` for both.
+- Latest pre-PR verifier round (docs and prompts only, no code change):
+  - The prompts told the agent to file and comment in another repo, which the `gh` guard refuses. Confirmed at the head: `issue_worker.ts:284` seeds only `ctx.repo`, and `gh_guard_decision.ts` returns `WRITE_REPO_BLOCKED` for any other repo. The five prompts, `docs/ISSUE-ROUTING.md` §5 and `CODING-STANDARDS.md` now give the file-in-the-current-repo fallback.
+  - `docs/ISSUE-ROUTING.md` named a function that does not exist as the `suggest-improvements` caller; it now names `createGitHubIssuesWithPartialFailures` (`worker/deno/lib/github.ts`).
+  - The classifier-table row said one other repo plus worker signals is split; it now says what `issue_routing_filing.ts:218-252` does.
+  - Every test file under `worker/deno/tests` that reads a prompt or doc (220 files, `deno test --allow-all --no-check`): 2590 passed, 0 failed, 1 ignored.
 - Pre-PR verifier findings, each red-checked by restoring the previous `issue_routing_classifier.ts` and `issue_routing_resolve.ts` (6 failed), then restoring the fix:
   - Generic worker words: `classify: product wording stays in the target (…)` for "Service worker serves stale cached bundle after deploy", "Price provider returns stale quotes", "Docker container image is missing the timezone data" and "Insurance claim form loses the attachment".
   - Letter case in the classifier: `classify: a marker naming the target in another letter case is a diagnostic`.
@@ -201,7 +210,7 @@ Earlier red-checks used the same method:
 - `route_issue.ts`: create, resolve and `--part`, which now share one routing-context builder.
 - `suggest_improvements.ts`: classifier wired in through `createGitHubIssuesWithPartialFailures`.
 - `mod.ts`: dispatch for `route-issue`.
-- The follow-up bullet in the prompts and docs: the prompts tell the agent to file with `gh issue create --repo <owner>/<repo>` in the owning repo, because `route-issue` is not on its `PATH`. The retro carve-out is the only exception, and it is stated.
+- The "Issue routing" paragraph in the prompts and docs: the prompts tell the agent to file with `gh issue create --repo <owner>/<repo>` in the owning repo, because `route-issue` is not on its `PATH`. When the `gh` guard refuses another repo (`WRITE_REPO_BLOCKED`), the agent files in the current repo, names the owning repo, and leaves the move to an operator. The retro carve-out keeps the outcome issue in the current repo, and it is stated.
 
 **Lifecycle-guard note:** `--resolve-duplicate` closes the wrong issue with `gh issue close`. In an issue run, the `gh` guard refuses to close the issue being worked. A run that tries to resolve its own issue as a duplicate therefore fails loud instead of closing it. This was not exercised live.
 
