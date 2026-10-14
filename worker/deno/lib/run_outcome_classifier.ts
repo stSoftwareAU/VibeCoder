@@ -248,6 +248,9 @@ export function classifyRunFailure(
   // Same for the security-fix gate refusal (Issue #3454): marker-prefixed
   // worker text quoting agent test declarations.
   if (category === "security_fix_gate") return AGENT_OUTCOME;
+  // And the pre-push gate block (PR #3716 review): marker-prefixed worker text
+  // quoting raw formatter, linter and test output.
+  if (category === "pre_push_gate") return AGENT_OUTCOME;
 
   // 1. Account limits: usage / rate limit and out-of-credit are never a
   //    worker fault. Checked before anything else so a stack trace or a

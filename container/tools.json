@@ -271,6 +271,19 @@
       "notes": "Drives the check-markdownlint gate stage against .markdownlint-cli2.jsonc; without it the stage SKIPs and structural Markdown breakage reaches merge. Pure JavaScript, so one noarch checksum covers both architectures — the pin matches .github/workflows/markdown-lint.yml so the container and CI report identical findings. It has no version flag: every argument is a glob, and a bare `--version` lints whatever the working directory's .markdownlint-cli2.* names — 134 files in the worker's own checkout, failing the start-up self-check on the first lint finding (Issues #2070–#2073). `--no-globs` drops the configured globs and `--version` matches no file, so the probe prints the banner (`markdownlint-cli2 v0.23.2 (…)`), lints nothing and exits 0 wherever it runs."
     },
     {
+      "id": "cspell",
+      "version": "10.3.6",
+      "versionArg": "CSPELL_VERSION",
+      "commands": ["cspell"],
+      "versionCommand": "cspell",
+      "source": "https://registry.npmjs.org/cspell",
+      "sha256": {
+        "noarch": "b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb89517b10e9f"
+      },
+      "repos": ["stSoftwareAU/GRQ"],
+      "notes": "Backs the pre-push gate's spelling stage (Issue #3689): when a repository tracks a cspell config (GRQ: docs/cspell.json) and its CI workflow runs cspell, the gate runs cspell over the changed files and fails closed if the binary is missing, so GRQ's CI Spelling workflow (streetsidesoftware/cspell-action) no longer fails on a PR the worker already pushed. Pure JavaScript and ESM, so one noarch checksum covers both architectures; cspell 10.3.6 declares engines node >=22.18.0, which the pinned Node 24.19.0 satisfies — check `engines` again when bumping either. Installed from a checksum-verified tarball with --ignore-scripts, like markdownlint-cli2; the sha256 was computed from the registry tarball and cross-checked against the registry's sha512 dist.integrity. `cspell --version` prints the bare version, so the manifest-derived start-up self-check needs no versionArgs."
+    },
+    {
       "id": "graft",
       "version": "0.18.0",
       "versionArg": "GRAFT_VERSION",
