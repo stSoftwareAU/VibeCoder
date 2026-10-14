@@ -14,6 +14,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureRepoClone } from "../lib/ensure_repo_clone.ts";
 import type { CommandResult } from "../types.ts";
+import { waitUntil } from "./support/rendezvous.ts";
 
 Deno.test(
   "ensureRepoClone - existing clone is left untouched (no setupRepo call)",
@@ -273,11 +274,28 @@ Deno.test(
         return { success: true, message: `${workDir}/widget` };
       };
 
-      const first = ensureRepoClone("acme/widget", workDir, { setupRepoFn });
-      const second = ensureRepoClone("acme/widget", workDir, { setupRepoFn });
-      // Let both callers reach the point where an unserialised pair would both
-      // have probed the corrupt clone, then finish the recovery.
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // The first thing the locked section runs, so a count of 1 means only one
+      // caller has entered it.
+      let entered = 0;
+      const isDirectoryFn = async (path: string): Promise<boolean> => {
+        entered++;
+        return (await Deno.stat(path)).isDirectory;
+      };
+
+      const first = ensureRepoClone("acme/widget", workDir, {
+        isDirectoryFn,
+        setupRepoFn,
+      });
+      const second = ensureRepoClone("acme/widget", workDir, {
+        isDirectoryFn,
+        setupRepoFn,
+      });
+      // Rendezvous on the first caller reaching setupRepo (held open), then
+      // assert the second has not entered the locked section. An unserialised
+      // second caller would have stat'ed before the first finished its git
+      // probes, so this goes red without waiting on a timer.
+      assertEquals(await waitUntil(() => setupCalls >= 1), true);
+      assertEquals(entered, 1);
       release();
       const results = await Promise.all([first, second]);
 
