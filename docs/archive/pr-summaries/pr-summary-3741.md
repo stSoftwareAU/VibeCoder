@@ -49,33 +49,6 @@ flowchart TD
 
 **Docs sweep** — grep: `classifyIssueRouting`, `isRepoFastFailureIssue`, `isRepoFastFailureTallyIssue`, `issue_routing`, `WALL_CLOCK_TEST_FILES`; section: none — no manual documents issue routing yet (#3749 will add it); siblings: `admin_only_finding_test`, `closure_verdict_test`, `top-up-3667` — no doc lists the wall-clock manifest or the top-up slices; updated: none; no hits in docs outside `docs/archive/`
 
-## Acceptance Criteria
-
-<!-- vibe-spec-review inputs="diff+issue-body" -->
-
-- **met** — Fixture: the #3607 / GRQ-AutoTrader#3242 pair routes to `stSoftwareAU/GRQ-AutoTrader`, `issue_kind: implementation`. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - #3607 drafted in VibeCoder routes to GRQ-AutoTrader as implementation`, `::classifyIssueRouting - GRQ-AutoTrader#3242 stays in GRQ-AutoTrader as implementation` — reviewer: met
-- **met** — Fixture: GRQ-AutoTrader#3184 routes to `stSoftwareAU/GRQ-AutoTrader`, `issue_kind: diagnostic`. #3630 routes to `stSoftwareAU/VibeCoder`, `issue_kind: implementation`. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - GRQ-AutoTrader#3184 tally issue stays in GRQ-AutoTrader as a diagnostic`, `::classifyIssueRouting - #3630 worker fix routes to VibeCoder as implementation` — reviewer: met
-- **met** — Fixture: a GRQ-AutoTrader review finding about prompt or worker code routes to `stSoftwareAU/VibeCoder`. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - a GRQ-AutoTrader review finding about prompt code routes to VibeCoder`, `::classifyIssueRouting - a GRQ-AutoTrader review finding about worker wording routes to VibeCoder` — reviewer: partial — reason: the reviewer said both fixtures pass and called it partial only because bare generic words ("provider", "container") are not worker signals. That exclusion is deliberate, because those words also name product code; a finding that names worker or prompt code by path or worker term routes to VibeCoder.
-- **met** — Fixture: a GRQ scoring bug routes to `stSoftwareAU/GRQ`. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - a GRQ scoring bug routes to GRQ wherever it is drafted` — reviewer: met
-- **met** — A #2592 diagnostic is never reported as belonging to another repository. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - a #2592 diagnostic is never reported as belonging to another repository` — reviewer: met
-- **met** — An ambiguous draft returns `issue_kind: ambiguous` with a non-empty `reason`. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - ambiguous drafts stay in their target with the basis stated` — reviewer: met
-- **met** — Every decision fills in all four audit fields. — evidence: `worker/deno/tests/issue_routing_classifier_test.ts::classifyIssueRouting - every decision fills in all four audit fields`, and the `route()` helper checks this on every call — reviewer: met
-- **met** — Tests and quality checks pass. — evidence: `./quality.sh < /dev/null` → `Result: PASSED (with skipped checks)` on the final code — reviewer: missing — reason: the reviewer worked from the diff alone and said "not verifiable from the diff"; the gate was run here and passed
-- **unrequested** — tally-marker detection via `isRepoFastFailureTallyIssue` — reviewer: unrequested — reason: required by the #3184 fixture criterion, because #3184 carries only the tally marker
-- **unrequested** — `MAX_MARKER_CANDIDATES = 8` cap that makes a body with more than 8 marker names ambiguous — reviewer: unrequested — reason: bounds the per-candidate body scan on untrusted text and fails closed to `ambiguous`
-- **unrequested** — `owner/name` validation of the target and context repositories — reviewer: unrequested — reason: input validation at the trust boundary; the Failure Detection section asks for missing fields to throw by name
-- **unrequested** — markers for several repositories return `ambiguous` — reviewer: unrequested — reason: a direct case of "signals conflict → ambiguous"
-- **unrequested** — a marker naming anything other than the target or a configured product repository returns `ambiguous`, and the product rule uses the target only when it is a configured product repository — reviewer: not reviewed (added after the review, to fix the pre-PR verifier's two blocking findings) — reason: the marker name comes from untrusted text, and the module doc (rules 1 and 3) promises both checks
-- **unrequested** — the `cross-repo` rule (worker and product signals in a draft for either codebase) — reviewer: unrequested — reason: the issue defines the `cross-repo` kind, and this is the only rule that produces it
-- **unrequested** — hostile-input growth test for every pattern — reviewer: unrequested — reason: CODING-STANDARDS requires one hostile case per regex run on untrusted text
-- **unrequested** — tests "VibeCoder is never counted as a product repository" and "a marker prefix quoted in prose is not a diagnostic" — reviewer: unrequested — reason: each pins a guard in the diff, and each guard turned the suite red when it was removed
-
-## Standards Review
-
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
-
-- **clean** — regexes on untrusted text each have a hostile case (review-enforced, "Vet every regex on untrusted text"); named tests exist (review-enforced); the code reuses the owner helpers instead of copying them; the `SIMPLE-ON-PURPOSE` format is correct; fail-loud throws name the field; tests are hermetic (no `/tmp`, env, clock or network) and assume no git history; no workflow files; Australian English; no assertion removed from and no expectation changed in any existing test. Optional note: the public API has no production caller yet. It is exempt as the issue's requested API (see Evidence).
-
 ## Test Plan
 
 - Added `worker/deno/tests/issue_routing_classifier_test.ts` (20 tests) and the fixtures `worker/deno/tests/fixtures/issue_routing/{vibecoder_3607,vibecoder_3630,grq_autotrader_3242,grq_autotrader_3184}.json`.
@@ -88,3 +61,22 @@ flowchart TD
 <!-- vibe-branch-outcomes -->
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — Fixture: the #3607 / GRQ-AutoTrader#3242 pair routes to stSoftwareAU/GRQ-AutoTrader , issue kind: implementation . — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - #3607 drafted in VibeCoder routes to GRQ-AutoTrader as implementation; ::classifyIssueRouting - GRQ-AutoTrader#3242 stays in GRQ-AutoTrader as implementation (fixtures vibecoder 3607.json, grq autotrader 3242.json)` — reviewer: met
+- **met** — Fixture: GRQ-AutoTrader#3184 routes to stSoftwareAU/GRQ-AutoTrader , issue kind: diagnostic . #3630 routes to stSoftwareAU/VibeCoder , issue kind: implementation . — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - GRQ-AutoTrader#3184 tally issue stays in GRQ-AutoTrader as a diagnostic; ::classifyIssueRouting - #3630 worker fix routes to VibeCoder as implementation (fixtures grq autotrader 3184.json, vibecoder 3630.json)` — reviewer: met
+- **met** — Fixture: a GRQ-AutoTrader review finding about prompt or worker code routes to stSoftwareAU/VibeCoder . — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - a GRQ-AutoTrader review finding about prompt code routes to VibeCoder; ::classifyIssueRouting - a GRQ-AutoTrader review finding about worker wording routes to VibeCoder` — reviewer: met
+- **met** — Fixture: a GRQ scoring bug routes to stSoftwareAU/GRQ . — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - a GRQ scoring bug routes to GRQ wherever it is drafted` — reviewer: met
+- **met** — A #2592 diagnostic is never reported as belonging to another repository. — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - a #2592 diagnostic is never reported as belonging to another repository; ::a diagnostic drafted against another repository stays in the monitored one; ::VibeCoder is never counted as a product repository (a marker can name on` — reviewer: met
+- **met** — An ambiguous draft returns issue kind: ambiguous with a non-empty reason . — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - ambiguous drafts stay in their target with the basis stated (AMBIGUOUS CASES, including the cases for unconfigured-marker and unlisted-target); ::markers for two repositories are ambiguous; ::more than eight marker names is a` — reviewer: met
+- **met** — Every decision fills in all four audit fields. — evidence: `worker/deno/tests/issue routing classifier test.ts::classifyIssueRouting - every decision fills in all four audit fields; the route() helper also checks all four fields on every classification in the file` — reviewer: met
+- **met** — Tests and quality checks pass. — evidence: `deno test tests/issue routing classifier test.ts (20 passed, 0 failed); deno test of lib sweep top up files test.ts, parallel unsafe test manifest test.ts, parallel safety cap test.ts and sweep drift command test.ts (50 passed, 0 failed); deno fmt --check, deno lint and deno check are clean on the c` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **clean** — Checked Australian English in identifiers, comments and the PR summary; KISS (one pure function, a SIMPLE-ON-PURPOSE cap on marker candidates); TDD with fixture-backed tests for each criterion; fail-loud validation that names the missing field and has no default owner; untrusted issue text treated a
