@@ -7,6 +7,7 @@
  * changes (`auditBlocked`). A red audit is never `ready`, so it is never
  * approved.
  */
+import { reviewForPost } from "../../../.claude/skills/review-fleet-prs/scripts/post.ts";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   pass,
@@ -156,6 +157,10 @@ Deno.test("gate: a red audit CI-fix replied to at the head goes to auditBlocked 
   assertEquals(entry.number, 41);
   assertEquals(entry.headSha, HEAD);
   assertEquals(entry.check, AUDIT);
+  // post.ts refuses an entry without a checklistState; an audit send-back
+  // runs no model review, so it owes no checklist and gains no finding.
+  assertEquals(entry.checklistState, { problem: null, expected: [] });
+  assertEquals(reviewForPost(entry.review, entry).findings.length, 1);
   // The gate itself still posts nothing: post.ts does.
   assertEquals(postedAnything(calls), false);
 

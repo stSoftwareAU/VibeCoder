@@ -1209,6 +1209,7 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
           testChanges: "none",
           testChangeNotes: [],
           unrelatedIssues: [],
+          checklist: [],
         },
       })
     ),
