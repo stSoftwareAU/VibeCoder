@@ -48,6 +48,19 @@ Every routed filing records, in the issue body and the command output:
 | `issue_kind` | `implementation`, `diagnostic` or `cross-repo` |
 | routing reason | The rule that chose the owner, in one sentence |
 
+The audit block is appended to the body of every issue the command files. It has
+two lines:
+
+- A visible line of the form
+  ``Routing: owner `X`, subject `Y`, kind K (reason)``, where the reason has its
+  whitespace collapsed to single spaces.
+- A hidden HTML-comment marker,
+  `<!-- issue-routing owner=… subject=… kind=… -->`, for tooling to read.
+
+The marker is lowercase on purpose, so the uppercase env-var scanner does not
+read it as a `VIBE_*` name. Any character in a marker value outside
+`[A-Za-z0-9_./-]` is replaced by `-`, so a value can never close the comment.
+
 ## 4. The diagnostic exception
 
 A repo-scoped diagnostic — a setup fast-failure (#2592), a lock or lease, a
@@ -68,6 +81,20 @@ across repos. The audit is printed to stdout as JSON (`classification`,
 `owner_repository`, `subject_repository`, `issue_kind`, `reason`, `action`,
 `issues`, `labels_not_migrated`). The command exits non-zero on a permission
 refusal, an unreadable body file, an unknown option or any other error.
+
+The `action` value is one of:
+
+- `created`: no match existed, so a new issue was filed.
+- `reused`: an existing match was found and linked; nothing was created, and
+  `labels_not_migrated` is empty.
+- `dry-run`: nothing was written; the report shows what would happen.
+- `filed-ambiguous`: a new issue was created and the owner decision was
+  ambiguous (section 6).
+- `split`: a multi-repo `--part` call filed (or reused) one issue per part.
+
+When a new issue is filed in a repo other than the target, no `--label` is sent
+to it. Instead the body gets a `Labels not migrated: …` line listing the labels
+that were dropped.
 
 A change across several repos is one call with one `--part` per repo, each
 naming its own body file: `--part owner/repo=body-file[;depends-on=owner/other]`.
@@ -100,16 +127,20 @@ issue last, as not planned. The titles need not match: this is the case of
 `stSoftwareAU/VibeCoder#3607` and `stSoftwareAU/GRQ-AutoTrader#3242`, which
 describe the same problem under different titles. `--dry-run` runs the same
 read-only checks (the correct issue must exist, and write permission is checked
-on both repos), writes nothing, and prints what would be linked and closed. A repo-scoped diagnostic is
-never closed (section 4), and the command refuses and says why. `--repo`,
-`--title`, `--body-file` and `--label` cannot be combined with
-`--resolve-duplicate`, and `--correct` requires it.
+on both repos), writes nothing, and prints what would be linked and closed. A
+repo-scoped diagnostic is never closed (section 4), and the command refuses and
+says why. `--repo`, `--title`, `--body-file` and `--label` cannot be combined
+with `--resolve-duplicate`, and `--correct` requires it.
 
 ## 6. Failure and ambiguity
 
 - **Permission failure.** If the caller cannot create issues in the owner repo,
-  the command fails visibly with the reason. Nothing is created, so a retry is
-  safe.
+  the command fails visibly with the reason by throwing
+  `IssueRoutingPermissionError`. It is thrown before any write, so nothing is
+  created and a retry is safe. It has three causes:
+  - the repo is not in the allowed list;
+  - the permission lookup fails;
+  - `viewerPermission` is not write-level.
 - **Ambiguity.** When the owner is not clear, state the basis for the choice
   in the issue and close nothing.
 
