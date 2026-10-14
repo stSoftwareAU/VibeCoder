@@ -52,6 +52,7 @@ Deno.test("an extra placeholder in the template is caught", () => {
         NO_TEST_ADDED_NOTE: "n",
         TEST_CHANGES: "t",
         PREVIOUS_FINDINGS: "p",
+        REVIEW_CHECKLISTS: "r",
       }),
     Error,
     "EXTRA_FIELD",
@@ -85,6 +86,7 @@ Deno.test("the verifier prompt carries every rule of the brief, fully rendered",
     headSha: "h".repeat(40),
     summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
     changedFiles: ["a.ts"],
+    reviewChecklists: "",
   });
   const flatPrompt = flatWholeFile(prompt);
   const missing = RULE_LINES.filter((l) =>
@@ -98,6 +100,22 @@ Deno.test("the verifier prompt carries every rule of the brief, fully rendered",
     NO_TEST_ADDED_NOTE: "n",
     TEST_CHANGES: "t",
     PREVIOUS_FINDINGS: "p",
+    REVIEW_CHECKLISTS: "r",
   });
   assert(!rendered.includes("{{"));
+});
+
+Deno.test("the brief carries five fields including {{REVIEW_CHECKLISTS}}, which the renderer fills", () => {
+  assertEquals(REVIEW_BRIEF_FIELDS.length, 5);
+  assert(TEMPLATE.includes("{{REVIEW_CHECKLISTS}}"));
+  const rendered = renderReviewBrief(TEMPLATE, {
+    REVIEW_CONTEXT: "c",
+    NO_TEST_ADDED_NOTE: "n",
+    TEST_CHANGES: "t",
+    PREVIOUS_FINDINGS: "p",
+    REVIEW_CHECKLISTS: "CHECKLIST-SENTINEL-3594",
+  });
+  assert(rendered.includes("CHECKLIST-SENTINEL-3594"));
+  assert(!rendered.includes("{{REVIEW_CHECKLISTS}}"));
+  assert(rendered.includes('"checklist":'));
 });

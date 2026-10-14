@@ -188,8 +188,10 @@ ones behind it.
    (steps below). `run.sh` posts them the same way before its round.
 4. Start step 1 again, adding `--sleep-first`. The PRs just reviewed are now
    `already-reviewed` at their head commit, so the gate does not report them
-   again; one whose review failed, or that was `over-limit`, is reported
-   after the next interval rather than straight away.
+   again; one whose review failed, or that was `over-limit`, or whose
+   checklist file could not be fetched (`checklist-unreadable`, a gh error
+   other than not-found, retried rather than reviewed), is reported after the
+   next interval rather than straight away.
 
 If the gate exits non-zero it could not reach GitHub for an hour; report its
 error and stop.
@@ -212,7 +214,7 @@ at `xhigh` effort (Issue #2976) — and the brief in
 [`prompts/pr_review_brief/prompt.md`](../../../prompts/pr_review_brief/prompt.md),
 shared with the worker's pre-PR verifier
 (`worker/deno/lib/pre_pr_verifier.ts`, Issue #3395), so change the review
-rules there, never in a copy here. Drop its HTML comment and fill in its four
+rules there, never in a copy here. Drop its HTML comment and fill in its five
 fields as follows:
 
 - `{{REVIEW_CONTEXT}}` — this paragraph, with the gate entry's fields filled
@@ -236,6 +238,16 @@ fields as follows:
   "An earlier review of this PR asked for these fixes: {previousFindings}.
   Check each one is fixed; one that is not is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
+- `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
+  (the repo's `review-checklists.json` at the base ref, matched against the
+  PR's changed files, Issue #3594; the PR's own copy governs only when the PR
+  edits the file and either copy is broken); the empty string when it is empty. The
+  reviewer's reply then carries a `checklist` array with a verdict per item,
+  and any `missing` item sends the PR back. Pass the entry to `post.ts`
+  verbatim: its `checklistState` (the load problem and the items owed a
+  verdict) lets `post.ts` add a blocking finding itself for a file that could
+  not be applied or an item the reply left without a verdict, and `post.ts`
+  refuses an entry without it.
 
 If an agent fails or returns something that isn't the JSON the brief asks
 for, post nothing for that PR; the next gate run reports it again.
@@ -265,8 +277,12 @@ The script does the rest, so do not post anything yourself:
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
 - It decides the outcome: reviewer findings mean **request changes** (the
-  worker acts on those); otherwise a meaningful test change or a removed
-  test file means **held for the owner**, as a comment-only review the
+  worker acts on those), and so do the checklist cases the code decides
+  itself: a `missing` checklist item (even with no matching finding), a
+  checklist file that could not be applied (malformed, undecodable, or an
+  unknown changed-file list) and an item the reply gave no verdict.
+  Otherwise a meaningful test change or a removed test file means **held for
+  the owner**, as a comment-only review the
   worker ignores; otherwise **approve**. **Auto-release:** for a repo in
   `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
   makes `post.ts` fail loud), a hold is instead an approval when rule 4's
@@ -299,8 +315,9 @@ prefixes that PR's "Approved, last 7 days" line with
 printed and logged only for a held PR in an opted-in repo.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
-code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
-comes back on the next gate pass.
+code 2 means the reviewer's reply was malformed, or the gate entry has no valid
+`checklistState` (re-run `gate.ts` and pass its entry verbatim): nothing was
+posted, and the PR comes back on the next gate pass.
 
 ### 3. Learn from recurring findings
 
