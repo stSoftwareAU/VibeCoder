@@ -1,0 +1,247 @@
+# Pre-PR gate now catches the CI failures it was missing (spelling, sweep ancestry, unpushed commits)
+
+## Summary
+
+An audit of recent VibeCoderST implementation PRs in GRQ, VibeCoder and
+GRQ-AutoTrader found three demonstrable gaps where the first failing required
+GitHub CI job was something the pre-PR worker could have caught, and did not.
+Each is fixed with a negative test; the full classification is in
+`docs/pre-pr-ci-audit.md`.
+
+- **GRQ Spelling (cspell).** The worker image had no cspell and the pre-push
+  gate never ran it, so unknown words in pushed markdown failed GitHub's
+  Spelling job. cspell is now pinned in `container/tools.json`, installed by the
+  `Containerfile`, and run by `pre_push_gate.ts` on changed spell-checked files.
+  A configured repo whose binary is missing fails closed.
+- **VibeCoder `sweptAt` ancestry.** CI requires every `sweptAt` in
+  `docs/audits/lib-sweep-coverage*` to be a commit on the default branch; the
+  worker only checked the JSON shape. New `pre_push_sweep_check.ts` runs the
+  same ancestry check on changed ledger/top-up files and fails closed.
+- **Ungated Step 2 push.** `commitAndPushPending` gated newly staged changes but
+  pushed already-committed agent commits unchecked, and the completion phase
+  pushed with no gate. Step 1b (`gateUnpushedCommits`) and the completion-phase
+  `gateBeforePush()` now gate those pushes when a pre-flight spec exists.
+
+```mermaid
+flowchart LR
+    A["agent commits"] --> S1["Step 1: staged changes gated"]
+    A --> S1b["Step 1b: unpushed commits gated<br/>(new, #3689)"]
+    A --> CP["completion phase<br/>gateBeforePush (new)"]
+    S1 --> G["runPrePushGate"]
+    S1b --> G
+    CP --> G
+    G --> C["cspell (new)"]
+    G --> W["sweptAt ancestry (new)"]
+    G --> M["markdownlint / rustfmt / ..."]
+    G -- "fail closed" --> X["[PRE_PUSH_BLOCKED]"]
+    G -- ok --> P["git push"]
+    P --> CI["GitHub CI runs every required check again"]
+```
+
+Closes #3689
+
+## Spec
+
+### Intent and Rationale
+
+Unattended workers should stop on a failure CI would later report on the same
+SHA, instead of pushing and waiting for the red run. The audit reconciles real
+failed runs with what the worker could run locally; the fixes cover only the
+gaps where a local command exists and the worker did not run it. CI is not
+weakened: it still runs every required check independently after PR creation.
+
+### Essential Design Decisions
+
+- **Left to CI, deliberately.** gitleaks, semgrep, Floci, bootstrap drift and
+  GRQ-AutoTrader's `version-bump` job (#3248, the designed enforcer) need
+  network, credentials or GitHub state. They are recorded as such, never as
+  PASS, and no follow-up is filed: no pre-PR gap was demonstrated.
+- **Fail closed.** A configured cspell with no binary, an unresolvable default
+  ref, or a failed gate blocks the push rather than skipping.
+- **Step 1b only when a pre-flight spec exists.** WIP-preservation callers have
+  no spec and are not gated (pinned by a test); the completion phase falls back
+  to `{ commands: [] }` so the changed-file checks still run.
+- **Unrequested, but needed for the fix to work:**
+  - `git fetch --unshallow origin` fallback in `pre_push_sweep_check.ts`: the
+    worker clones `--depth=1` and `ensureHistoryDepth` returns immediately for a
+    depth-1 clone of `main`, so without it an older, legitimate `sweptAt` on
+    `main` would be reported as missing.
+  - `findBinary` refactor in `pre_push_gate.ts`: shares the lookup between the
+    existing markdownlint binary search and the new cspell search instead of
+    duplicating it.
+  - `Containerfile` install-loop merge: the file was 21 bytes from its
+    15,000-byte cap; adding cspell as a separate RUN would have exceeded it.
+  - `prompts/security_scan/prompt.md` "Prior sweep records" rule: tells the
+    sweep agent that `sweptAt` must be a default-branch commit, the same
+    contract the new check enforces.
+
+### Undiscoverable Facts
+
+- GitHub's Spelling job reads `docs/cspell.json` (nested) or a root config; the
+  local call is `cspell --no-progress --no-summary --no-must-find-files <file>`
+  with `--config` only for the nested config.
+- The `[PRE_PUSH_BLOCKED]` hook (#3394) gates the agent's own `git push`; the
+  worker's `commitAndPushPending` and completion-phase pushes did not go through
+  it.
+- Evidence feeds #3644: the per-repo tables in `docs/pre-pr-ci-audit.md` give
+  the check, first failing SHA and whether pre-flight ran an equivalent. This PR
+  adds no metrics code (#3644 owns that).
+
+## Evidence
+
+Backend/tooling change — no web interface to screenshot.
+
+Representative failures (full table, run links and SHAs in
+`docs/pre-pr-ci-audit.md`):
+
+| Gap | Repo | Runs (first failing SHA) | Cause |
+| --- | --- | --- | --- |
+| cspell | GRQ | 38375639111 (e9a7f8fd), 38462363800 (6b3eeaef), 38030791481 (3e96c55d), 37921633370 (3e313843), 38395012672 (65d0d714), 37865294665 (9e39e325) | unknown words `fsmonitor`, `mawk`, `unthresholded`, `unacted`, `nosemgrep`, `backtester` |
+| sweptAt ancestry | VibeCoder | 38354507478 (45bf3c6f), 38134932391 (1e432ed1), 38060624463 (817e49b5), 38058126021 (1be1b9c0), 38051763868 (a5553ff5) | branch-only `sweptAt` in a top-up file |
+| ungated push | VibeCoder / GRQ-AutoTrader | 38476298053 (035d0353), 38074155287 (5f2a4e7b), 38486741580 (a85026a6) | MD018 in `USAGE.md:117`, MD018 in `mutation-check.md:147`, rustfmt in `handler.rs:67` |
+| left to CI | all | 38201375574, 38123883049, 38033819415, 38407346744, 38455750470, 38357245453 | gitleaks, semgrep, Floci, bootstrap drift, version-bump |
+| covered by `quality.sh` | VibeCoder / GRQ | 38126786967, 38345577457, 38484707749 | type check/tests, disk, `mermaid_blocks` |
+
+Two GRQ Spelling runs (37770312438, 37687047960) have no recorded unknown word
+and are classified as cspell on the evidence of the failing job only.
+
+- Targeted tests: 74 passed, 0 failed (`worker/deno/tests/git_push_preflight_test.ts`,
+  `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`,
+  `worker/deno/tests/toolchain_selfcheck_test.ts`);
+  `deno fmt --check`, `deno lint`, `deno check` clean.
+- Unattended-path verification is by unit tests of Step 1b and
+  `gateBeforePush()` through their real entry points; no live worker run was
+  performed in this run.
+- `./quality.sh < /dev/null` result is recorded in the PR body.
+
+Docs sweep: grep terms `pre-push gate`, `commitAndPushPending`, `unpushed`,
+`gateBeforePush`, `cspell`, `sweptAt`; section: `docs/CONFIGURATION.md` pre-flight
+gate section; siblings: "markdownlint", "gitleaks"; files updated:
+`docs/CONFIGURATION.md`, `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
+`docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
+`prompts/security_scan/prompt.md`; remaining hits left unchanged because they
+describe unaffected behaviour (the hook gating the agent's own push, and
+archived PR summaries as historical records).
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- Real representative failures are classified with links to CI/review evidence.
+  reviewer: Partial — 21 failed CI runs across the three repos are classified
+  with run IDs and first failing SHAs in `docs/pre-pr-ci-audit.md`; two GRQ rows
+  have no recorded cause, and no blocking reviewer-finding rows were audited.
+- The end-to-end pre-PR verifier and executable checks are verified on the
+  unattended worker path, not just unit tests.
+  reviewer: Partial — Step 1b and `gateBeforePush()` are exercised through
+  their real entry points in unit tests, but no live unattended worker run was
+  done and there is no per-PR disposable-checkout reproduction.
+- Missing check coverage is repaired or tracked as specific follow-ups with no
+  duplicate of existing issues.
+  reviewer: Met — the three demonstrable gaps are repaired; network/credential
+  and GitHub-exclusive checks are documented as Left to CI with no follow-up
+  because no pre-PR gap was shown; no duplicate of #2945, #2932, #2968 or #3395.
+  A systematic mapping of every required check to a local command is not
+  included.
+- CI still independently runs every required check after PR creation.
+  reviewer: Met — no workflow or required check is changed or weakened; the
+  new local checks are additive.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+No violations found. Optional notes from the reviewer, none requiring change:
+the unquoted `set -- ${spec}` in the `Containerfile` loop is intentional
+word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
+`git fetch --unshallow` directly (justified in the Spec section); the compound
+`rootCspell || nestedCspell` condition has a test per operand.
+
+## Test Plan
+
+- **Added** `worker/deno/tests/git_push_preflight_test.ts` — "commitAndPushPending
+  - unpushed agent commit failing the gate is not pushed (#3689)", "…clean
+  unpushed agent commit passes the gate and is pushed (#3689)", "…staged
+  changes run pre-flight exactly once (#3689)", "…no preFlight spec: bad
+  unpushed commit still pushed (#3689 WIP path)". Red-check: removing Step 1b
+  turns the first red.
+- **Added** `worker/deno/tests/pre_push_sweep_check_test.ts` — eight tests
+  (ledger-file selection, main/top-up pass, branch-only `sweptAt` blocks naming
+  slice and sha, only changed slices checked, shallow clone deepened, unresolvable
+  default ref blocks, `runPrePushGate` blocks on a pushed top-up, no sweep file
+  means no git calls). Red-check: deleting the ancestry comparison turns the
+  blocking cases red.
+- **Added** `worker/deno/tests/pre_push_gate_test.ts` — six cspell tests (root
+  operand, nested `--config` operand, no config, configured-but-missing binary,
+  non-spell-checked extensions, failing cspell blocks the push). Red-check:
+  dropping the cspell plan, or forcing either operand of
+  `rootCspell || nestedCspell` false, turns the matching test red.
+- **Added** `worker/deno/tests/phases/completion_phase_pre_push_gate_3689_test.ts`
+  — three tests that the completion phase gates the first push and the retry
+  push, and falls back to `{ commands: [] }` without a spec. Red-check:
+  removing `gateBeforePush()` turns them red.
+- **Added** one fixture entry in `worker/deno/tests/toolchain_selfcheck_test.ts`
+  (`REAL_IMAGE_OUTPUT`): `cspell: { command: "10.3.6\n" }`, so the start-up
+  self-check reads the bare version the pinned binary prints.
+- **Removed:** none. No existing assertion was deleted or edited.
+
+**Branch outcomes:**
+
+- `worker/deno/lib/git_push.ts` Step 1b gate fails → commits not pushed —
+  "unpushed agent commit failing the gate is not pushed (#3689)"; removing the
+  gate turns it red.
+- `worker/deno/lib/git_push.ts` Step 1b gate passes → pushed — "clean unpushed
+  agent commit passes the gate and is pushed (#3689)".
+- `worker/deno/lib/git_push.ts` staged changes already ran pre-flight → not
+  re-run — "staged changes run pre-flight exactly once (#3689)".
+- `worker/deno/lib/git_push.ts` no pre-flight spec → ungated — "no preFlight
+  spec: bad unpushed commit still pushed (#3689 WIP path)".
+- `worker/deno/lib/pre_push_gate.ts` `rootCspell` operand — "planChangedFileChecks:
+  cspell config and a changed .md plans cspell with the files".
+- `worker/deno/lib/pre_push_gate.ts` `nestedCspell` operand — "…a docs/cspell.json
+  config is passed with --config".
+- `worker/deno/lib/pre_push_gate.ts` `spelling.length > 0` operand — "…only
+  non-spellchecked extensions means no cspell check".
+- `worker/deno/lib/pre_push_gate.ts` no config → no check — "…no cspell config
+  means no cspell check".
+- `worker/deno/lib/pre_push_gate.ts` binary missing → error — "…cspell
+  configured but binary missing is an error naming cspell".
+- `worker/deno/lib/pre_push_gate.ts` cspell failure → blocked — "runPrePushGate:
+  a failing cspell blocks the push".
+- `worker/deno/lib/pre_push_sweep_check.ts` ledger-file filter — "touchesSweepLedger:
+  only the ledger and its top-up files count".
+- `worker/deno/lib/pre_push_sweep_check.ts` sweptAt on main → pass / branch-only →
+  block / unchanged slice → skipped / shallow → deepened / ref unresolvable →
+  block — one test each under "checkSweptAtAncestry"; flipping the comparison
+  turns the block cases red.
+- `worker/deno/lib/pre_push_gate.ts` sweep check wired into the gate — tests
+  `runPrePushGate: a branch-only sweptAt in a pushed top-up blocks the push` and
+  `runPrePushGate: no sweep file changed means no sweep git calls` in
+  `worker/deno/tests/pre_push_sweep_check_test.ts`.
+- `worker/deno/lib/phases/completion_phase.ts` `gateBeforePush()` before first and
+  retry push, empty-spec fallback — the three completion-phase tests.
+- `worker/deno/lib/container_manifest.ts` `REQUIRED_REPO_TOOLCHAIN_COMMANDS` —
+  `cspell` added; the one fixture entry in `worker/deno/tests/toolchain_selfcheck_test.ts`
+  that the start-up self-check reads.
+
+Entry points checked: `commitAndPushPending` (Step 1 and Step 1b), the completion
+phase first and retry push, `runPrePushGate` (cspell and sweep checks). Callers of
+the changed `gateUnpushedCommits`: only `commitAndPushPending`.
+
+## Pre-PR Security Self-Check
+
+- [x] **Input validation**: cspell and sweep checks take file lists and shas from
+      `git diff`; shas are validated before use and paths are passed as
+      arguments, never interpolated into a shell.
+- [x] **Secrets**: none staged; no hidden paths beyond the allow-list.
+- [x] **Injection surface**: subprocesses use argv arrays; the cspell tarball is
+      pinned by sha256 in `container/tools.json`.
+- [x] **Output encoding**: n/a.
+- [x] **Authentication/authorisation**: no change; all new gates fail closed and
+      no required CI check is weakened.
+- [x] **Error handling**: failures name the check and cause and block the push.
+- [x] **Dependencies**: one new pinned tool (cspell 10.3.6, sha256 pinned); the
+      dependency inventory was regenerated.
+- [x] **Path confinement**: n/a — only repo-relative paths from `git diff` are
+      passed to cspell.
