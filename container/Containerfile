@@ -227,8 +227,8 @@ RUN set -eu; \
 # upstream's word for the bytes. `--ignore-scripts` keeps a package lifecycle
 # script from running as root during the build. cspell is ESM and needs Node
 # >=22.18.0, which NODE_VERSION satisfies. Each tarball gets its own file name
-# and any stale copy is removed first: CURL_RETRY carries `-C -`, which resumes
-# from an existing file, so a shared path made cspell resume from the
+# and is removed once installed: CURL_RETRY carries `-C -`, which resumes from
+# an existing file, so a shared path made cspell resume from the
 # markdownlint-cli2 bytes and fail its checksum.
 ARG MARKDOWNLINT_CLI2_VERSION="0.23.2"
 ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
@@ -237,12 +237,13 @@ ARG CSPELL_SHA256_NOARCH="b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb8
 
 RUN set -eu; \
     for spec in "markdownlint-cli2 ${MARKDOWNLINT_CLI2_VERSION} ${MARKDOWNLINT_CLI2_SHA256_NOARCH}" "cspell ${CSPELL_VERSION} ${CSPELL_SHA256_NOARCH}"; do \
-      set -- ${spec}; tgz="/tmp/$1-$2.tgz"; rm -f "${tgz}"; \
+      set -- ${spec}; tgz="/tmp/$1-$2.tgz"; \
       curl -fsSL ${CURL_RETRY} -o "${tgz}" "https://registry.npmjs.org/$1/-/$1-$2.tgz"; \
       echo "$3  ${tgz}" | sha256sum -c -; \
       npm install -g --ignore-scripts "${tgz}"; \
+      rm -f "${tgz}"; \
     done; \
-    rm -rf /tmp/npmc /tmp/markdownlint-cli2-*.tgz /tmp/cspell-*.tgz; \
+    rm -rf /tmp/npmc; \
     markdownlint-cli2 --version; \
     cspell --version
 
