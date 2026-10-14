@@ -14,10 +14,13 @@ equivalent command. The stages are:
 - the agent pre-push hook (`lib/pre_push_gate.ts`, #3394);
 - Step 1b of `commitAndPushPending` (`gateUnpushedCommits` -> `runPrePushGate`
   in `lib/git_push.ts`), which gates commits the agent already made before the
-  worker pushes them;
+  worker pushes them. It sees only commits on no remote-tracking ref;
 - the issue worker's completion-phase gate (`gateBeforePush()` in
   `lib/phases/completion_phase.ts`), run before the first push and again before
-  the retry push after `recoverFromPushRejection`;
+  the retry push after `recoverFromPushRejection`. It checks every non-merge
+  commit the branch has ahead of the PR base, including commits the execute
+  phase's WIP checkpoint pushes (periodic and phase-end, which are ungated)
+  already put on origin;
 - `quality.sh` / `lib/quality_gate.ts`;
 - the end-to-end verifier (`lib/pre_pr_verifier.ts`).
 
@@ -38,11 +41,12 @@ UTC run creation dates (2026-10-07 to 2026-10-13).
 
 ```mermaid
 flowchart TD
-    A["Agent commits"] --> B["Pre-push hook on agent push"]
+    A["Agent commits"] --> W["WIP checkpoint pushes (periodic and phase-end, ungated)"]
+    W --> B["Pre-push hook on agent push"]
     B --> C["Worker final-mile commitAndPushPending"]
     C --> D["Pre-flight gate on staged changes"]
     D --> E["Changed-files gate on unpushed commits (new, #3689)"]
-    E --> H["Completion-phase gateBeforePush (before first push and retry push)"]
+    E --> H["Completion-phase gateBeforePush: every non-merge commit ahead of the PR base, pushed or not (before first push and retry push)"]
     H --> F["Push and open PR"]
     F --> G["CI runs every required check independently"]
 ```
@@ -51,18 +55,28 @@ flowchart TD
 
 | Run | First failing SHA | Check | Cause | Class | Pre-PR equivalent ran? | Outcome |
 | --- | --- | --- | --- | --- | --- | --- |
-| [38375639111](https://github.com/stSoftwareAU/GRQ/actions/runs/38375639111) | e9a7f8fd | Spelling | cspell: `pr-summary-5209.md:55` (fsmonitor, notrepo, emptyrepo) | local | No | Fixed by #3689 |
-| [38462363800](https://github.com/stSoftwareAU/GRQ/actions/runs/38462363800) | 6b3eeaef | Spelling | cspell: `pr-summary-5221.md:39` (mawk) | local | No | Fixed by #3689 |
-| [38030791481](https://github.com/stSoftwareAU/GRQ/actions/runs/38030791481) | 3e96c55d | Spelling | cspell: `pr-summary-5206.md:188` (unthresholded) | local | No | Fixed by #3689 |
-| [37921633370](https://github.com/stSoftwareAU/GRQ/actions/runs/37921633370) | 3e313843 | Spelling | cspell: `pr-summary-5202.md:105` (unacted) | local | No | Fixed by #3689 |
-| [38395012672](https://github.com/stSoftwareAU/GRQ/actions/runs/38395012672) | 65d0d714 | Spelling | cspell: `pr-summary-5225.md:28` (nosemgrep) | local | No | Fixed by #3689 |
-| [37865294665](https://github.com/stSoftwareAU/GRQ/actions/runs/37865294665) | 9e39e325 | Spelling | cspell: `CHANGELOG.md:240` (backtester) | local | No | Fixed by #3689 |
-| [37770312438](https://github.com/stSoftwareAU/GRQ/actions/runs/37770312438) | 26c8f269 | Spelling | cspell | local | No | Fixed by #3689 |
-| [37687047960](https://github.com/stSoftwareAU/GRQ/actions/runs/37687047960) | 1f92a0af | Spelling | cspell | local | No | Fixed by #3689 |
+| [38375639111](https://github.com/stSoftwareAU/GRQ/actions/runs/38375639111) | e9a7f8fd | Spelling | cspell: `pr-summary-5209.md:55` (fsmonitor, notrepo, emptyrepo) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| [38462363800](https://github.com/stSoftwareAU/GRQ/actions/runs/38462363800) | 6b3eeaef | Spelling | cspell: `pr-summary-5221.md:39` (mawk) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| [38030791481](https://github.com/stSoftwareAU/GRQ/actions/runs/38030791481) | 3e96c55d | Spelling | cspell: `pr-summary-5206.md:188` (unthresholded) | local | No | Fixed by the completion-phase whole-branch gate |
+| [37921633370](https://github.com/stSoftwareAU/GRQ/actions/runs/37921633370) | 3e313843 | Spelling | cspell: `pr-summary-5202.md:105` (unacted) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| [38395012672](https://github.com/stSoftwareAU/GRQ/actions/runs/38395012672) | 65d0d714 | Spelling | cspell: `pr-summary-5225.md:28` (nosemgrep) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| [37865294665](https://github.com/stSoftwareAU/GRQ/actions/runs/37865294665) | 9e39e325 | Spelling | cspell: `CHANGELOG.md:240` (backtester) | local | No | Fixed by the completion-phase whole-branch gate |
+| [37770312438](https://github.com/stSoftwareAU/GRQ/actions/runs/37770312438) | 26c8f269 | Spelling | cspell | local | No | Fixed by the completion-phase whole-branch gate |
+| [37687047960](https://github.com/stSoftwareAU/GRQ/actions/runs/37687047960) | 1f92a0af | Spelling | cspell | local | No | Fixed by the completion-phase whole-branch gate |
 
 The Spelling check runs cspell with `docs/cspell.json`. No pre-PR stage ran
 cspell. #3689 adds a cspell check to the pre-push gate and pins cspell in the
-worker image. A GRQ "Worker tests" failure is also class local and is already
+worker image. e9a7f8fd, 3e313843 and 65d0d714 are
+"WIP checkpoint: periodic agent progress snapshot" commits and 6b3eeaef is
+"Merge remote WIP checkpoints" (read with `gh api repos/stSoftwareAU/GRQ/commits/<sha>`):
+the execute phase's periodic and phase-end checkpoint pushes
+(`commitAndPushPending` with no pre-flight spec) put the misspelt PR summaries
+on origin before the completion phase ran. Those pushes stay ungated on
+purpose, so work is never lost. The check therefore sits at the completion
+phase, which gates every non-merge commit the branch has ahead of the PR base
+(`git log --no-merges origin/<base>..HEAD`), pushed or not, before
+`gh pr create`. `worker/deno/tests/git_push_preflight_test.ts` pins this with a
+bad commit already on origin through a checkpoint push. A GRQ "Worker tests" failure is also class local and is already
 covered by `quality.sh`.
 
 ## VibeCoder
@@ -123,6 +137,12 @@ The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
   completion phase falls back to an empty spec (`{ commands: [] }`), so on
   that path alone `gateBeforePush()` still runs the changed-file checks for a
   repo with no pre-flight commands.
+- The WIP checkpoint pushes themselves are ungated on purpose. A bad file
+  therefore reaches origin on the issue branch before the completion phase
+  blocks it; the block happens before `gh pr create`, so no PR (and no PR
+  check run) exists for it. If the base ref cannot be resolved the completion
+  gate degrades to the unpushed-only check, and the ahead-of-base guard logs
+  the unresolvable base as an error.
 - Bootstrap drift is network-only and is never reported as PASS locally. It is
   skipped, not passed.
 - Three VibeCoder failures (gitleaks, semgrep, Floci) need no secret or remote
@@ -158,8 +178,8 @@ Issue #3689 weakens or removes a CI, review or security gate.
   file content in this repository's tests (fixtures), not by cloning each
   failing PR in a disposable checkout.
 - The unattended worker path was verified by unit tests of `commitAndPushPending`
-  Step 1b and the completion phase `gateBeforePush()`, not by a live end-to-end
-  worker run.
+  Step 1b and the completion phase `gateBeforePush()` (including a bad commit
+  already pushed by a checkpoint), not by a live end-to-end worker run.
 - This evidence is the input #3644 consumes: per-repo tables with one row per
   failing run, giving the check name, first failing SHA, local, network or
   GitHub-exclusive class, and whether pre-flight ran an equivalent.

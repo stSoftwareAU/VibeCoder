@@ -4608,7 +4608,9 @@ The gate runs at four points:
    made but unpushed (the agent committed them and never pushed) and re-runs
    the pre-flight commands when Step 1 committed nothing;
 3. the issue completion phase's `gateBeforePush()`, before the first push and
-   again before the retry push that follows push-rejection recovery;
+   again before the retry push that follows push-rejection recovery, over every
+   non-merge commit ahead of the PR base (including commits the execute
+   phase's ungated WIP checkpoint pushes already put on origin);
 4. the agent's own `git push` through a per-run `pre-push` hook.
 
 Points 2–4 are described in
@@ -4714,7 +4716,16 @@ Step 1b runs only when a pre-flight spec exists, so callers passing no spec
 and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
 the changed-file checks (listed under the hook's first stage below: deno
 fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
-ancestry) still run and can fail the run. In Step 1b the pre-flight commands
+ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+checks every non-merge commit the branch has ahead of the PR base
+(`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
+ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
+push the agent's commits through `commitAndPushPending` with no spec, so those
+pushes are ungated and the commits are usually already on origin when the
+completion phase runs; the whole-branch range is what keeps them from reaching
+`gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
+the completion gate falls back to the unpushed-only check. The completion gate
+does nothing when the branch has no commit of its own ahead of the base. In Step 1b the pre-flight commands
 re-run only when Step 1 committed nothing; in the completion phase they run
 before every push.
 
@@ -4722,7 +4733,9 @@ The hook runs two stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
-   remote-tracking ref (merge commits and deleted files excluded), then runs
+   remote-tracking ref (merge commits and deleted files excluded; the issue
+   completion phase widens the range to every non-merge commit ahead of the PR
+   base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
    config would check, see below):
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,

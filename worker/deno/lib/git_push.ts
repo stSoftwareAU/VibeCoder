@@ -32,9 +32,11 @@ import { runGhOrThrow } from "./gh_spawn.ts";
 
 /**
  * Pre-flight gate specification passed to {@link commitAndPushPending}
- * (Issue #3577). Omit (or pass empty `commands`) to disable the gate — the
- * repo then commits and pushes exactly as it does today with zero added
- * latency.
+ * (Issue #3577). Omit the spec to disable the gate — the repo then commits and
+ * pushes with zero added latency. Passing a spec turns on Step 1b's
+ * changed-file checks (Issue #3689: deno/cargo fmt, markdownlint, cspell and
+ * `sweptAt` ancestry) even when `commands` is empty; an empty list only means
+ * no repo pre-flight commands run.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -520,16 +522,58 @@ export async function unstageWorkerStateFiles(
  * are skipped when Step 1 already ran them this call. Any failure — including
  * being unable to determine the state — is returned as an error so the caller
  * refuses to push (fail closed).
+ *
+ * With `baseRef` the gate covers every non-merge commit the branch has ahead
+ * of that ref, pushed or not (Issue #3689): the execute phase's WIP
+ * checkpoints push the agent's commits ungated, so the completion phase
+ * checks the whole branch before it raises the PR. It is a no-op only when
+ * the branch has no commit of its own ahead of `baseRef`.
  */
 export async function gateUnpushedCommits(
   branchName: string,
   options: GitCommandOptions,
   preFlight: PreFlightGateSpec,
   preFlightAlreadyRan = false,
+  baseRef?: string,
 ): Promise<Result<void>> {
   const state = await describeUnpushedCommits(branchName, options);
   if (!state.ok) return { ok: false, error: state.error };
-  if (state.value.count === 0) return { ok: true, value: undefined };
+  if (baseRef === undefined) {
+    if (state.value.count === 0) return { ok: true, value: undefined };
+  } else {
+    // Whole-branch mode: WIP checkpoints may already have pushed the commits,
+    // so "nothing unpushed" says nothing. Skip only when the branch has no
+    // commit of its own ahead of the base.
+    try {
+      assertSafeGitRef(baseRef, "gate base ref");
+    } catch (error) {
+      return {
+        ok: false,
+        error: new Error(
+          `[PRE_PUSH_BLOCKED] ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      };
+    }
+    const ahead = await runGitCommand(
+      ["rev-list", "--count", "--no-merges", `${baseRef}..HEAD`],
+      options,
+    );
+    if (!ahead.ok) return { ok: false, error: ahead.error };
+    const aheadCount = Number.parseInt(ahead.value.stdout.trim(), 10);
+    if (ahead.value.code !== 0 || !Number.isFinite(aheadCount)) {
+      return {
+        ok: false,
+        error: new Error(
+          `[PRE_PUSH_BLOCKED] git rev-list ${baseRef}..HEAD failed: ${
+            ahead.value.stderr.trim() || `exit ${ahead.value.code}`
+          }`,
+        ),
+      };
+    }
+    if (aheadCount === 0) return { ok: true, value: undefined };
+  }
 
   const head = await runGitCommand(["rev-parse", "HEAD"], options);
   if (!head.ok) return { ok: false, error: head.error };
@@ -551,6 +595,7 @@ export async function gateUnpushedCommits(
     preFlightCommands: preFlightAlreadyRan ? [] : preFlight.commands,
     timeoutSeconds: preFlight.timeoutSeconds,
     runner: preFlight.runner,
+    baseRef,
   });
   if (!gate.ok) {
     return {

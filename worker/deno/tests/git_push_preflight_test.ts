@@ -15,7 +15,7 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { commitAndPushPending } from "../lib/git_push.ts";
+import { commitAndPushPending, gateUnpushedCommits } from "../lib/git_push.ts";
 import {
   type PreFlightCommandResult,
   PreFlightGateError,
@@ -28,6 +28,14 @@ interface GitRunResult {
   stderr: string;
 }
 
+/**
+ * Keeps every git call away from the host's ambient config: the worker hands
+ * agent runs a `core.hooksPath` through `GIT_CONFIG_COUNT`/`KEY`/`VALUE`, and
+ * that pre-push hook would refuse the deliberately badly formatted fixtures,
+ * so the tests would differ inside and outside an agent run.
+ */
+const NO_HOST_GIT_CONFIG = { GIT_CONFIG_COUNT: "0" };
+
 async function runGit(args: string[], cwd: string): Promise<GitRunResult> {
   const cmd = new Deno.Command("git", {
     args,
@@ -35,6 +43,7 @@ async function runGit(args: string[], cwd: string): Promise<GitRunResult> {
     stdout: "piped",
     stderr: "piped",
     env: {
+      ...NO_HOST_GIT_CONFIG,
       GIT_AUTHOR_NAME: "test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "test",
@@ -100,7 +109,7 @@ Deno.test("commitAndPushPending - no pre-flight entry: unaffected (commits + pus
     const result = await commitAndPushPending(
       branch,
       "Auto-commit (Issue #3577 no gate)",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
     );
 
     assert(result.ok, result.ok ? "" : result.error.message);
@@ -122,7 +131,7 @@ Deno.test("commitAndPushPending - pre-flight exit 0: commit proceeds", async () 
     const result = await commitAndPushPending(
       branch,
       "Auto-commit (Issue #3577 gate pass)",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
       { commands: ["./pre-flight.sh"], runner: passRunner },
     );
@@ -160,7 +169,7 @@ Deno.test("commitAndPushPending - pre-flight non-zero: commit AND push both abor
     const result = await commitAndPushPending(
       branch,
       "Auto-commit (Issue #3577 gate block)",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
       { commands: ["./pre-flight.sh"], runner },
     );
@@ -214,7 +223,7 @@ Deno.test("commitAndPushPending - unstartable command aborts with not-started re
     const result = await commitAndPushPending(
       branch,
       "Auto-commit (Issue #3577 unstartable)",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
       { commands: ["./missing.sh"], runner },
     );
@@ -268,7 +277,7 @@ Deno.test("commitAndPushPending - unpushed agent commit failing the gate is not 
     const result = await commitAndPushPending(
       branch,
       "unused",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
       { commands: [] },
     );
@@ -293,7 +302,7 @@ Deno.test("commitAndPushPending - clean unpushed agent commit passes the gate an
     const result = await commitAndPushPending(
       branch,
       "unused",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
       { commands: [] },
     );
@@ -323,7 +332,7 @@ Deno.test("commitAndPushPending - staged changes run pre-flight exactly once (#3
     const result = await commitAndPushPending(
       branch,
       "Auto-commit (Issue #3689 once)",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
       false,
       { commands: ["./pre-flight.sh"], runner },
     );
@@ -344,13 +353,136 @@ Deno.test("commitAndPushPending - no preFlight spec: bad unpushed commit still p
     const result = await commitAndPushPending(
       branch,
       "unused",
-      { cwd: downstream },
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
     );
 
     assert(result.ok, result.ok ? "" : result.error.message);
     const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
       .trim();
     assertEquals(await originSha(downstream, branch), head);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+// Issue #3689 / PR #3716 review: the execute phase's WIP checkpoints push the
+// agent's commits with no gate, so by the time the completion phase runs they
+// are already on origin and "unpushed" is empty. The whole-branch mode checks
+// them against the PR base instead.
+
+/** Commit `file` and push it, as a WIP checkpoint push does (no gate). */
+async function checkpointPush(
+  downstream: string,
+  file: string,
+  content: string,
+): Promise<void> {
+  await commitLocally(downstream, file, content);
+  const pushed = await runGit(["push", "origin", "HEAD"], downstream);
+  assertEquals(pushed.code, 0, pushed.stderr);
+}
+
+Deno.test("gateUnpushedCommits - bad commit already pushed by a checkpoint is blocked against the PR base (#3689)", async () => {
+  const branch = "issue-3689-checkpointed";
+  const { tmp, downstream } = await makeRepo("preflight_3689_ckpt_", branch);
+  try {
+    await checkpointPush(downstream, "bad.ts", BAD_TS);
+    const opts = { cwd: downstream, env: NO_HOST_GIT_CONFIG };
+
+    // Positive control: the unpushed-only gate sees nothing — the gap.
+    const unpushedOnly = await gateUnpushedCommits(branch, opts, {
+      commands: [],
+    });
+    assert(unpushedOnly.ok, "nothing is unpushed, so this mode checks nothing");
+
+    const wholeBranch = await gateUnpushedCommits(
+      branch,
+      opts,
+      { commands: [] },
+      false,
+      "origin/main",
+    );
+    assert(!wholeBranch.ok, "the checkpointed bad commit must be blocked");
+    if (!wholeBranch.ok) {
+      assert(wholeBranch.error.message.includes("[PRE_PUSH_BLOCKED]"));
+      assert(wholeBranch.error.message.includes("bad.ts"));
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("gateUnpushedCommits - clean checkpointed branch passes against the PR base (#3689)", async () => {
+  const branch = "issue-3689-checkpointed-good";
+  const { tmp, downstream } = await makeRepo("preflight_3689_ckpt_ok_", branch);
+  try {
+    await checkpointPush(downstream, "good.ts", GOOD_TS);
+    const result = await gateUnpushedCommits(
+      branch,
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      { commands: [] },
+      false,
+      "origin/main",
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("gateUnpushedCommits - branch with no commit ahead of the PR base is a no-op (#3689)", async () => {
+  const branch = "issue-3689-level";
+  const { tmp, downstream } = await makeRepo("preflight_3689_level_", branch);
+  try {
+    const { runner, calls } = failRunner({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+    const result = await gateUnpushedCommits(
+      branch,
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      { commands: ["./pre-flight.sh"], runner },
+      false,
+      "origin/main",
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(calls, [], "no commit ahead: pre-flight must not run");
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("gateUnpushedCommits - unresolvable or option-like base ref fails closed (#3689)", async () => {
+  const branch = "issue-3689-badbase";
+  const { tmp, downstream } = await makeRepo("preflight_3689_base_", branch);
+  try {
+    await checkpointPush(downstream, "good.ts", GOOD_TS);
+    const opts = { cwd: downstream, env: NO_HOST_GIT_CONFIG };
+    const missing = await gateUnpushedCommits(
+      branch,
+      opts,
+      { commands: [] },
+      false,
+      "origin/does-not-exist",
+    );
+    assert(!missing.ok, "an unreadable range must not read as a pass");
+    if (!missing.ok) {
+      assert(missing.error.message.includes("[PRE_PUSH_BLOCKED]"));
+      assert(missing.error.message.includes("origin/does-not-exist..HEAD"));
+    }
+
+    const optionLike = await gateUnpushedCommits(
+      branch,
+      opts,
+      { commands: [] },
+      false,
+      "--all",
+    );
+    assert(!optionLike.ok);
+    if (!optionLike.ok) {
+      assert(optionLike.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }

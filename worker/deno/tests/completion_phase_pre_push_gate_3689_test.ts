@@ -61,6 +61,8 @@ interface Scenario {
   pushRefused: boolean;
   /** Gate verdicts, consumed one per call; a string is a block message. */
   gateAnswers: Array<"pass" | string>;
+  /** Whether the PR base resolves to nothing (no local, remote or fetched ref). */
+  baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
   warner?: MissingScopeWarner;
 }
@@ -71,6 +73,8 @@ interface Outcome {
   pushes: number;
   recoveries: number;
   gateCalls: number;
+  /** The `baseRef` each gate call received (5th argument). */
+  gateBaseRefs: Array<string | undefined>;
   warnings: string[];
 }
 
@@ -86,6 +90,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let pushes = 0;
   let recoveries = 0;
   let gateCalls = 0;
+  const gateBaseRefs: Array<string | undefined> = [];
   const warnings: string[] = [];
   const config: WorkerConfig = buildDefaultWorkerConfig();
   const ctx: IssueContext = {
@@ -119,6 +124,20 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ok: true as const,
             value: { code: 0, stdout, stderr: "" },
           });
+        if (scenario.baseUnresolvable) {
+          if (cmdArgs[0] === "fetch") {
+            return Promise.resolve({
+              ok: true as const,
+              value: { code: 1, stdout: "", stderr: "fatal: no such ref" },
+            });
+          }
+          if (cmdArgs[0] === "rev-parse" && cmdArgs.includes("--verify")) {
+            return Promise.resolve({
+              ok: true as const,
+              value: { code: 1, stdout: "", stderr: "" },
+            });
+          }
+        }
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           if (!scenario.diffAnswers) {
@@ -135,7 +154,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "rev-list") return ok("1\n");
         return ok("");
       },
-      gateUnpushedCommits: () => {
+      gateUnpushedCommits: (_branch, _opts, _spec, _ran, baseRef) => {
+        gateBaseRefs.push(baseRef);
         const answer = scenario.gateAnswers[gateCalls++] ?? "pass";
         return Promise.resolve(
           answer === "pass"
@@ -179,6 +199,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       pushes,
       recoveries,
       gateCalls,
+      gateBaseRefs,
       warnings,
     };
   } finally {
@@ -208,6 +229,42 @@ Deno.test({
     assertEquals(o.pushes, 0, "a blocked gate must never reach the push");
     assertEquals(o.recoveries, 0);
     assert((o.reason ?? "").startsWith("[PRE_PUSH_BLOCKED]"));
+  },
+});
+
+Deno.test({
+  name:
+    "completion - the gate covers the whole branch against the PR base, first and retry (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: true,
+      gateAnswers: ["pass", "pass"],
+    });
+    assertEquals(o.gateCalls, 2);
+    // WIP checkpoints push the agent's commits ungated, so "unpushed" alone
+    // would miss them: both calls must name the base the PR will compare to.
+    assertEquals(o.gateBaseRefs, ["origin/main", "origin/main"]);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - an unresolvable PR base degrades the gate to the unpushed-only check (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      baseUnresolvable: true,
+      pushRefused: false,
+      gateAnswers: ["pass"],
+    });
+    // Later phases may push again on this mock; every gate call must run
+    // without a base and none may be skipped or throw.
+    assert(o.gateBaseRefs.length >= 1, "the gate still runs");
+    assert(o.gateBaseRefs.every((ref) => ref === undefined));
+    assert(!(o.reason ?? "").includes("PRE_PUSH_BLOCKED"));
   },
 });
 

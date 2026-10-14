@@ -1830,6 +1830,19 @@ async function completionBody(
   // this push, so run the changed-file checks here. The repo's pre-flight
   // commands (when configured) run too; with none, the changed-file checks
   // still run. A block fails closed and never enters push recovery.
+  //
+  // The gate covers every non-merge commit the branch has ahead of the PR
+  // base, not only commits on no remote: the execute phase's WIP checkpoints
+  // (periodic and phase-end) push the agent's commits without any gate, so by
+  // now they are usually already on origin. The base is resolved here, ahead
+  // of the push, and reused by the ahead-of-base guard below (Issue #68). An
+  // unresolvable base degrades to the unpushed-only check; that guard logs the
+  // failure loudly below.
+  const comparableBase = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    baseBranch,
+    { cwd: state.repoPath },
+  );
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
@@ -1837,6 +1850,8 @@ async function completionBody(
       state.branchName,
       { cwd: state.repoPath },
       prePushSpec,
+      false,
+      comparableBase.ok ? comparableBase.value : undefined,
     );
     if (gate.ok) return undefined;
     logger.error("Pre-push gate blocked the push", {
@@ -1919,11 +1934,6 @@ async function completionBody(
   // "a merged PR merely mentions it while our commits sit unpublished".
   // `null` means the guard could not run — never silently zero.
   let branchCommitsAhead: number | null = null;
-  const comparableBase = await resolveComparableBaseRef(
-    deps.git.runGitCommand,
-    baseBranch,
-    { cwd: state.repoPath },
-  );
   if (!comparableBase.ok) {
     // The guard genuinely cannot run — a base that resolves to nothing local,
     // remote, or fetchable. Louder than the per-PR warning (Issue #68): this

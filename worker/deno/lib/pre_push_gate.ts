@@ -1,21 +1,33 @@
 /**
- * Pre-push gate for the coding agent's own `git push` calls (Issue #3394).
+ * Pre-push gate: the logic behind the coding agent's git `pre-push` hook
+ * (Issue #3394) and the worker's own gates over commits the agent never
+ * pushed (Issue #3689).
  *
- * The per-repo pre-flight gate (`pre_flight_gate.ts`) runs at the
- * worker's commit chokepoint. An agent that commits and pushes by itself never
- * passes through that chokepoint, so a doc-only push could reach the remote
- * without any check at all. This module is the logic behind a git `pre-push`
- * hook that closes that gap. It does two things, in order:
+ * The per-repo pre-flight gate (`pre_flight_gate.ts`) runs at the worker's
+ * commit chokepoint. An agent that commits and pushes by itself never passes
+ * through that chokepoint, so a doc-only push could reach the remote without
+ * any check at all. Callers of {@link runPrePushGate}:
  *
- * 1. Always runs a fast format/lint check over just the files the push
- *    introduces (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`), whatever the repo's own pre-flight list says and
- *    whatever the run budget — these checks are cheap and are never skipped.
+ * - the agent's `pre-push` hook (its own `git push`);
+ * - `commitAndPushPending` Step 1b, via `gateUnpushedCommits`, over commits
+ *   not yet on any remote (final-mile callers that pass a `preFlight` spec);
+ * - the issue completion phase, via `gateUnpushedCommits` with a `baseRef`,
+ *   over every non-merge commit the branch has ahead of the PR base — so
+ *   content the execute phase's WIP checkpoints already pushed is checked
+ *   before `gh pr create`.
+ *
+ * It does two things, in order:
+ *
+ * 1. Always runs a fast check over just the files the push introduces
+ *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
+ *    `markdownlint-cli2`, `cspell`, plus the sweep ledger `sweptAt` ancestry
+ *    check), whatever the repo's own pre-flight list says and whatever the run
+ *    budget — these checks are cheap and are never skipped.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
- * call, an unquotable path, or a configured-but-missing markdownlint binary
- * is an `Err`, never a pass.
+ * call, an unquotable path, or a configured-but-missing markdownlint or
+ * cspell binary is an `Err`, never a pass.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -102,16 +114,26 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
 };
 
 /**
- * List the files the push introduces: those touched by commits reachable from
- * the pushed tips but from no remote-tracking ref, minus deletions, and only
- * those that still exist as files in the working tree. Sorted and unique.
+ * List the files the push introduces: those touched by non-merge commits
+ * reachable from the pushed tips but not from `baseRef` — by default no
+ * remote-tracking ref (`--remotes`) — minus deletions, and only those that
+ * still exist as files in the working tree. Sorted and unique.
+ *
+ * `baseRef` widens the range to everything the branch has ahead of that ref,
+ * including commits a WIP checkpoint already pushed (Issue #3689). It must be
+ * a ref the caller resolved itself; a value git could read as an option is
+ * refused.
  */
 export async function listPushedFiles(
   refs: PrePushRef[],
   cwd: string,
   git: PrePushGit,
+  baseRef?: string,
 ): Promise<Result<string[], string>> {
   if (refs.length === 0) return { ok: true, value: [] };
+  if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
+    return { ok: false, error: `unsafe base ref ${JSON.stringify(baseRef)}` };
+  }
   const result = await git(
     [
       "log",
@@ -122,7 +144,7 @@ export async function listPushedFiles(
       "--diff-filter=d",
       ...refs.map((r) => r.localSha),
       "--not",
-      "--remotes",
+      baseRef ?? "--remotes",
     ],
     cwd,
   );
@@ -482,6 +504,11 @@ export async function runPrePushGate(opts: {
   findCspell?: (repoRoot: string) => Promise<string | null>;
   /** Default branch ref for the sweptAt check; resolved from origin/HEAD when absent. */
   defaultRef?: string;
+  /**
+   * Check every non-merge commit ahead of this ref instead of only commits on
+   * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
+   */
+  baseRef?: string;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const git = opts.git ?? defaultPrePushGit;
   const fail = (message: string): Result<never, Error> => ({
@@ -492,7 +519,12 @@ export async function runPrePushGate(opts: {
   const refs = parsePrePushRefs(opts.stdin);
   if (!refs.ok) return fail(refs.error);
 
-  const changed = await listPushedFiles(refs.value, opts.cwd, git);
+  const changed = await listPushedFiles(
+    refs.value,
+    opts.cwd,
+    git,
+    opts.baseRef,
+  );
   if (!changed.ok) return fail(changed.error);
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);

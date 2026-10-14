@@ -273,6 +273,45 @@ Deno.test("listPushedFiles: only files introduced by unpushed commits", async ()
   }
 });
 
+Deno.test("listPushedFiles: baseRef lists pushed commits ahead of the base; an option-like baseRef is refused (#3689)", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    // Model a WIP checkpoint push: origin/main now holds the docs commit. A
+    // ref update, not a real push, so an ambient pre-push hook cannot refuse it.
+    await git(clone, "update-ref", "refs/remotes/origin/main", "HEAD");
+    const initSha = await git(clone, "rev-parse", "HEAD~1");
+    const refs = parsePrePushRefs(stdin);
+    assert(refs.ok);
+    const run: PrePushGit = async (a, c) => {
+      const out = await new Deno.Command("git", {
+        args: a,
+        cwd: c,
+        stdout: "piped",
+        stderr: "piped",
+      }).output();
+      const d = new TextDecoder();
+      return {
+        code: out.code,
+        stdout: d.decode(out.stdout),
+        stderr: d.decode(out.stderr),
+      };
+    };
+    // Already on origin (a WIP checkpoint push): the default range is empty.
+    const unpushedOnly = await listPushedFiles(refs.value, clone, run);
+    assert(unpushedOnly.ok);
+    assertEquals(unpushedOnly.value, []);
+    // The whole-branch range still sees it.
+    const ahead = await listPushedFiles(refs.value, clone, run, initSha);
+    assert(ahead.ok);
+    assertEquals(ahead.value, ["README.md"]);
+    const unsafe = await listPushedFiles(refs.value, clone, run, "--all");
+    assert(!unsafe.ok);
+    assert(unsafe.error.includes("unsafe base ref"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("listPushedFiles: a committed symlink is not a regular file and is skipped", async () => {
   const { root, clone } = await makeRepoWithDocCommit();
   try {

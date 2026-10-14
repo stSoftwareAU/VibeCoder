@@ -24,14 +24,20 @@ fixed with a negative test; the full classification is in
 - **Ungated Step 2 push.** `commitAndPushPending` gated newly staged changes but
   pushed already-committed agent commits unchecked, and the completion phase
   pushed with no gate. Step 1b (`gateUnpushedCommits`, only when a pre-flight spec
-  exists) and the completion-phase `gateBeforePush()` (always, with an empty
-  command list when no spec exists) now gate those pushes.
+  exists) now gates commits on no remote-tracking ref. The completion-phase
+  `gateBeforePush()` (always, with an empty command list when no spec exists)
+  gates every non-merge commit the branch has ahead of the PR base, because the
+  execute phase's WIP checkpoints (periodic and phase-end, no spec, ungated)
+  have usually pushed the agent's commits already; the GRQ first-failing SHAs
+  e9a7f8fd, 3e313843 and 65d0d714 are such checkpoint commits and 6b3eeaef is
+  "Merge remote WIP checkpoints". The check runs before `gh pr create`
+  (PR #3716 review).
 
 ```mermaid
 flowchart LR
     A["agent commits"] --> S1["Step 1: staged changes gated"]
     A --> S1b["Step 1b: unpushed commits gated<br/>(new, #3689)"]
-    A --> CP["completion phase<br/>gateBeforePush (new)"]
+    A --> CP["completion phase gateBeforePush (new):<br/>whole branch ahead of the PR base,<br/>incl. checkpoint-pushed commits"]
     S1 --> G["runPrePushGate"]
     S1b --> G
     CP --> G
@@ -71,6 +77,19 @@ weakened: it still runs every required check independently after PR creation.
 - **Step 1b only when a pre-flight spec exists.** WIP-preservation callers have
   no spec and are not gated (pinned by a test); the completion phase falls back
   to `{ commands: [] }` so the changed-file checks still run.
+- **Completion gate scope is the whole branch (PR #3716 review).**
+  `gateUnpushedCommits(..., baseRef)` lists files with
+  `git log --no-merges <head> --not <baseRef>` instead of `--not --remotes`, and
+  skips only when `git rev-list --count --no-merges <baseRef>..HEAD` is 0. The
+  base is resolved by `resolveComparableBaseRef` once, before the first gate
+  (the ahead-of-base guard reuses it). If it cannot be resolved the gate falls
+  back to the unpushed-only check and the guard logs the failure as an error.
+  The WIP checkpoint pushes themselves stay ungated so work is never lost.
+- **Doc comments that described the old contract** were corrected in the same
+  push: `PreFlightGateSpec` (omitting the spec disables the gate; an empty
+  `commands` list still runs the changed-file checks), `RepoConfig.preFlight` in
+  `worker/deno/types.ts`, and the `pre_push_gate.ts` module header (cspell,
+  `sweptAt`, fail-closed on a missing cspell, and the three callers).
 - **Unrequested, but needed for the fix to work:**
   - `git fetch --unshallow origin` fallback in `pre_push_sweep_check.ts`: the
     worker clones `--depth=1` and `ensureHistoryDepth` returns immediately for a
@@ -129,26 +148,33 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
 `detect-non-literal-regexp` at `mutation_gate.ts:627`; Floci 38033819415
 `ValidationException ... PutParameter`.
 
-- Targeted tests: 119 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
+- Targeted tests: 126 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
   `worker/deno/tests/git_push_preflight_test.ts`,
   `worker/deno/tests/toolchain_selfcheck_test.ts`,
   `worker/deno/tests/completeness_checks_test.ts`,
-  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`), run with
-  the worker run's own injected pre-push hook (`core.hooksPath` from
-  `GIT_CONFIG_*`) unset — with it set, the hook blocks the test fixture's
-  deliberate ungated push in "no preFlight spec: bad unpushed commit still
-  pushed";
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`), run inside
+  an agent run with its injected `core.hooksPath` (`GIT_CONFIG_COUNT=1`) set,
+  and again with a `pre-push` hook that always exits 1: `git_push_preflight_test.ts`
+  passes either way because its git calls set `GIT_CONFIG_COUNT=0`. The wider
+  completion/issue-worker suites (456 tests) also pass;
   `deno fmt --check`, `deno lint`, `deno check` clean.
 - Unattended-path verification is by unit tests of Step 1b and
-  `gateBeforePush()` through their real entry points; no live worker run was
-  performed in this run.
+  `gateBeforePush()` through their real entry points, including a real-git test
+  where the bad commit is already on origin through a checkpoint push; no live
+  worker run was performed in this run.
+- Observed with the real tool: `gh api repos/stSoftwareAU/GRQ/commits/<sha>`
+  gives the first message line `WIP checkpoint: periodic agent progress snapshot`
+  for e9a7f8fd and 65d0d714, `... (Issue #4170)` for 3e313843, and
+  `Merge remote WIP checkpoints (#5221)` for 6b3eeaef.
 - `./quality.sh < /dev/null` result is recorded in the PR body.
 
 Docs sweep: grep terms `pre-push gate`, `commitAndPushPending`, `unpushed`,
 `gateBeforePush`, `cspell`, `sweptAt`, `network/credential`, `Left to CI`; section: `docs/CONFIGURATION.md` pre-flight
 gate section; siblings: "markdownlint", "gitleaks"; files updated:
-`docs/CONFIGURATION.md` (the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
+`worker/deno/types.ts` (`RepoConfig.preFlight`), `worker/deno/lib/git_push.ts`
+(`PreFlightGateSpec`, `gateUnpushedCommits`), `worker/deno/lib/pre_push_gate.ts`
+(module header), `docs/CONFIGURATION.md` (the whole-branch completion gate paragraph and the "runs at four points" item 3 added in PR #3716's review; the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
 `prompts/security_scan/prompt.md`. Remaining hits, each still true and left
 unchanged:
@@ -203,7 +229,17 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   unpushed agent commit passes the gate and is pushed (#3689)", "…staged
   changes run pre-flight exactly once (#3689)", "…no preFlight spec: bad
   unpushed commit still pushed (#3689 WIP path)". Red-check: removing Step 1b
-  turns the first red.
+  turns the first red. Every git call in the file now sets
+  `GIT_CONFIG_COUNT=0` (`NO_HOST_GIT_CONFIG`), so the result does not depend on
+  the agent run's ambient `core.hooksPath`; red-check: dropping it from the
+  WIP test while a hook that exits 1 is ambient fails that test.
+- **Added** four `gateUnpushedCommits` tests in the same file (PR #3716 review):
+  "bad commit already pushed by a checkpoint is blocked against the PR base"
+  (with the unpushed-only call as a passing positive control showing the gap),
+  "clean checkpointed branch passes against the PR base", "branch with no
+  commit ahead of the PR base is a no-op" (pre-flight runner not called), and
+  "unresolvable or option-like base ref fails closed". Red-check: passing
+  `undefined` instead of `baseRef` to `runPrePushGate` turns the first red.
 - **Added** `worker/deno/tests/pre_push_sweep_check_test.ts` — nine tests
   (ledger-file selection, main/top-up pass, branch-only `sweptAt` blocks naming
   slice and sha, only changed slices checked, a branch-only `sweptAt` on the
@@ -211,19 +247,24 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   unresolvable default ref blocks, `runPrePushGate` blocks on a pushed top-up,
   no sweep file means no git calls). Red-check: deleting the ancestry comparison turns the
   blocking cases red.
-- **Added** `worker/deno/tests/pre_push_gate_test.ts` — six cspell tests (root
+- **Added** `worker/deno/tests/pre_push_gate_test.ts` — one `listPushedFiles`
+  `baseRef` test (PR #3716 review, described under Branch outcomes) and six cspell tests (root
   operand, nested `--config` operand, no config, configured-but-missing binary,
   non-spell-checked extensions, failing cspell blocks the push). Red-check:
   dropping the cspell plan, or forcing either operand of
   `rootCspell || nestedCspell` false, turns the matching test red.
 - **Added** `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`
-  — three tests that the completion phase gates the first push and the retry
-  push, and falls back to `{ commands: [] }` without a spec. Red-check:
-  removing `gateBeforePush()` turns them red.
+  — five tests that the completion phase gates the first push and the retry
+  push, falls back to `{ commands: [] }` without a spec, passes the resolved PR
+  base (`origin/main`) to both gate calls, and passes no base when it cannot be
+  resolved. Red-check: removing `gateBeforePush()` turns the first three red;
+  passing `undefined` for the base turns the base test red.
 - **Added** one fixture entry in `worker/deno/tests/toolchain_selfcheck_test.ts`
   (`REAL_IMAGE_OUTPUT`): `cspell: { command: "10.3.6\n" }`, so the start-up
   self-check reads the bare version the pinned binary prints.
-- **Removed:** none. No existing assertion was deleted or edited.
+- **Removed:** none. No existing assertion was deleted; the existing tests'
+  git options only gained `env: NO_HOST_GIT_CONFIG`, which removes the host's
+  hook from the fixture and leaves each assertion unchanged.
 
 **Branch outcomes:**
 
@@ -264,17 +305,35 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   `runPrePushGate: no sweep file changed means no sweep git calls` in
   `worker/deno/tests/pre_push_sweep_check_test.ts`.
 - `worker/deno/lib/phases/completion_phase.ts` `gateBeforePush()` before first and
-  retry push, empty-spec fallback — the three completion-phase tests.
-- `worker/deno/lib/container_manifest.ts` `REQUIRED_REPO_TOOLCHAIN_COMMANDS` —
-  `cspell` added; the one fixture entry in `worker/deno/tests/toolchain_selfcheck_test.ts`
-  that the start-up self-check reads.
+  retry push, empty-spec fallback — the first three completion-phase tests.
+- `worker/deno/lib/phases/completion_phase.ts` `comparableBase.ok ? … : undefined`
+  → gate gets the PR base — "the gate covers the whole branch against the PR
+  base, first and retry" (`worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`);
+  passing `undefined` turns it red. The unresolvable-base
+  fallback (`undefined`, unpushed-only check) — "an unresolvable PR base degrades
+  the gate to the unpushed-only check"; always passing `origin/main` turns it red.
+- `worker/deno/lib/git_push.ts` `gateUnpushedCommits` `baseRef` mode — whole-branch
+  range: "bad commit already pushed by a checkpoint is blocked against the PR
+  base" (red when `baseRef` is not passed on); 0 commits ahead → no-op: "branch
+  with no commit ahead of the PR base is a no-op"; `rev-list` failure →
+  `[PRE_PUSH_BLOCKED]` and option-like ref refused: "unresolvable or option-like
+  base ref fails closed"; clean branch passes: "clean checkpointed branch passes".
+- `worker/deno/lib/pre_push_gate.ts` `listPushedFiles` `baseRef` argument —
+  `worker/deno/tests/pre_push_gate_test.ts` "listPushedFiles: baseRef lists
+  pushed commits ahead of the base; an option-like baseRef is refused (#3689)":
+  the default range is empty once origin holds the commit, the `baseRef` range
+  still lists `README.md`, and `--all` is refused with `unsafe base ref`.
+  Ignoring `baseRef`, and deleting the unsafe-ref refusal, each turn it red.
 
 Entry points checked: `commitAndPushPending` (Step 1 and Step 1b), the completion
-phase first and retry push, `runPrePushGate` (cspell and sweep checks). Callers of
+phase first and retry push (both pass the PR base), `runPrePushGate` (cspell and sweep checks). Callers of
 the changed `gateUnpushedCommits`: `commitAndPushPending` (Step 1b, in
 `worker/deno/lib/git_push.ts`) and the completion phase's `gateBeforePush()`
 (`worker/deno/lib/phases/completion_phase.ts`, as `deps.git.gateUnpushedCommits`),
-which `worker/deno/lib/issue_worker_wiring.ts` wires into `GitDeps`.
+which `worker/deno/lib/issue_worker_wiring.ts` wires into `GitDeps`. The new
+`baseRef` parameter is optional and only the completion phase passes it; Step 1b
+deliberately does not (its callers are the worker's final-mile pushes, which
+must not re-check commits already on origin).
 
 ## Pre-PR Security Self-Check
 
