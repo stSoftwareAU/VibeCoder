@@ -1,0 +1,13 @@
+{
+  "issue": 3718,
+  "chunk": "top-up-3718",
+  "title": "top-up: lifecycle ledger and issue assignment",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3718",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: issue_assignment.ts, lifecycle_ledger.ts (#3718)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_assignment.ts",
+    "worker/deno/lib/lifecycle_ledger.ts"
+  ],
+  "sweptAt": "89f5138244e10b35021a692a72f20d6f29101ac0"
+}

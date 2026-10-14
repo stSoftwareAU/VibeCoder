@@ -6,7 +6,7 @@
  * assignment, or the lifecycle ledger cannot say what a cohort achieved. The
  * assignment is therefore a marker comment on the issue itself:
  *
- *   <!-- vibe-assignment: id=<uuid> cohort=<label> assigned=<timestamp> -->
+ *   <!-- vibe-assignment id="<uuid>" cohort="<label>" assigned="<ISO>" -->
  *
  * Any run first reads the issue's comments. A marker posted by a trusted
  * fleet author is reused, so a restart, or a second host, carries on the
@@ -55,7 +55,7 @@ import {
 } from "./worker_build_info.ts";
 
 /** Opens every assignment marker comment. */
-export const ASSIGNMENT_MARKER_PREFIX = "<!-- vibe-assignment:";
+export const ASSIGNMENT_MARKER_PREFIX = "<!-- vibe-assignment ";
 
 /** The assignment a marker records. */
 export interface AssignmentMarker {
@@ -69,7 +69,7 @@ export interface AssignmentMarker {
  * ledger's predicates, so the pattern only has to be bounded, not exact.
  */
 const ASSIGNMENT_MARKER_PATTERN =
-  /<!-- vibe-assignment: id=([0-9a-f-]{36}) cohort=([a-z0-9][a-z0-9._-]{0,63}) assigned=([0-9TZ:.-]{20,24}) -->/;
+  /<!-- vibe-assignment id="([0-9a-f-]{36})" cohort="([a-z0-9][a-z0-9._-]{0,63})" assigned="([0-9TZ:.-]{20,24})" -->/;
 
 /**
  * Format an assignment as the marker comment text.
@@ -78,7 +78,7 @@ const ASSIGNMENT_MARKER_PATTERN =
  * @returns The single-line HTML comment.
  */
 export function formatAssignmentMarker(marker: AssignmentMarker): string {
-  return `<!-- vibe-assignment: id=${marker.assignmentId} cohort=${marker.cohort} assigned=${marker.assignedAt} -->`;
+  return `<!-- vibe-assignment id="${marker.assignmentId}" cohort="${marker.cohort}" assigned="${marker.assignedAt}" -->`;
 }
 
 /**

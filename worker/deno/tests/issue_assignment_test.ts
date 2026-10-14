@@ -540,7 +540,7 @@ Deno.test("issue assignment - malformed markers parse to undefined", () => {
 });
 
 Deno.test("issue assignment - a hostile long marker parses to undefined", () => {
-  const hostile = ASSIGNMENT_MARKER_PREFIX + " " + "a".repeat(100_000);
+  const hostile = ASSIGNMENT_MARKER_PREFIX + "a".repeat(100_000);
   assertEquals(parseAssignmentMarker(hostile), undefined);
 });
 
@@ -584,13 +584,13 @@ Deno.test("issue assignment - the gh store reads page 1 and keeps only marker co
     restComment(
       "VibeCoderST",
       "2026-10-14T10:53:42Z",
-      `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->\n\nLifecycle assignment.`,
+      `<!-- vibe-assignment id="${ASSIGNMENT_ID}" cohort="exp-a" assigned="2026-10-14T10:00:00Z" -->\n\nLifecycle assignment.`,
     ),
     restComment("someone", "2026-10-14T10:54:00Z", "A plain comment."),
     restComment(
       "mallory",
       "2026-10-14T10:55:00Z",
-      `<!-- vibe-assignment: id=${FORGED_ID} cohort=exp-b assigned=2026-10-14T10:00:00Z -->`,
+      `<!-- vibe-assignment id="${FORGED_ID}" cohort="exp-b" assigned="2026-10-14T10:00:00Z" -->`,
     ),
   ]);
   const fake = fakePagedGh([page]);
@@ -612,7 +612,7 @@ Deno.test("issue assignment - the gh store reads page 1 and keeps only marker co
 
 Deno.test("issue assignment - the gh store skips marker comments it cannot attribute", async () => {
   const marker =
-    `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->`;
+    `<!-- vibe-assignment id="${ASSIGNMENT_ID}" cohort="exp-a" assigned="2026-10-14T10:00:00Z" -->`;
   const page = JSON.stringify([
     restComment(undefined, "2026-10-14T10:53:42Z", marker),
     restComment("VibeCoderST", undefined, marker),
@@ -634,7 +634,7 @@ Deno.test("issue assignment - the gh store follows a full page to the next", asy
   const marker = restComment(
     "VibeCoderST",
     "2026-10-14T10:53:42Z",
-    `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->`,
+    `<!-- vibe-assignment id="${ASSIGNMENT_ID}" cohort="exp-a" assigned="2026-10-14T10:00:00Z" -->`,
   );
   const fake = fakePagedGh([
     JSON.stringify(filler),
@@ -819,7 +819,7 @@ Deno.test("issue assignment - a whitespace-only subscription allocation records 
 
 Deno.test("issue assignment - the gh store skips page items that are not objects or lack a string body", async () => {
   const marker =
-    `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->`;
+    `<!-- vibe-assignment id="${ASSIGNMENT_ID}" cohort="exp-a" assigned="2026-10-14T10:00:00Z" -->`;
   const page = JSON.stringify([
     42,
     null,

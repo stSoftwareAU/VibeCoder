@@ -1077,7 +1077,7 @@ agent is invoked records nothing. A failure to read, mint, post or append is
 logged at error level by the execute phase, and the run continues.
 
 **The marker.** The assignment is a hidden comment on the issue:
-`<!-- vibe-assignment: id=<uuid> cohort=<label> assigned=<ISO time> -->`.
+`<!-- vibe-assignment id="<uuid>" cohort="<label>" assigned="<ISO time>" -->`.
 The run reads the issue's comments through the bounded comment-page helper
 (`fetchIssueCommentPages` in `lib/issue_comment_pages.ts`), so a long thread is
 never read without a cap. Only a marker posted by a fleet author is trusted: the
