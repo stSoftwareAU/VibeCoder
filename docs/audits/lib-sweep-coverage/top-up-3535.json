@@ -1,0 +1,12 @@
+{
+  "issue": 3535,
+  "chunk": "top-up-3535",
+  "title": "top-up: PR summary facts loader and branch-outcomes renderer wiring",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3535",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: pr_summary_facts.ts (#3535)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pr_summary_facts.ts"
+  ],
+  "sweptAt": "d744efc482cccc6814b24a8301e6dba22c675a6b"
+}
