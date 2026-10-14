@@ -20,9 +20,10 @@
  *
  * 1. Always runs a fast check over just the files the push introduces
  *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`, `cspell`, plus the sweep ledger `sweptAt` ancestry
- *    check), whatever the repo's own pre-flight list says and whatever the run
- *    budget — these checks are cheap and are never skipped.
+ *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, plus the sweep
+ *    ledger `sweptAt` ancestry check), whatever the repo's own pre-flight list
+ *    says and whatever the run budget — these checks are cheap and are never
+ *    skipped.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
@@ -299,6 +300,13 @@ export function planChangedFileChecks(
     markdownlintBinary: string | null;
     /** Resolved cspell binary; absent or null means "not found". */
     cspellBinary?: string | null;
+    /**
+     * Whether the repo's own CI runs cspell. When false, a tracked cspell
+     * config is not enough to run the check: the push is not blocked on a
+     * tool CI would never run. Defaults to true for callers that do not
+     * inspect the workflows.
+     */
+    cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
   },
 ): Result<ChangedFileCheck[], string> {
@@ -392,7 +400,8 @@ export function planChangedFileChecks(
     tracked.includes(name)
   );
   const spelling = changed.filter((p) => hasExtension(p, CSPELL_EXTENSIONS));
-  if ((rootCspell || nestedCspell) && spelling.length > 0) {
+  const cspellInCi = opts.cspellInCi ?? true;
+  if ((rootCspell || nestedCspell) && cspellInCi && spelling.length > 0) {
     if (!opts.cspellBinary) {
       return {
         ok: false,
@@ -461,6 +470,33 @@ export function findMarkdownlintBinary(
   pathValue: string,
 ): Promise<string | null> {
   return findBinary("markdownlint-cli2", repoRoot, pathValue);
+}
+
+/**
+ * Whether the repo's own CI runs cspell: a tracked workflow under
+ * `.github/workflows/` with a `run:` or `uses:` step that names cspell.
+ * Comment lines are ignored. A repo with a cspell config but no such step
+ * is not blocked by cspell, since its required CI never runs it.
+ */
+export async function repoCiRunsCspell(
+  repoRoot: string,
+  tracked: readonly string[],
+): Promise<boolean> {
+  const stepNamingCspell = /^\s*(?:-\s*)?(?:run|uses)\s*:.*cspell/i;
+  for (const path of tracked) {
+    if (!path.startsWith(".github/workflows/")) continue;
+    if (!/\.ya?ml$/.test(path)) continue;
+    let text: string;
+    try {
+      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+    } catch {
+      continue;
+    }
+    if (text.split("\n").some((line) => stepNamingCspell.test(line))) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /** Find a runnable `cspell`: the repo's own install first, then `PATH`. */
@@ -565,7 +601,8 @@ export async function runPrePushGate(opts: {
     markdownlintBinary = await find(opts.cwd);
   }
 
-  const needsCspell =
+  const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
+  const needsCspell = cspellInCi &&
     changed.value.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
     [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
       tracked.includes(n)
@@ -581,6 +618,7 @@ export async function runPrePushGate(opts: {
     repoRoot: opts.cwd,
     markdownlintBinary,
     cspellBinary,
+    cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);

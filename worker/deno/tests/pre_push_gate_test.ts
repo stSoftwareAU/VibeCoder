@@ -12,6 +12,7 @@ import {
   planChangedFileChecks,
   PrePushGateInfrastructureError,
   type PrePushGit,
+  repoCiRunsCspell,
   runPrePushGate,
 } from "../lib/pre_push_gate.ts";
 import {
@@ -618,12 +619,71 @@ Deno.test("planChangedFileChecks: only non-spellchecked extensions means no cspe
   assertEquals(result.value, []);
 });
 
+Deno.test("planChangedFileChecks: cspell config but repo CI does not run cspell plans no check and is not blocked", () => {
+  const result = planChangedFileChecks(["notes.md"], ["cspell.json"], {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    cspellBinary: null,
+    cspellInCi: false,
+  });
+  assert(result.ok);
+  assertEquals(result.value.find((c) => c.label === "cspell"), undefined);
+});
+
+Deno.test("repoCiRunsCspell: a workflow run step naming cspell counts", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/spell.yml`,
+      'jobs:\n  spell:\n    steps:\n      - run: npx cspell "**/*.md"\n',
+    );
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/spell.yml"]),
+      true,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("repoCiRunsCspell: a commented-out cspell step does not count", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/.github/workflows/ci.yml`,
+      "jobs:\n  test:\n    steps:\n      # - run: cspell .\n      - run: deno test\n",
+    );
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/ci.yml"]),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("repoCiRunsCspell: untracked or non-workflow files do not count", async () => {
+  assertEquals(await repoCiRunsCspell("/nonexistent", ["README.md"]), false);
+  assertEquals(
+    await repoCiRunsCspell("/nonexistent", [".github/workflows/x.yml"]),
+    false,
+  );
+});
+
 Deno.test("runPrePushGate: a failing cspell blocks the push", async () => {
   const { root, clone, stdin } = await makeRepoWithDocCommit();
   try {
     await Deno.writeTextFile(`${clone}/cspell.json`, "{}\n");
+    // The repo's own CI runs cspell, so the gate must run it too.
+    await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/.github/workflows/spell.yml`,
+      'jobs:\n  spell:\n    steps:\n      - run: npx cspell "**/*.md"\n',
+    );
     await git(clone, "add", ".");
-    await git(clone, "commit", "-qm", "cspell config");
+    await git(clone, "commit", "-qm", "cspell config and CI");
     const tip = await git(clone, "rev-parse", "HEAD");
     const seen: string[] = [];
     const result = await runPrePushGate({

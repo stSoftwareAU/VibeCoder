@@ -4793,7 +4793,11 @@ The hook runs two stages:
      first, else the one on `PATH`;
    - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
      `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
-     config: a root one cspell finds itself (`cspell.json`, `.cspell.json`,
+     config and its own CI runs cspell: a tracked workflow under
+     `.github/workflows/` has a `run:` or `uses:` step naming cspell. A repo
+     with a cspell config but no such step gets no cspell run, so it is never
+     blocked on a tool its required CI does not run. The config is a root one
+     cspell finds itself (`cspell.json`, `.cspell.json`,
      `cSpell.json`, `cspell.{yaml,yml}`, `[.]cspell.config.*`) or
      `docs/cspell.json`, which is passed with `--config docs/cspell.json`. It
      runs from the repo root with `--no-progress --no-summary
