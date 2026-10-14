@@ -102,13 +102,15 @@ needs deeper history than the shallow worker checkout has, and no pre-PR stage
 checked ancestry. #3689 adds a sweptAt check to the pre-push gate that deepens
 shallow history and fails closed, plus a rule in the `security_scan` prompt.
 
-The agent pre-push hook runs markdownlint on the agent's own `git push`, and
-markdownlint now also runs via Step 1b and the completion-phase gate when a
-pre-flight spec exists. The two MD018 commits were pushed by the worker's
-final-mile Step 2 (`pushUnpushedCommits` in `lib/git_push.ts`), which had no
-changed-files gate. Issue #3689 gates the unpushed commits before that push
-(Step 1b) and again in the completion phase, for repos with a pre-flight spec.
-The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
+The agent pre-push hook runs markdownlint on the agent's own `git push`.
+markdownlint now also runs in the completion-phase gate, which covers the whole
+branch (including checkpoint-pushed commits) and runs for every repo, and in
+Step 1b, which runs only when a pre-flight spec exists. The two MD018 commits
+were pushed by the worker's final-mile Step 2 (`pushUnpushedCommits` in
+`lib/git_push.ts`), which had no changed-files gate. Issue #3689 gates the
+unpushed commits before that push (Step 1b, pre-flight spec required) and again
+in the completion phase (every repo). The completion-phase gate falls back to
+`{ commands: [] }` when no spec exists.
 
 ## GRQ-AutoTrader
 
@@ -139,8 +141,9 @@ The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
   repo with no pre-flight commands.
 - The WIP checkpoint pushes themselves are ungated on purpose. A bad file
   therefore reaches origin on the issue branch before the completion phase
-  blocks it; the block happens before `gh pr create`, so no PR (and no PR
-  check run) exists for it. If the base ref cannot be resolved the completion
+  blocks it; the block happens before `gh pr create`, but a resumed or retried
+  run can already have an open PR on the branch (`recoverExistingPr`), in which
+  case a checkpoint push triggers CI on that PR before the gate blocks. If the base ref cannot be resolved the completion
   gate degrades to the unpushed-only check, and the ahead-of-base guard logs
   the unresolvable base as an error.
 - Bootstrap drift is network-only and is never reported as PASS locally. It is
