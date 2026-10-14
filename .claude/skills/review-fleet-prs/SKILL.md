@@ -239,8 +239,9 @@ fields as follows:
   Check each one is fixed; one that is not is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
-  (the repo's `review-checklists.json` at the base ref, or the PR's own copy
-  when it edits that file, matched against the PR's changed files, Issue #3594); the empty string when it is empty. The
+  (the repo's `review-checklists.json` at the base ref, matched against the
+  PR's changed files, Issue #3594; the PR's own copy governs only when the PR
+  edits the file and either copy is broken); the empty string when it is empty. The
   reviewer's reply then carries a `checklist` array with a verdict per item,
   and any `missing` item sends the PR back. Pass the entry to `post.ts`
   verbatim: its `checklistState` (the load problem and the items owed a

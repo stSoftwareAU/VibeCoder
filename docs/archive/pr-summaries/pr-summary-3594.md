@@ -148,7 +148,7 @@ Docs sweep: grep `review-checklists`, `REVIEW_CHECKLISTS`,
 `docs/review-checklists.md` (new); siblings: `testChangeNotes`,
 `unrelatedIssues`, `PREVIOUS_FINDINGS` (the existing reply fields and brief
 placeholders the new `checklist` field and `｛｛REVIEW_CHECKLISTS｝｝` joined);
-updated: `README.md:519`, `docs/workflows/issue-processing.md:1191-1199`,
+updated: `README.md:519`, `docs/workflows/issue-processing.md:1190-1203`,
 `docs/MODEL-AND-CACHING.md:777`, `.claude/skills/review-fleet-prs/SKILL.md` (the
 `{{REVIEW_CHECKLISTS}}` bullet and the step-3 skipped reasons),
 `docs/review-checklists.md` (Failure behaviour, Who consumes it),
@@ -256,7 +256,7 @@ Added:
 
 Added in PR #3695's second review round (the PR's own copy of the file):
 
-- In `worker/deno/tests/review_checklists_3594_test.ts` (6 tests):
+- In `worker/deno/tests/review_checklists_3594_test.ts` (6 tests added; the file has 39):
   `mustReadHeadChecklists: the file among the changed paths, or an unknown list`,
   `effectiveChecklistLoad: a change that adds or leaves a broken file is judged on that broken copy`,
   `effectiveChecklistLoad: a repair of a broken base copy is judged on its own copy, not the base problem`,
@@ -264,7 +264,7 @@ Added in PR #3695's second review round (the PR's own copy of the file):
   `effectiveChecklistLoad: a failed fetch of either copy is passed on for a retry`
   and
   `a repairable base problem tells the author how: the fix text no longer says to fix the base branch`.
-- In `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` (5 tests):
+- In `worker/deno/tests/review_fleet_prs_checklists_3594_test.ts` (5 tests added; the file has 22):
   `gate: a PR that adds a malformed checklist file is judged on it and blocked, naming the parse error`,
   `gate: a PR that repairs a malformed base file is not blocked by the base problem`
   (with a control that does not edit the file, and a still-broken "repair"),
@@ -272,7 +272,7 @@ Added in PR #3695's second review round (the PR's own copy of the file):
   `gate: a failed fetch of the head copy is retried next pass, not reviewed`
   and
   `post: the base-problem fix text no longer sends the author to the base branch`.
-- In `worker/deno/tests/pre_pr_verifier_3395_test.ts` (4 tests):
+- In `worker/deno/tests/pre_pr_verifier_3395_test.ts` (4 tests added; the file has 55):
   `a PR that adds a malformed checklist file blocks, naming the parse error`,
   `a PR that repairs a malformed base file is not blocked by the base problem, and is judged on its own copy`
   (with a control that does not edit the file, an omitted-verdict case, and a
@@ -409,15 +409,15 @@ Branch outcomes:
   removed, RED (same tests).
 - `worker/deno/lib/review_checklists.ts:458` verdict key includes the checklist
   name — `T:474` — name removed from the key, RED.
-- `.claude/skills/review-fleet-prs/scripts/review_log.ts:221`
+- `.claude/skills/review-fleet-prs/scripts/review_log.ts:271-273`
   `gaps.length === 0` → review returned unchanged — `F:332`, `F:345` — flipped
   to `true`, RED (3 failed, with `F:415`).
-- `.claude/skills/review-fleet-prs/scripts/review_log.ts:233` a `missing` item →
+- `.claude/skills/review-fleet-prs/scripts/review_log.ts:301` a `missing` item →
   `changes_requested` — `F:255`, `F:288` — RED (earlier round; code unchanged).
-- `.claude/skills/review-fleet-prs/scripts/post.ts:212` `post.ts` main calls
+- `.claude/skills/review-fleet-prs/scripts/post.ts:338` `post.ts` main calls
   `reviewForPost` — `F:415` (end to end, subprocess) — call replaced by plain
   `parseFableReview`, RED.
-- `.claude/skills/review-fleet-prs/scripts/post.ts:75-77` a gate entry without a
+- `.claude/skills/review-fleet-prs/scripts/post.ts:83-90` a gate entry without a
   valid `checklistState` is refused, one operand each:
   `typeof state !== "object"` (flipped with `--no-check`, since removal fails
   type checking), `state === null`, `!Array.isArray(state.expected)`,
@@ -512,7 +512,7 @@ Pre-PR Security Self-Check:
 ## Disclosure of unrequested additions
 
 - `docs/audits/lib-sweep-coverage/top-up-3594.json`, a lib-sweep ledger slice at
-  full SHA `7638942f380cabff8505d3a0a129849f45875937`, needed by
+  full SHA `f108cad729222be877137d03878ed7af87fc01ae`, needed by
   `lib_sweep_coverage_test.ts` for the new module.
 - Docs pointers in `docs/workflows/issue-processing.md` and
   `docs/MODEL-AND-CACHING.md`, and the `README.md` docs-table row.

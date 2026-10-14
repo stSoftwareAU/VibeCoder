@@ -17,8 +17,8 @@ It is read at the **base ref** of the change:
   branch.
 
 A PR therefore cannot weaken its own checklist. A PR that edits
-`review-checklists.json` is judged against the base version; the edit takes
-effect once it merges.
+`review-checklists.json` is judged against the base version, and the edit takes
+effect once it merges, except when either copy is broken (see the table below).
 
 When the changed files include `review-checklists.json` (or the list is unknown),
 both consumers also read the change's own copy (`git show <headSha>:…` in the

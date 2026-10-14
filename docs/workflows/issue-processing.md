@@ -1193,9 +1193,11 @@ raised. The agent dispatches nothing for it.
   [review checklists](../review-checklists.md) apply to the changed files. A
   reply without the array is read as `[]`, but the worker owes a verdict for
   every item the brief rendered: an item with none, a malformed or unreadable
-  checklist file (the base copy, or the change's own copy when it edits the
-  file), or a changed-file list that is unknown each add a blocking finding
-  on `review-checklists.json` themselves, whatever the model replied. A
+  checklist file (the base copy, unless the change edits the file and its own
+  copy is usable or removes it, in which case the change is judged on that
+  copy; or the change's own copy, when that is the broken one), or a
+  changed-file list that is unknown each add a blocking finding on
+  `review-checklists.json` themselves, whatever the model replied. A
   `missing` verdict blocks the PR even with no matching finding. A failed read
   of the base or head ref makes the verifier "not checked" rather than a
   finding.
