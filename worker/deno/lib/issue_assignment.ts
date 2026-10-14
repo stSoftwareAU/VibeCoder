@@ -299,7 +299,7 @@ export async function recordIssueAssignment(
       input.subscriptionAllocation.trim() !== ""
       ? input.subscriptionAllocation
       : undefined;
-  const buildEvent = (assigned: AssignmentMarker, wasReused: boolean) =>
+  const buildEvent = (assigned: AssignmentMarker) =>
     buildLifecycleEvent({
       kind: "assignment",
       assignmentId: assigned.assignmentId,
@@ -310,7 +310,7 @@ export async function recordIssueAssignment(
       recordedAt: new Date(seams.now()).toISOString(),
       assignedAt: assigned.assignedAt,
       cohort: assigned.cohort,
-      reused: wasReused,
+      reused,
       treatment: {
         roles: [...input.roles],
         ...(facts.version ? { workerVersion: facts.version } : {}),
@@ -322,7 +322,7 @@ export async function recordIssueAssignment(
     });
   // Built before anything is posted, so an invalid input refuses with no side
   // effect.
-  let event = buildEvent(marker, reused);
+  let event = buildEvent(marker);
 
   if (existing === undefined) {
     await seams.store.postMarkerComment(
@@ -341,7 +341,7 @@ export async function recordIssueAssignment(
     if (!sameAssignment(settled, marker)) {
       marker = settled;
       reused = true;
-      event = buildEvent(marker, reused);
+      event = buildEvent(marker);
     }
   }
   await appendLifecycleEvent(seams.ledgerPath, event);
