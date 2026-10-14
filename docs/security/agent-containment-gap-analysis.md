@@ -59,12 +59,13 @@ flowchart LR
   `docs/THREAT-MODEL.md:199`.
 - **Gap:** no escape test has been run or recorded against the actual boundary.
 - **Verdict:** ADOPT the supervised test; it is the cheapest way to learn how
-  strong C22 really is. The deliverable is a human-run test plan only, with no
-  autonomous escape attempt. → **follow-up filed: #3703.**
+  strong C22 really is. This analysis supplies the human-run test plan below, and
+  makes no autonomous escape attempt. → **follow-up filed: #3703.**
 - **Human-run escape test plan.** An operator runs these checks on a throwaway
   test host, once per supported runtime (Docker, Podman, Apple `container`),
-  from a shell inside a launched agent container. Each check is a read-only
-  observation of what the container was given; none attempts a breakout. The
+  from a shell inside a launched agent container. Each check observes what the container was given,
+  except check 5, which attempts one ordinary write to the root filesystem;
+  none attempts a breakout. The
   expected result is what the launcher asks for
   (`container_launch.ts:1145-1166`). Record pass, fail or not applicable per
   check, with the date, runtime and versions.

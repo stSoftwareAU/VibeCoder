@@ -37,8 +37,9 @@ a list of specific gaps and owners.
 - Docs only. No worker code logic changes; the two code edits are comments that
   repeated the old R9 wording.
 - Exactly one follow-up per ADOPT, linked from its section.
-- The supervised sandbox-escape test (G1) is ADOPT, but its follow-up (#3703) is
-  a plan for a human to run. No escape attempt is made by the agent.
+- The supervised sandbox-escape test (G1) is ADOPT, and G1 now holds the human-run
+  test plan; its follow-up (#3703) runs that plan and records the verdicts. No
+  escape attempt is made by the agent.
 - Anthropic-account items (escape-classifier score, notifying the account team)
   are SKIP: the fleet runs the Claude Code CLI, where the score is not
   available.
