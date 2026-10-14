@@ -29,9 +29,9 @@
  * inside the container. The provider's whole credential sub-directory is
  * mounted read-only, so a process with filesystem read access there can read
  * every token file — the same exposure a single-token host has always carried,
- * with a higher count. That is accepted and recorded (R9 in the threat model),
- * and the last test holds the record in place rather than letting the risk go
- * unwritten. Isolating the mount is separate work.
+ * with a higher count. That gap is recorded as open in R9 of the threat model
+ * until #3698 (egress) and #3699 (mount and staging), and the last test holds
+ * the record in place rather than letting the risk go unwritten.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
@@ -383,11 +383,10 @@ Deno.test("buildContainerLaunchPlan - no token value or unselected token path re
 Deno.test("the residual filesystem-read risk of a token pool is recorded, not left implicit (Issue #920)", async () => {
   // The environment guarantee above stops at the environment. The container
   // still mounts every token file the pool holds, so a process with read
-  // access inside it can read the unselected ones. That is accepted — the
-  // agent is assumed compromised and the controls that must hold are
-  // containment and egress — but an accepted risk that is not written down is
-  // indistinguishable from one nobody noticed. These assertions keep it
-  // written down.
+  // access inside it can read the unselected ones. Egress is open until #3698,
+  // so the risk is not contained, but a risk that is not written down is
+  // indistinguishable from one nobody noticed. The pin checks that the R9 row
+  // keeps "read", "container" and "credential".
   const root = new URL("../../../", import.meta.url);
   const threatModel = await Deno.readTextFile(
     new URL("docs/THREAT-MODEL.md", root),

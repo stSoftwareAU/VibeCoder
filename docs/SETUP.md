@@ -980,10 +980,11 @@ inherited. It is an **environment** guarantee. The whole `claude/`
 sub-directory is mounted read-only into the container, so a process with
 filesystem read access inside the container can read every token file there,
 selected or not — recorded as residual risk R9 in
-[the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks). That is the same exposure
-a single-token host has always carried; more tokens raise its count, not its
-kind. Add a second subscription knowing that its blast radius is the container,
-not the environment policy.
+[the threat model](THREAT-MODEL.md#%EF%B8%8F-residual-risks), where it is an open
+gap: the container's outbound network is not restricted, so a token read there
+can leave the container until egress is default-deny (#3698). Add a second
+subscription knowing that every token file in `claude/` carries that exposure,
+whatever the environment policy selected.
 
 **Writing the files is your own step.** `setup.sh` provisions
 `claude/provider.env` and nothing else: there is no `VIBE_LAUNCHAGENT_*`
