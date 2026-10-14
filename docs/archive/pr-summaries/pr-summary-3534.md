@@ -60,7 +60,7 @@ Backend-only change: no UI files are touched, so no screenshot.
   summary facts structured data"; #3534, "Add a versioned summary-facts schema,
   validator and Branch-outcomes renderer".
 
-**Docs sweep** — grep: `reasonWordCount`, `summary_facts`, `WALL_CLOCK_TEST_FILES`, `parseBranchOutcomes`; section: none (new module with no documented surface); updated: none
+**Docs sweep** — grep: `reasonWordCount`, `summary_facts`, `WALL_CLOCK_TEST_FILES`, `parseBranchOutcomes`; section: none (new module with no documented surface); siblings: `tests/admin_only_finding_test.ts`, `SUBPROCESS_TIMING_TEST_FILES` (the existing `WALL_CLOCK_TEST_FILES` entry and sibling list; the manifest doc comment at L50-56 still describes them correctly); updated: none
 
 Where each hit stands:
 

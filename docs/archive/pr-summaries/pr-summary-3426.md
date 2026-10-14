@@ -58,7 +58,7 @@ URL, "review the changes on my current branch"), `security-review`,
 description did not change.
 
 **Docs sweep** — grep: `trigger-queries`, `references/{running-unattended`,
-"triggering test\w*", "Building Skills"; section: `docs/REFERENCES.md`
+"triggering test\w*", "Building Skills"; siblings: `references/edge-cases.md`, `references/running-unattended.md` (existing members of the skill's `references/` set that gained `trigger-queries.md`); section: `docs/REFERENCES.md`
 (skills-guide row); updated: `docs/REFERENCES.md`,
 `.claude/skills/review-fleet-prs/SKILL.md`, the module doc in
 `worker/deno/tests/review_fleet_prs_skill_links_3300_test.ts`;

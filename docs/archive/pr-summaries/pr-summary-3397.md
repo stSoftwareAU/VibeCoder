@@ -71,7 +71,7 @@ skills guide: review-fleet-prs".
 - Issue numbers this diff adds as provenance: #3397, "review-fleet-prs: opt-in
   auto-release of issue-required test-change holds".
 
-**Docs sweep** — grep: `pr_reviewer_auto_release`, `autoReleas`, `decideOutcome`, `testChangeNotes`, `held only for`; section: `docs/CONFIGURATION.md#-auto-release-of-issue-required-test-changes`; updated: `.claude/skills/review-fleet-prs/SKILL.md`, `docs/CONFIGURATION.md`, `docs/THREAT-MODEL.md`
+**Docs sweep** — grep: `pr_reviewer_auto_release`, `autoReleas`, `decideOutcome`, `testChangeNotes`, `held only for`; section: `docs/CONFIGURATION.md#-auto-release-of-issue-required-test-changes`; updated: `.claude/skills/review-fleet-prs/SKILL.md`, `docs/CONFIGURATION.md`, `docs/THREAT-MODEL.md`; siblings: `pr_reviewer_app` (the existing `.config.json` key the new `pr_reviewer_auto_release` key sits beside in `docs/CONFIGURATION.md`)
 
 Where each hit stands:
 
