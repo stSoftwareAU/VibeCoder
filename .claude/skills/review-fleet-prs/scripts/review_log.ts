@@ -27,10 +27,22 @@ export interface Finding {
   fix?: string;
 }
 
+// Lives here (not auto_release.ts) so auto_release.ts can import it without a cycle.
+export type TestChangeKind =
+  | "expected-value"
+  | "removed-case"
+  | "added-skip"
+  | "weakened-assertion"
+  | "removed-file"
+  | "other";
+
 export interface TestChangeNote {
   file: string;
   line: number;
   change: string;
+  kind?: TestChangeKind; // what sort of edit it is; only "expected-value" can auto-release (Issue #3397)
+  criterionQuote?: string; // verbatim acceptance criterion of a linked issue that requires the change
+  failsWithoutChange?: boolean | string; // whether the edited test fails without the code change
 }
 
 // A pre-existing problem Fable noticed that the PR did not cause (already on
@@ -43,12 +55,19 @@ export interface UnrelatedIssue {
   body: string;
   file?: string;
   line?: number;
+  /**
+   * An open issue the reviewer found that already covers this defect class
+   * (Issue #3598): the instance is added there as a comment, not filed anew.
+   */
+  existingIssue?: number;
 }
 
 export interface FiledIssue {
   number: number;
   url: string;
   title: string;
+  /** The instance was added to this existing issue, not filed (Issue #3598). */
+  addedTo?: true;
 }
 
 export { MAX_UNRELATED_ISSUES };
@@ -78,6 +97,8 @@ export interface LogRecord {
   removedTests: string[];
   filedIssues?: FiledIssue[];
   addedNeedsHuman?: boolean; // the skill's own needs-human label is on the PR after this review (Issue #2927)
+  autoReleased?: true; // set only when an issue-required test-change hold was auto-released (Issue #3397)
+  autoReleaseHeld?: string[]; // reasons an opted-in repo's hold was kept; set only on a held PR (Issue #3397)
 }
 
 export const LOG_FILE = "log.jsonl";
@@ -174,7 +195,18 @@ export const prKey = (repo: string, number: number) => `${repo}#${number}`;
 // malformed reply posts nothing and the PR is retried next pass. The parser
 // is shared with the pre-PR verifier (Issue #3395).
 export function parseFableReview(text: string): FableReview {
-  return parseReviewReply(text);
+  const r = parseReviewReply(text);
+  return { ...r, unrelatedIssues: r.unrelatedIssues.map(keepValidExisting) };
+}
+
+// The shared parser keeps `existingIssue` as the reviewer wrote it. Only a
+// positive whole number names an issue; anything else is dropped, so the
+// finding is filed as new rather than commented somewhere wrong (Issue #3598).
+function keepValidExisting(i: UnrelatedIssue): UnrelatedIssue {
+  const { existingIssue, ...rest } = i;
+  return Number.isInteger(existingIssue) && existingIssue! > 0
+    ? { ...rest, existingIssue }
+    : rest;
 }
 
 const normTitle = (t: string) =>
@@ -185,17 +217,52 @@ const normTitle = (t: string) =>
 export const sameIssueTitle = (a: string, b: string) =>
   normTitle(a) === normTitle(b);
 
+/**
+ * The reviewer's body without a footer it may have copied from earlier
+ * filings, so the footer is written exactly once (Issue #3598).
+ */
+function withoutFooter(body: string): string {
+  return body.split("\n").filter((line) => {
+    const t = line.trim();
+    return !/^Found while reviewing \S+, but outside that PR's scope\.?$/.test(
+      t,
+    ) &&
+      t !== `_${REVIEW_MARKER}._`;
+  }).join("\n").trim();
+}
+
+/** `file:line: ` ahead of an unrelated issue's body, when it names one. */
+function unrelatedWhere(issue: UnrelatedIssue): string {
+  return issue.file
+    ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`: `
+    : "";
+}
+
 export function unrelatedIssueBody(
   issue: UnrelatedIssue,
   pr: { repo: string; number: number; url: string },
 ): string {
-  const where = issue.file
-    ? `\`${issue.file}${issue.line ? `:${issue.line}` : ""}\`: `
-    : "";
   return [
-    `${where}${issue.body}`,
+    `${unrelatedWhere(issue)}${withoutFooter(issue.body)}`,
     "",
     `Found while reviewing ${pr.url}, but outside that PR's scope.`,
+    "",
+    `_${REVIEW_MARKER}._`,
+  ].join("\n");
+}
+
+/**
+ * The comment that adds a new instance of a defect class to the open issue
+ * that already covers it (Issue #3598).
+ */
+export function unrelatedInstanceComment(
+  issue: UnrelatedIssue,
+  pr: { repo: string; number: number; url: string },
+): string {
+  return [
+    `Another instance of this defect class, found while reviewing ${pr.url} (outside that PR's scope): **${issue.title}**`,
+    "",
+    `${unrelatedWhere(issue)}${withoutFooter(issue.body)}`,
     "",
     `_${REVIEW_MARKER}._`,
   ].join("\n");
@@ -204,10 +271,11 @@ export function unrelatedIssueBody(
 export function decideOutcome(
   review: FableReview,
   removedTests: readonly string[],
+  opts: { autoRelease?: boolean } = {},
 ): Outcome {
   if (review.findings.length > 0) return "changes_requested";
   if (review.testChanges === "meaningful" || removedTests.length > 0) {
-    return "held";
+    return opts.autoRelease === true ? "approved" : "held";
   }
   return "approved";
 }
@@ -226,6 +294,7 @@ export function reviewBody(
   review: FableReview,
   removedTests: readonly string[],
   filed: readonly FiledIssue[] = [],
+  opts: { autoReleased?: boolean } = {},
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -251,6 +320,16 @@ export function reviewBody(
       "",
       "Approve to merge or request changes; then remove `needs-human`.",
     );
+  } else if (outcome === "approved" && opts.autoReleased) {
+    lines.push(
+      "Auto-released: this PR changes existing tests, and each change is required by an acceptance criterion of a linked issue.",
+      "",
+      ...review.testChangeNotes.map((n) =>
+        `- \`${n.file}:${n.line}\`: ${n.change} — required by: "${n.criterionQuote}"`
+      ),
+      "",
+      review.summary,
+    );
   } else {
     lines.push(review.summary);
   }
@@ -258,7 +337,11 @@ export function reviewBody(
     lines.push(
       "",
       "Filed separately, as they are outside this PR's scope:",
-      ...filed.map((i) => `- #${i.number} ${i.title}`),
+      ...filed.map((i) =>
+        `- #${i.number} ${i.title}${
+          i.addedTo ? " (added as a new instance)" : ""
+        }`
+      ),
     );
   }
   lines.push("", `_${REVIEW_MARKER}._`);
@@ -397,7 +480,15 @@ export function renderSummary(
     `## Approved, last 7 days (${approved.length})`,
     "",
     ...(approved.length
-      ? approved.map((r) => line(r, clip(r.summary), isOpen(r)))
+      ? approved.map((r) =>
+        line(
+          r,
+          (r.autoReleased === true
+            ? "(auto-released: issue-required test change) "
+            : "") + clip(r.summary),
+          isOpen(r),
+        )
+      )
       : ["None."]),
     "",
   ];
