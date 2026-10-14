@@ -10,7 +10,7 @@ changelog".
 
 `review-checklists.json` at the root of the target repository.
 
-It is read at the **base ref** of the change, never the head:
+It is read at the **base ref** of the change:
 
 - the pre-PR verifier runs `git show <baseSha>:review-checklists.json`;
 - the fleet reviewer fetches it through the GitHub contents API at the PR's base
@@ -19,6 +19,21 @@ It is read at the **base ref** of the change, never the head:
 A PR therefore cannot weaken its own checklist. A PR that edits
 `review-checklists.json` is judged against the base version; the edit takes
 effect once it merges.
+
+When the changed files include `review-checklists.json` (or the list is unknown),
+both consumers also read the change's own copy (`git show <headSha>:…` in the
+verifier, the contents API at the PR's head SHA in the fleet gate), so a broken
+file can neither merge nor strand the repo. One shared function,
+`effectiveChecklistLoad`, decides which copy applies:
+
+| Base copy               | Change's copy                | Judged on                                              |
+| ----------------------- | ---------------------------- | ------------------------------------------------------ |
+| any                     | not touched by the change    | the base copy                                          |
+| absent or valid         | valid, absent or weakened    | the base copy (a change cannot weaken its checklist)   |
+| any                     | malformed or unreadable      | the change's copy: a blocking finding naming the error |
+| malformed or unreadable | valid                        | the change's copy: the change is the repair            |
+| malformed or unreadable | removes the file             | no checklist: the change is the repair                 |
+| fetch failed (either)   | any                          | retried / "not checked", as for any failed fetch       |
 
 ## Format
 
@@ -55,7 +70,7 @@ end with `/` or have a `..` segment. Anything else is a schema error (see
 
 ```mermaid
 flowchart LR
-    L["Load review-checklists.json<br/>at the base ref"] --> M["Match each checklist's<br/>paths against the changed files"]
+    L["Load review-checklists.json<br/>at the base ref, plus the change's<br/>copy when it edits the file"] --> M["Match each checklist's<br/>paths against the changed files"]
     M -->|"at least one file matches"| R["Add the checklist to the brief<br/>as {{REVIEW_CHECKLISTS}}"]
     M -->|"no file matches"| N["No section for that checklist"]
     R --> V["Reviewer reports every item in the<br/>checklist array: met / missing / not applicable"]
@@ -97,9 +112,10 @@ never an approval:
   and item text, ignoring case, spacing and a leading `1.`.
 
 The fleet reviewer lists the findings in the posted review (`changes_requested`)
-and the pre-PR verifier in its gate comment. Because the file is read at the
-base ref, a broken file must be fixed on the base branch; until then PRs that
-the checklist would apply to cannot pass.
+and the pre-PR verifier in its gate comment. A PR that adds or leaves a
+malformed file is sent back and cannot merge it. If a broken file is already on
+the base branch, every PR that does not edit it is sent back, but a PR that
+edits it is judged on its own copy, so the repair can be reviewed and merged.
 
 A failed _fetch_ is different: it says nothing about the file and may be
 transient (a timeout, HTTP 5xx, a rate limit). The fleet gate skips that PR for
@@ -110,6 +126,8 @@ any run it cannot complete.
 | Situation                                          | Result                                                                  |
 | -------------------------------------------------- | ----------------------------------------------------------------------- |
 | File absent (not found at the base ref)            | Nothing happens; no checklist section                                   |
+| A change adds or leaves a malformed file           | Code-added blocking finding naming the parse error                      |
+| A change repairs a malformed base file             | Judged on its own copy; the base problem is not raised for it           |
 | Present, but no changed file matches any checklist | Nothing happens; no checklist section                                   |
 | Malformed JSON or invalid schema                   | BLOCKING instruction in the brief and a code-added blocking finding     |
 | Contents reply that cannot be decoded              | The same                                                                |

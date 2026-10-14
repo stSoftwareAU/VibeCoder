@@ -15,8 +15,10 @@ import {
   CHECKLIST_FILE_LIST_LIMIT,
   checklistGapFindings,
   checklistState,
+  effectiveChecklistLoad,
   loadChecklistsFromText,
   matchesPathGlob,
+  mustReadHeadChecklists,
   parseChecklistVerdicts,
   parseReviewChecklists,
   renderChecklistSection,
@@ -501,4 +503,74 @@ Deno.test("checklistGapFindings: hostile text cannot carry markup or a mention",
     assert(!/[<>]/.test(f.problem), f.problem);
     assert(!f.problem.includes("@octocat"), f.problem);
   }
+});
+
+// ---- the change's own copy of the file (PR #3695 review) -------------------
+
+const loaded = loadChecklistsFromText(JSON.stringify(GOOD));
+const broken = loadChecklistsFromText("{ nope");
+const absent = loadChecklistsFromText(null);
+const FILE = REVIEW_CHECKLISTS_FILE;
+
+Deno.test("mustReadHeadChecklists: the file among the changed paths, or an unknown list", () => {
+  assert(mustReadHeadChecklists([FILE, "a.ts"]));
+  assert(mustReadHeadChecklists(null));
+  assertFalse(mustReadHeadChecklists(["a.ts", `sub/${FILE}`]));
+  assertFalse(mustReadHeadChecklists([]));
+});
+
+Deno.test("effectiveChecklistLoad: a change that adds or leaves a broken file is judged on that broken copy", () => {
+  for (const base of [absent, loaded, broken]) {
+    const r = effectiveChecklistLoad(base, broken);
+    assertEquals(r.kind, "malformed", base.kind);
+    const state = checklistState(r, [FILE]);
+    assertStringIncludes(state.problem ?? "", "as changed by this PR");
+    assertStringIncludes(state.problem ?? "", "is not valid JSON");
+  }
+  // An unreadable head copy is a problem too, never a pass.
+  const unreadable = loadChecklistsFromText(null, "bad bytes");
+  assertEquals(effectiveChecklistLoad(absent, unreadable).kind, "unreadable");
+});
+
+Deno.test("effectiveChecklistLoad: a repair of a broken base copy is judged on its own copy, not the base problem", () => {
+  const fixed = effectiveChecklistLoad(broken, loaded);
+  assertEquals(fixed.kind, "loaded");
+  assertEquals(checklistState(fixed, [FILE, "src/money/a.rs"]).problem, null);
+  assertEquals(
+    checklistState(fixed, [FILE, "src/money/a.rs"]).expected.length,
+    1,
+  );
+  assertStringIncludes(
+    renderChecklistSection(fixed, [FILE, "src/money/a.rs"]),
+    "the change's own copy",
+  );
+  // Removing the broken file repairs it too.
+  assertEquals(effectiveChecklistLoad(broken, absent).kind, "absent");
+  // Control: with no head copy to read, the base problem stands.
+  assertEquals(effectiveChecklistLoad(broken, null).kind, "malformed");
+});
+
+Deno.test("effectiveChecklistLoad: a usable base copy governs, so a change cannot weaken its checklist", () => {
+  const weak = loadChecklistsFromText(
+    JSON.stringify({
+      checklists: [{ name: "Weak", paths: ["nothing/**"], items: ["x"] }],
+    }),
+  );
+  assertEquals(effectiveChecklistLoad(loaded, weak), loaded);
+  assertEquals(effectiveChecklistLoad(loaded, absent), loaded);
+  assertEquals(effectiveChecklistLoad(absent, loaded), absent);
+});
+
+Deno.test("effectiveChecklistLoad: a failed fetch of either copy is passed on for a retry", () => {
+  const failed = { kind: "fetch_failed", reason: "502" } as const;
+  assertEquals(effectiveChecklistLoad(failed, loaded), failed);
+  assertEquals(effectiveChecklistLoad(loaded, failed), failed);
+  assertEquals(effectiveChecklistLoad(failed, broken), failed);
+});
+
+Deno.test("a repairable base problem tells the author how: the fix text no longer says to fix the base branch", () => {
+  const gaps = checklistGapFindings(checklistState(broken, [FILE]), []);
+  assertEquals(gaps.length, 1);
+  assertStringIncludes(gaps[0]!.fix, "in this change");
+  assertFalse(gaps[0]!.fix.includes("fix it on the base branch"));
 });

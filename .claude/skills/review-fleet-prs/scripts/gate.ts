@@ -60,7 +60,9 @@ import {
   type ChecklistLoad,
   type ChecklistState,
   checklistState,
+  effectiveChecklistLoad,
   loadChecklistsFromText,
+  mustReadHeadChecklists,
   renderChecklistSection,
   REVIEW_CHECKLISTS_FILE,
 } from "../../../../worker/deno/lib/review_checklists.ts";
@@ -118,7 +120,7 @@ export interface ReadyPr {
   // Findings of this PR's last review when it was sent back: the re-review
   // checks each one was fixed.
   previousFindings: Finding[];
-  // The repo's review checklists (base-branch `review-checklists.json`) that
+  // The repo's review checklists (`review-checklists.json`, read at the base ref and, for a PR that edits it, its head) that
   // apply to this diff, rendered for the brief's {{REVIEW_CHECKLISTS}} field;
   // "" when none applies (Issue #3594).
   reviewChecklists: string;
@@ -903,7 +905,19 @@ export async function pass(
         "--paginate",
       ]),
     );
-    const checklists = await loadBaseChecklists(callGh, repo, pr.baseRefName);
+    const changed = changedPaths(files);
+    const baseChecklists = await loadChecklistsAtRef(
+      callGh,
+      repo,
+      pr.baseRefName,
+    );
+    // A change that edits the file is also judged on its own copy (see
+    // effectiveChecklistLoad), so a broken file cannot merge and a repair of
+    // a broken one is not blocked by the problem it fixes.
+    const headChecklists = mustReadHeadChecklists(changed)
+      ? await loadChecklistsAtRef(callGh, repo, pr.headRefOid)
+      : null;
+    const checklists = effectiveChecklistLoad(baseChecklists, headChecklists);
     if (checklists.kind === "fetch_failed") {
       // A failed fetch says nothing about the file and may be transient:
       // leave the PR unreviewed so the next pass retries it, never a
@@ -916,7 +930,6 @@ export async function pass(
       console.error(line);
       continue;
     }
-    const changed = changedPaths(files);
     ready.push({
       repo,
       number: pr.number,
@@ -942,17 +955,18 @@ export async function pass(
   return { ready, auditBlocked, skipped, upkeep };
 }
 
-// Reads the repo's `review-checklists.json` at the PR's base ref (so a PR
-// cannot weaken its own checklist). Not found is absent; any other gh failure
-// is `fetch_failed` (the caller retries it next pass); an undecodable response
-// is unreadable, which the review reports rather than skips (Issue #3594).
-export async function loadBaseChecklists(
+// Reads the repo's `review-checklists.json` at a ref: the PR's base ref (so a
+// PR cannot weaken its own checklist) or, for a change that edits the file,
+// its head SHA. Not found is absent; any other gh failure is `fetch_failed`
+// (the caller retries it next pass); an undecodable response is unreadable,
+// which the review reports rather than skips (Issue #3594).
+export async function loadChecklistsAtRef(
   gh: (args: string[]) => Promise<string>,
   repo: string,
-  baseRef: string,
+  gitRef: string,
 ): Promise<ChecklistLoad> {
   // Refs may contain `/`, which stays valid in a query string.
-  const ref = encodeURIComponent(baseRef).replaceAll("%2F", "/");
+  const ref = encodeURIComponent(gitRef).replaceAll("%2F", "/");
   let raw: string;
   try {
     raw = await gh([

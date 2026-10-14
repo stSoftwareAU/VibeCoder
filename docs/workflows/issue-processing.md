@@ -1193,10 +1193,12 @@ raised. The agent dispatches nothing for it.
   [review checklists](../review-checklists.md) apply to the changed files. A
   reply without the array is read as `[]`, but the worker owes a verdict for
   every item the brief rendered: an item with none, a malformed or unreadable
-  base file, or a changed-file list that is unknown each add a blocking finding
+  checklist file (the base copy, or the change's own copy when it edits the
+  file), or a changed-file list that is unknown each add a blocking finding
   on `review-checklists.json` themselves, whatever the model replied. A
   `missing` verdict blocks the PR even with no matching finding. A failed read
-  of the base ref makes the verifier "not checked" rather than a finding.
+  of the base or head ref makes the verifier "not checked" rather than a
+  finding.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a

@@ -52,7 +52,9 @@ import {
   type ChecklistLoad,
   checklistState,
   type ChecklistVerdict,
+  effectiveChecklistLoad,
   loadChecklistsFromText,
+  mustReadHeadChecklists,
   parseChecklistVerdicts,
   renderChecklistSection,
   REVIEW_CHECKLISTS_FILE,
@@ -582,18 +584,18 @@ async function summaryEscapesCheckout(
 }
 
 /**
- * Read `review-checklists.json` at the base ref, so a PR cannot weaken its own
- * checklist. A file missing at the base is absent; a git failure is
- * `fetch_failed`, which makes the pass "not checked" rather than a finding
- * about a file that may not exist.
+ * Read `review-checklists.json` at a commit: the base (so a PR cannot weaken
+ * its own checklist) or, for a change that edits the file, the head. A file
+ * missing there is absent; a git failure is `fetch_failed`, which makes the
+ * pass "not checked" rather than a finding about a file that may not exist.
  */
-export async function readBaseChecklists(
+export async function readChecklistsAt(
   runGit: PrePrVerifierDeps["runGit"],
   cwd: string,
-  baseSha: string,
+  sha: string,
 ): Promise<ChecklistLoad> {
   const r = await runGit(
-    ["show", `${baseSha}:${REVIEW_CHECKLISTS_FILE}`],
+    ["show", `${sha}:${REVIEW_CHECKLISTS_FILE}`],
     cwd,
   );
   if (r === null) {
@@ -661,10 +663,17 @@ async function verifyInCheckout(
   });
   await Deno.writeTextFile(summaryFile, input.summaryContent);
 
-  const checklists = await readBaseChecklists(deps.runGit, checkout, baseSha);
+  const baseChecklists = await readChecklistsAt(deps.runGit, checkout, baseSha);
+  // A change that edits the file is also judged on its own copy (see
+  // effectiveChecklistLoad), so a broken file cannot merge and a repair of a
+  // broken one is not blocked by the problem it fixes.
+  const headChecklists = mustReadHeadChecklists(input.changedFiles)
+    ? await readChecklistsAt(deps.runGit, checkout, headSha)
+    : null;
+  const checklists = effectiveChecklistLoad(baseChecklists, headChecklists);
   if (checklists.kind === "fetch_failed") {
     return notChecked(
-      `could not read ${REVIEW_CHECKLISTS_FILE} at the base ref: ${checklists.reason}`,
+      `could not read ${REVIEW_CHECKLISTS_FILE} at the base or head ref: ${checklists.reason}`,
     );
   }
   const reviewChecklists = renderChecklistSection(

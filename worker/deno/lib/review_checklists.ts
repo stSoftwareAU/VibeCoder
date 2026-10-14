@@ -2,8 +2,9 @@
  * Repo-owned, path-scoped review checklists (Issue #3594).
  *
  * A target repo declares `review-checklists.json` at its root. The reviewer
- * loads it once (at the base ref, so a PR cannot weaken its own checklist),
- * and for each checklist whose path globs match the diff's changed files the
+ * loads it at the base ref (so a PR cannot weaken its own checklist; a change
+ * that edits the file is also parsed at its head, see
+ * {@link effectiveChecklistLoad}), and for each checklist whose path globs match the diff's changed files the
  * reviewer reports every item as met, missing or not applicable. No file, or
  * no matching path, means no checklist section at all. A file that cannot be
  * read or parsed yields a loud section: it is never silently ignored.
@@ -35,13 +36,15 @@ export interface ChecklistVerdict {
   verdict: ChecklistVerdictValue;
   note: string;
 }
+// `headCopy` marks a load taken from the change's own copy of the file, not
+// the base ref's (see effectiveChecklistLoad).
 export type ChecklistLoad =
   | { kind: "absent" }
-  | { kind: "loaded"; config: ReviewChecklistConfig }
-  | { kind: "malformed"; reason: string }
+  | { kind: "loaded"; config: ReviewChecklistConfig; headCopy?: true }
+  | { kind: "malformed"; reason: string; headCopy?: true }
   // Read, but unusable (an undecodable reply): a persistent problem the
   // reviewer must report.
-  | { kind: "unreadable"; reason: string }
+  | { kind: "unreadable"; reason: string; headCopy?: true }
   // The fetch itself failed (a timeout, HTTP 5xx, rate limit): possibly
   // transient and says nothing about the file, so callers retry or skip the
   // check rather than hand it to a reviewer as a finding.
@@ -228,7 +231,7 @@ export function matchesPathGlob(glob: string, path: string): boolean {
 
 /**
  * Turn the raw file text into a load result. `readError` set means the file
- * could not be read; `null` text means it does not exist at the base.
+ * could not be read; `null` text means it does not exist at that ref.
  */
 export function loadChecklistsFromText(
   text: string | null,
@@ -262,20 +265,69 @@ function blockingInstruction(file: string): string {
 const NAME_MAX = 200;
 const ITEM_MAX = 500;
 
+/** How the file is named in a problem: the change's copy, or the base's. */
+function fileLabel(load: ChecklistLoad): string {
+  const file = `\`${REVIEW_CHECKLISTS_FILE}\``;
+  return "headCopy" in load && load.headCopy
+    ? `${file} as changed by this PR`
+    : file;
+}
+
 function loadProblem(load: ChecklistLoad): string | null {
   switch (load.kind) {
     case "malformed":
-      return `\`${REVIEW_CHECKLISTS_FILE}\` is malformed: ${
-        inlineSafe(load.reason)
-      }`;
+      return `${fileLabel(load)} is malformed: ${inlineSafe(load.reason)}`;
     case "unreadable":
     case "fetch_failed":
-      return `\`${REVIEW_CHECKLISTS_FILE}\` could not be read: ${
-        inlineSafe(load.reason)
-      }`;
+      return `${fileLabel(load)} could not be read: ${inlineSafe(load.reason)}`;
     default:
       return null;
   }
+}
+
+/** The ChecklistLoad kinds that stop the checklist being applied. */
+function isBroken(load: ChecklistLoad): boolean {
+  return load.kind === "malformed" || load.kind === "unreadable";
+}
+
+/**
+ * Whether the change's own copy of the checklist file must also be read: the
+ * file is among the changed paths, or the list is unknown (null) so it may be.
+ */
+export function mustReadHeadChecklists(
+  changedFiles: readonly string[] | null,
+): boolean {
+  return changedFiles === null || changedFiles.includes(REVIEW_CHECKLISTS_FILE);
+}
+
+/**
+ * Combine the base ref's load with the change's own copy (`head`, null when
+ * the change does not touch the file). The base copy governs, so a change
+ * cannot weaken its own checklist, with two exceptions that keep a broken
+ * file from stranding a repo:
+ *
+ * - the change's copy is broken: that is the result, so a change that adds or
+ *   leaves a malformed file is sent back and cannot merge it;
+ * - the base copy is broken and the change's copy is usable (or removes the
+ *   file): the change is the repair, so it is judged on its own copy and not
+ *   blocked by the base problem.
+ *
+ * A failed fetch of either copy is returned as is, for the caller to retry.
+ */
+export function effectiveChecklistLoad(
+  base: ChecklistLoad,
+  head: ChecklistLoad | null,
+): ChecklistLoad {
+  if (base.kind === "fetch_failed") return base;
+  if (head === null) return base;
+  if (head.kind === "fetch_failed") return head;
+  if (head.kind === "malformed" || head.kind === "unreadable") {
+    return { ...head, headCopy: true };
+  }
+  if (isBroken(base)) {
+    return head.kind === "loaded" ? { ...head, headCopy: true } : head;
+  }
+  return base;
 }
 
 /** The checklists with at least one changed file matching their paths. */
@@ -341,7 +393,7 @@ export function renderChecklistSection(
     return [
       `### Review checklist file problem`,
       "",
-      `The repo's \`${file}\` ${what}: \`${inlineSafe(load.reason)}\``,
+      `The repo's ${fileLabel(load)} ${what}: \`${inlineSafe(load.reason)}\``,
       "",
       blockingInstruction(file),
     ].join("\n");
@@ -356,10 +408,13 @@ export function renderChecklistSection(
   const selected = selectChecklists(load.config, changedFiles);
   if (selected.length === 0) return "";
 
+  const source = load.headCopy
+    ? "the change's own copy, because the base ref's copy is unusable"
+    : "read at the base ref";
   const lines = [
     `### Review checklists for this change`,
     "",
-    `The repo declares these checklists in \`${file}\` (read at the base ref). Each applies because the change touches matching files. Report EVERY item below in the reply \`checklist\` array with a verdict of \`met\`, \`missing\` or \`not applicable\` and a short note, copying the checklist name and the item text exactly as written here. Any item that is \`missing\` also needs a blocking entry in \`findings\`. The worker checks that every item got a verdict; an item with none sends the change back.`,
+    `The repo declares these checklists in \`${file}\` (${source}). Each applies because the change touches matching files. Report EVERY item below in the reply \`checklist\` array with a verdict of \`met\`, \`missing\` or \`not applicable\` and a short note, copying the checklist name and the item text exactly as written here. Any item that is \`missing\` also needs a blocking entry in \`findings\`. The worker checks that every item got a verdict; an item with none sends the change back.`,
   ];
   for (const { c, matched } of selected) {
     const shown = matched.slice(0, MAX_MATCHED_SHOWN).map((f) =>
@@ -425,7 +480,7 @@ export function checklistGapFindings(
         gapText(state.problem, 600)
       }.`,
       fix:
-        `The file is read at the base ref, so fix it on the base branch (or reduce the change so its file list is complete); until then the checklist cannot be applied.`,
+        `Repair \`${REVIEW_CHECKLISTS_FILE}\` in this change, or reduce the change so its file list is complete. The base ref's copy governs, except that a change which edits the file is judged on its own copy when the base copy is unusable, so a repair can be reviewed and merged.`,
     });
   }
   const reported = new Set(

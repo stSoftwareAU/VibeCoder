@@ -21,7 +21,7 @@ import {
   prePrVerifierBlockReason,
   type PrePrVerifierDeps,
   type PrePrVerifierInput,
-  readBaseChecklists,
+  readChecklistsAt,
   renderReviewBrief,
   type ReviewBriefFields,
   runPrePrVerifier,
@@ -1075,11 +1075,11 @@ Deno.test("an unreadable base checklist (git show fails otherwise) is not checke
   }
 });
 
-Deno.test("readBaseChecklists: a git failure is fetch_failed; missing file variants are absent", async () => {
-  const none = await readBaseChecklists(() => Promise.resolve(null), "/x", "s");
+Deno.test("readChecklistsAt: a git failure is fetch_failed; missing file variants are absent", async () => {
+  const none = await readChecklistsAt(() => Promise.resolve(null), "/x", "s");
   assertEquals(none.kind, "fetch_failed");
   const run = (stderr: string) =>
-    readBaseChecklists(
+    readChecklistsAt(
       () => Promise.resolve({ code: 128, stdout: "", stderr }),
       "/x",
       "s",
@@ -1310,4 +1310,115 @@ Deno.test("no checklist file, or no matching path, owes no verdict and does not 
     "README.md",
   ], reply());
   assert(!prePrVerifierBlocked(unmatched));
+});
+
+// ---- the change's own copy of the file (PR #3695 review) -------------------
+
+const CHECKLIST_FILE = "review-checklists.json";
+
+Deno.test("a PR that adds a malformed checklist file blocks, naming the parse error", async () => {
+  const result = await checkedReview(
+    null,
+    { [CHECKLIST_FILE]: "{not json", "README.md": "x\n" },
+    [CHECKLIST_FILE, "README.md"],
+    reply(),
+  );
+  assert(prePrVerifierBlocked(result));
+  const problem = result.review.findings[0]!.problem;
+  assertStringIncludes(problem, "as changed by this PR");
+  assertStringIncludes(problem, "not valid JSON");
+  // Control: the same PR with a valid new file is not blocked.
+  const ok = await checkedReview(
+    null,
+    { [CHECKLIST_FILE]: MONEY_CHECKLISTS },
+    [CHECKLIST_FILE],
+    reply(),
+  );
+  assert(!prePrVerifierBlocked(ok));
+});
+
+Deno.test("a PR that repairs a malformed base file is not blocked by the base problem, and is judged on its own copy", async () => {
+  const repaired = await checkedReview(
+    "{not json",
+    { [CHECKLIST_FILE]: MONEY_CHECKLISTS, ...MONEY_FILES },
+    [CHECKLIST_FILE, "src/money/fees.ts"],
+    reply([verdict(DECIMAL), verdict("Rounding is tested")]),
+  );
+  assertEquals(repaired.review.findings, []);
+  assert(!prePrVerifierBlocked(repaired));
+  // The repaired file's items are owed a verdict, so the repair is no bypass.
+  const omitted = await checkedReview(
+    "{not json",
+    { [CHECKLIST_FILE]: MONEY_CHECKLISTS, ...MONEY_FILES },
+    [CHECKLIST_FILE, "src/money/fees.ts"],
+    reply(),
+  );
+  assert(prePrVerifierBlocked(omitted));
+  assertStringIncludes(omitted.review.findings[0]!.problem, "2 of 2");
+  // Control: a PR that leaves the file alone still meets the base problem.
+  const other = await checkedReview(
+    "{not json",
+    { "README.md": "x\n" },
+    ["README.md"],
+    reply(),
+  );
+  assert(prePrVerifierBlocked(other));
+  assertStringIncludes(other.review.findings[0]!.problem, "is malformed");
+  // A "repair" that is still broken stays blocked.
+  const still = await checkedReview(
+    "{not json",
+    { [CHECKLIST_FILE]: "{still not json" },
+    [CHECKLIST_FILE],
+    reply(),
+  );
+  assert(prePrVerifierBlocked(still));
+  assertStringIncludes(
+    still.review.findings[0]!.problem,
+    "as changed by this PR",
+  );
+});
+
+Deno.test("a PR that edits a valid base checklist file is still judged on the base copy", async () => {
+  const weak = JSON.stringify({
+    checklists: [{ name: "Weak", paths: ["nothing/**"], items: ["x"] }],
+  });
+  const result = await checkedReview(
+    MONEY_CHECKLISTS,
+    { [CHECKLIST_FILE]: weak, ...MONEY_FILES },
+    [CHECKLIST_FILE, "src/money/fees.ts"],
+    reply(),
+  );
+  assert(prePrVerifierBlocked(result));
+  assertStringIncludes(result.review.findings[0]!.problem, "2 of 2");
+});
+
+Deno.test("a git failure reading the head copy makes the verifier not checked", async () => {
+  const f = await makeChecklistRepo(MONEY_CHECKLISTS, {
+    [CHECKLIST_FILE]: `${MONEY_CHECKLISTS}\n`,
+  });
+  try {
+    let asked = false;
+    const real = makeDeps(() => {
+      asked = true;
+      return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+    }, []);
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: [CHECKLIST_FILE] }),
+      {
+        ...real,
+        runGit: (args, cwd) =>
+          args[0] === "show" && args[1]!.startsWith(f.headSha)
+            ? Promise.resolve({
+              code: 128,
+              stdout: "",
+              stderr: "fatal: unable to read tree object\n",
+            })
+            : real.runGit(args, cwd),
+      },
+    );
+    assertEquals(result.status, "not_checked");
+    assert(!asked, "a failed fetch is not handed to the model as a finding");
+  } finally {
+    await f.cleanup();
+  }
 });

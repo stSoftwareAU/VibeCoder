@@ -59,7 +59,7 @@ function pr(baseRefName = "main"): SearchPr {
 
 async function runGate(
   files: string[],
-  contentsReply: () => string,
+  contentsReply: (ref: string) => string,
   baseRef = "main",
 ) {
   const calls: string[][] = [];
@@ -87,7 +87,7 @@ async function runGate(
     }
     if (args[1]?.includes("/contents/")) {
       try {
-        return Promise.resolve(contentsReply());
+        return Promise.resolve(contentsReply(args[1].split("?ref=")[1]!));
       } catch (e) {
         return Promise.reject(e);
       }
@@ -478,4 +478,91 @@ fi
   } finally {
     await Deno.remove(tmp, { recursive: true });
   }
+});
+
+// ---- the change's own copy of the file (PR #3695 review) -------------------
+
+const CHECKLIST_FILE = "review-checklists.json";
+// Serve a different file at the base ref ("main") and at the PR head ("head-7").
+const byRef = (base: string | null, head: string | null) => (ref: string) => {
+  const text = ref === "head-7" ? head : base;
+  if (text === null) {
+    throw new Error("gh api x: gh: Not Found (HTTP 404)");
+  }
+  return contents(text);
+};
+
+Deno.test("gate: a PR that adds a malformed checklist file is judged on it and blocked, naming the parse error", async () => {
+  const { ready, calls } = await runGate(
+    [CHECKLIST_FILE],
+    byRef(null, "{ nope"),
+  );
+  assertEquals(ready.length, 1);
+  const state = ready[0]!.checklistState;
+  assertStringIncludes(state.problem ?? "", "as changed by this PR");
+  assertStringIncludes(state.problem ?? "", "is not valid JSON");
+  assertStringIncludes(ready[0]!.reviewChecklists, "BLOCKING");
+  // The head copy was read at the head SHA.
+  assert(calls.some((c) => c[1]?.endsWith("?ref=head-7")));
+  // Control: the same PR with a valid new file has no problem.
+  const ok = await runGate([CHECKLIST_FILE], byRef(null, CHECKLISTS));
+  assertEquals(ok.ready[0]!.checklistState.problem, null);
+});
+
+Deno.test("gate: a PR that repairs a malformed base file is not blocked by the base problem", async () => {
+  const repair = await runGate(
+    [CHECKLIST_FILE, "src/money/fees.rs"],
+    byRef("{ nope", CHECKLISTS),
+  );
+  assertEquals(repair.ready.length, 1);
+  const state = repair.ready[0]!.checklistState;
+  assertEquals(state.problem, null);
+  assertEquals(state.expected.length, 2);
+  assertStringIncludes(repair.ready[0]!.reviewChecklists, "own copy");
+  // Control: a PR that does not touch the file still meets the base problem,
+  // and reads no head copy.
+  const other = await runGate(["README.md"], byRef("{ nope", CHECKLISTS));
+  assertStringIncludes(
+    other.ready[0]!.checklistState.problem ?? "",
+    "is malformed",
+  );
+  assert(!other.calls.some((c) => c[1]?.endsWith("?ref=head-7")));
+  // A "repair" that is still broken stays blocked, on its own copy.
+  const still = await runGate(
+    [CHECKLIST_FILE],
+    byRef("{ nope", "{ still nope"),
+  );
+  assertStringIncludes(
+    still.ready[0]!.checklistState.problem ?? "",
+    "as changed by this PR",
+  );
+});
+
+Deno.test("gate: a PR cannot weaken a valid base checklist by editing the file", async () => {
+  const weak = JSON.stringify({
+    checklists: [{ name: "Weak", paths: ["nothing/**"], items: ["x"] }],
+  });
+  const { ready } = await runGate(
+    [CHECKLIST_FILE, "src/money/fees.rs"],
+    byRef(CHECKLISTS, weak),
+  );
+  assertEquals(ready[0]!.checklistState.expected.length, 2);
+});
+
+Deno.test("gate: a failed fetch of the head copy is retried next pass, not reviewed", async () => {
+  const { ready, skipped } = await runGate([CHECKLIST_FILE], (ref) => {
+    if (ref === "head-7") {
+      throw new Error("gh api x: gh: Bad Gateway (HTTP 502)");
+    }
+    return contents(CHECKLISTS);
+  });
+  assertEquals(ready, []);
+  assertEquals(skipped["checklist-unreadable"], 1);
+});
+
+Deno.test("post: the base-problem fix text no longer sends the author to the base branch", async () => {
+  const { ready } = await runGate(["README.md"], byRef("{ nope", null));
+  const r = sentBack(CLEAN_REPLY, ready[0]!.checklistState as never);
+  assertStringIncludes(r.body, "in this change");
+  assert(!r.body.includes("fix it on the base branch"));
 });

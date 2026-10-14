@@ -239,8 +239,8 @@ fields as follows:
   Check each one is fixed; one that is not is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
-  (the repo's `review-checklists.json` at the base ref, matched against the
-  PR's changed files, Issue #3594); the empty string when it is empty. The
+  (the repo's `review-checklists.json` at the base ref, or the PR's own copy
+  when it edits that file, matched against the PR's changed files, Issue #3594); the empty string when it is empty. The
   reviewer's reply then carries a `checklist` array with a verdict per item,
   and any `missing` item sends the PR back. Pass the entry to `post.ts`
   verbatim: its `checklistState` (the load problem and the items owed a
@@ -276,8 +276,12 @@ The script does the rest, so do not post anything yourself:
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
 - It decides the outcome: reviewer findings mean **request changes** (the
-  worker acts on those); otherwise a meaningful test change or a removed
-  test file means **held for the owner**, as a comment-only review the
+  worker acts on those), and so do the checklist cases the code decides
+  itself: a `missing` checklist item (even with no matching finding), a
+  checklist file that could not be applied (malformed, undecodable, or an
+  unknown changed-file list) and an item the reply gave no verdict.
+  Otherwise a meaningful test change or a removed test file means **held for
+  the owner**, as a comment-only review the
   worker ignores; otherwise **approve**. **Auto-release:** for a repo in
   `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
   makes `post.ts` fail loud), a hold is instead an approval when rule 4's
@@ -310,8 +314,9 @@ prefixes that PR's "Approved, last 7 days" line with
 printed and logged only for a held PR in an opted-in repo.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
-code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
-comes back on the next gate pass.
+code 2 means the reviewer's reply was malformed, or the gate entry has no valid
+`checklistState` (re-run `gate.ts` and pass its entry verbatim): nothing was
+posted, and the PR comes back on the next gate pass.
 
 ### 3. Learn from recurring findings
 
