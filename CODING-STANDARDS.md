@@ -716,32 +716,90 @@ test that goes red for each one. Reverting the whole change, or deleting the
 whole condition, does not show which operand a test reaches. An outcome with
 no test, or one whose flip leaves the suite green, is a blocking self-review
 finding: add a test for it. When the run writes or refreshes a PR summary,
-record the enumeration as a `Branch outcomes:` list in its Test Plan — one
-line per outcome naming `path:line`, the outcome, the test that reaches it,
-and that flipping it went red — or `Branch outcomes: none added` when the diff
-adds no branch; every test it names must exist at the head (see **A named test
-must exist**). A `Branch outcomes:` line for a compound condition names the
-operand it covers, and its flip is that operand's flip (Issue #3376). An entry
-that admits no test reaches its outcome is work still to do, not a record: add
-the test that goes red, or remove the branch. Only an outcome the issue puts
-out of scope, or one production can reach but a test cannot stage, may stand,
-written `exempt (out of scope): <reason>` or `exempt (untestable): <reason>`;
-an issue run's branch-outcomes gate blocks PR creation on any other admission
-(Issue #3288). An outcome no input can reach is dead code: remove it, never
-exempt it. `exempt (untestable)` is for an outcome production can reach but a
-test cannot stage, such as a permission or I/O fault the suite cannot stage
-portably; its reason names what blocks staging and the harness search — the
-test files that already call the enclosing function or script (a grep of the
-test tree for its name), each with why it cannot reach the outcome. "No
-existing harness" with no search named is not a reason. An outcome the linked
-issue asks a test for, in its acceptance criteria or Definition of done,
-cannot be `exempt (untestable)`. The gate checks only that an exemption gives
-a reason of three or more words, so the search must be named for a reviewer to
-check it (Issue #3428). The diff-scoped mutation check (Issue #3393, `docs/mutation-check.md`) blocks
-the PR on any added line whose mutation the tests do not catch, exempt only by
-the same `exempt (untestable): <reason>` record naming `path:line`. A fix to an existing PR re-enumerates every branch its
-own commits add, not only those a review finding named, and refreshes the list
-to the head.
+record the enumeration as structured facts in
+`docs/archive/pr-summaries/pr-summary-<N>.facts.json` beside it — one entry
+per outcome naming `path:line`, the outcome, the test that reaches it, and that
+flipping it went red, or `"noneAdded": true` when the diff adds no branch — and
+leave the `<!-- vibe-branch-outcomes -->` marker in its
+Test Plan, where the worker renders that record as the `Branch outcomes:` list
+(`CODING-STANDARDS.md` → **Branch outcomes facts file** gives the schema); every
+test it names must exist at the head (see **A named test must exist**). Without
+a facts file, the worker still reads a `Branch outcomes:` list written in the
+Test Plan, or `Branch outcomes: none added`. A `Branch outcomes:` line for a
+compound condition names the operand it covers, and its flip is that operand's
+flip (Issue #3376). An entry that admits no test reaches its outcome is work
+still to do, not a record: add the test that goes red, or remove the branch.
+Only an outcome the issue puts out of scope, or one production can reach but a
+test cannot stage, may stand, written `exempt (out of scope): <reason>` or
+`exempt (untestable): <reason>` (in the facts file, an `exempt` object of kind
+`out-of-scope` or `untestable` with that reason); an issue run's branch-outcomes
+gate blocks PR creation on any other admission (Issue #3288). An outcome no
+input can reach is dead code: remove it, never exempt it. `exempt (untestable)`
+is for an outcome production can reach but a test cannot stage, such as a
+permission or I/O fault the suite cannot stage portably; its reason names what
+blocks staging and the harness search — the test files that already call the
+enclosing function or script (a grep of the test tree for its name), each with
+why it cannot reach the outcome. "No existing harness" with no search named is
+not a reason. An outcome the linked issue asks a test for, in its acceptance
+criteria or Definition of done, cannot be `exempt (untestable)`. The gate checks
+only that an exemption gives a reason of three or more words, so the search must
+be named for a reviewer to check it (Issue #3428). The diff-scoped mutation
+check (Issue #3393, `docs/mutation-check.md`) blocks the PR on any added line
+whose mutation the tests do not catch, exempt only by the same
+`exempt (untestable): <reason>` record naming `path:line`. A fix to an existing
+PR re-enumerates every branch its own commits add, not only those a review
+finding named, and refreshes the facts file (or, without one, the list) to the
+head.
+
+**Branch outcomes facts file.** The facts file is JSON of this shape: top level
+`{"version": 1, "branchOutcomes": {"noneAdded": <boolean>, "entries": [...]}}`;
+unknown keys are rejected and only version 1 is accepted. `noneAdded: true`
+requires an empty `entries`; `false` requires at least one entry. Every entry
+has `path` (repo-relative, characters `[A-Za-z0-9_.-/]` only, no `..` or empty
+segment, at most 300 chars), `line` (a positive integer), an optional `endLine`
+(not less than `line`) and `outcome`. Each entry then gives either `test` (a
+test file path), `testName` and `flipWentRed`, or `exempt:
+{"kind": "out-of-scope" | "untestable", "reason": "..."}` — never both, never
+neither; the reason needs at least 3 words. Text fields are single-line,
+non-empty and at most 1,000 chars. Caps: the raw file at most 100,000 chars
+(checked before parsing), at most 100 entries, and each rendered entry at most
+4,000 chars. It fails closed: a facts file that cannot be read or fails any
+rule blocks PR creation with the field path and reason (for example
+`branchOutcomes.entries[0].exempt.reason: needs at least 3 words`); it is never
+treated as absent. The worker renders the list at the first
+`<!-- vibe-branch-outcomes -->` marker, appending it when there is none; a facts
+file plus a hand-written `Branch outcomes:` list blocks. The rendered list is
+then checked like a prose one, including that each named test exists at the
+head. With no facts file, the `Branch outcomes:` list in the Test Plan is read
+as before.
+
+```json
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/example.ts",
+        "line": 42,
+        "outcome": "returns the fail-closed default when the file is absent",
+        "test": "worker/deno/tests/example_test.ts",
+        "testName": "example fails closed when the file is absent",
+        "flipWentRed": "returned the lenient value; the test went red"
+      },
+      {
+        "path": "worker/deno/lib/example.ts",
+        "line": 57,
+        "outcome": "retries after a disk fault",
+        "exempt": {
+          "kind": "untestable",
+          "reason": "the suite cannot stage a disk fault portably"
+        }
+      }
+    ]
+  }
+}
+```
 
 **A new path to an existing outcome keeps that outcome's guards.** When a
 change adds an early return, a new gate or route, or a direct call that
