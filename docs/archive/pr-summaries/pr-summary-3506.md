@@ -45,8 +45,9 @@ re-sync re-derives that section. Closes #3506.
   leave such an issue open, and only when the PR body opens with the chain-stop
   heading followed by the marker: a marker quoted in a summary code span or
   mentioned under a later heading does not hold it (`hasFollowUpChainStop`). A
-  degraded run on such an issue still files one, as before. Without this, an item no run can deliver chained
-  `Finish #F: Finish #N: …` fleet runs without end. Marker authorship is not
+  degraded run on such an issue still files one, as before. Without this, an
+  item no run can deliver chained `Finish #F: Finish #N: …` fleet runs without
+  end. Marker authorship is not
   checked, because a planted marker only sends the gaps to a human.
 
 ### Undiscoverable Facts
