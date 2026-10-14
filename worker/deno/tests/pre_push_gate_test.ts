@@ -710,6 +710,35 @@ Deno.test("workflowRunsCspell: a commented-out cspell step inside a block does n
   );
 });
 
+// Each test below goes red when one branch of workflowRunsCspell is broken
+// (PR #3716 review): the block end, the blank-line skip, and the block header.
+Deno.test("workflowRunsCspell: a single-line cspell step after a block-scalar step counts", () => {
+  assert(
+    workflowRunsCspell(
+      'jobs:\n  test:\n    steps:\n      - run: |\n          npm ci\n      - run: npx cspell "**/*.md"\n',
+    ),
+  );
+});
+
+Deno.test("workflowRunsCspell: a blank line inside a block does not end it", () => {
+  assert(
+    workflowRunsCspell(
+      'jobs:\n  test:\n    steps:\n      - run: |\n          npm ci\n\n          npx cspell "**/*.md"\n',
+    ),
+  );
+});
+
+Deno.test("workflowRunsCspell: block headers with chomping or indent indicators are blocks", () => {
+  for (const header of ["|-", ">", ">-", "|+", "|2"]) {
+    assert(
+      workflowRunsCspell(
+        `jobs:\n  test:\n    steps:\n      - run: ${header}\n          npx cspell "**/*.md"\n`,
+      ),
+      `header ${header}`,
+    );
+  }
+});
+
 Deno.test("runPrePushGate: a cspell config with no CI cspell step is not blocked and never looks for cspell", async () => {
   const { root, clone, stdin } = await makeRepoWithDocCommit();
   try {

@@ -367,8 +367,28 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   non-spellchecked extensions means no cspell check".
 - `worker/deno/lib/pre_push_gate.ts` no config → no check — "…no cspell config
   means no cspell check".
-- `worker/deno/lib/pre_push_gate.ts` binary missing → error — "…cspell
-  check planned but binary missing is an error naming cspell".
+- `worker/deno/lib/pre_push_gate.ts` `cspellInCi` operand (`(rootCspell ||
+  nestedCspell) && cspellInCi && spelling.length > 0`) — "planChangedFileChecks:
+  cspell config but repo CI does not run cspell plans no check and is not
+  blocked"; flipping the operand turns it red.
+- `worker/deno/lib/pre_push_gate.ts` `needsCspell` (the gate's own check) —
+  "runPrePushGate: a cspell config with no CI cspell step is not blocked and
+  never looks for cspell" and "runPrePushGate: a cspell config with a GRQ-style
+  cspell-action step is blocked when cspell is missing".
+- `worker/deno/lib/pre_push_gate.ts` `repoCiRunsCspell` tracked-workflow filter —
+  "repoCiRunsCspell: a workflow run step naming cspell counts" and "repoCiRunsCspell:
+  untracked or non-workflow files do not count".
+- `worker/deno/lib/pre_push_gate.ts` `workflowRunsCspell`, one test each: a
+  block-scalar step that calls cspell counts; GRQ's cspell-action `uses:` step
+  counts; block-scalar and single-line steps without cspell do not count; a
+  commented-out cspell in a block does not count; the block ends at the next
+  step, so a single-line cspell step after a `run: |` step counts (killed by
+  `blockIndent = null` → `continue`); a blank line does not end a block (killed
+  by deleting the blank-line skip); block headers `|-`, `>`, `>-`, `|+`, `|2` are
+  blocks (killed by narrowing the header match to `|`). Each mutation was run
+  and turned exactly one test red.
+- `worker/deno/lib/pre_push_gate.ts` binary missing → error — "planChangedFileChecks:
+  cspell configured but binary missing is an error naming cspell".
 - `worker/deno/lib/pre_push_gate.ts` cspell failure → blocked — "runPrePushGate:
   a failing cspell blocks the push".
 - `worker/deno/lib/pre_push_sweep_check.ts` ledger-file filter — "touchesSweepLedger:
