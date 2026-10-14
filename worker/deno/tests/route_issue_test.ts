@@ -736,3 +736,95 @@ Deno.test("route-issue --part - a permission refusal on a non-target part reposi
   assertStringIncludes(result.message, "Permission refused, nothing created");
   assertEquals(creates(calls), []);
 });
+
+// ---------------------------------------------------------------------------
+// Result shape and success semantics of the command (mutation hardening)
+// ---------------------------------------------------------------------------
+
+Deno.test("route-issue - the command is registered under the name route-issue", () => {
+  assertEquals(routeIssueCommand.name, "route-issue");
+});
+
+Deno.test("route-issue --resolve-duplicate - the result carries the same report that was printed", async () => {
+  const { h } = resolveHarness();
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, true);
+  assertEquals(h.printed.length, 1);
+  const printed = JSON.parse(h.printed[0]!) as Record<string, unknown>;
+  assertEquals(result.data, printed as never);
+  assertEquals(result.data, {
+    wrong_issue: `${VIBE}#3607`,
+    correct_issue: `${PRODUCT}#3242`,
+    dry_run: false,
+    closed_wrong: true,
+    reason: result.message,
+  } as never);
+});
+
+Deno.test("route-issue --resolve-duplicate - a non-permission gh failure is reported as route-issue failed, not as a permission refusal", async () => {
+  const { h, calls } = resolveHarness("plain body", "WRITE", () => {
+    throw new Error("gh exploded");
+  });
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "route-issue failed:");
+  assertStringIncludes(result.message, "gh exploded");
+  assertEquals(result.message.includes("Permission refused"), false);
+  assertEquals(result.data, undefined);
+  assertEquals(writes(calls), []);
+});
+
+Deno.test("route-issue --resolve-duplicate - success follows whether the wrong issue was closed unless dry-run", async () => {
+  // Live and closed: success.
+  const live = resolveHarness();
+  const liveResult = await routeIssueCommand.execute(
+    { ...RESOLVE, __testDeps: live.h.deps },
+    config,
+  );
+  assertEquals(liveResult.success, true);
+  assertEquals(
+    (liveResult.data as unknown as Record<string, unknown>)["closed_wrong"],
+    true,
+  );
+
+  // Live but the wrong issue is already closed: nothing closed, not a success.
+  const closed = resolveHarness();
+  const inner = closed.h.deps.ghCommandFn!;
+  closed.h.deps.ghCommandFn = (args) =>
+    args[1] === "view" && args[2] === "3607"
+      ? Promise.resolve(JSON.stringify({ body: "plain", state: "CLOSED" }))
+      : inner(args);
+  const closedResult = await routeIssueCommand.execute(
+    { ...RESOLVE, __testDeps: closed.h.deps },
+    config,
+  );
+  assertEquals(closedResult.success, false);
+  assertStringIncludes(closedResult.message, "already closed");
+  assertEquals(writes(closed.calls), []);
+  assertEquals(
+    (closedResult.data as unknown as Record<string, unknown>)["closed_wrong"],
+    false,
+  );
+
+  // The same already-closed issue under dry-run: reported, and a success.
+  const dry = resolveHarness();
+  const dryInner = dry.h.deps.ghCommandFn!;
+  dry.h.deps.ghCommandFn = (args) =>
+    args[1] === "view" && args[2] === "3607"
+      ? Promise.resolve(JSON.stringify({ body: "plain", state: "CLOSED" }))
+      : dryInner(args);
+  const dryResult = await routeIssueCommand.execute(
+    { ...RESOLVE, "dry-run": true, __testDeps: dry.h.deps },
+    config,
+  );
+  assertEquals(dryResult.success, true);
+  assertStringIncludes(dryResult.message, "already closed");
+});

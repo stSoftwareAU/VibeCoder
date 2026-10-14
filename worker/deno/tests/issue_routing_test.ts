@@ -271,6 +271,56 @@ Deno.test("classify: other repo plus Vibe Coder signals is ambiguous cross-repo"
   assertStringIncludes(d.reason, "close nothing automatically");
 });
 
+Deno.test("classify: a bare named repo with no product signal stays in VibeCoder, ambiguous", () => {
+  const d = classifyIssueRouting(
+    draft("fix(worker): GRQ-AutoTrader keeps failing at setup", ""),
+    VIBE,
+    ctx(),
+  );
+  assertEquals(d.owner_repository, VIBE);
+  assertEquals(d.issue_kind, "implementation");
+  assert(d.ambiguous);
+  assert(!d.wrong_repo);
+  assertStringIncludes(d.reason, "no product signal and no worker signal");
+  assertStringIncludes(d.reason, "close nothing automatically");
+});
+
+Deno.test("classify: one other repo plus a fleet signal and no product signal is cross-repo", () => {
+  const d = classifyIssueRouting(
+    draft("x", "GRQ-AutoTrader hits a fleet problem at startup."),
+    VIBE,
+    ctx(),
+  );
+  assertEquals(d.owner_repository, VIBE);
+  assertEquals(d.issue_kind, "cross-repo");
+  assert(d.ambiguous);
+  assert(!d.wrong_repo);
+  assertStringIncludes(d.reason, "needs a split");
+});
+
+Deno.test("classify: one other repo plus a product signal still routes to that repo", () => {
+  for (
+    const d of [
+      classifyIssueRouting(
+        draft("PWA gap", "GRQ-AutoTrader PWA shows a blank space."),
+        VIBE,
+        ctx(),
+      ),
+      classifyIssueRouting(
+        draft("Scoring bug", "GRQ-AutoTrader scoring is off by one."),
+        VIBE,
+        ctx(),
+      ),
+    ]
+  ) {
+    assertEquals(d.owner_repository, GRQ);
+    assertEquals(d.issue_kind, "implementation");
+    assert(d.wrong_repo);
+    assert(!d.ambiguous);
+    assertStringIncludes(d.reason, "the work belongs to");
+  }
+});
+
 Deno.test("classify: two other repos named is ambiguous (in VibeCoder and elsewhere)", () => {
   const text = draft("x", "Both GRQ-AutoTrader and Other-Repo are affected.");
   const inVibe = classifyIssueRouting(text, VIBE, ctx());

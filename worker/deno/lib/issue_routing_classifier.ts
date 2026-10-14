@@ -156,13 +156,25 @@ export function classifyIssueRouting(
     }
     if (foreign.length === 1) {
       const other = foreign[0]!;
-      if (vibe.length === 0) {
+      if (vibe.length === 0 && product !== null) {
         return build(
           other,
           other,
           "implementation",
           `names ${other} and has ${vibeBasis}: the work belongs to ${other}`,
           targetRepo,
+        );
+      }
+      // A bare repo name is not enough: no product and no worker signal.
+      if (vibe.length === 0) {
+        return build(
+          targetRepo,
+          targetRepo,
+          "implementation",
+          `names ${other} but has no product signal and no worker signal: ` +
+            `ambiguous, stays in ${targetRepo}; close nothing automatically`,
+          targetRepo,
+          true,
         );
       }
       return build(

@@ -22,9 +22,12 @@ the implementation lives in the `issue_routing_*.ts` modules beside it:
 - [`issue_routing_context.ts`](../worker/deno/lib/issue_routing_context.ts) —
   context building.
 
-Acceptance examples: a worker defect filed against a product repo
-(GRQ-AutoTrader#3242 and GRQ-AutoTrader#3184, whose root causes were
-VibeCoder#3607 and VibeCoder#3630), and the reverse.
+Acceptance examples:
+
+- VibeCoder#3607 is a GRQ-AutoTrader UI defect filed in VibeCoder by mistake.
+  It belongs in GRQ-AutoTrader, where it duplicates GRQ-AutoTrader#3242.
+- GRQ-AutoTrader#3184 is a diagnostic, so it stays in GRQ-AutoTrader.
+- VibeCoder#3630 is the worker fix and stays in VibeCoder.
 
 ## 1. Flow
 
@@ -51,6 +54,19 @@ flowchart TD
 | Worker, fleet, container, prompt, provider or orchestration | `stSoftwareAU/VibeCoder` |
 | A repo-scoped diagnostic (see section 4) | The monitored repo |
 | A change across several repos | One issue per independently deployable codebase, filed in one `route-issue --part` call (section 5) and linked with `Depends on` / `Related`; no duplicated scope |
+
+### The classifier rule
+
+When the target repo is `stSoftwareAU/VibeCoder` and the draft names other
+allowed repos (by short name):
+
+| Draft | Result |
+| --- | --- |
+| Names exactly one other repo, has a product signal (`pwa`, `scoring`, `ui`, `page`, `layout`, `chart`, `blank space`, `api endpoint`, `database`, `report`) and no worker signal | Routed to that repo |
+| Names exactly one other repo and has worker signals | `cross-repo`, ambiguous: split into one issue per repo, close nothing |
+| Names exactly one other repo with neither a product nor a worker signal (a bare repo name) | Ambiguous, stays in VibeCoder |
+| Names two or more other repos | Ambiguous, stays in VibeCoder |
+| Names no other repo | Stays in VibeCoder |
 
 ## 3. Audit fields
 
@@ -107,6 +123,7 @@ from `worker/deno` as `deno run --allow-all mod.ts route-issue …`; the example
 below shorten that to `route-issue`. It is not installed in the agent's `PATH`
 shim directory, so the agent prompts tell the agent to apply the policy in
 section 2 itself and file with `gh issue create --repo <owner>/<repo>`.
+Agent filings are therefore guidance, not enforced by the classifier.
 
 `--label` takes a comma-separated list (or a JSON array); it is not repeatable.
 Labels are applied only when the issue stays in the same repo, never migrated
@@ -119,8 +136,11 @@ The `action` value is one of:
 
 - `created`: no match existed, so a new issue was filed.
 - `reused`: an existing match was found and returned as the result; it is not
-  commented on or linked, nothing was created, and `labels_not_migrated` is
-  empty.
+  commented on or linked, and `labels_not_migrated` is empty. This includes a
+  concurrent create: if another filer's issue with the same title has a lower
+  number, the issue this run just created (the higher number) closes itself as
+  not planned and the lower-numbered one is reported as `reused`, even though
+  an issue was created in that run.
 - `dry-run`: nothing was written; the report shows what would happen.
 - `filed-ambiguous`: a new issue was created and the owner decision was
   ambiguous (section 6).
@@ -163,15 +183,30 @@ describe the same problem under different titles. `--dry-run` runs the same
 read-only checks (the correct issue must exist, and write permission is checked
 on both repos), writes nothing, and prints what would be linked and closed. A
 wrong issue whose body carries a fast-failure or tally marker is never closed
-(section 4), and the command refuses and says why. `--repo`, `--title`, `--body-file` and `--label` cannot be combined
-with `--resolve-duplicate`, and `--correct` requires it.
+(section 4), and the command refuses and says why. `--repo`, `--title`,
+`--body-file`, `--label` and `--part` cannot be combined with
+`--resolve-duplicate`, and `--correct` requires it.
 
 The command acts only on the operator-supplied `--resolve-duplicate` and
-`--correct` arguments. The planning prompt tells the agent never to name the
-issue it is working on as the duplicate, but that is a prompt rule: nothing in
-the code enforces it on the planning route, because no reliable current-issue
-signal reaches `route-issue` there and the claimed-issue guard is inert on that
-route. The `gh` shim does not enforce it either.
+`--correct` arguments. The planning prompt (and the other prompts that carry the
+"Issue routing" paragraph: `coding_guidelines`, `ci_fix`, `pr_feedback` and
+`retro`) says only that closing a wrong-repo duplicate is left to an operator,
+who runs `route-issue --resolve-duplicate`. None of them has `route-issue` on
+its `PATH`: they apply the policy by prose and file with `gh issue create`, so
+an agent filing is guidance, not enforced. Nothing in the code stops an agent
+naming the issue it is working on, because no reliable current-issue signal
+reaches `route-issue` on the planning route and the claimed-issue guard is
+inert there. The `gh` shim does not enforce it either.
+
+Which filings are classified:
+
+- `route-issue` itself and `suggest-improvements` (`createImprovementIssues` in
+  [`github.ts`](../worker/deno/lib/github.ts)) call `routeIssueCreation`.
+- Other worker filers call `gh issue create` directly and are **not**
+  classified, for example
+  [`idle_starvation_escalation.ts`](../worker/deno/lib/idle_starvation_escalation.ts)
+  and [`audit_failure_notifier.ts`](../worker/deno/lib/audit_failure_notifier.ts).
+  They file in the repo they monitor.
 
 ## 6. Failure and ambiguity
 

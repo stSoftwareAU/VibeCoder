@@ -279,8 +279,13 @@ config to that repo; worker, fleet, container, prompt, provider and orchestratio
 changes to `stSoftwareAU/VibeCoder`. A repo-scoped diagnostic stays in the
 monitored repo; the code enforces this only for a fast-failure or tally marker
 (#2592), which the classifier keeps in place and `--resolve-duplicate` never
-closes. Routing is deterministic (`route-issue`, a `mod.ts` subcommand, and
-`suggest-improvements`), searches open and recently closed issues first, and
+closes. Routing is deterministic for the two paths that call the classifier
+(`route-issue`, a `mod.ts` subcommand, and `suggest-improvements`); other
+worker filers (for example the idle-starvation escalation and the audit-failure
+notifier) call `gh issue create` directly, and agents file by prose guidance
+only. A bare repo name in a VibeCoder draft is not enough to move it: it moves
+only with a product signal and no worker signal, and is otherwise ambiguous.
+The classifier searches open and recently closed issues first, and
 reuses a match rather than duplicating it. A reused match is left uncommented
 and unlinked, except in a `--part` split, where every part is linked to the
 others. A filing in a repo other than the target fails visibly, with nothing
