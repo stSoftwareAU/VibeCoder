@@ -55,6 +55,17 @@ import {
   needsBranchUpdate,
   updateBranch,
 } from "./branch_update.ts";
+import {
+  CHECKLIST_FILE_LIST_LIMIT,
+  type ChecklistLoad,
+  type ChecklistState,
+  checklistState,
+  effectiveChecklistLoad,
+  loadChecklistsFromText,
+  mustReadHeadChecklists,
+  renderChecklistSection,
+  REVIEW_CHECKLISTS_FILE,
+} from "../../../../worker/deno/lib/review_checklists.ts";
 import { isDependencyAuditCheck } from "../../../../worker/deno/lib/dependency_audit_check.ts";
 import {
   type CiFixMarkerComment,
@@ -89,6 +100,7 @@ type Skip =
   | "already-reviewed" // reviewed at this exact head commit, by this reviewer or by this skill on another host
   | "approved" // someone else approved it at this exact head commit (Issue #3225): nothing left to review
   | "awaiting-fix" // sent back at an earlier commit; only base-branch merges since, the PR's own diff unchanged
+  | "checklist-unreadable" // fetching review-checklists.json failed with a gh error other than not-found; retried next pass
   | "over-limit"; // ready, but past this pass's --limit; back next pass
 
 export interface ReadyPr {
@@ -109,6 +121,15 @@ export interface ReadyPr {
   // Findings of this PR's last review when it was sent back: the re-review
   // checks each one was fixed.
   previousFindings: Finding[];
+  // The repo's review checklists (`review-checklists.json`, read at the base ref and, for a PR that edits it, its head) that
+  // apply to this diff, rendered for the brief's {{REVIEW_CHECKLISTS}} field;
+  // "" when none applies (Issue #3594).
+  reviewChecklists: string;
+  // What the code knows about that load: the problem that stopped it being
+  // applied and the items a verdict is owed for. post.ts turns a problem or
+  // an unreported item into a blocking finding, so a reply that ignores the
+  // section is never approved (Issue #3594, PR #3695 review).
+  checklistState: ChecklistState;
 }
 
 // A PR whose dependency audit is still red after CI-fix replied at its head
@@ -502,6 +523,7 @@ export function auditSendBack(check: string): FableReview {
     testChanges: "none",
     testChangeNotes: [],
     unrelatedIssues: [],
+    checklist: [],
   };
 }
 
@@ -858,6 +880,9 @@ export async function pass(
         testChanges: { removed: [], edited: [] },
         noTestAdded: false,
         previousFindings: previousFindings(log, repo, pr.number),
+        // No model review runs for an audit send-back, so no checklist.
+        reviewChecklists: "",
+        checklistState: { problem: null, expected: [] },
         check: auditCheck,
         review: auditSendBack(auditCheck),
       });
@@ -881,6 +906,31 @@ export async function pass(
         "--paginate",
       ]),
     );
+    const changed = changedPaths(files);
+    const baseChecklists = await loadChecklistsAtRef(
+      callGh,
+      repo,
+      pr.baseRefName,
+    );
+    // A change that edits the file is also judged on its own copy (see
+    // effectiveChecklistLoad), so a broken file cannot merge and a repair of
+    // a broken one is not blocked by the problem it fixes.
+    const headChecklists = mustReadHeadChecklists(changed)
+      ? await loadChecklistsAtRef(callGh, repo, pr.headRefOid)
+      : null;
+    const checklists = effectiveChecklistLoad(baseChecklists, headChecklists);
+    if (checklists.kind === "fetch_failed") {
+      // A failed fetch says nothing about the file and may be transient:
+      // leave the PR unreviewed so the next pass retries it, never a
+      // send-back about a file that may not exist.
+      skipped["checklist-unreadable"] = (skipped["checklist-unreadable"] ?? 0) +
+        1;
+      const line =
+        `${key} checklist fetch failed, retried next pass: ${checklists.reason}`;
+      upkeep.push(line);
+      console.error(line);
+      continue;
+    }
     ready.push({
       repo,
       number: pr.number,
@@ -893,6 +943,8 @@ export async function pass(
       testChanges: existingTestChanges(files),
       noTestAdded: noTestAdded(files, kind),
       previousFindings: previousFindings(log, repo, pr.number),
+      reviewChecklists: renderChecklistSection(checklists, changed),
+      checklistState: checklistState(checklists, changed),
     });
   }
   // A single --repo run sees only part of the fleet, so it leaves the
@@ -902,6 +954,64 @@ export async function pass(
   await writeMemory(dir, BRANCH_UPDATE_FILE, updateAsked);
   await writeMemory(dir, FAILED_FILE, failed);
   return { ready, auditBlocked, skipped, upkeep };
+}
+
+// Reads the repo's `review-checklists.json` at a ref: the PR's base ref (so a
+// PR cannot weaken its own checklist) or, for a change that edits the file,
+// its head SHA. Not found is absent; any other gh failure is `fetch_failed`
+// (the caller retries it next pass); an undecodable response is unreadable,
+// which the review reports rather than skips (Issue #3594).
+export async function loadChecklistsAtRef(
+  gh: (args: string[]) => Promise<string>,
+  repo: string,
+  gitRef: string,
+): Promise<ChecklistLoad> {
+  // Refs may contain `/`, which stays valid in a query string.
+  const ref = encodeURIComponent(gitRef).replaceAll("%2F", "/");
+  let raw: string;
+  try {
+    raw = await gh([
+      "api",
+      `repos/${repo}/contents/${REVIEW_CHECKLISTS_FILE}?ref=${ref}`,
+    ]);
+  } catch (e) {
+    const message = (e as Error).message ?? String(e);
+    if (/HTTP 404|Not Found/i.test(message)) {
+      return loadChecklistsFromText(null);
+    }
+    const cause = message.split("\n").map((l) => l.trim()).find((l) => l) ??
+      "gh failed";
+    return { kind: "fetch_failed", reason: `gh api failed: ${cause}` };
+  }
+  try {
+    const body = JSON.parse(raw);
+    if (
+      typeof body?.content !== "string" || body.content === "" ||
+      (body.encoding !== undefined && body.encoding !== "base64")
+    ) {
+      throw new Error("no base64 content in the response");
+    }
+    const bin = atob(body.content.replace(/\s/g, ""));
+    const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return loadChecklistsFromText(text);
+  } catch (e) {
+    return loadChecklistsFromText(
+      null,
+      `could not decode the gh api response: ${
+        firstLine((e as Error).message ?? String(e))
+      }`,
+    );
+  }
+}
+
+// The changed paths (a rename counts at both names) for checklist matching;
+// null when the list is long enough to be truncated by GitHub.
+function changedPaths(files: PrFile[]): string[] | null {
+  if (files.length >= CHECKLIST_FILE_LIST_LIMIT) return null;
+  return files.flatMap((f) =>
+    f.previous_filename ? [f.filename, f.previous_filename] : [f.filename]
+  );
 }
 
 // The red audit check to send this PR back over, or undefined to leave it
