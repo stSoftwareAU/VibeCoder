@@ -4,7 +4,9 @@
  * A repo freshly added to `.config.json` has no local clone, so any consumer
  * that walks `${workDir}/<repo>` fails with ENOENT. The helper clones on
  * demand via the same `setupRepo` the setup phase uses, leaves an existing
- * clone untouched, and fails loud when the clone cannot be made.
+ * clone untouched, hands a corrupt clone (bad `.git/config`) to `setupRepo`
+ * for move-aside and re-clone (Issue #3708), and fails loud when the clone
+ * cannot be made.
  *
  * Australian English spelling used throughout.
  */
@@ -158,6 +160,79 @@ Deno.test(
         cloned: true,
       });
       assertEquals(setupCalls, [["acme/widget", workDir]]);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a clone with a corrupt .git/config is handed to setupRepo, not reused (Issue #3708)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
+      const configPath = `${workDir}/widget/.git/config`;
+      const config = await Deno.readTextFile(configPath);
+      await Deno.writeTextFile(configPath, `garbage line\n${config}`);
+
+      const setupCalls: Array<[string, string]> = [];
+      const result = await ensureRepoClone("acme/widget", workDir, {
+        setupRepoFn: (repo, dir) => {
+          setupCalls.push([repo, dir]);
+          return Promise.resolve({ success: true, message: `${dir}/widget` });
+        },
+      });
+
+      assertEquals(result, {
+        ok: true,
+        repoPath: `${workDir}/widget`,
+        cloned: true,
+      });
+      assertEquals(setupCalls, [["acme/widget", workDir]]);
+      // setupRepo owns the move-aside; ensureRepoClone must not remove it.
+      const stat = await Deno.stat(`${workDir}/widget`);
+      assertEquals(stat.isDirectory, true);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a corrupt clone whose recovery is refused fails loud (Issue #3708)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
+      const configPath = `${workDir}/widget/.git/config`;
+      const config = await Deno.readTextFile(configPath);
+      await Deno.writeTextFile(configPath, `garbage line\n${config}`);
+
+      const result = await ensureRepoClone("acme/widget", workDir, {
+        setupRepoFn: (): Promise<CommandResult> =>
+          Promise.resolve({
+            success: false,
+            message:
+              `The clone of acme/widget at ${workDir}/widget is corrupt (fatal: bad config line 1 in file .git/config) and was already re-cloned within 24 h`,
+          }),
+      });
+
+      assertEquals(result.ok, false);
+      assertEquals(result.cloned, false);
+      assertStringIncludes(String(result.message), "bad config line 1");
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }

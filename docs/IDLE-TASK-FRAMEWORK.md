@@ -156,7 +156,8 @@ Key points:
   `ENOENT`. The route now calls
   [`ensureRepoClone`](../worker/deno/lib/ensure_repo_clone.ts) for a recognised
   wrapper, which reuses the setup phase's `setupRepo()` **only when the clone is
-  missing**; an existing clone is left untouched (no fetch, no `reset --hard`).
+  missing or broken**; an existing healthy clone is left untouched (no fetch, no
+  `reset --hard`).
   A directory holding no git repository — an interrupted clone — is not a
   clone: it is discarded and cloned afresh (Issue #2848). A directory that is
   a git repository but corrupt — a bad `.git/config`, broken refs or
