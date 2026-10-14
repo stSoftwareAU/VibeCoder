@@ -1068,6 +1068,93 @@ This sidecar only ever describes one host; an operator who wants an `issue`-phas
 run to measure or compare behaviour across the whole fleet configures
 `fleet_run_archive` (see [Fleet Run Archive](CONFIGURATION.md#-fleet-run-archive)).
 
+### 🧾 Lifecycle ledger and issue assignment (Issue #3718)
+
+Part of #3644. Before the first agent invocation of an `issue`-phase run, the
+execute phase attaches the run to its issue's stable assignment and appends one
+`assignment` event to this host's lifecycle ledger. A run that exits before the
+agent is invoked records nothing. A failure to read, mint, post or append is
+logged at error level by the execute phase, and the run continues.
+
+**The marker.** The assignment is a hidden comment on the issue:
+`<!-- vibe-assignment: id=<uuid> cohort=<label> assigned=<ISO time> -->`.
+The run reads the issue's comments through the bounded comment-page helper
+(`fetchIssueCommentPages` in `lib/issue_comment_pages.ts`), so a long thread is
+never read without a cap. Only a marker posted by a fleet author is trusted: the
+author is checked with `isFleetAuthor` against the set `resolveFleetMaintenanceAuthorSet`
+returns (the host login, `fleet_pr_authors` and `service_accounts`). A marker
+anyone else posted is ignored, and the earliest trusted marker wins, so two
+hosts that race converge on one assignment. If the comments cannot be read, the
+run mints nothing, since an unreadable thread is never taken as "no marker".
+
+- **Reused.** A trusted marker's id, cohort and assignment time are reused, so a
+  restart, or another host picking the issue up, keeps the same assignment.
+- **Minted.** Otherwise a UUID is minted with cohort `unassigned` (no experiment
+  supplies cohorts yet; #3645 will), and the marker is posted beneath a short
+  visible sentence.
+
+**The ledger.** Each run appends its `assignment` event as one JSON line to
+`WORK_DIR/lifecycle_ledger_<hostname>.jsonl`. A re-entry of the execute-phase
+body within the same run (an infrastructure retry, a refusal retry or the
+prompt-too-long fallback) appends the same `eventKey` again, which the reader
+collapses to one event. The hostname is sanitised as the
+fleet-telemetry sidecar's is, so workers on a shared work volume keep separate
+ledgers. The `assignment` event records the host, run id, repo, issue number,
+recorded time, assignment time, cohort, whether the assignment was reused, and
+the treatment: each role's provider, model and effort. The manager is the
+`issue` phase's resolved routing; the executor and reviewer are the `--agents`
+definitions the run carries, on the Claude provider only. The Haiku-tier
+read-only explorer is not one of the three roles and is not recorded. The
+treatment also carries the worker version and commit (the build facts the
+post-run callback context emits), and the subscription allocation label when one
+is configured.
+
+The ledger's union defines five kinds: `assignment`, `invocation`, `follow_on`,
+`gate` and `outcome`. Only `assignment` is written today: the other four are
+defined, but not yet written, and later sub-issues of #3644 will write them. Their keys are:
+
+- `assignment:<assignmentId>:<runId>`: one event per run after dedupe, so each run records its own host.
+- `invocation`, `follow_on` and `gate` keys are run-scoped.
+- `outcome:<assignmentId>:<outcome>:pr-<n>` when the outcome names a PR, else
+  `outcome:<assignmentId>:<outcome>:run-<runId>`.
+
+Token and cost fields that are absent mean unknown, never zero.
+
+**Dedupe on read.** The writer is a plain append. The reader keeps the first
+line for each `eventKey`, so a replay after a restart is harmless.
+
+**Fail loud.** A missing ledger reads as empty. An unreadable file, or any line
+that is not JSON, fails validation, or carries a newer schema, raises
+`LifecycleLedgerReadError` naming the path and line; its message never echoes
+the raw line. A failed append raises `LifecycleLedgerAppendError`. Nothing is
+skipped silently.
+
+**The allowlist.** Every event is validated before it is written and again when
+it is read. A key the event kind does not name is refused, and so is any value
+of the wrong shape. Identifiers (host, run id, provider, model, effort, agent,
+gate, version and commit) must match a token pattern with no `@` or whitespace.
+Labels (cohort and subscription allocation) are lowercase `[a-z0-9._-]`, at most
+64 characters. Prompt text, issue bodies, tokens, credentials, e-mail addresses
+and user identities therefore cannot be written. A refusal names the field and
+the rule, never the value.
+
+```mermaid
+sequenceDiagram
+    participant Exec as Execute phase
+    participant Issue as Issue comments
+    participant Ledger as Lifecycle ledger
+    participant Agent as Agent
+    Exec->>Issue: read comments through the bounded page helper
+    alt trusted marker found
+        Issue-->>Exec: reuse id, cohort and assigned time
+    else no trusted marker
+        Exec->>Exec: mint UUID with cohort unassigned
+        Exec->>Issue: post marker comment
+    end
+    Exec->>Ledger: append assignment event
+    Exec->>Agent: invoke agent
+```
+
 ### 🎚️ Per-slot idle accounting — utilisation against capacity (Issue #925)
 
 `fleet-summary:` answers "was the **fleet** occupied?" — occupancy there is

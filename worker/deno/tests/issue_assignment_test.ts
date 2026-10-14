@@ -17,20 +17,24 @@ import {
 } from "@std/assert";
 import type { AgentProviderDescriptor } from "../lib/agent_provider.ts";
 import {
+  buildIssueCommentsPageArgs,
+  COMMENTS_PER_PAGE,
+} from "../lib/issue_comment_pages.ts";
+import {
   type AssignmentEvent,
+  type LifecycleEvent,
   LifecycleEventSchemaError,
   lifecycleLedgerPath,
-  type LifecycleEvent,
   readLifecycleLedger,
   type RoleTreatment,
   UNASSIGNED_COHORT,
 } from "../lib/lifecycle_ledger.ts";
 import {
   ASSIGNMENT_MARKER_PREFIX,
+  assignmentCommentBody,
   type AssignmentMarker,
   type AssignmentMarkerComment,
   type AssignmentMarkerStore,
-  assignmentCommentBody,
   formatAssignmentMarker,
   ghAssignmentMarkerStore,
   type IssueAssignmentInput,
@@ -540,46 +544,132 @@ Deno.test("issue assignment - a hostile long marker parses to undefined", () => 
   assertEquals(parseAssignmentMarker(hostile), undefined);
 });
 
-Deno.test("issue assignment - the gh store parses the observed compact JSON lines", async () => {
-  const body = assignmentCommentBody({
-    assignmentId: ASSIGNMENT_ID,
-    cohort: "exp-a",
-    assignedAt: "2026-10-14T10:00:00Z",
-  });
-  // The shape gh prints: one compact object per line, with < and > escaped.
-  const sample =
-    '{"author":"VibeCoderST","body":"\\u003c!-- vibe-assignment: id=' +
-    ASSIGNMENT_ID + " cohort=exp-a assigned=2026-10-14T10:00:00Z --\\u003e" +
-    '\\n\\n","created_at":"2026-10-14T10:53:42Z"}';
+/** One REST comment, as `repos/…/issues/…/comments` returns it. */
+function restComment(
+  login: string | undefined,
+  createdAt: string | undefined,
+  body: string,
+): Record<string, unknown> {
+  const comment: Record<string, unknown> = { body };
+  if (login !== undefined) comment.user = { login };
+  if (createdAt !== undefined) comment.created_at = createdAt;
+  return comment;
+}
+
+/**
+ * A fake `gh` that answers each bounded page request with the matching entry
+ * of `pages`. A page beyond the list is an empty array.
+ */
+function fakePagedGh(pages: string[]): {
+  runGh: (args: string[]) => Promise<string>;
+  calls: string[][];
+} {
   const calls: string[][] = [];
-  const store = ghAssignmentMarkerStore((args) => {
+  const runGh = (args: string[]): Promise<string> => {
     calls.push(args);
-    return Promise.resolve(sample + "\n\n");
-  });
+    for (let page = 1; page <= pages.length; page++) {
+      const expected = buildIssueCommentsPageArgs(REPO, ISSUE, page);
+      if (JSON.stringify(args) === JSON.stringify(expected)) {
+        return Promise.resolve(pages[page - 1] ?? "[]");
+      }
+    }
+    return Promise.resolve("[]");
+  };
+  return { runGh, calls };
+}
+
+Deno.test("issue assignment - the gh store reads page 1 and keeps only marker comments", async () => {
+  const page = JSON.stringify([
+    // The REST shape, with < and > as plain characters in the JSON body.
+    restComment(
+      "VibeCoderST",
+      "2026-10-14T10:53:42Z",
+      `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->\n\nLifecycle assignment.`,
+    ),
+    restComment("someone", "2026-10-14T10:54:00Z", "A plain comment."),
+    restComment(
+      "mallory",
+      "2026-10-14T10:55:00Z",
+      `<!-- vibe-assignment: id=${FORGED_ID} cohort=exp-b assigned=2026-10-14T10:00:00Z -->`,
+    ),
+  ]);
+  const fake = fakePagedGh([page]);
+  const store = ghAssignmentMarkerStore(fake.runGh);
+
+  const comments = await store.listMarkerComments(REPO, ISSUE);
+
+  assertEquals(comments.map((c) => c.author), ["VibeCoderST", "mallory"]);
+  assertEquals(comments.map((c) => c.createdAt), [
+    "2026-10-14T10:53:42Z",
+    "2026-10-14T10:55:00Z",
+  ]);
+  assertStringIncludes(comments[0]?.body ?? "", ASSIGNMENT_MARKER_PREFIX);
+  assertEquals(parseAssignmentMarker(comments[0]?.body ?? "")?.cohort, "exp-a");
+  // A short first page ends pagination, so exactly one request is made.
+  assertEquals(fake.calls.length, 1);
+  assertEquals(fake.calls[0], buildIssueCommentsPageArgs(REPO, ISSUE, 1));
+});
+
+Deno.test("issue assignment - the gh store skips marker comments it cannot attribute", async () => {
+  const marker =
+    `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->`;
+  const page = JSON.stringify([
+    restComment(undefined, "2026-10-14T10:53:42Z", marker),
+    restComment("VibeCoderST", undefined, marker),
+    restComment("VibeCoderST", "2026-10-14T10:53:42Z", marker),
+  ]);
+  const store = ghAssignmentMarkerStore(fakePagedGh([page]).runGh);
 
   const comments = await store.listMarkerComments(REPO, ISSUE);
 
   assertEquals(comments.length, 1);
   assertEquals(comments[0]?.author, "VibeCoderST");
-  assertEquals(comments[0]?.createdAt, "2026-10-14T10:53:42Z");
-  assertStringIncludes(comments[0]?.body ?? "", ASSIGNMENT_MARKER_PREFIX);
-  assertEquals(parseAssignmentMarker(comments[0]?.body ?? "")?.cohort, "exp-a");
-  assert(body.includes(ASSIGNMENT_MARKER_PREFIX));
-
-  const [args] = calls;
-  assertEquals(args?.[0], "api");
-  assert(args?.includes("--paginate"));
-  assert(args?.includes(`repos/${REPO}/issues/${ISSUE}/comments`));
 });
 
-Deno.test("issue assignment - the gh store names the issue on an unreadable line", async () => {
-  const store = ghAssignmentMarkerStore(() =>
-    Promise.resolve("this is not json\n")
+Deno.test("issue assignment - the gh store follows a full page to the next", async () => {
+  const filler = Array.from(
+    { length: COMMENTS_PER_PAGE },
+    () => restComment("someone", "2026-10-14T10:00:00Z", "A plain comment."),
+  );
+  const marker = restComment(
+    "VibeCoderST",
+    "2026-10-14T10:53:42Z",
+    `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->`,
+  );
+  const fake = fakePagedGh([
+    JSON.stringify(filler),
+    JSON.stringify([marker]),
+  ]);
+  const store = ghAssignmentMarkerStore(fake.runGh);
+
+  const comments = await store.listMarkerComments(REPO, ISSUE);
+
+  assertEquals(comments.map((c) => c.author), ["VibeCoderST"]);
+  assertEquals(fake.calls.length, 2);
+  assertEquals(fake.calls[1], buildIssueCommentsPageArgs(REPO, ISSUE, 2));
+});
+
+Deno.test("issue assignment - the gh store rejects a non-array page, naming the issue", async () => {
+  const store = ghAssignmentMarkerStore(
+    fakePagedGh([
+      '{"message":"Not Found"}',
+    ]).runGh,
   );
   await assertRejects(
     () => store.listMarkerComments(REPO, ISSUE),
     Error,
     `${REPO}#${ISSUE}`,
+  );
+});
+
+Deno.test("issue assignment - the gh store propagates a failing gh call", async () => {
+  const store = ghAssignmentMarkerStore(() =>
+    Promise.reject(new Error("gh api exploded"))
+  );
+  await assertRejects(
+    () => store.listMarkerComments(REPO, ISSUE),
+    Error,
+    "gh api exploded",
   );
 });
 

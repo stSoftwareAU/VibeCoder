@@ -994,6 +994,16 @@ export async function loadConfig(
     ? undefined
     : fleetRunArchiveTrimmed;
 
+  // Operator label for the subscription allocation this host's runs draw on,
+  // recorded on each issue's lifecycle-ledger assignment (Issue #3718). A label
+  // only; unset or blank records none.
+  const subscriptionAllocationTrimmed = file.subscription_allocation_label
+    ?.trim();
+  const subscriptionAllocationLabel = subscriptionAllocationTrimmed === "" ||
+      subscriptionAllocationTrimmed === undefined
+    ? undefined
+    : subscriptionAllocationTrimmed;
+
   // Session resume for multi-phase issue processing (Issue #1324)
   const enableSessionResume = file.enable_session_resume ??
     OPERATIONAL_DEFAULTS.enableSessionResume;
@@ -1247,6 +1257,7 @@ export async function loadConfig(
     issueSubAgentTier,
     issueReviewerAgents,
     fleetRunArchive,
+    subscriptionAllocationLabel,
     includeRecentActivity,
     includeCodebaseMap,
     codegraphContext,

@@ -16,11 +16,11 @@ import {
 import {
   appendLifecycleEvent,
   buildLifecycleEvent,
-  LifecycleLedgerAppendError,
   type LifecycleEventInput,
-  LifecycleLedgerReadError,
   lifecycleEventKey,
+  LifecycleLedgerAppendError,
   lifecycleLedgerPath,
+  LifecycleLedgerReadError,
   readLifecycleLedger,
   serialiseLifecycleEvent,
 } from "../lib/lifecycle_ledger.ts";
@@ -234,7 +234,10 @@ Deno.test("lifecycle ledger - an invalid but parseable line is refused", async (
   await withTempDir(async (dir) => {
     const path = `${dir}/ledger.jsonl`;
     const event = buildLifecycleEvent(oneOfEachKind()[0]!);
-    const badId = { ...JSON.parse(serialiseLifecycleEvent(event)), assignmentId: "not-a-uuid" };
+    const badId = {
+      ...JSON.parse(serialiseLifecycleEvent(event)),
+      assignmentId: "not-a-uuid",
+    };
     await Deno.writeTextFile(path, JSON.stringify(badId) + "\n");
 
     const error = await assertRejects(

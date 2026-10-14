@@ -510,6 +510,13 @@ export interface WorkerConfig {
   issueReviewerAgents: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930). Unset = feature off. */
   fleetRunArchive?: string;
+  /**
+   * Operator-configured label naming the subscription allocation this host's
+   * runs draw on, recorded on each issue's lifecycle-ledger assignment event
+   * (Issue #3718). A label only — never an account email, ID or fee. Unset =
+   * no label recorded.
+   */
+  subscriptionAllocationLabel?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326, default: true) */
   includeRecentActivity: boolean;
   /** Maximum number of merged PRs to include in activity summary (Issue #1326) */
@@ -1495,6 +1502,12 @@ export interface ConfigFile {
   issue_reviewer_agents?: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
   fleet_run_archive?: string;
+  /**
+   * Operator label naming this host's subscription allocation, recorded on each
+   * issue's lifecycle-ledger assignment event (Issue #3718). A label only, never
+   * an account email, ID or fee.
+   */
+  subscription_allocation_label?: string;
   /** Whether to include recent repo activity in prompts (Issue #1326) */
   include_recent_activity?: boolean;
   /** Maximum merged PRs in activity summary (Issue #1326) */

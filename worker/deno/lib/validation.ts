@@ -14,6 +14,7 @@ import {
 import { isAbsolutePath, pathStyleFor } from "./host_path_style.ts";
 import { LOG_DIR_CONFIG_KEY } from "./log_dir.ts";
 import { isValidRepoSlug, renderInertRepoSlug } from "./repo_slug.ts";
+import { isValidLifecycleLabel } from "./lifecycle_ledger.ts";
 
 /**
  * GitHub org team slug in `org/slug` form (Issue #252).
@@ -225,6 +226,8 @@ export interface ConfigFileJson {
   issue_reviewer_agents?: boolean;
   /** Fleet-wide run archive repo slug for measurement issues (Issue #2930) */
   fleet_run_archive?: string;
+  /** Operator label for the subscription allocation (Issue #3718) */
+  subscription_allocation_label?: string;
   enable_session_resume?: boolean;
   /** Global verbosity level override (Issue #1330) */
   verbosity?: string;
@@ -712,6 +715,20 @@ export function validateConfigFileJson(
       return fail(
         "fleet_run_archive",
         `Expected an owner/repo slug, got ${renderInertRepoSlug(raw)}`,
+      );
+    }
+  }
+
+  // subscription_allocation_label is an operator label (Issue #3718). The
+  // ledger owns the label rule. The message never echoes the value, which
+  // could be an account email. Blank is accepted: it records no label.
+  if (data.subscription_allocation_label !== undefined) {
+    const raw = data.subscription_allocation_label;
+    const trimmed = typeof raw === "string" ? raw.trim() : raw;
+    if (trimmed !== "" && !isValidLifecycleLabel(trimmed)) {
+      return fail(
+        "subscription_allocation_label",
+        "Expected an operator label of lowercase letters, digits, '.', '_' or '-' (at most 64 characters) — never an account email, ID or fee",
       );
     }
   }

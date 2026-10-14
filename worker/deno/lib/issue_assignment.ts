@@ -29,6 +29,7 @@ import {
   resolveInvocationRouting,
 } from "./agent_provider.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
+import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import { getRunId } from "./run_id.ts";
 import {
   appendLifecycleEvent,
@@ -46,7 +47,10 @@ import {
   STANDARDS_REVIEWER_AGENT_NAME,
 } from "./issue_executor_agents.ts";
 import { getHostname } from "./worker_identity.ts";
-import { type WorkerBuildFacts, workerBuildFacts } from "./worker_build_info.ts";
+import {
+  type WorkerBuildFacts,
+  workerBuildFacts,
+} from "./worker_build_info.ts";
 
 /** Opens every assignment marker comment. */
 export const ASSIGNMENT_MARKER_PREFIX = "<!-- vibe-assignment:";
@@ -101,8 +105,8 @@ export function parseAssignmentMarker(
 /**
  * The visible comment that carries a marker.
  *
- * A body holding only an HTML comment renders blank (Issue #1659), so the
- * marker travels beneath a sentence a human can read.
+ * A body holding only an HTML comment renders blank, so the marker travels
+ * beneath a sentence a human can read.
  *
  * @param marker - The assignment being recorded.
  * @returns The comment body.
@@ -144,8 +148,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 /**
  * The production {@link AssignmentMarkerStore}, backed by the `gh` CLI.
  *
- * A line that does not parse is an error, never "no marker": treating an
- * unreadable answer as absence would let a run mint a second assignment.
+ * Comments are read through the bounded page helper
+ * {@link fetchIssueCommentPages}, so a long thread is never materialised
+ * without a cap. Each raw REST comment is reshaped into an
+ * {@link AssignmentMarkerComment} and only marker-bearing comments are kept.
+ * A marker-bearing comment without a string `user.login` and `created_at` is
+ * skipped as unattributable, since it could never be trusted anyway. Errors
+ * from the page fetch propagate: an unreadable thread is never treated as "no
+ * marker", which would let a run mint a second assignment.
  *
  * @param runGh - Runs `gh` with the given arguments and returns its stdout.
  * @returns The store.
@@ -155,37 +165,20 @@ export function ghAssignmentMarkerStore(
 ): AssignmentMarkerStore {
   return {
     async listMarkerComments(repo, issueNumber) {
-      const stdout = await runGh([
-        "api",
-        "--paginate",
-        `repos/${repo}/issues/${issueNumber}/comments`,
-        "--jq",
-        '.[] | select(.body | contains("<!-- vibe-assignment:")) | {author: .user.login, created_at: .created_at, body: .body}',
-      ]);
+      const raw = await fetchIssueCommentPages(repo, issueNumber, runGh);
       const comments: AssignmentMarkerComment[] = [];
-      for (const line of stdout.split("\n")) {
-        if (line.trim() === "") continue;
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          throw new Error(
-            `Assignment marker listing for ${repo}#${issueNumber} is not JSON`,
-          );
-        }
-        if (
-          !isRecord(parsed) || typeof parsed.author !== "string" ||
-          typeof parsed.created_at !== "string" ||
-          typeof parsed.body !== "string"
-        ) {
-          throw new Error(
-            `Assignment marker listing for ${repo}#${issueNumber} has an unexpected shape`,
-          );
+      for (const item of raw) {
+        if (!isRecord(item) || typeof item.body !== "string") continue;
+        if (!item.body.includes(ASSIGNMENT_MARKER_PREFIX)) continue;
+        const user = item.user;
+        const login = isRecord(user) ? user.login : undefined;
+        if (typeof login !== "string" || typeof item.created_at !== "string") {
+          continue;
         }
         comments.push({
-          author: parsed.author,
-          createdAt: parsed.created_at,
-          body: parsed.body,
+          author: login,
+          createdAt: item.created_at,
+          body: item.body,
         });
       }
       return comments;

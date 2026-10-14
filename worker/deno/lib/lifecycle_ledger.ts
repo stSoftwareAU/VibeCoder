@@ -161,8 +161,7 @@ export type LifecycleEvent =
   | OutcomeEvent;
 
 /** Distributes `Omit` across a union so each member keeps its own fields. */
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown
-  ? Omit<T, K>
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
   : never;
 
 /** An event as a caller builds it, before the key is derived. */
@@ -292,7 +291,8 @@ const ASSIGNMENT_ID_PATTERN =
 const LABEL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** An ISO-8601 UTC timestamp, to at most millisecond precision. */
-const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+const TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 
 /** Whether `value` is a plain object (a JSON object, not an array or class). */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -354,8 +354,13 @@ function requireEnum<T extends string>(
   field: string,
   allowed: readonly T[],
 ): T {
-  if (typeof value !== "string" || !(allowed as readonly string[]).includes(value)) {
-    throw new LifecycleEventSchemaError(field, `must be one of ${allowed.join(", ")}`);
+  if (
+    typeof value !== "string" || !(allowed as readonly string[]).includes(value)
+  ) {
+    throw new LifecycleEventSchemaError(
+      field,
+      `must be one of ${allowed.join(", ")}`,
+    );
   }
   return value as T;
 }
@@ -371,7 +376,10 @@ function requirePositiveInteger(value: unknown, field: string): number {
 /** Refuse a value that is not a non-negative safe integer. */
 function requireCount(value: unknown, field: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new LifecycleEventSchemaError(field, "must be a non-negative integer");
+    throw new LifecycleEventSchemaError(
+      field,
+      "must be a non-negative integer",
+    );
   }
   return value;
 }
@@ -395,7 +403,10 @@ function requireBoolean(value: unknown, field: string): boolean {
 /** Refuse a value that is not a timestamp the ledger accepts. */
 function requireTimestamp(value: unknown, field: string): string {
   if (!isValidLifecycleTimestamp(value)) {
-    throw new LifecycleEventSchemaError(field, "must be an ISO-8601 UTC timestamp");
+    throw new LifecycleEventSchemaError(
+      field,
+      "must be an ISO-8601 UTC timestamp",
+    );
   }
   return value;
 }
@@ -681,7 +692,9 @@ export class LifecycleLedgerAppendError extends Error {
 
   constructor(path: string, cause: unknown) {
     super(
-      `Could not append to the lifecycle ledger ${path}: ${causeMessage(cause)}`,
+      `Could not append to the lifecycle ledger ${path}: ${
+        causeMessage(cause)
+      }`,
       { cause },
     );
     this.name = "LifecycleLedgerAppendError";

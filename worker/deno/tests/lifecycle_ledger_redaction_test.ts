@@ -13,12 +13,12 @@
 
 import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import {
-  type AssignmentEvent,
   appendLifecycleEvent,
+  type AssignmentEvent,
   buildLifecycleEvent,
   type LifecycleEvent,
-  LifecycleEventSchemaError,
   type LifecycleEventInput,
+  LifecycleEventSchemaError,
   serialiseLifecycleEvent,
 } from "../lib/lifecycle_ledger.ts";
 import { redactSecrets } from "../lib/secret_redaction.ts";
@@ -82,7 +82,14 @@ Deno.test("lifecycle redaction - the positive control serialises", () => {
 
 Deno.test("lifecycle redaction - an extra top-level key is refused, naming the key", async () => {
   for (
-    const key of ["prompt", "issueBody", "email", "token", "credentials", "user"]
+    const key of [
+      "prompt",
+      "issueBody",
+      "email",
+      "token",
+      "credentials",
+      "user",
+    ]
   ) {
     const probe = withKey(validAssignment(), key, "probe-value");
     const error = assertThrows(
@@ -132,7 +139,10 @@ Deno.test("lifecycle redaction - an extra key on a role item is refused", () => 
 
 Deno.test("lifecycle redaction - an e-mail address as cohort is refused", () => {
   const error = assertThrows(
-    () => serialiseLifecycleEvent(withKey(validAssignment(), "cohort", "alice@example.com")),
+    () =>
+      serialiseLifecycleEvent(
+        withKey(validAssignment(), "cohort", "alice@example.com"),
+      ),
     LifecycleEventSchemaError,
   );
   assertEquals(error.field, "cohort");
@@ -142,7 +152,10 @@ Deno.test("lifecycle redaction - an e-mail address as subscriptionAllocation is 
   const event = validAssignment();
   const probe = {
     ...event,
-    treatment: { ...event.treatment, subscriptionAllocation: "acct-1234@example.com" },
+    treatment: {
+      ...event.treatment,
+      subscriptionAllocation: "acct-1234@example.com",
+    },
   } as unknown as LifecycleEvent;
   const error = assertThrows(
     () => serialiseLifecycleEvent(probe),
@@ -153,7 +166,10 @@ Deno.test("lifecycle redaction - an e-mail address as subscriptionAllocation is 
 
 Deno.test("lifecycle redaction - prose as host is refused", () => {
   const error = assertThrows(
-    () => serialiseLifecycleEvent(withKey(validAssignment(), "host", "worker one runs the issue")),
+    () =>
+      serialiseLifecycleEvent(
+        withKey(validAssignment(), "host", "worker one runs the issue"),
+      ),
     LifecycleEventSchemaError,
   );
   assertEquals(error.field, "host");
@@ -182,7 +198,8 @@ Deno.test("lifecycle redaction - a long hostile run is refused without backtrack
   // A long run followed by a character the token alphabet forbids.
   const hostileHost = "a".repeat(50_000) + "@";
   const hostileError = assertThrows(
-    () => serialiseLifecycleEvent(withKey(validAssignment(), "host", hostileHost)),
+    () =>
+      serialiseLifecycleEvent(withKey(validAssignment(), "host", hostileHost)),
     LifecycleEventSchemaError,
   );
   assertEquals(hostileError.field, "host");
@@ -190,7 +207,10 @@ Deno.test("lifecycle redaction - a long hostile run is refused without backtrack
   // A long run of a character the label alphabet forbids in first position.
   const hostileLabel = "-".repeat(50_000);
   const labelError = assertThrows(
-    () => serialiseLifecycleEvent(withKey(validAssignment(), "cohort", hostileLabel)),
+    () =>
+      serialiseLifecycleEvent(
+        withKey(validAssignment(), "cohort", hostileLabel),
+      ),
     LifecycleEventSchemaError,
   );
   assertEquals(labelError.field, "cohort");
