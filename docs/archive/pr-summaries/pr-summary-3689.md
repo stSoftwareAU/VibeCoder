@@ -23,8 +23,9 @@ fixed with a negative test; the full classification is in
   `top-up-<n>` slices) and fails closed.
 - **Ungated Step 2 push.** `commitAndPushPending` gated newly staged changes but
   pushed already-committed agent commits unchecked, and the completion phase
-  pushed with no gate. Step 1b (`gateUnpushedCommits`) and the completion-phase
-  `gateBeforePush()` now gate those pushes when a pre-flight spec exists.
+  pushed with no gate. Step 1b (`gateUnpushedCommits`, only when a pre-flight spec
+  exists) and the completion-phase `gateBeforePush()` (always, with an empty
+  command list when no spec exists) now gate those pushes.
 
 ```mermaid
 flowchart LR
