@@ -203,6 +203,22 @@ Deno.test("route-issue - a gh failure other than permission fails the command", 
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "route-issue failed");
   assertStringIncludes(result.message, "boom from gh");
+  assertEquals(result.message, "route-issue failed: boom from gh");
+});
+
+Deno.test("route-issue - a non-Error gh throw is reported verbatim as route-issue failed", async () => {
+  const h = harness({
+    ghCommandFn: routingFakeGh(() => {
+      throw "string failure";
+    }),
+  });
+  const result = await routeIssueCommand.execute(
+    { ...baseArgs, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertEquals(result.message, "route-issue failed: string failure");
 });
 
 Deno.test("route-issue - an unreadable body file fails before any gh call", async () => {
@@ -780,6 +796,32 @@ Deno.test("route-issue --resolve-duplicate - a non-permission gh failure is repo
   assertEquals(result.message.includes("Permission refused"), false);
   assertEquals(result.data, undefined);
   assertEquals(writes(calls), []);
+  assertEquals(
+    result.message,
+    "route-issue failed: Correct issue org/product#3242 could not be verified; " +
+      "stSoftwareAU/VibeCoder#3607 left open: gh exploded",
+  );
+});
+
+Deno.test("route-issue --resolve-duplicate - a non-Error gh throw on close is reported verbatim as route-issue failed", async () => {
+  const { h, calls } = resolveHarness();
+  const inner = h.deps.ghCommandFn!;
+  h.deps.ghCommandFn = (args) => {
+    if (args[1] === "close") {
+      calls.push(args);
+      return Promise.reject("string failure");
+    }
+    return inner(args);
+  };
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertEquals(result.message, "route-issue failed: string failure");
+  assertEquals(result.data, undefined);
+  assertEquals(calls.some((c) => c[1] === "close"), true);
 });
 
 Deno.test("route-issue --resolve-duplicate - success follows whether the wrong issue was closed unless dry-run", async () => {

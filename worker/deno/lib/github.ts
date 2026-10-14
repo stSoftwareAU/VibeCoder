@@ -627,14 +627,16 @@ export interface CreateIssuesResult {
  *
  * Each improvement goes through {@link routeIssueCreation} (Issue #3691), so
  * it is filed in the repository that owns the work, behind a permission check
- * and a duplicate search. A permission refusal is logged at error level and
- * recorded in `failures`; it is never swallowed.
+ * and a duplicate search. A permission refusal is logged at warn level and
+ * recorded in `failures`; every other failure is recorded in `failures` too.
+ * None is swallowed.
  *
  * @param improvements - Improvements to create issues for
  * @param repo - Target repository in "owner/repo" format
  * @param routing - Routing context (owner repo, allowlist, dry-run, clock)
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @param logger - Logger used to warn on stripped reserved labels (Issue #2825)
+ *   and also to warn on routing permission refusals (Issue #3691)
  * @param extraReservedLabels - Configured `custom_label_prompts` labels, which
  *   the worker must never self-apply (Issue #847)
  * @returns Created issue numbers, routing audits and any failures

@@ -17,6 +17,7 @@ import {
 } from "../lib/github.ts";
 import { routingContext, routingFakeGh } from "./support/routing_fake_gh.ts";
 import type { Improvement } from "../commands/suggest_improvements.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 // --- isLabelNotFoundError tests ---
 
@@ -165,6 +166,100 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles empty improvem
 
   assertEquals(result.createdIssues.length, 0);
   assertEquals(result.failures.length, 0);
+});
+
+// --- Routing refusal logging (Issue #3691) ---
+
+interface CapturedWarn {
+  message: string;
+  context: LogContext | undefined;
+}
+
+/** A Logger that records warn calls (message + context) and drops the rest. */
+function capturingLogger(): { logger: Logger; warns: CapturedWarn[] } {
+  const warns: CapturedWarn[] = [];
+  const logger: Logger = {
+    info() {},
+    warn(message, context) {
+      warns.push({ message, context });
+    },
+    error() {},
+    debug() {},
+    security() {},
+    skipReason() {},
+    timing() {},
+    scanSummary() {},
+    workerSummary() {},
+  };
+  return { logger, warns };
+}
+
+Deno.test("github - createGitHubIssuesWithPartialFailures warns and records a routing permission refusal", async () => {
+  // Same wrong-repo signal as workerImprovement, so both are routed to the
+  // owner repository (the only path that runs requireWriteAccess).
+  const secondImprovement: Improvement = {
+    title: "Split worker/deno/lib/issue_queue.ts into phases",
+    description: "The queue in `worker/deno/lib/issue_queue.ts` is too big.",
+    category: "maintainability",
+    labels: ["enhancement"],
+  };
+  const creates: string[][] = [];
+  const gh = routingFakeGh((args) => {
+    creates.push(args);
+    return `https://github.com/${VIBE_REPO}/issues/1`;
+  }, "READ");
+  const { logger, warns } = capturingLogger();
+
+  const result = await createGitHubIssuesWithPartialFailures(
+    [workerImprovement, secondImprovement],
+    PRODUCT_REPO,
+    routingContext([PRODUCT_REPO, VIBE_REPO]),
+    gh,
+    logger,
+  );
+
+  assertEquals(creates.length, 0);
+  assertEquals(result.createdIssues, []);
+  assertEquals(result.failures.length, 2);
+  assertEquals(result.failures[0]!.title, workerImprovement.title);
+  assertEquals(result.failures[1]!.title, secondImprovement.title);
+  for (const failure of result.failures) {
+    assertStringIncludes(failure.error, "viewer permission is 'READ'");
+  }
+
+  const refusals = warns.filter((w) =>
+    w.message === "Issue routing refused a write"
+  );
+  assertEquals(refusals.length, 2);
+  assertEquals(refusals[0]!.context?.title, workerImprovement.title);
+  assertEquals(refusals[1]!.context?.title, secondImprovement.title);
+});
+
+Deno.test("github - createGitHubIssuesWithPartialFailures does not warn on a non-permission failure", async () => {
+  const gh = routingFakeGh(() => {
+    throw new Error("HTTP 500 Internal Server Error");
+  });
+  const { logger, warns } = capturingLogger();
+
+  const result = await createGitHubIssuesWithPartialFailures(
+    [workerImprovement],
+    PRODUCT_REPO,
+    routingContext([PRODUCT_REPO, VIBE_REPO]),
+    gh,
+    logger,
+  );
+
+  assertEquals(result.createdIssues, []);
+  assertEquals(result.failures.length, 1);
+  assertEquals(result.failures[0]!.title, workerImprovement.title);
+  assertEquals(
+    result.failures[0]!.error,
+    "HTTP 500 Internal Server Error",
+  );
+  assertEquals(
+    warns.some((w) => w.message === "Issue routing refused a write"),
+    false,
+  );
 });
 
 // --- Issue routing wiring (Issue #3691) ---
