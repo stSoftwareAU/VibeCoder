@@ -4983,6 +4983,60 @@ is a real launch fault and its own error text must still be classified. The
 posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
 `isSummaryGateFailureRecord`-style record check for the label-release sweeps.
 
+#### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
+
+The completion phase's pre-push gate (`gateBeforePush()` in
+`completion_phase.ts`) blocks with `[PRE_PUSH_BLOCKED]` followed by the failing
+check's output (cut to a head and tail, see "Two limits" below): `cargo fmt --check` and `deno fmt --check` diff hunks,
+markdownlint `[Context: ...]` excerpts and quoted pre-flight test names. That
+text is repository content, so a source comment such as `// back off when the
+exchange rate limit is hit` was read as a rate limit: the run was released
+uncounted with no failure comment and re-claimed every cycle, the loop that Issue 1949
+removed. The shared mechanism is the one described under
+"`summary_incomplete` is its own failure category" above, with
+`PRE_PUSH_GATE_MARKER` ("the branch did not pass the worker's pre-push gate")
+prefixed to the gate's message in `gateBeforePush()`, which redacts
+and cuts that message first; an error that is not a `PrePushGateBlockedError`
+is reported without the marker (see "Two limits" below).
+`detectFailureCategory` matches it with `startsWith` after the summary-gate and
+security-fix markers, giving `pre_push_gate` (display `pre-push-gate`), which is
+`not_code_fixable` (class `agent-outcome`) and not infrastructure, so
+`shouldRetryInfrastructureFailure` declines it. `classifyCodingFailure` returns
+a `ladder` decision with cooldown `non_transient`, `classifyRunFailure` answers
+it before the free-text rules and `detectHostFault` returns `null`, so a block
+always gets one normal attempt and a failure comment carrying the gate output.
+A message that merely quotes the marker later keeps its own category. The final
+mile of `commitAndPushPending` (Step 1b) returns the same unmarked
+`[PRE_PUSH_BLOCKED]` error to its PR-processor callers, which log it and do not
+classify it as a coding-run failure. `gateUnpushedCommits` cuts the gate output
+to the same 2,000 + 2,000 characters before adding the `[PRE_PUSH_BLOCKED]`
+prefix and the `Unpushed commits on <branch> were not pushed.` trailer, and the
+Step 1 pre-flight block is cut the same way, because the PR processors copy that
+error into the "fixed locally but failed to push" comment, which GitHub refuses
+over 65,536 characters.
+
+Two limits keep the failure comment postable and the blame accurate (PR #3716
+review). First, the gate's output is redacted whole, then cut to its first 2,000
+and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
+line that names the failing check, the tail the end of its output, and GitHub
+refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
+swallows). Second, only a verdict on the branch's content carries the marker, a
+`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan or the
+`sweptAt` ancestry failing, an unsafe base ref, or any other
+non-infrastructure error from `runPrePushGate` (such as malformed hook input),
+which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
+`describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
+`runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
+the base range) comes back as a plain error or a `PrePushGateInfrastructureError`
+with no gate marker, and `gateBeforePush()` reports it as
+`PRE_PUSH_LOOKUP_FAILED_MARKER` ("Git push failed: the pre-push gate could not
+read the branch state") followed by the cut git text. `detectFailureCategory`
+matches that prefix with `startsWith` ahead of its timeout rule, so the quoted
+git text (`TIMEOUT: git rev-list ... timed out after 30s`, `Connection timed
+out`) cannot make it a `timeout`: it is the `push_failure` infrastructure
+category, retried in-run, as the push path's own failures are (Issue #1550). With a `baseRef` the gate reads no remote head at all, because
+the base range is local.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a

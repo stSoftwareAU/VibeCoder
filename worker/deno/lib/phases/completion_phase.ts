@@ -12,7 +12,11 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { SUMMARY_RULE_GATE_MARKER } from "../failure_diagnosis.ts";
+import {
+  PRE_PUSH_GATE_MARKER,
+  PRE_PUSH_LOOKUP_FAILED_MARKER,
+  SUMMARY_RULE_GATE_MARKER,
+} from "../failure_diagnosis.ts";
 import { HeadDivergedError } from "../git_branch.ts";
 import {
   type IssueContext,
@@ -54,6 +58,13 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import {
+  PRE_PUSH_GATE_REASON_HEAD_CHARS,
+  PRE_PUSH_GATE_REASON_TAIL_CHARS,
+  PrePushGateBlockedError,
+  resolvePreFlightSpec,
+} from "../git_push.ts";
+import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
@@ -1941,6 +1952,73 @@ async function completionBody(
     }
   }
 
+  // Pre-push gate (Issue #3689) — the agent's own pre-push hook never sees
+  // this push, so run the changed-file checks here. The repo's pre-flight
+  // commands (when configured) run too; with none, the changed-file checks
+  // still run. A block fails closed and never enters push recovery.
+  //
+  // The gate covers every non-merge commit the branch has ahead of the PR
+  // base, not only commits on no remote: the execute phase's WIP checkpoints
+  // (periodic and phase-end) push the agent's commits without any gate, so by
+  // now they are usually already on origin. The base is resolved here, ahead
+  // of the push, and reused by the ahead-of-base guard below (Issue #68). An
+  // unresolvable base degrades to the unpushed-only check; that guard logs the
+  // failure loudly below.
+  const comparableBase = await resolveComparableBaseRef(
+    deps.git.runGitCommand,
+    baseBranch,
+    { cwd: state.repoPath },
+  );
+  const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
+    { commands: [] };
+  const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
+    const gate = await deps.git.gateUnpushedCommits(
+      state.branchName,
+      { cwd: state.repoPath },
+      prePushSpec,
+      false,
+      comparableBase.ok ? comparableBase.value : undefined,
+    );
+    if (gate.ok) return undefined;
+    logger.error("Pre-push gate blocked the push", {
+      error: gate.error.message,
+    });
+    // A failed git or remote lookup says nothing about the branch: it carries
+    // no gate marker, and its own prefix classifies it as a push failure
+    // (infrastructure) whatever git text it quotes — a "timed out" in it must
+    // not make it a `timeout` — so it is retried instead of using a ladder
+    // attempt.
+    if (!(gate.error instanceof PrePushGateBlockedError)) {
+      return {
+        status: "failure",
+        reason: `${PRE_PUSH_LOOKUP_FAILED_MARKER}: ${
+          redactedHeadTail(
+            gate.error.message,
+            PRE_PUSH_GATE_REASON_HEAD_CHARS,
+            PRE_PUSH_GATE_REASON_TAIL_CHARS,
+          )
+        }`,
+      };
+    }
+    // The gate message ends in the checks' raw output (diff hunks, test
+    // names), so the worker's own marker leads and decides the category. The
+    // output is redacted whole, then cut to a head (names the failing check)
+    // and a tail: the reason becomes a GitHub comment, which is refused over
+    // 65,536 characters, and the failure labelling swallows that refusal.
+    return {
+      status: "failure",
+      reason: `${PRE_PUSH_GATE_MARKER}: ${
+        redactedHeadTail(
+          gate.error.message,
+          PRE_PUSH_GATE_REASON_HEAD_CHARS,
+          PRE_PUSH_GATE_REASON_TAIL_CHARS,
+        )
+      }`,
+    };
+  };
+  const blockedBeforePush = await gateBeforePush();
+  if (blockedBeforePush) return blockedBeforePush;
+
   // Push branch
   const pushResult = await deps.git.pushUnpushedCommits(state.branchName, {
     cwd: state.repoPath,
@@ -1978,7 +2056,9 @@ async function completionBody(
       };
     }
 
-    // Retry push after recovery
+    // Retry push after recovery — recovery can add commits, so gate again.
+    const blockedBeforeRetry = await gateBeforePush();
+    if (blockedBeforeRetry) return blockedBeforeRetry;
     const retryPush = await deps.git.pushUnpushedCommits(state.branchName, {
       cwd: state.repoPath,
     });
@@ -2011,11 +2091,6 @@ async function completionBody(
   // "a merged PR merely mentions it while our commits sit unpublished".
   // `null` means the guard could not run — never silently zero.
   let branchCommitsAhead: number | null = null;
-  const comparableBase = await resolveComparableBaseRef(
-    deps.git.runGitCommand,
-    baseBranch,
-    { cwd: state.repoPath },
-  );
   if (!comparableBase.ok) {
     // The guard genuinely cannot run — a base that resolves to nothing local,
     // remote, or fetchable. Louder than the per-PR warning (Issue #68): this
