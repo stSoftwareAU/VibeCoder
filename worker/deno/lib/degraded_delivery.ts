@@ -601,9 +601,9 @@ const FOLLOW_UP_FINDING_ID_RE = new RegExp(
  * Whether an issue body is a partial-delivery follow-up the worker filed: it
  * carries a live `degraded-follow-up-<N>` finding-id marker (PR #3676 review).
  *
- * A run on such an issue must not file a nested `Finish #F: Finish #N: …`
- * follow-up: an item no run can deliver would otherwise chain fleet runs
- * without end. Authorship is not checked. A planted marker only routes a
+ * A healthy run on such an issue must not file a nested `Finish #F: Finish
+ * #N: …` follow-up: an item no run can deliver would otherwise chain fleet
+ * runs without end. A degraded run on such an issue still files one. Authorship is not checked. A planted marker only routes a
  * run's gaps to a human instead of to a fleet follow-up, which fails toward
  * a person, never toward silence.
  */

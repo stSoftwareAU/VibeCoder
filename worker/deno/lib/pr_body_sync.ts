@@ -634,8 +634,9 @@ export async function syncPrBodyFromSummary(
     view.body ?? "",
     REPORTED_GAP_SECTION_HEADING,
   );
-  // PR #3676 review: a run on a partial-delivery follow-up carries the
-  // chain-stop section instead, re-derived from the current gaps.
+  // PR #3676 review: a healthy run on a partial-delivery follow-up carries
+  // the chain-stop section instead, re-derived from the current gaps. A
+  // degraded run on one still files its own follow-up.
   const liveChainStop = liveDegraded || liveReportedGap
     ? ""
     : extractLeadingSection(

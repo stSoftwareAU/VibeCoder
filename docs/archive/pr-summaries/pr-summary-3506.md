@@ -69,7 +69,9 @@ flowchart TD
     D -- yes --> G["Existing degraded guard (unchanged)"]
     D -- no --> H{"assessReportedGaps:<br/>any partial or missing entry?"}
     H -- no --> P["PR as before"]
-    H -- yes --> F["fileDegradedFollowUp<br/>(same finding id, healthy body)"]
+    H -- yes --> C{"Issue is itself a<br/>partial-delivery follow-up?<br/>(PR #3676 review)"}
+    C -- no --> F["fileDegradedFollowUp<br/>(same finding id, healthy body)"]
+    C -- "yes (chain stop)" --> CS["No nested follow-up; label needs-human;<br/>PR body opens 'handed to a human', says 'Part of'"]
     F -- filed --> S["PR body opens with<br/>'Partial delivery — follow-up filed'"]
     F -- "gh failed" --> X["Run fails, no PR finalised"]
     S --> Y["Later re-sync:<br/>rederiveReportedGapSection"]
@@ -137,8 +139,9 @@ true because it names the guard, which still runs for degraded runs:
 
 ## Test Plan
 
-- `deno task test:unit` from `worker/deno` passed on the final head, after
-  the mutation-check tests were added: 27568 passed and 969 passed in its two
+- `deno task test:unit` from `worker/deno` passed on an earlier head, after
+  the mutation-check tests were added (before the review rounds below; the
+  full gate was not re-run on the final head): 27568 passed and 969 passed in its two
   runs, 0 failed. It ran every test file that drives `workOnIssueCompletion`
   or `syncPrBodyFromSummary`, plus `worker/deno/tests/degraded_delivery_test.ts`.
 - PR #3676 review push (second round, no follow-up writes from the sync):
@@ -200,7 +203,7 @@ true because it names the guard, which still runs for degraded runs:
   `buildReportedGapStaleFollowUpSection` (exact layout and throw), and
   `fileDegradedFollowUp - a parent's milestone is passed to gh issue create`.
 - Added to `worker/deno/tests/pr_body_sync_test.ts` (8 tests; the file now
-  has 47): the section is kept while a gap remains, dropped when every
+  has 54): the section is kept while a gap remains, dropped when every
   criterion is met, logged on drop, not logged when unchanged, and the sync
   fails loud when the issue cannot be read. For the PR #3676 review, three
   tests pin that a sync never writes to the follow-up: changed gaps give the
@@ -291,6 +294,22 @@ true because it names the guard, which still runs for degraded runs:
   `partial` or `missing` entry above carries a reason that says what is left.
   Nothing else was found.
 
+- PR #3676 review push (fifth round, chain-stop scope): the prompt's chain-stop
+  exception now says it applies to a healthy run only; the `degraded_delivery.ts`
+  module doc and mermaid, the `completionBody` comment in
+  `completion_phase.ts` and the `issue-processing.md` diagram gained the same
+  branch. Tests: `deno test` over `follow_up_chain_stop_test.ts` and
+  `degraded_delivery_test.ts` (76 passed), and over
+  `completion_phase_degraded_delivery_test.ts`, `pr_body_sync_test.ts` and
+  `claim_freshness_phase_test.ts` (97 passed), 0 failed; `deno fmt --check`
+  passed on the changed files. The full gate was not re-run on this push.
+- PR #3676 review push (sixth round): the `isPartialDeliveryFollowUp` doc, the
+  `pr_body_sync.ts` comment and `docs/USAGE.md` now scope the chain stop to a
+  healthy run and say a degraded run still files one. The Evidence diagram has
+  the chain-stop branch. The Test Plan's first bullet names the head it ran on,
+  the `pr_body_sync_test.ts` count is 54, and this entry sits in the Test Plan.
+  No behaviour changed in this round, so no suite was re-run.
+
 **Branch outcomes:**
 
 - `worker/deno/lib/phases/completion_phase.ts` `abortStaleClaim` `newFollowUp !== undefined` — closed: "a healthy run's follow-up is closed when the parent closes mid-run and no PR is raised (PR #3676 review)" and the degraded twin; absent: "a stale claim with no gap files and closes no follow-up (PR #3676 review)". Disabling the close went red.
@@ -317,12 +336,3 @@ true because it names the guard, which still runs for degraded runs:
   - Removing the reported-gap branch went red.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-- PR #3676 review push (fifth round, chain-stop scope): the prompt's chain-stop
-  exception now says it applies to a healthy run only; the `degraded_delivery.ts`
-  module doc and mermaid, the `completionBody` comment in
-  `completion_phase.ts` and the `issue-processing.md` diagram gained the same
-  branch. Tests: `deno test` over `follow_up_chain_stop_test.ts` and
-  `degraded_delivery_test.ts` (76 passed), and over
-  `completion_phase_degraded_delivery_test.ts`, `pr_body_sync_test.ts` and
-  `claim_freshness_phase_test.ts` (97 passed), 0 failed; `deno fmt --check`
-  passed on the changed files. The full gate was not re-run on this push.
