@@ -1172,7 +1172,7 @@ Deno.test("resolve: permission failure on either repo throws before any write", 
   assertEquals(gh.writes(), []);
 });
 
-Deno.test("resolve: same-repo duplicates check permission once; dry-run does nothing", async () => {
+Deno.test("resolve: same-repo duplicates check permission once; dry-run reads and writes nothing", async () => {
   const { logger } = makeRecordingLogger();
   const gh = new FakeGh();
   gh.views.set(`${VIBE}#5`, JSON.stringify({ number: 5, state: "OPEN" }));
@@ -1197,5 +1197,10 @@ Deno.test("resolve: same-repo duplicates check permission once; dry-run does not
   });
   assertEquals(res.closedWrong, false);
   assertStringIncludes(res.reason, "dry-run");
-  assertEquals(dry.calls, []);
+  assertEquals(dry.writes(), []);
+  assertEquals(
+    dry.calls.filter((c) => c[0] === "issue" && c[1] === "view").length,
+    2,
+  );
+  assertEquals(dry.calls.some((c) => c[0] === "repo"), true);
 });

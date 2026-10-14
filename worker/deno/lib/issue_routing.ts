@@ -701,6 +701,9 @@ export async function routeIssueCreation(
  * diagnostic, check permission, comment on both, and only then close. Any
  * earlier failure throws with nothing closed. Nothing is deleted and no
  * label or assignee is touched.
+ *
+ * A dry run performs the same reads and permission checks and stops just
+ * before the first write, so it reports what a live run would refuse.
  */
 export async function resolveWrongRepoDuplicate(args: {
   wrong: { repo: string; number: number };
@@ -712,14 +715,6 @@ export async function resolveWrongRepoDuplicate(args: {
   const { wrong, correct, ctx, gh, logger } = args;
   const wrongText = `${wrong.repo}#${wrong.number}`;
   const correctText = `${correct.repo}#${correct.number}`;
-
-  if (ctx.dryRun) {
-    return {
-      closedWrong: false,
-      reason: `dry-run: would link and close ${wrongText} in favour of ` +
-        correctText,
-    };
-  }
 
   // 1. The correct issue must exist.
   let correctRaw: string;
@@ -807,7 +802,16 @@ export async function resolveWrongRepoDuplicate(args: {
     await requireWriteAccess(correct.repo, ctx, gh);
   }
 
-  // 4. Link both, then close the wrong one last.
+  // 4. A dry run stops here, before the first write.
+  if (ctx.dryRun) {
+    return {
+      closedWrong: false,
+      reason: `dry-run: would link and close ${wrongText} in favour of ` +
+        correctText,
+    };
+  }
+
+  // 5. Link both, then close the wrong one last.
   await gh([
     "issue",
     "comment",

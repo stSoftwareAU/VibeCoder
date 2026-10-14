@@ -5,6 +5,9 @@
  * Usage:
  *   deno run --allow-all mod.ts route-issue --repo owner/repo \
  *     --title "..." --body-file body.md [--label L[,L2]] [--dry-run]
+ *   deno run --allow-all mod.ts route-issue --repo owner/repo \
+ *     --title "..." --part '["owner/a=a.md","owner/b=b.md;depends-on=owner/a"]' \
+ *     [--label L[,L2]] [--dry-run]
  *   deno run --allow-all mod.ts route-issue \
  *     --resolve-duplicate owner/repo#N --correct owner/repo#M [--dry-run]
  *
@@ -31,6 +34,8 @@ import { loadConfig } from "../lib/config.ts";
 import { runGhCommand } from "../lib/github.ts";
 import {
   type IssueRoutingAudit,
+  type IssueRoutingDraft,
+  type IssueRoutingPart,
   IssueRoutingPermissionError,
   resolveWrongRepoDuplicate,
   routeIssueCreation,
@@ -53,6 +58,7 @@ const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
   "title",
   "body-file",
   "label",
+  "part",
   "dry-run",
   "resolve-duplicate",
   "correct",
@@ -191,18 +197,47 @@ export const routeIssueCommand: Command = {
     if (!parsed.ok) {
       return { success: false, message: parsed.error.message };
     }
-    const { repo, title, bodyFile, labels, dryRun } = parsed.value;
+    const { repo, title, bodyFile, labels, parts, dryRun } = parsed.value;
+    const readText = deps.readTextFile ?? Deno.readTextFile;
 
-    let body: string;
-    try {
-      body = await (deps.readTextFile ?? Deno.readTextFile)(bodyFile);
-    } catch (error: unknown) {
-      return {
-        success: false,
-        message: `Could not read --body-file ${bodyFile}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
+    let draft: IssueRoutingDraft;
+    if (bodyFile !== null) {
+      let body: string;
+      try {
+        body = await readText(bodyFile);
+      } catch (error: unknown) {
+        return {
+          success: false,
+          message: `Could not read --body-file ${bodyFile}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        };
+      }
+      draft = { title, body, labels };
+    } else {
+      // --part mode: each part carries its own body; the top-level body stays
+      // empty so no part's text can divert the draft to a single issue.
+      const routedParts: IssueRoutingPart[] = [];
+      for (const part of parts) {
+        let partBody: string;
+        try {
+          partBody = await readText(part.bodyFile);
+        } catch (error: unknown) {
+          return {
+            success: false,
+            message: `Could not read --part body file ${part.bodyFile}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          };
+        }
+        routedParts.push({
+          repo: part.repo,
+          title,
+          body: partBody,
+          dependsOnRepos: part.dependsOnRepos,
+        });
+      }
+      draft = { title, body: "", labels, parts: routedParts };
     }
 
     try {
@@ -214,7 +249,7 @@ export const routeIssueCommand: Command = {
         nowMs: (deps.now ?? Date.now)(),
       });
       const audit = await routeIssueCreation(
-        { title, body, labels },
+        draft,
         repo,
         routing,
         deps.ghCommandFn ?? runGhCommand,

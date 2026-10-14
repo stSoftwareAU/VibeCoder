@@ -247,19 +247,30 @@ export interface RouteIssueArgs {
   /** Repository the issue is being filed from, "owner/repo" */
   repo: string;
   title: string;
-  /** Path to the file holding the issue body */
-  bodyFile: string;
+  /** Path to the file holding the issue body; null in --part mode */
+  bodyFile: string | null;
   /** Labels requested for the issue (never migrated across repositories) */
   labels: string[];
+  /** One entry per --part; empty for a single-repository issue */
+  parts: RouteIssuePartArg[];
   dryRun: boolean;
+}
+
+/** One `--part owner/repo=body-file[;depends-on=owner/repo,...]` (Issue #3691). */
+export interface RouteIssuePartArg {
+  repo: string;
+  bodyFile: string;
+  dependsOnRepos: string[];
 }
 
 /**
  * Validate and parse route-issue command arguments.
  *
  * `repo`, `title` and `body-file` are required. `label` is optional: one name,
- * a comma-separated list, or a JSON array of names. `dry-run` defaults to
- * false and is refused, not ignored, when unreadable.
+ * a comma-separated list, or a JSON array of names. `part` replaces `body-file`
+ * with two or more `owner/repo=body-file` entries, each filed as one linked
+ * issue. `dry-run` defaults to false and is refused, not ignored, when
+ * unreadable.
  */
 export function validateRouteIssueArgs(
   args: Record<string, unknown>,
@@ -290,9 +301,28 @@ export function validateRouteIssueArgs(
     return fail("Argument 'title' is required and must be a non-empty string");
   }
 
-  const bodyFile = args["body-file"];
-  if (typeof bodyFile !== "string" || bodyFile.length === 0) {
-    return fail("Argument 'body-file' is required and must be a file path");
+  const partMode = args.part !== undefined;
+  let parts: RouteIssuePartArg[] = [];
+  if (partMode) {
+    const parsedParts = parseRouteIssueParts(args.part);
+    if (!parsedParts.ok) return { ok: false, error: parsedParts.error };
+    parts = parsedParts.value;
+  }
+
+  let bodyFile: string | null = null;
+  if (partMode) {
+    if (args["body-file"] !== undefined) {
+      return fail(
+        "Argument 'body-file' cannot be combined with --part; each part names " +
+          "its own body file",
+      );
+    }
+  } else {
+    const rawBodyFile = args["body-file"];
+    if (typeof rawBodyFile !== "string" || rawBodyFile.length === 0) {
+      return fail("Argument 'body-file' is required and must be a file path");
+    }
+    bodyFile = rawBodyFile;
   }
 
   const labelValue = args.label;
@@ -319,8 +349,112 @@ export function validateRouteIssueArgs(
 
   return {
     ok: true,
-    value: { repo, title, bodyFile, labels, dryRun: dryRun.value },
+    value: { repo, title, bodyFile, labels, parts, dryRun: dryRun.value },
   };
+}
+
+const PART_REPO = /^[^/\s=;]+\/[^/\s=;]+$/;
+const PART_FORMAT =
+  "Argument 'part' must be owner/repo=body-file[;depends-on=owner/repo,...]";
+
+/**
+ * Parse the `--part` value: one `owner/repo=body-file[;depends-on=...]` string
+ * or a JSON array of them. mod.ts keeps only the last value of a repeated flag,
+ * so two or more parts need the array form. Refuses rather than guesses.
+ */
+function parseRouteIssueParts(raw: unknown): Result<RouteIssuePartArg[]> {
+  const fail = (message: string): Result<RouteIssuePartArg[]> => ({
+    ok: false,
+    error: new Error(message),
+  });
+  let entries: unknown[];
+  if (typeof raw === "string") {
+    entries = [raw];
+  } else if (Array.isArray(raw)) {
+    entries = raw;
+  } else {
+    return fail(`${PART_FORMAT}, or a JSON array of them`);
+  }
+
+  const parts: RouteIssuePartArg[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== "string") {
+      return fail(`${PART_FORMAT}, or a JSON array of them`);
+    }
+    const parsed = parseRouteIssuePart(entry);
+    if (!parsed.ok) return { ok: false, error: parsed.error };
+    parts.push(parsed.value);
+  }
+
+  if (parts.length < 2) {
+    return fail(
+      "Argument 'part' needs at least two parts; several parts need a JSON " +
+        'array string, e.g. --part \'["owner/a=a.md","owner/b=b.md"]\' ' +
+        "(a repeated --part flag keeps only its last value)",
+    );
+  }
+
+  const repos = new Set<string>();
+  for (const part of parts) {
+    const key = part.repo.toLowerCase();
+    if (repos.has(key)) {
+      return fail(`Argument 'part' names ${part.repo} more than once`);
+    }
+    repos.add(key);
+  }
+
+  for (const part of parts) {
+    for (const dep of part.dependsOnRepos) {
+      if (dep.toLowerCase() === part.repo.toLowerCase()) {
+        return fail(`Argument 'part' for ${part.repo} cannot depend on itself`);
+      }
+      if (!repos.has(dep.toLowerCase())) {
+        return fail(
+          `Argument 'part' for ${part.repo} depends on ${dep}, which is not ` +
+            "one of the --part repositories",
+        );
+      }
+    }
+  }
+
+  return { ok: true, value: parts };
+}
+
+function parseRouteIssuePart(raw: string): Result<RouteIssuePartArg> {
+  const fail = (message: string): Result<RouteIssuePartArg> => ({
+    ok: false,
+    error: new Error(message),
+  });
+  const [head = "", ...keyed] = raw.split(";");
+  const eq = head.indexOf("=");
+  const repo = eq < 0 ? "" : head.slice(0, eq);
+  const bodyFile = eq < 0 ? "" : head.slice(eq + 1);
+  if (!PART_REPO.test(repo) || bodyFile.trim().length === 0) {
+    return fail(`${PART_FORMAT}; got "${raw}"`);
+  }
+
+  const dependsOnRepos: string[] = [];
+  for (const segment of keyed) {
+    const kv = segment.indexOf("=");
+    const key = kv < 0 ? segment : segment.slice(0, kv);
+    if (key !== "depends-on") {
+      return fail(
+        `Argument 'part' has unknown key '${key}' in "${raw}"; the only key ` +
+          "is depends-on",
+      );
+    }
+    const value = kv < 0 ? "" : segment.slice(kv + 1);
+    for (const name of value.split(",")) {
+      if (!PART_REPO.test(name)) {
+        return fail(
+          `Argument 'part' depends-on must list owner/repo names in "${raw}"`,
+        );
+      }
+      dependsOnRepos.push(name);
+    }
+  }
+
+  return { ok: true, value: { repo, bodyFile, dependsOnRepos } };
 }
 
 /** A parsed `owner/repo#N` issue reference. */
@@ -369,7 +503,7 @@ export function validateRouteIssueResolveArgs(
     error: new Error(message),
   });
 
-  for (const flag of ["repo", "title", "body-file", "label"]) {
+  for (const flag of ["repo", "title", "body-file", "label", "part"]) {
     if (args[flag] !== undefined) {
       return fail(
         `Argument '${flag}' cannot be combined with --resolve-duplicate`,

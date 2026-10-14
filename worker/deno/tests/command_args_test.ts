@@ -7,7 +7,7 @@
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { WorkerConfig } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { assessClarityCommand } from "../commands/assess_clarity.ts";
@@ -357,6 +357,7 @@ Deno.test("command_args - validateRouteIssueArgs accepts valid args and splits c
       title: "T",
       bodyFile: "b.md",
       labels: ["bug", "enhancement"],
+      parts: [],
       dryRun: true,
     });
   }
@@ -456,4 +457,111 @@ Deno.test("command_args - validateRouteIssueArgs refuses --resolve-duplicate and
     validateRouteIssueArgs({ ...base, correct: "a/b#1" }).ok,
     false,
   );
+});
+
+Deno.test("command_args - validateRouteIssueArgs parses a JSON array of --part entries with depends-on", () => {
+  const result = validateRouteIssueArgs({
+    repo: "org/product",
+    title: "T",
+    part: [
+      "stSoftwareAU/VibeCoder=vibe.md",
+      "org/product=product.md;depends-on=stSoftwareAU/VibeCoder",
+    ],
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.bodyFile, null);
+    assertEquals(result.value.parts, [
+      {
+        repo: "stSoftwareAU/VibeCoder",
+        bodyFile: "vibe.md",
+        dependsOnRepos: [],
+      },
+      {
+        repo: "org/product",
+        bodyFile: "product.md",
+        dependsOnRepos: ["stSoftwareAU/VibeCoder"],
+      },
+    ]);
+  }
+});
+
+Deno.test("command_args - validateRouteIssueArgs refuses a single --part and points to the JSON array form", () => {
+  const result = validateRouteIssueArgs({
+    repo: "org/product",
+    title: "T",
+    part: "org/product=product.md",
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "at least two parts");
+    assertStringIncludes(result.error.message, "JSON array");
+  }
+});
+
+Deno.test("command_args - validateRouteIssueArgs refuses malformed --part values with a specific message", () => {
+  const cases: [unknown, string][] = [
+    [["org/product=a.md", "not-a-repo=b.md"], "must be owner/repo=body-file"],
+    [["org/product=a.md", "org/other="], "must be owner/repo=body-file"],
+    [
+      ["org/product=a.md", "org/other=b.md;owner=x"],
+      "unknown key 'owner'",
+    ],
+    [
+      ["org/product=a.md", "org/other=b.md;depends-on="],
+      "depends-on must list owner/repo names",
+    ],
+    [
+      ["org/product=a.md", "org/other=b.md;depends-on=other/third"],
+      "which is not one of the --part repositories",
+    ],
+    [
+      ["org/product=a.md", "org/other=b.md;depends-on=org/other"],
+      "cannot depend on itself",
+    ],
+    [
+      ["org/product=a.md", "ORG/PRODUCT=b.md"],
+      "names ORG/PRODUCT more than once",
+    ],
+    [[3, "org/other=b.md"], "must be owner/repo=body-file"],
+    [42, "must be owner/repo=body-file"],
+    [[], "at least two parts"],
+  ];
+  for (const [part, expected] of cases) {
+    const result = validateRouteIssueArgs({
+      repo: "org/product",
+      title: "T",
+      part,
+    });
+    assertEquals(result.ok, false, JSON.stringify(part));
+    if (!result.ok) assertStringIncludes(result.error.message, expected);
+  }
+});
+
+Deno.test("command_args - validateRouteIssueArgs refuses --body-file alongside --part", () => {
+  const result = validateRouteIssueArgs({
+    repo: "org/product",
+    title: "T",
+    "body-file": "b.md",
+    part: ["org/product=a.md", "stSoftwareAU/VibeCoder=b.md"],
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(
+      result.error.message,
+      "cannot be combined with --part",
+    );
+  }
+});
+
+Deno.test("command_args - validateRouteIssueResolveArgs refuses --part", () => {
+  const result = validateRouteIssueResolveArgs({
+    "resolve-duplicate": "stSoftwareAU/VibeCoder#3607",
+    correct: "org/product#3242",
+    part: "org/product=a.md",
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "'part' cannot be combined");
+  }
 });

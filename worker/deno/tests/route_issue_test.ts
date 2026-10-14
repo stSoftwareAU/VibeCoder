@@ -211,13 +211,15 @@ const RESOLVE = {
 function resolveHarness(
   wrongBody = "plain body",
   permission = "WRITE",
+  correctReply: () => string = () =>
+    JSON.stringify({ number: 3242, state: "OPEN" }),
 ): { h: Harness; calls: string[][] } {
   const calls: string[][] = [];
   const h = harness({
     ghCommandFn: routingFakeGh((args) => {
       calls.push(args);
       if (args[1] === "view" && args[2] === "3242") {
-        return JSON.stringify({ number: 3242, state: "OPEN" });
+        return correctReply();
       }
       if (args[1] === "view" && args[2] === "3607") {
         return JSON.stringify({ body: wrongBody, state: "OPEN" });
@@ -249,7 +251,7 @@ Deno.test("route-issue --resolve-duplicate - links both issues, closes the wrong
   assertEquals(report["closed_wrong"], true);
 });
 
-Deno.test("route-issue --resolve-duplicate - dry-run calls nothing and reports what it would do", async () => {
+Deno.test("route-issue --resolve-duplicate - dry-run performs the read-only checks, writes nothing and reports what it would do", async () => {
   const { h, calls } = resolveHarness();
   const result = await routeIssueCommand.execute(
     { ...RESOLVE, "dry-run": true, __testDeps: h.deps },
@@ -257,7 +259,8 @@ Deno.test("route-issue --resolve-duplicate - dry-run calls nothing and reports w
   );
 
   assertEquals(result.success, true);
-  assertEquals(calls, []);
+  assertEquals(writes(calls), []);
+  assertEquals(calls.filter((c) => c[1] === "view").length, 2);
   const report = JSON.parse(h.printed[0]!) as Record<string, unknown>;
   assertEquals(report["dry_run"], true);
   assertEquals(report["closed_wrong"], false);
@@ -329,4 +332,280 @@ Deno.test("route-issue --resolve-duplicate - a missing --correct is refused befo
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "--correct");
   assertEquals(calls, []);
+});
+
+Deno.test("route-issue --resolve-duplicate - dry-run refuses when the correct issue cannot be verified and writes nothing", async () => {
+  const { h, calls } = resolveHarness("plain body", "WRITE", () => {
+    throw new Error("gh: not found");
+  });
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, "dry-run": true, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "could not be verified");
+  assertEquals(writes(calls), []);
+});
+
+Deno.test("route-issue --resolve-duplicate - dry-run refuses when the correct issue number does not match and writes nothing", async () => {
+  const { h, calls } = resolveHarness(
+    "plain body",
+    "WRITE",
+    () => JSON.stringify({ number: 9999, state: "OPEN" }),
+  );
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, "dry-run": true, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "not found");
+  assertEquals(writes(calls), []);
+});
+
+Deno.test("route-issue --resolve-duplicate - dry-run reports a diagnostic as not closable and writes nothing", async () => {
+  const { h, calls } = resolveHarness(formatRepoFastFailureMarker(VIBE));
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, "dry-run": true, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, true);
+  assertStringIncludes(result.message, "fast-failure marker");
+  assertEquals(writes(calls), []);
+  const report = JSON.parse(h.printed[0]!) as Record<string, unknown>;
+  assertEquals(report["closed_wrong"], false);
+});
+
+Deno.test("route-issue --resolve-duplicate - dry-run refuses on a read-only permission and closes nothing", async () => {
+  const { h, calls } = resolveHarness("plain body", "READ");
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, "dry-run": true, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Permission refused, nothing closed");
+  assertEquals(writes(calls), []);
+});
+
+// ---------------------------------------------------------------------------
+// --part (cross-repository split, Issue #3691)
+// ---------------------------------------------------------------------------
+
+const PART_A = `${PRODUCT}=a.md`;
+const PART_B_DEPENDS = `${VIBE}=b.md;depends-on=${PRODUCT}`;
+
+/** A split harness: every create gets a fresh number and every call is recorded. */
+function splitHarness(
+  permission = "WRITE",
+  readTextFile: (path: string) => Promise<string> = (path) =>
+    path.endsWith(".md")
+      ? Promise.resolve(`body of ${path}`)
+      : Promise.reject(new Error("no such file")),
+): { h: Harness; calls: string[][] } {
+  const calls: string[][] = [];
+  let next = 600;
+  const h = harness({
+    ghCommandFn: routingFakeGh((args) => {
+      calls.push(args);
+      if (args[1] === "create") {
+        return `https://github.com/${VIBE}/issues/${next++}`;
+      }
+      return "";
+    }, permission),
+    readTextFile,
+  });
+  return { h, calls };
+}
+
+const creates = (calls: string[][]): string[][] =>
+  calls.filter((c) => c[1] === "create");
+const comments = (calls: string[][]): string[][] =>
+  calls.filter((c) => c[1] === "comment");
+
+Deno.test("route-issue --part - dry-run checks write access, creates and comments nothing, and reports the split", async () => {
+  const { h, calls } = splitHarness();
+  const result = await routeIssueCommand.execute(
+    {
+      repo: PRODUCT,
+      title: "Split work",
+      part: [PART_A, PART_B_DEPENDS],
+      "dry-run": true,
+      __testDeps: h.deps,
+    },
+    config,
+  );
+
+  assertEquals(result.success, true);
+  assertEquals(creates(calls), []);
+  assertEquals(comments(calls), []);
+  const report = JSON.parse(h.printed[0]!) as RouteIssueReport;
+  assertEquals(report.action, "dry-run");
+  assertEquals(report.issues.length, 2);
+  assertEquals(report.issues.every((i) => i.number === null), true);
+});
+
+Deno.test("route-issue --part - dry-run still refuses when a non-target part repository is read-only", async () => {
+  const { h, calls } = splitHarness("READ");
+  const result = await routeIssueCommand.execute(
+    {
+      repo: PRODUCT,
+      title: "Split work",
+      part: [PART_A, PART_B_DEPENDS],
+      "dry-run": true,
+      __testDeps: h.deps,
+    },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Permission refused, nothing created");
+  assertEquals(creates(calls), []);
+  assertEquals(comments(calls), []);
+});
+
+Deno.test("route-issue --part - a live split files one issue per part and cross-links them with Depends on and Related", async () => {
+  const { h, calls } = splitHarness();
+  const result = await routeIssueCommand.execute(
+    {
+      repo: PRODUCT,
+      title: "Split work",
+      part: [PART_A, PART_B_DEPENDS],
+      __testDeps: h.deps,
+    },
+    config,
+  );
+
+  assertEquals(result.success, true);
+  assertEquals(creates(calls).length, 2);
+  const report = JSON.parse(h.printed[0]!) as RouteIssueReport;
+  assertEquals(report.action, "split");
+  assertEquals(report.issues.map((i) => i.number), [600, 601]);
+
+  const commentsOn = comments(calls);
+  assertEquals(commentsOn.length, 2);
+  const onProduct = commentsOn.find((c) =>
+    c[c.indexOf("--repo") + 1] === PRODUCT
+  )!;
+  const onVibe = commentsOn.find((c) => c[c.indexOf("--repo") + 1] === VIBE)!;
+  assertStringIncludes(
+    onProduct[onProduct.indexOf("--body") + 1]!,
+    `Related: ${VIBE}#601`,
+  );
+  assertStringIncludes(
+    onVibe[onVibe.indexOf("--body") + 1]!,
+    `Depends on: ${PRODUCT}#600`,
+  );
+});
+
+Deno.test("route-issue --part - a single part string is refused with the JSON array hint and creates nothing", async () => {
+  const { h, calls } = splitHarness();
+  const result = await routeIssueCommand.execute(
+    { repo: PRODUCT, title: "Split work", part: PART_A, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "at least two parts");
+  assertStringIncludes(result.message, "JSON array");
+  assertEquals(creates(calls), []);
+});
+
+Deno.test("route-issue --part - malformed, unknown-key and self-referential parts are refused before any create", async () => {
+  const cases: Array<{ part: unknown; message: string }> = [
+    {
+      part: [`${PRODUCT}`, PART_B_DEPENDS],
+      message: "must be owner/repo=body-file",
+    },
+    {
+      part: [`${PRODUCT}=a.md;owner=x`, PART_B_DEPENDS],
+      message: "unknown key 'owner'",
+    },
+    {
+      part: [PART_A, `${VIBE}=b.md;depends-on=other/repo`],
+      message: "which is not one of the --part repositories",
+    },
+    {
+      part: [`${PRODUCT}=a.md;depends-on=${PRODUCT}`, `${VIBE}=b.md`],
+      message: "cannot depend on itself",
+    },
+    {
+      part: [`${PRODUCT}=a.md`, `${PRODUCT}=b.md`],
+      message: `names ${PRODUCT} more than once`,
+    },
+    {
+      part: [PART_A, `${VIBE}=b.md;depends-on=bad`],
+      message: "depends-on must list owner/repo names",
+    },
+  ];
+  for (const { part, message } of cases) {
+    const { h, calls } = splitHarness();
+    const result = await routeIssueCommand.execute(
+      { repo: PRODUCT, title: "Split work", part, __testDeps: h.deps },
+      config,
+    );
+    assertEquals(result.success, false);
+    assertStringIncludes(result.message, message);
+    assertEquals(creates(calls), []);
+  }
+});
+
+Deno.test("route-issue --part - combining --part with --body-file is refused before any create", async () => {
+  const { h, calls } = splitHarness();
+  const result = await routeIssueCommand.execute(
+    {
+      repo: PRODUCT,
+      title: "Split work",
+      part: [PART_A, PART_B_DEPENDS],
+      "body-file": "body.md",
+      __testDeps: h.deps,
+    },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "cannot be combined with --part");
+  assertEquals(creates(calls), []);
+});
+
+Deno.test("route-issue --part - an unreadable part body fails before any create", async () => {
+  const { h, calls } = splitHarness(
+    "WRITE",
+    (path) =>
+      path === "a.md"
+        ? Promise.resolve("body a")
+        : Promise.reject(new Error("no such file")),
+  );
+  const result = await routeIssueCommand.execute(
+    {
+      repo: PRODUCT,
+      title: "Split work",
+      part: [PART_A, PART_B_DEPENDS],
+      __testDeps: h.deps,
+    },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Could not read --part body file b.md");
+  assertEquals(creates(calls), []);
+});
+
+Deno.test("route-issue --part - a permission refusal on a non-target part repository creates nothing", async () => {
+  const { h, calls } = splitHarness("READ");
+  const result = await routeIssueCommand.execute(
+    {
+      repo: PRODUCT,
+      title: "Split work",
+      part: [PART_A, PART_B_DEPENDS],
+      __testDeps: h.deps,
+    },
+    config,
+  );
+
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Permission refused, nothing created");
+  assertEquals(creates(calls), []);
 });

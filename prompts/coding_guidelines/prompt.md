@@ -1041,8 +1041,10 @@ this **instead of looping**:
    code lives: product code, CI or config goes to the repo that versions it; a
    worker, fleet, container, prompt, provider or orchestration change goes to
    `stSoftwareAU/VibeCoder`; a multi-repo change gets one issue per
-   independently deployable codebase, linked with `Depends on`/`Related` and no
-   duplicated scope. A repo-scoped diagnostic (setup fast-failure, lock or
+   independently deployable codebase, all filed in one `route-issue` call with
+   one `--part <owner>/<repo>=<body-file>` per repo (two or more parts as a JSON
+   array in one `--part` value, e.g. `--part '["owner/a=a.md","owner/b=b.md;depends-on=owner/a"]'`),
+   linked with `Depends on`/`Related` and no duplicated scope. A repo-scoped diagnostic (setup fast-failure, lock or
    lease, back-off, escalation anchor) stays in the monitored repo: never close
    a live diagnostic as "wrong repo" (#2592), and link a separate Vibe Coder
    root-cause issue if needed. Search open **and** recently closed issues and

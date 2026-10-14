@@ -35,7 +35,7 @@ flowchart TD
 | Product code, CI, config | The repo that versions it |
 | Worker, fleet, container, prompt, provider or orchestration | `stSoftwareAU/VibeCoder` |
 | A repo-scoped diagnostic (see section 4) | The monitored repo |
-| A change across several repos | One issue per independently deployable codebase, linked with `Depends on` / `Related`; no duplicated scope |
+| A change across several repos | One issue per independently deployable codebase, filed in one `route-issue --part` call (section 5) and linked with `Depends on` / `Related`; no duplicated scope |
 
 ## 3. Audit fields
 
@@ -69,6 +69,20 @@ across repos. The audit is printed to stdout as JSON (`classification`,
 `issues`, `labels_not_migrated`). The command exits non-zero on a permission
 refusal, an unreadable body file, an unknown option or any other error.
 
+A change across several repos is one call with one `--part` per repo, each
+naming its own body file: `--part owner/repo=body-file[;depends-on=owner/other]`.
+Two or more parts need a JSON array in a single `--part` value, because a
+repeated flag keeps only its last value:
+
+```bash
+route-issue --repo owner/a --title "..." \
+  --part '["owner/a=a.md","owner/b=b.md;depends-on=owner/a"]' [--dry-run]
+```
+
+Each part is filed as one issue in its own repo. `depends-on` names the parts a
+part waits on; the other parts are linked with `Related`. `--body-file` cannot
+be combined with `--part`.
+
 Prefer it to a bare `gh issue create` whenever the target repo may not be the
 owner. `--dry-run` prints the classification, the audit fields and any
 duplicate it would reuse, and creates nothing; use it first when unsure.
@@ -84,8 +98,9 @@ route-issue --resolve-duplicate owner/repo#N --correct owner/repo#M [--dry-run]
 write permission on both repos, comments on both issues, and closes the wrong
 issue last, as not planned. The titles need not match: this is the case of
 `stSoftwareAU/VibeCoder#3607` and `stSoftwareAU/GRQ-AutoTrader#3242`, which
-describe the same problem under different titles. `--dry-run` calls nothing at
-all; it prints what would be linked and closed. A repo-scoped diagnostic is
+describe the same problem under different titles. `--dry-run` runs the same
+read-only checks (the correct issue must exist, and write permission is checked
+on both repos), writes nothing, and prints what would be linked and closed. A repo-scoped diagnostic is
 never closed (section 4), and the command refuses and says why. `--repo`,
 `--title`, `--body-file` and `--label` cannot be combined with
 `--resolve-duplicate`, and `--correct` requires it.
