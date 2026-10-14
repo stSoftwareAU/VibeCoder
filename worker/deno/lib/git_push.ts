@@ -578,6 +578,13 @@ export async function gateUnpushedCommits(
  *
  *   1. `git status --porcelain` — if dirty, stage and commit with the
  *      provided message.
+ *   1b. Step 1b — when `preFlight` is supplied, `gateUnpushedCommits` runs
+ *      the changed-file pre-push checks (`runPrePushGate`) over the unpushed
+ *      commits, including any the agent committed but never pushed (nothing
+ *      runs when no commit is unpushed). When Step 1 committed nothing it
+ *      also re-runs the repo's pre-flight commands; when Step 1 committed,
+ *      those commands already ran there and are not repeated. A block
+ *      refuses the push.
  *   2. `pushUnpushedCommits` — push every commit ahead of origin (handles
  *      first-time push and non-fast-forward recovery internally).
  *   3. Re-count unpushed commits against the branch's own remote head —
@@ -597,10 +604,13 @@ export async function gateUnpushedCommits(
  *   (Issue #2584). Defaults to `false` (forbid pushing to the default branch).
  * @param preFlight - Optional mandatory pre-flight gate (Issue #3577). When
  *   supplied with a non-empty `commands` list, the commands run at the
- *   `assertSafeToCommit()` chokepoint before the automated commit; the first
- *   non-zero exit (or a command that cannot be started, or a timeout) blocks
- *   BOTH the commit and the push. There is no override flag. Omit to leave the
- *   repo unaffected (zero added latency).
+ *   `assertSafeToCommit()` chokepoint before the automated commit, and again
+ *   in Step 1b when Step 1 committed nothing and unpushed commits exist; the
+ *   first non-zero exit (or a command that cannot be started, or a timeout)
+ *   blocks BOTH the commit and the push. There is no override flag. Supplying
+ *   a spec, even one with an empty `commands` list, also turns on Step 1b's
+ *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
+ *   (zero added latency, no gate).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly

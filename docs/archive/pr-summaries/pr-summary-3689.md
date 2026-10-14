@@ -147,7 +147,7 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
 Docs sweep: grep terms `pre-push gate`, `commitAndPushPending`, `unpushed`,
 `gateBeforePush`, `cspell`, `sweptAt`, `network/credential`, `Left to CI`; section: `docs/CONFIGURATION.md` pre-flight
 gate section; siblings: "markdownlint", "gitleaks"; files updated:
-`docs/CONFIGURATION.md`, `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
+`docs/CONFIGURATION.md` (the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
 `prompts/security_scan/prompt.md`. Remaining hits, each still true and left
 unchanged:
