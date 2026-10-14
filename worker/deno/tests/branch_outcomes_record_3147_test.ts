@@ -149,7 +149,7 @@ Deno.test("issue prompt Test Plan step names the Branch outcomes: list, the fact
       "<!-- vibe-branch-outcomes -->",
       "noneAdded",
       "flipWentRed",
-      "exempt",
+      '"kind":"untestable"',
     ]
   ) {
     assert(
@@ -195,7 +195,7 @@ Deno.test("pr_feedback prompt requires re-enumerating every branch a fix commit 
       "every test it names must exist at the head",
       "facts file",
       "pr-summary-<N>.facts.json",
-      "true to the head",
+      "keeps the facts file true to the head",
     ]
   ) {
     assert(
