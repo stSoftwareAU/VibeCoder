@@ -23,6 +23,7 @@ import {
 import { assertSafeToCommit, inspectStagedFiles } from "./pre_commit_safety.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
+import { runPrePushGate } from "./pre_push_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import { getPreFlightCommands } from "./repo_config.ts";
 import type { RepoConfig } from "../types.ts";
@@ -511,6 +512,60 @@ export async function unstageWorkerStateFiles(
 }
 
 /**
+ * Run the pre-push gate over the commits about to be pushed (Issue #3689).
+ *
+ * A no-op when nothing is unpushed. Synthesises the stdin git would hand a
+ * pre-push hook (`<local ref> <local sha> <remote ref> <remote sha>`), using
+ * forty zeros when the branch has no local tracking ref. Pre-flight commands
+ * are skipped when Step 1 already ran them this call. Any failure — including
+ * being unable to determine the state — is returned as an error so the caller
+ * refuses to push (fail closed).
+ */
+async function gateUnpushedCommits(
+  branchName: string,
+  options: GitCommandOptions,
+  preFlight: PreFlightGateSpec,
+  preFlightAlreadyRan: boolean,
+): Promise<Result<void>> {
+  const state = await describeUnpushedCommits(branchName, options);
+  if (!state.ok) return { ok: false, error: state.error };
+  if (state.value.count === 0) return { ok: true, value: undefined };
+
+  const head = await runGitCommand(["rev-parse", "HEAD"], options);
+  if (!head.ok) return { ok: false, error: head.error };
+  if (head.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `[PRE_PUSH_BLOCKED] git rev-parse HEAD failed: ${head.value.stderr.trim()}`,
+      ),
+    };
+  }
+  const remoteSha = state.value.source === "tracking-ref" && state.value.sha
+    ? state.value.sha
+    : "0".repeat(40);
+  const ref = `refs/heads/${branchName}`;
+  const gate = await runPrePushGate({
+    cwd: options.cwd ?? Deno.cwd(),
+    stdin: `${ref} ${head.value.stdout.trim()} ${ref} ${remoteSha}\n`,
+    preFlightCommands: preFlightAlreadyRan ? [] : preFlight.commands,
+    timeoutSeconds: preFlight.timeoutSeconds,
+    runner: preFlight.runner,
+  });
+  if (!gate.ok) {
+    return {
+      ok: false,
+      error: new Error(
+        `[PRE_PUSH_BLOCKED] ${gate.error.message}\n` +
+          `Unpushed commits on ${branchName} were not pushed.`,
+        { cause: gate.error },
+      ),
+    };
+  }
+  return { ok: true, value: undefined };
+}
+
+/**
  * Commit any uncommitted working-tree changes and push every unpushed commit
  * to origin (Issue #1643 — "Why we forget to push?").
  *
@@ -685,6 +740,22 @@ export async function commitAndPushPending(
       } else {
         committedNewChanges = true;
       }
+    }
+  }
+
+  // Step 1b — gate commits the agent made but never pushed itself (Issue
+  // #3689). The agent's per-run pre-push hook only covers the agent's own
+  // `git push`; these commits would otherwise leave ungated by the
+  // changed-file checks. Final-mile callers (those passing `preFlight`) only.
+  if (preFlight) {
+    const gate = await gateUnpushedCommits(
+      branchName,
+      options,
+      preFlight,
+      committedNewChanges,
+    );
+    if (!gate.ok) {
+      return { ok: false, error: gate.error };
     }
   }
 

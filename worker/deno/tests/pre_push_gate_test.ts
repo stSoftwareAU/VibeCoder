@@ -505,3 +505,89 @@ Deno.test("defaultPrePushGit: a nonexistent working directory fails closed", asy
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+// ---- cspell (Issue #3689) ---------------------------------------------------
+
+Deno.test("planChangedFileChecks: cspell config and a changed .md plans cspell with the files", () => {
+  const result = planChangedFileChecks(
+    ["pr-summary-1.md", "x.rs"],
+    ["cspell.json"],
+    { repoRoot: "/r", markdownlintBinary: null, cspellBinary: "/r/bin/cspell" },
+  );
+  assert(result.ok);
+  const check = result.value.find((c) => c.label === "cspell");
+  assert(check !== undefined);
+  assertEquals(
+    check.command,
+    "'/r/bin/cspell' --no-progress --no-summary --no-must-find-files " +
+      "'pr-summary-1.md'",
+  );
+  assertEquals(check.cwd, "/r");
+});
+
+Deno.test("planChangedFileChecks: a docs/cspell.json config is passed with --config", () => {
+  const result = planChangedFileChecks(["CHANGELOG.md"], ["docs/cspell.json"], {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    cspellBinary: "/r/bin/cspell",
+  });
+  assert(result.ok);
+  assert(result.value[0]!.command.includes("--config docs/cspell.json "));
+});
+
+Deno.test("planChangedFileChecks: no cspell config means no cspell check", () => {
+  const result = planChangedFileChecks(["a.md"], ["README.md"], {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    cspellBinary: null,
+  });
+  assert(result.ok);
+  assertEquals(result.value, []);
+});
+
+Deno.test("planChangedFileChecks: cspell configured but binary missing is an error naming cspell", () => {
+  const result = planChangedFileChecks(["a.md"], ["cspell.json"], {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    cspellBinary: null,
+  });
+  assert(!result.ok);
+  assert(result.error.includes("cspell"));
+});
+
+Deno.test("planChangedFileChecks: only non-spellchecked extensions means no cspell check", () => {
+  const result = planChangedFileChecks(["src/a.rs"], ["cspell.json"], {
+    repoRoot: "/r",
+    markdownlintBinary: null,
+    cspellBinary: null,
+  });
+  assert(result.ok);
+  assertEquals(result.value, []);
+});
+
+Deno.test("runPrePushGate: a failing cspell blocks the push", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    await Deno.writeTextFile(`${clone}/cspell.json`, "{}\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "cspell config");
+    const tip = await git(clone, "rev-parse", "HEAD");
+    const seen: string[] = [];
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: stdin.replace(
+        / [0-9a-f]{40} refs\/heads\/main/,
+        ` ${tip} refs/heads/main`,
+      ),
+      preFlightCommands: [],
+      runner: recordingRunner((c) => c.includes("/fake/cspell"), seen),
+      findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+      findCspell: () => Promise.resolve("/fake/cspell"),
+    });
+    assert(!result.ok);
+    assertInstanceOf(result.error, PreFlightGateError);
+    assert(result.error.command.includes("/fake/cspell"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});

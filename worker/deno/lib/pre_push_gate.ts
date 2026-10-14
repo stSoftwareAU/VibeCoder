@@ -25,6 +25,7 @@ import { outermostConfigDirs } from "./repo_formatters.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
+import { checkSweptAtAncestry } from "./pre_push_sweep_check.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
@@ -176,6 +177,33 @@ const DENO_FORMAT_EXTENSIONS = [
 const DENO_LINT_EXTENSIONS = DENO_FORMAT_EXTENSIONS.slice(0, 8);
 const MARKDOWN_EXTENSIONS = [".md", ".markdown"];
 
+/** Extensions the Spelling workflow's glob covers (`**\/*.{md,html,js,ts,css,sh}`). */
+const CSPELL_EXTENSIONS = [
+  ".md",
+  ".markdown",
+  ".html",
+  ".js",
+  ".ts",
+  ".css",
+  ".sh",
+];
+
+/** Config names cspell finds on its own when run from the repo root. */
+const CSPELL_ROOT_CONFIGS = [
+  "cspell.json",
+  ".cspell.json",
+  "cSpell.json",
+  "cspell.yaml",
+  "cspell.yml",
+  ...["json", "jsonc", "js", "cjs", "mjs", "yaml", "yml"].flatMap((ext) => [
+    `cspell.config.${ext}`,
+    `.cspell.config.${ext}`,
+  ]),
+];
+
+/** Non-root config locations; cspell needs `--config` to find these. */
+const CSPELL_NESTED_CONFIGS = ["docs/cspell.json"];
+
 const MARKDOWNLINT_CONFIGS = [
   ".markdownlint-cli2.jsonc",
   ".markdownlint-cli2.yaml",
@@ -233,6 +261,8 @@ export function planChangedFileChecks(
   opts: {
     repoRoot: string;
     markdownlintBinary: string | null;
+    /** Resolved cspell binary; absent or null means "not found". */
+    cspellBinary?: string | null;
     denoScopes?: Record<string, DenoScopeConfig>;
   },
 ): Result<ChangedFileCheck[], string> {
@@ -321,6 +351,39 @@ export function planChangedFileChecks(
     });
   }
 
+  const rootCspell = CSPELL_ROOT_CONFIGS.find((name) => tracked.includes(name));
+  const nestedCspell = CSPELL_NESTED_CONFIGS.find((name) =>
+    tracked.includes(name)
+  );
+  const spelling = changed.filter((p) => hasExtension(p, CSPELL_EXTENSIONS));
+  if ((rootCspell || nestedCspell) && spelling.length > 0) {
+    if (!opts.cspellBinary) {
+      return {
+        ok: false,
+        error: "cspell is configured for this repository but cspell could " +
+          "not be found — the push is blocked, not waved through",
+      };
+    }
+    const binary = quoteForTokeniser(opts.cspellBinary);
+    const quoted = quoteAll(spelling);
+    if (binary === null) {
+      return {
+        ok: false,
+        error: `cannot safely quote the cspell path ${
+          JSON.stringify(opts.cspellBinary)
+        }`,
+      };
+    }
+    if (!quoted.ok) return quoted;
+    const config = rootCspell ? "" : `--config ${nestedCspell} `;
+    checks.push({
+      label: "cspell",
+      cwd: opts.repoRoot,
+      command:
+        `${binary} --no-progress --no-summary --no-must-find-files ${config}${quoted.value}`,
+    });
+  }
+
   return { ok: true, value: checks };
 }
 
@@ -357,11 +420,27 @@ async function loadDenoScopes(
  * Find a runnable `markdownlint-cli2`: the repo's own install first, then the
  * first working one on `PATH`; null when neither runs.
  */
-export async function findMarkdownlintBinary(
+export function findMarkdownlintBinary(
   repoRoot: string,
   pathValue: string,
 ): Promise<string | null> {
-  const local = `${repoRoot}/node_modules/.bin/markdownlint-cli2`;
+  return findBinary("markdownlint-cli2", repoRoot, pathValue);
+}
+
+/** Find a runnable `cspell`: the repo's own install first, then `PATH`. */
+export function findCspellBinary(
+  repoRoot: string,
+  pathValue: string,
+): Promise<string | null> {
+  return findBinary("cspell", repoRoot, pathValue);
+}
+
+async function findBinary(
+  name: string,
+  repoRoot: string,
+  pathValue: string,
+): Promise<string | null> {
+  const local = `${repoRoot}/node_modules/.bin/${name}`;
   try {
     if ((await Deno.stat(local)).isFile && await canRunBinary(local)) {
       return local;
@@ -371,7 +450,7 @@ export async function findMarkdownlintBinary(
   }
   for (const dir of pathValue.split(":")) {
     if (dir === "") continue;
-    const candidate = `${dir}/markdownlint-cli2`;
+    const candidate = `${dir}/${name}`;
     try {
       if (
         (await Deno.stat(candidate)).isFile && await canRunBinary(candidate)
@@ -400,6 +479,9 @@ export async function runPrePushGate(opts: {
   runner?: PreFlightRunner;
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
+  findCspell?: (repoRoot: string) => Promise<string | null>;
+  /** Default branch ref for the sweptAt check; resolved from origin/HEAD when absent. */
+  defaultRef?: string;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const git = opts.git ?? defaultPrePushGit;
   const fail = (message: string): Result<never, Error> => ({
@@ -432,12 +514,33 @@ export async function runPrePushGate(opts: {
     markdownlintBinary = await find(opts.cwd);
   }
 
+  const needsCspell =
+    changed.value.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
+    [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
+      tracked.includes(n)
+    );
+  let cspellBinary: string | null = null;
+  if (needsCspell) {
+    const find = opts.findCspell ??
+      ((root: string) => findCspellBinary(root, Deno.env.get("PATH") ?? ""));
+    cspellBinary = await find(opts.cwd);
+  }
+
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
+    cspellBinary,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);
+
+  const sweep = await checkSweptAtAncestry({
+    cwd: opts.cwd,
+    changed: changed.value,
+    git,
+    defaultRef: opts.defaultRef,
+  });
+  if (!sweep.ok) return fail(sweep.error);
 
   const checksRun: string[] = [];
   for (const check of plan.value) {

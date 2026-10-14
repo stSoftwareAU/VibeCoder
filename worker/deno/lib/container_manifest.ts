@@ -217,6 +217,10 @@ export const REQUIRED_RUNTIME_TOOLS: readonly string[] = [
  * `codespell`, which NEAT-AI-core's gate skipped with a warning and
  * NEAT-AI-scorer's `scripts/spell-check.sh` preflight exits 1 without.
  *
+ * `cspell` (Issue #3689) is run by the pre-push gate itself over the changed
+ * files whenever a repository tracks a cspell config (GRQ: `docs/cspell.json`),
+ * and the gate fails closed when it is configured but missing.
+ *
  * Not every pinned toolchain is listed here, and `codegraph` (Issue #2153) is
  * the deliberate absence: it exists for the worker's own repo-context trial,
  * so no repository's gate would miss it and requiring it would state a
@@ -237,6 +241,7 @@ export const REQUIRED_REPO_TOOLCHAIN_COMMANDS: readonly string[] = [
   "pwsh",
   "bats",
   "codespell",
+  "cspell",
 ];
 
 /**

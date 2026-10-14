@@ -232,3 +232,126 @@ Deno.test("commitAndPushPending - unstartable command aborts with not-started re
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+// Issue #3689 — commits the agent made but never pushed must pass the
+// changed-file gate before the final-mile push.
+
+const BAD_TS = "export const   x  =  1\n";
+const GOOD_TS = "export const x = 1;\n";
+
+/** Commit `file` locally (unpushed) in a repo rooted by a deno.json. */
+async function commitLocally(
+  downstream: string,
+  file: string,
+  content: string,
+): Promise<void> {
+  await Deno.writeTextFile(`${downstream}/deno.json`, "{}\n");
+  await runGit(["add", "deno.json"], downstream);
+  await runGit(["commit", "-m", "add deno.json"], downstream);
+  await runGit(["push", "origin", "HEAD"], downstream);
+  await Deno.writeTextFile(`${downstream}/${file}`, content);
+  await runGit(["add", file], downstream);
+  const c = await runGit(["commit", "-m", "agent commit"], downstream);
+  assertEquals(c.code, 0, c.stderr);
+}
+
+const originSha = async (cwd: string, branch: string) =>
+  (await runGit(["ls-remote", "origin", branch], cwd)).stdout.split("\t")[0];
+
+Deno.test("commitAndPushPending - unpushed agent commit failing the gate is not pushed (#3689)", async () => {
+  const branch = "issue-3689-bad";
+  const { tmp, downstream } = await makeRepo("preflight_3689_bad_", branch);
+  try {
+    await commitLocally(downstream, "bad.ts", BAD_TS);
+    const before = await originSha(downstream, branch);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream },
+      false,
+      { commands: [] },
+    );
+
+    assert(!result.ok, "ungated unpushed commit must be refused");
+    if (!result.ok) {
+      assert(result.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
+    assertEquals(await originSha(downstream, branch), before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - clean unpushed agent commit passes the gate and is pushed (#3689)", async () => {
+  const branch = "issue-3689-good";
+  const { tmp, downstream } = await makeRepo("preflight_3689_good_", branch);
+  try {
+    await commitLocally(downstream, "good.ts", GOOD_TS);
+    const before = await originSha(downstream, branch);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream },
+      false,
+      { commands: [] },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+    assert(head !== before);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - staged changes run pre-flight exactly once (#3689)", async () => {
+  const branch = "issue-3689-once";
+  const { tmp, downstream } = await makeRepo("preflight_3689_once_", branch);
+  try {
+    await Deno.writeTextFile(`${downstream}/feature.txt`, "work\n");
+    const { runner, calls } = failRunner({
+      started: true,
+      code: 0,
+      stdout: "",
+      stderr: "",
+    });
+
+    const result = await commitAndPushPending(
+      branch,
+      "Auto-commit (Issue #3689 once)",
+      { cwd: downstream },
+      false,
+      { commands: ["./pre-flight.sh"], runner },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(calls, ["./pre-flight.sh"]);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - no preFlight spec: bad unpushed commit still pushed (#3689 WIP path)", async () => {
+  const branch = "issue-3689-wip";
+  const { tmp, downstream } = await makeRepo("preflight_3689_wip_", branch);
+  try {
+    await commitLocally(downstream, "bad.ts", BAD_TS);
+
+    const result = await commitAndPushPending(
+      branch,
+      "unused",
+      { cwd: downstream },
+    );
+
+    assert(result.ok, result.ok ? "" : result.error.message);
+    const head = (await runGit(["rev-parse", "HEAD"], downstream)).stdout
+      .trim();
+    assertEquals(await originSha(downstream, branch), head);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
