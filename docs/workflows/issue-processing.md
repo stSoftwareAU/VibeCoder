@@ -2116,9 +2116,10 @@ blocks first, it shares the single
 a second block fails the run — a branch that already carries a PR finalises
 as `summary_incomplete` through `reportSummaryRuleBlock`. The gate runs in
 the issue-run completion phase only; a pr_feedback run instead re-enumerates
-every branch its own fix commits add and refreshes the committed summary's
-`Branch outcomes:` list to the head, rather than leaving the first round's
-entries standing (`prompts/pr_feedback/prompt.md`).
+every branch its own fix commits add and refreshes the facts file's entries
+(`pr-summary-<N>.facts.json`) to the head when the PR has one, or the
+committed summary's `Branch outcomes:` list otherwise, rather than leaving the
+first round's entries standing (`prompts/pr_feedback/prompt.md`).
 
 ## 🔎 A summary that describes named code wrongly blocks the PR (Issue #3257)
 
