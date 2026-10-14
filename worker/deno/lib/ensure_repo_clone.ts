@@ -58,16 +58,52 @@ async function statIsDirectory(path: string): Promise<boolean> {
   }
 }
 
+/** Tail of the in-process queue per clone path (see {@link ensureRepoClone}). */
+const cloneQueues = new Map<string, Promise<unknown>>();
+
+/** Run `fn` after every earlier call for `key` has settled; the queue entry is dropped once idle. */
+async function runExclusive<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const previous = cloneQueues.get(key) ?? Promise.resolve();
+  const run = previous.then(fn);
+  const tail = run.catch(() => undefined);
+  cloneQueues.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (cloneQueues.get(key) === tail) cloneQueues.delete(key);
+  }
+}
+
 /**
  * Ensure `${workDir}/<repo name>` holds a clone of `repo`.
+ *
+ * Calls for the same clone path are serialised within the process: pool lanes,
+ * the PR-branch-update pass and the idle-task route all reach here for one
+ * repository at once, and an unserialised pair that both saw a corrupt clone
+ * would both call `setupRepo` — the second would be refused by the 24 h
+ * re-clone cap and reported as a second corruption, or would clone into the
+ * first one's half-finished directory (PR #3712 review). A caller that waited
+ * re-probes, finds the fresh clone and reuses it.
  *
  * @param repo - Repository in `owner/repo` form
  * @param workDir - Directory the worker clones repositories into
  */
-export async function ensureRepoClone(
+export function ensureRepoClone(
   repo: string,
   workDir: string,
   deps: EnsureRepoCloneDeps = {},
+): Promise<EnsureRepoCloneResult> {
+  const repoName = repo.split("/").pop() ?? repo;
+  return runExclusive(
+    `${workDir}/${repoName}`,
+    () => ensureRepoCloneLocked(repo, workDir, deps),
+  );
+}
+
+async function ensureRepoCloneLocked(
+  repo: string,
+  workDir: string,
+  deps: EnsureRepoCloneDeps,
 ): Promise<EnsureRepoCloneResult> {
   const setupRepoFn = deps.setupRepoFn ?? defaultSetupRepo;
   const isDirectory = deps.isDirectoryFn ?? statIsDirectory;

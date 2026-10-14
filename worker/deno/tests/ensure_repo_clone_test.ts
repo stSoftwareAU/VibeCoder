@@ -238,3 +238,145 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "ensureRepoClone - concurrent callers on one corrupt clone recover it once, none refused as a repeat (PR #3712 review)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
+      const configPath = `${workDir}/widget/.git/config`;
+      const healthy = await Deno.readTextFile(configPath);
+      await Deno.writeTextFile(configPath, `garbage line\n${healthy}`);
+
+      let setupCalls = 0;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      // Mirrors setupRepo: the first call repairs the clone, any further call
+      // for a clone already recovered is refused by the 24 h cap.
+      const setupRepoFn = async (): Promise<CommandResult> => {
+        setupCalls++;
+        if (setupCalls > 1) {
+          return {
+            success: false,
+            message: "already re-cloned within 24 h",
+          };
+        }
+        await held;
+        await Deno.writeTextFile(configPath, healthy);
+        return { success: true, message: `${workDir}/widget` };
+      };
+
+      const first = ensureRepoClone("acme/widget", workDir, { setupRepoFn });
+      const second = ensureRepoClone("acme/widget", workDir, { setupRepoFn });
+      // Let both callers reach the point where an unserialised pair would both
+      // have probed the corrupt clone, then finish the recovery.
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      const results = await Promise.all([first, second]);
+
+      assertEquals(results.map((r) => r.ok), [true, true]);
+      assertEquals(setupCalls, 1);
+      assertEquals(results.map((r) => r.cloned), [true, false]);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a failed call does not block the next caller for the same clone path, and other paths run in parallel",
+  async () => {
+    let calls = 0;
+    const failing = ensureRepoClone("acme/widget", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: () => {
+        calls++;
+        return Promise.reject(new Error("clone blew up"));
+      },
+    });
+    // Same path, queued behind the failing call: runs after it rather than
+    // inheriting its rejection.
+    const retryPromise = ensureRepoClone("acme/widget", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: () => {
+        calls++;
+        return Promise.resolve({ success: true, message: "" });
+      },
+    });
+    let rejected = false;
+    await failing.catch(() => (rejected = true));
+    assertEquals(rejected, true);
+    const retry = await retryPromise;
+    assertEquals(retry.ok, true);
+
+    // A different clone path is not queued behind a held one.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const slow = ensureRepoClone("acme/slow", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: async () => {
+        await held;
+        return { success: true, message: "" };
+      },
+    });
+    const other = await ensureRepoClone("acme/other", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: () => Promise.resolve({ success: true, message: "" }),
+    });
+    assertEquals(other.ok, true);
+    release();
+    assertEquals((await slow).ok, true);
+    assertEquals(calls, 2);
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a caller arriving after an earlier one finished still waits for the one still running (PR #3712 review)",
+  async () => {
+    const releases: Array<() => void> = [];
+    const log: string[] = [];
+    const call = (label: string) =>
+      ensureRepoClone("acme/widget", "/work", {
+        isDirectoryFn: () => Promise.resolve(false),
+        setupRepoFn: async () => {
+          log.push(`start ${label}`);
+          await new Promise<void>((resolve) => releases.push(resolve));
+          log.push(`end ${label}`);
+          return { success: true, message: "" };
+        },
+      });
+
+    const a = call("a");
+    const b = call("b");
+    // A starts first; B is queued behind it.
+    await Promise.resolve();
+    while (releases.length < 1) await Promise.resolve();
+    releases[0]!();
+    await a;
+    // B is now running (A's queue slot is gone); D arrives while B is held.
+    while (releases.length < 2) await Promise.resolve();
+    const d = call("d");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assertEquals(log, ["start a", "end a", "start b"]);
+    releases[1]!();
+    await b;
+    while (releases.length < 3) await Promise.resolve();
+    releases[2]!();
+    await d;
+    assertEquals(log, [
+      "start a",
+      "end a",
+      "start b",
+      "end b",
+      "start d",
+      "end d",
+    ]);
+  },
+);

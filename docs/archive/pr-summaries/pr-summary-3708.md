@@ -17,6 +17,7 @@ a corrupt clone aside and re-clones it (Issue #2957). Closes #3708.
 
 - `ensureRepoClone` removes nothing itself. The move-aside, the once-per-repo-per-24 h cap, the `.corrupt-*` sibling handling and the repeat-corruption escalation (Issue #2958) all stay inside `setupRepo`/`recoverCorruptClone`.
 - A healthy existing clone is still left untouched: no fetch and no `reset --hard`.
+- `ensureRepoClone` calls for the same clone path are serialised in-process with a keyed promise queue (`runExclusive`, `worker/deno/lib/ensure_repo_clone.ts`). Lanes, the PR-branch-update pass and the idle-task route reach it in parallel for one repository; unserialised, two callers that both saw a corrupt clone would both call `setupRepo`, and the loser would be refused by the 24 h cap and escalated as a repeat corruption (PR #3712 review). A caller that waited re-probes, finds the fresh clone and reuses it. Different clone paths do not wait on each other, and a failed call does not block the next one.
 
 ### Undiscoverable Facts
 
@@ -57,8 +58,9 @@ Issue numbers cited in the diff: #2957: Move a corrupt clone aside and re-clone 
 
 - Added `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - a clone with a corrupt .git/config is handed to setupRepo, not reused (Issue #3708)`. It uses a real `git init` clone with a garbage first line in `.git/config`. With the probe removed (base behaviour), it failed: `cloned: false` vs `cloned: true`.
 - Added `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - a corrupt clone whose recovery is refused fails loud (Issue #3708)`. It checks that a refused `setupRepo` recovery (the 24 h cap) comes back as `ok: false` and still names the cause `bad config line 1`. It also failed with the probe removed.
+- Added three review-round tests in the same file: `::ensureRepoClone - concurrent callers on one corrupt clone recover it once, none refused as a repeat (PR #3712 review)` (two concurrent calls on one real corrupt clone; fake `setupRepo` refuses a second call as the 24 h cap would; asserts both `ok`, one `setupRepo` call, `cloned` `[true, false]`; red with the queue removed: `AssertionError: Values are not equal`), `::ensureRepoClone - a failed call does not block the next caller for the same clone path, and other paths run in parallel`, and `::ensureRepoClone - a caller arriving after an earlier one finished still waits for the one still running (PR #3712 review)` (red when the queue entry is deleted unconditionally on completion).
 - No existing test was edited, and no assertion was removed.
-- `deno task test:unit tests/ensure_repo_clone_test.ts tests/broken_clone_test.ts tests/lane_worktree_test.ts tests/regression_git_operations_test.ts`: 81 passed, 0 failed, on the head.
+- `deno task test:unit tests/ensure_repo_clone_test.ts tests/broken_clone_test.ts tests/lane_worktree_test.ts tests/regression_git_operations_test.ts`: 84 passed, 0 failed, on the head (re-run after the review round).
 - `deno lint` (3232 files), `deno fmt --check` (3247 files) and `deno check` on the four changed TS files: all passed.
 - `./quality.sh`: every stage up to and including `release-tag ruleset` passed, including completeness checks, semgrep and markdownlint. The full `deno tests` stage did not finish inside the 580 s foreground cap (exit 124), so the full suite was not run here.
 
@@ -66,5 +68,8 @@ Issue numbers cited in the diff: #2957: Move a corrupt clone aside and re-clone 
 
 **Branch outcomes:**
 
-- `worker/deno/lib/ensure_repo_clone.ts:100` — healthy existing clone (`corruption === null`) is reused untouched — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - default directory probe reuses a real clone untouched` and `::ensureRepoClone - existing clone is left untouched (no setupRepo call)` — making the null case fall through to `setupRepo` turned both red
-- `worker/deno/lib/ensure_repo_clone.ts:100` — corrupt clone (non-null corruption) falls through to `setupRepo` — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - a clone with a corrupt .git/config is handed to setupRepo, not reused (Issue #3708)` — removing the probe (the old early return) turned it red
+- `worker/deno/lib/ensure_repo_clone.ts:136` — healthy existing clone (`corruption === null`) is reused untouched — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - default directory probe reuses a real clone untouched` and `::ensureRepoClone - existing clone is left untouched (no setupRepo call)` — making the null case fall through to `setupRepo` turned both red
+- `worker/deno/lib/ensure_repo_clone.ts:136` — corrupt clone (non-null corruption) falls through to `setupRepo` — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - a clone with a corrupt .git/config is handed to setupRepo, not reused (Issue #3708)` — removing the probe (the old early return) turned it red
+- `worker/deno/lib/ensure_repo_clone.ts:66` — a second caller for a clone path with an earlier call in flight waits for it (`cloneQueues.get(key) ?? …`) — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - concurrent callers on one corrupt clone recover it once, none refused as a repeat (PR #3712 review)` — replacing the queued predecessor with an immediate promise turned it red
+- `worker/deno/lib/ensure_repo_clone.ts:73` — queue entry dropped only if still this call's tail — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - a caller arriving after an earlier one finished still waits for the one still running (PR #3712 review)` — deleting unconditionally turned it red
+- `worker/deno/lib/ensure_repo_clone.ts:68` — a rejected call does not wedge the queue (`run.catch`) — `worker/deno/tests/ensure_repo_clone_test.ts::ensureRepoClone - a failed call does not block the next caller for the same clone path, and other paths run in parallel` — queuing on the raw rejected promise turned it red

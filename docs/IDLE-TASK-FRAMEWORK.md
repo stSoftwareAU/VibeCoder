@@ -162,7 +162,9 @@ Key points:
   clone: it is discarded and cloned afresh (Issue #2848). A directory that is
   a git repository but corrupt — a bad `.git/config`, broken refs or
   objects — is moved aside and re-cloned instead, capped at one recovery per
-  repo per 24 h (Issue #2957).
+  repo per 24 h (Issue #2957). Calls for the same clone path are serialised
+  within the process, so two lanes that both see one corrupt clone recover it
+  once rather than the second being refused as a repeat (PR #3712 review).
   Adding a repo to `.config.json` and raising its wrappers is therefore enough
   to bring it up — no manual clone.
 - **A claimed idle task always runs to completion.** The throttle
