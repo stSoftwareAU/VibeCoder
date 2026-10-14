@@ -81,6 +81,13 @@ export function parseArgs(argv: string[]): Result<CliArgs, Error> {
   };
 }
 
+/** Issue number from a `pr-summary-<N>.md` path, or `null` when absent. */
+export function issueNumberFromSummaryPath(path: string): number | null {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const match = /^pr-summary-(\d+)\.md$/.exec(name);
+  return match ? Number(match[1]) : null;
+}
+
 /** Injected effects, so the entry is testable without a process. */
 export interface CliDeps {
   readTextFile: (path: string) => Promise<string>;
@@ -122,6 +129,7 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
 
   const checked = await runPrSummaryCheck({
     summaryContent,
+    issueNumber: issueNumberFromSummaryPath(args.value.summaryFile),
     baseBranch: args.value.baseBranch,
     issueBody,
     issueLabels: args.value.labels,

@@ -31,6 +31,10 @@
  * deleted — a missing file is treated as "nothing to refresh", not as
  * "blank the body".
  *
+ * Issue #3535: the structured Branch outcomes facts file beside the summary is
+ * rendered into the rebuilt body and its content is part of the digest input,
+ * so a push changing only the facts still refreshes the body.
+ *
  * The rebuilt body also carries over the hidden sub-agent tier marker (Issue
  * #3403) the live body carries, so a review-fix refresh keeps attributing
  * the PR to the tier of the issue run that opened it rather than silently
@@ -51,6 +55,12 @@ import {
 } from "./pr_body.ts";
 import { buildWorkerFooter } from "./worker_identity.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
+import {
+  applyBranchOutcomesFacts,
+  prSummaryDigestInput,
+  prSummaryFactsPath,
+  resolveBranchOutcomesFacts,
+} from "./pr_summary_facts.ts";
 import {
   findBranchEvidenceImages,
   formatBranchEvidenceSection,
@@ -359,7 +369,8 @@ function extractLeadingSection(body: string, heading: string): string {
  *   worker did not author);
  * - the summary file was not deleted (a deleted summary means "nothing to
  *   refresh", not "blank the body");
- * - the summary actually changed:
+ * - the summary actually changed (Issue #3535: the facts file beside it counts
+ *   as part of the summary, in both the digest and the legacy diff):
  *   - when the live body carries a summary-digest marker (Issue #3315), that
  *     recorded digest differs from the digest of the summary at HEAD; or
  *   - for a legacy body with no digest marker, a before-push SHA is
@@ -443,16 +454,27 @@ export async function syncPrBodyFromSummary(
       };
     }
 
+    // Issue #3535: the facts file is a second pathspec so a facts-only change
+    // is not skipped.
     const summaryRelPath = prSummaryPath(issueNumber);
+    const factsRelPath = prSummaryFactsPath(issueNumber);
     const diffResult = await deps.runGitCommand(
-      ["diff", "--name-only", input.beforeSha, "HEAD", "--", summaryRelPath],
+      [
+        "diff",
+        "--name-only",
+        input.beforeSha,
+        "HEAD",
+        "--",
+        summaryRelPath,
+        factsRelPath,
+      ],
       { cwd: input.repoPath },
     );
     if (!diffResult.ok) {
       return {
         ok: false,
         error: new Error(
-          `Failed to diff ${summaryRelPath}: ${diffResult.error.message}`,
+          `Failed to diff ${summaryRelPath} and ${factsRelPath}: ${diffResult.error.message}`,
         ),
       };
     }
@@ -476,8 +498,25 @@ export async function syncPrBodyFromSummary(
   }
 
   const changedFiles = (view.files ?? []).map((f) => f.path);
-  const summaryContent = summaryResult.value.content;
-  const currentDigest = await prSummaryDigest(summaryContent);
+  const rawSummary = summaryResult.value.content;
+  // Issue #3535: fail loud on an invalid facts file; never rebuild without it.
+  const factsOutcome = await resolveBranchOutcomesFacts(
+    input.repoPath,
+    issueNumber,
+  );
+  if (factsOutcome.kind === "error") {
+    return { ok: false, error: new Error(factsOutcome.reason) };
+  }
+  // Must equal the digest completion_phase records at PR creation.
+  const currentDigest = await prSummaryDigest(
+    prSummaryDigestInput(
+      rawSummary,
+      factsOutcome.kind === "valid" ? factsOutcome.content : null,
+    ),
+  );
+  const summaryContent = factsOutcome.kind === "valid"
+    ? applyBranchOutcomesFacts(rawSummary, factsOutcome.rendered)
+    : rawSummary;
 
   if (recordedDigest !== undefined && recordedDigest === currentDigest) {
     return {

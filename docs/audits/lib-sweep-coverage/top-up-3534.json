@@ -1,0 +1,12 @@
+{
+  "issue": 3534,
+  "chunk": "top-up-3534",
+  "title": "top-up: versioned summary-facts schema, validator and renderer",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3534",
+  "definition": "modules added to worker/deno/lib/ after 12a-12af recorded their coverage: summary_facts.ts (#3534)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/summary_facts.ts"
+  ],
+  "sweptAt": "75ed6063423bdd0bdee8b7b0a59f0fde8918e676"
+}

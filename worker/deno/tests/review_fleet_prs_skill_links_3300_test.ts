@@ -1,8 +1,9 @@
 /**
  * Guards the review-fleet-prs skill's split into `references/` (Issue #3300).
  *
- * `SKILL.md` keeps its core loop and links out to `references/
- * {running-unattended,edge-cases,notes}.md`, and `docs/CONFIGURATION.md`'s
+ * `SKILL.md` keeps its core loop and links out to `references/`
+ * ({running-unattended,edge-cases,notes}.md from that split, and
+ * `trigger-queries.md` since Issue #3426), and `docs/CONFIGURATION.md`'s
  * deep link into the skill moved with it. A split like that breaks easily:
  * a relative `../` count that no longer matches the new file's depth, a
  * heading anchor that moved to a different file, or a `references/` file

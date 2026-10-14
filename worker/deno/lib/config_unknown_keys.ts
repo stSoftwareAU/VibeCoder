@@ -38,6 +38,9 @@ export const KNOWN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   // The GitHub App the review-fleet-prs skill reviews as; read by that
   // skill's app_token.ts, not by the worker.
   "pr_reviewer_app",
+  // Opt-in auto-release list for the review-fleet-prs skill; read by that
+  // skill's auto_release.ts, not by the worker.
+  "pr_reviewer_auto_release",
   "repos",
   "authorized_commenters",
   "author_source",

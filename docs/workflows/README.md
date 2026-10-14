@@ -349,7 +349,8 @@ That pass now works in its **own linked worktree**,
 clone. It shares the object store — no re-clone, no extra objects — and gets its
 own `HEAD`, index and checkout, so no other lane can move the tree underneath
 it. It no longer runs `reset --hard` / `clean -fd` on the shared clone at all:
-the clone is created only when genuinely missing.
+the clone is created only when missing, and a clone git reports as corrupt
+(a bad `.git/config`, say) is moved aside and re-cloned (Issues #2957, #3708).
 
 ```mermaid
 flowchart LR

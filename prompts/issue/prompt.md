@@ -1369,16 +1369,48 @@ The file MUST contain:
    reach the outcome. "No existing harness" with no search named is not a
    reason. An outcome the linked issue asks a test for, in its acceptance
    criteria or Definition of done, cannot be `exempt (untestable)`. Before the
-   PR is raised the worker also mutates the lines the diff adds and re-runs the covering tests; a mutation the
-   tests do not catch blocks the PR unless the summary names it as
-   `` `path:line` `` with `exempt (untestable): <reason>` (a non-empty
-   reason), the same convention. The Test Plan carries this enumeration as a
-   `Branch outcomes:` list — one line per outcome naming `path:line`, the
-   outcome, the test that reaches it, and that flipping it went red — or
-   `Branch outcomes: none added` when the diff adds no branch. When the diff
-   changes non-test, non-doc files, the worker blocks PR creation without
-   that line: it asks for it once more if this is the run's first summary
-   block, or records the shortfall against a PR the run already raised. A
+   PR is raised the worker also mutates the lines the diff adds and re-runs
+   the covering tests; a mutation the tests do not catch blocks the PR unless
+   the summary names it as `` `path:line` `` with
+   `exempt (untestable): <reason>` (a non-empty reason), the same convention.
+   Record this enumeration as structured facts in
+   `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.facts.json`, beside
+   the summary — one entry per outcome, because each outcome needs a test that
+   reaches it. A tested outcome names `path`, `line`, the `outcome`, the
+   `test` file, its `testName` and what `flipWentRed`:
+
+   ```json
+   {"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+     {"path":"lib/x.ts","line":12,"outcome":"empty input returns early",
+      "test":"tests/x_test.ts","testName":"returns early on empty input",
+      "flipWentRed":"removing the guard turned it red: the call threw"}
+   ]}}
+   ```
+
+   An exempt outcome carries an `exempt` object in place of the test fields —
+   the facts-file form of `exempt (out of scope): <reason>` or
+   `exempt (untestable): <reason>`: kind `out-of-scope` or `untestable`, and a
+   reason of at least three words:
+
+   ```json
+   {"path":"lib/x.ts","line":40,"outcome":"disk-full write fails",
+    "exempt":{"kind":"untestable","reason":"the suite cannot stage ENOSPC"}}
+   ```
+
+   When the diff adds no branch, write
+   `{"version":1,"branchOutcomes":{"noneAdded":true,"entries":[]}}`. Leave the
+   `<!-- vibe-branch-outcomes -->` marker in the Test Plan: the worker renders
+   the `Branch outcomes:` list there. An invalid or unreadable facts file
+   blocks PR creation, and so does a hand-written `Branch outcomes:` list
+   beside the facts file. The schema is in `CODING-STANDARDS.md` under
+   **Branch outcomes facts file**. Without a facts file the worker still reads
+   a `Branch outcomes:` list written in the Test Plan — one line per outcome
+   naming `path:line`, the outcome, the test that reaches it, and that
+   flipping it went red — or `Branch outcomes: none added` when the diff adds
+   no branch. When the diff changes non-test, non-doc files, the worker
+   blocks PR creation without the facts file or that line: it asks for it
+   once more if this is the run's first summary block, or records the
+   shortfall against a PR the run already raised. A
    named test that does not exist at the head is the same blocking finding as
    above. Likewise, a path the diff adds to an outcome
    an existing path already reaches — an early return, gate, route or direct
@@ -1497,7 +1529,18 @@ Fixed the button alignment issue by updating CSS flexbox properties. Closes
 
 - Added a headless-browser check for button alignment in `e2e/buttons.spec.ts`
 
-**Branch outcomes:**
+<!-- vibe-branch-outcomes -->
+```
 
-- `assets/css/buttons.css:31` — wrap disabled on narrow viewports — `e2e/buttons.spec.ts::the buttons' rects share one row at 375px` — restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows
+For that button case, the matching
+`docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.facts.json` is:
+
+```json
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"assets/css/buttons.css","line":31,
+   "outcome":"wrap disabled on narrow viewports",
+   "test":"e2e/buttons.spec.ts",
+   "testName":"the buttons' rects share one row at 375px",
+   "flipWentRed":"restoring `flex-wrap: wrap` turned it red: the measured button rects split across two rows"}
+]}}
 ```

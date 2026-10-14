@@ -12,7 +12,16 @@ import {
   hasBlock,
   runPrSummaryCheck,
 } from "../lib/pr_summary_check.ts";
-import { type CliDeps, main, parseArgs } from "../lib/pr_summary_check_cli.ts";
+import {
+  type CliDeps,
+  issueNumberFromSummaryPath,
+  main,
+  parseArgs,
+} from "../lib/pr_summary_check_cli.ts";
+import {
+  BRANCH_OUTCOMES_MARKER,
+  prSummaryFactsPath,
+} from "../lib/pr_summary_facts.ts";
 
 const ROOT = "/repo";
 const TEST_PATH = "worker/deno/tests/foo_test.ts";
@@ -94,16 +103,22 @@ function statusOf(reports: GateReport[], ref: string): string | undefined {
 
 async function run(
   summaryContent: string,
-  extra: { issueBody?: string | null; issueLabels?: string | null } = {},
+  extra: {
+    issueBody?: string | null;
+    issueLabels?: string | null;
+    issueNumber?: number | null;
+    repoRoot?: string;
+  } = {},
   git = fakeGit(),
 ) {
   return await runPrSummaryCheck({
     summaryContent,
+    issueNumber: extra.issueNumber ?? null,
     baseBranch: "main",
     issueBody: extra.issueBody ?? null,
     issueLabels: extra.issueLabels ?? null,
     runGit: git.runGit,
-    repoRoot: ROOT,
+    repoRoot: extra.repoRoot ?? ROOT,
   });
 }
 
@@ -311,4 +326,119 @@ Deno.test("main - a repository root failure exits 2 and names the repository roo
   assertStringIncludes(stderr, "repository root");
   assertStringIncludes(stderr, "not a git repo");
   assertEquals(d.out.length, 0);
+});
+
+// --- Branch outcomes facts file (Issue #3535) -------------------------------
+
+const FACTS_ISSUE = 77;
+const VALID_FACTS = JSON.stringify({
+  version: 1,
+  branchOutcomes: {
+    noneAdded: false,
+    entries: [{
+      path: "worker/deno/lib/foo.ts",
+      line: 42,
+      outcome: "error",
+      test: TEST_PATH,
+      testName: "rejects bad",
+      flipWentRed: "went red when the guard was removed",
+    }],
+  },
+});
+const MARKER_ONLY_SUMMARY = GOOD_SUMMARY.replace(
+  /\*\*Branch outcomes:\*\*\n- [^\n]*\n/,
+  `${BRANCH_OUTCOMES_MARKER}\n`,
+);
+
+/** Run with a repo root holding the given facts file (none when undefined). */
+async function runWithFacts(summary: string, facts?: string) {
+  const dir = await Deno.makeTempDir();
+  try {
+    if (facts !== undefined) {
+      await Deno.mkdir(`${dir}/docs/archive/pr-summaries`, { recursive: true });
+      await Deno.writeTextFile(
+        `${dir}/${prSummaryFactsPath(FACTS_ISSUE)}`,
+        facts,
+      );
+    }
+    return await run(summary, { issueNumber: FACTS_ISSUE, repoRoot: dir });
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+}
+
+Deno.test("runPrSummaryCheck - a marker-only summary with a valid facts file passes branch outcomes", async () => {
+  assert(!MARKER_ONLY_SUMMARY.includes("**Branch outcomes:**"));
+  assertStringIncludes(MARKER_ONLY_SUMMARY, BRANCH_OUTCOMES_MARKER);
+  const r = await runWithFacts(MARKER_ONLY_SUMMARY, VALID_FACTS);
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#3147"), "passed");
+  assertEquals(hasBlock(r.value), false);
+});
+
+Deno.test("runPrSummaryCheck - the same marker-only summary without a facts file blocks", async () => {
+  const r = await runWithFacts(MARKER_ONLY_SUMMARY);
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#3147"), "blocked");
+});
+
+Deno.test("runPrSummaryCheck - an invalid facts file blocks and names the file", async () => {
+  const r = await runWithFacts(MARKER_ONLY_SUMMARY, "{ not json");
+  assert(r.ok);
+  const report = r.value.find((g) => g.issueRef === "#3147")!;
+  assertEquals(report.status, "blocked");
+  assertStringIncludes(report.problems.join("\n"), "is invalid");
+  assertStringIncludes(
+    report.problems.join("\n"),
+    prSummaryFactsPath(FACTS_ISSUE),
+  );
+});
+
+Deno.test("runPrSummaryCheck - a valid facts file beside a hand-written list blocks", async () => {
+  // GOOD_SUMMARY is itself valid, so only the facts-plus-prose rule can block.
+  const alone = await runWithFacts(GOOD_SUMMARY);
+  assert(alone.ok);
+  assertEquals(statusOf(alone.value, "#3147"), "passed");
+
+  const r = await runWithFacts(GOOD_SUMMARY, VALID_FACTS);
+  assert(r.ok);
+  const report = r.value.find((g) => g.issueRef === "#3147")!;
+  assertEquals(report.status, "blocked");
+  assertStringIncludes(report.problems.join("\n"), "hand-written");
+});
+
+Deno.test("runPrSummaryCheck - a facts file is ignored when the summary name carries no issue number", async () => {
+  const r = await run(MARKER_ONLY_SUMMARY, { issueNumber: null });
+  assert(r.ok);
+  assertEquals(statusOf(r.value, "#3147"), "blocked");
+});
+
+Deno.test("issueNumberFromSummaryPath - reads the number from pr-summary-<N>.md only", () => {
+  assertEquals(
+    issueNumberFromSummaryPath("docs/archive/pr-summaries/pr-summary-77.md"),
+    77,
+  );
+  assertEquals(issueNumberFromSummaryPath("pr-summary-5.md"), 5);
+  assertEquals(issueNumberFromSummaryPath("summary.md"), null);
+  assertEquals(issueNumberFromSummaryPath("pr-summary-5.facts.json"), null);
+});
+
+Deno.test("main - reads the facts file named by the summary path", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/docs/archive/pr-summaries`, { recursive: true });
+    await Deno.writeTextFile(
+      `${dir}/${prSummaryFactsPath(FACTS_ISSUE)}`,
+      VALID_FACTS,
+    );
+    const d = deps(MARKER_ONLY_SUMMARY);
+    d.deps.repoRoot = () => Promise.resolve({ ok: true as const, value: dir });
+    const code = await main(
+      ["--base", "main", `x/pr-summary-${FACTS_ISSUE}.md`],
+      d.deps,
+    );
+    assertEquals(code, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
