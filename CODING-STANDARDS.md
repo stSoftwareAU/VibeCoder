@@ -1730,7 +1730,10 @@ for every PR summary — containing:
 In this repository, `deno task pr-summary-check --base <base-branch>
 <summary-file>` from `worker/deno` runs most of the PR-summary gates against a
 draft summary before the PR is raised. A gate it reports as not checked is not
-a pass.
+a pass. For a summary named `pr-summary-<N>.md` it also reads the sibling
+`pr-summary-<N>.facts.json`, as the worker does: the Branch outcomes gate sees
+the list rendered at the `<!-- vibe-branch-outcomes -->` marker, and blocks on
+an invalid facts file or on a facts file beside a hand-written list.
 
 The summary describes the **final** state of the branch, not the history of the
 run. Before the last commit, re-read `git diff <base>...HEAD`, rerun the tests
