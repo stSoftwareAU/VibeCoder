@@ -31,12 +31,16 @@ fixed with a negative test; the full classification is in
   have usually pushed the agent's commits already; the GRQ first-failing SHAs
   e9a7f8fd, 3e313843 and 65d0d714 are such checkpoint commits and 6b3eeaef is
   "Merge remote WIP checkpoints". The check runs before `gh pr create`
-  (PR #3716 review). A completion-phase block is reported as
-  `PRE_PUSH_GATE_MARKER` ("the branch did not pass the worker's pre-push
-  gate") followed by the gate output, so the quoted formatter, linter and test
-  output cannot reclassify the run: it is the `pre_push_gate` category, one
-  normal ladder attempt plus a failure comment carrying the output (PR #3716
-  review, same mechanism as #3431 and #3454).
+  (PR #3716 review). A completion-phase block on the
+  branch's content is reported as `PRE_PUSH_GATE_MARKER` ("the branch did not
+  pass the worker's pre-push gate") followed by the gate output, redacted and
+  cut to its first and last 2,000 characters, so the quoted formatter, linter
+  and test output cannot reclassify the run: it is the `pre_push_gate`
+  category, one normal ladder attempt plus a failure comment carrying that
+  capped output. A git or remote lookup failure is not a verdict on the
+  branch: it is reported unmarked as `Git push failed: ...`, the `push_failure`
+  infrastructure category, and is retried in-run (PR #3716 review, same
+  mechanism as #3431 and #3454).
 
 ```mermaid
 flowchart LR
@@ -183,7 +187,7 @@ gate section; siblings: "markdownlint", "gitleaks"; files updated:
 (module header, `PrePushGateInfrastructureError`), `worker/deno/lib/pre_push_sweep_check.ts` (`SweepCheckResult`), `worker/deno/lib/phases/completion_phase.ts` (gate reason cap), `docs/CONFIGURATION.md` (the whole-branch completion gate paragraph and the "runs at four points" item 3 added in PR #3716's review; the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
 `prompts/security_scan/prompt.md`, `docs/INTERNALS.md` (new "`pre_push_gate` is
-its own failure category" section, extended for the output cap and the unmarked lookup failures; `docs/CONFIGURATION.md` and `docs/pre-pr-ci-audit.md` gained one sentence each; grep terms added `PRE_PUSH_BLOCKED`, `describeUnpushedCommits`, `ls-remote`; siblings grepped: `security_fix_gate`,
+its own failure category" section, extended for the output cap and the unmarked lookup failures; `docs/CONFIGURATION.md` gained the whole-branch remote-head sentence and the lookup-failure sentence, and `docs/pre-pr-ci-audit.md` a parenthetical about the cut plus the "Only a verdict on the branch carries it" sentence; grep terms added `PRE_PUSH_BLOCKED`, `describeUnpushedCommits`, `ls-remote`; siblings grepped: `security_fix_gate`,
 `summary_incomplete`). Remaining hits, each still true and left
 unchanged:
 - `docs/MERGE.md` (`assertPushTargetAllowed` default-branch rule and Issue #1661 unstaging): describes the push guard, which this change does not alter.
@@ -262,7 +266,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   dropping the cspell plan, or forcing either operand of
   `rootCspell || nestedCspell` false, turns the matching test red.
 - **Added** `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`
-  — five tests (a sixth is described below) that the completion phase gates the first push and the retry
+  — six tests (four more are described below) that the completion phase gates the first push and the retry
   push, falls back to `{ commands: [] }` without a spec, passes the resolved PR
   base (`origin/main`) to both gate calls, and passes no base when it cannot be
   resolved. Red-check: removing `gateBeforePush()` turns the first three red;
@@ -282,7 +286,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   `pre_push_gate` / `ladder`; the two existing block tests now assert the reason
   starts with the marker and still contains the gate output. Red-check:
   deleting the `startsWith(PRE_PUSH_GATE_MARKER)` rule in
-  `detectFailureCategory` turned 4 of the 13 tests in those two files red.
+  `detectFailureCategory` turned 4 of the 17 tests in those two files red (re-run at the head).
 - **Added** (PR #3716 second review, cap and blame):
   `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts` — a gate
   block with over 100 KB of output keeps the marker, names the failing command,

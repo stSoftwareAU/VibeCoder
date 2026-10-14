@@ -4979,7 +4979,7 @@ posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
 
 The completion phase's pre-push gate (`gateBeforePush()` in
 `completion_phase.ts`) blocks with `[PRE_PUSH_BLOCKED]` followed by the failing
-check's full output: `cargo fmt --check` and `deno fmt --check` diff hunks,
+check's output (cut to a head and tail, see "Two limits" below): `cargo fmt --check` and `deno fmt --check` diff hunks,
 markdownlint `[Context: ...]` excerpts and quoted pre-flight test names. That
 text is repository content, so a source comment such as `// back off when the
 exchange rate limit is hit` was read as a rate limit: the run was released
@@ -4987,7 +4987,9 @@ uncounted with no failure comment and re-claimed every cycle, the loop that Issu
 removed. The shared mechanism is the one described under
 "`summary_incomplete` is its own failure category" above, with
 `PRE_PUSH_GATE_MARKER` ("the branch did not pass the worker's pre-push gate")
-prefixed to the gate's message in `gateBeforePush()`.
+prefixed to the gate's message in `gateBeforePush()`, which redacts
+and cuts that message first; an error that is not a `PrePushGateBlockedError`
+is reported without the marker (see "Two limits" below).
 `detectFailureCategory` matches it with `startsWith` after the summary-gate and
 security-fix markers, giving `pre_push_gate` (display `pre-push-gate`), which is
 `not_code_fixable` (class `agent-outcome`) and not infrastructure, so
@@ -5007,7 +5009,9 @@ line that names the failing check, the tail the end of its output, and GitHub
 refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
 swallows). Second, only a verdict on the branch's content carries the marker, a
 `PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan or the
-`sweptAt` ancestry failing. A git or remote lookup that failed or timed out (a
+`sweptAt` ancestry failing, an unsafe base ref, or any other
+non-infrastructure error from `runPrePushGate` (such as malformed hook input),
+which `gateUnpushedCommits` wraps in one. A git or remote lookup that failed or timed out (a
 `describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
 `runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
 the base range) comes back as a plain error or a `PrePushGateInfrastructureError`
