@@ -144,7 +144,7 @@ An independent standards-reviewer found no violations.
   - `tests/mod_test.ts`: 18 passed.
   - `tests/github_retry_test.ts`: 15 passed.
   - `tests/issue_routing_context_test.ts`: 3 passed.
-- Gate: `./quality.sh < /dev/null` PASSED at the head of this round (the config integration stage was skipped).
+- Gate: `./quality.sh < /dev/null` exited 0 ("PASSED (with skipped checks)") at the head of this round; the config integration stage was skipped. An earlier run was stopped by the harness time limit before reporting, so this is the rerun.
 - Mutation check. Each mutant of `worker/deno/commands/route_issue.ts` the gate reported as surviving was applied by hand and run with `deno test --no-check tests/route_issue_test.ts`; each one now turns a test red.
 
   | Mutant | Failing tests |
