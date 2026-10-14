@@ -2767,8 +2767,9 @@ export async function createProductionRunCoreDeps(
           // `reset --hard` + `clean -fd` + `checkout <default>`, so running it
           // here threw away whatever an issue slot had in that tree and moved
           // `HEAD` under it. `ensureRepoClone` only clones when the clone is
-          // genuinely missing, and the worktree gives this lane its own HEAD,
-          // index and checkout off the same object store.
+          // missing or broken (no repository, or corrupt — Issue #3708), and
+          // the worktree gives this lane its own HEAD, index and checkout off
+          // the same object store.
           setupRepo: async (repo: string, wd: string) => {
             const clone = await ensureRepoClone(repo, wd);
             if (!clone.ok) {
