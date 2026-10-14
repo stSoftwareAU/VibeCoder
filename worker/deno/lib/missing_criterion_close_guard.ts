@@ -34,7 +34,10 @@
 
 import { parseClosureEntries } from "./acceptance_criteria_gate.ts";
 import { LABEL_DEFAULTS } from "./config_defaults.ts";
-import { FOLLOW_UP_CHAIN_STOP_MARKER } from "./degraded_delivery.ts";
+import {
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+} from "./degraded_delivery.ts";
 
 /** Longest criterion text quoted back in a comment or PR note. */
 const MAX_QUOTED_LENGTH = 300;
@@ -193,14 +196,21 @@ export async function holdIssueOpenForMissingCriteria(args: {
 }
 
 /**
- * Whether a merged PR body carries the chain-stop section's marker (PR #3676
- * review): the PR worked a partial-delivery follow-up and left gaps no
- * further follow-up holds, so the merge does not complete the issue.
+ * Whether a merged PR body carries the chain-stop section (PR #3676 review):
+ * the PR worked a partial-delivery follow-up and left gaps no further
+ * follow-up holds, so the merge does not complete the issue.
+ *
+ * Only a section that opens the body counts: the heading with the marker on
+ * the next line, the leading-block rule `extractLeadingSection` applies. A
+ * summary that quotes the marker in a code span, or mentions it after the
+ * summary heading, does not hold the issue.
  *
  * @param prBody - The merged PR's body.
  */
 export function hasFollowUpChainStop(prBody: string): boolean {
-  return prBody.includes(FOLLOW_UP_CHAIN_STOP_MARKER);
+  const opening =
+    `${FOLLOW_UP_CHAIN_STOP_SECTION_HEADING}\n${FOLLOW_UP_CHAIN_STOP_MARKER}`;
+  return prBody.replace(/\r\n/g, "\n").trimStart().startsWith(opening);
 }
 
 /**

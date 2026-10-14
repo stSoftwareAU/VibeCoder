@@ -209,6 +209,33 @@ Deno.test("hasFollowUpChainStop reads the marker only (PR #3676 review)", () => 
   assert(!hasFollowUpChainStop(PARTIAL_SUMMARY));
 });
 
+Deno.test("hasFollowUpChainStop ignores a marker quoted in a summary code span (PR #3676 review)", () => {
+  const quoted = PARTIAL_SUMMARY +
+    "\nThe section carries `<!-- vibe-follow-up-chain-stop -->`.\n";
+  assert(!hasFollowUpChainStop(quoted));
+});
+
+Deno.test("hasFollowUpChainStop ignores a marker mentioned after the summary heading (PR #3676 review)", () => {
+  const later = PARTIAL_SUMMARY + "\n## Notes\n" +
+    `${FOLLOW_UP_CHAIN_STOP_SECTION_HEADING}\n${FOLLOW_UP_CHAIN_STOP_MARKER}\n`;
+  assert(!hasFollowUpChainStop(later));
+});
+
+Deno.test("closeIssuesForMergedPrs - a summary quoting the chain-stop marker does not hold the issue (PR #3676 review)", async () => {
+  const quoted = PARTIAL_SUMMARY +
+    "\nThe section carries `<!-- vibe-follow-up-chain-stop -->`.\n";
+  const w = world(quoted);
+  await closeIssuesForMergedPrs(
+    ["owner/repo"],
+    "bot-user",
+    w.fn,
+    "planning",
+    undefined,
+    { verifyMergeLandedFn: landed, logger: makeLogger() },
+  );
+  assert(!w.labelled.includes("needs-human"), "not held for a human");
+});
+
 Deno.test("closeIssuesForMergedPrs - a chain-stop PR with only partial gaps leaves the follow-up open (PR #3676 review)", async () => {
   const w = world(CHAIN_STOP_PR_BODY, ["needs-human"]);
   const count = await closeIssuesForMergedPrs(
