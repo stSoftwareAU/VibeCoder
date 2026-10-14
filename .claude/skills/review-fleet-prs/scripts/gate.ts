@@ -100,6 +100,7 @@ type Skip =
   | "already-reviewed" // reviewed at this exact head commit, by this reviewer or by this skill on another host
   | "approved" // someone else approved it at this exact head commit (Issue #3225): nothing left to review
   | "awaiting-fix" // sent back at an earlier commit; only base-branch merges since, the PR's own diff unchanged
+  | "checklist-unreadable" // fetching review-checklists.json failed with a gh error other than not-found; retried next pass
   | "over-limit"; // ready, but past this pass's --limit; back next pass
 
 export interface ReadyPr {
