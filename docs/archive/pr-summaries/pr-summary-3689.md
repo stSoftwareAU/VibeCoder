@@ -165,7 +165,7 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
 `detect-non-literal-regexp` at `mutation_gate.ts:627`; Floci 38033819415
 `ValidationException ... PutParameter`.
 
-- Targeted tests: 146 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
+- Targeted tests: 160 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
   `worker/deno/tests/git_push_preflight_test.ts`,
   `worker/deno/tests/toolchain_selfcheck_test.ts`,
@@ -210,27 +210,10 @@ unchanged:
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
-- Real representative failures are classified with links to CI/review evidence.
-  reviewer: Partial — 25 failed CI runs (8 cspell, 5 sweep, 3 unpushed, 3 left to CI, 3 local and tracked as follow-ups, 3 covered by quality.sh) across the three repos are classified
-  with run IDs and first failing SHAs in `docs/pre-pr-ci-audit.md`; two GRQ rows
-  have no recorded cause, and no blocking reviewer-finding rows were audited.
-- The end-to-end pre-PR verifier and executable checks are verified on the
-  unattended worker path, not just unit tests.
-  reviewer: Partial — Step 1b and `gateBeforePush()` are exercised through
-  their real entry points in unit tests, but no live unattended worker run was
-  done and there is no per-PR disposable-checkout reproduction.
-- Missing check coverage is repaired or tracked as specific follow-ups with no
-  duplicate of existing issues.
-  reviewer: Met — the three gaps with a local fix in scope are repaired; the
-  gitleaks, semgrep and Floci failures are local and tracked as #3725, #3726
-  and #3727 (searched first; none duplicates an open issue); bootstrap drift
-  and the GitHub-exclusive version-bump check are documented as Left to CI
-  because no pre-PR gap was shown; no duplicate of #2945, #2932, #2968 or #3395.
-  A systematic mapping of every required check to a local command is not
-  included.
-- CI still independently runs every required check after PR creation.
-  reviewer: Met — no workflow or required check is changed or weakened; the
-  new local checks are additive.
+- **partial** — Real representative failures are classified with links to CI/review evidence. — evidence: `docs/pre-pr-ci-audit.md` (25 failed CI runs across the three repos: 8 cspell, 5 sweep, 3 unpushed, 3 left to CI, 3 local and tracked as follow-ups, 3 covered by quality.sh, classified with run IDs and first failing SHAs) — reviewer: partial — reason: two GRQ rows have no recorded cause, and no blocking reviewer-finding rows were audited
+- **partial** — The end-to-end pre-PR verifier and executable checks are verified on the unattended worker path, not just unit tests. — evidence: `worker/deno/tests/pre_push_gate_test.ts` (Step 1b and `gateBeforePush()` exercised through their real entry points) — reviewer: partial — reason: no live unattended worker run was done and there is no per-PR disposable-checkout reproduction
+- **met** — Missing check coverage is repaired or tracked as specific follow-ups with no duplicate of existing issues. — evidence: `docs/pre-pr-ci-audit.md`, #3725, #3726, #3727 (the three gaps with a local fix in scope are repaired; the gitleaks, semgrep and Floci failures are local and tracked as #3725, #3726 and #3727, searched first with none duplicating an open issue; bootstrap drift and the GitHub-exclusive version-bump check are documented as Left to CI because no pre-PR gap was shown; no duplicate of #2945, #2932, #2968 or #3395) — reviewer: met
+- **met** — CI still independently runs every required check after PR creation. — evidence: `git diff` touches no workflow or required check; the new local checks are additive — reviewer: met
 
 ## Standards Review
 
@@ -272,6 +255,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   operand, nested `--config` operand, no config, configured-but-missing binary,
   non-spell-checked extensions, failing cspell blocks the push, the CI gate
   (`planChangedFileChecks` plans no check when `cspellInCi` is off), the
+  path filter (a tracked YAML outside `.github/workflows/` and a non-YAML file under it, each naming cspell, do not count while the same text in a workflow YAML does), the
   workflow detector (a `run: |` block, GRQ's `uses: streetsidesoftware/cspell-action`
   step, a non-cspell block, a commented-out step, a single-line cspell step after a
   block, a blank line inside a block, and the `|-`/`>`/`>-`/`|+`/`|2` headers), and two `runPrePushGate` tests on
@@ -376,9 +360,15 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   "runPrePushGate: a cspell config with no CI cspell step is not blocked and
   never looks for cspell" and "runPrePushGate: a cspell config with a GRQ-style
   cspell-action step is blocked when cspell is missing".
-- `worker/deno/lib/pre_push_gate.ts` `repoCiRunsCspell` tracked-workflow filter —
-  "repoCiRunsCspell: a workflow run step naming cspell counts" and "repoCiRunsCspell:
-  untracked or non-workflow files do not count".
+- `worker/deno/lib/pre_push_gate.ts` `repoCiRunsCspell` `.github/workflows/` prefix
+  filter and `.ya?ml` extension filter — "repoCiRunsCspell: a tracked file outside
+  .github/workflows/ or not YAML does not count" (real files in a temp dir: `ci/spell.yml`
+  and `.github/workflows/notes.md` each hold `- run: npx cspell .` and expect false, with
+  `.github/workflows/real.yml` as the positive control). Deleting the prefix check
+  turns it red at the `ci/spell.yml` assertion; deleting the extension check turns it
+  red at the `notes.md` assertion (both run). The unreadable-file `catch` is reached by
+  "repoCiRunsCspell: a tracked workflow that cannot be read is skipped"; a workflow
+  that names cspell is counted by "repoCiRunsCspell: a workflow run step naming cspell counts".
 - `worker/deno/lib/pre_push_gate.ts` `workflowRunsCspell`, one test each: a
   block-scalar step that calls cspell counts; GRQ's cspell-action `uses:` step
   counts; block-scalar and single-line steps without cspell do not count; a

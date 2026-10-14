@@ -674,8 +674,33 @@ Deno.test("repoCiRunsCspell: a commented-out cspell step does not count", async 
   }
 });
 
-Deno.test("repoCiRunsCspell: untracked or non-workflow files do not count", async () => {
-  assertEquals(await repoCiRunsCspell("/nonexistent", ["README.md"]), false);
+Deno.test("repoCiRunsCspell: a tracked file outside .github/workflows/ or not YAML does not count", async () => {
+  const dir = await Deno.makeTempDir();
+  const body = "jobs:\n  spell:\n    steps:\n      - run: npx cspell .\n";
+  try {
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.mkdir(`${dir}/ci`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/.github/workflows/real.yml`, body);
+    await Deno.writeTextFile(`${dir}/ci/spell.yml`, body);
+    await Deno.writeTextFile(`${dir}/.github/workflows/notes.md`, body);
+    // Positive control: the same text in a tracked workflow YAML counts.
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/real.yml"]),
+      true,
+    );
+    // Prefix filter: a YAML outside .github/workflows/ is another CI system's.
+    assertEquals(await repoCiRunsCspell(dir, ["ci/spell.yml"]), false);
+    // Extension filter: a non-YAML file under .github/workflows/ is not a workflow.
+    assertEquals(
+      await repoCiRunsCspell(dir, [".github/workflows/notes.md"]),
+      false,
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("repoCiRunsCspell: a tracked workflow that cannot be read is skipped", async () => {
   assertEquals(
     await repoCiRunsCspell("/nonexistent", [".github/workflows/x.yml"]),
     false,

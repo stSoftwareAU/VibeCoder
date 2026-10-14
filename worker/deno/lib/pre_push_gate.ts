@@ -520,7 +520,6 @@ export function workflowRunsCspell(text: string): boolean {
       }
       blockIndent = null;
     }
-    if (line.trimStart().startsWith("#")) continue;
     const step = stepKey.exec(line);
     if (!step) continue;
     const rest = (step[2] ?? "").trim();
