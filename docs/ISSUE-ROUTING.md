@@ -2,8 +2,8 @@
 
 A follow-up issue belongs **where the code lives**. Issue routing is the
 deterministic rule, and the `route-issue` command, that decide which repository
-a follow-up is filed in, search for an existing issue first, and link the
-result — instead of leaving the choice to the agent's judgement each run.
+a follow-up is filed in, search for an existing issue first, and reuse a
+match rather than file a duplicate — instead of leaving the choice to the agent's judgement each run.
 [`issue_routing.ts`](../worker/deno/lib/issue_routing.ts) is the public facade;
 the implementation lives in the `issue_routing_*.ts` modules beside it:
 
@@ -35,9 +35,9 @@ flowchart TD
     C -- "no" --> X["Fail visibly:<br/>nothing created,<br/>safe to retry"]
     C -- "yes" --> D["Search open and<br/>recently closed<br/>issues and PRs"]
     D --> E{"Match found?"}
-    E -- "yes" --> F["Reuse the match<br/>and link it"]
+    E -- "yes" --> F["Reuse the match<br/>(no comment, no link)"]
     E -- "no" --> G["Create the issue"]
-    F --> H["Link both sides:<br/>Depends on / Related"]
+    F --> H["Multi-repo split only:<br/>link every part with<br/>Depends on / Related"]
     G --> H
     style X fill:#9d0208,stroke:#6a040f,color:#fff
     style H fill:#2d6a4f,stroke:#1b4332,color:#fff
@@ -100,8 +100,9 @@ refusal, an unreadable body file, an unknown option or any other error.
 The `action` value is one of:
 
 - `created`: no match existed, so a new issue was filed.
-- `reused`: an existing match was found and linked; nothing was created, and
-  `labels_not_migrated` is empty.
+- `reused`: an existing match was found and returned as the result; it is not
+  commented on or linked, nothing was created, and `labels_not_migrated` is
+  empty.
 - `dry-run`: nothing was written; the report shows what would happen.
 - `filed-ambiguous`: a new issue was created and the owner decision was
   ambiguous (section 6).
@@ -169,7 +170,8 @@ route. The `gh` shim does not enforce it either.
 ## 7. Duplicates
 
 Search open **and** recently closed issues and PRs in the owner repo before
-filing, and reuse or link what you find. For a duplicate that was filed in the
+filing, and reuse what you find: the existing issue is returned and left
+untouched. For a duplicate that was filed in the
 wrong repo, in this order:
 
 1. Create, or verify, the correct issue.
@@ -180,7 +182,12 @@ Duplicate matching is by exact normalised title only. A duplicate of the same
 problem filed under a different title (for example VibeCoder#3607 against
 GRQ-AutoTrader#3242) is not caught automatically; resolve it with
 `route-issue --resolve-duplicate`. A reused match is reported in the routing
-audit but is not commented on or linked.
+audit but is not commented on or linked. (In a multi-repo `--part` split, a
+reused part is still linked to the other parts with `Depends on` / `Related`.)
+
+The recently-closed window (`recentlyClosedDays`, default 30) is a chosen
+default, not a derived value. A closed issue or PR older than the window is not
+matched, so the same title is filed again.
 
 Never delete history, and never migrate labels or assignees. If two filers
 race and both create an issue, the **lowest-numbered issue wins**: the later

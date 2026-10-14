@@ -276,6 +276,58 @@ Deno.test("classify: explicit mention of the Vibe Coder repo is a signal", () =>
   assertStringIncludes(d.reason, `mention of ${VIBE}`);
 });
 
+// One isolated signal per case, so deleting any single regex operand in the
+// classifier turns exactly its case red.
+for (
+  const [text, basis] of [
+    ["see myworker/deno/lib/a.ts", "path 'worker/deno/'"],
+    ["the Vibe Coder needs it", "keyword 'Vibe Coder'"],
+    ["the vibe-coder needs it", "keyword 'vibe-coder'"],
+    ["the worker is slow", "keyword 'worker'"],
+    ["the fleet is slow", "keyword 'fleet'"],
+    ["orchestration is slow", "keyword 'orchestrat'"],
+    ["the container image is slow", "keyword 'container image'"],
+    ["the lane worktree is slow", "keyword 'lane worktree'"],
+    ["a claim is slow", "keyword 'claim'"],
+    ["the prompt template is slow", "keyword 'prompt template'"],
+    ["the provider is slow", "keyword 'provider'"],
+    ["edit prompt.md", "path 'prompt.md'"],
+    ["edit prompts/x", "path 'prompts/'"],
+  ] as const
+) {
+  Deno.test(`classify: Vibe Coder signal alone routes to VibeCoder (${basis})`, () => {
+    const d = classifyIssueRouting(draft("x", text), GRQ, ctx());
+    assertEquals(d.owner_repository, VIBE);
+    assertStringIncludes(d.reason, basis);
+  });
+}
+
+for (
+  const word of [
+    "pwa",
+    "scoring",
+    "ui",
+    "page",
+    "layout",
+    "chart",
+    "blank space",
+    "api endpoint",
+    "database",
+    "report",
+  ]
+) {
+  Deno.test(`classify: product signal '${word}' makes a Vibe Coder signal ambiguous`, () => {
+    const d = classifyIssueRouting(
+      draft("x", `the fleet shows a ${word} problem`),
+      GRQ,
+      ctx(),
+    );
+    assert(d.ambiguous);
+    assertEquals(d.owner_repository, GRQ);
+    assertStringIncludes(d.reason, `product signal '${word}'`);
+  });
+}
+
 Deno.test("classify: parts across repos are cross-repo, owner prefers target", () => {
   const parts = [
     { repo: VIBE, title: "a", body: "a" },

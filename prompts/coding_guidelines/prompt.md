@@ -1050,7 +1050,8 @@ this **instead of looping**:
    lease, back-off, escalation anchor) stays in the monitored repo: never close
    a live diagnostic as "wrong repo" (#2592), and link a separate Vibe Coder
    root-cause issue if needed. Search open **and** recently closed issues and
-   PRs in the target repo before filing, and reuse or link what you find. If
+   PRs in the target repo before filing, and reuse what you find (a reused match
+   is returned as-is, not commented on or linked). If
    the owner is ambiguous, state the basis and close nothing. A wrong-repo
    duplicate is closed with `route-issue --resolve-duplicate
    <owner>/<repo>#<wrong> --correct <owner>/<repo>#<right>` (`--dry-run` first
