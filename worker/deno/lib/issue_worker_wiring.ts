@@ -55,6 +55,7 @@ import {
 import {
   commitAndPushPending,
   ensureDefaultBranchCurrent,
+  gateUnpushedCommits,
   pushUnpushedCommits,
   recoverExistingPr,
 } from "./git_push.ts";
@@ -266,6 +267,8 @@ export interface GitDeps {
   countCommitsAhead: typeof countCommitsAhead;
   reconcileHeadToBranch: typeof reconcileHeadToBranch;
   pushUnpushedCommits: typeof pushUnpushedCommits;
+  /** Pre-push changed-file gate over unpushed commits (Issue #3689). */
+  gateUnpushedCommits: typeof gateUnpushedCommits;
   commitAndPushPending: typeof commitAndPushPending;
   ensureDefaultBranchCurrent: typeof ensureDefaultBranchCurrent;
   getRepoDefaultBranch: typeof getRepoDefaultBranch;
@@ -645,6 +648,7 @@ export function createDefaultDeps(
       countCommitsAhead,
       reconcileHeadToBranch,
       pushUnpushedCommits,
+      gateUnpushedCommits,
       commitAndPushPending,
       ensureDefaultBranchCurrent,
       getRepoDefaultBranch,
@@ -1000,6 +1004,9 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     ),
     pushUnpushedCommits: mockFn<GitDeps["pushUnpushedCommits"]>(() =>
       Promise.resolve({ ok: true, value: 0 })
+    ),
+    gateUnpushedCommits: mockFn<GitDeps["gateUnpushedCommits"]>(() =>
+      Promise.resolve({ ok: true, value: undefined })
     ),
     commitAndPushPending: mockFn<GitDeps["commitAndPushPending"]>(() =>
       Promise.resolve({

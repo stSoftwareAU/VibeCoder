@@ -159,10 +159,15 @@ export function classifyCodingFailure(
 
   // A PR-summary gate refusal (Issue #3431; PR #3440 review) or a
   // security-fix gate refusal (Issue #3454) is the worker's
-  // refusal plus the agent's quoted summary, so no free-text check below may
-  // read it: a quoted "at the cycle deadline" or "timeout" must neither make
-  // it transient nor a timeout-class failure. It earns a normal attempt.
-  if (category === "summary_incomplete" || category === "security_fix_gate") {
+  // refusal plus the agent's quoted summary, and a pre-push gate block (PR
+  // #3716 review) is the worker's prefix plus raw check output, so no
+  // free-text check below may read it: a quoted "at the cycle deadline",
+  // "rate limit" or "timeout" must neither make it transient nor a
+  // timeout-class failure. It earns a normal attempt.
+  if (
+    category === "summary_incomplete" || category === "security_fix_gate" ||
+    category === "pre_push_gate"
+  ) {
     return {
       disposition: "ladder",
       category,
