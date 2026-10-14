@@ -83,7 +83,7 @@ These verdicts come from an independent spec-reviewer that read only the diff an
   - The code calls the classifier from `createGitHubIssuesWithPartialFailures` (`suggest_improvements`) and from `route-issue`.
   - The agent prompts (`ci_fix`, `planning`, `pr_feedback`, `retro`, `coding_guidelines`) carry the routing policy. `route-issue` is not on the agent's `PATH`, so they tell the agent to apply the policy itself and file with `gh issue create --repo <owner>/<repo>` (changed after the reviewer ran, on the pre-PR verifier's finding). No `gh` guard change refuses a bare `gh issue create`.
   - The retro outcome issue stays in the current repo.
-  - The reviewer found no separate review-learning filing path in the diff. The `retro` and `coding_guidelines` prompts are the review-learning filers it covers, and they carry the policy.
+  - The reviewer found no review-learning filing path named in the diff. Any such filer is an agent prompt, so it gets the prose policy only.
 
   reason: agreed partial. Putting `route-issue` on the agent's `PATH`, or making the guard shim refuse `gh issue create`, touches the agent's security boundary in every phase, so it needs its own issue.
 - "auditable `owner_repository`, `subject_repository`, `issue_kind` and reason fields", with the diagnostic exception — reviewer: met for the fields; partial for the exception.
