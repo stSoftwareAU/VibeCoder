@@ -536,7 +536,8 @@ async function setupRepoFn(
   // the other's work; that is why slots were excluded from a repository a
   // sibling held, and why only one slot could ever serve a backlog
   // concentrated in one repository. `ensureRepoClone` clones only when the
-  // clone is genuinely missing, and the worktree gives the lane its own
+  // clone is missing or broken (no repository, or corrupt — Issue #3708), and
+  // the worktree gives the lane its own
   // HEAD, index and checkout off the same object store — no second copy of
   // history, which matters because the work volume only ever grows.
   if (laneId !== undefined) {
