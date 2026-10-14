@@ -4,7 +4,9 @@
  * A repo freshly added to `.config.json` has no local clone, so any consumer
  * that walks `${workDir}/<repo>` fails with ENOENT. The helper clones on
  * demand via the same `setupRepo` the setup phase uses, leaves an existing
- * clone untouched, and fails loud when the clone cannot be made.
+ * clone untouched, hands a corrupt clone (bad `.git/config`) to `setupRepo`
+ * for move-aside and re-clone (Issue #3708), and fails loud when the clone
+ * cannot be made.
  *
  * Australian English spelling used throughout.
  */
@@ -12,6 +14,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureRepoClone } from "../lib/ensure_repo_clone.ts";
 import type { CommandResult } from "../types.ts";
+import { waitUntil } from "./support/rendezvous.ts";
 
 Deno.test(
   "ensureRepoClone - existing clone is left untouched (no setupRepo call)",
@@ -161,5 +164,237 @@ Deno.test(
     } finally {
       await Deno.remove(workDir, { recursive: true });
     }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a clone with a corrupt .git/config is handed to setupRepo, not reused (Issue #3708)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
+      const configPath = `${workDir}/widget/.git/config`;
+      const config = await Deno.readTextFile(configPath);
+      await Deno.writeTextFile(configPath, `garbage line\n${config}`);
+
+      const setupCalls: Array<[string, string]> = [];
+      const result = await ensureRepoClone("acme/widget", workDir, {
+        setupRepoFn: (repo, dir) => {
+          setupCalls.push([repo, dir]);
+          return Promise.resolve({ success: true, message: `${dir}/widget` });
+        },
+      });
+
+      assertEquals(result, {
+        ok: true,
+        repoPath: `${workDir}/widget`,
+        cloned: true,
+      });
+      assertEquals(setupCalls, [["acme/widget", workDir]]);
+      // setupRepo owns the move-aside; ensureRepoClone must not remove it.
+      const stat = await Deno.stat(`${workDir}/widget`);
+      assertEquals(stat.isDirectory, true);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a corrupt clone whose recovery is refused fails loud (Issue #3708)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
+      const configPath = `${workDir}/widget/.git/config`;
+      const config = await Deno.readTextFile(configPath);
+      await Deno.writeTextFile(configPath, `garbage line\n${config}`);
+
+      const result = await ensureRepoClone("acme/widget", workDir, {
+        setupRepoFn: (): Promise<CommandResult> =>
+          Promise.resolve({
+            success: false,
+            message:
+              `The clone of acme/widget at ${workDir}/widget is corrupt (fatal: bad config line 1 in file .git/config) and was already re-cloned within 24 h`,
+          }),
+      });
+
+      assertEquals(result.ok, false);
+      assertEquals(result.cloned, false);
+      assertStringIncludes(String(result.message), "bad config line 1");
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - concurrent callers on one corrupt clone recover it once, none refused as a repeat (PR #3712 review)",
+  async () => {
+    const workDir = await Deno.makeTempDir();
+    try {
+      await Deno.mkdir(`${workDir}/widget`);
+      const init = await new Deno.Command("git", {
+        args: ["init", "-q"],
+        cwd: `${workDir}/widget`,
+        stdin: "null",
+      }).output();
+      assertEquals(init.code, 0);
+      const configPath = `${workDir}/widget/.git/config`;
+      const healthy = await Deno.readTextFile(configPath);
+      await Deno.writeTextFile(configPath, `garbage line\n${healthy}`);
+
+      let setupCalls = 0;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      // Mirrors setupRepo: the first call repairs the clone, any further call
+      // for a clone already recovered is refused by the 24 h cap.
+      const setupRepoFn = async (): Promise<CommandResult> => {
+        setupCalls++;
+        if (setupCalls > 1) {
+          return {
+            success: false,
+            message: "already re-cloned within 24 h",
+          };
+        }
+        await held;
+        await Deno.writeTextFile(configPath, healthy);
+        return { success: true, message: `${workDir}/widget` };
+      };
+
+      // The first thing the locked section runs, so a count of 1 means only one
+      // caller has entered it.
+      let entered = 0;
+      const isDirectoryFn = async (path: string): Promise<boolean> => {
+        entered++;
+        return (await Deno.stat(path)).isDirectory;
+      };
+
+      const first = ensureRepoClone("acme/widget", workDir, {
+        isDirectoryFn,
+        setupRepoFn,
+      });
+      const second = ensureRepoClone("acme/widget", workDir, {
+        isDirectoryFn,
+        setupRepoFn,
+      });
+      // Rendezvous on the first caller reaching setupRepo (held open), then
+      // assert the second has not entered the locked section. An unserialised
+      // second caller would have stat'ed before the first finished its git
+      // probes, so this goes red without waiting on a timer.
+      assertEquals(await waitUntil(() => setupCalls >= 1), true);
+      assertEquals(entered, 1);
+      release();
+      const results = await Promise.all([first, second]);
+
+      assertEquals(results.map((r) => r.ok), [true, true]);
+      assertEquals(setupCalls, 1);
+      assertEquals(results.map((r) => r.cloned), [true, false]);
+    } finally {
+      await Deno.remove(workDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a failed call does not block the next caller for the same clone path, and other paths run in parallel",
+  async () => {
+    let calls = 0;
+    const failing = ensureRepoClone("acme/widget", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: () => {
+        calls++;
+        return Promise.reject(new Error("clone blew up"));
+      },
+    });
+    // Same path, queued behind the failing call: runs after it rather than
+    // inheriting its rejection.
+    const retryPromise = ensureRepoClone("acme/widget", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: () => {
+        calls++;
+        return Promise.resolve({ success: true, message: "" });
+      },
+    });
+    let rejected = false;
+    await failing.catch(() => (rejected = true));
+    assertEquals(rejected, true);
+    const retry = await retryPromise;
+    assertEquals(retry.ok, true);
+
+    // A different clone path is not queued behind a held one.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const slow = ensureRepoClone("acme/slow", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: async () => {
+        await held;
+        return { success: true, message: "" };
+      },
+    });
+    const other = await ensureRepoClone("acme/other", "/work", {
+      isDirectoryFn: () => Promise.resolve(false),
+      setupRepoFn: () => Promise.resolve({ success: true, message: "" }),
+    });
+    assertEquals(other.ok, true);
+    release();
+    assertEquals((await slow).ok, true);
+    assertEquals(calls, 2);
+  },
+);
+
+Deno.test(
+  "ensureRepoClone - a caller arriving after an earlier one finished still waits for the one still running (PR #3712 review)",
+  async () => {
+    const releases: Array<() => void> = [];
+    const log: string[] = [];
+    const call = (label: string) =>
+      ensureRepoClone("acme/widget", "/work", {
+        isDirectoryFn: () => Promise.resolve(false),
+        setupRepoFn: async () => {
+          log.push(`start ${label}`);
+          await new Promise<void>((resolve) => releases.push(resolve));
+          log.push(`end ${label}`);
+          return { success: true, message: "" };
+        },
+      });
+
+    const a = call("a");
+    const b = call("b");
+    // A starts first; B is queued behind it.
+    await Promise.resolve();
+    while (releases.length < 1) await Promise.resolve();
+    releases[0]!();
+    await a;
+    // B is now running (A's queue slot is gone); D arrives while B is held.
+    while (releases.length < 2) await Promise.resolve();
+    const d = call("d");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    assertEquals(log, ["start a", "end a", "start b"]);
+    releases[1]!();
+    await b;
+    while (releases.length < 3) await Promise.resolve();
+    releases[2]!();
+    await d;
+    assertEquals(log, [
+      "start a",
+      "end a",
+      "start b",
+      "end b",
+      "start d",
+      "end d",
+    ]);
   },
 );
