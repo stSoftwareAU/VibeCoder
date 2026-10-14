@@ -16,6 +16,7 @@ import {
 import { formatRepoFastFailureMarker } from "../lib/repo_fast_failure_issue.ts";
 import { createLogger } from "../lib/logger.ts";
 import { ROUTING_NOW, routingFakeGh } from "./support/routing_fake_gh.ts";
+import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
 
 const VIBE = "stSoftwareAU/VibeCoder";
 const PRODUCT = "org/product";
@@ -74,6 +75,54 @@ Deno.test("route-issue - wrong-repo draft is created in the owner repo and the a
   assertEquals(report.action, "created");
   assertEquals(report.issues[0]!.number, 501);
   assertEquals(result.data, report);
+});
+
+Deno.test("route-issue - --label on a wrong-repo draft is reported as not migrated, with the kind and reason", async () => {
+  const h = harness();
+  const result = await routeIssueCommand.execute(
+    { ...baseArgs, label: "bug,enhancement", __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, true);
+  assertEquals(h.creates.length, 1);
+  assertEquals(h.creates[0]!.includes("--label"), false);
+  const report = JSON.parse(h.printed[0]!) as RouteIssueReport;
+  assertEquals(report.issue_kind, "implementation");
+  assertStringIncludes(report.reason, "path 'worker/deno/'");
+  assertStringIncludes(report.reason, `the fix belongs to ${VIBE}`);
+  assertEquals(report.labels_not_migrated, ["bug", "enhancement"]);
+});
+
+Deno.test("route-issue - a closed duplicate is reused inside the recently-closed window and refiled outside it", async () => {
+  const DAY = 86_400_000;
+  for (
+    const [ageDays, wantCreates] of [[10, 0], [60, 1]] as const
+  ) {
+    const h = harness();
+    const inner = h.deps.ghCommandFn!;
+    h.deps.ghCommandFn = (args) => {
+      if (args[0] === "issue" && args[1] === "list") {
+        return Promise.resolve(JSON.stringify([{
+          number: 77,
+          title: baseArgs.title,
+          state: "CLOSED",
+          closedAt: new Date(ROUTING_NOW - ageDays * DAY).toISOString(),
+          url: `https://github.com/${VIBE}/issues/77`,
+        }]));
+      }
+      return inner(args);
+    };
+    const result = await routeIssueCommand.execute(
+      { ...baseArgs, __testDeps: h.deps },
+      config,
+    );
+
+    assertEquals(result.success, true);
+    assertEquals(h.creates.length, wantCreates, `closed ${ageDays} days ago`);
+    const report = JSON.parse(h.printed[0]!) as RouteIssueReport;
+    assertEquals(report.action, wantCreates === 0 ? "reused" : "created");
+  }
 });
 
 Deno.test("route-issue - dry-run creates nothing but still prints the audit", async () => {
@@ -206,6 +255,24 @@ Deno.test("route-issue - an unknown option is refused rather than ignored", asyn
   assertEquals(h.creates.length, 0);
 });
 
+Deno.test("route-issue - toRouteIssueReport copies every audit field onto the report", () => {
+  const fields = {
+    owner_repository: VIBE,
+    subject_repository: PRODUCT,
+    issue_kind: "cross-repo",
+    reason: "the basis",
+    action: "created",
+    issues: [{ repo: VIBE, number: 9, url: "u", state: "open" }],
+    labels_not_migrated: ["bug"],
+  };
+  assertEquals(
+    toRouteIssueReport(
+      { ...fields, wrong_repo: true, ambiguous: false } as never,
+    ),
+    { classification: "wrong-repo", ...fields } as never,
+  );
+});
+
 Deno.test("route-issue - toRouteIssueReport classifies ambiguous ahead of wrong-repo", () => {
   const base = {
     owner_repository: VIBE,
@@ -314,6 +381,29 @@ Deno.test("route-issue --resolve-duplicate - a diagnostic is refused and nothing
   assertEquals(result.success, false);
   assertStringIncludes(result.message, "fast-failure marker");
   assertEquals(writes(calls), []);
+});
+
+Deno.test("route-issue --resolve-duplicate - an unreadable config warns and falls back to the wrong issue's repo only", async () => {
+  const { h, calls } = resolveHarness();
+  const { logger, records } = makeRecordingLogger();
+  h.deps.logger = logger;
+  h.deps.loadConfig = () => Promise.reject(new Error("no config"));
+  const result = await routeIssueCommand.execute(
+    { ...RESOLVE, __testDeps: h.deps },
+    config,
+  );
+
+  // Only the wrong issue's repo is allowed, so the correct one is refused.
+  assertEquals(result.success, false);
+  assertStringIncludes(result.message, "Permission refused, nothing closed");
+  assertStringIncludes(result.message, PRODUCT);
+  assertEquals(writes(calls), []);
+  assertEquals(
+    records.some(([m]) =>
+      m.includes("Could not load monitored-repo allowlist")
+    ),
+    true,
+  );
 });
 
 Deno.test("route-issue --resolve-duplicate - a permission refusal closes nothing", async () => {

@@ -78,17 +78,35 @@ read it as a `VIBE_*` name. Any character in a marker value outside
 
 ## 4. The diagnostic exception
 
-A repo-scoped diagnostic — a setup fast-failure (#2592), a lock or lease, a
-back-off, an escalation anchor — **stays in the monitored repo**, because it is
-the live signal for that repo. Never close a live diagnostic as "wrong repo". If
-the cause is in the worker, file a separate VibeCoder root-cause issue and link
-the two.
+The policy: a repo-scoped diagnostic — a setup fast-failure (#2592), a lock or
+lease, a back-off, an escalation anchor — **stays in the monitored repo**,
+because it is the live signal for that repo. Never close a live diagnostic as
+"wrong repo". If the cause is in the worker, file a separate VibeCoder
+root-cause issue and link the two.
+
+What the code recognises is narrower: only a body carrying a fast-failure or
+tally marker (`VIBE_REPO_FAST_FAILURE` / `VIBE_REPO_FAST_FAILURE_TALLY`).
+
+- The classifier keeps a draft in the target repo when it carries a marker
+  naming that repo, in any letter case.
+- `--resolve-duplicate` refuses to close a wrong issue that carries any such
+  marker, whatever repo it names.
+
+A lock, lease, back-off or escalation-anchor diagnostic carries no marker, so
+the code does not exempt it: it is classified like any other draft and can be
+closed by `--resolve-duplicate`. Keeping it in place is the operator's call.
 
 ## 5. Running it
 
 ```bash
 route-issue --repo owner/repo --title "..." --body-file body.md [--label bug,enhancement] [--dry-run]
 ```
+
+`route-issue` is a worker subcommand, not an executable on any `PATH`. Run it
+from `worker/deno` as `deno run --allow-all mod.ts route-issue …`; the examples
+below shorten that to `route-issue`. It is not installed in the agent's `PATH`
+shim directory, so the agent prompts tell the agent to apply the policy in
+section 2 itself and file with `gh issue create --repo <owner>/<repo>`.
 
 `--label` takes a comma-separated list (or a JSON array); it is not repeatable.
 Labels are applied only when the issue stays in the same repo, never migrated
@@ -144,8 +162,8 @@ issue last, as not planned. The titles need not match: this is the case of
 describe the same problem under different titles. `--dry-run` runs the same
 read-only checks (the correct issue must exist, and write permission is checked
 on both repos), writes nothing, and prints what would be linked and closed. A
-repo-scoped diagnostic is never closed (section 4), and the command refuses and
-says why. `--repo`, `--title`, `--body-file` and `--label` cannot be combined
+wrong issue whose body carries a fast-failure or tally marker is never closed
+(section 4), and the command refuses and says why. `--repo`, `--title`, `--body-file` and `--label` cannot be combined
 with `--resolve-duplicate`, and `--correct` requires it.
 
 The command acts only on the operator-supplied `--resolve-duplicate` and
@@ -157,21 +175,27 @@ route. The `gh` shim does not enforce it either.
 
 ## 6. Failure and ambiguity
 
-- **Permission failure.** If the caller cannot create issues in the owner repo,
-  the command fails visibly with the reason by throwing
-  `IssueRoutingPermissionError`. It is thrown before any write, so nothing is
-  created and a retry is safe. It has three causes:
+- **Permission failure.** When the issue is filed in a repo other than the
+  target repo (a wrong-repo move, or a non-target part of a `--part` split),
+  write access is checked first. If the caller cannot create issues there, the
+  command fails visibly by throwing `IssueRoutingPermissionError`. It is thrown
+  before any write, so nothing is created and a retry is safe. It has three
+  causes:
   - the repo is not in the allowed list;
   - the permission lookup fails;
   - `viewerPermission` is not write-level.
+
+  No such check runs when the issue stays in the target repo (including every
+  ambiguous decision): a missing permission there surfaces as the `gh issue
+  create` error, reported as `route-issue failed: …`.
 - **Ambiguity.** When the owner is not clear, state the basis for the choice
   in the issue and close nothing.
 
 ## 7. Duplicates
 
 Search open **and** recently closed issues and PRs in the owner repo before
-filing, and reuse what you find: the existing issue is returned and left
-untouched. For a duplicate that was filed in the
+filing, and reuse what you find: the existing issue is returned and, outside a
+`--part` split, left untouched. For a duplicate that was filed in the
 wrong repo, in this order:
 
 1. Create, or verify, the correct issue.

@@ -525,9 +525,9 @@ Independent calls go in one batch; dependent calls go in sequence.
 
 The `gh` CLI is installed and authenticated. Use it for all GitHub operations:
 
-- **Issues**: `gh issue view`, `gh issue list`, `gh issue comment` — and file
-  new issues with `route-issue`, never a bare `gh issue create` (see **Issue
-  routing** below)
+- **Issues**: `gh issue view`, `gh issue list`, `gh issue comment`,
+  `gh issue create` — file a new issue in the repo that owns the code (see
+  **Issue routing** below)
 - **Pull requests**: `gh pr view`, `gh pr list`, `gh pr create`,
   `gh pr comment` — but **not** `gh pr merge`, `close`, `reopen`, `ready` or
   `review --approve`: the guard refuses those (see **Issue Lifecycle Is Not
@@ -1033,31 +1033,27 @@ this **instead of looping**:
 2. Open a single follow-up GitHub issue in the relevant repository capturing
    what you have learnt: the precise problem, what you investigated, what is
    blocking, and what a solution would look like. Use
-   `route-issue --repo <owner>/<repo> --title "..." --body-file <file>`, as
-   **Issue routing** below describes. Skip this step when step 1 found an
+   `gh issue create --repo <owner>/<repo> --title "..." --body-file <file>` in
+   the repo **Issue routing** below picks. Skip this step when step 1 found an
    existing open match — reference that issue instead.
 
-   **Issue routing.** Every issue you file goes through `route-issue`, never a
-   bare `gh issue create`: `route-issue --repo <owner>/<repo> --title "..."
-   --body-file <file>`, with `--dry-run` first when unsure. File it where the
-   code lives: product code, CI or config goes to the repo that versions it; a
-   worker, fleet, container, prompt, provider or orchestration change goes to
+   **Issue routing.** File every issue where the code lives, with `gh issue
+   create --repo <owner>/<repo> --title "..." --body-file <file>` in the owning
+   repo: product code, CI or config goes to the repo that versions it; a worker,
+   fleet, container, prompt, provider or orchestration change goes to
    `stSoftwareAU/VibeCoder`; a multi-repo change gets one issue per
-   independently deployable codebase, all filed in one `route-issue` call with
-   one `--part <owner>/<repo>=<body-file>` per repo (two or more parts as a JSON
-   array in one `--part` value, e.g. `--part '["owner/a=a.md","owner/b=b.md;depends-on=owner/a"]'`),
-   linked with `Depends on`/`Related` and no duplicated scope. A repo-scoped diagnostic (setup fast-failure, lock or
-   lease, back-off, escalation anchor) stays in the monitored repo: never close
-   a live diagnostic as "wrong repo" (#2592), and link a separate Vibe Coder
-   root-cause issue if needed. Search open **and** recently closed issues and
-   PRs in the target repo before filing, and reuse what you find (a reused match
-   is returned as-is, not commented on or linked). If
-   the owner is ambiguous, state the basis and close nothing. A wrong-repo
-   duplicate is closed with `route-issue --resolve-duplicate
-   <owner>/<repo>#<wrong> --correct <owner>/<repo>#<right>` (`--dry-run` first
-   when unsure): create or verify the correct issue first; the command links
-   both sides, then closes the duplicate, never the issue you are working on,
-   with an explanation. Never delete history or migrate labels or assignees.
+   independently deployable codebase, each filed in its own repo and linked with
+   `Depends on`/`Related`, with no duplicated scope. The worker's deterministic
+   `route-issue` command is not on your PATH, so apply this rule yourself. A
+   repo-scoped diagnostic (setup fast-failure, lock or lease, back-off,
+   escalation anchor) stays in the monitored repo: never treat a live diagnostic
+   as "wrong repo" (#2592), and link a separate Vibe Coder root-cause issue if
+   needed. Search open **and** recently closed issues and PRs in the owning repo
+   before filing, and reuse or link what you find. If the owner is ambiguous,
+   file in the current repo, state the basis and close nothing. For a wrong-repo
+   duplicate, create or verify the correct issue first and comment on both to
+   link them; leave closing the duplicate to an operator, who runs `route-issue
+   --resolve-duplicate`. Never delete history or migrate labels or assignees.
    See `docs/ISSUE-ROUTING.md`.
 3. Post **one** message that:
    - Names the follow-up issue you filed or referenced (e.g.

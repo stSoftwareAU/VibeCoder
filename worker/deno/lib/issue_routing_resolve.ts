@@ -1,9 +1,8 @@
-import { sameRepo } from "./issue_routing_classifier.ts";
-import { requireWriteAccess } from "./issue_routing_github.ts";
 import {
-  isRepoFastFailureIssue,
-  isRepoFastFailureTallyIssue,
-} from "./repo_fast_failure_issue.ts";
+  fastFailureMarkerRepos,
+  sameRepo,
+} from "./issue_routing_classifier.ts";
+import { requireWriteAccess } from "./issue_routing_github.ts";
 import type { Gh, IssueRoutingContext } from "./issue_routing_types.ts";
 import type { Logger } from "../types.ts";
 
@@ -95,10 +94,9 @@ export async function resolveWrongRepoDuplicate(args: {
     );
   }
   const wrongBody = wrongView.body ?? "";
-  if (
-    isRepoFastFailureIssue(wrongBody, wrong.repo) ||
-    isRepoFastFailureTallyIssue(wrongBody, wrong.repo)
-  ) {
+  // Any fast-failure or tally marker, whatever repository (or letter case)
+  // it names: a diagnostic is never closed as a wrong-repository duplicate.
+  if (fastFailureMarkerRepos(wrongBody).length > 0) {
     return {
       closedWrong: false,
       reason: `${wrongText} carries a fast-failure marker: repo-scoped ` +

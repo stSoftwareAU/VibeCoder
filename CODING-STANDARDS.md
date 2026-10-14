@@ -1921,9 +1921,12 @@ gate if a model-generation name reappears in this document.
 - **File a follow-up where the code lives.** Product code, CI and config go to
   the repo that versions them; worker, fleet, container, prompt, provider and
   orchestration changes go to `stSoftwareAU/VibeCoder`; a repo-scoped diagnostic
-  stays in the monitored repo. Search open and recently closed issues first,
-  then file every issue through `route-issue`, never a bare `gh issue create`
-  (see [docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md)).
+  stays in the monitored repo. Search open and recently closed issues first.
+  The worker's own filings go through the routing classifier
+  (`suggest-improvements`, and the `route-issue` subcommand of `mod.ts`); an
+  agent has no `route-issue` on its `PATH`, so it applies the rule itself and
+  files with `gh issue create --repo <owner>/<repo>` (see
+  [docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md)).
 - **Check the existing rules before you add one.** Before adding or changing a
   rule in `prompts/*/prompt.md`, `CODING-STANDARDS.md` or a shared prompt
   constant under `worker/deno/lib/`, grep those files for existing rules on

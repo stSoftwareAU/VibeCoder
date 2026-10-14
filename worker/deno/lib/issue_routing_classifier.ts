@@ -1,8 +1,4 @@
 import { escapeRegExp } from "./regexp_escape.ts";
-import {
-  isRepoFastFailureIssue,
-  isRepoFastFailureTallyIssue,
-} from "./repo_fast_failure_issue.ts";
 import type {
   IssueKind,
   IssueRoutingContext,
@@ -12,9 +8,20 @@ import type {
 
 /** Paths that only the worker repository owns. */
 const WORKER_PATH_RE = /worker\/deno\/|prompts\/|prompt\.md/i;
-/** Worker vocabulary. Flat alternation, one optional-free literal each. */
+/**
+ * Worker vocabulary. Flat alternation, one optional-free literal each. Only
+ * worker-specific terms: a generic word such as "worker", "provider", "claim"
+ * or "container image" also names product code (a service worker, a price
+ * provider), and would move a product issue to VibeCoder.
+ */
 const WORKER_KEYWORD_RE =
-  /vibe[ -]?coder|\bworker\b|\bfleet\b|orchestrat|container image|lane worktree|\bclaim|prompt template|\bprovider/i;
+  /vibe[ -]?coder|\bfleet\b|orchestrat|lane worktree|prompt template/i;
+/**
+ * Fast-failure and tally markers for any repository (#2592). Bounded class,
+ * no nested quantifier: the input is untrusted issue text.
+ */
+const FAST_FAILURE_MARKER_RE =
+  /<!-- VIBE_REPO_FAST_FAILURE(?:_TALLY)?:([A-Za-z0-9_.\/-]{1,200}) -->/g;
 /** User-facing / product vocabulary. */
 const PRODUCT_RE =
   /\b(?:pwa|scoring|ui|page|layout|chart|blank space|api endpoint|database|report)\b/i;
@@ -26,6 +33,16 @@ function shortName(repo: string): string {
 
 export function sameRepo(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
+}
+
+/**
+ * The repositories named by the fast-failure and tally markers in `body`, as
+ * written. Compare them with {@link sameRepo}: GitHub repository names are
+ * case-insensitive, so a marker must not be missed for a differently cased
+ * argument.
+ */
+export function fastFailureMarkerRepos(body: string): string[] {
+  return [...(body ?? "").matchAll(FAST_FAILURE_MARKER_RE)].map((m) => m[1]!);
 }
 
 /** Whether `text` names the repository, by short name on a name boundary. */
@@ -88,10 +105,7 @@ export function classifyIssueRouting(
   const body = draft.body ?? "";
 
   // 1. #2592: a repo-scoped diagnostic stays in the repo it describes.
-  if (
-    isRepoFastFailureIssue(body, targetRepo) ||
-    isRepoFastFailureTallyIssue(body, targetRepo)
-  ) {
+  if (fastFailureMarkerRepos(body).some((r) => sameRepo(r, targetRepo))) {
     return build(
       targetRepo,
       targetRepo,

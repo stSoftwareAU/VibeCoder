@@ -151,6 +151,43 @@ Deno.test("classify: fast-failure diagnostic stays, even with worker paths", () 
   assertStringIncludes(d.reason, "#2592");
 });
 
+Deno.test("classify: a marker naming the target in another letter case is a diagnostic", () => {
+  for (
+    const marker of [
+      formatRepoFastFailureMarker(GRQ.toLowerCase()),
+      formatRepoFastFailureTallyMarker(GRQ.toUpperCase()),
+    ]
+  ) {
+    const d = classifyIssueRouting(
+      draft("GRQ keeps failing", `${marker}\nworker/deno/lib/x.ts`),
+      GRQ,
+      ctx(),
+    );
+    assertEquals(d.issue_kind, "diagnostic");
+    assertEquals(d.owner_repository, GRQ);
+    assert(!d.wrong_repo);
+  }
+});
+
+// Generic words that also name product code are not Vibe Coder signals: each
+// of these product issues stays in the target repository.
+for (
+  const text of [
+    "Service worker serves stale cached bundle after deploy",
+    "Price provider returns stale quotes",
+    "Docker container image is missing the timezone data",
+    "Insurance claim form loses the attachment",
+  ]
+) {
+  Deno.test(`classify: product wording stays in the target (${text})`, () => {
+    const d = classifyIssueRouting(draft(text, text), GRQ, ctx());
+    assertEquals(d.owner_repository, GRQ);
+    assert(!d.wrong_repo);
+    assert(!d.ambiguous);
+    assertStringIncludes(d.reason, "no Vibe Coder signals");
+  });
+}
+
 Deno.test("classify: tally marker is also a diagnostic", () => {
   const d = classifyIssueRouting(
     draft("tally", formatRepoFastFailureTallyMarker(GRQ)),
@@ -246,7 +283,7 @@ Deno.test("classify: two other repos named is ambiguous (in VibeCoder and elsewh
 
 Deno.test("classify: Vibe Coder and product signals in another repo is ambiguous", () => {
   const d = classifyIssueRouting(
-    draft("x", "The worker leaves a blank space on the page."),
+    draft("x", "The fleet leaves a blank space on the page."),
     GRQ,
     ctx(),
   );
@@ -283,14 +320,10 @@ for (
     ["see myworker/deno/lib/a.ts", "path 'worker/deno/'"],
     ["the Vibe Coder needs it", "keyword 'Vibe Coder'"],
     ["the vibe-coder needs it", "keyword 'vibe-coder'"],
-    ["the worker is slow", "keyword 'worker'"],
     ["the fleet is slow", "keyword 'fleet'"],
     ["orchestration is slow", "keyword 'orchestrat'"],
-    ["the container image is slow", "keyword 'container image'"],
     ["the lane worktree is slow", "keyword 'lane worktree'"],
-    ["a claim is slow", "keyword 'claim'"],
     ["the prompt template is slow", "keyword 'prompt template'"],
-    ["the provider is slow", "keyword 'provider'"],
     ["edit prompt.md", "path 'prompt.md'"],
     ["edit prompts/x", "path 'prompts/'"],
   ] as const
@@ -389,6 +422,7 @@ for (
     ["repo mention regex", "GRQ-AutoTrade", "!"],
     ["repo mention regex, boundary", "GRQ-AutoTrader-", "x"],
     ["whitespace run", " ", "x"],
+    ["fast-failure marker regex", "<!-- VIBE_REPO_FAST_FAILURE:a", "!"],
   ] as const
 ) {
   Deno.test(`classify: hostile input stays linear (${name})`, () => {
@@ -513,7 +547,7 @@ Deno.test("route: ambiguous is filed in the target, nothing closed", async () =>
   const gh = new FakeGh();
   const { logger } = makeRecordingLogger();
   const audit = await routeIssueCreation(
-    draft("x", "The worker leaves a blank space on the page."),
+    draft("x", "The fleet leaves a blank space on the page."),
     GRQ,
     ctx(),
     gh.run,
@@ -1057,6 +1091,34 @@ Deno.test("resolve: refuses to close a diagnostic and says why", async () => {
     const { logger } = makeRecordingLogger();
     const out = await resolveWrongRepoDuplicate({
       wrong,
+      correct,
+      ctx: ctx(),
+      gh: gh.run,
+      logger,
+    });
+    assertEquals(out.closedWrong, false);
+    assertStringIncludes(out.reason, "#2592");
+    assertEquals(gh.writes(), []);
+  }
+});
+
+Deno.test("resolve: refuses a diagnostic whatever letter case or repository its marker names", async () => {
+  const lowerWrong = { repo: VIBE.toLowerCase(), number: wrong.number };
+  for (
+    const marker of [
+      formatRepoFastFailureMarker(VIBE),
+      formatRepoFastFailureTallyMarker(VIBE.toUpperCase()),
+      formatRepoFastFailureMarker(OTHER),
+    ]
+  ) {
+    const gh = resolveFake(`${marker}\nbody`);
+    gh.views.set(
+      `${lowerWrong.repo}#${lowerWrong.number}`,
+      JSON.stringify({ body: `${marker}\nbody`, state: "OPEN" }),
+    );
+    const { logger } = makeRecordingLogger();
+    const out = await resolveWrongRepoDuplicate({
+      wrong: lowerWrong,
       correct,
       ctx: ctx(),
       gh: gh.run,

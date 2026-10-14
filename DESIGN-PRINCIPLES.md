@@ -277,10 +277,15 @@ lives. Recorded for the worker in the `prompts/coding_guidelines/` template.
 A follow-up goes to the repository that versions the code: product code, CI and
 config to that repo; worker, fleet, container, prompt, provider and orchestration
 changes to `stSoftwareAU/VibeCoder`. A repo-scoped diagnostic stays in the
-monitored repo and is never closed as "wrong repo". Routing is deterministic
-(`route-issue`), searches open and recently closed issues first, reuses a match
-(left uncommented, unlinked) rather than duplicating it, and fails visibly with nothing created when the caller lacks
-permission. Operator manual: [docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md).
+monitored repo; the code enforces this only for a fast-failure or tally marker
+(#2592), which the classifier keeps in place and `--resolve-duplicate` never
+closes. Routing is deterministic (`route-issue`, a `mod.ts` subcommand, and
+`suggest-improvements`), searches open and recently closed issues first, and
+reuses a match rather than duplicating it. A reused match is left uncommented
+and unlinked, except in a `--part` split, where every part is linked to the
+others. A filing in a repo other than the target fails visibly, with nothing
+created, when the caller lacks permission there. Operator manual:
+[docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md).
 
 ### Merge conflicts are the worker's to resolve — never a person's
 

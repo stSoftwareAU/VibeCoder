@@ -34,6 +34,7 @@ import { loadConfig } from "../lib/config.ts";
 import { runGhCommand } from "../lib/github.ts";
 import {
   type IssueRoutingAudit,
+  type IssueRoutingContext,
   type IssueRoutingDraft,
   type IssueRoutingPart,
   IssueRoutingPermissionError,
@@ -64,6 +65,12 @@ const KNOWN_OPTIONS: ReadonlySet<string> = new Set([
   "correct",
   "__testDeps",
 ]);
+
+/** Builds the routing context for a target repository. */
+type RoutingFor = (
+  targetRepo: string,
+  dryRun: boolean,
+) => Promise<IssueRoutingContext>;
 
 /** The audit as printed: stable snake_case fields an operator can parse. */
 export interface RouteIssueReport {
@@ -114,6 +121,7 @@ async function resolveDuplicate(
   deps: RouteIssueDeps,
   log: (line: string) => void,
   logger: Logger,
+  routingFor: RoutingFor,
 ): Promise<CommandResult<RouteIssueResolveReport>> {
   const parsed = validateRouteIssueResolveArgs(args);
   if (!parsed.ok) {
@@ -124,13 +132,7 @@ async function resolveDuplicate(
   const correctText = `${correct.repo}#${correct.number}`;
 
   try {
-    const routing = await buildIssueRoutingContext({
-      targetRepo: wrong.repo,
-      dryRun,
-      deps: { config: { loadConfig: deps.loadConfig ?? loadConfig } },
-      logger,
-      nowMs: (deps.now ?? Date.now)(),
-    });
+    const routing = await routingFor(wrong.repo, dryRun);
     const outcome = await resolveWrongRepoDuplicate({
       wrong,
       correct,
@@ -189,8 +191,18 @@ export const routeIssueCommand: Command = {
       };
     }
 
+    // One context builder for both modes, so they cannot drift.
+    const routingFor: RoutingFor = (targetRepo, dryRun) =>
+      buildIssueRoutingContext({
+        targetRepo,
+        dryRun,
+        deps: { config: { loadConfig: deps.loadConfig ?? loadConfig } },
+        logger,
+        nowMs: (deps.now ?? Date.now)(),
+      });
+
     if (args["resolve-duplicate"] !== undefined) {
-      return await resolveDuplicate(args, deps, log, logger);
+      return await resolveDuplicate(args, deps, log, logger, routingFor);
     }
 
     const parsed = validateRouteIssueArgs(args);
@@ -241,13 +253,7 @@ export const routeIssueCommand: Command = {
     }
 
     try {
-      const routing = await buildIssueRoutingContext({
-        targetRepo: repo,
-        dryRun,
-        deps: { config: { loadConfig: deps.loadConfig ?? loadConfig } },
-        logger,
-        nowMs: (deps.now ?? Date.now)(),
-      });
+      const routing = await routingFor(repo, dryRun);
       const audit = await routeIssueCreation(
         draft,
         repo,
