@@ -1,0 +1,12 @@
+{
+  "issue": 3689,
+  "chunk": "top-up-3689",
+  "title": "top-up: pre-push sweep ancestry check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3689",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: pre_push_sweep_check.ts (#3689)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pre_push_sweep_check.ts"
+  ],
+  "sweptAt": "e53e0c7cbcdaae57bc952fe7fea00d9c84a8082c"
+}

@@ -23,6 +23,11 @@ import {
 import { assertSafeToCommit, inspectStagedFiles } from "./pre_commit_safety.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
+import { redactedHeadTail } from "./redacted_text.ts";
+import {
+  PrePushGateInfrastructureError,
+  runPrePushGate,
+} from "./pre_push_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import { getPreFlightCommands } from "./repo_config.ts";
 import type { RepoConfig } from "../types.ts";
@@ -31,9 +36,11 @@ import { runGhOrThrow } from "./gh_spawn.ts";
 
 /**
  * Pre-flight gate specification passed to {@link commitAndPushPending}
- * (Issue #3577). Omit (or pass empty `commands`) to disable the gate — the
- * repo then commits and pushes exactly as it does today with zero added
- * latency.
+ * (Issue #3577). Omit the spec to disable the gate — the repo then commits and
+ * pushes with zero added latency. Passing a spec turns on Step 1b's
+ * changed-file checks (Issue #3689: deno/cargo fmt, markdownlint, cspell and
+ * `sweptAt` ancestry) even when `commands` is empty; an empty list only means
+ * no repo pre-flight commands run.
  */
 export interface PreFlightGateSpec {
   /** Commands to run before the automated commit, in listed order. */
@@ -50,7 +57,9 @@ export interface PreFlightGateSpec {
  *
  * A convenience for the automated-commit call sites: pass the result straight
  * to {@link commitAndPushPending}. Returns `undefined` (not an empty spec) so
- * a repo with no entry runs exactly as it does today. Throws on malformed
+ * a caller that passes it straight through leaves a repo with no entry
+ * ungated; the issue completion phase substitutes `{ commands: [] }` instead,
+ * so it still runs the changed-file checks (Issue #3689). Throws on malformed
  * config via `getPreFlightCommands` — but config is already validated at load
  * (Issue #3577), so this is defence in depth.
  */
@@ -511,6 +520,145 @@ export async function unstageWorkerStateFiles(
 }
 
 /**
+ * Head and tail budgets for the gate output carried in a returned error (PR
+ * #3716 review). The head holds the line that names the failing command; the
+ * tail holds the end of its output. The error reaches a PR comment (the
+ * PR-processor "fixed locally but failed to push" reply), and GitHub refuses a
+ * comment body over 65,536 characters; a few KB stays far under it.
+ */
+export const PRE_PUSH_GATE_REASON_HEAD_CHARS = 2000;
+export const PRE_PUSH_GATE_REASON_TAIL_CHARS = 2000;
+
+/** Redact a gate's output, then keep only its head and tail. */
+function capGateText(text: string): string {
+  return redactedHeadTail(
+    text,
+    PRE_PUSH_GATE_REASON_HEAD_CHARS,
+    PRE_PUSH_GATE_REASON_TAIL_CHARS,
+  );
+}
+
+/**
+ * The pre-push gate gave a verdict on the branch's content (PR #3716 review):
+ * a changed-file or pre-flight command failed, a plan could not be built, or a
+ * `sweptAt` is not on the default branch. {@link gateUnpushedCommits} returns
+ * any other error (a git or remote lookup that failed or timed out) as itself,
+ * so a caller that blames the branch for a failed gate can tell the two apart.
+ */
+export class PrePushGateBlockedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PrePushGateBlockedError";
+  }
+}
+
+/**
+ * Run the pre-push gate over the commits about to be pushed (Issue #3689).
+ *
+ * A no-op when nothing is unpushed. Synthesises the stdin git would hand a
+ * pre-push hook (`<local ref> <local sha> <remote ref> <remote sha>`), using
+ * forty zeros when the branch has no local tracking ref. Pre-flight commands
+ * are skipped when Step 1 already ran them this call. Any failure — including
+ * being unable to determine the state — is returned as an error so the caller
+ * refuses to push (fail closed). Only a verdict on the branch's content is a
+ * {@link PrePushGateBlockedError}; a failed git or remote lookup is a plain
+ * error (or a `PrePushGateInfrastructureError`) with no `[PRE_PUSH_BLOCKED]`
+ * prefix, so it is not reported as the branch failing its checks.
+ *
+ * With `baseRef` the gate covers every non-merge commit the branch has ahead
+ * of that ref, pushed or not (Issue #3689): the execute phase's WIP
+ * checkpoints push the agent's commits ungated, so the completion phase
+ * checks the whole branch before it raises the PR. It is a no-op only when
+ * the branch has no commit of its own ahead of `baseRef`. That mode never
+ * reads the remote head: the range is local, so no `ls-remote` or `fetch` runs.
+ */
+export async function gateUnpushedCommits(
+  branchName: string,
+  options: GitCommandOptions,
+  preFlight: PreFlightGateSpec,
+  preFlightAlreadyRan = false,
+  baseRef?: string,
+): Promise<Result<void>> {
+  let remoteSha = "0".repeat(40);
+  if (baseRef === undefined) {
+    const state = await describeUnpushedCommits(branchName, options);
+    if (!state.ok) return { ok: false, error: state.error };
+    if (state.value.count === 0) return { ok: true, value: undefined };
+    if (state.value.source === "tracking-ref" && state.value.sha) {
+      remoteSha = state.value.sha;
+    }
+  } else {
+    // Whole-branch mode: WIP checkpoints may already have pushed the commits,
+    // so "nothing unpushed" says nothing. Skip only when the branch has no
+    // commit of its own ahead of the base.
+    try {
+      assertSafeGitRef(baseRef, "gate base ref");
+    } catch (error) {
+      return {
+        ok: false,
+        error: new PrePushGateBlockedError(
+          `[PRE_PUSH_BLOCKED] ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        ),
+      };
+    }
+    const ahead = await runGitCommand(
+      ["rev-list", "--count", "--no-merges", `${baseRef}..HEAD`],
+      options,
+    );
+    if (!ahead.ok) return { ok: false, error: ahead.error };
+    const aheadCount = Number.parseInt(ahead.value.stdout.trim(), 10);
+    if (ahead.value.code !== 0 || !Number.isFinite(aheadCount)) {
+      return {
+        ok: false,
+        error: new Error(
+          `git rev-list ${baseRef}..HEAD failed: ${
+            ahead.value.stderr.trim() || `exit ${ahead.value.code}`
+          }`,
+        ),
+      };
+    }
+    if (aheadCount === 0) return { ok: true, value: undefined };
+  }
+
+  const head = await runGitCommand(["rev-parse", "HEAD"], options);
+  if (!head.ok) return { ok: false, error: head.error };
+  if (head.value.code !== 0) {
+    return {
+      ok: false,
+      error: new Error(
+        `git rev-parse HEAD failed: ${head.value.stderr.trim()}`,
+      ),
+    };
+  }
+  const ref = `refs/heads/${branchName}`;
+  const gate = await runPrePushGate({
+    cwd: options.cwd ?? Deno.cwd(),
+    stdin: `${ref} ${head.value.stdout.trim()} ${ref} ${remoteSha}\n`,
+    preFlightCommands: preFlightAlreadyRan ? [] : preFlight.commands,
+    timeoutSeconds: preFlight.timeoutSeconds,
+    runner: preFlight.runner,
+    baseRef,
+  });
+  if (!gate.ok) {
+    // A lookup that failed is not a verdict: pass it on unmarked.
+    if (gate.error instanceof PrePushGateInfrastructureError) {
+      return { ok: false, error: gate.error };
+    }
+    return {
+      ok: false,
+      error: new PrePushGateBlockedError(
+        `[PRE_PUSH_BLOCKED] ${capGateText(gate.error.message)}\n` +
+          `Unpushed commits on ${branchName} were not pushed.`,
+        { cause: gate.error },
+      ),
+    };
+  }
+  return { ok: true, value: undefined };
+}
+
+/**
  * Commit any uncommitted working-tree changes and push every unpushed commit
  * to origin (Issue #1643 — "Why we forget to push?").
  *
@@ -523,6 +671,15 @@ export async function unstageWorkerStateFiles(
  *
  *   1. `git status --porcelain` — if dirty, stage and commit with the
  *      provided message.
+ *   1b. Step 1b — when `preFlight` is supplied, `gateUnpushedCommits` runs
+ *      the changed-file pre-push checks (`runPrePushGate`) over the unpushed
+ *      commits, including any the agent committed but never pushed (nothing
+ *      runs when no commit is unpushed). When Step 1 committed nothing it
+ *      also re-runs the repo's pre-flight commands; when Step 1 committed,
+ *      those commands already ran there and are not repeated. A block
+ *      refuses the push. The gate output in the
+ *      returned error is cut to a head and a tail (as is Step 1's pre-flight
+ *      block), because PR processors post it in a comment.
  *   2. `pushUnpushedCommits` — push every commit ahead of origin (handles
  *      first-time push and non-fast-forward recovery internally).
  *   3. Re-count unpushed commits against the branch's own remote head —
@@ -542,10 +699,13 @@ export async function unstageWorkerStateFiles(
  *   (Issue #2584). Defaults to `false` (forbid pushing to the default branch).
  * @param preFlight - Optional mandatory pre-flight gate (Issue #3577). When
  *   supplied with a non-empty `commands` list, the commands run at the
- *   `assertSafeToCommit()` chokepoint before the automated commit; the first
- *   non-zero exit (or a command that cannot be started, or a timeout) blocks
- *   BOTH the commit and the push. There is no override flag. Omit to leave the
- *   repo unaffected (zero added latency).
+ *   `assertSafeToCommit()` chokepoint before the automated commit, and again
+ *   in Step 1b when Step 1 committed nothing and unpushed commits exist; the
+ *   first non-zero exit (or a command that cannot be started, or a timeout)
+ *   blocks BOTH the commit and the push. There is no override flag. Supplying
+ *   a spec, even one with an empty `commands` list, also turns on Step 1b's
+ *   changed-file checks (Issue #3689). Omit to leave the repo unaffected
+ *   (zero added latency, no gate).
  * @param runId - Run id stamped into the `Vibe-Coder-Run-Id` commit trailer
  *   (Issue #963). Omit in production: it then falls back to {@link getRunId},
  *   which reads `VIBE_RUN_ID` and generates-and-caches one when unset, exactly
@@ -645,7 +805,14 @@ export async function commitAndPushPending(
         });
         if (!gateResult.ok) {
           await runGitCommand(["reset", "--"], options);
-          return { ok: false, error: gateResult.error };
+          // Capped like Step 1b's: the message reaches a PR comment.
+          const capped = capGateText(gateResult.error.message);
+          return {
+            ok: false,
+            error: capped === gateResult.error.message
+              ? gateResult.error
+              : new Error(capped, { cause: gateResult.error }),
+          };
         }
       }
 
@@ -685,6 +852,22 @@ export async function commitAndPushPending(
       } else {
         committedNewChanges = true;
       }
+    }
+  }
+
+  // Step 1b — gate commits the agent made but never pushed itself (Issue
+  // #3689). The agent's per-run pre-push hook only covers the agent's own
+  // `git push`; these commits would otherwise leave ungated by the
+  // changed-file checks. Final-mile callers (those passing `preFlight`) only.
+  if (preFlight) {
+    const gate = await gateUnpushedCommits(
+      branchName,
+      options,
+      preFlight,
+      committedNewChanges,
+    );
+    if (!gate.ok) {
+      return { ok: false, error: gate.error };
     }
   }
 

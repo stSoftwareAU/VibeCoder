@@ -294,6 +294,8 @@ const REAL_IMAGE_OUTPUT: Record<
     command: "markdownlint-cli2 v0.23.2 (markdownlint v0.41.1)\n" +
       "Finding: --version\nLinting: 0 files\nSummary: 0 issues in 0 files\n",
   },
+  // `cspell --version` prints the bare version (Issue #3689).
+  cspell: { command: "10.3.6\n" },
   // Captured from the image's own binary (Issue #2097): `graft --version`
   // prints the bare version, so the manifest entry needs no versionArgs.
   graft: { command: "0.18.0\n" },
