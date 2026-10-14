@@ -12,6 +12,11 @@ import {
   resolveLogDir,
 } from "../../../../worker/deno/lib/log_dir.ts";
 import {
+  checklistGapFindings,
+  type ChecklistState,
+  type ChecklistVerdict,
+} from "../../../../worker/deno/lib/review_checklists.ts";
+import {
   MAX_UNRELATED_ISSUES,
   parseReviewReply,
 } from "../../../../worker/deno/lib/pre_pr_verifier.ts";
@@ -81,6 +86,9 @@ export interface FableReview {
   testChanges: "none" | "trivial" | "tightened" | "meaningful";
   testChangeNotes: TestChangeNote[];
   unrelatedIssues: UnrelatedIssue[];
+  // Per-item verdicts for the repo's review checklists; [] when none apply
+  // (Issue #3594).
+  checklist: ChecklistVerdict[];
 }
 
 export interface LogRecord {
@@ -251,6 +259,20 @@ export function unrelatedIssueBody(
   ].join("\n");
 }
 
+// Adds the blocking findings the code owes for a checklist that was not
+// applied: a load problem, or an item the reply gave no verdict (Issue #3594).
+// Done before decideOutcome, so such a review is never approved and the
+// problem is named in the posted body whatever the model replied.
+export function withChecklistGaps(
+  review: FableReview,
+  state: ChecklistState,
+): FableReview {
+  const gaps = checklistGapFindings(state, review.checklist);
+  return gaps.length === 0
+    ? review
+    : { ...review, findings: [...review.findings, ...gaps] };
+}
+
 /**
  * The comment that adds a new instance of a defect class to the open issue
  * that already covers it (Issue #3598).
@@ -274,10 +296,43 @@ export function decideOutcome(
   opts: { autoRelease?: boolean } = {},
 ): Outcome {
   if (review.findings.length > 0) return "changes_requested";
+  // A checklist item the reviewer found missing blocks, even if it forgot to
+  // add the matching finding (Issue #3594).
+  if (review.checklist.some((c) => c.verdict === "missing")) {
+    return "changes_requested";
+  }
   if (review.testChanges === "meaningful" || removedTests.length > 0) {
     return opts.autoRelease === true ? "approved" : "held";
   }
   return "approved";
+}
+
+// Untrusted text (a repo's checklist wording, the reviewer's note) on one
+// line, with markdown/HTML/mention metacharacters neutralised.
+function plain(text: string, max = 300): string {
+  const flat = text.replace(/\s+/g, " ").trim()
+    .replace(/[`<>@]/g, (c) => c === "`" ? "'" : c === "@" ? "@\u200b" : " ");
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+const VERDICT_MARK: Record<ChecklistVerdict["verdict"], string> = {
+  "met": "✅ met",
+  "missing": "❌ missing",
+  "not applicable": "➖ not applicable",
+};
+
+function checklistLines(review: FableReview): string[] {
+  if (review.checklist.length === 0) return [];
+  const lines = ["### Repository review checklists"];
+  const names = [...new Set(review.checklist.map((c) => c.checklist))];
+  for (const name of names) {
+    lines.push("", `**${plain(name, 200)}**`);
+    for (const c of review.checklist.filter((v) => v.checklist === name)) {
+      const note = c.note.trim() === "" ? "" : `: ${plain(c.note)}`;
+      lines.push(`- ${plain(c.item, 300)} — ${VERDICT_MARK[c.verdict]}${note}`);
+    }
+  }
+  return lines;
 }
 
 function testNotes(review: FableReview, removedTests: readonly string[]) {
@@ -333,6 +388,8 @@ export function reviewBody(
   } else {
     lines.push(review.summary);
   }
+  const checklist = checklistLines(review);
+  if (checklist.length > 0) lines.push("", ...checklist);
   if (filed.length > 0) {
     lines.push(
       "",

@@ -43,6 +43,7 @@ const review = (unrelatedIssues: UnrelatedIssue[]): FableReview => ({
   testChanges: "none",
   testChangeNotes: [],
   unrelatedIssues,
+  checklist: [],
 });
 
 const count = (text: string, needle: string) => text.split(needle).length - 1;

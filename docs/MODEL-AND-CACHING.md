@@ -773,6 +773,8 @@ the worker makes itself.
 
 How it works, what it may run and how its findings block is in
 [issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).
+The repository-owned checklists it also applies are in
+[review-checklists.md](review-checklists.md).
 
 ### Haiku sub-agent tier (issue phase)
 
