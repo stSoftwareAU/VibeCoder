@@ -255,6 +255,14 @@ Inventory the codebase and record:
   inventories nothing, every module is never-recorded, and the scan
   proceeds unchanged.
 
+  When this run writes or repoints a sweep coverage slice, its `sweptAt`
+  must be a commit on the default branch: the merge-base,
+  `git fetch origin <default>` then `git merge-base HEAD origin/<default>`
+  (e.g. `origin/main`), never a feature-branch commit such as `HEAD`.
+  CI's "Sweep ledger sweptAt ancestry" step and the pre-push gate reject a
+  `sweptAt` that is not an ancestor of `origin/<default>`, and squash-merge
+  would delete a branch commit. Several earlier runs failed exactly this way.
+
 From the inventory, produce a **chunk plan**: a numbered list of focused
 review chunks, each scoped to a single trust boundary or
 security-sensitive module, listing the files it covers and the taxonomy

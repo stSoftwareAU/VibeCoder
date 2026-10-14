@@ -108,6 +108,12 @@ export type FailureCategory =
    * the worker did not malfunction.
    */
   | "security_fix_gate"
+  /**
+   * The completion phase's pre-push gate blocked the branch (PR #3716 review).
+   * The changed-file checks and the repository's pre-flight commands refused
+   * it; the worker did not malfunction.
+   */
+  | "pre_push_gate"
   | "unknown";
 
 /** Clarity status — whether the issue was assessed for clarity before failure. */
@@ -138,6 +144,8 @@ export type CategoryDisplay =
   | "summary-incomplete"
   /** Issue #3454: the security-fix gate refused the run. */
   | "security-fix-gate"
+  /** PR #3716 review: the completion phase's pre-push gate blocked the branch. */
+  | "pre-push-gate"
   | "unknown";
 
 /** Parsed diagnostic context for zero-output failures (Issue #533). */
@@ -243,6 +251,33 @@ export const SECURITY_FIX_GATE_MARKER =
   "the security fix did not pass the worker's security-fix gate";
 
 /**
+ * Phrase the completion phase opens a pre-push gate block with (PR #3716
+ * review of Issue #3689). Worker-authored prefix put ahead of the gate's own
+ * output, which is the changed-file and pre-flight tools' raw stdout/stderr:
+ * `cargo fmt --check` and `deno fmt --check` diff hunks, markdownlint
+ * `[Context: ...]` excerpts and quoted test names. A source comment such as
+ * `// back off when the exchange rate limit is hit` in a hunk was read as a
+ * rate limit, so the run was released uncounted and re-claimed every cycle.
+ * Matched with `startsWith` ahead of every other rule, so a quotation cannot
+ * forge or outrank it. The failure ladder, the run-failure classifier and the
+ * host-fault detector honour the same prefix.
+ */
+export const PRE_PUSH_GATE_MARKER =
+  "the branch did not pass the worker's pre-push gate";
+
+/**
+ * The worker-written prefix of the completion phase's reason when the pre-push
+ * gate could not read the branch state (a failed or timed-out git or remote
+ * lookup, PR #3716 review). The branch was not judged, so it is a
+ * `push_failure` (infrastructure, retried in-run). Matched with `startsWith`
+ * ahead of the timeout rule, because the quoted git text legitimately says
+ * `timed out` (`TIMEOUT: git rev-list … timed out after 30s`) or
+ * `Connection timed out`, which would otherwise make it a `timeout`.
+ */
+export const PRE_PUSH_LOOKUP_FAILED_MARKER =
+  "Git push failed: the pre-push gate could not read the branch state";
+
+/**
  * The worker-written head of a posted summary-gate failure record: the
  * `## Automated Processing Failed …` heading line followed by the
  * `**Category:** \`summary-incomplete\`` line `markIssueAsFailedOnce` and
@@ -303,7 +338,9 @@ export function buildScheduledReleaseReason(
  *
  * Order matters: more specific patterns are checked before general ones.
  * The leading worker-written gate markers ({@link SUMMARY_RULE_GATE_MARKER},
- * Issue #3431, then {@link SECURITY_FIX_GATE_MARKER}, Issue #3454) are
+ * Issue #3431, {@link SECURITY_FIX_GATE_MARKER}, Issue #3454, then
+ * {@link PRE_PUSH_GATE_MARKER}, PR #3716 review, then
+ * {@link PRE_PUSH_LOOKUP_FAILED_MARKER}) are
  * `startsWith` rules checked ahead of every other rule.
  */
 export function detectFailureCategory(failureMessage: string): FailureCategory {
@@ -325,6 +362,18 @@ export function detectFailureCategory(failureMessage: string): FailureCategory {
   // a worker-written prefix ahead of quoted agent test declarations.
   if (failureMessage.startsWith(SECURITY_FIX_GATE_MARKER)) {
     return "security_fix_gate";
+  }
+
+  // The completion phase's pre-push gate block (PR #3716 review): the
+  // worker's prefix ahead of raw formatter, linter and test output.
+  if (failureMessage.startsWith(PRE_PUSH_GATE_MARKER)) {
+    return "pre_push_gate";
+  }
+
+  // The gate could not read the branch state: an infrastructure fault, never
+  // a timeout or rate limit the quoted git text happens to mention.
+  if (failureMessage.startsWith(PRE_PUSH_LOOKUP_FAILED_MARKER)) {
+    return "push_failure";
   }
 
   // A scheduled release outranks every other pattern (Issue #424, parent
@@ -565,6 +614,7 @@ const VALID_FAILURE_CATEGORIES: ReadonlySet<string> = new Set<FailureCategory>([
   "clone_corrupt",
   "summary_incomplete",
   "security_fix_gate",
+  "pre_push_gate",
   "unknown",
 ]);
 
@@ -644,6 +694,10 @@ export function isInfrastructureFailure(category: FailureCategory): boolean {
     // security-fix evidence; retrying is governed by the normal retry rules.
     case "security_fix_gate":
       return false;
+    // Not infrastructure (PR #3716 review): the branch itself failed the
+    // checks; a retry of the same content would be blocked identically.
+    case "pre_push_gate":
+      return false;
     default:
       return false;
   }
@@ -694,6 +748,8 @@ export function getFailureCategoryDisplay(
       return "summary-incomplete";
     case "security_fix_gate":
       return "security-fix-gate";
+    case "pre_push_gate":
+      return "pre-push-gate";
     case "unknown":
       return "unknown";
     default:
@@ -1026,6 +1082,12 @@ export function getFailureDiagnosis(
 - This is the agent's deliverable falling short, not a worker defect
 - The normal retry and \`failed-once\` rules apply`;
 
+    case "pre_push_gate":
+      return `- The branch did not pass the worker's pre-push gate (PR #3716 review)
+- The gate's comment on the issue quotes the failing check's output, which names each file and finding
+- This is the branch's content failing the repository's own checks, not a worker defect
+- The normal retry and \`failed-once\` rules apply`;
+
     case "evidence_missing":
       return `- The PR was blocked because screenshot evidence is required for UI changes
 - This is a process requirement, not related to issue complexity
@@ -1133,6 +1195,10 @@ export function getFailureDiagnosisOneliner(
     // refused the run (Issue #3454).
     case "security_fix_gate":
       return "The agent did not deliver the vulnerability-fix verification evidence the worker's security-fix gate requires — not a worker defect.";
+    // Deliberately not "Likely cause": the worker's own pre-push gate blocked
+    // the branch and quoted the failing check (PR #3716 review).
+    case "pre_push_gate":
+      return "The branch did not pass the worker's pre-push gate (changed-file checks or the repository's pre-flight commands) — see the quoted check output, not a worker defect.";
     case "internal_error":
       return "Likely cause: internal tooling or CLI error (not related to issue complexity).";
     case "unknown":
