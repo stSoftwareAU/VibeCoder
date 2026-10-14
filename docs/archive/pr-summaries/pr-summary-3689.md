@@ -273,7 +273,8 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   non-spell-checked extensions, failing cspell blocks the push, the CI gate
   (`planChangedFileChecks` plans no check when `cspellInCi` is off), the
   workflow detector (a `run: |` block, GRQ's `uses: streetsidesoftware/cspell-action`
-  step, a non-cspell block, a commented-out step), and two `runPrePushGate` tests on
+  step, a non-cspell block, a commented-out step, a single-line cspell step after a
+  block, a blank line inside a block, and the `|-`/`>`/`>-`/`|+`/`|2` headers), and two `runPrePushGate` tests on
   a real repo: a `docs/cspell.json` with no CI step is not blocked and never
   looks up cspell, and a GRQ-style cspell-action step with a missing binary is
   blocked. Red-check: dropping the cspell plan, forcing either operand of
