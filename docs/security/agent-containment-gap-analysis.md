@@ -113,7 +113,7 @@ flowchart LR
   scanned on a schedule.
 - **VibeCoder today:** transcripts are kept 3 days with a 200-file cap
   (`worker/deno/lib/agent_transcript.ts:28-38`;
-  `worker/deno/lib/worker_log_cleanup.ts:19`, `:37`); `agent_transcript.ts:59`
+  `worker/deno/lib/worker_log_cleanup.ts:34`, `:37`); `agent_transcript.ts:59`
   caps one transcript at 100 MiB. Nothing scans them on a schedule.
 - **Gap:** 3-day retention against 30 days, and no scheduled scan.
 - **Verdict:** ADOPT; without retention and a scan, an incident cannot be
