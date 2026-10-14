@@ -17,7 +17,8 @@ only, and the container runs on a bridge network with open egress. Closes #3652.
 - [x] THREAT-MODEL R9 and R11 rewritten as open until #3698; R6 pointer added
 - [x] `docs/SETUP.md` "Several Claude tokens" no longer restates R9's old
       acceptance
-- [x] One follow-up per ADOPT (#3698–#3703); escape test is a human-run plan
+- [x] One follow-up per ADOPT (#3698–#3703); the human-run escape test plan
+      itself (seven checks against the C22 properties, per runtime) is in G1
 - [x] Anthropic-account items recorded as SKIP
 - [x] Comment-only updates in `claude_env.ts` and the isolation test header
 

@@ -61,6 +61,30 @@ flowchart LR
 - **Verdict:** ADOPT the supervised test; it is the cheapest way to learn how
   strong C22 really is. The deliverable is a human-run test plan only, with no
   autonomous escape attempt. → **follow-up filed: #3703.**
+- **Human-run escape test plan.** An operator runs these checks on a throwaway
+  test host, once per supported runtime (Docker, Podman, Apple `container`),
+  from a shell inside a launched agent container. Each check is a read-only
+  observation of what the container was given; none attempts a breakout. The
+  expected result is what the launcher asks for
+  (`container_launch.ts:1145-1166`). Record pass, fail or not applicable per
+  check, with the date, runtime and versions.
+
+  | # | C22 property         | Check (what to observe from inside the container)                                | Expected on Docker and Podman                                   | Expected on Apple `container`                                  |
+  | - | -------------------- | -------------------------------------------------------------------------------- | --------------------------------------------------------------- | -------------------------------------------------------------- |
+  | 1 | Explicit mount set   | List the mounts. Compare with the mount table in `docs/CONTAINMENT.md`.          | Only the documented mounts; no host root, home or socket        | Same mount set; no runtime socket                              |
+  | 2 | Explicit mount set   | Check the runtime control socket is not visible in the container.                | Absent                                                          | Absent                                                         |
+  | 3 | Dropped capabilities | Read the effective capability set of the agent process.                          | Empty (`--cap-drop ALL`)                                        | Not applicable: no `--cap-drop`; record the observed set       |
+  | 4 | `no-new-privileges`  | Read the no-new-privileges flag of the agent process.                            | Set                                                             | Not applicable: no `--security-opt`; record the observed value |
+  | 5 | Read-only root       | Confirm a write to a root-filesystem path outside the scratch mounts is refused. | Refused; writes succeed only in the scratch `tmpfs` and volumes | Not applicable: no `--read-only`; record where writes succeed  |
+  | 6 | No host networking   | Compare the container's network interfaces with the host's.                      | Own network namespace; host interfaces not visible              | Own VM and IP address                                          |
+  | 7 | No published ports   | From the host, list the container's published ports.                             | None                                                            | None                                                           |
+
+  A check whose result differs from the expected column is a failed check and
+  gets its own issue. A runtime whose dialect cannot take a flag (Apple
+  `container`: `supportsCapDrop`, `supportsSecurityOpt` and `supportsReadOnly`
+  are all `false`) records what it observed instead of failing; its own VM is
+  the compensating control named in `container_runtime.ts:400-415`. The
+  deliverable of #3703 is running this plan and recording the verdicts.
 
 ### G2 — Network — **ADOPT**
 
