@@ -1,6 +1,6 @@
 ---
 name: review-fleet-prs
-description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner. Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
+description: Review open PRs by Dependabot and the VibeCoder fleet accounts across the monitored repos. Once CI is green, an Opus 5.5 reviewer checks each PR at xhigh effort; clean PRs are approved, PRs with blocking problems get a request for changes, and PRs that change an existing test in a meaningful way are held for the owner (unless the repo opts in to auto-release of issue-required test changes). Watches for new PRs every 5 minutes without spending tokens while there is nothing to review. Use when asked to review the open PRs raised by the fleet or by Dependabot, or to run, start or install the unattended review loop.
 ---
 
 # Review fleet PRs
@@ -54,7 +54,16 @@ reviewing as a GitHub App, and persistent failure escalation.
    old implementation) is the owner's call: the PR is held with a
    comment-only review, neither approved nor sent back, and labelled
    `needs-human`; the skill removes that label on a later approve or
-   send-back only when it was the one that added it. Trivial edits
+   send-back only when it was the one that added it. **Opt-in exception:** a
+   repo listed in `.config.json` `pr_reviewer_auto_release` (an array of
+   `owner/repo`; absent or empty is off) has such a hold approved instead
+   (auto-released) only when there are no findings, no test file was removed,
+   the PR has a linked issue (`closingIssuesReferences`) whose title or body
+   could be read, and every note is kind `expected-value` with a
+   `criterionQuote` of at least 5 words found verbatim in a linked issue's
+   title or body (comments never count) and a positive `failsWithoutChange`.
+   A removed case, added skip, weakened or deleted assertion, removed test
+   file or any fetch failure keeps the hold. Trivial edits
    (formatting, renames, imports, added cases, fixture paths) are not, and
    neither are edits that only **tighten** a meaningful behavioural or
    contractual test (it now asserts more or allows less, as the issue asks):
@@ -259,13 +268,22 @@ The script does the rest, so do not post anything yourself:
 
 - It files each of the reviewer's `unrelatedIssues` first: they are already on
   the base branch, so they are filed even if the PR has since moved or
-  merged.
+  merged. One with `existingIssue` naming an open issue is added to that
+  issue as a comment instead; if it is closed or cannot be read, the
+  finding is filed as new, never dropped (Issue #3598). These follow-ups
+  carry no label, because the fleet discovers open issues without one; only
+  step 3's guidance issues get `idle-task`.
 - It re-checks the head commit and posts no review if it moved or the PR
   closed; the next gate pass picks up the new commit.
 - It decides the outcome: reviewer findings mean **request changes** (the
   worker acts on those); otherwise a meaningful test change or a removed
   test file means **held for the owner**, as a comment-only review the
-  worker ignores; otherwise **approve**.
+  worker ignores; otherwise **approve**. **Auto-release:** for a repo in
+  `pr_reviewer_auto_release` (read via `auto_release.ts`; a malformed value
+  makes `post.ts` fail loud), a hold is instead an approval when rule 4's
+  conditions all hold. The body opens "Auto-released: ..." and lists each
+  change with its quoted criterion; there is no held comment and no
+  `needs-human` label.
 - After an approval, when the PR is behind its base (and is not a Dependabot
   PR), it asks GitHub to bring the branch up to date at the reviewed head
   (rule 9), so the armed auto-merge can complete once CI re-runs. The result
@@ -283,8 +301,13 @@ The script does the rest, so do not post anything yourself:
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
   PR is sent back or held.
 
-It prints `{ posted, outcome?, filedIssues?, labelError?, branchUpdated?,
-branchUpdateError?, reason? }`.
+It prints `{ posted, outcome?, autoReleased?, autoReleaseHeld?,
+filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
+`autoReleased: true` is also in the `log.jsonl` record, and `summary.md`
+prefixes that PR's "Approved, last 7 days" line with
+`(auto-released: issue-required test change)` as an audit trail.
+`autoReleaseHeld` lists the reasons an opted-in repo's hold was kept; it is
+printed and logged only for a held PR in an opted-in repo.
 `labelError` names the label action (`add` or `remove`) and the `gh` error
 when the label call failed; the exit code is unchanged either way. Exit
 code 2 means the reviewer's reply was malformed: nothing was posted, and the PR
@@ -299,16 +322,34 @@ VibeCoder's own guidance:
    wording or file. Compare it with `<logs>/review-fleet-prs/log.jsonl` and the
    recent review history it records. A recurrence means the same preventable
    mistake has appeared in at least **two independent PRs**; repeated comments
-   on one PR or one head commit count once.
-2. Ask whether a concrete change to VibeCoder's prompt, a skill,
+   on one PR or one head commit count once. When the finding matches the
+   target pattern of guidance already filed (the `pattern` slugs in
+   `guidance.ts due`'s output), record it with
+   `guidance.ts hit --pattern=<slug> --pr=<owner/repo#n>`.
+2. First assess a deterministic check: something that catches the mistake
+   mechanically, every time, whether or not the agent remembers a rule.
+   Consider, in this order:
+   - a worker gate (the worker refuses the PR or the push);
+   - a test or lint rule;
+   - a Semgrep rule;
+   - a script or deno task the agent or the gate runs.
+
+   Prose rules alone keep being broken, and each one added makes the
+   guidance longer without reducing the mistake, so a feasible check is
+   always the proposal.
+3. Propose prose guidance only when none of these checks is feasible: ask
+   whether a concrete change to VibeCoder's prompt, a skill,
    `CODING-STANDARDS.md`, templates, or similar worker guidance would likely
    prevent or materially reduce that mistake. If the answer is no, do
    nothing. Product bugs, repository-specific design decisions and random
-   implementation mistakes are not automatically prompt problems.
-3. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
+   implementation mistakes are not automatically prompt problems. A prose
+   proposal prefers rewording, moving or replacing an existing rule over
+   adding a new one. When a rule already exists and was ignored, diagnose
+   why first (#3425) rather than restating it.
+4. Before filing, search open issues in `stSoftwareAU/VibeCoder` for the root
    mistake and the proposed guidance area. If an issue already covers it,
    do not create another one.
-4. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
+5. Otherwise create an issue in `stSoftwareAU/VibeCoder` describing:
    - the recurring failure pattern and why it is preventable;
    - at least two independent PR/review examples: a link for each one in a
      public repo, and a concept-level description, with no name, number or
@@ -316,13 +357,25 @@ VibeCoder's own guidance:
      [Keeping private repos private](#keeping-private-repos-private));
    - the VibeCoder prompt/skill/guidance that should change, when identifiable;
    - the proposed guidance or guardrail and how future reviews can verify it
-     worked.
+     worked;
+   - a `## Deterministic check assessment` section naming the checks
+     considered, and the check proposed or why none is feasible;
+   - a `## Target pattern` section naming one lower-case slug for the root
+     mistake (for example `untested-call-site`). After filing, record it with
+     `guidance.ts track --issue=<n> --pattern=<slug>`.
    Apply `idle-task` to the issue filed, and no reserved label (never
    `work-on`, `top-priority`, `low-priority` or `planning`): the reviewer
    App is in `authorized_commenters`, so the worker trusts only its
    `idle-task` add, and reserved labels are for humans to set. Otherwise
    leave assignment/triage unchanged.
-5. Keep the threshold evidence-based. Similar symptoms with different causes
+6. Once per round, run `guidance.ts due` and act on each `recurring` entry:
+   guidance that closed as completed at least 30 days ago while its pattern
+   still recurs in two or more independent PRs has not worked. Search first,
+   then file at most one issue proposing removal or a rewrite of that
+   guidance, never an extension, under the same private-repo rules, and
+   record it with `guidance.ts retire --issue=<n> --by=<new issue>`. See
+   [references/guidance-ledger.md](references/guidance-ledger.md).
+7. Keep the threshold evidence-based. Similar symptoms with different causes
    are not a recurrence. Never create an issue solely to make a review pass,
    and never relax safety, testing or correctness guidance as the cure.
 
@@ -332,7 +385,9 @@ search or file an improvement issue must not change the PR review outcome.
 ### 4. Report
 
 One short line per round: approved, sent back, and held for the owner, each
-with PR links, plus any issues filed. When post.ts printed a `labelError` or
+with PR links, plus any issues filed and any `recurring` guidance entries
+from `guidance.ts due`. When `due` fails, name the failure in the report; a
+`due` failure never changes a PR review outcome. When post.ts printed a `labelError` or
 a `branchUpdateError` for a PR, name that PR and the failure. Then go back to
 the loop.
 
@@ -350,3 +405,6 @@ the last 7 days. Every gate pass rewrites it at no token cost.
 
 Read [references/notes.md](references/notes.md) for why approval counts, the
 idle cost, and where `<logs>` (used throughout this file) lives.
+
+When you change the `description` above, rerun the triggering check in
+[references/trigger-queries.md](references/trigger-queries.md).

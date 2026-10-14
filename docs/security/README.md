@@ -17,6 +17,7 @@ today.
 | **[GhostCommit — image prompt-injection threat model](ghostcommit-image-injection-assessment.md)** | The repo's threat model for image-based prompt injection: attack surface, detect-and-flag posture, and the mitigation sub-issues it scoped |
 | **[GhostCommit canary regression tests](ghostcommit-canary-tests.md)** | The empirical half of the same work: canary tests that prove the posture at runtime and guard against regressions |
 | **[VulnHunter methodology evaluation](vulnhunter-methodology-evaluation.md)** | Adopt/skip evaluation of five VulnHunter defensive techniques (falsification, independent verification, evidence filter, remediation mapping, RED→GREEN) against the security-fix gate, the whole-tree sweep and the code-scanning feed |
+| **[Agent containment gap analysis](agent-containment-gap-analysis.md)** | Gap analysis of Anthropic's agent containment best practices against the run boundary: sandbox, egress, credentials, permissions, run limits, transcript monitoring and incident response, with seven verdicts and follow-ups #3698–#3703 |
 
 Related index entries outside this directory:
 

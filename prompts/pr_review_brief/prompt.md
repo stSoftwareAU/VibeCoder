@@ -43,7 +43,14 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    changed to make the build pass), report it as a blocking **finding**
    asking for the test to be restored, not only under `testChanges`.
    Report it under `testChanges` as **meaningful** only when the issue
-   requires the change.
+   requires the change. For each `testChangeNotes` entry give `kind`
+   (`expected-value` for a changed expected value or behaviour,
+   `removed-case`, `added-skip`, `weakened-assertion`, `removed-file` or
+   `other`); `criterionQuote`, the acceptance criterion from a linked issue
+   that requires the change, quoted verbatim from the issue's title or body
+   (not comments), or omitted if there is none; and `failsWithoutChange`,
+   `true` or a short statement that the edited test still fails without the
+   code it guards.
 6. {{PREVIOUS_FINDINGS}}
 7. Repo review checklists: {{REVIEW_CHECKLISTS}}
    When that is empty, the repo has no checklist that applies to this
@@ -66,9 +73,13 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    by this change. Anything this change causes, even in a file it only
    touches in passing, is a blocking **finding** it must fix; when in
    doubt, it is a finding. Only real, verified problems with a file and
-   line, at most 3; not style, polish or wishes. Skip any the repo's open
-   issues already cover (search them as described above, where you can).
-   Write each as a standalone issue: a title that names the defect, and a
+   line, at most 3; not style, polish or wishes. Before writing one, search
+   the repo's open issues by the file path and the defect's key words, not
+   only its title (as described above, where you can). If an open issue
+   already covers the same defect class, including an umbrella issue for
+   it, set `existingIssue` to that issue's number: the new instance is added
+   there as a comment instead of filed again. Leave out an instance that
+   issue already describes. Write each as a standalone issue: a title that names the defect, and a
    body saying what is wrong, the failure scenario and a suggested fix.
    Describe a security gap by class and location only (for example "the
    query is written into the page unescaped"), never with a working
@@ -82,5 +93,5 @@ diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>"}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>"}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}]}`
+`{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 Use `[]` for `checklist` when there is no checklist section.
