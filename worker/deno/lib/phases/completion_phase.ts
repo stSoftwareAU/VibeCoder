@@ -3641,7 +3641,9 @@ async function completionBody(
   // Issue #3506: a healthy run whose summary has a `partial` or `missing`
   // closure entry files the same follow-up (same finding-id key) and its PR
   // body gains the partial-delivery section. `unassessed` items file nothing;
-  // otherwise a healthy run is untouched.
+  // otherwise a healthy run is untouched. PR #3676 review: on an issue that is
+  // itself a partial-delivery follow-up a healthy run files no nested one; it
+  // takes the chain-stop path instead. A degraded run still files one.
   //
   // PR #3676 review: the follow-up joins the parent's milestone, and the
   // claim-freshness check below retracts one this run newly filed.

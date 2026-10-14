@@ -2400,7 +2400,9 @@ flowchart TD
     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
     D -- no --> H{"Any closure entry<br/>partial or missing?<br/>(Issue #3506)"}
     H -- no --> P["PR as today"]
-    H -- yes --> F
+    H -- yes --> C{"Issue is itself a<br/>partial-delivery follow-up?"}
+    C -- no --> F
+    C -- "yes (chain stop)" --> CS["No nested follow-up; label<br/>needs-human; PR body opens<br/>'handed to a human', says 'Part of'"]
     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}

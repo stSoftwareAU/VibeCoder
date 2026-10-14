@@ -42,7 +42,10 @@ re-sync re-derives that section. Closes #3506.
   the gaps, and its PR opens with a `## ⚠️ Partial delivery — handed to a
   human` section carrying a `vibe-follow-up-chain-stop` marker, with the
   closing keyword for the issue turned into `Part of`. Both merged-PR closers
-  leave such an issue open. Without this, an item no run can deliver chained
+  leave such an issue open, and only when the PR body opens with the chain-stop
+  heading followed by the marker: a marker quoted in a summary code span or
+  mentioned under a later heading does not hold it (`hasFollowUpChainStop`). A
+  degraded run on such an issue still files one, as before. Without this, an item no run can deliver chained
   `Finish #F: Finish #N: …` fleet runs without end. Marker authorship is not
   checked, because a planted marker only sends the gaps to a human.
 
@@ -172,8 +175,10 @@ true because it names the guard, which still runs for degraded runs:
   close it; a failed label raises no PR and posts no comment; a degraded run
   on a follow-up still files one), 2 to `worker/deno/tests/pr_body_sync_test.ts`
   (the re-sync keeps the section while a gap remains and drops it once none
-  does) and the new `worker/deno/tests/follow_up_chain_stop_test.ts` (8 tests:
-  the helpers, and both closers leaving a chain-stop PR's issue open). The
+  does) and the new `worker/deno/tests/follow_up_chain_stop_test.ts` (11 tests:
+  the helpers, the leading-section rule (a quoted marker and a later-heading
+  mention do not hold the issue), and the closers leaving a chain-stop PR's
+  issue open). The
   related suites (689 tests) passed, with `deno fmt --check`, `deno lint` and
   `deno check`. Red check: forcing the chain-stop condition in the guard turned
   9 completion tests red; disabling the closer branch in `pr_issue_linking.ts`
@@ -312,3 +317,12 @@ true because it names the guard, which still runs for degraded runs:
   - Removing the reported-gap branch went red.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+- PR #3676 review push (fifth round, chain-stop scope): the prompt's chain-stop
+  exception now says it applies to a healthy run only; the `degraded_delivery.ts`
+  module doc and mermaid, the `completionBody` comment in
+  `completion_phase.ts` and the `issue-processing.md` diagram gained the same
+  branch. Tests: `deno test` over `follow_up_chain_stop_test.ts` and
+  `degraded_delivery_test.ts` (76 passed), and over
+  `completion_phase_degraded_delivery_test.ts`, `pr_body_sync_test.ts` and
+  `claim_freshness_phase_test.ts` (97 passed), 0 failed; `deno fmt --check`
+  passed on the changed files. The full gate was not re-run on this push.

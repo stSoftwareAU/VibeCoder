@@ -19,7 +19,9 @@
  *     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(same verdict as the<br/>run-stats comment)"}
  *     D -- no --> H{"Any closure entry<br/>partial or missing?"}
  *     H -- no --> P["PR as today"]
- *     H -- yes --> F2["File (or reuse) the same follow-up;<br/>PR body gains a 'Partial delivery'<br/>section pointing at it"]
+ *     H -- yes --> C{"Issue is itself a<br/>partial-delivery follow-up?"}
+ *     C -- no --> F2["File (or reuse) the same follow-up;<br/>PR body gains a 'Partial delivery'<br/>section pointing at it"]
+ *     C -- yes --> CS["No nested follow-up; label<br/>needs-human; PR body opens<br/>'handed to a human', says 'Part of'"]
  *     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
  *     S -- yes --> P
  *     S -- no --> G{"Any shortfall<br/>partial or missing?"}
@@ -58,6 +60,13 @@
  * filed (or reused, keyed on the parent) with a body for a healthy run, and the
  * PR body gains a section from {@link buildReportedGapPrSection}. `unassessed`
  * items file nothing (Issue #2695).
+ *
+ * PR #3676 review, chain stop: a healthy run on an issue that is itself a
+ * partial-delivery follow-up (see {@link isPartialDeliveryFollowUp}) files no
+ * nested follow-up. It labels the issue `needs-human`, and its PR body opens
+ * with the chain-stop section from {@link buildFollowUpChainStopSection}, which
+ * says `Part of` rather than closing the issue. A degraded run on such an issue
+ * still files one, as above.
  *
  * The follow-up carries the `idle-task` label — the one work-trigger label the
  * worker may apply itself — so a later run picks the residue up without a
