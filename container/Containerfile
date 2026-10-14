@@ -234,12 +234,12 @@ ARG CSPELL_SHA256_NOARCH="b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb8
 
 RUN set -eu; \
     for spec in "markdownlint-cli2 ${MARKDOWNLINT_CLI2_VERSION} ${MARKDOWNLINT_CLI2_SHA256_NOARCH}" "cspell ${CSPELL_VERSION} ${CSPELL_SHA256_NOARCH}"; do \
-      set -- ${spec}; \
-      curl -fsSL ${CURL_RETRY} -o /tmp/n.tgz "https://registry.npmjs.org/$1/-/$1-$2.tgz"; \
-      echo "$3  /tmp/n.tgz" | sha256sum -c -; \
-      npm install -g --ignore-scripts /tmp/n.tgz; \
+      set -- ${spec}; tgz=/tmp/n.tgz; \
+      curl -fsSL ${CURL_RETRY} -o "${tgz}" "https://registry.npmjs.org/$1/-/$1-$2.tgz"; \
+      echo "$3  ${tgz}" | sha256sum -c -; \
+      npm install -g --ignore-scripts "${tgz}"; \
     done; \
-    rm -rf /tmp/npmc /tmp/n.tgz; \
+    rm -rf /tmp/npmc "${tgz}"; \
     markdownlint-cli2 --version; \
     cspell --version
 

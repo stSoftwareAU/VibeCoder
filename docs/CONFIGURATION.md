@@ -4679,9 +4679,12 @@ every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
-agent runs goes through it. The worker's own pushes (its final-mile
-commit-and-push and WIP preservation) do not carry the agent's environment and
-are not gated by the hook; they keep the pre-flight at the commit chokepoint.
+agent runs goes through it. The worker's own pushes do not carry the agent's
+environment, so the hook does not gate them; instead its final-mile
+commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
+same changed-files check through `runPrePushGate` on the already-committed
+unpushed commits before pushing, and refuses the push on failure (Issue #3689).
+WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
 
 The hook runs two stages:
 
@@ -4707,7 +4710,25 @@ The hook runs two stages:
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
      root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
-     first, else the one on `PATH`.
+     first, else the one on `PATH`;
+   - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
+     `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
+     config: a root one cspell finds itself (`cspell.json`, `.cspell.json`,
+     `cSpell.json`, `cspell.{yaml,yml}`, `[.]cspell.config.*`) or
+     `docs/cspell.json`, which is passed with `--config docs/cspell.json`. It
+     runs from the repo root with `--no-progress --no-summary
+     --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
+     else the one on `PATH`. No tracked config, or no matching changed file,
+     means no cspell run;
+   - **sweep ledger `sweptAt` ancestry**, only when the push changes
+     `docs/audits/lib-sweep-coverage.json` or a
+     `docs/audits/lib-sweep-coverage/top-up-*.json`: it checks that the
+     `sweptAt` of just the slices those files contribute is an ancestor of the
+     default branch (`origin/HEAD`, resolved with
+     `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
+     "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
+     `sweptAt` is caught before the push. A shallow clone is deepened first.
+     When no ledger file changed, this check makes no git calls.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4715,7 +4736,10 @@ The hook runs two stages:
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
-`markdownlint-cli2` not found refuses the push; a missing hook module, spec or
+`markdownlint-cli2` not found refuses the push; cspell configured but `cspell`
+not found refuses the push; a changed sweep ledger file whose default branch
+cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
+is not on the default branch refuses the push; a missing hook module, spec or
 `deno` binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).

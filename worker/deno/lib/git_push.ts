@@ -521,11 +521,11 @@ export async function unstageWorkerStateFiles(
  * being unable to determine the state — is returned as an error so the caller
  * refuses to push (fail closed).
  */
-async function gateUnpushedCommits(
+export async function gateUnpushedCommits(
   branchName: string,
   options: GitCommandOptions,
   preFlight: PreFlightGateSpec,
-  preFlightAlreadyRan: boolean,
+  preFlightAlreadyRan = false,
 ): Promise<Result<void>> {
   const state = await describeUnpushedCommits(branchName, options);
   if (!state.ok) return { ok: false, error: state.error };

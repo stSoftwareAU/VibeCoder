@@ -48,6 +48,7 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
+import { resolvePreFlightSpec } from "../git_push.ts";
 import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
@@ -1825,6 +1826,27 @@ async function completionBody(
     }
   }
 
+  // Pre-push gate (Issue #3689) — the agent's own pre-push hook never sees
+  // this push, so run the changed-file checks here. The repo's pre-flight
+  // commands (when configured) run too; with none, the changed-file checks
+  // still run. A block fails closed and never enters push recovery.
+  const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
+    { commands: [] };
+  const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
+    const gate = await deps.git.gateUnpushedCommits(
+      state.branchName,
+      { cwd: state.repoPath },
+      prePushSpec,
+    );
+    if (gate.ok) return undefined;
+    logger.error("Pre-push gate blocked the push", {
+      error: gate.error.message,
+    });
+    return { status: "failure", reason: gate.error.message };
+  };
+  const blockedBeforePush = await gateBeforePush();
+  if (blockedBeforePush) return blockedBeforePush;
+
   // Push branch
   const pushResult = await deps.git.pushUnpushedCommits(state.branchName, {
     cwd: state.repoPath,
@@ -1862,7 +1884,9 @@ async function completionBody(
       };
     }
 
-    // Retry push after recovery
+    // Retry push after recovery — recovery can add commits, so gate again.
+    const blockedBeforeRetry = await gateBeforePush();
+    if (blockedBeforeRetry) return blockedBeforeRetry;
     const retryPush = await deps.git.pushUnpushedCommits(state.branchName, {
       cwd: state.repoPath,
     });
