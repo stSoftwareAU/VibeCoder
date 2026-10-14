@@ -383,11 +383,10 @@ Deno.test("buildContainerLaunchPlan - no token value or unselected token path re
 Deno.test("the residual filesystem-read risk of a token pool is recorded, not left implicit (Issue #920)", async () => {
   // The environment guarantee above stops at the environment. The container
   // still mounts every token file the pool holds, so a process with read
-  // access inside it can read the unselected ones. That is accepted — the
-  // agent is assumed compromised and the controls that must hold are
-  // containment and egress — but an accepted risk that is not written down is
-  // indistinguishable from one nobody noticed. These assertions keep it
-  // written down.
+  // access inside it can read the unselected ones. Egress is open until #3698,
+  // so the risk is not contained, but a risk that is not written down is
+  // indistinguishable from one nobody noticed. The pin checks that the R9 row
+  // keeps "read", "container" and "credential".
   const root = new URL("../../../", import.meta.url);
   const threatModel = await Deno.readTextFile(
     new URL("docs/THREAT-MODEL.md", root),
