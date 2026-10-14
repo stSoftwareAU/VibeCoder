@@ -1,9 +1,9 @@
 ## Summary
 
 The agent is now told to record branch outcomes as structured facts in
-`docs/archive/pr-summaries/pr-summary-<N>.facts.json` and to leave a
-`<!-- vibe-branch-outcomes -->` marker in the Test Plan for the worker to
-render. Before this change, every surface still asked for a hand-written
+`docs/archive/pr-summaries/pr-summary-<N>.facts.json` and to leave the
+`vibe-branch-outcomes` marker in the Test Plan for the worker to render.
+Before this change, every surface still asked for a hand-written
 `Branch outcomes:` list.
 
 - `prompts/issue/prompt.md`: the PR Summary File step tells the agent to write
@@ -22,7 +22,9 @@ render. Before this change, every surface still asked for a hand-written
 - `docs/workflows/issue-processing.md`: the pr_feedback refresh sentence now
   names the facts file.
 - `worker/deno/tests/branch_outcomes_record_3147_test.ts`: the pins are
-  re-scoped to the new wording.
+  re-scoped to the new wording. The skeleton pin looks for the marker between
+  the skeleton's own `## Test Plan` heading line and its closing fence, so the
+  step's marker sentence cannot satisfy it.
 
 Closes #3538.
 
@@ -119,16 +121,21 @@ below. No other content in the diff conflicts with it.
   integration is skipped by the gate itself. Markdownlint on
   `docs/workflows/issue-processing.md` after its later fix: 0 issues.
 - Drift pins: each new phrase was run through
-  `deno task drift-pins-on-base 3576bae0 <doc> <section> <phrase>...` and was
-  absent from the base section. The phrases are `pr-summary-<N>.facts.json`,
-  `<!-- vibe-branch-outcomes -->`, `noneAdded` and `Branch outcomes facts file`
-  (both twin paragraphs); the schema pins `flipWentRed`, `testName`,
-  `out-of-scope`, `untestable`, `at least 3 words`, `100,000`, `4,000`,
-  `blocks` and `With no facts file`; the step pins
-  `pr-summary-{{ISSUE_NUMBER}}.facts.json`, `"kind":"untestable"` and
-  `facts-file form of`; and the pr_feedback pins `pr-summary-<N>.facts.json`,
-  `keeps the facts file true to the head` and `refreshing the facts file`.
-  `exempt` and `true to the head` were already on base, so they were replaced.
+  `deno task drift-pins-on-base 3576bae0 <doc> <section> <phrase>...`.
+  Absent from the base section: the twin-paragraph pins
+  `pr-summary-<N>.facts.json`, the `vibe-branch-outcomes` marker, `noneAdded`
+  and `Branch outcomes facts file` (both twin sections); the step pins
+  `the worker blocks PR creation without the facts file or that line`,
+  `pr-summary-{{ISSUE_NUMBER}}.facts.json`, the marker, `noneAdded`,
+  `flipWentRed` and `"kind":"untestable"`; and the pr_feedback pins
+  `facts file`, `pr-summary-<N>.facts.json` and
+  `keeps the facts file true to the head`. The schema test reads only the new
+  `**Branch outcomes facts file.**` paragraph, which base lacks, so on base it
+  fails at its first assert. Of its phrases, `flipWentRed`, `testName`,
+  `out-of-scope`, `at least 3 words`, `100,000`, `4,000` and
+  `With no facts file` are also absent from the base section; `exempt`,
+  `untestable` and `blocks` occur elsewhere in the base section, but not in
+  the paragraph the test reads.
 - Removed test `issue prompt skeleton summary carries a Branch outcomes: example (Issue #3147)`, verbatim:
 
   ```ts
@@ -137,8 +144,21 @@ below. No other content in the diff conflicts with it.
   ```
 
   Justification: #3538 requires the marker in place of a prose list. The
-  replacement test asserts the marker follows `## Test Plan` and that no
-  `**Branch outcomes:**` heading remains.
+  replacement test, `issue prompt skeleton carries the branch-outcomes marker
+  in its Test Plan, not a Branch outcomes: heading (Issue #3538)`, asserts the
+  marker sits between the skeleton's `## Test Plan` heading line and its
+  closing fence, and that no `**Branch outcomes:**` heading remains.
+- Moved ``assert( text.includes(phrase), `PR Summary File section is missing "${phrase}": ${text}`, );``
+  to `worker/deno/tests/branch_outcomes_record_3147_test.ts::issue prompt Test Plan step names the Branch outcomes: list, the facts file and the gate (Issues #3147, #3538)`.
+  The assertion is unchanged; only its test was renamed. Its phrase list lost
+  `the worker blocks PR creation without that line`, because #3538 makes the
+  gate block without the facts file or that line, so the old sentence is
+  untrue. The list now carries the new sentence in its place (RC1).
+- Moved ``assert( flattened.includes(phrase), `pr_feedback prompt is missing "${phrase}": ${flattened}`, );``
+  to `worker/deno/tests/branch_outcomes_record_3147_test.ts::pr_feedback prompt requires re-enumerating every branch a fix commit adds (Issue #3147)`.
+  It stays in place: the assertion and the test name are unchanged. Its phrase list only gained
+  `facts file`, `pr-summary-<N>.facts.json` and
+  `keeps the facts file true to the head`; no phrase was removed.
 - Edited expectation: "the worker blocks PR creation without that line" became
   "…without the facts file or that line". Red check RC1: reverting the prompt
   to the old wording turned the step test red (4 passed, 1 failed).
@@ -148,7 +168,10 @@ below. No other content in the diff conflicts with it.
   prompt's exempt example turned the step test red.
 - RC4: removing the facts clause from `prompts/pr_feedback/prompt.md:70`
   turned the pr_feedback test red.
-- All four were restored, and the test went back to 5 passed.
+- RC5: replacing the skeleton's marker line (`prompts/issue/prompt.md:1529`)
+  with other text turned the skeleton test red (4 passed, 1 failed: "issue
+  prompt skeleton's Test Plan is missing the ... marker").
+- All five were restored, and the test went back to 5 passed.
 
 <!-- vibe-branch-outcomes -->
 

@@ -164,11 +164,19 @@ Deno.test("issue prompt skeleton carries the branch-outcomes marker in its Test 
     await readRepoDoc("prompts/issue/prompt.md"),
     "PR Summary File",
   );
-  const planStart = body.indexOf("## Test Plan");
+  // Anchor to the skeleton's own `## Test Plan` heading line (the step text
+  // mentions the heading inline earlier) and stop at the skeleton's closing
+  // fence, so the step's own marker sentence cannot satisfy this pin.
+  const planStart = body.lastIndexOf("\n## Test Plan\n");
   assert(planStart >= 0, "issue prompt skeleton has no '## Test Plan' area");
+  const fenceEnd = body.indexOf("\n```", planStart);
+  assert(
+    fenceEnd >= 0,
+    "issue prompt skeleton's Test Plan has no closing fence",
+  );
   const marker = body.indexOf("<!-- vibe-branch-outcomes -->", planStart);
   assert(
-    marker >= 0,
+    marker >= 0 && marker < fenceEnd,
     "issue prompt skeleton's Test Plan is missing the <!-- vibe-branch-outcomes --> marker",
   );
   assert(
