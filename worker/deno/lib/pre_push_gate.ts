@@ -303,8 +303,8 @@ export function planChangedFileChecks(
     /**
      * Whether the repo's own CI runs cspell. When false, a tracked cspell
      * config is not enough to run the check: the push is not blocked on a
-     * tool CI would never run. Defaults to true for callers that do not
-     * inspect the workflows.
+     * tool CI would never run. Defaults to false, so a caller that does not
+     * read the workflows cannot block on cspell by accident.
      */
     cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
@@ -400,7 +400,7 @@ export function planChangedFileChecks(
     tracked.includes(name)
   );
   const spelling = changed.filter((p) => hasExtension(p, CSPELL_EXTENSIONS));
-  const cspellInCi = opts.cspellInCi ?? true;
+  const cspellInCi = opts.cspellInCi ?? false;
   if ((rootCspell || nestedCspell) && cspellInCi && spelling.length > 0) {
     if (!opts.cspellBinary) {
       return {
@@ -482,7 +482,6 @@ export async function repoCiRunsCspell(
   repoRoot: string,
   tracked: readonly string[],
 ): Promise<boolean> {
-  const stepNamingCspell = /^\s*(?:-\s*)?(?:run|uses)\s*:.*cspell/i;
   for (const path of tracked) {
     if (!path.startsWith(".github/workflows/")) continue;
     if (!/\.ya?ml$/.test(path)) continue;
@@ -492,9 +491,44 @@ export async function repoCiRunsCspell(
     } catch {
       continue;
     }
-    if (text.split("\n").some((line) => stepNamingCspell.test(line))) {
-      return true;
+    if (workflowRunsCspell(text)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether one workflow file's text runs cspell: a `run:` or `uses:` step
+ * whose command or action names cspell, on the same line or inside a
+ * block scalar (`run: |`) under it. Comment lines are ignored. A cspell run
+ * reached only through a script the step calls (`npm run spellcheck`) is not
+ * detected, and the docs say so.
+ */
+export function workflowRunsCspell(text: string): boolean {
+  const stepKey = /^(\s*)(?:-\s+)?(?:run|uses)\s*:(.*)$/;
+  const cspellWord = /\bcspell\b/i;
+  let blockIndent: number | null = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (blockIndent !== null) {
+      if (line.trim() === "") continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent > blockIndent) {
+        if (!line.trimStart().startsWith("#") && cspellWord.test(line)) {
+          return true;
+        }
+        continue;
+      }
+      blockIndent = null;
     }
+    if (line.trimStart().startsWith("#")) continue;
+    const step = stepKey.exec(line);
+    if (!step) continue;
+    const rest = (step[2] ?? "").trim();
+    if (/^[|>][-+0-9]*$/.test(rest)) {
+      blockIndent = (step[1] ?? "").length;
+      continue;
+    }
+    if (cspellWord.test(rest)) return true;
   }
   return false;
 }

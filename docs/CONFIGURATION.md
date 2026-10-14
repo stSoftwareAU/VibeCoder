@@ -4794,9 +4794,11 @@ The hook runs two stages:
    - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
      `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
      config and its own CI runs cspell: a tracked workflow under
-     `.github/workflows/` has a `run:` or `uses:` step naming cspell. A repo
-     with a cspell config but no such step gets no cspell run, so it is never
-     blocked on a tool its required CI does not run. The config is a root one
+     `.github/workflows/` has a `run:` or `uses:` step naming cspell, on that
+     line or inside a `run: |` block. A repo with a cspell config but no such
+     step gets no cspell run, so it is never blocked on a tool its required CI
+     does not run. A cspell run reached only through a script the step calls
+     (for example `npm run spellcheck`) is not detected. The config is a root one
      cspell finds itself (`cspell.json`, `.cspell.json`,
      `cSpell.json`, `cspell.{yaml,yml}`, `[.]cspell.config.*`) or
      `docs/cspell.json`, which is passed with `--config docs/cspell.json`. It
@@ -4820,8 +4822,9 @@ The hook runs two stages:
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
-`markdownlint-cli2` not found refuses the push; cspell configured but `cspell`
-not found refuses the push; a changed sweep ledger file whose default branch
+`markdownlint-cli2` not found refuses the push; cspell configured and run by
+the repo's CI but `cspell` not found refuses the push (a cspell config alone
+does not); a changed sweep ledger file whose default branch
 cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
 is not on the default branch refuses the push; a missing hook module, spec or
 `deno` binary refuses the push. Refusals print lines starting

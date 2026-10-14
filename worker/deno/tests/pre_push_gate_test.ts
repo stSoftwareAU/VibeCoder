@@ -14,6 +14,7 @@ import {
   type PrePushGit,
   repoCiRunsCspell,
   runPrePushGate,
+  workflowRunsCspell,
 } from "../lib/pre_push_gate.ts";
 import {
   PreFlightGateError,
@@ -566,7 +567,12 @@ Deno.test("planChangedFileChecks: cspell config and a changed .md plans cspell w
   const result = planChangedFileChecks(
     ["pr-summary-1.md", "x.rs"],
     ["cspell.json"],
-    { repoRoot: "/r", markdownlintBinary: null, cspellBinary: "/r/bin/cspell" },
+    {
+      repoRoot: "/r",
+      markdownlintBinary: null,
+      cspellBinary: "/r/bin/cspell",
+      cspellInCi: true,
+    },
   );
   assert(result.ok);
   const check = result.value.find((c) => c.label === "cspell");
@@ -584,6 +590,7 @@ Deno.test("planChangedFileChecks: a docs/cspell.json config is passed with --con
     repoRoot: "/r",
     markdownlintBinary: null,
     cspellBinary: "/r/bin/cspell",
+    cspellInCi: true,
   });
   assert(result.ok);
   assert(result.value[0]!.command.includes("--config docs/cspell.json "));
@@ -594,6 +601,7 @@ Deno.test("planChangedFileChecks: no cspell config means no cspell check", () =>
     repoRoot: "/r",
     markdownlintBinary: null,
     cspellBinary: null,
+    cspellInCi: true,
   });
   assert(result.ok);
   assertEquals(result.value, []);
@@ -604,6 +612,7 @@ Deno.test("planChangedFileChecks: cspell configured but binary missing is an err
     repoRoot: "/r",
     markdownlintBinary: null,
     cspellBinary: null,
+    cspellInCi: true,
   });
   assert(!result.ok);
   assert(result.error.includes("cspell"));
@@ -614,6 +623,7 @@ Deno.test("planChangedFileChecks: only non-spellchecked extensions means no cspe
     repoRoot: "/r",
     markdownlintBinary: null,
     cspellBinary: null,
+    cspellInCi: true,
   });
   assert(result.ok);
   assertEquals(result.value, []);
@@ -670,6 +680,106 @@ Deno.test("repoCiRunsCspell: untracked or non-workflow files do not count", asyn
     await repoCiRunsCspell("/nonexistent", [".github/workflows/x.yml"]),
     false,
   );
+});
+
+Deno.test("workflowRunsCspell: a block-scalar run step that calls cspell counts", () => {
+  const yml =
+    'jobs:\n  spell:\n    steps:\n      - name: Spell\n        run: |\n          npm ci\n          npx cspell --config docs/cspell.json "**/*.md"\n';
+  assert(workflowRunsCspell(yml));
+});
+
+Deno.test("workflowRunsCspell: GRQ's cspell-action uses step counts", () => {
+  const yml =
+    "jobs:\n  spell:\n    steps:\n      - uses: streetsidesoftware/cspell-action@v6\n";
+  assert(workflowRunsCspell(yml));
+});
+
+Deno.test("workflowRunsCspell: block-scalar and single-line steps without cspell do not count", () => {
+  assert(
+    !workflowRunsCspell(
+      "jobs:\n  test:\n    steps:\n      - run: |\n          deno test\n          deno lint\n      - run: deno fmt --check\n",
+    ),
+  );
+});
+
+Deno.test("workflowRunsCspell: a commented-out cspell step inside a block does not count", () => {
+  assert(
+    !workflowRunsCspell(
+      "jobs:\n  test:\n    steps:\n      - run: |\n          deno test\n          # npx cspell .\n",
+    ),
+  );
+});
+
+Deno.test("runPrePushGate: a cspell config with no CI cspell step is not blocked and never looks for cspell", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    await Deno.mkdir(`${clone}/docs`, { recursive: true });
+    await Deno.writeTextFile(`${clone}/docs/cspell.json`, "{}\n");
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "nested cspell config");
+    const tip = await git(clone, "rev-parse", "HEAD");
+    let looked = false;
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: stdin.replace(
+        / [0-9a-f]{40} refs\/heads\/main/,
+        ` ${tip} refs/heads/main`,
+      ),
+      preFlightCommands: [],
+      runner: recordingRunner(() => false, []),
+      findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+      findCspell: () => {
+        looked = true;
+        return Promise.resolve(null);
+      },
+    });
+    assert(!looked, "cspell must not be looked up when CI does not run it");
+    assert(
+      result.ok,
+      `the push must not be blocked on cspell: ${
+        result.ok ? "" : result.error.message
+      }`,
+    );
+    assert(
+      !result.value.checksRun.some((c) => c.includes("--no-must-find-files")),
+      `no cspell check may be planned: ${
+        JSON.stringify(result.value.checksRun)
+      }`,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("runPrePushGate: a cspell config with a GRQ-style cspell-action step is blocked when cspell is missing", async () => {
+  const { root, clone, stdin } = await makeRepoWithDocCommit();
+  try {
+    await Deno.mkdir(`${clone}/docs`, { recursive: true });
+    await Deno.writeTextFile(`${clone}/docs/cspell.json`, "{}\n");
+    await Deno.mkdir(`${clone}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(
+      `${clone}/.github/workflows/spell.yml`,
+      "jobs:\n  spell:\n    steps:\n      - uses: streetsidesoftware/cspell-action@v6\n",
+    );
+    await git(clone, "add", ".");
+    await git(clone, "commit", "-qm", "cspell config and CI");
+    const tip = await git(clone, "rev-parse", "HEAD");
+    const result = await runPrePushGate({
+      cwd: clone,
+      stdin: stdin.replace(
+        / [0-9a-f]{40} refs\/heads\/main/,
+        ` ${tip} refs/heads/main`,
+      ),
+      preFlightCommands: [],
+      runner: recordingRunner(() => false, []),
+      findMarkdownlint: () => Promise.resolve("/fake/mdl"),
+      findCspell: () => Promise.resolve(null),
+    });
+    assert(!result.ok, "CI runs cspell, so a missing binary must block");
+    assert(result.error.message.includes("cspell"));
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
 });
 
 Deno.test("runPrePushGate: a failing cspell blocks the push", async () => {

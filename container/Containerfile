@@ -221,7 +221,8 @@ RUN set -eu; \
 
 # markdownlint-cli2 backs the check-markdownlint gate stage; cspell (Issue
 # #3689) backs the pre-push gate's spelling stage for a repository that tracks
-# a cspell config (GRQ: docs/cspell.json) and fails closed when it is missing.
+# a cspell config and whose CI runs cspell (GRQ: docs/cspell.json). The gate
+# fails closed when that check is planned and cspell is missing.
 # Each release tarball is downloaded and checksum-verified first, then
 # installed from that local file — `npm install <name>@<version>` would take
 # upstream's word for the bytes. `--ignore-scripts` keeps a package lifecycle

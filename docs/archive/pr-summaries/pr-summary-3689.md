@@ -86,8 +86,11 @@ weakened: it still runs every required check independently after PR creation.
   pre-PR stage; the semgrep failure (run 38123883049) ran past an existing
   local semgrep stage that the logs cannot explain. They are tracked in #3725,
   #3727 and #3726 respectively, and are not claimed as fixed by this PR.
-- **Fail closed.** A configured cspell with no binary, an unresolvable default
-  ref, or a failed gate blocks the push rather than skipping.
+- **Fail closed.** A cspell check the repo's CI runs, with no binary, an
+  unresolvable default ref, or a failed gate blocks the push rather than
+  skipping. A cspell config alone, with no CI step that runs cspell, plans no
+  check and never blocks (`cspellInCi`, read from the tracked workflows by
+  `repoCiRunsCspell` and `workflowRunsCspell`; the planner defaults to off).
 - **Step 1b only when a pre-flight spec exists.** WIP-preservation callers have
   no spec and are not gated (pinned by a test); the completion phase falls back
   to `{ commands: [] }` so the changed-file checks still run.
@@ -265,11 +268,17 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   no sweep file means no git calls). Red-check: deleting the ancestry comparison turns the
   blocking cases red.
 - **Added** `worker/deno/tests/pre_push_gate_test.ts` — one `listPushedFiles`
-  `baseRef` test (PR #3716 review, described under Branch outcomes) and six cspell tests (root
+  `baseRef` test (PR #3716 review, described under Branch outcomes) and the cspell tests: root
   operand, nested `--config` operand, no config, configured-but-missing binary,
-  non-spell-checked extensions, failing cspell blocks the push). Red-check:
-  dropping the cspell plan, or forcing either operand of
-  `rootCspell || nestedCspell` false, turns the matching test red.
+  non-spell-checked extensions, failing cspell blocks the push, the CI gate
+  (`planChangedFileChecks` plans no check when `cspellInCi` is off), the
+  workflow detector (a `run: |` block, GRQ's `uses: streetsidesoftware/cspell-action`
+  step, a non-cspell block, a commented-out step), and two `runPrePushGate` tests on
+  a real repo: a `docs/cspell.json` with no CI step is not blocked and never
+  looks up cspell, and a GRQ-style cspell-action step with a missing binary is
+  blocked. Red-check: dropping the cspell plan, forcing either operand of
+  `rootCspell || nestedCspell` false, or forcing `cspellInCi` false in
+  `runPrePushGate` turns the matching test red.
 - **Added** `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`
   — twelve tests (the first six are described here, the later ones under the PR #3716 review entries below): the completion phase gates the first push and the retry
   push, falls back to `{ commands: [] }` without a spec, passes the resolved PR
@@ -359,7 +368,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
 - `worker/deno/lib/pre_push_gate.ts` no config → no check — "…no cspell config
   means no cspell check".
 - `worker/deno/lib/pre_push_gate.ts` binary missing → error — "…cspell
-  configured but binary missing is an error naming cspell".
+  check planned but binary missing is an error naming cspell".
 - `worker/deno/lib/pre_push_gate.ts` cspell failure → blocked — "runPrePushGate:
   a failing cspell blocks the push".
 - `worker/deno/lib/pre_push_sweep_check.ts` ledger-file filter — "touchesSweepLedger:
