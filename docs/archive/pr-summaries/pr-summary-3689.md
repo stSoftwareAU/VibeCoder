@@ -105,10 +105,11 @@ Representative failures (full table, run links and SHAs in
 Two GRQ Spelling runs (37770312438, 37687047960) have no recorded unknown word
 and are classified as cspell on the evidence of the failing job only.
 
-- Targeted tests: 74 passed, 0 failed (`worker/deno/tests/git_push_preflight_test.ts`,
+- Targeted tests: 118 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
-  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`,
-  `worker/deno/tests/toolchain_selfcheck_test.ts`);
+  `worker/deno/tests/git_push_preflight_test.ts`,
+  `worker/deno/tests/toolchain_selfcheck_test.ts`,
+  `worker/deno/tests/completeness_checks_test.ts`);
   `deno fmt --check`, `deno lint`, `deno check` clean.
 - Unattended-path verification is by unit tests of Step 1b and
   `gateBeforePush()` through their real entry points; no live worker run was
@@ -120,16 +121,22 @@ Docs sweep: grep terms `pre-push gate`, `commitAndPushPending`, `unpushed`,
 gate section; siblings: "markdownlint", "gitleaks"; files updated:
 `docs/CONFIGURATION.md`, `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
-`prompts/security_scan/prompt.md`; remaining hits left unchanged because they
-describe unaffected behaviour (the hook gating the agent's own push, and
-archived PR summaries as historical records).
+`prompts/security_scan/prompt.md`. Remaining hits, each still true and left
+unchanged:
+- `docs/MERGE.md` (`assertPushTargetAllowed` default-branch rule and Issue #1661 unstaging): describes the push guard, which this change does not alter.
+- `docs/INTERNALS.md` (`commitAndPushPending` reports `finalUnpushedCount` and `finalUnpushedSource`): the fields still exist with the same meaning.
+- `docs/SECURITY-SCAN.md` (the `sweptAt` default-branch-ancestor rule): this change enforces that rule, so the text is consistent.
+- `docs/USAGE.md`, `docs/workflows/pr-feedback.md`, `docs/workflows/ci-fix.md`, `prompts/spelling_fix/prompt.md` (spelling-route classification): unaffected.
+- `docs/AGENT-ACCOUNTABILITY.md` and `prompts/coding_guidelines/prompt.md` (commit trailer stamping): unaffected.
+- `docs/audits/security-sweep-*` (about 140 hits): historical records of past state, not edited.
+- The hook gating the agent's own push, and archived PR summaries: historical records or unaffected behaviour.
 
 ## Acceptance Criteria
 
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - Real representative failures are classified with links to CI/review evidence.
-  reviewer: Partial — 21 failed CI runs across the three repos are classified
+  reviewer: Partial — 25 failed CI runs (8 cspell, 5 sweep, 3 unpushed, 6 left to CI, 3 covered by quality.sh) across the three repos are classified
   with run IDs and first failing SHAs in `docs/pre-pr-ci-audit.md`; two GRQ rows
   have no recorded cause, and no blocking reviewer-finding rows were audited.
 - The end-to-end pre-PR verifier and executable checks are verified on the
