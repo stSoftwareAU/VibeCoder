@@ -90,6 +90,43 @@ Deno.test("route-issue - dry-run creates nothing but still prints the audit", as
   assertEquals(report.issues[0]!.number, null);
 });
 
+Deno.test("route-issue - dry-run reports the existing open duplicate it would reuse and creates nothing", async () => {
+  const h = harness();
+  const url = `https://github.com/${VIBE}/issues/77`;
+  const calls: string[][] = [];
+  const inner = h.deps.ghCommandFn!;
+  h.deps.ghCommandFn = (args) => {
+    calls.push(args);
+    if (args[0] === "issue" && args[1] === "list") {
+      return Promise.resolve(JSON.stringify([{
+        number: 77,
+        title: baseArgs.title,
+        state: "OPEN",
+        closedAt: null,
+        url,
+      }]));
+    }
+    return inner(args);
+  };
+  const result = await routeIssueCommand.execute(
+    { ...baseArgs, "dry-run": true, __testDeps: h.deps },
+    config,
+  );
+
+  assertEquals(result.success, true);
+  assertEquals(h.creates.length, 0);
+  assertEquals(
+    calls.filter((c) => c[1] === "create" || c[1] === "comment"),
+    [],
+  );
+  const report = JSON.parse(h.printed[0]!) as RouteIssueReport;
+  assertEquals(report.action, "dry-run");
+  assertEquals(report.issues[0]!.repo, VIBE);
+  assertEquals(report.issues[0]!.number, 77);
+  assertEquals(report.issues[0]!.url, url);
+  assertStringIncludes(result.message, `${VIBE}#77`);
+});
+
 Deno.test("route-issue - a permission refusal fails the command and creates nothing", async () => {
   const h = harness({}, "READ");
   const result = await routeIssueCommand.execute(

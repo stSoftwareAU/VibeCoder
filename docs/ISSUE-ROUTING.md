@@ -147,6 +147,13 @@ repo-scoped diagnostic is never closed (section 4), and the command refuses and
 says why. `--repo`, `--title`, `--body-file` and `--label` cannot be combined
 with `--resolve-duplicate`, and `--correct` requires it.
 
+The command acts only on the operator-supplied `--resolve-duplicate` and
+`--correct` arguments. The planning prompt tells the agent never to name the
+issue it is working on as the duplicate, but that is a prompt rule: nothing in
+the code enforces it on the planning route, because no reliable current-issue
+signal reaches `route-issue` there and the claimed-issue guard is inert on that
+route. The `gh` shim does not enforce it either.
+
 ## 6. Failure and ambiguity
 
 - **Permission failure.** If the caller cannot create issues in the owner repo,

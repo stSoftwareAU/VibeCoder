@@ -20,6 +20,7 @@ interface SearchRow {
   state: string;
   closedAt?: string | null;
   url?: string | null;
+  author?: { login?: string | null } | null;
 }
 
 function normaliseTitle(title: string): string {
@@ -51,7 +52,6 @@ export async function findMatches(
   gh: Gh,
 ): Promise<RoutedIssueRef[]> {
   const search = `${title} in:title`;
-  const fields = "number,title,state,closedAt,url";
   const issues = parseRows(
     await gh([
       "issue",
@@ -63,7 +63,7 @@ export async function findMatches(
       "--search",
       search,
       "--json",
-      fields,
+      "number,title,state,closedAt,url,author",
       "--limit",
       "50",
     ]),
@@ -80,7 +80,7 @@ export async function findMatches(
       "--search",
       search,
       "--json",
-      fields,
+      "number,title,state,closedAt,url,author",
     ]),
     `gh pr list (${repo})`,
   );

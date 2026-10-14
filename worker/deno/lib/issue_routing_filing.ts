@@ -105,6 +105,26 @@ async function fileOrReuse(
   return { ref: ours, created: true };
 }
 
+/** Dry-run: read-only search; report the issue a live run would reuse, if any. */
+async function dryRunRef(
+  repo: string,
+  title: string,
+  ctx: IssueRoutingContext,
+  gh: Gh,
+  logger: Logger,
+): Promise<RoutedIssueRef> {
+  const match = (await findMatches(repo, title, ctx, gh))[0];
+  if (!match) {
+    logger.info(`Issue routing: dry-run found no duplicate in ${repo}`);
+    return { repo, number: null, url: null, state: "dry-run" };
+  }
+  logger.info(
+    `Issue routing: dry-run would reuse ${match.repo}#${match.number} ` +
+      `${match.url ?? ""}`.trimEnd(),
+  );
+  return match;
+}
+
 const refText = (r: RoutedIssueRef): string => `${r.repo}#${r.number}`;
 
 async function fileSplit(
@@ -128,12 +148,9 @@ async function fileSplit(
     return {
       ...decision,
       action: "dry-run",
-      issues: parts.map((p) => ({
-        repo: p.repo,
-        number: null,
-        url: null,
-        state: "dry-run" as const,
-      })),
+      issues: await Promise.all(
+        parts.map((p) => dryRunRef(p.repo, p.title, ctx, gh, logger)),
+      ),
       labels_not_migrated: uniqueNotMigrated,
     };
   }
@@ -215,7 +232,7 @@ export async function routeIssueCreation(
     return {
       ...decision,
       action: "dry-run",
-      issues: [{ repo: dest, number: null, url: null, state: "dry-run" }],
+      issues: [await dryRunRef(dest, draft.title, ctx, gh, logger)],
       labels_not_migrated: notMigrated,
     };
   }

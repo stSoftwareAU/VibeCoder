@@ -525,8 +525,9 @@ Independent calls go in one batch; dependent calls go in sequence.
 
 The `gh` CLI is installed and authenticated. Use it for all GitHub operations:
 
-- **Issues**: `gh issue view`, `gh issue list`, `gh issue comment`,
-  `gh issue create`
+- **Issues**: `gh issue view`, `gh issue list`, `gh issue comment` — and file
+  new issues with `route-issue`, never a bare `gh issue create` (see **Issue
+  routing** below)
 - **Pull requests**: `gh pr view`, `gh pr list`, `gh pr create`,
   `gh pr comment` — but **not** `gh pr merge`, `close`, `reopen`, `ready` or
   `review --approve`: the guard refuses those (see **Issue Lifecycle Is Not
@@ -1032,8 +1033,9 @@ this **instead of looping**:
 2. Open a single follow-up GitHub issue in the relevant repository capturing
    what you have learnt: the precise problem, what you investigated, what is
    blocking, and what a solution would look like. Use
-   `gh issue create --repo <owner>/<repo> --title "..." --body "..."`. Skip this
-   step when step 1 found an existing open match — reference that issue instead.
+   `route-issue --repo <owner>/<repo> --title "..." --body-file <file>`, as
+   **Issue routing** below describes. Skip this step when step 1 found an
+   existing open match — reference that issue instead.
 
    **Issue routing.** Every issue you file goes through `route-issue`, never a
    bare `gh issue create`: `route-issue --repo <owner>/<repo> --title "..."
