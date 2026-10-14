@@ -19,6 +19,7 @@ import {
   validateCheckParentDepsArgs,
   validateCheckRepoAvailabilityArgs,
   validateRouteIssueArgs,
+  validateRouteIssueResolveArgs,
   validateSuggestImprovementsArgs,
 } from "../lib/command_args.ts";
 
@@ -388,4 +389,71 @@ Deno.test("command_args - validateRouteIssueArgs rejects missing or malformed re
   ) {
     assertEquals(validateRouteIssueArgs(args).ok, false);
   }
+});
+
+Deno.test("command_args - validateRouteIssueResolveArgs accepts a well-formed pair", () => {
+  assertEquals(
+    validateRouteIssueResolveArgs({
+      "resolve-duplicate": "stSoftwareAU/VibeCoder#3607",
+      correct: "org/product#3242",
+      "dry-run": true,
+    }),
+    {
+      ok: true,
+      value: {
+        wrong: { repo: "stSoftwareAU/VibeCoder", number: 3607 },
+        correct: { repo: "org/product", number: 3242 },
+        dryRun: true,
+      },
+    },
+  );
+});
+
+Deno.test("command_args - validateRouteIssueResolveArgs rejects malformed, identical or missing references", () => {
+  for (
+    const args of [
+      { "resolve-duplicate": "VibeCoder#3607", correct: "org/product#3242" },
+      { "resolve-duplicate": "org/product", correct: "org/product#3242" },
+      { "resolve-duplicate": "org/product#0", correct: "org/product#3242" },
+      { "resolve-duplicate": "org/product#x", correct: "org/product#3242" },
+      { "resolve-duplicate": "org/product#3242", correct: "org/product#3242" },
+      { "resolve-duplicate": "org/product#3242" },
+      { "resolve-duplicate": "org/product#3242", correct: 3242 },
+      { "resolve-duplicate": true, correct: "org/product#3242" },
+    ]
+  ) {
+    assertEquals(validateRouteIssueResolveArgs(args).ok, false);
+  }
+});
+
+Deno.test("command_args - validateRouteIssueResolveArgs refuses to mix with create-mode arguments", () => {
+  for (
+    const extra of [
+      { title: "T" },
+      { "body-file": "b.md" },
+      { label: "bug" },
+      { repo: "org/product" },
+    ]
+  ) {
+    assertEquals(
+      validateRouteIssueResolveArgs({
+        "resolve-duplicate": "stSoftwareAU/VibeCoder#3607",
+        correct: "org/product#3242",
+        ...extra,
+      }).ok,
+      false,
+    );
+  }
+});
+
+Deno.test("command_args - validateRouteIssueArgs refuses --resolve-duplicate and --correct", () => {
+  const base = { repo: "org/repo", title: "T", "body-file": "b.md" };
+  assertEquals(
+    validateRouteIssueArgs({ ...base, "resolve-duplicate": "a/b#1" }).ok,
+    false,
+  );
+  assertEquals(
+    validateRouteIssueArgs({ ...base, correct: "a/b#1" }).ok,
+    false,
+  );
 });

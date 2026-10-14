@@ -269,6 +269,15 @@ export function validateRouteIssueArgs(
     error: new Error(message),
   });
 
+  for (const flag of ["resolve-duplicate", "correct"]) {
+    if (args[flag] !== undefined) {
+      return fail(
+        `Argument '${flag}' belongs to --resolve-duplicate mode and cannot be ` +
+          "used with --repo, --title or --body-file",
+      );
+    }
+  }
+
   const repo = args.repo;
   if (typeof repo !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(repo)) {
     return fail("Argument 'repo' is required and must be in owner/repo format");
@@ -311,6 +320,87 @@ export function validateRouteIssueArgs(
   return {
     ok: true,
     value: { repo, title, bodyFile, labels, dryRun: dryRun.value },
+  };
+}
+
+/** A parsed `owner/repo#N` issue reference. */
+export interface IssueRef {
+  repo: string;
+  number: number;
+}
+
+/** Typed arguments for `route-issue --resolve-duplicate` (Issue #3691). */
+export interface RouteIssueResolveArgs {
+  /** The wrong-repository issue to close, `--resolve-duplicate` */
+  wrong: IssueRef;
+  /** The issue it duplicates, `--correct` */
+  correct: IssueRef;
+  dryRun: boolean;
+}
+
+const ISSUE_REF = /^([^/\s#]+\/[^/\s#]+)#([1-9]\d*)$/;
+
+function parseIssueRef(raw: unknown, flag: string): Result<IssueRef> {
+  const match = typeof raw === "string" ? ISSUE_REF.exec(raw) : null;
+  if (match === null) {
+    return {
+      ok: false,
+      error: new Error(`Argument '${flag}' must be owner/repo#N`),
+    };
+  }
+  return {
+    ok: true,
+    value: { repo: match[1]!, number: Number(match[2]) },
+  };
+}
+
+/**
+ * Validate and parse `route-issue --resolve-duplicate <wrong> --correct <right>`.
+ *
+ * Both references are `owner/repo#N` and must name different issues. The
+ * create-mode arguments (`repo`, `title`, `body-file`, `label`) are refused
+ * rather than ignored. `dry-run` defaults to false.
+ */
+export function validateRouteIssueResolveArgs(
+  args: Record<string, unknown>,
+): Result<RouteIssueResolveArgs> {
+  const fail = (message: string): Result<RouteIssueResolveArgs> => ({
+    ok: false,
+    error: new Error(message),
+  });
+
+  for (const flag of ["repo", "title", "body-file", "label"]) {
+    if (args[flag] !== undefined) {
+      return fail(
+        `Argument '${flag}' cannot be combined with --resolve-duplicate`,
+      );
+    }
+  }
+
+  if (args.correct === undefined) {
+    return fail("Argument 'resolve-duplicate' requires --correct owner/repo#M");
+  }
+
+  const wrong = parseIssueRef(args["resolve-duplicate"], "resolve-duplicate");
+  if (!wrong.ok) return { ok: false, error: wrong.error };
+  const correct = parseIssueRef(args.correct, "correct");
+  if (!correct.ok) return { ok: false, error: correct.error };
+
+  if (
+    wrong.value.repo.toLowerCase() === correct.value.repo.toLowerCase() &&
+    wrong.value.number === correct.value.number
+  ) {
+    return fail(
+      "Argument 'correct' must name a different issue from 'resolve-duplicate'",
+    );
+  }
+
+  const dryRun = coerceBooleanFlag(args["dry-run"], "dry-run", false);
+  if (!dryRun.ok) return { ok: false, error: dryRun.error };
+
+  return {
+    ok: true,
+    value: { wrong: wrong.value, correct: correct.value, dryRun: dryRun.value },
   };
 }
 

@@ -73,6 +73,23 @@ Prefer it to a bare `gh issue create` whenever the target repo may not be the
 owner. `--dry-run` prints the classification, the audit fields and any
 duplicate it would reuse, and creates nothing; use it first when unsure.
 
+To close a wrong-repo duplicate in favour of the correct issue, run:
+
+```bash
+route-issue --resolve-duplicate owner/repo#N --correct owner/repo#M [--dry-run]
+```
+
+`owner/repo#N` is the wrong issue and `owner/repo#M` the correct one; each is
+`owner/repo#number`. The command verifies that the correct issue exists, checks
+write permission on both repos, comments on both issues, and closes the wrong
+issue last, as not planned. The titles need not match: this is the case of
+`stSoftwareAU/VibeCoder#3607` and `stSoftwareAU/GRQ-AutoTrader#3242`, which
+describe the same problem under different titles. `--dry-run` calls nothing at
+all; it prints what would be linked and closed. A repo-scoped diagnostic is
+never closed (section 4), and the command refuses and says why. `--repo`,
+`--title`, `--body-file` and `--label` cannot be combined with
+`--resolve-duplicate`, and `--correct` requires it.
+
 ## 6. Failure and ambiguity
 
 - **Permission failure.** If the caller cannot create issues in the owner repo,
@@ -93,7 +110,7 @@ wrong repo, in this order:
 
 Never delete history, and never migrate labels or assignees. If two filers
 race and both create an issue, the **lowest-numbered issue wins**: the later
-one is linked to it and closed as a duplicate.
+one is linked to it and closed as not planned.
 
 ## Related
 
