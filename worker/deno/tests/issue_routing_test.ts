@@ -298,6 +298,19 @@ Deno.test("classify: one other repo plus a fleet signal and no product signal is
   assertStringIncludes(d.reason, "needs a split");
 });
 
+Deno.test("classify: one other repo with both a product and a worker signal is cross-repo", () => {
+  const d = classifyIssueRouting(
+    draft("x", "GRQ-AutoTrader scoring page drops fleet claims."),
+    VIBE,
+    ctx(),
+  );
+  assertEquals(d.owner_repository, VIBE);
+  assertEquals(d.issue_kind, "cross-repo");
+  assert(d.ambiguous);
+  assert(!d.wrong_repo);
+  assertStringIncludes(d.reason, "needs a split");
+});
+
 Deno.test("classify: one other repo plus a product signal still routes to that repo", () => {
   for (
     const d of [
