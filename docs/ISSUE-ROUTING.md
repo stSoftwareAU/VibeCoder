@@ -176,6 +176,12 @@ wrong repo, in this order:
 2. Link both sides.
 3. Close the duplicate with an explanation.
 
+Duplicate matching is by exact normalised title only. A duplicate of the same
+problem filed under a different title (for example VibeCoder#3607 against
+GRQ-AutoTrader#3242) is not caught automatically; resolve it with
+`route-issue --resolve-duplicate`. A reused match is reported in the routing
+audit but is not commented on or linked.
+
 Never delete history, and never migrate labels or assignees. If two filers
 race and both create an issue, the **lowest-numbered issue wins**: the later
 one is linked to it and closed as not planned.
