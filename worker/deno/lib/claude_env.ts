@@ -30,7 +30,7 @@
  * suffixed or indexed variant of a listed name outright, so no allowlist edit
  * and no narrowing of the shape pattern can hand the child a second token.
  *
- * Residual risk (accepted, R9 in `docs/THREAT-MODEL.md`): the container mounts
+ * Residual risk (open, R9 in `docs/THREAT-MODEL.md`; see #3698/#3699): the container mounts
  * the provider's whole credential sub-directory read-only, so a process with
  * filesystem read access inside the container can read the unselected token
  * FILES regardless of this environment policy. Several tokens raise the count
