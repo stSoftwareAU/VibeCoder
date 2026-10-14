@@ -17,6 +17,7 @@
  */
 
 import {
+  PRE_PUSH_GATE_MARKER,
   SECURITY_FIX_GATE_MARKER,
   SUMMARY_RULE_GATE_MARKER,
 } from "./failure_diagnosis.ts";
@@ -98,6 +99,9 @@ export function detectHostFault(message: string): HostFaultKind | null {
   // Likewise a security-fix gate refusal (Issue #3454) quotes agent-authored
   // test declarations, never host output.
   if (message.startsWith(SECURITY_FIX_GATE_MARKER)) return null;
+  // And a pre-push gate block (PR #3716 review) quotes the branch's own
+  // formatter, linter and test output, never host output.
+  if (message.startsWith(PRE_PUSH_GATE_MARKER)) return null;
   if (
     brokenRefsIn(message).length > 0 || isObjectStoreCorruption(message) ||
     CLONE_CORRUPT_PATTERNS.some((re) => re.test(message))

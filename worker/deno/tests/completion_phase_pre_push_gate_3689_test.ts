@@ -8,7 +8,9 @@
  * Australian English throughout (behaviour, organisation).
  */
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
+import { PRE_PUSH_GATE_MARKER } from "../lib/failure_diagnosis.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -228,7 +230,8 @@ Deno.test({
     assertEquals(o.gateCalls, 1);
     assertEquals(o.pushes, 0, "a blocked gate must never reach the push");
     assertEquals(o.recoveries, 0);
-    assert((o.reason ?? "").startsWith("[PRE_PUSH_BLOCKED]"));
+    assert((o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER));
+    assertStringIncludes(o.reason ?? "", BLOCK);
   },
 });
 
@@ -299,6 +302,27 @@ Deno.test({
     assertEquals(o.recoveries, 1);
     assertEquals(o.gateCalls, 2);
     assertEquals(o.pushes, 1, "the retry push must be blocked by the gate");
-    assert((o.reason ?? "").startsWith("[PRE_PUSH_BLOCKED]"));
+    assert((o.reason ?? "").startsWith(PRE_PUSH_GATE_MARKER));
+    assertStringIncludes(o.reason ?? "", BLOCK);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a blocked gate whose quoted output says rate limit, timed out and SIGKILL still earns a ladder attempt (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [
+        "[PRE_PUSH_BLOCKED] -    // back off when the exchange rate limit is hit\n" +
+        "the check timed out and was killed by SIGKILL",
+      ],
+    });
+    assertEquals(o.status, "failure");
+    const decision = classifyCodingFailure(o.reason);
+    assertEquals(decision.category, "pre_push_gate");
+    assertEquals(decision.disposition, "ladder");
   },
 });

@@ -12,7 +12,10 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-import { SUMMARY_RULE_GATE_MARKER } from "../failure_diagnosis.ts";
+import {
+  PRE_PUSH_GATE_MARKER,
+  SUMMARY_RULE_GATE_MARKER,
+} from "../failure_diagnosis.ts";
 import { HeadDivergedError } from "../git_branch.ts";
 import {
   type IssueContext,
@@ -1857,7 +1860,12 @@ async function completionBody(
     logger.error("Pre-push gate blocked the push", {
       error: gate.error.message,
     });
-    return { status: "failure", reason: gate.error.message };
+    // The gate message ends in the checks' raw output (diff hunks, test
+    // names), so the worker's own marker leads and decides the category.
+    return {
+      status: "failure",
+      reason: `${PRE_PUSH_GATE_MARKER}: ${gate.error.message}`,
+    };
   };
   const blockedBeforePush = await gateBeforePush();
   if (blockedBeforePush) return blockedBeforePush;

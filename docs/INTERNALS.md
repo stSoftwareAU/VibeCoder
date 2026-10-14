@@ -4975,6 +4975,31 @@ is a real launch fault and its own error text must still be classified. The
 posted issue comment is unchanged. Unlike `summary_incomplete`, there is no
 `isSummaryGateFailureRecord`-style record check for the label-release sweeps.
 
+#### `pre_push_gate` is its own failure category (PR #3716 review of Issue #3689)
+
+The completion phase's pre-push gate (`gateBeforePush()` in
+`completion_phase.ts`) blocks with `[PRE_PUSH_BLOCKED]` followed by the failing
+check's full output: `cargo fmt --check` and `deno fmt --check` diff hunks,
+markdownlint `[Context: ...]` excerpts and quoted pre-flight test names. That
+text is repository content, so a source comment such as `// back off when the
+exchange rate limit is hit` was read as a rate limit: the run was released
+uncounted with no failure comment and re-claimed every cycle, the loop that Issue 1949
+removed. The shared mechanism is the one described under
+"`summary_incomplete` is its own failure category" above, with
+`PRE_PUSH_GATE_MARKER` ("the branch did not pass the worker's pre-push gate")
+prefixed to the gate's message in `gateBeforePush()`.
+`detectFailureCategory` matches it with `startsWith` after the summary-gate and
+security-fix markers, giving `pre_push_gate` (display `pre-push-gate`), which is
+`not_code_fixable` (class `agent-outcome`) and not infrastructure, so
+`shouldRetryInfrastructureFailure` declines it. `classifyCodingFailure` returns
+a `ladder` decision with cooldown `non_transient`, `classifyRunFailure` answers
+it before the free-text rules and `detectHostFault` returns `null`, so a block
+always gets one normal attempt and a failure comment carrying the gate output.
+A message that merely quotes the marker later keeps its own category. The final
+mile of `commitAndPushPending` (Step 1b) returns the same unmarked
+`[PRE_PUSH_BLOCKED]` error to its PR-processor callers, which log it and do not
+classify it as a coding-run failure.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a

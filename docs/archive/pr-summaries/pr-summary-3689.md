@@ -31,7 +31,12 @@ fixed with a negative test; the full classification is in
   have usually pushed the agent's commits already; the GRQ first-failing SHAs
   e9a7f8fd, 3e313843 and 65d0d714 are such checkpoint commits and 6b3eeaef is
   "Merge remote WIP checkpoints". The check runs before `gh pr create`
-  (PR #3716 review).
+  (PR #3716 review). A completion-phase block is reported as
+  `PRE_PUSH_GATE_MARKER` ("the branch did not pass the worker's pre-push
+  gate") followed by the gate output, so the quoted formatter, linter and test
+  output cannot reclassify the run: it is the `pre_push_gate` category, one
+  normal ladder attempt plus a failure comment carrying the output (PR #3716
+  review, same mechanism as #3431 and #3454).
 
 ```mermaid
 flowchart LR
@@ -148,12 +153,13 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
 `detect-non-literal-regexp` at `mutation_gate.ts:627`; Floci 38033819415
 `ValidationException ... PutParameter`.
 
-- Targeted tests: 126 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
+- Targeted tests: 134 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
   `worker/deno/tests/git_push_preflight_test.ts`,
   `worker/deno/tests/toolchain_selfcheck_test.ts`,
   `worker/deno/tests/completeness_checks_test.ts`,
-  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`), run inside
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts`,
+  `worker/deno/tests/pre_push_gate_failure_category_test.ts`), run inside
   an agent run with its injected `core.hooksPath` (`GIT_CONFIG_COUNT=1`) set,
   and again with a `pre-push` hook that always exits 1: `git_push_preflight_test.ts`
   passes either way because its git calls set `GIT_CONFIG_COUNT=0`. The wider
@@ -176,7 +182,9 @@ gate section; siblings: "markdownlint", "gitleaks"; files updated:
 (`PreFlightGateSpec`, `gateUnpushedCommits`), `worker/deno/lib/pre_push_gate.ts`
 (module header), `docs/CONFIGURATION.md` (the whole-branch completion gate paragraph and the "runs at four points" item 3 added in PR #3716's review; the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
-`prompts/security_scan/prompt.md`. Remaining hits, each still true and left
+`prompts/security_scan/prompt.md`, `docs/INTERNALS.md` (new "`pre_push_gate` is
+its own failure category" section; siblings grepped: `security_fix_gate`,
+`summary_incomplete`). Remaining hits, each still true and left
 unchanged:
 - `docs/MERGE.md` (`assertPushTargetAllowed` default-branch rule and Issue #1661 unstaging): describes the push guard, which this change does not alter.
 - `docs/INTERNALS.md` (`commitAndPushPending` reports `finalUnpushedCount` and `finalUnpushedSource`): the fields still exist with the same meaning.
@@ -259,6 +267,22 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   base (`origin/main`) to both gate calls, and passes no base when it cannot be
   resolved. Red-check: removing `gateBeforePush()` turns the first three red;
   passing `undefined` for the base turns the base test red.
+- **Added** `worker/deno/tests/pre_push_gate_failure_category_test.ts` — seven
+  tests (PR #3716 review): `detectFailureCategory` returns `pre_push_gate` for a
+  marked block quoting rate limit, timed out, SIGKILL, `command not found` and
+  ENOSPC (the unmarked quotation is `killed`, as a positive control) and the
+  marker must be a prefix; `classifyCodingFailure` gives `ladder` /
+  `non_transient` / `agent-outcome` for four quoted shapes (the unmarked rate
+  limit is `transient`); `classifyRunFailure`; `detectHostFault` is `null`
+  (unmarked is `disk-full`); display, diagnosis, one-liner, normalisation and
+  not-infrastructure; `shouldRetryInfrastructureFailure` declines the marked
+  block and retries the unmarked rate-limit text. Plus one test in
+  `completion_phase_pre_push_gate_3689_test.ts`: a blocked gate quoting rate
+  limit, timed out and SIGKILL, run through the completion phase, classifies as
+  `pre_push_gate` / `ladder`; the two existing block tests now assert the reason
+  starts with the marker and still contains the gate output. Red-check:
+  deleting the `startsWith(PRE_PUSH_GATE_MARKER)` rule in
+  `detectFailureCategory` turned 4 of the 13 tests in those two files red.
 - **Added** one fixture entry in `worker/deno/tests/toolchain_selfcheck_test.ts`
   (`REAL_IMAGE_OUTPUT`): `cspell: { command: "10.3.6\n" }`, so the start-up
   self-check reads the bare version the pinned binary prints.
@@ -312,6 +336,23 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   passing `undefined` turns it red. The unresolvable-base
   fallback (`undefined`, unpushed-only check) — "an unresolvable PR base degrades
   the gate to the unpushed-only check"; always passing `origin/main` turns it red.
+- `worker/deno/lib/failure_diagnosis.ts` `startsWith(PRE_PUSH_GATE_MARKER)` →
+  `pre_push_gate` — "detectFailureCategory - a marked pre-push gate block
+  quoting rate limit, timed out and SIGKILL is pre_push_gate" and the
+  completion-phase test above; deleting the rule turns them red. Marker only
+  included, not a prefix → keeps its own category — "the pre-push gate marker
+  must be a prefix".
+- `worker/deno/lib/coding_failure_ladder.ts` `pre_push_gate` operand of the
+  gate-category condition → `ladder` / `non_transient` — "classifyCodingFailure -
+  a marked pre-push gate block earns a normal ladder attempt"; dropping the
+  operand turns the rate-limit shape `transient`.
+- `worker/deno/lib/run_outcome_classifier.ts` `pre_push_gate` → agent-outcome —
+  "classifyRunFailure - a pre-push gate block is an agent-outcome".
+- `worker/deno/lib/host_fault.ts` marked block → `null` — "detectHostFault - a
+  marked pre-push gate block quoting ENOSPC is never a host fault".
+- `worker/deno/lib/failure_diagnosis.ts` `isInfrastructureFailure("pre_push_gate")`
+  → false so the in-run retry declines — "shouldRetryInfrastructureFailure - a
+  marked pre-push gate block quoting a rate limit is not re-run".
 - `worker/deno/lib/git_push.ts` `gateUnpushedCommits` `baseRef` mode — whole-branch
   range: "bad commit already pushed by a checkpoint is blocked against the PR
   base" (red when `baseRef` is not passed on); 0 commits ahead → no-op: "branch

@@ -20,7 +20,10 @@ equivalent command. The stages are:
   the retry push after `recoverFromPushRejection`. It checks every non-merge
   commit the branch has ahead of the PR base, including commits the execute
   phase's WIP checkpoint pushes (periodic and phase-end, which are ungated)
-  already put on origin;
+  already put on origin. A block is reported with the worker-written prefix
+  "the branch did not pass the worker's pre-push gate" ahead of the check
+  output, so quoted diff hunks or test names cannot change the failure category;
+  see `docs/INTERNALS.md`;
 - `quality.sh` / `lib/quality_gate.ts`;
 - the end-to-end verifier (`lib/pre_pr_verifier.ts`).
 
