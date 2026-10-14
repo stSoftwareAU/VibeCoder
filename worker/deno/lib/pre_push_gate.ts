@@ -44,6 +44,20 @@ import {
   parseDenoScope,
 } from "./deno_scope.ts";
 
+/**
+ * The gate could not read the repository state it needs: a `git log`,
+ * `ls-files` or history-deepening call failed or timed out (PR #3716 review).
+ * It is no verdict on the branch's content, so callers that classify a failed
+ * run (the completion phase) must not blame the branch for it. The gate still
+ * fails closed: it is an `Err`, never a pass.
+ */
+export class PrePushGateInfrastructureError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrePushGateInfrastructureError";
+  }
+}
+
 /** One ref line from git's pre-push hook stdin. */
 export interface PrePushRef {
   localRef: string;
@@ -516,6 +530,11 @@ export async function runPrePushGate(opts: {
     error: new Error(message),
   });
 
+  const infrastructureFail = (message: string): Result<never, Error> => ({
+    ok: false,
+    error: new PrePushGateInfrastructureError(message),
+  });
+
   const refs = parsePrePushRefs(opts.stdin);
   if (!refs.ok) return fail(refs.error);
 
@@ -525,11 +544,11 @@ export async function runPrePushGate(opts: {
     git,
     opts.baseRef,
   );
-  if (!changed.ok) return fail(changed.error);
+  if (!changed.ok) return infrastructureFail(changed.error);
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);
   if (lsFiles.code !== 0) {
-    return fail(
+    return infrastructureFail(
       `git ls-files failed (exit ${lsFiles.code}): ${lsFiles.stderr.trim()}`,
     );
   }
@@ -572,7 +591,11 @@ export async function runPrePushGate(opts: {
     git,
     defaultRef: opts.defaultRef,
   });
-  if (!sweep.ok) return fail(sweep.error);
+  if (!sweep.ok) {
+    return sweep.infrastructure
+      ? infrastructureFail(sweep.error)
+      : fail(sweep.error);
+  }
 
   const checksRun: string[] = [];
   for (const check of plan.value) {

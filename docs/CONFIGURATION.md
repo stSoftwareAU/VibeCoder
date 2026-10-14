@@ -4756,7 +4756,11 @@ pushes are ungated and the commits are usually already on origin when the
 completion phase runs; the whole-branch range is what keeps them from reaching
 `gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
 the completion gate falls back to the unpushed-only check. The completion gate
-does nothing when the branch has no commit of its own ahead of the base. In Step 1b the pre-flight commands
+does nothing when the branch has no commit of its own ahead of the base, and in
+that whole-branch mode it does not look up the branch's remote head. A git or
+remote lookup that fails (a network error, a timeout) is not reported as the
+branch failing its checks: it fails the run as a push failure, which is retried
+in-run (PR #3716 review). In Step 1b the pre-flight commands
 re-run only when Step 1 committed nothing; in the completion phase they run
 before every push.
 

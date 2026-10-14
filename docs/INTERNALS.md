@@ -5000,6 +5000,23 @@ mile of `commitAndPushPending` (Step 1b) returns the same unmarked
 `[PRE_PUSH_BLOCKED]` error to its PR-processor callers, which log it and do not
 classify it as a coding-run failure.
 
+Two limits keep the failure comment postable and the blame accurate (PR #3716
+review). First, the gate's output is redacted whole, then cut to its first 2,000
+and last 2,000 characters: the head holds the `[PRE_PUSH_BLOCKED] ... command`
+line that names the failing check, the tail the end of its output, and GitHub
+refuses a comment body over 65,536 characters (a refusal `markIssueAsFailedOnce`
+swallows). Second, only a verdict on the branch's content carries the marker, a
+`PrePushGateBlockedError` from `gateUnpushedCommits`: a check, a plan or the
+`sweptAt` ancestry failing. A git or remote lookup that failed or timed out (a
+`describeUnpushedCommits` `ls-remote`, the `git log` or `ls-files` call in
+`runPrePushGate`, a failed history deepen in the sweep check, a `rev-list` of
+the base range) comes back as a plain error or a `PrePushGateInfrastructureError`
+with no marker, and `gateBeforePush()` reports it as `Git push failed: the
+pre-push gate could not read the branch state: ...`. That is the `push_failure`
+infrastructure category, retried in-run, as the push path's own failures are
+(Issue #1550). With a `baseRef` the gate reads no remote head at all, because
+the base range is local.
+
 ### 🩹 Host-fault failure labels release themselves (Issue #2890)
 
 The milestone-branch refusal release above frees a milestone's issues once a

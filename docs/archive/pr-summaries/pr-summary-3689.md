@@ -153,7 +153,7 @@ Observed from the run logs (`gh run view <id> --log-failed`): gitleaks
 `detect-non-literal-regexp` at `mutation_gate.ts:627`; Floci 38033819415
 `ValidationException ... PutParameter`.
 
-- Targeted tests: 134 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
+- Targeted tests: 142 passed, 0 failed (`worker/deno/tests/lib_sweep_coverage_test.ts`,
   `worker/deno/tests/pre_push_sweep_check_test.ts`, `worker/deno/tests/pre_push_gate_test.ts`,
   `worker/deno/tests/git_push_preflight_test.ts`,
   `worker/deno/tests/toolchain_selfcheck_test.ts`,
@@ -179,11 +179,11 @@ Docs sweep: grep terms `pre-push gate`, `commitAndPushPending`, `unpushed`,
 `gateBeforePush`, `cspell`, `sweptAt`, `network/credential`, `Left to CI`; section: `docs/CONFIGURATION.md` pre-flight
 gate section; siblings: "markdownlint", "gitleaks"; files updated:
 `worker/deno/types.ts` (`RepoConfig.preFlight`), `worker/deno/lib/git_push.ts`
-(`PreFlightGateSpec`, `gateUnpushedCommits`), `worker/deno/lib/pre_push_gate.ts`
-(module header), `docs/CONFIGURATION.md` (the whole-branch completion gate paragraph and the "runs at four points" item 3 added in PR #3716's review; the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
+(`PreFlightGateSpec`, `gateUnpushedCommits`, `PrePushGateBlockedError`), `worker/deno/lib/pre_push_gate.ts`
+(module header, `PrePushGateInfrastructureError`), `worker/deno/lib/pre_push_sweep_check.ts` (`SweepCheckResult`), `worker/deno/lib/phases/completion_phase.ts` (gate reason cap), `docs/CONFIGURATION.md` (the whole-branch completion gate paragraph and the "runs at four points" item 3 added in PR #3716's review; the `pre-flight` table row, the "runs at four points" list, the Behaviour bullets, the flowchart and the changed-file-check list, so each names Step 1b and the completion-phase gate), the `commitAndPushPending` JSDoc in `worker/deno/lib/git_push.ts` (step list and `@param preFlight`), `docs/CONTAINER.md`, `docs/CONTAINER-IMAGE.md`,
 `docs/pre-pr-ci-audit.md`, `docs/audits/dependency-inventory.md`, `README.md`,
 `prompts/security_scan/prompt.md`, `docs/INTERNALS.md` (new "`pre_push_gate` is
-its own failure category" section; siblings grepped: `security_fix_gate`,
+its own failure category" section, extended for the output cap and the unmarked lookup failures; `docs/CONFIGURATION.md` and `docs/pre-pr-ci-audit.md` gained one sentence each; grep terms added `PRE_PUSH_BLOCKED`, `describeUnpushedCommits`, `ls-remote`; siblings grepped: `security_fix_gate`,
 `summary_incomplete`). Remaining hits, each still true and left
 unchanged:
 - `docs/MERGE.md` (`assertPushTargetAllowed` default-branch rule and Issue #1661 unstaging): describes the push guard, which this change does not alter.
@@ -248,7 +248,7 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   commit ahead of the PR base is a no-op" (pre-flight runner not called), and
   "unresolvable or option-like base ref fails closed". Red-check: passing
   `undefined` instead of `baseRef` to `runPrePushGate` turns the first red.
-- **Added** `worker/deno/tests/pre_push_sweep_check_test.ts` — nine tests
+- **Added** `worker/deno/tests/pre_push_sweep_check_test.ts` — ten tests (the tenth is described below under the second review)
   (ledger-file selection, main/top-up pass, branch-only `sweptAt` blocks naming
   slice and sha, only changed slices checked, a branch-only `sweptAt` on the
   ledger file's own in-file `top-up-<n>` slice blocks, shallow clone deepened,
@@ -283,6 +283,31 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   starts with the marker and still contains the gate output. Red-check:
   deleting the `startsWith(PRE_PUSH_GATE_MARKER)` rule in
   `detectFailureCategory` turned 4 of the 13 tests in those two files red.
+- **Added** (PR #3716 second review, cap and blame):
+  `worker/deno/tests/completion_phase_pre_push_gate_3689_test.ts` — a gate
+  block with over 100 KB of output keeps the marker, names the failing command,
+  keeps the trailer and stays under 8,000 characters; a secret in the output is
+  redacted before the cut; a lookup failure (`Could not resolve host`) is not
+  marked, classifies as `push_failure` (infrastructure), is retried in-run and
+  never pushes; a lookup failure with over 100 KB of output is capped too.
+  `worker/deno/tests/git_push_preflight_test.ts` — whole-branch mode with no
+  tracking ref and an unreachable origin still returns the verdict (the
+  unpushed-only call is the positive control and fails on its remote lookup,
+  unmarked); a corrupt index (`git ls-files` fails) is returned unmarked, with a
+  readable-index control returning a `PrePushGateBlockedError`; the existing
+  `rev-list` failure assertion now expects no marker and no
+  `PrePushGateBlockedError`, while the option-like ref keeps both.
+  `worker/deno/tests/pre_push_gate_test.ts` — `git log` and `ls-files` failures
+  are `PrePushGateInfrastructureError`, malformed hook input is not.
+  `worker/deno/tests/pre_push_sweep_check_test.ts` — a failed deepen sets
+  `infrastructure` and comes out of `runPrePushGate` as the same class, with a
+  branch-only `sweptAt` as the verdict control. Red-checks, each run by
+  reverting only that line and confirming a test goes red: dropping the cut on
+  the marked reason, dropping the cut on the unmarked reason, replacing
+  `instanceof PrePushGateBlockedError` with `false`, calling
+  `describeUnpushedCommits` in `baseRef` mode, returning the infrastructure
+  error as a verdict in `gateUnpushedCommits`, and demoting the `ls-files`,
+  `git log` and sweep failures to plain errors in `runPrePushGate`.
 - **Added** one fixture entry in `worker/deno/tests/toolchain_selfcheck_test.ts`
   (`REAL_IMAGE_OUTPUT`): `cspell: { command: "10.3.6\n" }`, so the start-up
   self-check reads the bare version the pinned binary prints.
@@ -357,8 +382,32 @@ word-splitting of a pinned spec; `pre_push_sweep_check.ts` calls
   range: "bad commit already pushed by a checkpoint is blocked against the PR
   base" (red when `baseRef` is not passed on); 0 commits ahead → no-op: "branch
   with no commit ahead of the PR base is a no-op"; `rev-list` failure →
-  `[PRE_PUSH_BLOCKED]` and option-like ref refused: "unresolvable or option-like
-  base ref fails closed"; clean branch passes: "clean checkpointed branch passes".
+  returned unmarked (not a `PrePushGateBlockedError`) and option-like ref →
+  `PrePushGateBlockedError` with `[PRE_PUSH_BLOCKED]`: "unresolvable or
+  option-like base ref fails closed"; clean branch passes: "clean checkpointed
+  branch passes". `baseRef` mode reads no remote head: "whole-branch mode never
+  looks the remote up" (red when `describeUnpushedCommits` runs there).
+- `worker/deno/lib/git_push.ts` `gateUnpushedCommits` `gate.error instanceof
+  PrePushGateInfrastructureError` → returned unmarked, otherwise a
+  `PrePushGateBlockedError` carrying `[PRE_PUSH_BLOCKED]` — "a failed git lookup
+  inside the gate is returned unmarked, not as a verdict" (verdict control in
+  the same test); forcing the condition false turns it red.
+- `worker/deno/lib/pre_push_gate.ts` `runPrePushGate` `git log` / `ls-files` /
+  sweep infrastructure failures → `PrePushGateInfrastructureError`; plan, parse
+  and `sweptAt` failures stay plain — `git log failure is an error`, `git
+  ls-files failure is an error`, `malformed hook input is not infrastructure`
+  and the sweep test; each demotion to a plain error turns one red.
+- `worker/deno/lib/pre_push_sweep_check.ts` `infrastructure: true` on the
+  shallow-check, deepen and `fetch --unshallow` failures — "a failed history
+  deepen is infrastructure, a branch-only sweptAt is not" (stages each of the
+  three failures; removing any one `infrastructure: true` turns it red, and the
+  branch-only `sweptAt` is the verdict control).
+- `worker/deno/lib/phases/completion_phase.ts` `gateBeforePush()`: a
+  `PrePushGateBlockedError` → marker plus `redactedHeadTail(…, 2000, 2000)`;
+  anything else → `Git push failed: …` with the same cut — "a gate block with
+  ~100 KB of output keeps the marker…", "redacts a secret…", "a gate that
+  cannot reach the remote is not blamed on the branch…" and "a gate lookup
+  failure with ~100 KB of output is capped too".
 - `worker/deno/lib/pre_push_gate.ts` `listPushedFiles` `baseRef` argument —
   `worker/deno/tests/pre_push_gate_test.ts` "listPushedFiles: baseRef lists
   pushed commits ahead of the base; an option-like baseRef is refused (#3689)":

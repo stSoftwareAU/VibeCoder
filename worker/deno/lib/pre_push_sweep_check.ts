@@ -14,7 +14,6 @@
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
 
-import type { Result } from "../types.ts";
 import { ensureHistoryDepth, isShallowRepo } from "./git_history.ts";
 import type { GitRunner } from "./git_history.ts";
 import {
@@ -46,6 +45,16 @@ export function touchesSweepLedger(changed: readonly string[]): boolean {
 }
 
 /**
+ * Outcome of {@link checkSweptAtAncestry}. `infrastructure` marks a failure to
+ * read or deepen git history (PR #3716 review): the check could not run, which
+ * is no verdict on the branch's ledger, so a caller can tell it from a
+ * `sweptAt` that is genuinely not on the default branch.
+ */
+export type SweepCheckResult =
+  | { ok: true; value: void }
+  | { ok: false; error: string; infrastructure?: true };
+
+/**
  * Verify the `sweptAt` of the slices contributed by the changed ledger files.
  * Makes no git call at all when no ledger file changed.
  */
@@ -54,7 +63,7 @@ export async function checkSweptAtAncestry(opts: {
   changed: readonly string[];
   git: Git;
   defaultRef?: string;
-}): Promise<Result<void, string>> {
+}): Promise<SweepCheckResult> {
   if (!touchesSweepLedger(opts.changed)) return { ok: true, value: undefined };
   const { cwd, git } = opts;
   const runGit: SweepGitRunner = (args) => git([...args], cwd);
@@ -123,6 +132,7 @@ export async function checkSweptAtAncestry(opts: {
   if (!shallow.ok) {
     return {
       ok: false,
+      infrastructure: true,
       error:
         `could not check whether the clone is shallow: ${shallow.error.message}`,
     };
@@ -135,6 +145,7 @@ export async function checkSweptAtAncestry(opts: {
     if (!deepened.ok) {
       return {
         ok: false,
+        infrastructure: true,
         error:
           `could not deepen history to check sweptAt ancestry: ${deepened.error.message}`,
       };
@@ -151,6 +162,7 @@ export async function checkSweptAtAncestry(opts: {
       if (full.code !== 0) {
         return {
           ok: false,
+          infrastructure: true,
           error: "could not deepen history to check sweptAt ancestry: " +
             (full.stderr.trim() || `git fetch --unshallow exit ${full.code}`),
         };

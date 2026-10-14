@@ -10,7 +10,11 @@ import {
   checkSweptAtAncestry,
   touchesSweepLedger,
 } from "../lib/pre_push_sweep_check.ts";
-import { defaultPrePushGit, runPrePushGate } from "../lib/pre_push_gate.ts";
+import {
+  defaultPrePushGit,
+  PrePushGateInfrastructureError,
+  runPrePushGate,
+} from "../lib/pre_push_gate.ts";
 
 const TOP_UP = "docs/audits/lib-sweep-coverage/top-up-5000.json";
 const LEDGER = "docs/audits/lib-sweep-coverage.json";
@@ -240,6 +244,95 @@ Deno.test("checkSweptAtAncestry: an unresolvable default ref blocks", async () =
     });
     assert(!explicit.ok);
     assert(explicit.error.includes("origin/nonexistent"), explicit.error);
+  } finally {
+    await cleanup(f.root);
+  }
+});
+
+Deno.test("checkSweptAtAncestry: a failed history deepen is infrastructure, a branch-only sweptAt is not (PR #3716 review)", async () => {
+  const f = await makeFixture();
+  try {
+    await git(f.clone, "checkout", "-qb", "feat");
+    await Deno.writeTextFile(`${f.clone}/branch.txt`, "b\n");
+    await git(f.clone, "add", ".");
+    await git(f.clone, "commit", "-qm", "branch only");
+    const branchSha = await git(f.clone, "rev-parse", "HEAD");
+    const tip = await commitTopUp(f.clone, branchSha);
+
+    // Positive control: with git answering, the same input is a verdict.
+    const verdict = await checkSweptAtAncestry({
+      cwd: f.clone,
+      changed: [TOP_UP],
+      git: defaultPrePushGit,
+    });
+    assert(!verdict.ok);
+    assertEquals(verdict.infrastructure, undefined);
+
+    // The clone reads as shallow and every fetch fails: the check could not run.
+    const outage: typeof defaultPrePushGit = (args, cwd) => {
+      if (args[0] === "rev-parse" && args.includes("--is-shallow-repository")) {
+        return Promise.resolve({ code: 0, stdout: "true\n", stderr: "" });
+      }
+      // The pushed sweptAt reads as missing locally, so the check must unshallow.
+      if (args[0] === "cat-file") {
+        return Promise.resolve({ code: 1, stdout: "", stderr: "" });
+      }
+      if (args[0] === "fetch") {
+        return Promise.resolve({
+          code: 128,
+          stdout: "",
+          stderr: "fatal: unable to access 'https://github.com/o/r.git/'",
+        });
+      }
+      return defaultPrePushGit(args, cwd);
+    };
+    const result = await checkSweptAtAncestry({
+      cwd: f.clone,
+      changed: [TOP_UP],
+      git: outage,
+    });
+    assert(!result.ok);
+    assertEquals(result.infrastructure, true);
+    assert(result.error.includes("could not deepen"), result.error);
+
+    // The other two ways the check can fail to run are infrastructure too.
+    const shallowUnknown = await checkSweptAtAncestry({
+      cwd: f.clone,
+      changed: [TOP_UP],
+      git: (args, cwd) =>
+        args[0] === "rev-parse" && args.includes("--is-shallow-repository")
+          ? Promise.resolve({ code: 128, stdout: "", stderr: "fatal: oops" })
+          : defaultPrePushGit(args, cwd),
+    });
+    assert(!shallowUnknown.ok);
+    assertEquals(shallowUnknown.infrastructure, true);
+    assert(
+      shallowUnknown.error.includes("whether the clone is shallow"),
+      shallowUnknown.error,
+    );
+
+    const cannotDeepen = await checkSweptAtAncestry({
+      cwd: f.clone,
+      changed: [TOP_UP],
+      git: (args, cwd) =>
+        args[0] === "merge-base"
+          ? Promise.resolve({ code: 1, stdout: "", stderr: "" })
+          : outage(args, cwd),
+    });
+    assert(!cannotDeepen.ok);
+    assertEquals(cannotDeepen.infrastructure, true);
+    assert(cannotDeepen.error.includes("could not deepen"), cannotDeepen.error);
+
+    // Through the whole gate it is an infrastructure error, not a verdict.
+    const gate = await runPrePushGate({
+      cwd: f.clone,
+      stdin: `refs/heads/feat ${tip} refs/heads/feat ${"0".repeat(40)}\n`,
+      preFlightCommands: [],
+      git: outage,
+    });
+    assert(!gate.ok);
+    assert(gate.error instanceof PrePushGateInfrastructureError);
+    assert(gate.error.message.includes("could not deepen"), gate.error.message);
   } finally {
     await cleanup(f.root);
   }

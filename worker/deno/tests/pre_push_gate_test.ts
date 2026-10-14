@@ -10,6 +10,7 @@ import {
   listPushedFiles,
   parsePrePushRefs,
   planChangedFileChecks,
+  PrePushGateInfrastructureError,
   type PrePushGit,
   runPrePushGate,
 } from "../lib/pre_push_gate.ts";
@@ -488,6 +489,18 @@ Deno.test("runPrePushGate: git log failure is an error", async () => {
   });
   assert(!result.ok);
   assert(result.error.message.includes("git log failed"));
+  // The lookup failed; nothing was decided about the branch (PR #3716 review).
+  assertInstanceOf(result.error, PrePushGateInfrastructureError);
+});
+
+Deno.test("runPrePushGate: malformed hook input is not infrastructure (PR #3716 review)", async () => {
+  const result = await runPrePushGate({
+    cwd: "/x",
+    stdin: "garbage",
+    preFlightCommands: [],
+  });
+  assert(!result.ok);
+  assert(!(result.error instanceof PrePushGateInfrastructureError));
 });
 
 Deno.test("runPrePushGate: malformed hook input is an error", async () => {
@@ -521,6 +534,7 @@ Deno.test("runPrePushGate: git ls-files failure is an error", async () => {
   assert(!failed.ok);
   assert(failed.error.message.includes("ls-files"));
   assert(failed.error.message.includes("index corrupt"));
+  assertInstanceOf(failed.error, PrePushGateInfrastructureError);
   assertEquals(calls, ["log", "ls-files"]);
 
   const accepted = await runPrePushGate({ ...input, git: makeGit(0) });

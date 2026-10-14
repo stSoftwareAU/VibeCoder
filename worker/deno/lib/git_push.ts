@@ -23,7 +23,10 @@ import {
 import { assertSafeToCommit, inspectStagedFiles } from "./pre_commit_safety.ts";
 import { isWorkerStatePath } from "./worker_state_paths.ts";
 import { runPreFlightGate } from "./pre_flight_gate.ts";
-import { runPrePushGate } from "./pre_push_gate.ts";
+import {
+  PrePushGateInfrastructureError,
+  runPrePushGate,
+} from "./pre_push_gate.ts";
 import type { PreFlightRunner } from "./pre_flight_gate.ts";
 import { getPreFlightCommands } from "./repo_config.ts";
 import type { RepoConfig } from "../types.ts";
@@ -516,6 +519,20 @@ export async function unstageWorkerStateFiles(
 }
 
 /**
+ * The pre-push gate gave a verdict on the branch's content (PR #3716 review):
+ * a changed-file or pre-flight command failed, a plan could not be built, or a
+ * `sweptAt` is not on the default branch. {@link gateUnpushedCommits} returns
+ * any other error (a git or remote lookup that failed or timed out) as itself,
+ * so a caller that blames the branch for a failed gate can tell the two apart.
+ */
+export class PrePushGateBlockedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "PrePushGateBlockedError";
+  }
+}
+
+/**
  * Run the pre-push gate over the commits about to be pushed (Issue #3689).
  *
  * A no-op when nothing is unpushed. Synthesises the stdin git would hand a
@@ -523,13 +540,17 @@ export async function unstageWorkerStateFiles(
  * forty zeros when the branch has no local tracking ref. Pre-flight commands
  * are skipped when Step 1 already ran them this call. Any failure — including
  * being unable to determine the state — is returned as an error so the caller
- * refuses to push (fail closed).
+ * refuses to push (fail closed). Only a verdict on the branch's content is a
+ * {@link PrePushGateBlockedError}; a failed git or remote lookup is a plain
+ * error (or a `PrePushGateInfrastructureError`) with no `[PRE_PUSH_BLOCKED]`
+ * prefix, so it is not reported as the branch failing its checks.
  *
  * With `baseRef` the gate covers every non-merge commit the branch has ahead
  * of that ref, pushed or not (Issue #3689): the execute phase's WIP
  * checkpoints push the agent's commits ungated, so the completion phase
  * checks the whole branch before it raises the PR. It is a no-op only when
- * the branch has no commit of its own ahead of `baseRef`.
+ * the branch has no commit of its own ahead of `baseRef`. That mode never
+ * reads the remote head: the range is local, so no `ls-remote` or `fetch` runs.
  */
 export async function gateUnpushedCommits(
   branchName: string,
@@ -538,10 +559,14 @@ export async function gateUnpushedCommits(
   preFlightAlreadyRan = false,
   baseRef?: string,
 ): Promise<Result<void>> {
-  const state = await describeUnpushedCommits(branchName, options);
-  if (!state.ok) return { ok: false, error: state.error };
+  let remoteSha = "0".repeat(40);
   if (baseRef === undefined) {
+    const state = await describeUnpushedCommits(branchName, options);
+    if (!state.ok) return { ok: false, error: state.error };
     if (state.value.count === 0) return { ok: true, value: undefined };
+    if (state.value.source === "tracking-ref" && state.value.sha) {
+      remoteSha = state.value.sha;
+    }
   } else {
     // Whole-branch mode: WIP checkpoints may already have pushed the commits,
     // so "nothing unpushed" says nothing. Skip only when the branch has no
@@ -551,7 +576,7 @@ export async function gateUnpushedCommits(
     } catch (error) {
       return {
         ok: false,
-        error: new Error(
+        error: new PrePushGateBlockedError(
           `[PRE_PUSH_BLOCKED] ${
             error instanceof Error ? error.message : String(error)
           }`,
@@ -568,7 +593,7 @@ export async function gateUnpushedCommits(
       return {
         ok: false,
         error: new Error(
-          `[PRE_PUSH_BLOCKED] git rev-list ${baseRef}..HEAD failed: ${
+          `git rev-list ${baseRef}..HEAD failed: ${
             ahead.value.stderr.trim() || `exit ${ahead.value.code}`
           }`,
         ),
@@ -583,13 +608,10 @@ export async function gateUnpushedCommits(
     return {
       ok: false,
       error: new Error(
-        `[PRE_PUSH_BLOCKED] git rev-parse HEAD failed: ${head.value.stderr.trim()}`,
+        `git rev-parse HEAD failed: ${head.value.stderr.trim()}`,
       ),
     };
   }
-  const remoteSha = state.value.source === "tracking-ref" && state.value.sha
-    ? state.value.sha
-    : "0".repeat(40);
   const ref = `refs/heads/${branchName}`;
   const gate = await runPrePushGate({
     cwd: options.cwd ?? Deno.cwd(),
@@ -600,9 +622,13 @@ export async function gateUnpushedCommits(
     baseRef,
   });
   if (!gate.ok) {
+    // A lookup that failed is not a verdict: pass it on unmarked.
+    if (gate.error instanceof PrePushGateInfrastructureError) {
+      return { ok: false, error: gate.error };
+    }
     return {
       ok: false,
-      error: new Error(
+      error: new PrePushGateBlockedError(
         `[PRE_PUSH_BLOCKED] ${gate.error.message}\n` +
           `Unpushed commits on ${branchName} were not pushed.`,
         { cause: gate.error },

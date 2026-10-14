@@ -57,7 +57,8 @@ import {
 } from "../pre_pr_verifier.ts";
 import { buildPrTitle } from "../pr_title_build.ts";
 import { getRepoConfig } from "../repo_config.ts";
-import { resolvePreFlightSpec } from "../git_push.ts";
+import { PrePushGateBlockedError, resolvePreFlightSpec } from "../git_push.ts";
+import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
 import type { WorkerConfig } from "../../types.ts";
@@ -246,6 +247,15 @@ import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
  * metric.
  */
 const WORK_ON_STATS_PHASE = IMPLEMENTATION_RUN_STATS_PHASE;
+
+/**
+ * Head and tail budgets for the pre-push gate output carried in a failure
+ * reason (PR #3716 review). The head holds the `[PRE_PUSH_BLOCKED] … command`
+ * line that names the failing check; the tail holds the end of its output.
+ * Together a few KB, far under the 65,536-character GitHub comment limit.
+ */
+const PRE_PUSH_GATE_REASON_HEAD_CHARS = 2000;
+const PRE_PUSH_GATE_REASON_TAIL_CHARS = 2000;
 
 /** What {@link lookupPrState} could read about an existing PR. */
 interface LinkedPrLookup {
@@ -1866,11 +1876,36 @@ async function completionBody(
     logger.error("Pre-push gate blocked the push", {
       error: gate.error.message,
     });
+    // A failed git or remote lookup says nothing about the branch: leave it
+    // unmarked, as the push path does, so it classifies as a push failure
+    // (infrastructure) and is retried instead of using a ladder attempt.
+    if (!(gate.error instanceof PrePushGateBlockedError)) {
+      return {
+        status: "failure",
+        reason: `Git push failed: the pre-push gate could not read the ` +
+          `branch state: ${
+            redactedHeadTail(
+              gate.error.message,
+              PRE_PUSH_GATE_REASON_HEAD_CHARS,
+              PRE_PUSH_GATE_REASON_TAIL_CHARS,
+            )
+          }`,
+      };
+    }
     // The gate message ends in the checks' raw output (diff hunks, test
-    // names), so the worker's own marker leads and decides the category.
+    // names), so the worker's own marker leads and decides the category. The
+    // output is redacted whole, then cut to a head (names the failing check)
+    // and a tail: the reason becomes a GitHub comment, which is refused over
+    // 65,536 characters, and the failure labelling swallows that refusal.
     return {
       status: "failure",
-      reason: `${PRE_PUSH_GATE_MARKER}: ${gate.error.message}`,
+      reason: `${PRE_PUSH_GATE_MARKER}: ${
+        redactedHeadTail(
+          gate.error.message,
+          PRE_PUSH_GATE_REASON_HEAD_CHARS,
+          PRE_PUSH_GATE_REASON_TAIL_CHARS,
+        )
+      }`,
     };
   };
   const blockedBeforePush = await gateBeforePush();

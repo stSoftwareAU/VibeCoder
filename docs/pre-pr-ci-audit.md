@@ -22,7 +22,9 @@ equivalent command. The stages are:
   phase's WIP checkpoint pushes (periodic and phase-end, which are ungated)
   already put on origin. A block is reported with the worker-written prefix
   "the branch did not pass the worker's pre-push gate" ahead of the check
-  output, so quoted diff hunks or test names cannot change the failure category;
+  output (redacted and cut to a few KB so the failure comment stays postable),
+  so quoted diff hunks or test names cannot change the failure category. Only a
+  verdict on the branch carries it; a failed git or remote lookup does not;
   see `docs/INTERNALS.md`;
 - `quality.sh` / `lib/quality_gate.ts`;
 - the end-to-end verifier (`lib/pre_pr_verifier.ts`).

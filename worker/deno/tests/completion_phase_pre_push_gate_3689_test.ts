@@ -10,7 +10,12 @@
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { classifyCodingFailure } from "../lib/coding_failure_ladder.ts";
-import { PRE_PUSH_GATE_MARKER } from "../lib/failure_diagnosis.ts";
+import {
+  detectFailureCategory,
+  isInfrastructureFailure,
+  PRE_PUSH_GATE_MARKER,
+} from "../lib/failure_diagnosis.ts";
+import { PrePushGateBlockedError } from "../lib/git_push.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
@@ -61,8 +66,12 @@ interface Scenario {
   changedFiles: string[];
   /** Whether the push is refused by GitHub for want of the scope. */
   pushRefused: boolean;
-  /** Gate verdicts, consumed one per call; a string is a block message. */
-  gateAnswers: Array<"pass" | string>;
+  /**
+   * Gate answers, consumed one per call; a string is a block message (a
+   * verdict on the branch) and an `Error` is returned as is (a lookup that
+   * failed).
+   */
+  gateAnswers: Array<"pass" | string | Error>;
   /** Whether the PR base resolves to nothing (no local, remote or fetched ref). */
   baseUnresolvable?: boolean;
   /** The host's warn-once latch, shared to model one process (Issue #2689). */
@@ -95,6 +104,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const gateBaseRefs: Array<string | undefined> = [];
   const warnings: string[] = [];
   const config: WorkerConfig = buildDefaultWorkerConfig();
+  // The in-run infrastructure retry must not sleep its real backoff.
+  config.infraRetryBackoffMs = 1;
   const ctx: IssueContext = {
     repo: "stSoftwareAU/GRQ-VibeCoder",
     issueNumber: 10,
@@ -160,9 +171,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         gateBaseRefs.push(baseRef);
         const answer = scenario.gateAnswers[gateCalls++] ?? "pass";
         return Promise.resolve(
-          answer === "pass"
-            ? { ok: true as const, value: undefined }
-            : { ok: false as const, error: new Error(answer) },
+          answer === "pass" ? { ok: true as const, value: undefined } : {
+            ok: false as const,
+            error: answer instanceof Error
+              ? answer
+              : new PrePushGateBlockedError(answer),
+          },
         );
       },
       pushUnpushedCommits: () => {
@@ -324,5 +338,104 @@ Deno.test({
     const decision = classifyCodingFailure(o.reason);
     assertEquals(decision.category, "pre_push_gate");
     assertEquals(decision.disposition, "ladder");
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a gate block with ~100 KB of output keeps the marker, names the check and stays under the comment cap (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const command = "deno fmt --check --permit-no-files src/big.ts";
+    const huge = `[PRE_PUSH_BLOCKED] Pre-flight gate BLOCK (Issue #3577): ` +
+      `command \`${command}\` failed with exit code 1.\n\n` +
+      "-    let unformatted = 1;\n".repeat(5000) +
+      "Unpushed commits on issue-10 were not pushed.";
+    assert(huge.length > 100_000);
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [huge],
+    });
+    assertEquals(o.status, "failure");
+    const reason = o.reason ?? "";
+    assert(reason.startsWith(PRE_PUSH_GATE_MARKER));
+    assertStringIncludes(reason, command);
+    assertStringIncludes(
+      reason,
+      "Unpushed commits on issue-10 were not pushed.",
+    );
+    // Far under GitHub's 65,536-character comment limit.
+    assert(reason.length < 8000, `reason was ${reason.length} characters`);
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a gate block redacts a secret in its output before the cut (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: [
+        `[PRE_PUSH_BLOCKED] command \`./pre-flight.sh\` failed\n` +
+        `GITHUB_TOKEN=${token}\n`,
+      ],
+    });
+    assert(!(o.reason ?? "").includes(token));
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a gate that cannot reach the remote is not blamed on the branch: no marker, infrastructure (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      // The in-run infrastructure retry may ask again: keep answering with
+      // the same outage so a retry cannot slip through and push.
+      gateAnswers: Array.from(
+        { length: 5 },
+        () =>
+          new Error(
+            "fatal: unable to access 'https://github.com/o/r.git/': " +
+              "Could not resolve host: github.com",
+          ),
+      ),
+    });
+    assertEquals(o.status, "failure");
+    const reason = o.reason ?? "";
+    assert(!reason.startsWith(PRE_PUSH_GATE_MARKER));
+    assertEquals(o.pushes, 0, "an unreadable branch state must not push");
+    assert(o.gateCalls > 1, "an infrastructure failure is retried in-run");
+    assertStringIncludes(reason, "Could not resolve host");
+    const category = detectFailureCategory(reason);
+    assertEquals(category, "push_failure");
+    assert(isInfrastructureFailure(category));
+    assertEquals(classifyCodingFailure(reason).category, "push_failure");
+  },
+});
+
+Deno.test({
+  name:
+    "completion - a gate lookup failure with ~100 KB of output is capped too (PR #3716 review)",
+  permissions: { read: true, write: true },
+  async fn() {
+    const huge = "fatal: Could not resolve host: github.com\n" +
+      "remote: noise\n".repeat(10_000) + "end of the git output";
+    assert(huge.length > 100_000);
+    const o = await runCompletion({
+      ...base,
+      pushRefused: false,
+      gateAnswers: Array.from({ length: 5 }, () => new Error(huge)),
+    });
+    const reason = o.reason ?? "";
+    assertStringIncludes(reason, "Could not resolve host");
+    assertStringIncludes(reason, "end of the git output");
+    assert(reason.length < 8000, `reason was ${reason.length} characters`);
   },
 });

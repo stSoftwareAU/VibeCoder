@@ -15,7 +15,11 @@
  */
 
 import { assert, assertEquals } from "@std/assert";
-import { commitAndPushPending, gateUnpushedCommits } from "../lib/git_push.ts";
+import {
+  commitAndPushPending,
+  gateUnpushedCommits,
+  PrePushGateBlockedError,
+} from "../lib/git_push.ts";
 import {
   type PreFlightCommandResult,
   PreFlightGateError,
@@ -403,6 +407,7 @@ Deno.test("gateUnpushedCommits - bad commit already pushed by a checkpoint is bl
     );
     assert(!wholeBranch.ok, "the checkpointed bad commit must be blocked");
     if (!wholeBranch.ok) {
+      assert(wholeBranch.error instanceof PrePushGateBlockedError);
       assert(wholeBranch.error.message.includes("[PRE_PUSH_BLOCKED]"));
       assert(wholeBranch.error.message.includes("bad.ts"));
     }
@@ -468,7 +473,9 @@ Deno.test("gateUnpushedCommits - unresolvable or option-like base ref fails clos
     );
     assert(!missing.ok, "an unreadable range must not read as a pass");
     if (!missing.ok) {
-      assert(missing.error.message.includes("[PRE_PUSH_BLOCKED]"));
+      // A failed git lookup is no verdict on the branch (PR #3716 review).
+      assert(!(missing.error instanceof PrePushGateBlockedError));
+      assert(!missing.error.message.includes("[PRE_PUSH_BLOCKED]"));
       assert(missing.error.message.includes("origin/does-not-exist..HEAD"));
     }
 
@@ -481,7 +488,92 @@ Deno.test("gateUnpushedCommits - unresolvable or option-like base ref fails clos
     );
     assert(!optionLike.ok);
     if (!optionLike.ok) {
+      assert(optionLike.error instanceof PrePushGateBlockedError);
       assert(optionLike.error.message.includes("[PRE_PUSH_BLOCKED]"));
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("gateUnpushedCommits - whole-branch mode never looks the remote up: an unreachable origin still gives the verdict (PR #3716 review)", async () => {
+  const branch = "issue-3689-offline";
+  const { tmp, downstream } = await makeRepo("preflight_3689_offline_", branch);
+  try {
+    await checkpointPush(downstream, "bad.ts", BAD_TS);
+    // No tracking ref for the branch and an origin that cannot be reached:
+    // `describeUnpushedCommits` would need `ls-remote` and fail.
+    await runGit(
+      ["update-ref", "-d", `refs/remotes/origin/${branch}`],
+      downstream,
+    );
+    await runGit(
+      ["remote", "set-url", "origin", `${tmp}/does-not-exist.git`],
+      downstream,
+    );
+    const opts = { cwd: downstream, env: NO_HOST_GIT_CONFIG };
+
+    // Positive control: the unpushed-only mode does need the remote lookup and
+    // fails on it, and that failure is not a verdict.
+    const unpushedOnly = await gateUnpushedCommits(branch, opts, {
+      commands: [],
+    });
+    assert(!unpushedOnly.ok);
+    if (!unpushedOnly.ok) {
+      assert(!(unpushedOnly.error instanceof PrePushGateBlockedError));
+    }
+
+    const wholeBranch = await gateUnpushedCommits(
+      branch,
+      opts,
+      { commands: [] },
+      false,
+      "origin/main",
+    );
+    assert(!wholeBranch.ok);
+    if (!wholeBranch.ok) {
+      assert(wholeBranch.error instanceof PrePushGateBlockedError);
+      assert(wholeBranch.error.message.includes("bad.ts"));
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("gateUnpushedCommits - a failed git lookup inside the gate is returned unmarked, not as a verdict (PR #3716 review)", async () => {
+  const branch = "issue-3689-corrupt-index";
+  const { tmp, downstream } = await makeRepo("preflight_3689_index_", branch);
+  try {
+    await checkpointPush(downstream, "bad.ts", BAD_TS);
+    const opts = { cwd: downstream, env: NO_HOST_GIT_CONFIG };
+
+    // Positive control: with a readable index the same branch is a verdict.
+    const verdict = await gateUnpushedCommits(
+      branch,
+      opts,
+      { commands: [] },
+      false,
+      "origin/main",
+    );
+    assert(!verdict.ok);
+    if (!verdict.ok) {
+      assert(verdict.error instanceof PrePushGateBlockedError);
+    }
+
+    // `git ls-files` cannot read the index; rev-list and rev-parse still work.
+    await Deno.writeTextFile(`${downstream}/.git/index`, "not an index");
+    const result = await gateUnpushedCommits(
+      branch,
+      opts,
+      { commands: [] },
+      false,
+      "origin/main",
+    );
+    assert(!result.ok, "an unreadable index must still fail closed");
+    if (!result.ok) {
+      assert(!(result.error instanceof PrePushGateBlockedError));
+      assert(!result.error.message.includes("[PRE_PUSH_BLOCKED]"));
+      assert(result.error.message.includes("ls-files"));
     }
   } finally {
     await Deno.remove(tmp, { recursive: true });
