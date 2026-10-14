@@ -137,9 +137,11 @@ flowchart LR
 | Auto permission mode (G4)                                                     | Auto permission mode         | The container is the permission boundary; depends on Anthropic-side classifier features                                                                                        |
 | microVM for every agent on Linux                                              | Hardware-virtualised sandbox | C22 already gives cap-dropped, read-only, non-privileged containers; a VM runtime per host is a platform migration larger than the gap; #3703 measures the real boundary first |
 
-**Related claims.** R6 (`THREAT-MODEL.md:239`) and R13 (`:246`) make the same
-egress claim via C12/C13. This document does not change them; it flags them as
-related to G2.
+**Related claims.** R6 (`THREAT-MODEL.md:239`) and R13 (`:246`) mention egress
+control via C12/C13. R6 now carries a pointer to R9 and #3698 (C12/C13 cover
+`gh` writes only). R13 claims only that RTK adds no exposure relative to the
+existing controls, not that egress control stops exfiltration, so it has no
+pointer. Both are related to G2.
 
 ## Summary
 

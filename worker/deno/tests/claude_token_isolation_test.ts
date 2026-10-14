@@ -29,9 +29,9 @@
  * inside the container. The provider's whole credential sub-directory is
  * mounted read-only, so a process with filesystem read access there can read
  * every token file — the same exposure a single-token host has always carried,
- * with a higher count. That is accepted and recorded (R9 in the threat model),
- * and the last test holds the record in place rather than letting the risk go
- * unwritten. Isolating the mount is separate work.
+ * with a higher count. That gap is recorded as open in R9 of the threat model
+ * until #3698 (egress) and #3699 (mount and staging), and the last test holds
+ * the record in place rather than letting the risk go unwritten.
  *
  * Uses Australian English spelling (behaviour, colour, organisation, etc.)
  */
