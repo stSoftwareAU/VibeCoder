@@ -294,8 +294,14 @@ const LABEL_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const TIMESTAMP_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
 
-/** Whether `value` is a plain object (a JSON object, not an array or class). */
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/**
+ * Whether `value` is a plain object (a JSON object, not an array or class).
+ *
+ * Exported so the assignment module reads JSON through the same guard.
+ */
+export function isPlainObject(
+  value: unknown,
+): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
@@ -764,8 +770,6 @@ export class LifecycleLedgerReadError extends Error {
  * A missing ledger is a legitimate empty result. Any other fault is refused
  * rather than skipped, so a damaged ledger cannot be mistaken for a short one.
  *
- * SIMPLE-ON-PURPOSE: reads the whole file into memory, fine to ~100,000 events — upgrade when a host's ledger exceeds tens of megabytes
- *
  * @param path - The ledger path.
  * @returns The distinct events, in first-seen order.
  * @throws {LifecycleLedgerReadError} When the ledger or a line is refused.
@@ -773,6 +777,7 @@ export class LifecycleLedgerReadError extends Error {
 export async function readLifecycleLedger(
   path: string,
 ): Promise<LifecycleEvent[]> {
+  // SIMPLE-ON-PURPOSE: reads the whole file into memory, fine to ~100,000 events — upgrade when a host's ledger exceeds tens of megabytes
   let text: string;
   try {
     text = await Deno.readTextFile(path);
@@ -821,15 +826,13 @@ export async function readLifecycleLedger(
     try {
       event = validateLifecycleEvent(parsed);
     } catch (error) {
-      if (error instanceof LifecycleEventSchemaError) {
-        throw new LifecycleLedgerReadError(
-          path,
-          lineNumber,
-          "invalid",
-          `field ${error.field} failed validation`,
-        );
-      }
-      throw error;
+      // validateLifecycleEvent only throws LifecycleEventSchemaError.
+      throw new LifecycleLedgerReadError(
+        path,
+        lineNumber,
+        "invalid",
+        `field ${(error as LifecycleEventSchemaError).field} failed validation`,
+      );
     }
 
     if (seen.has(event.eventKey)) continue;

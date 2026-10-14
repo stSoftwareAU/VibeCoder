@@ -767,3 +767,191 @@ Deno.test("issue assignment - a non-Claude provider lists the manager only", () 
   });
   assertEquals(roles, [{ role: "manager", provider: "codex" }]);
 });
+
+Deno.test("issue assignment - an unparseable createdAt sorts after a parseable one", () => {
+  const unparseable: AssignmentMarkerComment = {
+    author: "VibeCoderST",
+    createdAt: "not-a-time",
+    body: formatAssignmentMarker({
+      assignmentId: FORGED_ID,
+      cohort: "exp-b",
+      assignedAt: "2026-10-01T00:00:00Z",
+    }),
+  };
+  const parseable: AssignmentMarkerComment = {
+    author: "VibeCoderST",
+    createdAt: "2026-10-05T00:00:00Z",
+    body: formatAssignmentMarker({
+      assignmentId: ASSIGNMENT_ID,
+      cohort: "exp-a",
+      assignedAt: "2026-10-05T00:00:00Z",
+    }),
+  };
+  assertEquals(
+    selectTrustedAssignment([unparseable, parseable], TRUSTED)?.assignmentId,
+    ASSIGNMENT_ID,
+  );
+  assertEquals(
+    selectTrustedAssignment([parseable, unparseable], TRUSTED)?.assignmentId,
+    ASSIGNMENT_ID,
+  );
+});
+
+Deno.test("issue assignment - a whitespace-only subscription allocation records no label", async () => {
+  await withTempDir(async (dir) => {
+    const ledger = `${dir}/ledger.jsonl`;
+    const { store } = fakeStore();
+    await recordIssueAssignment(
+      inputFor({ subscriptionAllocation: "   " }),
+      seamsFor({
+        store,
+        ledgerPath: ledger,
+        host: "host-a",
+        runId: "vibe-run-0001",
+        mintId: countingMint().mintId,
+      }),
+    );
+    const [event] = assignmentsOf(await readLifecycleLedger(ledger));
+    assert(event !== undefined);
+    assertEquals("subscriptionAllocation" in event.treatment, false);
+  });
+});
+
+Deno.test("issue assignment - the gh store skips page items that are not objects or lack a string body", async () => {
+  const marker =
+    `<!-- vibe-assignment: id=${ASSIGNMENT_ID} cohort=exp-a assigned=2026-10-14T10:00:00Z -->`;
+  const page = JSON.stringify([
+    42,
+    null,
+    {
+      user: { login: "VibeCoderST" },
+      created_at: "2026-10-14T10:53:42Z",
+      body: 7,
+    },
+    restComment("VibeCoderST", "2026-10-14T10:53:42Z", marker),
+  ]);
+  const store = ghAssignmentMarkerStore(fakePagedGh([page]).runGh);
+
+  const comments = await store.listMarkerComments(REPO, ISSUE);
+
+  assertEquals(comments, [{
+    author: "VibeCoderST",
+    createdAt: "2026-10-14T10:53:42Z",
+    body: marker,
+  }]);
+});
+
+Deno.test("issue assignment - a sub-agent with blank model and effort omits them", () => {
+  const roles = issueRunRoleTreatments({
+    provider: fakeProvider("claude", "opus", "high"),
+    agents: {
+      executor: { description: "d", prompt: "p", model: "  ", effort: "" },
+    },
+  });
+  assertEquals(roles, [
+    { role: "manager", provider: "claude", model: "opus", effort: "high" },
+    { role: "executor", agent: "executor", provider: "claude" },
+  ]);
+});
+
+/**
+ * A store where another host's earlier trusted marker lands in the same
+ * window as ours: the post inserts our comment, then the rival's.
+ */
+function racingStore(rival: AssignmentMarkerComment): {
+  store: AssignmentMarkerStore;
+  posted: string[];
+} {
+  const comments: AssignmentMarkerComment[] = [];
+  const posted: string[] = [];
+  const store: AssignmentMarkerStore = {
+    listMarkerComments: async () => comments.map((c) => ({ ...c })),
+    postMarkerComment: async (_repo, _issueNumber, body) => {
+      posted.push(body);
+      comments.push({
+        author: "VibeCoderST",
+        createdAt: "2026-10-14T10:00:01Z",
+        body,
+      });
+      comments.push({ ...rival });
+    },
+  };
+  return { store, posted };
+}
+
+Deno.test("issue assignment - a racing earlier trusted marker is adopted after the re-read", async () => {
+  await withTempDir(async (dir) => {
+    const ledger = `${dir}/ledger.jsonl`;
+    const rivalId = "11111111-2222-4333-8444-555555555555";
+    const rival: AssignmentMarkerComment = {
+      author: "VibeCoderST",
+      createdAt: "2026-10-14T09:59:00Z",
+      body: formatAssignmentMarker({
+        assignmentId: rivalId,
+        cohort: "exp-a",
+        assignedAt: "2026-10-01T00:00:00Z",
+      }),
+    };
+    const { store, posted } = racingStore(rival);
+    const mint = countingMint();
+
+    const record = await recordIssueAssignment(
+      inputFor(),
+      seamsFor({
+        store,
+        ledgerPath: ledger,
+        host: "host-a",
+        runId: "vibe-run-0001",
+        mintId: mint.mintId,
+      }),
+    );
+
+    assertEquals(record, {
+      assignmentId: rivalId,
+      cohort: "exp-a",
+      reused: true,
+    });
+    assertEquals(mint.calls.count, 1);
+    assertEquals(posted.length, 1);
+    const [event] = assignmentsOf(await readLifecycleLedger(ledger));
+    assertEquals(event?.assignmentId, rivalId);
+    assertEquals(event?.cohort, "exp-a");
+    assertEquals(event?.assignedAt, "2026-10-01T00:00:00Z");
+    assertEquals(event?.reused, true);
+  });
+});
+
+Deno.test("issue assignment - a failing re-read after posting rejects and appends nothing", async () => {
+  await withTempDir(async (dir) => {
+    const ledger = `${dir}/ledger.jsonl`;
+    const { store, posted } = fakeStore();
+    let reads = 0;
+    const flaky: AssignmentMarkerStore = {
+      listMarkerComments: (repo, issueNumber) => {
+        reads += 1;
+        if (reads > 1) {
+          return Promise.reject(new Error("gh re-read exploded"));
+        }
+        return store.listMarkerComments(repo, issueNumber);
+      },
+      postMarkerComment: store.postMarkerComment,
+    };
+    await assertRejects(
+      () =>
+        recordIssueAssignment(
+          inputFor(),
+          seamsFor({
+            store: flaky,
+            ledgerPath: ledger,
+            host: "host-a",
+            runId: "vibe-run-0001",
+            mintId: countingMint().mintId,
+          }),
+        ),
+      Error,
+      "gh re-read exploded",
+    );
+    assertEquals(posted.length, 1);
+    assertEquals(await exists(ledger), false);
+  });
+});

@@ -7,7 +7,7 @@
  * the value back. Blank or absent records no label.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { validateConfigFileJson } from "../lib/validation.ts";
 import {
   detectUnknownConfigKeys,
@@ -32,60 +32,75 @@ async function withTempConfig(
 
 // --- validateConfigFileJson ---
 
+/** The label rule's own message, so a refusal is known to come from that rule. */
+const LABEL_RULE_MESSAGE = "Expected an operator label";
+
+/** Validate a config holding only this key set to `value`. */
+function validateLabel(value: unknown) {
+  return validateConfigFileJson({ subscription_allocation_label: value });
+}
+
+/**
+ * Assert the label rule refuses `value`: the field names the key, and the
+ * message is the label-rule message. Each refused input is paired with a
+ * control that differs only in the probed value, so the refusal is shown to
+ * come from that value alone.
+ */
+function assertRefusedByLabelRule(value: unknown, what: string): void {
+  const result = validateLabel(value);
+  assertEquals(result.ok, false, `${what} must be refused`);
+  if (result.ok) return;
+  assertEquals(result.error.field, "subscription_allocation_label");
+  assertStringIncludes(result.error.message, LABEL_RULE_MESSAGE);
+}
+
+/** Assert the key accepts `value`. */
+function assertAccepted(value: unknown, what: string): void {
+  const result = validateLabel(value);
+  assertEquals(result.ok, true, `${what} must be accepted`);
+}
+
 Deno.test("subscription_allocation_label - positive control: accepts team-a (Issue #3718)", () => {
-  const result = validateConfigFileJson({
-    subscription_allocation_label: "team-a",
-  });
-  assertEquals(result.ok, true);
+  assertAccepted("team-a", "team-a");
 });
 
 Deno.test("subscription_allocation_label - accepts a blank value, which records no label (Issue #3718)", () => {
   for (const blank of ["", "   "]) {
-    const result = validateConfigFileJson({
-      subscription_allocation_label: blank,
-    });
-    assertEquals(result.ok, true, `expected blank "${blank}" to be accepted`);
+    assertAccepted(blank, `blank "${blank}"`);
   }
 });
 
-Deno.test("subscription_allocation_label - rejects an email, naming the key and never echoing it (Issue #3718)", () => {
+Deno.test("subscription_allocation_label - refuses an email, naming the key and never echoing it (Issue #3718)", () => {
   const email = "ops@example.com";
-  const result = validateConfigFileJson({
-    subscription_allocation_label: email,
-  });
-  assertEquals(result.ok, false);
+  assertRefusedByLabelRule(email, "an email");
+  const result = validateLabel(email);
   if (!result.ok) {
-    assertEquals(result.error.field, "subscription_allocation_label");
     assertEquals(
       result.error.message.includes(email),
       false,
       "the refusal must not echo the raw value",
     );
   }
+  // Control: the same shape with only the '@' made legal is accepted.
+  assertAccepted("ops-example.com", "ops-example.com (email with '@' removed)");
 });
 
-Deno.test("subscription_allocation_label - rejects a label with capitals and spaces (Issue #3718)", () => {
-  const result = validateConfigFileJson({
-    subscription_allocation_label: "Team A",
-  });
-  assertEquals(result.ok, false);
+Deno.test("subscription_allocation_label - refuses a label with capitals and a space (Issue #3718)", () => {
+  assertRefusedByLabelRule("Team A", "'Team A'");
+  // Control: the same label made legal (lowercase, hyphen for the space).
+  assertAccepted("team-a", "'team-a'");
 });
 
-Deno.test("subscription_allocation_label - rejects a 65-character label (Issue #3718)", () => {
-  const result = validateConfigFileJson({
-    subscription_allocation_label: "a".repeat(65),
-  });
-  assertEquals(result.ok, false);
+Deno.test("subscription_allocation_label - refuses a 65-character label (Issue #3718)", () => {
+  assertRefusedByLabelRule("a".repeat(65), "a 65-character label");
+  // Control: the same label at the 64-character limit is accepted.
+  assertAccepted("a".repeat(64), "a 64-character label");
 });
 
-Deno.test("subscription_allocation_label - rejects a non-string value (Issue #3718)", () => {
-  const result = validateConfigFileJson({
-    subscription_allocation_label: 42,
-  });
-  assertEquals(result.ok, false);
-  if (!result.ok) {
-    assertEquals(result.error.field, "subscription_allocation_label");
-  }
+Deno.test("subscription_allocation_label - refuses a non-string value (Issue #3718)", () => {
+  assertRefusedByLabelRule(42, "the number 42");
+  // Control: the same value as a legal string is accepted.
+  assertAccepted("42", "the string '42'");
 });
 
 // --- config loader ---

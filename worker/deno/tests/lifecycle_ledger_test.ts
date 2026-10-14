@@ -12,17 +12,21 @@ import {
   assertEquals,
   assertRejects,
   assertStringIncludes,
+  assertThrows,
 } from "@std/assert";
 import {
   appendLifecycleEvent,
   buildLifecycleEvent,
+  type LifecycleEvent,
   type LifecycleEventInput,
   lifecycleEventKey,
+  LifecycleEventSchemaError,
   LifecycleLedgerAppendError,
   lifecycleLedgerPath,
   LifecycleLedgerReadError,
   readLifecycleLedger,
   serialiseLifecycleEvent,
+  validateLifecycleEvent,
 } from "../lib/lifecycle_ledger.ts";
 
 const ASSIGNMENT_ID = "3f2c9a1e-4b5d-4c6e-8f70-1a2b3c4d5e6f";
@@ -326,4 +330,272 @@ Deno.test("lifecycle ledger - a hostname with a separator stays inside workDir",
     path,
     `${dir}/lifecycle_ledger_evil_.._host.jsonl`,
   );
+});
+
+/**
+ * Build the input for one fixture from `oneOfEachKind()`, with fields replaced
+ * or dropped. The result is deliberately not checked, so a probe can carry a
+ * value the validator must refuse.
+ */
+function probeInput(
+  index: number,
+  fields: Record<string, unknown> = {},
+  drop: string[] = [],
+): LifecycleEventInput {
+  const merged: Record<string, unknown> = { ...oneOfEachKind()[index] };
+  Object.assign(merged, fields);
+  for (const key of drop) delete merged[key];
+  return merged as unknown as LifecycleEventInput;
+}
+
+/** The unvalidated object a caller might hand the validator, keyed as the builder would. */
+function rawEvent(input: LifecycleEventInput): unknown {
+  return { schema: 1, ...input, eventKey: lifecycleEventKey(input) };
+}
+
+/** Each refusal, the field the validator must name, and the fixture it is cut from. */
+const REFUSED: { name: string; input: LifecycleEventInput; field: string }[] = [
+  {
+    name: "invocation role outside the enum",
+    input: probeInput(1, { role: "boss" }),
+    field: "role",
+  },
+  {
+    name: "treatment role outside the enum",
+    input: probeInput(0, {
+      treatment: { roles: [{ role: "boss", provider: "claude" }] },
+    }),
+    field: "treatment.roles[0].role",
+  },
+  {
+    name: "invocation result outside the enum",
+    input: probeInput(1, { result: "bogus" }),
+    field: "result",
+  },
+  {
+    name: "gate result outside the enum",
+    input: probeInput(3, { result: "maybe" }),
+    field: "result",
+  },
+  {
+    name: "follow_on outside the enum",
+    input: probeInput(2, { followOn: "nope" }),
+    field: "followOn",
+  },
+  {
+    name: "outcome outside the enum",
+    input: probeInput(4, { outcome: "maybe" }),
+    field: "outcome",
+  },
+  {
+    name: "attempt zero",
+    input: probeInput(1, { attempt: 0 }),
+    field: "attempt",
+  },
+  {
+    name: "issueNumber fractional",
+    input: probeInput(0, { issueNumber: 1.5 }),
+    field: "issueNumber",
+  },
+  {
+    name: "prNumber negative",
+    input: probeInput(2, { prNumber: -1 }),
+    field: "prNumber",
+  },
+  {
+    name: "inputTokens negative",
+    input: probeInput(1, { inputTokens: -1 }),
+    field: "inputTokens",
+  },
+  {
+    name: "inputTokens fractional",
+    input: probeInput(1, { inputTokens: 1.5 }),
+    field: "inputTokens",
+  },
+  {
+    name: "durationSeconds negative",
+    input: probeInput(1, { durationSeconds: -1 }),
+    field: "durationSeconds",
+  },
+  {
+    name: "estimatedApiCostUsd NaN",
+    input: probeInput(1, { estimatedApiCostUsd: Number.NaN }),
+    field: "estimatedApiCostUsd",
+  },
+  {
+    name: "estimatedApiCostUsd Infinity",
+    input: probeInput(1, { estimatedApiCostUsd: Number.POSITIVE_INFINITY }),
+    field: "estimatedApiCostUsd",
+  },
+  {
+    name: "reused not a boolean",
+    input: probeInput(0, { reused: "yes" }),
+    field: "reused",
+  },
+  {
+    name: "recordedAt not a timestamp",
+    input: probeInput(0, { recordedAt: "yesterday" }),
+    field: "recordedAt",
+  },
+  {
+    name: "assignedAt an impossible date",
+    input: probeInput(0, { assignedAt: "2026-13-45T00:00:00Z" }),
+    field: "assignedAt",
+  },
+  {
+    name: "servedModels not an array",
+    input: probeInput(1, { servedModels: "opus" }),
+    field: "servedModels",
+  },
+  {
+    name: "role item not an object",
+    input: probeInput(0, { treatment: { roles: ["manager"] } }),
+    field: "treatment.roles[0]",
+  },
+  {
+    name: "treatment not an object",
+    input: probeInput(0, { treatment: "manager" }),
+    field: "treatment",
+  },
+  {
+    name: "empty roles",
+    input: probeInput(0, { treatment: { roles: [] } }),
+    field: "treatment.roles",
+  },
+  {
+    name: "roles not an array",
+    input: probeInput(0, { treatment: { roles: "manager" } }),
+    field: "treatment.roles",
+  },
+];
+
+Deno.test("lifecycle ledger - each refusal names the field it broke", () => {
+  for (const entry of REFUSED) {
+    const error = assertThrows(
+      () => validateLifecycleEvent(rawEvent(entry.input)),
+      LifecycleEventSchemaError,
+    );
+    assertEquals(error.field, entry.field, entry.name);
+  }
+});
+
+Deno.test("lifecycle ledger - a root value that is not an object is refused", () => {
+  for (const value of [null, [], "x", 42]) {
+    const error = assertThrows(
+      () => validateLifecycleEvent(value),
+      LifecycleEventSchemaError,
+    );
+    assertEquals(error.field, "(root)");
+  }
+});
+
+Deno.test("lifecycle ledger - a wrong schema or unknown kind is refused by name", () => {
+  const good = rawEvent(probeInput(0)) as Record<string, unknown>;
+  const cases: [string, unknown, string][] = [
+    ["schema 2", { ...good, schema: 2 }, "schema"],
+    ["schema as a string", { ...good, schema: "1" }, "schema"],
+    ["unknown kind", { ...good, kind: "mystery" }, "kind"],
+  ];
+  for (const [name, value, field] of cases) {
+    const error = assertThrows(
+      () => validateLifecycleEvent(value),
+      LifecycleEventSchemaError,
+    );
+    assertEquals(error.field, field, name);
+  }
+});
+
+Deno.test("lifecycle ledger - the base events the refusals are cut from validate", () => {
+  for (let index = 0; index < 5; index++) {
+    const input = probeInput(index);
+    assertEquals(
+      validateLifecycleEvent(rawEvent(input)),
+      buildLifecycleEvent(input),
+    );
+  }
+  // A null-prototype object is still a plain object, so it validates.
+  const nullProto = Object.assign(
+    Object.create(null),
+    rawEvent(probeInput(0)) as Record<string, unknown>,
+  );
+  assertEquals(validateLifecycleEvent(nullProto).kind, "assignment");
+});
+
+Deno.test("lifecycle ledger - a role carrying an agent is accepted and round-trips", async () => {
+  await withTempDir(async (dir) => {
+    const path = `${dir}/ledger.jsonl`;
+    const event = buildLifecycleEvent(probeInput(0, {
+      treatment: {
+        roles: [{
+          role: "executor",
+          agent: "executor",
+          provider: "claude",
+          model: "sonnet",
+          effort: "medium",
+        }],
+      },
+    }));
+    await appendLifecycleEvent(path, event);
+    assertEquals(await readLifecycleLedger(path), [event]);
+  });
+});
+
+Deno.test("lifecycle ledger - events without prNumber or agent are accepted and keyed", async () => {
+  const cases: [LifecycleEventInput, string][] = [
+    [
+      probeInput(1, {}, ["agent"]),
+      `invocation:${ASSIGNMENT_ID}:${RUN_ID}:executor:-:1`,
+    ],
+    [
+      probeInput(2, {}, ["prNumber"]),
+      `follow_on:${ASSIGNMENT_ID}:${RUN_ID}:ci_fix:-:1`,
+    ],
+    [
+      probeInput(3, {}, ["prNumber"]),
+      `gate:${ASSIGNMENT_ID}:${RUN_ID}:quality:1`,
+    ],
+    [
+      probeInput(4, {}, ["prNumber"]),
+      `outcome:${ASSIGNMENT_ID}:pr_opened:run-${RUN_ID}`,
+    ],
+  ];
+  await withTempDir(async (dir) => {
+    const path = `${dir}/ledger.jsonl`;
+    const events: LifecycleEvent[] = [];
+    for (const [input, key] of cases) {
+      const event = buildLifecycleEvent(input);
+      assertEquals(event.eventKey, key);
+      await appendLifecycleEvent(path, event);
+      events.push(event);
+    }
+    assertEquals(await readLifecycleLedger(path), events);
+  });
+});
+
+Deno.test("lifecycle ledger - a valid JSON line that is not an object is refused as invalid", async () => {
+  for (const literal of ["42", "[]", "null", '"text"']) {
+    await withTempDir(async (dir) => {
+      const path = `${dir}/ledger.jsonl`;
+      await appendLifecycleEvent(path, buildLifecycleEvent(probeInput(0)));
+      await Deno.writeTextFile(path, literal + "\n", { append: true });
+      const error = await assertRejects(
+        () => readLifecycleLedger(path),
+        LifecycleLedgerReadError,
+      );
+      assertEquals(error.reason, "invalid", literal);
+      assertEquals(error.line, 2, literal);
+    });
+  }
+});
+
+Deno.test("lifecycle ledger - a whitespace-only line between events is skipped", async () => {
+  await withTempDir(async (dir) => {
+    const path = `${dir}/ledger.jsonl`;
+    const first = buildLifecycleEvent(probeInput(1));
+    const second = buildLifecycleEvent(probeInput(2));
+    await appendLifecycleEvent(path, first);
+    await Deno.writeTextFile(path, " \t \n", { append: true });
+    await appendLifecycleEvent(path, second);
+    assertEquals(await readLifecycleLedger(path), [first, second]);
+  });
 });

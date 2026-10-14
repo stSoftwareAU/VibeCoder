@@ -11,8 +11,9 @@
  * Any run first reads the issue's comments. A marker posted by a trusted
  * fleet author is reused, so a restart, or a second host, carries on the
  * same assignment. When none exists, the run mints an id and posts one. Two
- * hosts that race each post a marker; the earliest trusted marker wins on
- * every host, so they converge on one assignment.
+ * hosts that race each post a marker, so each re-reads the issue after
+ * posting and adopts the earliest trusted marker it can now see. The hosts
+ * converge on one assignment.
  *
  * The assignment event is built and validated BEFORE any marker is posted,
  * so an invalid label is refused before it reaches GitHub. Only the comment's
@@ -34,6 +35,7 @@ import { getRunId } from "./run_id.ts";
 import {
   appendLifecycleEvent,
   buildLifecycleEvent,
+  isPlainObject,
   isValidAssignmentId,
   isValidLifecycleLabel,
   isValidLifecycleTimestamp,
@@ -140,11 +142,6 @@ export interface AssignmentMarkerStore {
   ): Promise<void>;
 }
 
-/** Whether `value` is a plain JSON object. */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 /**
  * The production {@link AssignmentMarkerStore}, backed by the `gh` CLI.
  *
@@ -168,10 +165,10 @@ export function ghAssignmentMarkerStore(
       const raw = await fetchIssueCommentPages(repo, issueNumber, runGh);
       const comments: AssignmentMarkerComment[] = [];
       for (const item of raw) {
-        if (!isRecord(item) || typeof item.body !== "string") continue;
+        if (!isPlainObject(item) || typeof item.body !== "string") continue;
         if (!item.body.includes(ASSIGNMENT_MARKER_PREFIX)) continue;
         const user = item.user;
-        const login = isRecord(user) ? user.login : undefined;
+        const login = isPlainObject(user) ? user.login : undefined;
         if (typeof login !== "string" || typeof item.created_at !== "string") {
           continue;
         }
@@ -268,9 +265,12 @@ export interface IssueAssignmentRecord {
 /**
  * Attach this run to the issue's assignment, creating it when none exists.
  *
- * The order is deliberate: the event is built and validated before anything is
- * posted, so an invalid input is refused with no side effect. Every error
- * propagates; the caller logs it at error level.
+ * The order is deliberate. The event is built and validated before anything is
+ * posted, so an invalid input is refused with no side effect. A minted marker
+ * is then posted and the issue re-read: if a racing host's earlier trusted
+ * marker is now visible, this run adopts that assignment and records it with
+ * `reused: true`, so two hosts converge. Every error propagates, and nothing is
+ * appended if any read or post fails; the caller logs it at error level.
  *
  * @param input - The issue, the trusted authors and the run's treatment.
  * @param seams - The store, ledger path, identity and clock.
@@ -286,11 +286,12 @@ export async function recordIssueAssignment(
     input.issueNumber,
   );
   const existing = selectTrustedAssignment(comments, input.trustedAuthors);
-  const marker: AssignmentMarker = existing ?? {
+  let marker: AssignmentMarker = existing ?? {
     assignmentId: seams.mintId(),
     cohort: UNASSIGNED_COHORT,
     assignedAt: new Date(seams.now()).toISOString(),
   };
+  let reused = existing !== undefined;
 
   const facts = seams.buildFacts();
   const subscriptionAllocation =
@@ -298,26 +299,30 @@ export async function recordIssueAssignment(
       input.subscriptionAllocation.trim() !== ""
       ? input.subscriptionAllocation
       : undefined;
-  const event = buildLifecycleEvent({
-    kind: "assignment",
-    assignmentId: marker.assignmentId,
-    runId: seams.runId,
-    host: seams.host,
-    repo: input.repo,
-    issueNumber: input.issueNumber,
-    recordedAt: new Date(seams.now()).toISOString(),
-    assignedAt: marker.assignedAt,
-    cohort: marker.cohort,
-    reused: existing !== undefined,
-    treatment: {
-      roles: [...input.roles],
-      ...(facts.version ? { workerVersion: facts.version } : {}),
-      ...(facts.commit ? { workerCommit: facts.commit } : {}),
-      ...(subscriptionAllocation !== undefined
-        ? { subscriptionAllocation }
-        : {}),
-    },
-  });
+  const buildEvent = (assigned: AssignmentMarker, wasReused: boolean) =>
+    buildLifecycleEvent({
+      kind: "assignment",
+      assignmentId: assigned.assignmentId,
+      runId: seams.runId,
+      host: seams.host,
+      repo: input.repo,
+      issueNumber: input.issueNumber,
+      recordedAt: new Date(seams.now()).toISOString(),
+      assignedAt: assigned.assignedAt,
+      cohort: assigned.cohort,
+      reused: wasReused,
+      treatment: {
+        roles: [...input.roles],
+        ...(facts.version ? { workerVersion: facts.version } : {}),
+        ...(facts.commit ? { workerCommit: facts.commit } : {}),
+        ...(subscriptionAllocation !== undefined
+          ? { subscriptionAllocation }
+          : {}),
+      },
+    });
+  // Built before anything is posted, so an invalid input refuses with no side
+  // effect.
+  let event = buildEvent(marker, reused);
 
   if (existing === undefined) {
     await seams.store.postMarkerComment(
@@ -325,13 +330,32 @@ export async function recordIssueAssignment(
       input.issueNumber,
       assignmentCommentBody(marker),
     );
+    // Re-read after posting. A racing host may have posted an earlier trusted
+    // marker; if so, this run adopts that assignment rather than its own.
+    const relisted = await seams.store.listMarkerComments(
+      input.repo,
+      input.issueNumber,
+    );
+    const settled = selectTrustedAssignment(relisted, input.trustedAuthors) ??
+      marker;
+    if (!sameAssignment(settled, marker)) {
+      marker = settled;
+      reused = true;
+      event = buildEvent(marker, reused);
+    }
   }
   await appendLifecycleEvent(seams.ledgerPath, event);
   return {
     assignmentId: marker.assignmentId,
     cohort: marker.cohort,
-    reused: existing !== undefined,
+    reused,
   };
+}
+
+/** Whether two markers describe the same assignment in every field. */
+function sameAssignment(a: AssignmentMarker, b: AssignmentMarker): boolean {
+  return a.assignmentId === b.assignmentId && a.cohort === b.cohort &&
+    a.assignedAt === b.assignedAt;
 }
 
 /** The role a sub-agent name runs as, or `undefined` for a non-role agent. */

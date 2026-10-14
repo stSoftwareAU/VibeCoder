@@ -1083,9 +1083,13 @@ The run reads the issue's comments through the bounded comment-page helper
 never read without a cap. Only a marker posted by a fleet author is trusted: the
 author is checked with `isFleetAuthor` against the set `resolveFleetMaintenanceAuthorSet`
 returns (the host login, `fleet_pr_authors` and `service_accounts`). A marker
-anyone else posted is ignored, and the earliest trusted marker wins, so two
-hosts that race converge on one assignment. If the comments cannot be read, the
-run mints nothing, since an unreadable thread is never taken as "no marker".
+anyone else posted is ignored. The earliest trusted marker wins: a run that
+minted re-reads the comments after posting and adopts the earliest trusted
+marker, so two hosts that race converge on one assignment — provided GitHub
+lists a just-posted comment on the next read. A re-read that fails is logged at
+error level like any other failure, and nothing is appended. If the comments
+cannot be read, the run mints nothing, since an unreadable thread is never taken
+as "no marker".
 
 - **Reused.** A trusted marker's id, cohort and assignment time are reused, so a
   restart, or another host picking the issue up, keeps the same assignment.
@@ -1150,6 +1154,7 @@ sequenceDiagram
     else no trusted marker
         Exec->>Exec: mint UUID with cohort unassigned
         Exec->>Issue: post marker comment
+        Exec->>Issue: re-read comments and adopt the earliest trusted marker
     end
     Exec->>Ledger: append assignment event
     Exec->>Agent: invoke agent
