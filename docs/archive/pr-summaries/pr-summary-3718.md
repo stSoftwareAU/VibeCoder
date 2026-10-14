@@ -10,7 +10,7 @@ Each worked issue now gets one stable assignment ID with its treatment, recorded
   - assignment time and cohort
   - optional operator label `subscription_allocation_label`
 - `lib/phases/execute_phase.ts` records the assignment immediately before the first `invokeAgent`, after every early exit. A failure is logged at error level and the run continues.
-- New host config key `subscription_allocation_label`. It is a label only, never an email, ID or fee. Values are validated with the ledger's own label rule, and a refusal never echoes the value.
+- New host config key `subscription_allocation_label`. It is meant as a label only, never an email, ID or fee; the label rule refuses an email but cannot tell a numeric account ID from a label. Values are validated with the ledger's own label rule, and a refusal never echoes the value.
 
 ## Spec
 
@@ -21,7 +21,7 @@ Each worked issue now gets one stable assignment ID with its treatment, recorded
 
 ### Essential Design Decisions
 
-- The allowlist works at the key level and the value level. An unknown key is refused. Identifiers match a bounded token pattern with no `@` or whitespace. Labels are lowercase `[a-z0-9._-]{1,64}`. Prompt text, issue bodies, tokens, emails and user identities therefore cannot be written. The reader re-validates every line and recomputes its `eventKey`.
+- The allowlist works at the key level and the value level. An unknown key is refused. Identifiers match a bounded token pattern with no `@` or whitespace. Labels are lowercase `[a-z0-9._-]{1,64}`. Prompt text and issue bodies have no key, and an email or multi-word prose fails every value pattern. The patterns do not recognise a single-token secret (`ghp_…`, `sk-…`) or a bare login, so the assignment event's identifiers are filled only from worker-owned sources: host name, run id, model routing, `--agents` definitions and build facts. The reader re-validates every line and recomputes its `eventKey`.
 - Marker trust uses `isFleetAuthor` against `resolveFleetMaintenanceAuthorSet`. This is the same control as the `CLAIM_LOCK` author gate. A forged marker is ignored, which fails towards minting a new ID, the harmless direction.
 - The assignment is recorded in the execute phase rather than at claim time. The issue only assumed the claim phase, and the execute phase is the module that makes the issue's first agent call (`invokeAgent`). The setup phase's milestone presync agent runs earlier, but it is milestone-branch maintenance memoised once per run and shared by every issue of the milestone, not this issue's work. The parent milestone asks for maintenance to be kept separate from implementation.
 - Owner direction on #3644 (2026-10-13): "estimated API-equivalent USD cost only … do not implement subscription fee allocation". The subscription field is therefore an operator label only. Nothing computes or allocates fees, and `estimatedApiCostUsd` is an optional, unwritten invocation field. This narrows the sub-issue's "subscription allocation label" bullet rather than replacing it.

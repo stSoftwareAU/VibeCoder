@@ -1134,13 +1134,19 @@ the raw line. A failed append raises `LifecycleLedgerAppendError`. Nothing is
 skipped silently.
 
 **The allowlist.** Every event is validated before it is written and again when
-it is read. A key the event kind does not name is refused, and so is any value
-of the wrong shape. Identifiers (host, run id, provider, model, effort, agent,
-gate, version and commit) must match a token pattern with no `@` or whitespace.
-Labels (cohort and subscription allocation) are lowercase `[a-z0-9._-]`, at most
-64 characters. Prompt text, issue bodies, tokens, credentials, e-mail addresses
-and user identities therefore cannot be written. A refusal names the field and
-the rule, never the value.
+it is read. A key the event kind does not name is refused, so a prompt, an issue
+body or any other field outside the schema has no key to be written under. A
+value of the wrong shape is refused too. Identifiers (host, run id, provider,
+model, effort, agent, gate, version and commit) must match a bounded token
+pattern with no `@` or whitespace, which refuses an e-mail address and
+multi-word prose. Labels (cohort and subscription allocation) are lowercase
+`[a-z0-9._-]`, at most 64 characters, which also refuses an e-mail address. The
+patterns do not recognise a single-token secret, such as a `ghp_…` GitHub token
+or an `sk-…` API key, or a bare GitHub login: such a value placed in an
+identifier field would be validated and written. What keeps them out of the
+`assignment` event is where its identifiers come from — the host name, the run
+id, the provider's model routing, the run's `--agents` definitions and the
+worker's build facts. A refusal names the field and the rule, never the value.
 
 ```mermaid
 sequenceDiagram

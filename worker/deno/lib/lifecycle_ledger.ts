@@ -14,9 +14,12 @@
  *
  *   - **Allowlist, not denylist.** {@link validateLifecycleEvent} refuses any
  *     key the kind does not name, and any string that is not a bounded token,
- *     label, repo, UUID or timestamp. A prompt, an issue body, an e-mail
- *     address or a credential therefore cannot be stored by accident, however
- *     a caller shapes the object.
+ *     label, repo, UUID or timestamp. A prompt or an issue body has no key to
+ *     be stored under, and an e-mail address or multi-word prose fails every
+ *     value pattern. A single-token secret or a bare login does fit the token
+ *     pattern, so the patterns alone do not keep one out of an identifier
+ *     field; the assignment writer fills those fields from worker-owned
+ *     sources (host name, run id, model routing, build facts).
  *   - **Idempotent by key.** Each event carries a deterministic `eventKey`.
  *     The writer is a plain append; {@link readLifecycleLedger} dedupes on
  *     that key, so a replay after a restart is harmless.
@@ -274,9 +277,10 @@ const ROLE_TREATMENT_KEYS: readonly string[] = [
 
 /**
  * The shape of a token: a provider, model, effort, agent, host, run id, gate
- * or version. No `@`, no whitespace, so an e-mail address or prose cannot be
- * stored. Bounded, with no overlapping quantifiers, because it runs on agent
- * and operator text.
+ * or version. No `@`, no whitespace, so an e-mail address or multi-word prose
+ * is refused; a single-token secret or a bare login is not recognised.
+ * Bounded, with no overlapping quantifiers, because it runs on agent and
+ * operator text.
  */
 const TOKEN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/+\[\]-]{0,127}$/;
 
