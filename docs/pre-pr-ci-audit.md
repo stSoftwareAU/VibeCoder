@@ -103,26 +103,48 @@ The completion-phase gate falls back to `{ commands: [] }` when no spec exists.
 | [38486741580](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38486741580) | a85026a6 | rustfmt | `handler.rs:67` | local | No (final-mile Step 2 gap) | Fixed by #3689 |
 | [38484707749](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38484707749) | a3b78e09 | mermaid_blocks | invalid Mermaid block | local | Covered by `quality.sh` | No change needed |
 | [38407346744](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38407346744) | 82d4a6fd | bootstrap drift | drift against the remote bootstrap | network-only | No | Left to CI |
-| [38455750470](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38455750470) | 8b788065 | VERSION not bumped | compares to base PR state | GitHub-exclusive, locally checkable | No | Left to CI — GRQ-AutoTrader's own `version-bump` job (#3248, closed) is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
-| [38357245453](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38357245453) | 2c0f586c | VERSION not bumped | compares to base PR state | GitHub-exclusive, locally checkable | No | Left to CI — GRQ-AutoTrader's own `version-bump` job (#3248, closed) is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
+| [38455750470](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38455750470) | 8b788065 | VERSION not bumped | compares to base PR state | GitHub-exclusive (compares against base PR state) | No | Left to CI — GRQ-AutoTrader's own `version-bump` job (#3248, closed) is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
+| [38357245453](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38357245453) | 2c0f586c | VERSION not bumped | compares to base PR state | GitHub-exclusive (compares against base PR state) | No | Left to CI — GRQ-AutoTrader's own `version-bump` job (#3248, closed) is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
 
 ## Checks the worker cannot run
 
 - **Network/credential-only**: gitleaks, semgrep, Floci (AWS emulation) and
   bootstrap drift.
 - **GitHub-exclusive**: checks that compare against GitHub state, such as the
-  base PR's VERSION. These may still be approximated locally (see the
-  follow-up above).
+  base PR's VERSION. This check is left to CI's version-bump job (#3248); no
+  pre-PR approximation exists or is claimed.
 
 ## Known remaining limits
 
-- Repos without pre-flight commands stay ungated at Step 1b: callers without a
-  spec are not gated.
+- Step 1b is skipped only for callers with no pre-flight spec, such as
+  WIP-preservation pushes; these are the ungated remainder. Repos with no
+  pre-flight commands are still gated by the completion phase's
+  `gateBeforePush()` using the changed-file checks.
 - Network/credential-only checks (gitleaks, semgrep, bootstrap drift, Floci)
   are never reported as PASS locally. They are skipped, not passed.
 
 CI still runs every required check independently after PR creation. Nothing in
 Issue #3689 weakens or removes a CI, review or security gate.
+
+## Method and limits of this audit
+
+- Rows were derived from the failed GitHub Actions runs linked in the tables
+  (first failing job per run, log read via `gh`).
+- The rows for GRQ runs 37770312438 and 37687047960 record the failing check
+  (Spelling/cspell), but the individual unknown words were not retained.
+- No review-finding (blocking review) rows were audited, only CI jobs.
+- Reproduction ran the equivalent local command against the checked-out failing
+  file content in this repository's tests (fixtures), not by cloning each
+  failing PR in a disposable checkout.
+- The unattended worker path was verified by unit tests of `commitAndPushPending`
+  Step 1b and the completion phase `gateBeforePush()`, not by a live end-to-end
+  worker run.
+- This evidence is the input #3644 consumes: per-repo tables with one row per
+  failing run, giving the check name, first failing SHA, local, network or
+  GitHub-exclusive class, and whether pre-flight ran an equivalent.
+- Network/credential-only items (gitleaks, semgrep, bootstrap drift, Floci) have
+  no follow-up filed because CI is their designed enforcer and no pre-PR gap was
+  demonstrated.
 
 ## Out of scope
 
