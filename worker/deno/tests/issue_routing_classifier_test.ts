@@ -215,6 +215,25 @@ Deno.test("classifyIssueRouting - VibeCoder is never counted as a product reposi
   });
   assertEquals(d.owner_repository, AUTOTRADER);
   assertEquals(d.issue_kind, "implementation");
+  // Nor is VibeCoder a product target or a marker's monitored repository.
+  const listsVibe = { vibeCoderRepo: VIBE, productRepos: [GRQ, VIBE] };
+  const blank = route(
+    { title: "The leaderboard chart is blank" },
+    VIBE,
+    listsVibe,
+  );
+  assertEquals(blank.issue_kind, "ambiguous");
+  assertStringIncludes(blank.reason, "no product repository");
+  const marker = route(
+    {
+      title: "Setup keeps failing",
+      body: formatRepoFastFailureTallyMarker(VIBE),
+    },
+    GRQ,
+    listsVibe,
+  );
+  assertEquals(marker.issue_kind, "ambiguous");
+  assertEquals(marker.owner_repository, GRQ);
 });
 
 Deno.test("classifyIssueRouting - a marker prefix quoted in prose is not a diagnostic", () => {
@@ -337,6 +356,50 @@ const AMBIGUOUS_CASES: {
     },
     target: AUTOTRADER,
     reasonPart: "neither codebase",
+  },
+  {
+    name: "product signal, target outside the product repositories",
+    draft: { title: "The leaderboard chart is blank", body: "" },
+    target: "other/unlisted",
+    reasonPart: "no product repository",
+  },
+  {
+    name: "marker for an unconfigured repository",
+    draft: {
+      title: "Setup keeps failing",
+      body: formatRepoFastFailureMarker("attacker/elsewhere"),
+    },
+    target: AUTOTRADER,
+    reasonPart: "not a configured product repository",
+  },
+  {
+    name: "marker for VibeCoder, drafted in a product repository",
+    draft: {
+      title: "Setup keeps failing",
+      body: formatRepoFastFailureTallyMarker(VIBE),
+    },
+    target: AUTOTRADER,
+    reasonPart: "not a configured product repository",
+  },
+  {
+    name: "marker for a name that is not owner/name",
+    draft: {
+      title: "Setup keeps failing",
+      body: formatRepoFastFailureMarker("not-a-repo"),
+    },
+    target: VIBE,
+    reasonPart: "not a configured product repository",
+  },
+  {
+    name: "marker for a product repository and an unconfigured one",
+    draft: {
+      title: "Setup keeps failing",
+      body: `${formatRepoFastFailureMarker(GRQ)}\n${
+        formatRepoFastFailureMarker("attacker/elsewhere")
+      }`,
+    },
+    target: VIBE,
+    reasonPart: "not a configured product repository",
   },
 ];
 

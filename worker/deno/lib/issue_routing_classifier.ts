@@ -10,7 +10,8 @@
  * 1. A #2592 repo-scoped fast-failure diagnostic (a back-off or tally marker,
  *    confirmed by `isRepoFastFailureIssue` / `isRepoFastFailureTallyIssue`)
  *    stays in the monitored repository its marker names, whatever worker
- *    code it mentions.
+ *    code it mentions. That repository must be the target or a configured
+ *    product repository; a marker for any other name is `ambiguous`.
  * 2. A worker signal (worker, fleet, container, prompt, provider or
  *    orchestration code) with no product signal belongs in `vibeCoderRepo`.
  * 3. A product signal with no worker signal belongs in the repository that
@@ -235,8 +236,20 @@ export function classifyIssueRouting(
         "stays in the repository it describes",
     );
   }
+  // A marker can only send a draft to a configured product repository: any
+  // other name comes from untrusted text, so it conflicts. A configured name
+  // is already a validated owner/name, so a match is one too.
+  const monitoredRepos = marked.map((r) =>
+    products.find((p) => !sameRepo(p, vibe) && sameRepo(p, r))
+  );
+  if (monitoredRepos.some((r) => r === undefined)) {
+    return ambiguous(
+      `fast-failure marker for a repository that is not a configured ` +
+        `product repository (${marked.join(", ")})`,
+    );
+  }
   if (marked.length === 1) {
-    const monitored = marked[0]!;
+    const monitored = monitoredRepos[0]!;
     return decide(
       monitored,
       monitored,
@@ -271,7 +284,7 @@ export function classifyIssueRouting(
     );
   }
 
-  const productRepo = identifyProductRepo(named, target, vibe);
+  const productRepo = identifyProductRepo(named, target, vibe, products);
   if (worker.length === 0 && product.length > 0 && productRepo !== null) {
     return decide(
       productRepo,
@@ -318,8 +331,11 @@ function identifyProductRepo(
   named: readonly string[],
   target: string,
   vibe: string,
+  products: readonly string[],
 ): string | null {
   if (named.length > 1) return null;
   if (named.length === 1) return named[0]!;
-  return sameRepo(target, vibe) ? null : target;
+  const isProduct = !sameRepo(target, vibe) &&
+    products.some((r) => sameRepo(r, target));
+  return isProduct ? target : null;
 }
