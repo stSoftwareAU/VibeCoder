@@ -11,7 +11,7 @@ Deterministic cross-repository issue routing and wrong-repo duplicate prevention
 - `worker/deno/commands/route_issue.ts`: `route-issue` create, resolve and `--part` modes. It is a `mod.ts` subcommand (`deno run --allow-all mod.ts route-issue`), not an executable on the agent's `PATH`.
 - `worker/deno/commands/suggest_improvements.ts`: classifier wired into the suggestion path.
 - `docs/ISSUE-ROUTING.md` (new) and the policy rows in the docs and prompts.
-Scope: 34 files against `2685151f`, +4670/−42.
+Scope: 34 files against `2685151f`, +5018/−42.
 
 Closes #3691.
 
@@ -83,9 +83,14 @@ These verdicts come from an independent spec-reviewer that read only the diff an
   - The code calls the classifier from `createGitHubIssuesWithPartialFailures` (`suggest_improvements`) and from `route-issue`.
   - The agent prompts (`ci_fix`, `planning`, `pr_feedback`, `retro`, `coding_guidelines`) carry the routing policy. `route-issue` is not on the agent's `PATH`, so they tell the agent to apply the policy itself and file with `gh issue create --repo <owner>/<repo>` (changed after the reviewer ran, on the pre-PR verifier's finding). No `gh` guard change refuses a bare `gh issue create`.
   - The retro outcome issue stays in the current repo.
+  - The reviewer found no separate review-learning filing path in the diff. The `retro` and `coding_guidelines` prompts are the review-learning filers it covers, and they carry the policy.
 
   reason: agreed partial. Putting `route-issue` on the agent's `PATH`, or making the guard shim refuse `gh issue create`, touches the agent's security boundary in every phase, so it needs its own issue.
-- "auditable `owner_repository`, `subject_repository`, `issue_kind` and reason fields", with the diagnostic exception — reviewer: met. Evidence: `formatRoutingAuditBlock`, and classify rule 1 checks the fast-failure and tally markers through `fastFailureMarkerRepos`. Tests: `classify: fast-failure diagnostic stays, even with worker paths` and `audit block: visible line and hidden marker, inert values`.
+- "auditable `owner_repository`, `subject_repository`, `issue_kind` and reason fields", with the diagnostic exception — reviewer: met for the fields; partial for the exception.
+  - Evidence: `formatRoutingAuditBlock`, and classify rule 1 checks the fast-failure and tally markers through `fastFailureMarkerRepos`. Tests: `classify: fast-failure diagnostic stays, even with worker paths` and `audit block: visible line and hidden marker, inert values`.
+  - The exception covers only diagnostics that carry a fast-failure or tally marker. Marker-less diagnostics (lock, lease, back-off, escalation anchor) are not exempt; `docs/ISSUE-ROUTING.md` §4 says so.
+
+  reason: agreed partial. The issue gives no marker for those diagnostics, and a keyword guess could keep a real wrong-repo issue open or close a diagnostic.
 - "no-mutation dry-run" with fixtures — reviewer: met. Tests: `route: dry-run performs no writes` and `route: dry-run still enforces permission on a foreign destination`.
 - "create or verify the correct issue, link both, then close the duplicate" — reviewer: partial.
   - The manual path is met. Tests: `resolve: verifies, links both, then closes the wrong one last` and `resolve: a failed comment stops before the close`. The resolve comments carry no labels line; `Labels not migrated:` is appended only to the body of a new issue filed outside the target repo (`fileOrReuse`).
@@ -116,7 +121,7 @@ These verdicts come from an independent spec-reviewer that read only the diff an
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 An independent standards-reviewer found no violations.
 - Clean — test-only production members (#3455). `__testDeps` follows the same pattern as 10 other commands and defaults to the real dependencies. `toRouteIssueReport` and the `routing` parameter both have production callers.
-- Clean — fail loud. Every `catch` in the `issue_routing_*.ts` modules rethrows with `cause`. `route_issue.ts` catches each error and returns a failed command result whose message carries it. `createGitHubIssuesWithPartialFailures` logs each failed improvement, records it in `failures` and carries on with the next.
+- Clean — fail loud. Every `catch` in the `issue_routing_*.ts` modules rethrows with `cause`. `route_issue.ts` catches each error and returns a failed command result whose message carries it. `createGitHubIssuesWithPartialFailures` records every failed improvement in `failures` and carries on with the next; only an `IssueRoutingPermissionError` is also logged, at warn level. `suggest-improvements` then returns `success: false` with "(K failed)", so no failure reads as success. Tests: `github - createGitHubIssuesWithPartialFailures warns and records a routing permission refusal` and `… does not warn on a non-permission failure`.
 - Clean — CLI trust boundary. Unknown keys are refused through validators and `KNOWN_OPTIONS`, and `gh` receives an argument array.
 - Clean — regexes on untrusted text. They use bounded character classes and have an `assertLinearGrowth` test, including the fast-failure marker regex.
 - Clean — guard order on the new resolve path (#3087), branch coverage, and the new argument passed at every caller (#3253).
@@ -133,11 +138,11 @@ An independent standards-reviewer found no violations.
 - Removed from `worker/deno/tests/mod_test.ts`: `assertEquals(commands.length, 152);` — #3691 registers the `route-issue` command, so the registry holds 153 commands and 152 is untrue. The test now asserts `assertEquals(commands.length, 153)` and `assertEquals(commands.includes("route-issue"), true)`.
 - Unit, run from `worker/deno` at the head, all 0 failed:
   - `tests/issue_routing_test.ts`: 82 passed.
-  - `tests/route_issue_test.ts`: 32 passed.
+  - `tests/route_issue_test.ts`: 38 passed.
   - `tests/github_test.ts`: 54 passed, 1 ignored.
   - `tests/command_args_test.ts`: 39 passed.
   - `tests/mod_test.ts`: 18 passed.
-  - `tests/github_retry_test.ts`: 13 passed.
+  - `tests/github_retry_test.ts`: 15 passed.
   - `tests/issue_routing_context_test.ts`: 3 passed.
 - Gate: `./quality.sh < /dev/null` PASSED at the head of this round (the config integration stage was skipped).
 - Mutation check. Each mutant of `worker/deno/commands/route_issue.ts` the gate reported as surviving was applied by hand and run with `deno test --no-check tests/route_issue_test.ts`; each one now turns a test red.
@@ -167,7 +172,11 @@ An independent standards-reviewer found no violations.
 | (d) | `Depends on` / `Related` swapped | 2: `route: split files one issue per repo …` and `route-issue --part - a live split files one issue per part …` |
 | (e) | `--body-file` / `--part` conflict check removed | 2: `validateRouteIssueArgs refuses --body-file alongside --part` and `route-issue --part - combining --part with --body-file is refused …` |
 | (f) | diagnostic refusal in `resolveWrongRepoDuplicate` disabled (then the `isRepoFastFailureIssue` check; now `issue_routing_resolve.ts:99`) | 1: `resolve: refuses to close a diagnostic and says why` |
-| (g) | closed short-circuit in `resolveWrongRepoDuplicate` disabled, `issue_routing_resolve.ts:106` | 1: `resolve: a wrong issue that is already closed is left alone` |
+| (g) | closed short-circuit in `resolveWrongRepoDuplicate` disabled, `worker/deno/lib/issue_routing_resolve.ts:106` | 1: `resolve: a wrong issue that is already closed is left alone` |
+| (h) | resolve-catch error/non-Error message ternary swapped, `worker/deno/commands/route_issue.ts:157` | 2: the resolve error-message tests in `worker/deno/tests/route_issue_test.ts`, including the non-Error close throw |
+| (i) | create-catch error/non-Error message ternary swapped, `worker/deno/commands/route_issue.ts:276` | 2: the create error-message tests in `worker/deno/tests/route_issue_test.ts`, including the non-Error throw |
+| (j) | `logger.warn` removed from the routing-permission branch, `worker/deno/lib/github.ts:681` | 2: `github - createGitHubIssuesWithPartialFailures warns and records a routing permission refusal` and the existing `… records a permission refusal in failures and logs it at warn level` |
+| (k) | `instanceof IssueRoutingPermissionError` check forced true, `worker/deno/lib/github.ts:680` | 1: `github - createGitHubIssuesWithPartialFailures does not warn on a non-permission failure` |
 
 Earlier red-checks used the same method:
 - PR window check disabled: 2 failed.
@@ -175,15 +184,18 @@ Earlier red-checks used the same method:
 - Mixing-modes refusal removed: 1 failed.
 
 **Branch outcomes:**
-- `issue_routing_resolve.ts:99` diagnostic refusal (`fastFailureMarkerRepos(wrongBody).length > 0`): the close is refused and the reason names #2592. Tests: `resolve: refuses to close a diagnostic and says why` and `resolve: refuses a diagnostic whatever letter case or repository its marker names`. Flip (f) went red, and so did restoring the case-sensitive check.
-- `issue_routing_resolve.ts:106` closed short-circuit (`toUpperCase() === "CLOSED"`): the wrong issue is left alone. Test: `resolve: a wrong issue that is already closed is left alone`. Flip (g) went red.
-- `issue_routing_resolve.ts:117` dry-run return (`dry-run: would link and close`): the result is reported only. Test: `resolve: same-repo duplicates check permission once; dry-run reads and writes nothing`. Flip (a) went red.
-- `issue_routing_filing.ts:141` `requireWriteAccess` in `fileSplit`: a read-only part repo is refused, even on a dry-run. Test: `route-issue --part - dry-run still refuses when a non-target part repository is read-only`. Flip (b) went red.
-- `route_issue.ts` single-part guard: refused with a JSON-array hint. Flip (c) went red.
-- `route_issue.ts` `--body-file` with `--part`: refused before any create. Flip (e) went red.
-- `issue_routing_filing.ts:180` `${dependsOn ? "Depends on" : "Related"}`: both arms are reached. Flip (d) went red.
-- `issue_routing_context.ts:22` `ISSUE_ROUTING_RECENTLY_CLOSED_DAYS` window: an issue closed inside the window is reused; one closed outside it is not. Test: `route: closed within the window is reused; outside it is not`. The PR-window flip went red.
-- Classifier branches (the `classify:` tests in `worker/deno/tests/issue_routing_test.ts`, including ambiguous and parts-across-repos): tests reach these outcomes, but their individual flips were NOT run. This is disclosed as not flipped.
+- `worker/deno/lib/issue_routing_resolve.ts:99` diagnostic refusal (`fastFailureMarkerRepos(wrongBody).length > 0`): the close is refused and the reason names #2592. Tests: `resolve: refuses to close a diagnostic and says why` and `resolve: refuses a diagnostic whatever letter case or repository its marker names`. Flip (f) went red, and so did restoring the case-sensitive check.
+- `worker/deno/lib/issue_routing_resolve.ts:106` closed short-circuit (`toUpperCase() === "CLOSED"`): the wrong issue is left alone. Test: `resolve: a wrong issue that is already closed is left alone`. Flip (g) went red.
+- `worker/deno/lib/issue_routing_resolve.ts:117` dry-run return (`dry-run: would link and close`): the result is reported only. Test: `resolve: same-repo duplicates check permission once; dry-run reads and writes nothing`. Flip (a) went red.
+- `worker/deno/lib/issue_routing_filing.ts:141` `requireWriteAccess` in `fileSplit`: a read-only part repo is refused, even on a dry-run. Test: `route-issue --part - dry-run still refuses when a non-target part repository is read-only`. Flip (b) went red.
+- `worker/deno/lib/command_args.ts:389` single-part guard (`parts.length < 2`): refused with a JSON-array hint. Flip (c) went red.
+- `worker/deno/lib/command_args.ts:314` `--body-file` with `--part`: refused before any create. Flip (e) went red.
+- `worker/deno/lib/issue_routing_filing.ts:180` `${dependsOn ? "Depends on" : "Related"}`: both arms are reached. Flip (d) went red.
+- `worker/deno/lib/issue_routing_context.ts:22` `ISSUE_ROUTING_RECENTLY_CLOSED_DAYS` window: an issue closed inside the window is reused; one closed outside it is not. Test: `route: closed within the window is reused; outside it is not`. The PR-window flip went red.
+- `worker/deno/commands/route_issue.ts:157` resolve-catch message (`Error` vs non-`Error` throw): both are reported with their text. Tests: the resolve error-message tests in `worker/deno/tests/route_issue_test.ts`. Flip (h) went red.
+- `worker/deno/commands/route_issue.ts:276` create-catch message (`Error` vs non-`Error` throw): same. Tests: the create error-message tests in `worker/deno/tests/route_issue_test.ts`. Flip (i) went red.
+- `worker/deno/lib/github.ts:680` `instanceof IssueRoutingPermissionError`: a routing refusal is warn-logged and recorded; any other failure is only recorded. Tests: `github - createGitHubIssuesWithPartialFailures warns and records a routing permission refusal` and `… does not warn on a non-permission failure`. Flips (j) and (k) went red.
+- Classifier branches (worker/deno/lib/issue_routing_classifier.ts:108, :121, :136-220; the `classify:` tests in `worker/deno/tests/issue_routing_test.ts`, including ambiguous and parts-across-repos): tests reach these outcomes, but their individual flips were NOT run. This is disclosed as not flipped.
 
 **Callers checked:**
 - `route_issue.ts`: create, resolve and `--part`, which now share one routing-context builder.
