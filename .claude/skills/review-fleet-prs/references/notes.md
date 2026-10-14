@@ -7,8 +7,10 @@
 - PRs authored by the signed-in user are never candidates: GitHub does not
   let an author approve their own PR.
 - Cost while idle: one GraphQL search (about 2 points) every 5 minutes, and
-  no model tokens. Each ready PR adds one REST call for its file list; an
-  `over-limit` PR adds none.
+  no model tokens. Each ready PR adds a REST call for its file list and one
+  for `review-checklists.json` at the base ref, plus one at the head SHA when
+  the PR edits that file or its file list is unknown. A failed checklist fetch
+  skips the PR for that pass. An `over-limit` PR adds none.
 - `<logs>` is the Vibe Coder's own log directory: `.config.json` `log_dir`
   (the fleet sets `~/logs`), else the platform default. Everything this skill
   writes lives in `<logs>/review-fleet-prs/`, outside the checkout, which the
