@@ -3,9 +3,11 @@
 ## Summary
 
 An audit of recent VibeCoderST implementation PRs in GRQ, VibeCoder and
-GRQ-AutoTrader found three demonstrable gaps where the first failing required
+GRQ-AutoTrader found three gaps, fixed here, where the first failing required
 GitHub CI job was something the pre-PR worker could have caught, and did not.
-Each is fixed with a negative test; the full classification is in
+It also found local failures (gitleaks, semgrep, Floci) with no pre-PR stage;
+those are tracked as follow-ups, not fixed here. Each of the three gaps is
+fixed with a negative test; the full classification is in
 `docs/pre-pr-ci-audit.md`.
 
 - **GRQ Spelling (cspell).** The worker image had no cspell and the pre-push
@@ -162,7 +164,7 @@ unchanged:
 <!-- vibe-spec-review inputs="diff+issue-body" -->
 
 - Real representative failures are classified with links to CI/review evidence.
-  reviewer: Partial — 25 failed CI runs (8 cspell, 5 sweep, 3 unpushed, 6 left to CI, 3 covered by quality.sh) across the three repos are classified
+  reviewer: Partial — 25 failed CI runs (8 cspell, 5 sweep, 3 unpushed, 3 left to CI, 3 local and tracked as follow-ups, 3 covered by quality.sh) across the three repos are classified
   with run IDs and first failing SHAs in `docs/pre-pr-ci-audit.md`; two GRQ rows
   have no recorded cause, and no blocking reviewer-finding rows were audited.
 - The end-to-end pre-PR verifier and executable checks are verified on the

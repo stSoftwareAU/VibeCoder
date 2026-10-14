@@ -163,8 +163,9 @@ Issue #3689 weakens or removes a CI, review or security gate.
 - This evidence is the input #3644 consumes: per-repo tables with one row per
   failing run, giving the check name, first failing SHA, local, network or
   GitHub-exclusive class, and whether pre-flight ran an equivalent.
-- Only bootstrap drift is left to CI with no follow-up, because it needs the
-  remote bootstrap and no pre-PR gap was demonstrated. The gitleaks, semgrep and
+- Bootstrap drift and the GitHub-exclusive VERSION-not-bumped check are left to
+  CI with no follow-up, because they need the remote bootstrap or base PR state
+  and no pre-PR gap was demonstrated. The gitleaks, semgrep and
   Floci rows are local and have follow-ups (#3725, #3726, #3727); they are not
   fixed by #3689.
 - The cause of the semgrep miss could not be established from the logs (see
