@@ -676,7 +676,7 @@ export async function createGitHubIssuesWithPartialFailures(
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (error instanceof IssueRoutingPermissionError) {
-        logger.error("Issue routing refused a write", {
+        logger.warn("Issue routing refused a write", {
           title: improvement.title,
           error: message,
         });

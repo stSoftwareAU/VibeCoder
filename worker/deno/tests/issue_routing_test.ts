@@ -548,22 +548,50 @@ Deno.test("route: a non-matching title is not reused", async () => {
   assertEquals(audit.action, "created");
 });
 
-Deno.test("route: a matching PR is reused, whatever its state", async () => {
-  const gh = new FakeGh();
-  gh.prs.set(GRQ, [{
+Deno.test("route: a closed PR is reused only inside the recently-closed window; an open PR always is", async () => {
+  const title = pwaDraft.title;
+  const { logger } = makeRecordingLogger();
+
+  const stale = new FakeGh();
+  stale.prs.set(GRQ, [{
     number: 12,
-    title: pwaDraft.title,
+    title,
     state: "MERGED",
     closedAt: new Date(NOW - 90 * DAY).toISOString(),
     url: "pr12",
   }]);
-  const { logger } = makeRecordingLogger();
-  const audit = await routeIssueCreation(pwaDraft, VIBE, ctx(), gh.run, logger);
-  assertEquals(audit.action, "reused");
-  assertEquals(audit.issues[0]!.number, 12);
-  assertEquals(audit.issues[0]!.state, "closed");
-  assertEquals(gh.writes().length, 0);
-  assert(gh.calls.some((c) => c[0] === "pr" && c[1] === "list"));
+  const a = await routeIssueCreation(pwaDraft, VIBE, ctx(), stale.run, logger);
+  assertEquals(a.action, "created");
+  assertEquals(stale.writes().filter((c) => c[1] === "create").length, 1);
+
+  const recent = new FakeGh();
+  recent.prs.set(GRQ, [{
+    number: 12,
+    title,
+    state: "MERGED",
+    closedAt: new Date(NOW - 6 * DAY).toISOString(),
+    url: "pr12",
+  }]);
+  const b = await routeIssueCreation(pwaDraft, VIBE, ctx(), recent.run, logger);
+  assertEquals(b.action, "reused");
+  assertEquals(b.issues[0]!.number, 12);
+  assertEquals(b.issues[0]!.state, "closed");
+  assertEquals(recent.writes().length, 0);
+  assert(recent.calls.some((c) => c[0] === "pr" && c[1] === "list"));
+
+  const open = new FakeGh();
+  open.prs.set(GRQ, [{
+    number: 13,
+    title,
+    state: "OPEN",
+    closedAt: null,
+    url: "pr13",
+  }]);
+  const c = await routeIssueCreation(pwaDraft, VIBE, ctx(), open.run, logger);
+  assertEquals(c.action, "reused");
+  assertEquals(c.issues[0]!.number, 13);
+  assertEquals(c.issues[0]!.state, "open");
+  assertEquals(open.writes().length, 0);
 });
 
 Deno.test("route: lowest-numbered match wins when several exist", async () => {

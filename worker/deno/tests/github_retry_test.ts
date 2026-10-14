@@ -212,7 +212,7 @@ Deno.test("github - createGitHubIssuesWithPartialFailures routes a wrong-repo im
   assertEquals(result.audits[0]!.labels_not_migrated, ["enhancement"]);
 });
 
-Deno.test("github - createGitHubIssuesWithPartialFailures records a permission refusal in failures and logs it at error level", async () => {
+Deno.test("github - createGitHubIssuesWithPartialFailures records a permission refusal in failures and logs it at warn level", async () => {
   const creates: string[][] = [];
   const gh = routingFakeGh((args) => {
     creates.push(args);
@@ -238,7 +238,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures records a permission r
     result.failures[0]!.error,
     "viewer permission is 'READ'",
   );
-  assertEquals(lines.some((l) => l.includes("ERROR")), true);
+  assertEquals(lines.some((l) => l.includes("WARN")), true);
+  assertEquals(lines.some((l) => l.includes("ERROR")), false);
 });
 
 Deno.test("github - createGitHubIssuesWithPartialFailures dry-run creates nothing but still records the audit", async () => {

@@ -414,10 +414,10 @@ async function findMatches(
   const want = normaliseTitle(title);
   const windowMs = ctx.recentlyClosedDays * MS_PER_DAY;
   const matches: RoutedIssueRef[] = [];
-  const consider = (row: SearchRow, isPr: boolean): void => {
+  const consider = (row: SearchRow): void => {
     if (normaliseTitle(row.title) !== want) return;
     const open = row.state.toUpperCase() === "OPEN";
-    if (!open && !isPr) {
+    if (!open) {
       const closedMs = Date.parse(row.closedAt ?? "");
       if (!Number.isFinite(closedMs) || ctx.nowMs - closedMs > windowMs) {
         return;
@@ -430,8 +430,8 @@ async function findMatches(
       state: open ? "open" : "closed",
     });
   };
-  issues.forEach((r) => consider(r, false));
-  prs.forEach((r) => consider(r, true));
+  issues.forEach(consider);
+  prs.forEach(consider);
   return matches.sort((a, b) => (a.number ?? 0) - (b.number ?? 0));
 }
 
