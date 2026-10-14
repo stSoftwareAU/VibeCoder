@@ -3,9 +3,24 @@
 A follow-up issue belongs **where the code lives**. Issue routing is the
 deterministic rule, and the `route-issue` command, that decide which repository
 a follow-up is filed in, search for an existing issue first, and link the
-result — instead of leaving the choice to the agent's judgement each run. The
-classifier and `routeIssueCreation` live in
-[`issue_routing.ts`](../worker/deno/lib/issue_routing.ts).
+result — instead of leaving the choice to the agent's judgement each run.
+[`issue_routing.ts`](../worker/deno/lib/issue_routing.ts) is the public facade;
+the implementation lives in the `issue_routing_*.ts` modules beside it:
+
+- [`issue_routing_types.ts`](../worker/deno/lib/issue_routing_types.ts) — shared
+  types and `IssueRoutingPermissionError`.
+- [`issue_routing_classifier.ts`](../worker/deno/lib/issue_routing_classifier.ts)
+  — `classifyIssueRouting`.
+- [`issue_routing_audit.ts`](../worker/deno/lib/issue_routing_audit.ts) —
+  `formatRoutingAuditBlock`.
+- [`issue_routing_github.ts`](../worker/deno/lib/issue_routing_github.ts) —
+  duplicate search and the write-access check.
+- [`issue_routing_filing.ts`](../worker/deno/lib/issue_routing_filing.ts) —
+  `routeIssueCreation`.
+- [`issue_routing_resolve.ts`](../worker/deno/lib/issue_routing_resolve.ts) —
+  `resolveWrongRepoDuplicate`.
+- [`issue_routing_context.ts`](../worker/deno/lib/issue_routing_context.ts) —
+  context building.
 
 Acceptance examples: a worker defect filed against a product repo
 (GRQ-AutoTrader#3242 and GRQ-AutoTrader#3184, whose root causes were

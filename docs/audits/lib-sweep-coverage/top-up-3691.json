@@ -3,12 +3,18 @@
   "chunk": "top-up-3691",
   "title": "top-up: deterministic cross-repository issue routing",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3691",
-  "definition": "modules added to worker/deno/lib/ and worker/deno/commands/ after 12a-12af recorded their coverage: issue_routing.ts, issue_routing_context.ts (#3691)",
+  "definition": "modules added to worker/deno/lib/ and worker/deno/commands/ after 12a-12af recorded their coverage: issue_routing.ts, issue_routing_types.ts, issue_routing_classifier.ts, issue_routing_audit.ts, issue_routing_github.ts, issue_routing_filing.ts, issue_routing_resolve.ts, issue_routing_context.ts, and the route_issue.ts command (#3691)",
   "status": "claimed",
   "paths": [
     "worker/deno/commands/route_issue.ts",
     "worker/deno/lib/issue_routing.ts",
-    "worker/deno/lib/issue_routing_context.ts"
+    "worker/deno/lib/issue_routing_audit.ts",
+    "worker/deno/lib/issue_routing_classifier.ts",
+    "worker/deno/lib/issue_routing_context.ts",
+    "worker/deno/lib/issue_routing_filing.ts",
+    "worker/deno/lib/issue_routing_github.ts",
+    "worker/deno/lib/issue_routing_resolve.ts",
+    "worker/deno/lib/issue_routing_types.ts"
   ],
   "sweptAt": "f108cad729222be877137d03878ed7af87fc01ae"
 }
