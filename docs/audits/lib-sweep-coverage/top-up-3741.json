@@ -1,0 +1,12 @@
+{
+  "issue": 3741,
+  "chunk": "top-up-3741",
+  "title": "top-up: issue-routing classifier",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3741",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_routing_classifier.ts, the pure classifier that decides which repository owns a draft issue (#3741)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_routing_classifier.ts"
+  ],
+  "sweptAt": "c448928c2bd8c3d5f7e0f4666842ddc9712c538a"
+}
