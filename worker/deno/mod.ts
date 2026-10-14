@@ -194,6 +194,7 @@ import { logDirCommand } from "./commands/log_dir.ts";
 import { workerCheckoutUpdateCommand } from "./commands/worker_checkout_update.ts";
 import { auditDefaultBranchRulesetsCommand } from "./commands/audit_default_branch_rulesets.ts";
 import { checkMainRulesetCommand } from "./commands/check_main_ruleset.ts";
+import { routeIssueCommand } from "./commands/route_issue.ts";
 import { checkReleaseTagRulesetCommand } from "./commands/check_release_tag_ruleset.ts";
 import { secretsHistoryScanCommand } from "./commands/secrets_history_scan.ts";
 import { securityTabletopCommand } from "./commands/security_tabletop.ts";
@@ -395,6 +396,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(workerCheckoutUpdateCommand);
   registry.register(auditDefaultBranchRulesetsCommand);
   registry.register(checkMainRulesetCommand);
+  registry.register(routeIssueCommand);
   registry.register(checkReleaseTagRulesetCommand);
   registry.register(secretsHistoryScanCommand);
   registry.register(securityTabletopCommand);
@@ -551,6 +553,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "version",
       "help",
       "suggest-improvements",
+      // Allowlist load is best-effort, so no config is needed (Issue #3691).
+      "route-issue",
       "check-repo-availability",
       "maybe-file-idle-task",
       "create-all-idle-task-wrappers",
@@ -690,6 +694,8 @@ export async function main(args: string[] = Deno.args): Promise<void> {
     const configOptionalCommands = [
       "version",
       "suggest-improvements",
+      // Allowlist load is best-effort, so no config is needed (Issue #3691).
+      "route-issue",
       "check-repo-availability",
       "maybe-file-idle-task",
       "create-all-idle-task-wrappers",

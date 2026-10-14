@@ -501,6 +501,8 @@ apply:
   `## Blocked:` heading
   does not defer, and the worker would raise a PR that closes this issue.
 
+**Issue routing.** The escape hatch's follow-up follows the Issue routing rule in the coding guidelines: file it where the code lives (worker, fleet, container, prompt, provider or orchestration changes to `stSoftwareAU/VibeCoder`; a repo-scoped diagnostic stays in the monitored repo), search open and recently closed issues and PRs first, and use `route-issue --repo <owner>/<repo> --title "..." --body-file <file>` (with `--dry-run` when unsure) instead of a bare `gh issue create` when the owner may not be `{{REPO}}`. When the owner is ambiguous, state the basis and close nothing.
+
 ### Too large for one PR → emit the planning marker, and the worker plans it
 
 When the issue genuinely needs **several independent PRs** — separate

@@ -1022,6 +1022,8 @@ this **instead of looping**:
    search the repo the follow-up belongs in for an existing **open** issue on
    the same root cause, e.g.
    `gh issue list --repo <owner>/<repo> --search "<root-cause terms> in:title,body" --state open`.
+   Also search recently closed issues and PRs (`--state closed`, `gh pr list`),
+   and see **Issue routing** below for choosing the repo.
    If a genuine match exists, **comment on / reference that issue** instead of
    opening a new one — do not file a duplicate. Never split a single root cause
    across multiple follow-ups. This applies regardless of which deferral branch
@@ -1032,6 +1034,24 @@ this **instead of looping**:
    blocking, and what a solution would look like. Use
    `gh issue create --repo <owner>/<repo> --title "..." --body "..."`. Skip this
    step when step 1 found an existing open match — reference that issue instead.
+
+   **Issue routing.** File a follow-up where the code lives: product code, CI
+   or config goes to the repo that versions it; a worker, fleet, container,
+   prompt, provider or orchestration change goes to `stSoftwareAU/VibeCoder`;
+   a multi-repo change gets one issue per independently deployable codebase,
+   linked with `Depends on`/`Related` and no duplicated scope. A repo-scoped
+   diagnostic (setup fast-failure, lock or lease, back-off, escalation anchor)
+   stays in the monitored repo — never close a live diagnostic as "wrong
+   repo"; link a separate Vibe Coder root-cause issue if needed. Search open
+   **and** recently closed issues and PRs in the target repo before filing,
+   and reuse or link what you find. When the target may not be the current
+   repo, file with `route-issue --repo <owner>/<repo> --title "..."
+   --body-file <file>` instead of a bare `gh issue create`, with `--dry-run`
+   first when unsure; if the owner is ambiguous, state the basis and close
+   nothing. A wrong-repo duplicate: create or verify the correct issue, link
+   both sides, then close the duplicate (never the issue you are working on)
+   with an explanation — never delete history or migrate labels or assignees.
+   See `docs/ISSUE-ROUTING.md`.
 3. Post **one** message that:
    - Names the follow-up issue you filed or referenced (e.g.
      `stSoftwareAU/foo#NNN`).

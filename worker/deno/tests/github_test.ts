@@ -5,6 +5,7 @@
  */
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { routingContext, routingFakeGh } from "./support/routing_fake_gh.ts";
 import { buildIssueCommentsPageArgs } from "../lib/issue_comment_pages.ts";
 import {
   createGitHubClient,
@@ -411,7 +412,7 @@ Deno.test("github - runGhCommandRaw rejects for non-existent command", async () 
 
 // --- createGitHubIssuesWithPartialFailures edge cases ---
 
-Deno.test("github - createGitHubIssuesWithPartialFailures handles output without issue number", async () => {
+Deno.test("github - createGitHubIssuesWithPartialFailures reports output without issue number as a failure", async () => {
   const { createGitHubIssuesWithPartialFailures } = await import(
     "../lib/github.ts"
   );
@@ -433,12 +434,15 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles output without
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockGh,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockGh),
   );
 
-  // Should not crash, but also not capture an issue number
+  // Routing refuses to record an issue it cannot number: a failure, not a
+  // silent skip.
   assertEquals(result.createdIssues.length, 0);
-  assertEquals(result.failures.length, 0);
+  assertEquals(result.failures.length, 1);
+  assertStringIncludes(result.failures[0]!.error, "returned no issue number");
 });
 
 Deno.test("github - createGitHubIssuesWithPartialFailures passes non-reserved labels as args", async () => {
@@ -464,7 +468,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures passes non-reserved la
   await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockGh,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockGh),
   );
 
   // Verify label args are passed correctly (2 non-reserved labels)
@@ -496,7 +501,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles non-Error thro
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockGh,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockGh),
   );
 
   assertEquals(result.failures.length, 1);
@@ -596,7 +602,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures strips reserved labels
   await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockGh,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockGh),
   );
 
   // Only "enhancement" should remain — reserved labels stripped
@@ -633,7 +640,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures warns once per strippe
   await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockGh,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockGh),
     logger,
   );
 
@@ -698,7 +706,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures strips a configured cu
   await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockGh,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockGh),
     logger,
     ["deploy-review"],
   );

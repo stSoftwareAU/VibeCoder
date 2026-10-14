@@ -10,7 +10,12 @@
  */
 
 import type { Logger } from "../types.ts";
-import type { WorkerDeps } from "./issue_worker_wiring.ts";
+import type { ConfigDeps } from "./issue_worker_wiring.ts";
+
+/** The only part of the worker dependencies this loader reads. */
+export interface MonitoredReposDeps {
+  config: Pick<ConfigDeps, "loadConfig">;
+}
 
 /**
  * Load the monitored-repo list from the worker config, returning `[]` on any
@@ -20,12 +25,12 @@ import type { WorkerDeps } from "./issue_worker_wiring.ts";
  * back to the current-repo-only secure default — the label strip must never
  * abort a hand-off just because the allowlist could not be read.
  *
- * @param deps - Worker dependencies providing `config.loadConfig`
+ * @param deps - Dependencies providing `config.loadConfig`
  * @param logger - Logger for the non-fatal warning
  * @returns The configured `repos` list, or `[]`
  */
 export async function loadMonitoredReposBestEffort(
-  deps: WorkerDeps,
+  deps: MonitoredReposDeps,
   logger: Logger,
 ): Promise<string[]> {
   try {

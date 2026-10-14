@@ -272,6 +272,16 @@ fixing a genuine root cause in a shared *dependency's* own repo is still correct
 isolation forbids centralising a per-repo quality gate, not fixing a bug where it
 lives. Recorded for the worker in the `prompts/coding_guidelines/` template.
 
+### Follow-up issues are filed where the code lives
+
+A follow-up goes to the repository that versions the code: product code, CI and
+config to that repo; worker, fleet, container, prompt, provider and orchestration
+changes to `stSoftwareAU/VibeCoder`. A repo-scoped diagnostic stays in the
+monitored repo and is never closed as "wrong repo". Routing is deterministic
+(`route-issue`), searches open and recently closed issues first, links rather
+than duplicates, and fails visibly with nothing created when the caller lacks
+permission. Operator manual: [docs/ISSUE-ROUTING.md](docs/ISSUE-ROUTING.md).
+
 ### Merge conflicts are the worker's to resolve — never a person's
 
 **The fleet tries to avoid merge conflicts; when one occurs anyway, the Vibe

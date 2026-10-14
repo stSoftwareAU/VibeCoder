@@ -232,7 +232,9 @@ Deno.test("mod - createDefaultRegistry has all built-in commands registered", ()
   // prints redacted Codex budget metadata (count 149 -> 150).
   // Issues #2070–#2073 added `toolchain-selfcheck` (count 150 → 151).
   // Issue #3293 added `review-round` (count 151 → 152).
-  assertEquals(commands.length, 152);
+  // Issue #3691 added `route-issue` (count 152 -> 153).
+  assertEquals(commands.length, 153);
+  assertEquals(commands.includes("route-issue"), true);
   assertEquals(commands.includes("sweep-drift"), true);
   assertEquals(commands.includes("check-resurrected-files"), true);
   assertEquals(commands.includes("check-release-tag-ruleset"), true);

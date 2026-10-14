@@ -39,6 +39,12 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import type { Improvement } from "../commands/suggest_improvements.ts";
 import { formatImprovementAsIssueBody } from "../commands/suggest_improvements.ts";
 import { defaultLogger } from "./logger.ts";
+import {
+  type IssueRoutingAudit,
+  type IssueRoutingContext,
+  IssueRoutingPermissionError,
+  routeIssueCreation,
+} from "./issue_routing.ts";
 
 /**
  * Parse gh CLI issue JSON into a GitHubIssue object.
@@ -602,10 +608,15 @@ export function filterReservedLabelsWithWarning(
  * Result of creating GitHub issues with partial failure handling.
  */
 export interface CreateIssuesResult {
-  /** Issue numbers that were successfully created */
+  /**
+   * Issue numbers that were created or reused (the first routed issue of each
+   * improvement). A dry-run has no numbers, so it adds nothing here.
+   */
   createdIssues: number[];
   /** Improvements that failed to create, with error details */
   failures: Array<{ title: string; error: string }>;
+  /** One routing audit per improvement that was routed (Issue #3691) */
+  audits: IssueRoutingAudit[];
 }
 
 /**
@@ -614,23 +625,31 @@ export interface CreateIssuesResult {
  * Unlike the original createGitHubIssues which stops on first failure,
  * this function attempts all improvements and reports partial failures.
  *
+ * Each improvement goes through {@link routeIssueCreation} (Issue #3691), so
+ * it is filed in the repository that owns the work, behind a permission check
+ * and a duplicate search. A permission refusal is logged at error level and
+ * recorded in `failures`; it is never swallowed.
+ *
  * @param improvements - Improvements to create issues for
  * @param repo - Target repository in "owner/repo" format
+ * @param routing - Routing context (owner repo, allowlist, dry-run, clock)
  * @param ghCommandFn - Function to run gh commands (injectable for testing)
  * @param logger - Logger used to warn on stripped reserved labels (Issue #2825)
  * @param extraReservedLabels - Configured `custom_label_prompts` labels, which
  *   the worker must never self-apply (Issue #847)
- * @returns Created issue numbers and any failures
+ * @returns Created issue numbers, routing audits and any failures
  */
 export async function createGitHubIssuesWithPartialFailures(
   improvements: Improvement[],
   repo: string,
+  routing: IssueRoutingContext,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
   logger: Logger = defaultLogger,
   extraReservedLabels: readonly string[] = [],
 ): Promise<CreateIssuesResult> {
   const createdIssues: number[] = [];
   const failures: Array<{ title: string; error: string }> = [];
+  const audits: IssueRoutingAudit[] = [];
 
   for (const improvement of improvements) {
     try {
@@ -642,31 +661,31 @@ export async function createGitHubIssuesWithPartialFailures(
         logger,
         extraReservedLabels,
       );
-      const labelArgs = safeLabels.flatMap((l) => ["--label", l]);
 
-      const output = await ghCommandFn([
-        "issue",
-        "create",
-        "--repo",
+      const audit = await routeIssueCreation(
+        { title: improvement.title, body, labels: safeLabels },
         repo,
-        "--title",
-        improvement.title,
-        "--body",
-        body,
-        ...labelArgs,
-      ]);
+        routing,
+        ghCommandFn,
+        logger,
+      );
+      audits.push(audit);
 
-      const match = output.match(/\/issues\/(\d+)/);
-      if (match && match[1]) {
-        createdIssues.push(parseInt(match[1], 10));
-      }
+      const number = audit.issues[0]?.number;
+      if (typeof number === "number") createdIssues.push(number);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof IssueRoutingPermissionError) {
+        logger.error("Issue routing refused a write", {
+          title: improvement.title,
+          error: message,
+        });
+      }
       failures.push({ title: improvement.title, error: message });
     }
   }
 
-  return { createdIssues, failures };
+  return { createdIssues, failures, audits };
 }
 
 /**

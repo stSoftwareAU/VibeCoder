@@ -9,11 +9,13 @@
  * - removeLabel only ignores "label not found" errors
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { createLogger } from "../lib/logger.ts";
 import {
   createGitHubIssuesWithPartialFailures,
   isLabelNotFoundError,
 } from "../lib/github.ts";
+import { routingContext, routingFakeGh } from "./support/routing_fake_gh.ts";
 import type { Improvement } from "../commands/suggest_improvements.ts";
 
 // --- isLabelNotFoundError tests ---
@@ -72,7 +74,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures returns all successes"
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockRunGhCommand,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockRunGhCommand),
   );
 
   assertEquals(result.createdIssues, [1, 2]);
@@ -113,7 +116,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures continues after failur
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockRunGhCommand,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockRunGhCommand),
   );
 
   assertEquals(result.createdIssues, [1, 3]);
@@ -139,7 +143,8 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles all failures",
   const result = await createGitHubIssuesWithPartialFailures(
     improvements,
     "org/repo",
-    mockRunGhCommand,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockRunGhCommand),
   );
 
   assertEquals(result.createdIssues.length, 0);
@@ -154,9 +159,105 @@ Deno.test("github - createGitHubIssuesWithPartialFailures handles empty improvem
   const result = await createGitHubIssuesWithPartialFailures(
     [],
     "org/repo",
-    mockRunGhCommand,
+    routingContext(["org/repo"]),
+    routingFakeGh(mockRunGhCommand),
   );
 
   assertEquals(result.createdIssues.length, 0);
   assertEquals(result.failures.length, 0);
+});
+
+// --- Issue routing wiring (Issue #3691) ---
+
+const VIBE_REPO = "stSoftwareAU/VibeCoder";
+const PRODUCT_REPO = "org/product";
+
+const workerImprovement: Improvement = {
+  title: "Split worker/deno/lib/issue_worker.ts into phases",
+  description:
+    "The fleet orchestrator in `worker/deno/lib/issue_worker.ts` is too big.",
+  category: "maintainability",
+  labels: ["enhancement"],
+};
+
+function valueAfter(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : undefined;
+}
+
+Deno.test("github - createGitHubIssuesWithPartialFailures routes a wrong-repo improvement to the owner repo and records the audit", async () => {
+  const creates: string[][] = [];
+  const gh = routingFakeGh((args) => {
+    creates.push(args);
+    return `https://github.com/${VIBE_REPO}/issues/77`;
+  });
+
+  const result = await createGitHubIssuesWithPartialFailures(
+    [workerImprovement],
+    PRODUCT_REPO,
+    routingContext([PRODUCT_REPO, VIBE_REPO]),
+    gh,
+  );
+
+  assertEquals(creates.length, 1);
+  assertEquals(valueAfter(creates[0]!, "--repo"), VIBE_REPO);
+  // Labels are never migrated across repositories.
+  assertEquals(creates[0]!.includes("--label"), false);
+  assertEquals(result.createdIssues, [77]);
+  assertEquals(result.failures, []);
+  assertEquals(result.audits.length, 1);
+  assertEquals(result.audits[0]!.owner_repository, VIBE_REPO);
+  assertEquals(result.audits[0]!.subject_repository, PRODUCT_REPO);
+  assertEquals(result.audits[0]!.action, "created");
+  assertEquals(result.audits[0]!.labels_not_migrated, ["enhancement"]);
+});
+
+Deno.test("github - createGitHubIssuesWithPartialFailures records a permission refusal in failures and logs it at error level", async () => {
+  const creates: string[][] = [];
+  const gh = routingFakeGh((args) => {
+    creates.push(args);
+    return `https://github.com/${VIBE_REPO}/issues/1`;
+  }, "READ");
+  const lines: string[] = [];
+  const logger = createLogger({ write: (msg) => lines.push(msg) });
+
+  const result = await createGitHubIssuesWithPartialFailures(
+    [workerImprovement],
+    PRODUCT_REPO,
+    routingContext([PRODUCT_REPO, VIBE_REPO]),
+    gh,
+    logger,
+  );
+
+  assertEquals(creates.length, 0);
+  assertEquals(result.createdIssues, []);
+  assertEquals(result.audits, []);
+  assertEquals(result.failures.length, 1);
+  assertEquals(result.failures[0]!.title, workerImprovement.title);
+  assertStringIncludes(
+    result.failures[0]!.error,
+    "viewer permission is 'READ'",
+  );
+  assertEquals(lines.some((l) => l.includes("ERROR")), true);
+});
+
+Deno.test("github - createGitHubIssuesWithPartialFailures dry-run creates nothing but still records the audit", async () => {
+  const creates: string[][] = [];
+  const gh = routingFakeGh((args) => {
+    creates.push(args);
+    return `https://github.com/${VIBE_REPO}/issues/1`;
+  });
+
+  const result = await createGitHubIssuesWithPartialFailures(
+    [workerImprovement],
+    PRODUCT_REPO,
+    routingContext([PRODUCT_REPO, VIBE_REPO], { dryRun: true }),
+    gh,
+  );
+
+  assertEquals(creates.length, 0);
+  assertEquals(result.createdIssues, []);
+  assertEquals(result.failures, []);
+  assertEquals(result.audits.length, 1);
+  assertEquals(result.audits[0]!.action, "dry-run");
 });

@@ -18,6 +18,7 @@ import {
   validateAssessClarityArgs,
   validateCheckParentDepsArgs,
   validateCheckRepoAvailabilityArgs,
+  validateRouteIssueArgs,
   validateSuggestImprovementsArgs,
 } from "../lib/command_args.ts";
 
@@ -333,5 +334,58 @@ Deno.test("command_args - coercePositiveIntFlag refuses non-positive and non-int
     if (!result.ok) {
       assertEquals(result.error.message.includes("--interval"), true);
     }
+  }
+});
+
+// =============================================================================
+// validateRouteIssueArgs tests (Issue #3691)
+// =============================================================================
+
+Deno.test("command_args - validateRouteIssueArgs accepts valid args and splits comma-separated labels", () => {
+  const result = validateRouteIssueArgs({
+    repo: "org/repo",
+    title: "T",
+    "body-file": "b.md",
+    label: "bug, enhancement",
+    "dry-run": true,
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value, {
+      repo: "org/repo",
+      title: "T",
+      bodyFile: "b.md",
+      labels: ["bug", "enhancement"],
+      dryRun: true,
+    });
+  }
+});
+
+Deno.test("command_args - validateRouteIssueArgs coerces a numeric title and defaults to a live run", () => {
+  const result = validateRouteIssueArgs({
+    repo: "org/repo",
+    title: 3691,
+    "body-file": "b.md",
+  });
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.title, "3691");
+    assertEquals(result.value.labels, []);
+    assertEquals(result.value.dryRun, false);
+  }
+});
+
+Deno.test("command_args - validateRouteIssueArgs rejects missing or malformed required args", () => {
+  for (
+    const args of [
+      {},
+      { repo: "org/repo", title: "T" },
+      { repo: "org/repo", "body-file": "b.md" },
+      { title: "T", "body-file": "b.md" },
+      { repo: "norepo", title: "T", "body-file": "b.md" },
+      { repo: "org/repo", title: "  ", "body-file": "b.md" },
+    ]
+  ) {
+    assertEquals(validateRouteIssueArgs(args).ok, false);
   }
 });

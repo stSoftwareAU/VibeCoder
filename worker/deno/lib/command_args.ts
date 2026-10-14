@@ -239,6 +239,82 @@ export function validateSuggestImprovementsArgs(
 }
 
 // =============================================================================
+// route-issue (Issue #3691)
+// =============================================================================
+
+/** Typed arguments for the route-issue command. */
+export interface RouteIssueArgs {
+  /** Repository the issue is being filed from, "owner/repo" */
+  repo: string;
+  title: string;
+  /** Path to the file holding the issue body */
+  bodyFile: string;
+  /** Labels requested for the issue (never migrated across repositories) */
+  labels: string[];
+  dryRun: boolean;
+}
+
+/**
+ * Validate and parse route-issue command arguments.
+ *
+ * `repo`, `title` and `body-file` are required. `label` is optional: one name,
+ * a comma-separated list, or a JSON array of names. `dry-run` defaults to
+ * false and is refused, not ignored, when unreadable.
+ */
+export function validateRouteIssueArgs(
+  args: Record<string, unknown>,
+): Result<RouteIssueArgs> {
+  const fail = (message: string): Result<RouteIssueArgs> => ({
+    ok: false,
+    error: new Error(message),
+  });
+
+  const repo = args.repo;
+  if (typeof repo !== "string" || !/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+    return fail("Argument 'repo' is required and must be in owner/repo format");
+  }
+
+  // mod.ts JSON-parses flag values, so a numeric title arrives as a number.
+  const rawTitle = args.title;
+  const title = typeof rawTitle === "number" ? String(rawTitle) : rawTitle;
+  if (typeof title !== "string" || title.trim().length === 0) {
+    return fail("Argument 'title' is required and must be a non-empty string");
+  }
+
+  const bodyFile = args["body-file"];
+  if (typeof bodyFile !== "string" || bodyFile.length === 0) {
+    return fail("Argument 'body-file' is required and must be a file path");
+  }
+
+  const labelValue = args.label;
+  let labels: string[] = [];
+  if (labelValue !== undefined) {
+    const items = Array.isArray(labelValue)
+      ? labelValue
+      : typeof labelValue === "string"
+      ? labelValue.split(",")
+      : null;
+    if (items === null || items.some((l) => typeof l !== "string")) {
+      return fail(
+        "Argument 'label' must be a label name, a comma-separated list or " +
+          "a list of names",
+      );
+    }
+    labels = (items as string[]).map((l) => l.trim()).filter((l) =>
+      l.length > 0
+    );
+  }
+
+  const dryRun = coerceBooleanFlag(args["dry-run"], "dry-run", false);
+  if (!dryRun.ok) return { ok: false, error: dryRun.error };
+
+  return {
+    ok: true,
+    value: { repo, title, bodyFile, labels, dryRun: dryRun.value },
+  };
+}
+
+// =============================================================================
 // Shared CLI flag coercion (Issue #1266)
 // =============================================================================
 

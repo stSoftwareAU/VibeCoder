@@ -16,9 +16,13 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   createGitHubIssuesWithPartialFailures,
   type CreateIssuesResult,
+  runGhCommand,
 } from "../lib/github.ts";
 import { validateSuggestImprovementsArgs } from "../lib/command_args.ts";
 import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
+import { buildIssueRoutingContext } from "../lib/issue_routing_context.ts";
+import { loadConfig } from "../lib/config.ts";
+import { defaultLogger } from "../lib/logger.ts";
 
 /**
  * Represents a single improvement suggestion.
@@ -229,15 +233,33 @@ export const suggestImprovementsCommand: Command = {
       };
     }
 
+    // Issue #3691: file each improvement in the repository that owns it.
+    const routing = await buildIssueRoutingContext({
+      targetRepo: repo,
+      dryRun,
+      deps: { config: { loadConfig } },
+      logger: defaultLogger,
+      nowMs: Date.now(),
+    });
+
     const result = await createGitHubIssuesWithPartialFailures(
       improvements,
       repo,
-      undefined,
-      undefined,
+      routing,
+      runGhCommand,
+      defaultLogger,
       // Issue #847: a configured custom label dispatches a privileged phase, so
       // the worker must never self-apply one on an issue it files.
       customLabelPromptLabels(config),
     );
+
+    for (const audit of result.audits) {
+      defaultLogger.info(
+        `Issue routing audit: owner=${audit.owner_repository} ` +
+          `subject=${audit.subject_repository} kind=${audit.issue_kind} ` +
+          `reason=${audit.reason} action=${audit.action}`,
+      );
+    }
 
     const successMsg =
       `Created ${result.createdIssues.length} improvement issue${
