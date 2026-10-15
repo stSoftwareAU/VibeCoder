@@ -160,6 +160,8 @@ Once **all** issues for a milestone are completed (merged to the milestone branc
 4. **CI (Continuous Integration) monitoring** — The final PR is monitored for CI/integration test failures. This is particularly important because **repositories that only run integration tests on the default branch** will have those tests exercised for the first time against the milestone's combined changes. The worker automatically detects and fixes CI failures at priority 1.55 in the main loop — see [CI/integration test failure detection](#-ciintegration-test-failure-monitoring).
 5. **After merge** — Close the GitHub milestone (when the final PR is merged).
 
+The completion scan lists every open milestone in pages of 100, up to 10 pages (1,000 open milestones); a repository past that bound gets a `WARNING` in the worker log naming it, and milestones beyond the bound wait (Issue #3609). Each milestone's closed issues — the list the tracking issue and final PR body are built from — are then read by milestone number with a paginated `gh api repos/<repo>/issues?milestone=<n>&state=closed`, so an older milestone's issues are not lost to the repo-wide newest-500 closed batch; a failed read logs a `WARNING` and skips that milestone for the scan (Issue #3662, see *Nothing to merge* under [Decision points and exceptions](#-decision-points-and-exceptions)).
+
 This final PR is monitored like all other PRs **authored by the configured GitHub user** (see [pr-feedback.md](pr-feedback.md)): spelling, quality (shellcheck, Deno quality checks), CI/integration test failures, and merge issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
 
 ## 🔒 Issue closure for milestone issues
@@ -562,13 +564,33 @@ Two things hold this in place:
   `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
   `sync/milestone-*` head that lives in this repository, and `--squash` for
   everything else, and every auto-merge and direct-merge path routes through
-  it. A fork names its own branches, so a cross-repository head cannot claim
-  the merge-commit deviation by its name (Issue #1249); when one tries, the
-  squash is announced rather than silent. This needs **merge
+  it. A milestone-fix head is the exception to that default: its callers pick
+  the method with `milestoneFixMergeMethod` instead (next bullet). A fork names
+  its own branches, so a cross-repository head cannot claim the merge-commit
+  deviation by its name (Issue #1249); when one tries, the squash is announced
+  rather than silent. This needs **merge
   commits to be permitted on the repository** (Settings → Pull Requests →
   Allow merge commits). Where they are not, the sync is armed as a squash with
   a warning naming the setting, and the check below is what catches the
   consequence.
+- **A milestone-fix PR merges as a merge commit when its head merges the
+  default branch** (Issue #3596). `milestoneFixMergeMethod` in
+  `worker/deno/lib/milestone_fix_pr.ts` reads the default branch, the fix
+  head's merge base with it, and whether that merge base is already in the
+  milestone branch. When `compare` reports `ahead` or `diverged` (the merge
+  base is not in the milestone branch yet), the PR merges with `--merge`; when
+  it reports `identical` or `behind`, the PR squashes; any other status is an
+  unreadable method (below), never a squash. Creation arming has no
+  same-repository check, because the worker pushed the branch itself. The
+  Auto-Merge sweep and the direct merge apply the rule only to same-repository
+  heads, so a fork's fix-shaped head still squashes as before. Where merge
+  commits are forbidden the fix PR is refused, never downgraded: at creation
+  with a warning and a PR comment; on the sweep with a logged warning and a
+  failed result; in the direct merge with an error. Each names the setting
+  (Settings → Pull Requests → Allow merge commits). An unreadable method fails
+  closed: at creation the PR is not armed, with a warning and a PR comment; the
+  sweep returns a failed result and re-reads next scan; the direct merge is
+  refused with an error and retried on the next maintenance scan.
 - **A resurrection is detected directly.** The `check-resurrected-files`
   command fails when a branch carries a file the default branch deleted and
   whose deleting commit is already in the branch's ancestry:
@@ -624,7 +646,7 @@ A fleet PR is also **not** retargeted when merging its head onto the milestone b
 
 ### Milestone-fix PRs only target their milestone branch (Issue #3433)
 
-A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch.
+A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch. Its merge method follows its head: a merge commit when the head merges the default branch, so the default branch stays an ancestor (see [the sync rule](#the-sync-must-record-the-default-branch-as-an-ancestor)).
 
 - **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head to anything but its own milestone branch, or any other PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH` or `POST …/pulls/N` (or `repositories/<id>/pulls/N`) with `base`, including `gh api`'s default POST when a field is given without `-X`, and any GraphQL request (`graphql`, `/graphql` or the absolute `api.github.com/graphql` URL) that may carry an `updatePullRequest` mutation, including a document read from a file or stdin that cannot be read, and an `--input` JSON body that spells the name with `\uXXXX` escapes), whether or not the write-repo allowlist is active.
 
@@ -688,10 +710,10 @@ Priority extraction is implemented in `worker/deno/lib/milestone_priority.ts`. T
 ## 🔀 Decision points and exceptions
 
 - **Milestone branch sync conflict:** Merge from default into milestone fails; worker logs and aborts; user may need to resolve on milestone branch manually.
-- **Final PR already exists:** Worker should not create a duplicate; ensure idempotent behaviour (create or update/find existing).
-  - An existing final PR's body is rewritten only while the PR is `OPEN` (read live with `gh pr view`), is headed by the milestone branch in the same repository, and no longer matches the closed-issue classification (Issue #3476, PR #3640 review). The body ends with a `<!-- vibe-rollup-fingerprint value="…" -->` marker over the milestone title, default branch, tracker and classified issues; a scan that finds the current marker in the body costs that one read and makes no edit. The edit is skipped only while the marker is present and current, so a hand edit that keeps the marker survives, while one that removes or rewrites it is overwritten on the next scan, and a changed milestone title, default branch, tracker or classified issue changes the fingerprint and triggers a rewrite. A closed issue's claim verdict is cached by its number and `updatedAt` (and the cache TTL), so an unchanged issue's timeline is not re-paged each scan. While the milestone still has an open child, the same refresh runs only for final PRs that the cached all-state branch list shows `OPEN` (or shows no state for, as an older cache entry does): a milestone whose only final PR is merged or closed, as after an automated roll-back, costs no closed-issue classification and no `gh pr view` per scan.
+- **Final PR already exists:** Worker should not create a duplicate; ensure idempotent behaviour (create or update/find existing). Only a same-repository PR headed by the milestone branch counts as the existing final PR; a fork-headed PR reusing the branch name is ignored, so it cannot stop the final PR from being raised (Issue #3595).
+  - An existing final PR's body is rewritten only while the PR is `OPEN` (read live with `gh pr view`), is headed by the milestone branch in the same repository, and no longer matches the closed-issue classification (Issue #3476, PR #3640 review). The body ends with a `<!-- vibe-rollup-fingerprint value="…" -->` marker over the milestone title, default branch, tracker and classified issues; a scan that finds the current marker in the body costs that one read and makes no edit. The edit is skipped only while the marker is present and current, so a hand edit that keeps the marker survives, while one that removes or rewrites it is overwritten on the next scan, and a changed milestone title, default branch, tracker or classified issue changes the fingerprint and triggers a rewrite. A closed issue's claim verdict is cached by its number and `updatedAt` (and the cache TTL), so an unchanged issue's timeline is not re-paged each scan. While the milestone still has an open child, the same refresh runs only for final PRs that the cached all-state branch list shows `OPEN` (or shows no state for, when the read gave none): a milestone whose only final PR is merged or closed, as after an automated roll-back, costs no closed-issue classification and no `gh pr view` per scan.
 - **Final PR closed without merging (Issue #3474):** Once no milestone issue is open, the worker reads the same-repository PRs from the milestone branch (up to 100; a fork-headed PR reusing the branch name is ignored). If one has merged, the milestone is closed as merged. If one is open, the milestone stays open. If every one was closed unmerged, the worker comments on the tracking issue (or on the closed PR when there is no tracker) naming the closed PR, closes the tracker and the milestone, and raises no new final PR. A final PR closed by the fleet's own milestone roll-back is not abandoned: it is ignored, any open sync PR is retired first, and a fresh final PR is raised. The roll-back is recognised by its close comment (`<!-- vibe-final-pr-rollback-close -->`, or the earlier "Closed by a milestone roll-back of" prose) **only when a fleet login authored that comment** — a comment from any other account is ignored and the PR stays abandoned. When the fleet logins cannot be resolved, the PR is classed neither abandoned nor superseded: the worker logs a warning and the milestone is left as it was.
-- **Nothing to merge (Issues #3214, #3474):** When the milestone branch is missing or 0 commits ahead of the default branch, the milestone is closed directly with no tracker or final PR — even when it has no closed issues. An empty milestone whose branch has commits ahead is still skipped, as is an empty milestone created in the last 15 minutes (or with no usable `created_at`), which planning may still be assigning issues to; a later scan closes it once it is older.
+- **Nothing to merge (Issues #3214, #3474):** When the milestone branch is missing or 0 commits ahead of the default branch, the milestone is closed directly with no tracker or final PR — even when it has no closed issues. An empty milestone whose branch has commits ahead is still skipped, as is an empty milestone created in the last 15 minutes (or with no usable `created_at`), which planning may still be assigning issues to; a later scan closes it once it is older. The closed items are read per milestone by its number, through a paginated `gh api` read of `repos/<repo>/issues?milestone=<n>&state=closed` (Issue #3662), not filtered from the repo-wide newest-500 `gh issue list` batch, so an older milestone's closed issues are no longer dropped. A failed read is logged as a `WARNING` and that milestone is skipped for the scan: it is neither closed as "nothing to merge" nor treated as empty.
 - **Milestone closed on GitHub:** Worker should not pick new issues from closed milestones; in-progress work on already-claimed issues may complete.
 
 ## 📚 Further reading
