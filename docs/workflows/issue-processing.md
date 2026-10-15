@@ -2471,8 +2471,10 @@ flowchart TD
   criterion line is copied
   from the untrusted issue body, or, for an unmatched or subjectless
   `partial`/`missing` gap, from the agent-written closure entry (its subject,
-  or its `reason:` when the subject has no words). Delivered lines are copied
-  from the issue body. Both are neutralised by `neutraliseAgentMarkers`
+  or its `reason:` when the subject has no words). Delivered lines are the
+  issue's own scope items or, when the issue states no scope, the subjects of
+  the summary's `met` closure entries. All of these are neutralised by
+  `neutraliseAgentMarkers`
   before they are copied (Issue #2778): only the worker's own marker is live,
   and a `finding-id` hidden in a criterion or a closure entry cannot suppress
   an unrelated finding.

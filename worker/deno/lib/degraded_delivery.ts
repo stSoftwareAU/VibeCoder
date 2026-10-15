@@ -132,7 +132,7 @@ export interface DegradedDeliveryVerdict {
   degraded: boolean;
   /** The degradation reason, as the run-stats comment states it. */
   reason?: string;
-  /** Scope items the summary marks `met`. Empty on the verdict {@link assessDegradedDelivery} gives a healthy run; {@link assessReportedGaps} fills it. */
+  /** Scope items the summary marks `met`, or, for an issue that states no scope, the subjects of its `met` closure entries. Empty on the verdict {@link assessDegradedDelivery} gives a healthy run; {@link assessReportedGaps} fills it. */
   delivered: string[];
   /** Scope items short of `met`, plus unmatched `partial` or `missing` gaps. Always empty on the verdict {@link assessDegradedDelivery} gives a healthy run; {@link assessReportedGaps} fills only the `partial`/`missing` ones. */
   shortfalls: DegradedShortfall[];
@@ -318,8 +318,10 @@ export function buildDegradedFollowUpIssue(args: {
   runId: string;
 }): { title: string; body: string } {
   const { parentNumber, verdict } = args;
-  // Same reasoning as shortfallLines: `delivered` is copied from the issue
-  // body, which is untrusted, into this fleet-authored issue — Issue #2778.
+  // Same reasoning as shortfallLines: `delivered` is the issue's own scope
+  // items or, when the issue states none, the subjects of the summary's `met`
+  // closure entries. Both are untrusted (issue body, agent-written PR
+  // summary) and are copied into this fleet-authored issue — Issue #2778.
   const delivered = verdict.delivered.length > 0
     ? verdict.delivered.map((c) => `- ${neutraliseAgentMarkers(c).text}`)
     : ["- nothing the PR summary marks `met`"];
