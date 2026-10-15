@@ -1499,6 +1499,24 @@ applies before the outcome, keeping each on the new path or stating why it
 does not apply, and proving each kept guard with a test that goes red when
 the new branch is moved ahead of it.
 
+**A new path for untrusted input keeps its sibling's trust-boundary control
+(Issue #3679).** The security half of the #3087 rule, whose examples named only
+orchestration guards. Fleet PRs added a path for untrusted input that skipped
+the control a sibling path handling the same input already called:
+VibeCoder#3533's mutation runner spawned the repository's own tests with the
+worker's inherited environment, not one built by `buildUntrustedCommandEnv` /
+`untrustedQualityCommandEnv`; VibeCoder#3584's pre-PR verifier prompt copied the
+issue title outside the nonce fence and boundary-integrity instruction the issue
+body gets; and VibeCoder#3676's PR-body sync wrote the parent's `idle-task`
+follow-up from issue text fetched at sync time rather than the body the
+content-integrity snapshot check re-verified. The guidelines, the issue prompt's
+Test Plan step and the PR-feedback prompt now require a path that puts untrusted
+text into a prompt, spawns a repository-controlled command, writes untrusted
+text into a fleet-authored artefact the fleet later trusts, or publishes to an
+outbound sink to call the control its sibling calls, to list each control kept
+(or why one does not apply) in the PR summary, and to prove each kept control
+with a test that trips it and goes red when the control call is removed.
+
 **A new branch must be reachable by the input it exists for (Issue #3167).**
 The mirror of the #3087 rule: fleet PRs inserted a new branch below an
 existing early exit that a realistic input for the new case fires first,
