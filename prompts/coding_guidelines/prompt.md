@@ -1345,10 +1345,36 @@ change only moves, while converting an existing whole-file drift test to
 each moved check in its own section instead. A test that only pins current
 behaviour — the fault was unreproduced or already fixed, and no production
 change was made — is expected green on base, and the Test Plan says so.
-**A negative test must be able to fail** below is this rule for an
-assertion that something does *not* happen, and **An edited expectation
-must still go red without its guard** below is this rule for a test the
-diff edits rather than adds.
+**A test named for one step must reach that step** below is this rule for a
+change that adds the same handling at more than one step, **A negative test
+must be able to fail** below is this rule for an assertion that something does
+*not* happen, and **An edited expectation must still go red without its
+guard** below is this rule for a test the diff edits rather than adds.
+
+**A test named for one step must reach that step.** When a change adds the
+same handling at more than one step of a path — a deadline checked up front
+and again on each iteration, a time limit on the connect and on every read
+after it, the same error handling in two loops run one after the other —
+removing the whole change removes the earlier step too. A test named for a
+later step whose fixture trips an earlier step that gives the same outcome
+then goes red at that earlier step, so the red check above seems to pass while
+the named step never runs. For each new test named for one step, break only
+that step and leave the earlier ones in place (delete the per-iteration check
+but keep the up-front one, stall only the read and not the connect), run that
+test, and confirm that test goes red. Reverting the whole change does not show
+which step a test reached, just as it does not show which operand of a
+compound condition a test reaches (**Every outcome of a branch you add needs a
+test that reaches it** below). When the steps share one mechanism — one
+deadline, one stub matched by pattern, one error mapper — the code may have no
+per-step branch to break, so the test also asserts that the run got past the
+earlier steps: the stub records which request it stalled and the test asserts
+it was the read, or the test asserts the first loop finished or the up-front
+check passed. Without that positive control a later fixture or stub change can
+move the test back to the earlier step unnoticed. Record one Test Plan line
+per such test naming the step, the step-only break and the result, for example
+`read-stall test: stall only the first read after connect → red`. A test that
+stays green when only its own step is broken is a blocking self-review
+finding.
 
 **An edited expectation must still go red without its guard.** When an
 issue changes an expected value or expected behaviour in an existing test,
