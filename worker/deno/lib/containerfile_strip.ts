@@ -19,8 +19,19 @@
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
-/** Hard cap Apple `container` enforces on a Dockerfile, with headroom. */
-export const CONTAINERFILE_SIZE_CAP_BYTES = 15_000;
+/**
+ * Cap on the stripped Containerfile, with headroom under Apple `container`'s
+ * limit.
+ *
+ * The limit is not the file's 16,384 bytes alone: the CLI sends the file
+ * JSON-escaped, in one request with the build arguments. At 15,000 bytes
+ * (15,824 escaped characters) GRQ-23's build with
+ * `AGENT_PROVIDERS=claude,deepseek` was dropped with "Stream unexpectedly
+ * closed" on every launch, while a single-provider host, which passes no build
+ * argument, still built. 14,600 bytes escapes to about 15,400, leaving room
+ * for the widest provider list.
+ */
+export const CONTAINERFILE_SIZE_CAP_BYTES = 14_600;
 
 /** File name of the stripped copy the launch plan builds from. */
 export const STRIPPED_CONTAINERFILE_SUFFIX = ".Containerfile";
