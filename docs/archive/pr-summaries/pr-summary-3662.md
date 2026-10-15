@@ -27,24 +27,24 @@ This is a backend-only change, so there are no screenshots.
 
 ```mermaid
 flowchart LR
-    S[processRepoMilestones] --> G[getClosedIssues]
-    G --> F[fetchClosedIssuesByMilestoneNumber]
-    F -->|cache hit| C[cached list]
-    F -->|gh api --paginate| P[pages validated line by line]
-    P -->|all pages parse| W[cache write + list]
-    P -->|blank / non-JSON / non-array / gh error| T[throw, nothing cached]
-    T --> N[getClosedIssues returns null]
-    N --> K[WARNING, milestone skipped this scan]
-    W --> R[tracker + final PR from the full list]
-    X[worker gh issue close / reopen] -->|noteGhIssueClose: invalidatePrefix| D[every issues_closed_milestone_* in the repo dropped]
-    D --> F
+    S[processRepoMilestones] --․> G[getClosedIssues]
+    G --․> F[fetchClosedIssuesByMilestoneNumber]
+    F --․>|cache hit| C[cached list]
+    F --․>|gh api --paginate| P[pages validated line by line]
+    P --․>|all pages parse| W[cache write + list]
+    P --․>|blank / non-JSON / non-array / gh error| T[throw, nothing cached]
+    T --․> N[getClosedIssues returns null]
+    N --․> K[WARNING, milestone skipped this scan]
+    W --․> R[tracker + final PR from the full list]
+    X[worker gh issue close / reopen] --․>|noteGhIssueClose: invalidatePrefix| D[every issues_closed_milestone_* in the repo dropped]
+    D --․> F
 ```
 
 - `worker/deno/tests/issue_query_test.ts::issue_query - #3662 regression: a milestone outside the repo-wide batch is read by number`: the repo-wide batch omits the milestone's issue, and the by-number read returns it.
 - `worker/deno/tests/milestone_completion_test.ts::Issue #3662 - a complete milestone raises its tracker and summary PR from the REST closed read, though the repo-wide closed batch omits its issue` runs the whole scan end to end.
 - `worker/deno/tests/issue_close_notifier_test.ts::close notifier - a close makes the next per-milestone closed read include the issue (Issue #3662)`: a closed list is cached, `#21` is closed through the `gh issue close` path, and the next `fetchClosedIssuesByMilestoneNumber` call goes to gh and returns `#21`.
 
-**Docs sweep** — grep: `fetchClosedIssuesByMilestone`, `fetchAllClosedIssues`, `getClosedIssues`, `issues_closed_all`, `issues_closed_milestone`, `CLOSED_ALL_DEFAULT_LIMIT`, `--limit 500`, "newest 500", "closed issues"; section: `docs/workflows/milestones.md#-milestone-completion`; siblings: `fetchAllIssues`, `fetchIssuesByLabel` (the cached-read list in `docs/GH-API-OPTIMISATION.md`, which now names `fetchClosedIssuesByMilestoneNumber`), `issues_all`, `issues_closed_all` (the close/reopen invalidation row, which now lists every `issues_closed_milestone_<n>`); updated: `docs/workflows/milestones.md` (the *Milestone completion* section now describes the by-number closed read and the skip on a failed read, and the *Nothing to merge* bullet records the same), `docs/GH-API-OPTIMISATION.md` (cached-read list entry: dropped by a worker close or reopen, by `invalidateRepo`, or by its 600 s TTL; the close/reopen row; the note under the table; the *Issue closes are never left to the TTL* diagram), `docs/workflows/issue-processing.md:3107` and `DESIGN-PRINCIPLES.md:3134` (the keys a close drops now include every per-milestone closed list). Stayed true, read through: `docs/INTERNALS.md:2960` (`build_milestone_summary_body() — list all closed issues`, now true for old milestones as well); `docs/workflows/milestones.md:158` ("lists all closed milestone issues", same reason). The other "closed issues" hits (`docs/workflows/grill-me.md`, `docs/MODEL-AND-CACHING.md:1703`) and the "--limit 500" hits (`docs/GH-API-OPTIMISATION.md:592`, `docs/pre-pr-ci-audit.md:144`) are about other features.
+**Docs sweep** — grep: `fetchClosedIssuesByMilestone`, `fetchAllClosedIssues`, `getClosedIssues`, `issues_closed_all`, `issues_closed_milestone`, `CLOSED_ALL_DEFAULT_LIMIT`, `--limit 500`, "newest 500", "closed issues"; section: `docs/workflows/milestones.md#-milestone-completion`; siblings: `fetchAllIssues`, `fetchIssuesByLabel` (the cached-read list in `docs/GH-API-OPTIMISATION.md`, which now names `fetchClosedIssuesByMilestoneNumber`), `issues_all`, `issues_closed_all` (the close/reopen invalidation row, which now lists every `issues_closed_milestone_<n>`); updated: `docs/workflows/milestones.md` (the *Milestone completion* section now describes the by-number closed read and the skip on a failed read, and the *Nothing to merge* bullet records the same), `docs/GH-API-OPTIMISATION.md` (cached-read list entry: dropped by a worker close or reopen, by `invalidateRepo`, or by its 600 s TTL; the close/reopen row; the note under the table; the *Issue closes are never left to the TTL* diagram), `docs/workflows/issue-processing.md:3107` and `DESIGN-PRINCIPLES.md:3134` (the keys a close drops now include every per-milestone closed list). Stayed true, read through: `docs/INTERNALS.md:2960` (`build_milestone_summary_body() — list all closed issues`, now true for old milestones as well); `docs/workflows/milestones.md:158` ("lists all closed milestone issues", same reason). The other "closed issues" hits (`docs/workflows/grill-me.md`, `docs/MODEL-AND-CACHING.md:1703`) and the "--limit 500" hits (`docs/GH-API-OPTIMISATION.md:595`, `docs/pre-pr-ci-audit.md:144`) are about other features.
 
 **Branch outcomes:**
 - `worker/deno/lib/issue_query.ts:862` — error (milestone number not a positive integer, rejected before any gh call) — `worker/deno/tests/issue_query_test.ts::issue_query - fetchClosedIssuesByMilestoneNumber rejects a non-positive-integer number before calling gh (Issue #3662)` — flipped the guard to `<= -1`, test went red
@@ -74,6 +74,6 @@ flowchart LR
 - Results: `worker/deno/tests/issue_query_test.ts` `ok | 98 passed | 0 failed`; `worker/deno/tests/issue_close_notifier_test.ts` `ok | 17 passed | 0 failed`. The 125 test files that reference `issue_close_notifier`, `issue_cache`, `milestone_completion`, `issue_query` or `gh_spawn` gave `ok | 2183 passed | 0 failed`. The 13 doc-reading test files (`markdown_anchors_test.ts`, `docs_sweep_gate_test.ts` and others) gave `ok | 141 passed | 0 failed`. `deno fmt --check` and `deno lint` are clean on the changed `.ts` files.
 - Flip checks: see **Branch outcomes** above. Each was run against `issue_query_test.ts`, `milestone_completion_test.ts` and `milestone_completion_cache_test.ts` (the two new branches against `issue_close_notifier_test.ts`), and the source was restored after each one.
 
-<!-- vibe-branch-outcomes -->
+<․!-- vibe-branch-outcomes --․>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
