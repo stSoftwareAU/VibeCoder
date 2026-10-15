@@ -189,11 +189,30 @@ export const REPORTED_GAP_SECTION_HEADING =
  * A healthy run's own gaps (Issue #3506): the closure entries its PR summary
  * marks `partial` or `missing`, matched exactly as assessScopeShortfalls does.
  * `unassessed` items are dropped — the run said nothing about them (Issue #2695).
+ *
+ * An issue that states no scope has no criterion to match against, so each
+ * `partial` or `missing` entry is kept as an unassigned gap, named by its own
+ * subject (PR #3676 review). Nothing is delivered then: no entry is matched to
+ * a criterion.
  */
 export function assessReportedGaps(
   issueBody: string,
   prBody: string,
 ): DegradedDeliveryVerdict {
+  if (extractAcceptedScope(issueBody).length === 0) {
+    const { unassignedGaps } = matchClosureEntries(
+      [],
+      parseClosureEntries(prBody),
+    );
+    return {
+      degraded: false,
+      delivered: [],
+      shortfalls: unassignedGaps.map((gap) => ({
+        criterion: gap.subject,
+        status: gap.status,
+      })),
+    };
+  }
   const { delivered, shortfalls } = assessScopeShortfalls(issueBody, prBody);
   return {
     degraded: false,

@@ -1058,9 +1058,26 @@ Deno.test("assessReportedGaps - unassessed items are dropped but an unassigned p
   ]);
 });
 
-Deno.test("assessReportedGaps - an issue stating no criteria yields no shortfall (Issue #3506)", () => {
+Deno.test("assessReportedGaps - an issue stating no criteria keeps each partial or missing entry, named by its subject (PR #3676 review)", () => {
   assertEquals(
-    assessReportedGaps(ISSUE_WITHOUT_SCOPE, PARTIAL_SUMMARY).shortfalls,
+    assessReportedGaps(ISSUE_WITHOUT_SCOPE, PARTIAL_SUMMARY),
+    {
+      degraded: false,
+      delivered: [],
+      shortfalls: [{ criterion: "the export works —", status: "partial" }],
+    },
+  );
+  const missing = assessReportedGaps(
+    ISSUE_WITHOUT_SCOPE,
+    MET_SUMMARY +
+      "- **missing** — the quarterly emailer — reviewer: missing — reason: not started\n",
+  );
+  assertEquals(missing.shortfalls, [
+    { criterion: "the quarterly emailer —", status: "missing" },
+  ]);
+  // A `met` entry alone is no gap, so a healthy run with no residue files nothing.
+  assertEquals(
+    assessReportedGaps(ISSUE_WITHOUT_SCOPE, MET_SUMMARY).shortfalls,
     [],
   );
 });

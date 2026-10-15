@@ -510,6 +510,30 @@ Deno.test("completion - a healthy run whose summary reports a missing criterion 
   assertStringIncludes(pr, "The docs table lists opus for planning.");
 });
 
+Deno.test("completion - a healthy run on an issue stating no criteria files one idle-task follow-up for its partial entry (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue", outcome.reason);
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(
+    body,
+    "**partial** — the router sends planning to opus",
+  );
+  assert(!body.includes("**degraded**"));
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, REPORTED_GAP_SECTION_HEADING);
+  assertStringIncludes(pr, "the router sends planning to opus");
+  assertStringIncludes(pr, "#900");
+  assert(!pr.includes("Degraded run"));
+});
+
 Deno.test("completion - a healthy run whose summary closes out one criterion as partial files exactly one idle-task follow-up (Issue #3506)", async () => {
   const outcome = await runCompletion({
     issueBody: ISSUE_WITH_CRITERIA,

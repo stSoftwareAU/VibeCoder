@@ -2527,7 +2527,8 @@ run:
   path (`assessReportedGaps` calls `assessScopeShortfalls`); an unmatched
   `partial` or `missing` entry is named by its own subject. `unassessed` items
   file nothing and add nothing to the PR body. An issue that states no criteria
-  files nothing on a healthy run.
+  has nothing to match against, so each `partial` or `missing` entry is kept
+  and named by its own subject; a `met` entry alone files nothing.
 - **One shared follow-up.** The worker files (or reuses and rewrites) one
   `idle-task` follow-up keyed on the parent with the same `finding-id` marker
   as the degraded follow-up (`degraded-follow-up-<N>`), so a healthy and a

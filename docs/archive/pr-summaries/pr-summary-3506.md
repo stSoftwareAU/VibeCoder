@@ -34,8 +34,10 @@ re-sync re-derives that section. Closes #3506.
 - Failing to file or update the follow-up fails the run, exactly as on the
   degraded path. Raising the PR anyway would close the issue with the
   residue recorded nowhere.
-- On a healthy run whose issue states no criteria, nothing is filed: entries
-  are matched to the issue's criteria, and there are none to match.
+- On a healthy run whose issue states no criteria there is nothing to match
+  entries against, so `assessReportedGaps` keeps each `partial` or `missing`
+  entry, named by its own subject (PR #3676 review); a `met` entry alone files
+  nothing.
 - A healthy run on an issue that is itself a partial-delivery follow-up (its
   body carries a `degraded-follow-up-<N>` marker) files no nested follow-up
   (PR #3676 review). It labels the issue `needs-human` and comments naming
@@ -286,19 +288,19 @@ true because it names the guard, which still runs for degraded runs:
   test.
 - Callers checked (re-grepped at the final head): `assessReportedGaps` is
   called by `applyDegradedDeliveryGuard` (`completion_phase.ts:894`),
-  `rederiveReportedGapSection` (`degraded_delivery.ts:567`) and
-  `rederiveFollowUpChainStopSection` (`degraded_delivery.ts:719`).
+  `rederiveReportedGapSection` (`degraded_delivery.ts:586`) and
+  `rederiveFollowUpChainStopSection` (`degraded_delivery.ts:738`).
   `buildReportedGapPrSection` is called by `applyDegradedDeliveryGuard`
   (`completion_phase.ts:989`) and `rederiveReportedGapSection`
-  (`degraded_delivery.ts:575`). `syncPrBodyFromSummary` reaches
+  (`degraded_delivery.ts:594`). `syncPrBodyFromSummary` reaches
   `assessReportedGaps` through whichever of `rederiveReportedGapSection` or
   `rederiveFollowUpChainStopSection` matches the live leading section
   (`pr_body_sync.ts:679`–`:689`); only the chain-stop path then calls
   `withholdIssueClose` (`pr_body_sync.ts:709`), which rewrites the closing
   keyword to `Part of`.
   `REPORTED_GAP_SECTION_HEADING` is used by `buildReportedGapPrSection`
-  (`degraded_delivery.ts:508`), `buildReportedGapStaleFollowUpSection`
-  (`degraded_delivery.ts:536`) and `syncPrBodyFromSummary`
+  (`degraded_delivery.ts:527`), `buildReportedGapStaleFollowUpSection`
+  (`degraded_delivery.ts:555`) and `syncPrBodyFromSummary`
   (`pr_body_sync.ts:635`). All are production readers.
 - Applied the new prompt sentence to this PR's own diff and summary: each
   `partial` or `missing` entry above carries a reason that says what is left.
@@ -319,6 +321,16 @@ true because it names the guard, which still runs for degraded runs:
   the chain-stop branch. The Test Plan's first bullet names the head it ran on,
   the `pr_body_sync_test.ts` count is 54, and this entry sits in the Test Plan.
   No behaviour changed in this round, so no suite was re-run.
+- PR #3676 review push (seventh round, issue with no criteria): `assessReportedGaps`
+  now keeps each `partial` or `missing` closure entry, named by its own subject,
+  when the issue states no scope (`degraded_delivery.ts:198`); the
+  `issue-processing.md` Trigger bullet and the design bullet above say so.
+  Tests: `deno task test:unit` over `degraded_delivery_test.ts`,
+  `completion_phase_degraded_delivery_test.ts`, `follow_up_chain_stop_test.ts`
+  and `pr_body_sync_test.ts`: 165 passed, 0 failed; `deno fmt --check` and
+  `deno lint` passed on the changed files. With only `lib/degraded_delivery.ts`
+  stashed, the new unit test and the new completion test went red. The full gate
+  was not re-run on this push.
 
 **Branch outcomes:**
 
@@ -330,6 +342,7 @@ true because it names the guard, which still runs for degraded runs:
 - `worker/deno/lib/phases/completion_phase.ts` `verdict = degradedDelivery.degraded ? …` — degraded arm: the existing degraded tests (for example "a degraded run delivering one of two criteria files the residue and says so in the PR"). Healthy arm: "a healthy run whose summary closes out one criterion as partial files exactly one idle-task follow-up (Issue #3506)". Flipping it to always use `degradedDelivery` went red.
 - `worker/deno/lib/phases/completion_phase.ts` failure `reason: verdict.degraded ? …` — degraded arm: "a degraded run whose follow-up cannot be filed raises no PR". Healthy arm: "a healthy run whose gap follow-up cannot be filed raises no PR (Issue #3506)". Each forced flip went red.
 - `worker/deno/lib/phases/completion_phase.ts` section `verdict.degraded ? buildDegradedPrSection : buildReportedGapPrSection` — the degraded arm is covered by "a degraded run delivering one of two criteria …", and the healthy arm by both edited healthy tests. The flip went red.
+- `worker/deno/lib/degraded_delivery.ts` `assessReportedGaps` `extractAcceptedScope(issueBody).length === 0` — no scope: "assessReportedGaps - an issue stating no criteria keeps each partial or missing entry, named by its subject (PR #3676 review)" and "completion - a healthy run on an issue stating no criteria files one idle-task follow-up for its partial entry (PR #3676 review)"; scope stated: the existing criteria tests. Removing the branch went red.
 - `worker/deno/lib/degraded_delivery.ts` `assessReportedGaps` filter `partial || missing` — kept: "assessReportedGaps - a partial entry is a shortfall …"; dropped: "assessReportedGaps - unassessed items are dropped …". Dropping the filter went red.
 - `worker/deno/lib/degraded_delivery.ts` `buildDegradedFollowUpIssue` `!verdict.degraded ? healthy : degraded` — "buildDegradedFollowUpIssue - a healthy verdict gets the reported-gap body …" and "… a degraded verdict keeps the degraded body …". The flip went red.
 - `worker/deno/lib/degraded_delivery.ts` `buildReportedGapPrSection` throw: `verdict.degraded` operand and `!degradedNeedsFollowUp` operand — "buildReportedGapPrSection - throws on a degraded verdict or one without a gap" asserts both. Removing the throw went red. The healthy arm is "buildReportedGapPrSection - names the follow-up and the shortfall".
