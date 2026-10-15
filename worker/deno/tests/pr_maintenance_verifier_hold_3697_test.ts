@@ -49,7 +49,11 @@ function makeGh(
     const key = args.join(" ");
     if (key.includes("pr list")) {
       return Promise.resolve(JSON.stringify([
-        { number: PR_NUMBER, headRefName: "issue-10-fix", headRefOid: "abc123" },
+        {
+          number: PR_NUMBER,
+          headRefName: "issue-10-fix",
+          headRefOid: "abc123",
+        },
       ]));
     }
     if (key.includes(`issues/${PR_NUMBER}/comments`)) {
@@ -97,7 +101,8 @@ async function scanFor(
 }
 
 const RELEASABLE_BODY = `${prePrVerifierHeldMarkerLine(true)}\n${HOLD_TEXT}`;
-const NON_RELEASABLE_BODY = `${prePrVerifierHeldMarkerLine(false)}\n${HOLD_TEXT}`;
+const NOT_RELEASABLE_MARKER = prePrVerifierHeldMarkerLine(false);
+const NON_RELEASABLE_BODY = `${NOT_RELEASABLE_MARKER}\n${HOLD_TEXT}`;
 
 Deno.test("findPrCommentsToFix - a releasable verifier hold on the worker's own comment is actionable (Issue #3697)", async () => {
   const value = await scanFor({ login: OWN, body: RELEASABLE_BODY });
