@@ -81,6 +81,8 @@ interface FakeGhOptions {
   } | null;
   prCreateUrl?: string;
   labelsOnPr?: string[];
+  /** The `.behind_by` reply for compare calls; a string can be garbage. */
+  behindBy?: number | string;
 }
 
 interface FakeGh {
@@ -171,6 +173,27 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
       );
     }
 
+    // Default branch lookup.
+    if (
+      args[0] === "api" && args[1] === `repos/${REPO}` &&
+      args.includes(".default_branch")
+    ) {
+      return Promise.resolve("main");
+    }
+
+    // Compare reads: fix-branch staleness (Issue #3596) and merge-method probes.
+    if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+      if (args.includes(".behind_by")) {
+        return Promise.resolve(String(options.behindBy ?? 0));
+      }
+      if (args.includes(".merge_base_commit.sha")) {
+        return Promise.resolve("a".repeat(40));
+      }
+      if (args.includes(".status")) {
+        return Promise.resolve("ahead");
+      }
+    }
+
     return Promise.resolve("");
   };
 
@@ -229,6 +252,27 @@ Deno.test("runConflictTakeover - gated milestone head raises a fix PR, never tou
 
   assertEquals(outcome.kind, "fix-pr-raised");
   assert(fixBranchUsed.startsWith("milestone-fix/"));
+
+  // The fix branch is confirmed 0 commits behind the base before the fix PR
+  // is raised (Issue #3596).
+  const behindIndex = fake.calls.findIndex((a) =>
+    a[0] === "api" &&
+    a[1] === `repos/${REPO}/compare/main...${fixBranchUsed}` &&
+    a.includes(".behind_by")
+  );
+  const createIndex = fake.calls.findIndex((a) =>
+    a[0] === "pr" && a[1] === "create"
+  );
+  assert(behindIndex >= 0, "no behind_by compare call for the fix branch");
+  assert(createIndex > behindIndex, "behind_by check must precede pr create");
+
+  // The fake reports the head as ahead of its merge base with main, so the
+  // fix PR is armed as a merge commit and never squashed (Issue #3596).
+  const merges = fake.calls.filter((a) => a[0] === "pr" && a[1] === "merge");
+  assertEquals(merges.length, 1);
+  assert(merges[0]!.includes("--auto"));
+  assert(merges[0]!.includes("--merge"));
+  assert(!merges[0]!.includes("--squash"));
 
   const creates = fake.calls.filter((a) => a[0] === "pr" && a[1] === "create");
   assertEquals(creates.length, 1);
@@ -704,4 +748,55 @@ Deno.test("runConflictTakeover - a sync marker that lands before the lock spends
     ),
     1,
   );
+});
+
+Deno.test("runConflictTakeover - a fix branch still behind its base raises no fix PR (Issue #3596)", async () => {
+  const fake = makeFakeGh({ gated: true, openFixPr: null, behindBy: 3 });
+  const deps = makeDeps(fake, {
+    resolveViaLadder: () => {
+      throw new Error("resolveViaLadder must not be called for a gated head");
+    },
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), deps);
+
+  assertEquals(outcome.kind, "failed");
+  if (outcome.kind === "failed") {
+    assertEquals(outcome.route, "milestone-fix");
+    assertStringIncludes(outcome.detail, "3 commit(s) behind 'main'");
+  }
+  assert(!fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
+
+  const comments = commentsCalls(fake.calls);
+  assertEquals(comments.length, 2);
+  const concludeBody = commentBody(comments[1]!);
+  assertStringIncludes(concludeBody, CONFLICT_FAILED_MARKER);
+  assert(!concludeBody.includes(CONFLICT_RESOLVED_MARKER));
+});
+
+Deno.test("runConflictTakeover - an unreadable behind count rejects with no fix PR (Issue #3596)", async () => {
+  const fake = makeFakeGh({ gated: true, openFixPr: null, behindBy: "" });
+  const deps = makeDeps(fake);
+
+  await assertRejects(
+    () => runConflictTakeover(gatedPr(), deps),
+    Error,
+    "fixBranchBehindBase",
+  );
+
+  assert(!fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
+  const comments = commentsCalls(fake.calls);
+  assert(
+    comments.some((call) => commentBody(call).includes(CONFLICT_FAILED_MARKER)),
+  );
+});
+
+Deno.test("runConflictTakeover - a fix branch up to its base raises the fix PR (Issue #3596)", async () => {
+  const fake = makeFakeGh({ gated: true, openFixPr: null, behindBy: 0 });
+  const deps = makeDeps(fake);
+
+  const outcome = await runConflictTakeover(gatedPr(), deps);
+
+  assertEquals(outcome.kind, "fix-pr-raised");
+  assert(fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
 });

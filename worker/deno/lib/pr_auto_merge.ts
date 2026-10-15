@@ -15,6 +15,10 @@ import { directMergePr } from "./direct_merge.ts";
 import { disarmAutoMerge } from "./auto_merge_disarm.ts";
 import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
 import {
+  milestoneFixMergeCommitRefusal,
+  milestoneFixMergeMethod,
+} from "./milestone_fix_pr.ts";
+import {
   decideMilestoneBaseMerge,
   decideSummaryPrMerge,
   holdOrphanBoundPr,
@@ -708,6 +712,10 @@ export function invisiblePolicyWarning(
 /**
  * Enable auto squash merge on a PR (Issue #63, #430, #927).
  *
+ * A milestone-fix PR whose head merges the default branch arms as a merge
+ * commit, never a squash, and is not armed at all if its method cannot be read
+ * (Issue #3596).
+ *
  * Retries on transient failures (HTTP 5xx, network errors).
  *
  * @param options - Auto-merge options
@@ -1109,7 +1117,9 @@ export async function enableAutoMerge(
 
   // A milestone sync must land as a merge commit, not a squash (Issue #1048):
   // squashed, the default branch never becomes an ancestor of the milestone
-  // branch and its deletions return as conflicts. Everything else squashes.
+  // branch and its deletions return as conflicts. A milestone-fix head that
+  // merges the default branch must land as a merge commit too (Issue #3596).
+  // Everything else squashes.
   //
   // The deviation also needs the head to live in this repository, which is
   // only asked when the name looks like a sync — one extra read on the rare
@@ -1117,7 +1127,13 @@ export async function enableAutoMerge(
   // head that fails that check is downgraded *loudly*: a quietly squashed
   // sync is the defect #1048 exists to prevent.
   const syncShaped = isMilestoneSyncBranch(options.headRefName);
-  const headIsSameRepository = syncShaped
+  // A milestone-fix PR whose head merges the default branch follows the same
+  // rule (Issue #3596): its method is read from the head's ancestry, and a
+  // repository that refuses merge commits fails the arming rather than
+  // squashing. A fork fix head keeps the squash default, with no compare calls.
+  const fixShaped = isMilestoneFixBranch(options.headRefName ?? "") &&
+    (baseRefName ?? "").startsWith("milestone/");
+  const headIsSameRepository = syncShaped || fixShaped
     ? await fetchHeadIsSameRepository(repo, prNumber, ghCommandFn)
     : false;
   if (syncShaped && !headIsSameRepository) {
@@ -1129,6 +1145,24 @@ export async function enableAutoMerge(
     options.headRefName,
     headIsSameRepository,
   );
+  let fixNeedsMergeCommit = false;
+  if (fixShaped && headIsSameRepository) {
+    const method = await milestoneFixMergeMethod(
+      repo,
+      baseRefName,
+      options.headRefName ?? "",
+      ghCommandFn,
+    );
+    if (!method.ok) {
+      return {
+        result: AutoMergeResult.Failed,
+        message:
+          `Auto-merge not armed on milestone fix PR #${prNumber}: ${method.error.message} — not armed rather than risk squashing a default-branch merge; re-read next scan (Issue #3596)`,
+      };
+    }
+    mergeMethod = method.value;
+    fixNeedsMergeCommit = method.value === "--merge";
+  }
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
@@ -1170,6 +1204,19 @@ export async function enableAutoMerge(
       // the setting — rather than leaving the branch to drift unsynced. The
       // check-resurrected-files gate is what catches the consequence.
       if (mergeMethod === "--merge" && isMergeCommitNotAllowed(errorMsg)) {
+        // A milestone fix is refused, never squashed (Issue #3596).
+        if (fixNeedsMergeCommit) {
+          const refusal = milestoneFixMergeCommitRefusal(
+            repo,
+            prNumber,
+            errorMsg,
+          );
+          log(`WARNING: ${refusal}`);
+          return {
+            result: AutoMergeResult.Failed,
+            message: `Auto-merge not armed on PR #${prNumber}: ${refusal}`,
+          };
+        }
         log(squashedSyncWarning(repo, options.headRefName ?? "", errorMsg));
         mergeMethod = "--squash";
         continue;

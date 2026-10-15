@@ -18,9 +18,15 @@ import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { decideMilestoneBaseMerge } from "./milestone_children_gate.ts";
 import {
   forkSyncDowngradeWarning,
+  isMergeCommitNotAllowed,
   isMilestoneSyncBranch,
   mergeMethodFlagForHead,
 } from "./milestone_sync_pr.ts";
+import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
+import {
+  milestoneFixMergeCommitRefusal,
+  milestoneFixMergeMethod,
+} from "./milestone_fix_pr.ts";
 import {
   type ApprovedDefaultBranchPolicy,
   fetchPrReviews,
@@ -138,6 +144,8 @@ export interface PreMergeGateOutcome {
    * deviation; absent reads as "not established" and squashes.
    */
   headIsSameRepository?: boolean;
+  /** Base branch of the PR; decides whether a `milestone-fix/**` head needs a merge commit (Issue #3596). */
+  baseRefName?: string;
 }
 
 /** Operator overrides for the pre-merge gate (Issue #3705). */
@@ -815,8 +823,14 @@ export async function enforcePreMergeRequirements(
   return {
     ok: true,
     value: headSha
-      ? { allowed: true, headSha, headRefName, headIsSameRepository }
-      : { allowed: true, headRefName, headIsSameRepository },
+      ? {
+        allowed: true,
+        headSha,
+        headRefName,
+        headIsSameRepository,
+        baseRefName,
+      }
+      : { allowed: true, headRefName, headIsSameRepository, baseRefName },
   };
 }
 
@@ -826,7 +840,8 @@ export async function enforcePreMergeRequirements(
 
 /**
  * Merge the PR directly via `gh pr merge --squash` (without --auto), or
- * `--merge` when the head is a milestone sync branch (Issue #1048).
+ * `--merge` when the head is a milestone sync branch (Issue #1048) or a
+ * milestone-fix branch that merges the default branch (Issue #3596).
  *
  * Only call this when all checks have passed.
  *
@@ -974,6 +989,34 @@ export async function directMergePr(
     );
   }
 
+  let mergeMethod = mergeMethodFlagForHead(
+    gate.value.headRefName,
+    headIsSameRepository,
+  );
+  // A milestone-fix head that merges the default branch lands as a merge
+  // commit (Issue #3596), read from the gated head SHA: the exact commit merged.
+  // Unreadable, it fails closed rather than squashing.
+  const fixShaped = isMilestoneFixBranch(gate.value.headRefName ?? "") &&
+    headIsSameRepository &&
+    (gate.value.baseRefName ?? "").startsWith("milestone/");
+  if (fixShaped) {
+    const method = await milestoneFixMergeMethod(
+      repo,
+      gate.value.baseRefName ?? "",
+      headSha,
+      ghCommandFn,
+    );
+    if (!method.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to direct-merge milestone fix PR #${prNumber} in ${repo}: ${method.error.message}. Failing closed so a default-branch merge is never squashed; will retry on the next maintenance scan (Issue #3596).`,
+        ),
+      };
+    }
+    mergeMethod = method.value;
+  }
+
   try {
     await ghCommandFn([
       "pr",
@@ -981,7 +1024,7 @@ export async function directMergePr(
       String(prNumber),
       "--repo",
       repo,
-      mergeMethodFlagForHead(gate.value.headRefName, headIsSameRepository),
+      mergeMethod,
       // Pin the merge to the checked commit — GitHub refuses the merge if the
       // head moved after the checks were read (Issue #3946).
       "--match-head-commit",
@@ -995,6 +1038,18 @@ export async function directMergePr(
       // expected race, not a fault: leave the PR open so the next maintenance
       // cycle re-reads the checks for the new head.
       return { ok: true, value: { merged: false, blocked: "head_moved" } };
+    }
+    // A milestone fix that cannot take a merge commit is refused, never
+    // retried as a squash (Issue #3596).
+    if (
+      fixShaped && mergeMethod === "--merge" && isMergeCommitNotAllowed(message)
+    ) {
+      return {
+        ok: false,
+        error: new Error(
+          milestoneFixMergeCommitRefusal(repo, prNumber, message),
+        ),
+      };
     }
     return {
       ok: false,

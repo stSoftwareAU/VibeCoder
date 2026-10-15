@@ -15,6 +15,12 @@
  * direct push is what lets this PR land unattended once its checks are
  * green.
  *
+ * The merge method follows the head's shape (Issue #3596): a merge commit when
+ * the head merges the default branch, since a squash would drop that ancestry
+ * and strand the milestone's final PR; a squash otherwise. If the repository
+ * refuses merge commits, the PR is not armed and the refusal is reported, never
+ * squashed.
+ *
  * Unlike the sync PR, this module does not push — the caller has already
  * committed and pushed the fix branch (the same way it would for any other
  * PR) before calling {@link raiseMilestoneFixPr}. This module only opens (or
@@ -31,6 +37,7 @@ import {
   sanitiseSegment,
 } from "./milestone_branch_names.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
+import { isMergeCommitNotAllowed } from "./milestone_sync_pr.ts";
 
 /** `owner/repo` with the character set GitHub actually allows. */
 const REPO_PATTERN = /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/;
@@ -221,6 +228,125 @@ export interface RaiseMilestoneFixPrOptions {
   pass: string;
 }
 
+/** The merge method a milestone fix PR is armed with (Issue #3596). */
+export type MilestoneFixMergeMethod = "--merge" | "--squash";
+
+/** A branch name or commit sha that is safe to put in a `gh api` path. */
+const GIT_REF_CHARS = /^[A-Za-z0-9._\/-]+$/;
+
+/** A full commit sha, as the compare API returns it. */
+const COMMIT_SHA = /^[0-9a-f]{40}$/i;
+
+/**
+ * Which merge method may land a milestone fix PR (Issue #3596).
+ *
+ * `--merge` when the head's merge base with the default branch is not yet in
+ * `milestoneBranch`, so the head carries default-branch ancestry that a squash
+ * would drop. `--squash` when that base is already in the milestone branch
+ * (identical or behind), so the head carries only content changes. An
+ * unreadable answer is an error, never a guessed method. Never throws.
+ */
+export async function milestoneFixMergeMethod(
+  repo: string,
+  milestoneBranch: string,
+  head: string, // the fix branch name, or a head commit sha
+  gh: (args: string[]) => Promise<string>,
+): Promise<Result<MilestoneFixMergeMethod>> {
+  if (!REPO_PATTERN.test(repo)) {
+    return {
+      ok: false,
+      error: new Error(`milestoneFixMergeMethod: invalid repo '${repo}'`),
+    };
+  }
+  if (!milestoneBranch.startsWith("milestone/")) {
+    return {
+      ok: false,
+      error: new Error(
+        `milestoneFixMergeMethod: '${milestoneBranch}' is not a milestone branch`,
+      ),
+    };
+  }
+  for (const ref of [milestoneBranch, head]) {
+    if (!GIT_REF_CHARS.test(ref) || ref.includes("..")) {
+      return {
+        ok: false,
+        error: new Error(
+          `milestoneFixMergeMethod: '${ref}' is not a safe branch name or sha`,
+        ),
+      };
+    }
+  }
+
+  const fail = (cause: unknown): Result<MilestoneFixMergeMethod> => ({
+    ok: false,
+    error: new Error(
+      `milestoneFixMergeMethod: could not tell whether ${head} merges ` +
+        `${repo}'s default branch: ${
+          cause instanceof Error ? cause.message.trim() : String(cause)
+        }`,
+    ),
+  });
+
+  let defaultBranch: string;
+  try {
+    defaultBranch = (await gh([
+      "api",
+      `repos/${repo}`,
+      "--jq",
+      ".default_branch",
+    ])).trim();
+  } catch (error) {
+    return fail(error);
+  }
+  if (!defaultBranch) return fail("GitHub returned no default branch");
+
+  let mergeBase: string;
+  try {
+    mergeBase = (await gh([
+      "api",
+      `repos/${repo}/compare/${defaultBranch}...${head}`,
+      "--jq",
+      ".merge_base_commit.sha",
+    ])).trim();
+  } catch (error) {
+    return fail(error);
+  }
+  if (!COMMIT_SHA.test(mergeBase)) {
+    return fail(`the merge base '${mergeBase}' is not a commit sha`);
+  }
+
+  let status: string;
+  try {
+    status = (await gh([
+      "api",
+      `repos/${repo}/compare/${milestoneBranch}...${mergeBase}`,
+      "--jq",
+      ".status",
+    ])).trim();
+  } catch (error) {
+    return fail(error);
+  }
+  if (status === "identical" || status === "behind") {
+    return { ok: true, value: "--squash" };
+  }
+  if (status === "ahead" || status === "diverged") {
+    return { ok: true, value: "--merge" };
+  }
+  return fail(`GitHub reported the comparison as '${status}'`);
+}
+
+/**
+ * The one-line refusal for a milestone fix PR whose head merges the default
+ * branch but whose repository disallows merge commits (Issue #3596).
+ */
+export function milestoneFixMergeCommitRefusal(
+  repo: string,
+  prNumber: number,
+  detail: string,
+): string {
+  return `the head of milestone fix PR ${repo}#${prNumber} merges the default branch, so it must land as a merge commit, but ${repo} does not permit merge commits (${detail.trim()}). It was NOT squashed: a squash drops the default branch's ancestry and the milestone's final PR stays conflicting (Issue #3596). Enable merge commits on ${repo} (Settings → Pull Requests → Allow merge commits).`;
+}
+
 /** Warn and comment why a fix PR was not armed; never throws. */
 async function reportFixPrNotArmed(
   repo: string,
@@ -265,11 +391,16 @@ async function reportFixPrNotArmed(
  * Best-effort: a PR that is not armed does not fail the fix, but it is never
  * silent — the reason is logged and posted as a PR comment (Issue #2457), and
  * the Auto-Merge sweep re-checks the base on every later pass (Issue #3433).
+ *
+ * The merge method follows the head (Issue #3596): `--merge` when it merges
+ * the default branch, `--squash` otherwise. A repository that refuses merge
+ * commits is reported, never retried with `--squash`.
  */
 async function armMilestoneFixPrAutoMerge(
   repo: string,
   prNumber: number,
   milestoneBranch: string,
+  fixBranch: string,
   deps: MilestoneFixPrDeps,
 ): Promise<void> {
   let base: unknown;
@@ -305,6 +436,21 @@ async function armMilestoneFixPrAutoMerge(
     );
     return;
   }
+  const method = await milestoneFixMergeMethod(
+    repo,
+    milestoneBranch,
+    fixBranch,
+    deps.gh,
+  );
+  if (!method.ok) {
+    await reportFixPrNotArmed(
+      repo,
+      prNumber,
+      `whether its head merges the default branch could not be read (${method.error.message}), so it is not armed rather than risk squashing a default-branch merge (Issue #3596)`,
+      deps,
+    );
+    return;
+  }
   try {
     await deps.gh([
       "pr",
@@ -313,10 +459,19 @@ async function armMilestoneFixPrAutoMerge(
       "--repo",
       repo,
       "--auto",
-      "--squash",
+      method.value,
     ]);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (method.value === "--merge" && isMergeCommitNotAllowed(message)) {
+      await reportFixPrNotArmed(
+        repo,
+        prNumber,
+        milestoneFixMergeCommitRefusal(repo, prNumber, message),
+        deps,
+      );
+      return;
+    }
     await reportFixPrNotArmed(repo, prNumber, message.trim(), deps);
   }
 }
@@ -431,7 +586,13 @@ export async function raiseMilestoneFixPr(
       };
     }
 
-    await armMilestoneFixPrAutoMerge(repo, number, milestoneBranch, deps);
+    await armMilestoneFixPrAutoMerge(
+      repo,
+      number,
+      milestoneBranch,
+      fixBranch,
+      deps,
+    );
     await clearMilestoneReviewRequests({
       repo,
       prNumber: number,

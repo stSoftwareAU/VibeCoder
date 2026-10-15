@@ -4242,7 +4242,12 @@ Three defences, each independent of the others:
   `--merge` for a `sync/milestone-*` head **whose head branch lives in this
   repository**, and `--squash` for every other PR; `pr_auto_merge.ts`,
   `direct_merge.ts` and `pr_manager.ts` all route their `gh pr merge` through
-  it, so no arming path can quietly squash a sync. The same-repository
+  it, so no arming path can quietly squash a sync. A `milestone-fix/**` head on
+  a `milestone/**` base is the exception: it takes its method from
+  [`milestoneFixMergeMethod`](../worker/deno/lib/milestone_fix_pr.ts) instead,
+  a merge commit when its head merges the default branch (Issue #3596). Where
+  merge commits are forbidden it is refused with a warning, never downgraded to
+  a squash. The same-repository
   condition is Issue #1249, finding 10: a fork chooses its own branch names, so
   the name alone cannot select a deviation on a path that bypasses branch
   protection. A sync-shaped head that fails it is squashed with

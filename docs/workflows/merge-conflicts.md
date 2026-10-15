@@ -515,15 +515,22 @@ flowchart TD
   (`milestone-fix/<leaf>/pr-<N>-takeover-<sha12>`), resolves and pushes only
   that branch, and opens a PR into the milestone branch with
   `raiseMilestoneFixPr` (Issue #2907). Nothing is pushed to the head branch.
+  Before it raises the PR, `fixBranchBehindBase` checks that the resolved fix
+  branch is 0 commits behind the PR's base (`compare <base>...<fixBranch>`,
+  `behind_by`). A branch still behind concludes `failed` with no PR raised; an
+  unreadable answer throws (Issue #3596). Once raised, the PR's merge method
+  follows its head: a merge commit when the head merges the default branch,
+  which leaves the milestone branch 0 behind the default branch.
 - Any other head: the ordinary ladder resolve path (`resolveViaLadder`). Both
   resolver seams are marker-free by contract — the takeover owns the attempt
   and conclusion markers, so one takeover spends at most one unit of the
   shared budget.
 - A judged exit after the attempt marker posts a conclusion marker:
   `resolved` (`pass="takeover"`) when the merge was pushed or the fix PR was
-  raised, `failed` when the resolver could not resolve, and `failed` when
-  anything threw — then the error is re-raised, never swallowed. A cut-short
-  agent (`AGENT_RUN_ENDED_BY_WORKER`) or a provider refusal
+  raised, `failed` when the resolver could not resolve or the fix branch is
+  still behind its base (no PR raised), and `failed` when anything threw — then
+  the error is re-raised, never swallowed. A cut-short agent
+  (`AGENT_RUN_ENDED_BY_WORKER`) or a provider refusal
   (`AGENT_PROVIDER_UNAVAILABLE`) withdraws the attempt marker instead, so
   that attempt is not charged (Issues #1693, #2613).
 - Labels (Issue #2951): the pass adds `merge-conflict` only when it is absent,
@@ -569,7 +576,10 @@ flowchart TD
     H -- "Yes" --> I["Reuse it<br/>(no marker)"]
     H -- "No" --> J[Post attempt marker]
     J --> K[Resolve on<br/>milestone-fix branch]
-    K --> L["Raise fix PR<br/>(Issue #2907)"]
+    K --> Q{"Fix branch 0 behind<br/>PR base? (Issue #3596)"}
+    Q -- "No (still behind)" --> N
+    Q -. "unreadable: throw" .-> N
+    Q -- "Yes" --> L["Raise fix PR<br/>(Issue #2907)"]
     L --> M[Conclusion marker]
     E -. "throw" .-> N["Failed conclusion"]
     N -. "re-raise" .-> O[Error propagates]

@@ -14,7 +14,10 @@
  * and delivers the fix through a pull request into the gated head, using the
  * {@link findOpenMilestoneFixPr}/{@link raiseMilestoneFixPr} helpers Issue
  * #2907 built for exactly this shape. A fix PR already open for this
- * milestone PR is reused rather than duplicated.
+ * milestone PR is reused rather than duplicated. No fix PR is raised until the
+ * resolved fix branch is confirmed 0 commits behind the PR's base, since a
+ * branch still behind would leave the PR conflicting again once it lands
+ * (Issue #3596).
  *
  * **The shared budget (Issue #2996).** This pass spends from the same
  * {@link CONFLICT_RESOLUTION_BUDGET} every other conflict-resolution pass
@@ -188,11 +191,17 @@ export type ConflictTakeoverOutcome =
   | { kind: "no-longer-due" }
   /** A fix PR for this milestone PR is already open; nothing was attempted. */
   | { kind: "fix-pr-reused"; fixPr: MilestoneFixPr }
-  /** The gated route resolved and a fix PR now carries it into the head. */
+  /**
+   * The gated route resolved, its fix branch was confirmed up to date with the
+   * base, and a fix PR now carries it into the head.
+   */
   | { kind: "fix-pr-raised"; fixPr: MilestoneFixPr; fixBranch: string }
   /** The ordinary (non-gated) route resolved the conflict directly. */
   | { kind: "resolved" }
-  /** Either route ran and did not resolve the conflict. */
+  /**
+   * Either route ran and did not resolve the conflict, or the gated route
+   * resolved but its fix branch was still behind the base (Issue #3596).
+   */
   | {
     kind: "failed";
     route: "milestone-fix" | "ladder";
@@ -323,12 +332,42 @@ function postComment(
 }
 
 /**
+ * How many commits `fixBranch` is behind `baseRefName` in `repo` (Issue #3596).
+ *
+ * Throws when the reply is not a non-negative integer, so an unreadable answer
+ * fails the takeover loudly rather than passing as "up to date".
+ */
+export async function fixBranchBehindBase(
+  repo: string,
+  baseRefName: string,
+  fixBranch: string,
+  gh: ConflictTakeoverDeps["gh"],
+): Promise<number> {
+  const raw = await gh([
+    "api",
+    `repos/${repo}/compare/${baseRefName}...${fixBranch}`,
+    "--jq",
+    ".behind_by",
+  ]);
+  const reply = raw.trim();
+  if (!/^\d+$/.test(reply)) {
+    throw new Error(
+      `fixBranchBehindBase: could not read how far '${fixBranch}' is behind ` +
+        `'${baseRefName}' in ${repo} — the reply was ${JSON.stringify(raw)}`,
+    );
+  }
+  return Number(reply);
+}
+
+/**
  * Resolve a stalled conflicted PR (Issue #2999).
  *
  * Validates the head sha and the trusted-author set, reads the shared tally
  * (Issue #2996) and declines before posting anything once it is spent,
  * checks whether the head is gated (Issue #2907) and reuses or raises a fix
- * PR when it is, posts the attempt marker, runs the appropriate resolver,
+ * PR when it is (raising only once the resolved fix branch is confirmed up to
+ * date with its base, Issue #3596), posts the attempt marker, runs the
+ * appropriate resolver,
  * and posts the conclusion. The `merge-conflict` label is removed only on an
  * ordinary resolved outcome and only when this call is the one that added it
  * (Issue #2951).
@@ -524,19 +563,36 @@ export async function runConflictTakeover(
               detail: resolution.detail,
             };
         } else {
-          const raised = await raiseMilestoneFixPr({
-            repo: pr.repo,
-            milestoneBranch: pr.headRefName,
-            milestonePrNumber: pr.number,
+          const behindBy = await fixBranchBehindBase(
+            pr.repo,
+            pr.baseRefName,
             fixBranch,
-            pass: "merge-conflict resolution",
-          }, milestoneDeps);
-          if (!raised.ok) throw raised.error;
-          outcome = {
-            kind: "fix-pr-raised",
-            fixPr: raised.value,
-            fixBranch,
-          };
+            gh,
+          );
+          if (behindBy > 0) {
+            outcome = {
+              kind: "failed",
+              route: "milestone-fix",
+              detail: `the resolved fix branch '${fixBranch}' is still ` +
+                `${behindBy} commit(s) behind '${pr.baseRefName}', so landing ` +
+                "it would leave this PR conflicting — no fix PR was raised " +
+                "(Issue #3596)",
+            };
+          } else {
+            const raised = await raiseMilestoneFixPr({
+              repo: pr.repo,
+              milestoneBranch: pr.headRefName,
+              milestonePrNumber: pr.number,
+              fixBranch,
+              pass: "merge-conflict resolution",
+            }, milestoneDeps);
+            if (!raised.ok) throw raised.error;
+            outcome = {
+              kind: "fix-pr-raised",
+              fixPr: raised.value,
+              fixBranch,
+            };
+          }
         }
       } else {
         const resolution = await deps.resolveViaLadder(pr);
