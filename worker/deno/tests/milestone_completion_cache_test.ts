@@ -49,6 +49,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneSummaryPr serves sec
             number: 100,
             title: "Milestone: v1.0",
             headRefName: "milestone/v1-0",
+            isCrossRepository: false,
           },
         ]);
       }
@@ -79,7 +80,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneSummaryPr serves sec
     // Confirm the cache key is shaped as the helper documents.
     const cached = await cache.read(
       "owner/repo",
-      "prs_all_branch_milestone/v1-0",
+      "prs_all_branch_v2_milestone/v1-0",
     );
     assertEquals(Array.isArray(cached), true);
   } finally {
@@ -280,14 +281,15 @@ function buildOrchestrationGhStub(
   return async (args: string[]) => {
     const key = args.join(" ");
     // Issue #3908: the fresh authoritative open-children reads — GitHub agrees
-    // the milestone has no open children.
-    if (key.includes("/issues?milestone=")) {
+    // the milestone has no open children. Issue #3662: the closed read by
+    // milestone number is answered below, not here.
+    if (key.includes("/issues?milestone=") && !key.includes("state=closed")) {
       return "[]";
     }
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
       return JSON.stringify({ open_issues: 0 });
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "v1.0", number: 1 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -297,8 +299,12 @@ function buildOrchestrationGhStub(
       return "[]";
     }
     // Issue #1908: closed batch is fetched without --milestone; payload
-    // tags each issue with its milestone for local filtering.
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    // tags each issue with its milestone for local filtering. Issue #3662:
+    // the milestone's own closed read is the REST one by milestone number.
+    if (
+      (key.includes("issue list") && key.includes("--state closed")) ||
+      (key.includes("issues?milestone=") && key.includes("state=closed"))
+    ) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -379,7 +385,7 @@ Deno.test("milestone_completion cache - summary PR creation invalidates prs_all_
     const cache = new IssueCache(cacheDir);
 
     // Pre-populate the branch-keyed cache so we can verify it gets dropped.
-    await cache.write("owner/repo", "prs_all_branch_milestone/v1-0", []);
+    await cache.write("owner/repo", "prs_all_branch_v2_milestone/v1-0", []);
 
     let prCreated = 0;
     const ghFn = buildOrchestrationGhStub({
@@ -401,7 +407,7 @@ Deno.test("milestone_completion cache - summary PR creation invalidates prs_all_
     // After PR create, the branch-keyed PR cache must be invalidated.
     const cached = await cache.read(
       "owner/repo",
-      "prs_all_branch_milestone/v1-0",
+      "prs_all_branch_v2_milestone/v1-0",
     );
     assertEquals(
       cached,
