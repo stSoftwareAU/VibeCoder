@@ -584,11 +584,17 @@ async function fetchBaseRefName(
  * merge-commit deviation. An unreadable answer is `false`: the deviation is
  * refused rather than granted on a field that could not be read.
  */
-async function fetchHeadIsSameRepository(
+/**
+ * Whether the PR head lives in this repository, read as three states
+ * (Issue #3596): `true`/`false` when GitHub answers, `null` when the read failed
+ * or did not give a boolean. A milestone-fix head must not treat `null` as a
+ * fork, so its caller fails closed on it.
+ */
+async function readHeadIsSameRepository(
   repo: string,
   prNumber: number,
   ghCommandFn: (args: string[]) => Promise<string>,
-): Promise<boolean> {
+): Promise<boolean | null> {
   try {
     const raw = (await ghCommandFn([
       "pr",
@@ -601,10 +607,20 @@ async function fetchHeadIsSameRepository(
       "--jq",
       ".isCrossRepository",
     ])).trim();
-    return raw === "false";
+    if (raw === "false") return true;
+    if (raw === "true") return false;
+    return null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function fetchHeadIsSameRepository(
+  repo: string,
+  prNumber: number,
+  ghCommandFn: (args: string[]) => Promise<string>,
+): Promise<boolean> {
+  return (await readHeadIsSameRepository(repo, prNumber, ghCommandFn)) === true;
 }
 
 /**
@@ -1134,9 +1150,19 @@ export async function enableAutoMerge(
   // The Issue #3433 guards above have already returned for a fix head on any
   // other base, so only a milestone base reaches here.
   const fixShaped = isMilestoneFixBranch(options.headRefName ?? "");
-  const headIsSameRepository = syncShaped || fixShaped
-    ? await fetchHeadIsSameRepository(repo, prNumber, ghCommandFn)
+  // One read serves both: a fix head whose answer is unreadable is not armed
+  // (Issue #3596), so it never reaches the squash default as a fork would.
+  const sameRepoRead: boolean | null = syncShaped || fixShaped
+    ? await readHeadIsSameRepository(repo, prNumber, ghCommandFn)
     : false;
+  if (fixShaped && sameRepoRead === null) {
+    return {
+      result: AutoMergeResult.Failed,
+      message:
+        `Auto-merge not armed on milestone fix PR #${prNumber}: whether its head lives in ${repo} could not be read — not armed rather than risk squashing a default-branch merge; re-read next scan (Issue #3596)`,
+    };
+  }
+  const headIsSameRepository = sameRepoRead === true;
   if (syncShaped && !headIsSameRepository) {
     log(
       forkSyncDowngradeWarning(repo, prNumber, options.headRefName ?? ""),

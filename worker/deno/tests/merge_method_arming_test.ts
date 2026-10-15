@@ -163,13 +163,18 @@ function fixGh(
     compareError?: Error;
     /** The PR's base as `pr view` reports it; defaults to the milestone. */
     base?: string;
+    /** Overrides the `isCrossRepository` answer, e.g. "" for an unreadable one. */
+    isCrossRepositoryAnswer?: string;
   } = {},
 ) {
   const calls: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);
     if (args.join(" ").includes("isCrossRepository")) {
-      return Promise.resolve(options.crossRepository ? "true" : "false");
+      return Promise.resolve(
+        options.isCrossRepositoryAnswer ??
+          (options.crossRepository ? "true" : "false"),
+      );
     }
     if (args[0] === "pr" && args[1] === "merge") {
       if (args.includes("--merge") && options.mergeRefusal) {
@@ -286,6 +291,14 @@ Deno.test("enableAutoMerge - a fork milestone-fix head keeps --squash and reads 
   assertEquals(result.result, AutoMergeResult.Enabled);
   assert(mergeCall(calls).includes("--squash"));
   assertEquals(compareCalls(calls), []);
+});
+
+Deno.test("enableAutoMerge - a milestone-fix head whose same-repository answer is unreadable is not armed (Issue #3596)", async () => {
+  const { calls, gh } = fixGh("ahead", { isCrossRepositoryAnswer: "" });
+  const result = await enableAutoMerge(fixArmOptions(51, gh));
+  assertEquals(result.result, AutoMergeResult.Failed);
+  assertStringIncludes(result.message, "could not be read");
+  assertEquals(mergeAttempts(calls), []);
 });
 
 // ---------------------------------------------------------------------------
@@ -448,6 +461,26 @@ Deno.test("directMergePr - a same-repository milestone-fix head on a non-milesto
   assert(merge.includes("--squash"), merge.join(" "));
   assert(!merge.includes("--merge"), merge.join(" "));
   assertEquals(compareCalls(calls), []);
+});
+
+Deno.test("directMergePr - a milestone-fix gate that cannot say whether the head is same-repository is refused (Issue #3596)", async () => {
+  const { calls, gh } = fixGh("ahead");
+  // A gate value that omits headIsSameRepository, as the gate reports when
+  // isCrossRepository was not a boolean.
+  const unknownGate = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        allowed: true,
+        headSha: "deadbeef",
+        headRefName: FIX_HEAD,
+        baseRefName: FIX_BASE,
+      },
+    });
+  const result = await directMergePr("owner/repo", 52, gh, unknownGate);
+  assert(!result.ok, "an unknown same-repository answer must not merge");
+  assertStringIncludes(result.error.message, "could not be read");
+  assertEquals(mergeAttempts(calls), []);
 });
 
 // ---------------------------------------------------------------------------
