@@ -49,6 +49,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneSummaryPr serves sec
             number: 100,
             title: "Milestone: v1.0",
             headRefName: "milestone/v1-0",
+            isCrossRepository: false,
           },
         ]);
       }
@@ -79,7 +80,7 @@ Deno.test("milestone_completion cache - hasExistingMilestoneSummaryPr serves sec
     // Confirm the cache key is shaped as the helper documents.
     const cached = await cache.read(
       "owner/repo",
-      "prs_all_branch_milestone/v1-0",
+      "prs_all_branch_v2_milestone/v1-0",
     );
     assertEquals(Array.isArray(cached), true);
   } finally {
@@ -379,7 +380,7 @@ Deno.test("milestone_completion cache - summary PR creation invalidates prs_all_
     const cache = new IssueCache(cacheDir);
 
     // Pre-populate the branch-keyed cache so we can verify it gets dropped.
-    await cache.write("owner/repo", "prs_all_branch_milestone/v1-0", []);
+    await cache.write("owner/repo", "prs_all_branch_v2_milestone/v1-0", []);
 
     let prCreated = 0;
     const ghFn = buildOrchestrationGhStub({
@@ -401,7 +402,7 @@ Deno.test("milestone_completion cache - summary PR creation invalidates prs_all_
     // After PR create, the branch-keyed PR cache must be invalidated.
     const cached = await cache.read(
       "owner/repo",
-      "prs_all_branch_milestone/v1-0",
+      "prs_all_branch_v2_milestone/v1-0",
     );
     assertEquals(
       cached,

@@ -134,6 +134,7 @@ Deno.test("hasExistingMilestoneSummaryPr - returns PR number when found", async 
           number: 100,
           title: "Milestone: v1.0",
           headRefName: "milestone/v1-0",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -150,6 +151,39 @@ Deno.test("hasExistingMilestoneSummaryPr - returns PR number when found", async 
   if (result.ok) {
     assertEquals(result.value, 100);
   }
+});
+
+Deno.test("hasExistingMilestoneSummaryPr - a fork-headed PR reusing the milestone branch name is not an existing final PR (Issue #3595)", async () => {
+  const ghFor = (isCrossRepository: boolean) => (args: string[]) =>
+    Promise.resolve(
+      args.join(" ").includes("pr list")
+        ? JSON.stringify([{
+          number: 100,
+          title: "Milestone: v1.0",
+          headRefName: "milestone/v1-0",
+          isCrossRepository,
+        }])
+        : "[]",
+    );
+
+  const fork = await hasExistingMilestoneSummaryPr(
+    "owner/repo",
+    "v1.0",
+    "milestone/v1-0",
+    ghFor(true),
+  );
+  assertEquals(fork.ok, true);
+  if (fork.ok) assertEquals(fork.value, null);
+
+  // Positive control: the same row from this repository does count.
+  const same = await hasExistingMilestoneSummaryPr(
+    "owner/repo",
+    "v1.0",
+    "milestone/v1-0",
+    ghFor(false),
+  );
+  assertEquals(same.ok, true);
+  if (same.ok) assertEquals(same.value, 100);
 });
 
 Deno.test("hasExistingMilestoneSummaryPr - returns null when no PR exists", async () => {
@@ -2007,6 +2041,7 @@ Deno.test("Issue #1133 - tracking issue closed when summary PR already exists", 
           number: 601,
           title: "Milestone: v3.0",
           headRefName: "milestone/v3-0",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -2107,6 +2142,7 @@ Deno.test("checkAndHandleMilestoneCompletions - refreshes the existing summary P
           number: 601,
           title: "Milestone: v3.0",
           headRefName: "milestone/v3-0",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -2335,8 +2371,8 @@ Deno.test("checkAndHandleMilestoneCompletions - a cached all-state row with no s
     const editedBodies: string[] = [];
     const calls: string[] = [];
     const inner = reopenedListedIssueGhFn(editedBodies, true);
-    // A cache entry written before `state` joined the row.
-    await cache.write("owner/repo", "prs_all_branch_milestone/v3-0", [{
+    // A cached row whose read carried no `state`.
+    await cache.write("owner/repo", "prs_all_branch_v2_milestone/v3-0", [{
       number: 601,
       title: "Milestone: v3.0",
       headRefName: "milestone/v3-0",
@@ -2928,6 +2964,7 @@ Deno.test("Issue #1210 - milestone closed when summary PR is merged", async () =
           number: 1069,
           title: "Milestone: Better Discovery",
           headRefName: "milestone/better-discovery",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -5064,6 +5101,7 @@ Deno.test("close-out - a final PR the fleet's roll-back closed is superseded: a 
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   assertEquals(r.comments, [], "no 'closed without merging' close-out");
@@ -5113,6 +5151,7 @@ Deno.test("close-out - a roll-back close comment posted by a non-fleet account i
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   assertEquals(r.patched, [1], "abandoned close-out closes the milestone");
@@ -5135,6 +5174,7 @@ Deno.test("close-out - an unresolved fleet set classes a roll-back-commented fin
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   assertEquals(r.patched, [], "the milestone is not closed");
@@ -5151,6 +5191,35 @@ Deno.test("close-out - an unresolved fleet set classes a roll-back-commented fin
   );
 });
 
+Deno.test("close-out - a fork-headed PR on the milestone branch name does not stop the final PR being raised (Issue #3595)", async () => {
+  const forkRow = (isCrossRepository: boolean) => ({
+    number: 77,
+    title: "Milestone: scan",
+    headRefName: BRANCH_3474,
+    isCrossRepository,
+  });
+  const r = await run3474({
+    prs: [pr3474(77, "OPEN", BRANCH_3474, true)],
+    branchExists: true,
+    allStatePrs: [forkRow(true)],
+  });
+  assert(
+    r.calls.some((c) => c.includes("pr create")),
+    "a fork-headed PR is not the milestone's final PR, so one is raised",
+  );
+
+  // Positive control: the same PR from this repository is the final PR.
+  const same = await run3474({
+    prs: [pr3474(77, "OPEN", BRANCH_3474, false)],
+    branchExists: true,
+    allStatePrs: [forkRow(false)],
+  });
+  assert(
+    !same.calls.some((c) => c.includes("pr create")),
+    "a same-repository final PR already exists, so none is raised",
+  );
+});
+
 Deno.test("close-out - the superseded arm retires an open sync PR before the fresh final PR is raised (PR #3592 review, #1967)", async () => {
   const r = await run3474({
     prs: [pr3474(77, "CLOSED")],
@@ -5163,6 +5232,7 @@ Deno.test("close-out - the superseded arm retires an open sync PR before the fre
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   const closeAt = r.calls.findIndex((c) => c.startsWith("pr close 1957"));

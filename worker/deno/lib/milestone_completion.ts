@@ -513,9 +513,13 @@ async function closedByRollback(
  * logged when closing the tracking issue.
  *
  * Issue #1798: Routes through `fetchAllStatePRsByBranch` so the
- * `prs_all_branch_${milestoneBranch}` cache is shared across milestone
+ * `prs_all_branch_v2_${milestoneBranch}` cache is shared across milestone
  * scans within a single iteration. The defence-in-depth `headRefName`
  * filter (Issue #859) is preserved.
+ *
+ * Issue #3595: a fork-headed PR reusing the milestone branch name does not
+ * count as an existing final PR; `fetchAllStatePRsByBranch` returns
+ * same-repository PRs only.
  *
  * @param repo - Repository in "owner/repo" format
  * @param _milestoneTitle - The milestone title (unused, kept for API clarity)
@@ -1875,8 +1879,8 @@ async function getClosedIssues(
  *
  * The scan stays cheap for the common milestone, which has no summary PR at
  * all (PR #3640 review): candidates come from the cached all-state branch list,
- * and only those that list shows `OPEN` (or shows no state, as a cache entry
- * from before the field existed does) are carried on. A milestone whose only
+ * and only those that list shows `OPEN` (or shows no state, because the read
+ * gave none) are carried on. A milestone whose only
  * final PR is merged or closed — the normal state after an automated roll-back
  * — therefore costs no closed-issue classification and no live read. Each
  * remaining candidate is then read live by {@link refreshExistingSummaryPr},

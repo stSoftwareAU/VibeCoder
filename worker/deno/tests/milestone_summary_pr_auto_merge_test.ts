@@ -279,6 +279,7 @@ Deno.test("summary PR arming - an existing summary PR is left untouched", async 
             number: PR_NUMBER,
             title: `Milestone: ${MILESTONE}`,
             headRefName: MILESTONE_BRANCH,
+            isCrossRepository: false,
             state: "OPEN",
           },
         ]),
