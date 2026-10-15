@@ -15,6 +15,7 @@ import {
   fetchAllIssues,
   fetchAllOpenPRs,
   fetchClosedIssuesByMilestone,
+  fetchClosedIssuesByMilestoneNumber,
   fetchMergedPRsByUser,
   fetchOpenMilestoneClosedCounts,
   fetchOpenPRsForFleet,
@@ -1970,6 +1971,331 @@ Deno.test("issue_query - fetchClosedIssuesByMilestone carries updatedAt and stil
   } finally {
     await cleanup();
   }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber reads one page by number and maps updated_at (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    const calls: string[][] = [];
+    const issues = await fetchClosedIssuesByMilestoneNumber(
+      "org/repo",
+      7,
+      cache,
+      (args) => {
+        calls.push(args);
+        return Promise.resolve(JSON.stringify([
+          { number: 1, title: "A", updated_at: "2026-10-05T00:00:00Z" },
+          // An empty timestamp is no timestamp: it must not be invented.
+          { number: 2, title: "B", updated_at: "" },
+        ]));
+      },
+    );
+    assertEquals(issues, [
+      { number: 1, title: "A", updatedAt: "2026-10-05T00:00:00Z" },
+      { number: 2, title: "B" },
+    ]);
+    assertEquals(calls, [[
+      "api",
+      "repos/org/repo/issues?milestone=7&state=closed&per_page=100",
+      "--paginate",
+      "--jq",
+      '[.[] | select(has("pull_request") | not) | {number, title, updated_at}]',
+    ]]);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber concatenates pages in order (Issue #3662)", async () => {
+  const issues = await fetchClosedIssuesByMilestoneNumber(
+    "org/repo",
+    7,
+    undefined,
+    () =>
+      Promise.resolve(
+        '[{"number":1,"title":"A"}]\n' +
+          '[{"number":2,"title":"B"},{"number":3,"title":"C"}]\n',
+      ),
+  );
+  assertEquals(issues, [
+    { number: 1, title: "A" },
+    { number: 2, title: "B" },
+    { number: 3, title: "C" },
+  ]);
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber skips a page entry with no numeric number (Issue #3662)", async () => {
+  const issues = await fetchClosedIssuesByMilestoneNumber(
+    "org/repo",
+    7,
+    undefined,
+    () =>
+      Promise.resolve(
+        '[null,{"title":"no number"},{"number":"5","title":"string number"},' +
+          '{"number":6,"title":"F"}]\n',
+      ),
+  );
+  assertEquals(issues, [{ number: 6, title: "F" }]);
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber blank output throws and is not cached (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const fake = (): Promise<string> => {
+      calls++;
+      return Promise.resolve(
+        calls === 1 ? "" : JSON.stringify([{ number: 4, title: "D" }]),
+      );
+    };
+    await assertRejects(
+      () => fetchClosedIssuesByMilestoneNumber("org/repo", 7, cache, fake),
+      Error,
+      "4257",
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_closed_milestone_7"),
+      null,
+      "blank output must not be cached as no closed issues",
+    );
+
+    // The failure was not cached, so the next call re-reads and succeeds.
+    const issues = await fetchClosedIssuesByMilestoneNumber(
+      "org/repo",
+      7,
+      cache,
+      fake,
+    );
+    assertEquals(issues, [{ number: 4, title: "D" }]);
+    assertEquals(calls, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber propagates a gh failure and does not cache it (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const fake = (): Promise<string> => {
+      calls++;
+      return calls === 1
+        ? Promise.reject(new Error("rate limited"))
+        : Promise.resolve("[]");
+    };
+    await assertRejects(
+      () => fetchClosedIssuesByMilestoneNumber("org/repo", 7, cache, fake),
+      Error,
+      "rate limited",
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_closed_milestone_7"),
+      null,
+      "a failed call must not poison issues_closed_milestone_7",
+    );
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber("org/repo", 7, cache, fake),
+      [],
+    );
+    assertEquals(calls, 2);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber throws on a malformed page and does not cache it (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    await assertRejects(
+      () =>
+        fetchClosedIssuesByMilestoneNumber(
+          "org/repo",
+          7,
+          cache,
+          () => Promise.resolve('[{"number":1,"title":"A"}]\n[{"number":2,'),
+        ),
+      Error,
+      "not valid JSON",
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_closed_milestone_7"),
+      null,
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber throws on a page that is not an array (Issue #3662)", async () => {
+  await assertRejects(
+    () =>
+      fetchClosedIssuesByMilestoneNumber(
+        "org/repo",
+        7,
+        undefined,
+        () => Promise.resolve('{"number":1,"title":"A"}'),
+      ),
+    Error,
+    "not a JSON array",
+  );
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber rejects a non-positive-integer number before calling gh (Issue #3662)", async () => {
+  for (const bad of [0, -1, 1.5, NaN]) {
+    let calls = 0;
+    await assertRejects(
+      () =>
+        fetchClosedIssuesByMilestoneNumber(
+          "org/repo",
+          bad,
+          undefined,
+          () => {
+            calls++;
+            return Promise.resolve("[]");
+          },
+        ),
+      Error,
+      "positive integer",
+    );
+    assertEquals(calls, 0, `gh must not be called for milestone ${bad}`);
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber serves a second call from cache (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const fake = (): Promise<string> => {
+      calls++;
+      return Promise.resolve(JSON.stringify([{ number: 1, title: "A" }]));
+    };
+    const first = await fetchClosedIssuesByMilestoneNumber(
+      "org/repo",
+      7,
+      cache,
+      fake,
+    );
+    const second = await fetchClosedIssuesByMilestoneNumber(
+      "org/repo",
+      7,
+      cache,
+      fake,
+    );
+    assertEquals(second, first);
+    assertEquals(calls, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber keys the cache per milestone (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const fake = (args: string[]): Promise<string> => {
+      calls++;
+      return Promise.resolve(
+        (args[1] ?? "").includes("milestone=1&")
+          ? JSON.stringify([{ number: 10, title: "one" }])
+          : JSON.stringify([{ number: 20, title: "two" }]),
+      );
+    };
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber("org/repo", 1, cache, fake),
+      [{ number: 10, title: "one" }],
+    );
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber("org/repo", 2, cache, fake),
+      [{ number: 20, title: "two" }],
+    );
+    assertEquals(
+      calls,
+      2,
+      "milestone 2 must not be served milestone 1's entry",
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_closed_milestone_1"),
+      [{ number: 10, title: "one" }],
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_closed_milestone_2"),
+      [{ number: 20, title: "two" }],
+    );
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber caches [] as a valid empty result (Issue #3662)", async () => {
+  const { cache, cleanup } = await makeTempCache();
+  try {
+    let calls = 0;
+    const fake = (): Promise<string> => {
+      calls++;
+      return Promise.resolve("[]");
+    };
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber("org/repo", 7, cache, fake),
+      [],
+    );
+    assertEquals(
+      await cache.read("org/repo", "issues_closed_milestone_7"),
+      [],
+    );
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber(
+        "org/repo",
+        7,
+        cache,
+        () => Promise.reject(new Error("must be served from cache")),
+      ),
+      [],
+    );
+    assertEquals(calls, 1);
+  } finally {
+    await cleanup();
+  }
+});
+
+Deno.test("issue_query - #3662 regression: a milestone outside the repo-wide batch is read by number", async () => {
+  // The repo-wide `issue list --state closed` batch holds only the newest
+  // closed issues, none of them in milestone "v1". The milestone's own closed
+  // issues sit beyond that batch, so only the number-based REST read finds them.
+  const fakeGh = (args: string[]): Promise<string> => {
+    if (args[0] === "issue") {
+      return Promise.resolve(JSON.stringify([{
+        number: 900,
+        title: "Newest",
+        milestone: { title: "v9" },
+        updatedAt: "2026-10-10T00:00:00Z",
+      }]));
+    }
+    if (
+      args[0] === "api" &&
+      args[1] === "repos/org/repo/issues?milestone=1&state=closed&per_page=100"
+    ) {
+      return Promise.resolve(JSON.stringify([{
+        number: 3,
+        title: "Old",
+        updated_at: "2025-01-01T00:00:00Z",
+      }]));
+    }
+    return Promise.reject(new Error(`unexpected gh call: ${args.join(" ")}`));
+  };
+
+  assertEquals(
+    await fetchClosedIssuesByMilestone("org/repo", "v1", undefined, fakeGh),
+    [],
+  );
+  assertEquals(
+    await fetchClosedIssuesByMilestoneNumber(
+      "org/repo",
+      1,
+      undefined,
+      fakeGh,
+    ),
+    [{ number: 3, title: "Old", updatedAt: "2025-01-01T00:00:00Z" }],
+  );
 });
 
 Deno.test("issue_query - fetchOpenMilestoneClosedCounts maps title to closed_issues (Issue #2009)", async () => {

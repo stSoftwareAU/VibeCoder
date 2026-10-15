@@ -883,7 +883,8 @@ interface BehindMemoEntry {
   readonly reading: BehindReading;
 }
 
-type BehindReading =
+/** How far a branch is behind its base, or why that could not be read. */
+export type BehindReading =
   | { ok: true; behindBy: number }
   | { ok: false; detail: string };
 
@@ -914,6 +915,43 @@ export function invalidateMilestoneBehindMemoForBranch(
 }
 
 /**
+ * Commits `head` is behind `base`, read without any cache (Issue #3596).
+ *
+ * Never throws: an unreadable or empty answer comes back as `ok: false`.
+ */
+export async function readCompareBehindBy(
+  repo: string,
+  base: string,
+  head: string,
+  ghCommandFn: GhCommandFn,
+): Promise<BehindReading> {
+  try {
+    const raw = await ghCommandFn([
+      "api",
+      `repos/${repo}/compare/${base}...${head}`,
+      "--jq",
+      ".behind_by",
+    ]);
+    // `Number("")` is 0, so an empty answer must be rejected BEFORE the
+    // conversion: read as "level with the default branch" it would arm the
+    // very merge this gate exists to refuse.
+    const text = raw.trim();
+    const behindBy = text.length > 0 ? Number(text) : Number.NaN;
+    return Number.isFinite(behindBy) ? { ok: true, behindBy } : {
+      ok: false,
+      detail: `compare ${base}...${head} returned no behind_by`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      detail: `could not compare ${base}...${head}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+}
+
+/**
  * Commits `milestoneBranch` is behind `defaultBranch`, memoised per
  * (repo, default branch, milestone branch) for {@link MILESTONE_BEHIND_MEMO_TTL_MS}.
  *
@@ -937,32 +975,12 @@ async function readMilestoneBehindBy(
   if (memo && now - memo.readAtMs < MILESTONE_BEHIND_MEMO_TTL_MS) {
     return memo.reading;
   }
-  let reading: BehindReading;
-  try {
-    const raw = await ghCommandFn([
-      "api",
-      `repos/${repo}/compare/${defaultBranch}...${milestoneBranch}`,
-      "--jq",
-      ".behind_by",
-    ]);
-    // `Number("")` is 0, so an empty answer must be rejected BEFORE the
-    // conversion: read as "level with the default branch" it would arm the
-    // very merge this gate exists to refuse.
-    const text = raw.trim();
-    const behindBy = text.length > 0 ? Number(text) : Number.NaN;
-    reading = Number.isFinite(behindBy) ? { ok: true, behindBy } : {
-      ok: false,
-      detail:
-        `compare ${defaultBranch}...${milestoneBranch} returned no behind_by`,
-    };
-  } catch (err) {
-    reading = {
-      ok: false,
-      detail: `could not compare ${defaultBranch}...${milestoneBranch}: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-    };
-  }
+  const reading = await readCompareBehindBy(
+    repo,
+    defaultBranch,
+    milestoneBranch,
+    ghCommandFn,
+  );
   behindMemo.set(key, { readAtMs: now, reading });
   return reading;
 }

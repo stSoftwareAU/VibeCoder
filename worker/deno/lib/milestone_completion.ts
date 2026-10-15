@@ -52,7 +52,7 @@ import {
 import {
   fetchAllStateIssuesByMilestone,
   fetchAllStatePRsByBranch,
-  fetchClosedIssuesByMilestone,
+  fetchClosedIssuesByMilestoneNumber,
   fetchOpenIssuesByMilestone,
   fetchPRsForIssueByTitle,
   fetchTimelineWithCache,
@@ -74,6 +74,7 @@ import {
   NOT_PLANNED_DOCS_UNVERIFIED_NOTE,
   renderNotPlannedDocSection,
 } from "./milestone_not_planned_refs.ts";
+import { fetchOpenMilestonePages } from "./open_milestone_pages.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -513,9 +514,13 @@ async function closedByRollback(
  * logged when closing the tracking issue.
  *
  * Issue #1798: Routes through `fetchAllStatePRsByBranch` so the
- * `prs_all_branch_${milestoneBranch}` cache is shared across milestone
+ * `prs_all_branch_v2_${milestoneBranch}` cache is shared across milestone
  * scans within a single iteration. The defence-in-depth `headRefName`
  * filter (Issue #859) is preserved.
+ *
+ * Issue #3595: a fork-headed PR reusing the milestone branch name does not
+ * count as an existing final PR; `fetchAllStatePRsByBranch` returns
+ * same-repository PRs only.
  *
  * @param repo - Repository in "owner/repo" format
  * @param _milestoneTitle - The milestone title (unused, kept for API clarity)
@@ -1818,6 +1823,11 @@ export async function classifyClosedIssues(
  * `(#N)`-titled merged PR) right beside `Closes #N`. Trackers are identified by
  * the same title + marker + fleet-author check every other tracker decision
  * uses, over the milestone's all-state list (which carries body and author).
+ *
+ * Issue #3662: the closed issues are read by milestone number, paginated, so
+ * they are not bounded by the 500-issue repo-wide batch that once hid an older
+ * milestone's work. `null` means a read failed, which is kept apart from `[]`
+ * (a genuinely empty milestone) so a failed read is never mistaken for empty.
  */
 async function getClosedIssues(
   repo: string,
@@ -1825,14 +1835,14 @@ async function getClosedIssues(
   ghCommandFn: GhCommandFn,
   cache?: IssueCache,
   verification: MilestoneTrackerVerification = {},
-): Promise<ClosedIssue[]> {
+): Promise<ClosedIssue[] | null> {
   // Issue #1786: routes through the cached helper so duplicate
   // closed-issue lookups across the milestone helpers within a single
   // iteration share a payload.
   try {
-    const closed = await fetchClosedIssuesByMilestone(
+    const closed = await fetchClosedIssuesByMilestoneNumber(
       repo,
-      milestone.title,
+      milestone.number,
       cache,
       ghCommandFn,
     );
@@ -1860,7 +1870,9 @@ async function getClosedIssues(
       cache,
     );
   } catch {
-    return [];
+    // Issue #3662: a failed read is null, never [], so callers can skip the
+    // milestone rather than treat it as empty.
+    return null;
   }
 }
 
@@ -1875,8 +1887,8 @@ async function getClosedIssues(
  *
  * The scan stays cheap for the common milestone, which has no summary PR at
  * all (PR #3640 review): candidates come from the cached all-state branch list,
- * and only those that list shows `OPEN` (or shows no state, as a cache entry
- * from before the field existed does) are carried on. A milestone whose only
+ * and only those that list shows `OPEN` (or shows no state, because the read
+ * gave none) are carried on. A milestone whose only
  * final PR is merged or closed — the normal state after an automated roll-back
  * — therefore costs no closed-issue classification and no live read. Each
  * remaining candidate is then read live by {@link refreshExistingSummaryPr},
@@ -1912,9 +1924,17 @@ async function refreshOpenSummaryPrBodyWhileIncomplete(
     cache,
     verification,
   );
-  // An empty list is indistinguishable from a failed read (the fetchers swallow
-  // gh faults into []), and publishing "_No issues found_" over a good body
-  // would be worse than leaving it stale — so leave it for a later scan.
+  // Issue #3662: null is a failed read; [] is a genuinely empty milestone.
+  // Publishing "_No issues found_" over a good body after a failed read would
+  // be worse than leaving it stale, so leave it for a later scan.
+  if (closedIssues === null) {
+    log(
+      `WARNING: could not refresh summary PR body for milestone ` +
+        `'${milestone.title}' in ${repo}: closed-issue read failed — leaving ` +
+        `the body as it is for a later scan (Issue #3662)`,
+    );
+    return;
+  }
   if (closedIssues.length === 0) return;
   const tracker = await hasExistingMilestoneTrackingIssue(
     repo,
@@ -2095,16 +2115,21 @@ async function processRepoMilestones(
     return;
   }
 
-  // List open milestones
+  // Issue #3609: every open milestone, in bounded pages — the default page of
+  // 30 hid the rest from completion and deadlock detection.
   let milestones: GitHubMilestone[];
   try {
-    const output = await ghCommandFn([
-      "api",
-      `repos/${repo}/milestones`,
-    ]);
-    milestones = JSON.parse(output) as GitHubMilestone[];
-  } catch {
-    return; // No milestones or API failure — nothing to do
+    milestones = await fetchOpenMilestonePages(
+      repo,
+      ghCommandFn,
+      log,
+    ) as GitHubMilestone[];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: could not list open milestones for ${repo} — skipping milestone check: ${message}`,
+    );
+    return;
   }
 
   for (const milestone of milestones) {
@@ -2382,6 +2407,16 @@ async function processRepoMilestones(
       cache,
       verification,
     );
+    // Issue #3662: a failed read is null, not an empty milestone. Skip it for
+    // this scan so it neither closes (nothing-to-merge) nor is read as empty.
+    if (closedIssues === null) {
+      log(
+        `WARNING: Milestone '${milestone.title}' in ${repo}: closed-issue ` +
+          `read failed; skipping this milestone for this scan, not treating ` +
+          `it as empty (Issue #3662)`,
+      );
+      continue;
+    }
     // PR #3592 review: planning POSTs the milestone and only then assigns its
     // sub-issues, so for a moment it has no items and no branch. Leave a young
     // (or undated) empty milestone for a later scan rather than closing it
