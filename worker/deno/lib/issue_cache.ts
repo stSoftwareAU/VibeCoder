@@ -48,6 +48,14 @@ import { redactJsonStrings } from "./redact_json.ts";
  */
 export const ISSUE_STATE_CACHE_PREFIX = "issue_state_v2_";
 
+/**
+ * Cache key prefix for one milestone's closed issues, read by milestone number
+ * (Issue #3662). The full key is `issues_closed_milestone_<n>`. A close or
+ * reopen carries the issue number but not the milestone number, so the close
+ * notifier drops every key with this prefix in the repo.
+ */
+export const CLOSED_MILESTONE_CACHE_PREFIX = "issues_closed_milestone_";
+
 /** Cache key prefix for a referenced issue's body (Issue #1818). */
 export const ISSUE_BODY_CACHE_PREFIX = "issue_body_v1_";
 
@@ -256,6 +264,29 @@ export class IssueCache {
       await Deno.remove(filePath);
     } catch {
       // Already removed or doesn't exist — fine
+    }
+  }
+
+  /**
+   * Invalidate every cache entry for a repository whose key starts with
+   * `keyPrefix` (Issue #3662), for a family of keys whose suffix the caller
+   * does not know.
+   */
+  async invalidatePrefix(repo: string, keyPrefix: string): Promise<void> {
+    const repoKey = repo.replace("/", "_");
+    const keySafe = keyPrefix.replace(/[\s/]/g, "_");
+    const filePrefix = `${repoKey}_${keySafe}`;
+    try {
+      for await (const entry of Deno.readDir(this.cacheDir)) {
+        if (
+          entry.name.startsWith(filePrefix) &&
+          entry.name.endsWith(".cache.json")
+        ) {
+          await Deno.remove(`${this.cacheDir}/${entry.name}`);
+        }
+      }
+    } catch {
+      // Directory may not exist — fine
     }
   }
 

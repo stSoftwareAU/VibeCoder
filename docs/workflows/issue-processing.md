@@ -1397,6 +1397,23 @@ the other operands decide — with a test that goes red for each, and a `Branch
 outcomes:` line that names its operand. The issue prompt's Test Plan step and
 the pr_feedback re-enumeration rule carry the same requirement.
 
+**A test named for one step must reach that step (Issue #3666).** Fleet PRs
+added the same handling at more than one step of a path, then a new test named
+for a later step whose fixture stopped at an earlier one, so the named step's
+handling could be deleted with every test green. NEAT-AI-Discovery#2400 named
+a test for its per-iteration deadline checks but passed an already elapsed
+deadline, which the up-front check caught; VibeCoder#3308's real-repo test of
+the ancestor walk ran in a repository with no origin, so `gitignoreReallowed`
+returned before the walk; and two private fleet PRs stopped a second-loop test
+in the first loop and a read time-limit test at the connect. Each author's red
+check reverted the whole change, which removed the earlier step too.
+`CODING-STANDARDS.md` and the guidelines now require the red check for such a
+test to break only its own step and leave the earlier ones in place, a
+positive control asserting that the run got past the earlier steps when the
+steps share one mechanism, and one Test Plan line per such test. The issue
+prompt's Test Plan step, the pr_feedback red-run rule and the shared review
+brief carry the same check.
+
 **Every changed call site needs a test that goes red without it (Issue #3067).**
 A test of a shared helper, or of some of its callers, does not cover the
 other callers' wiring. Fleet PRs threaded a new argument through several
@@ -3087,8 +3104,9 @@ itself closes is now recorded in a per-run
   (`fetchIssueState`) deliberately reads through the **uncached**
   `runGhCommand`.
 - **The caches are dropped.** A successful `gh issue close` (or `reopen`) at the
-  `gh` chokepoint invalidates that repo's `issues_all`, `issues_closed_all` and
-  the issue's own cache entries — see
+  `gh` chokepoint invalidates that repo's `issues_all`, `issues_closed_all`,
+  every per-milestone closed list (`issues_closed_milestone_<n>`) and the
+  issue's own cache entries — see
   [GH-API-OPTIMISATION](../GH-API-OPTIMISATION.md) → *Issue closes are never
   left to the TTL*.
 
