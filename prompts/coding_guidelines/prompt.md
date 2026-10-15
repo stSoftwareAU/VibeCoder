@@ -1500,6 +1500,36 @@ List the guards kept and excluded in the PR summary. A new path that skips an
 existing path's guard with no stated reason is a blocking self-review finding
 (Issue #3087).
 
+**A new path for untrusted input keeps its sibling's trust-boundary control.**
+This is **A new path to an existing outcome keeps that outcome's guards**
+above, applied to security controls, which its examples do not name. When a
+change adds a path that (a) puts issue, PR, comment or other untrusted text
+into a prompt, (b) spawns a command the repository controls (its tests, its
+quality script, a mutation or dependency tool), (c) writes untrusted text into
+a fleet-authored artefact the fleet later trusts (an `idle-task` issue, a
+marker comment, a PR body other gates read), or (d) publishes to an outbound
+sink, first find the existing path that handles the same input, grep for the
+control it calls, and call that control rather than copying or skipping it. In
+the Vibe Coder worker those controls are: for (a), the nonce fence
+(`fenceUntrustedIssueText`, which runs `scrubUntrustedText`) plus a
+`buildBoundaryIntegrityInstruction` line naming the fenced block
+(`docs/THREAT-MODEL.md` C4, C5); for (b), a child environment built by
+`buildUntrustedCommandEnv`, or by `untrustedQualityCommandEnv` where the
+repository's declared credentials apply as they do for the quality gate, never
+the worker's inherited environment (`SECURITY.md` § 6b); for (c), the body the
+content-integrity snapshot check re-verified (`verifyPickupContentIntegrity`
+in `pickup_content_integrity.ts`, C10 against AP-7), never text fetched again
+afterwards; and for (d), `redactSecrets()`, as `CODING-STANDARDS.md` →
+**Secret Redaction — Every Outbound Sink** requires (C23, C24). A path built
+from untrusted text also follows **Path Confinement**. List each control kept
+in the PR summary, or say why one does not apply. For each control kept, add a
+test that reaches the new path with input that trips it — a title carrying a
+forged boundary marker, a credential in the source environment, an issue
+edited after approval, a token in the published text — and asserts the
+control's effect, then remove the control call and confirm the test goes red.
+A new path that skips a control its sibling applies, with no stated reason, is
+a blocking self-review finding (Issue #3679).
+
 **A new branch must be reachable by the input it exists for.** When you add
 a branch, guard, capture or hand-off below existing early exits in the same
 function or its caller (`return`, `continue`, `break`, `exit`, a retry or

@@ -1423,7 +1423,17 @@ The file MUST contain:
    excluded with its reason, and a kept guard counts only once a named test
    reaches the new path with the guard's trigger holding and goes red when
    the new branch is moved ahead of the guard; a new path that skips a guard
-   with no stated reason is a blocking self-review finding. Likewise, a
+   with no stated reason is a blocking self-review finding.
+   Likewise, a path the diff adds that puts untrusted text into a prompt,
+   spawns a command the repository controls, writes untrusted text into a
+   fleet-authored artefact the fleet later trusts, or publishes to an outbound
+   sink keeps the trust-boundary control the sibling path handling the same
+   input applies (see **A new path for untrusted input keeps its sibling's
+   trust-boundary control** in the guidelines): list each control kept, or why
+   one does not apply, and a kept control counts only once a named test
+   reaches the new path with input that trips it and goes red when the control
+   call is removed; a new path that skips a control its sibling applies with
+   no stated reason is a blocking self-review finding. Likewise, a
    branch, guard, capture or hand-off the diff adds below existing early
    exits must be reachable by the input it exists for (see **A new branch
    must be reachable by the input it exists for** in the guidelines): list
