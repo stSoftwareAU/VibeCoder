@@ -1,21 +1,34 @@
 /**
- * Pre-push gate for the coding agent's own `git push` calls (Issue #3394).
+ * Pre-push gate: the logic behind the coding agent's git `pre-push` hook
+ * (Issue #3394) and the worker's own gates over commits the agent never
+ * pushed (Issue #3689).
  *
- * The per-repo pre-flight gate (`pre_flight_gate.ts`) runs at the
- * worker's commit chokepoint. An agent that commits and pushes by itself never
- * passes through that chokepoint, so a doc-only push could reach the remote
- * without any check at all. This module is the logic behind a git `pre-push`
- * hook that closes that gap. It does two things, in order:
+ * The per-repo pre-flight gate (`pre_flight_gate.ts`) runs at the worker's
+ * commit chokepoint. An agent that commits and pushes by itself never passes
+ * through that chokepoint, so a doc-only push could reach the remote without
+ * any check at all. Callers of {@link runPrePushGate}:
  *
- * 1. Always runs a fast format/lint check over just the files the push
- *    introduces (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
- *    `markdownlint-cli2`), whatever the repo's own pre-flight list says and
- *    whatever the run budget — these checks are cheap and are never skipped.
+ * - the agent's `pre-push` hook (its own `git push`);
+ * - `commitAndPushPending` Step 1b, via `gateUnpushedCommits`, over commits
+ *   not yet on any remote (final-mile callers that pass a `preFlight` spec);
+ * - the issue completion phase, via `gateUnpushedCommits` with a `baseRef`,
+ *   over every non-merge commit the branch has ahead of the PR base — so
+ *   content the execute phase's WIP checkpoints already pushed is checked
+ *   before `gh pr create`.
+ *
+ * It does two things, in order:
+ *
+ * 1. Always runs a fast check over just the files the push introduces
+ *    (`deno fmt --check`, `deno lint`, `cargo fmt --check`,
+ *    `markdownlint-cli2`, `cspell` when the repo's CI runs it, plus the sweep
+ *    ledger `sweptAt` ancestry check), whatever the repo's own pre-flight list
+ *    says and whatever the run budget — these checks are cheap and are never
+ *    skipped.
  * 2. Then runs the repo's configured pre-flight commands.
  *
  * Every uncertainty fails closed: unparseable hook input, a failing `git`
- * call, an unquotable path, or a configured-but-missing markdownlint binary
- * is an `Err`, never a pass.
+ * call, an unquotable path, or a configured-but-missing markdownlint or
+ * cspell binary is an `Err`, never a pass.
  *
  * Australian English spelling throughout (behaviour, colour, organisation).
  */
@@ -25,11 +38,26 @@ import { outermostConfigDirs } from "./repo_formatters.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
+import { checkSweptAtAncestry } from "./pre_push_sweep_check.ts";
 import {
   type DenoScopeConfig,
   inDenoScope,
   parseDenoScope,
 } from "./deno_scope.ts";
+
+/**
+ * The gate could not read the repository state it needs: a `git log`,
+ * `ls-files` or history-deepening call failed or timed out (PR #3716 review).
+ * It is no verdict on the branch's content, so callers that classify a failed
+ * run (the completion phase) must not blame the branch for it. The gate still
+ * fails closed: it is an `Err`, never a pass.
+ */
+export class PrePushGateInfrastructureError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PrePushGateInfrastructureError";
+  }
+}
 
 /** One ref line from git's pre-push hook stdin. */
 export interface PrePushRef {
@@ -101,16 +129,26 @@ export const defaultPrePushGit: PrePushGit = async (args, cwd) => {
 };
 
 /**
- * List the files the push introduces: those touched by commits reachable from
- * the pushed tips but from no remote-tracking ref, minus deletions, and only
- * those that still exist as files in the working tree. Sorted and unique.
+ * List the files the push introduces: those touched by non-merge commits
+ * reachable from the pushed tips but not from `baseRef` — by default no
+ * remote-tracking ref (`--remotes`) — minus deletions, and only those that
+ * still exist as files in the working tree. Sorted and unique.
+ *
+ * `baseRef` widens the range to everything the branch has ahead of that ref,
+ * including commits a WIP checkpoint already pushed (Issue #3689). It must be
+ * a ref the caller resolved itself; a value git could read as an option is
+ * refused.
  */
 export async function listPushedFiles(
   refs: PrePushRef[],
   cwd: string,
   git: PrePushGit,
+  baseRef?: string,
 ): Promise<Result<string[], string>> {
   if (refs.length === 0) return { ok: true, value: [] };
+  if (baseRef !== undefined && (baseRef === "" || baseRef.startsWith("-"))) {
+    return { ok: false, error: `unsafe base ref ${JSON.stringify(baseRef)}` };
+  }
   const result = await git(
     [
       "log",
@@ -121,7 +159,7 @@ export async function listPushedFiles(
       "--diff-filter=d",
       ...refs.map((r) => r.localSha),
       "--not",
-      "--remotes",
+      baseRef ?? "--remotes",
     ],
     cwd,
   );
@@ -175,6 +213,33 @@ const DENO_FORMAT_EXTENSIONS = [
 ];
 const DENO_LINT_EXTENSIONS = DENO_FORMAT_EXTENSIONS.slice(0, 8);
 const MARKDOWN_EXTENSIONS = [".md", ".markdown"];
+
+/** Extensions the Spelling workflow's glob covers (`**\/*.{md,html,js,ts,css,sh}`). */
+const CSPELL_EXTENSIONS = [
+  ".md",
+  ".markdown",
+  ".html",
+  ".js",
+  ".ts",
+  ".css",
+  ".sh",
+];
+
+/** Config names cspell finds on its own when run from the repo root. */
+const CSPELL_ROOT_CONFIGS = [
+  "cspell.json",
+  ".cspell.json",
+  "cSpell.json",
+  "cspell.yaml",
+  "cspell.yml",
+  ...["json", "jsonc", "js", "cjs", "mjs", "yaml", "yml"].flatMap((ext) => [
+    `cspell.config.${ext}`,
+    `.cspell.config.${ext}`,
+  ]),
+];
+
+/** Non-root config locations; cspell needs `--config` to find these. */
+const CSPELL_NESTED_CONFIGS = ["docs/cspell.json"];
 
 const MARKDOWNLINT_CONFIGS = [
   ".markdownlint-cli2.jsonc",
@@ -233,6 +298,15 @@ export function planChangedFileChecks(
   opts: {
     repoRoot: string;
     markdownlintBinary: string | null;
+    /** Resolved cspell binary; absent or null means "not found". */
+    cspellBinary?: string | null;
+    /**
+     * Whether the repo's own CI runs cspell. When false, a tracked cspell
+     * config is not enough to run the check: the push is not blocked on a
+     * tool CI would never run. Defaults to false, so a caller that does not
+     * read the workflows cannot block on cspell by accident.
+     */
+    cspellInCi?: boolean;
     denoScopes?: Record<string, DenoScopeConfig>;
   },
 ): Result<ChangedFileCheck[], string> {
@@ -321,6 +395,40 @@ export function planChangedFileChecks(
     });
   }
 
+  const rootCspell = CSPELL_ROOT_CONFIGS.find((name) => tracked.includes(name));
+  const nestedCspell = CSPELL_NESTED_CONFIGS.find((name) =>
+    tracked.includes(name)
+  );
+  const spelling = changed.filter((p) => hasExtension(p, CSPELL_EXTENSIONS));
+  const cspellInCi = opts.cspellInCi ?? false;
+  if ((rootCspell || nestedCspell) && cspellInCi && spelling.length > 0) {
+    if (!opts.cspellBinary) {
+      return {
+        ok: false,
+        error: "cspell is configured for this repository but cspell could " +
+          "not be found — the push is blocked, not waved through",
+      };
+    }
+    const binary = quoteForTokeniser(opts.cspellBinary);
+    const quoted = quoteAll(spelling);
+    if (binary === null) {
+      return {
+        ok: false,
+        error: `cannot safely quote the cspell path ${
+          JSON.stringify(opts.cspellBinary)
+        }`,
+      };
+    }
+    if (!quoted.ok) return quoted;
+    const config = rootCspell ? "" : `--config ${nestedCspell} `;
+    checks.push({
+      label: "cspell",
+      cwd: opts.repoRoot,
+      command:
+        `${binary} --no-progress --no-summary --no-must-find-files ${config}${quoted.value}`,
+    });
+  }
+
   return { ok: true, value: checks };
 }
 
@@ -357,11 +465,87 @@ async function loadDenoScopes(
  * Find a runnable `markdownlint-cli2`: the repo's own install first, then the
  * first working one on `PATH`; null when neither runs.
  */
-export async function findMarkdownlintBinary(
+export function findMarkdownlintBinary(
   repoRoot: string,
   pathValue: string,
 ): Promise<string | null> {
-  const local = `${repoRoot}/node_modules/.bin/markdownlint-cli2`;
+  return findBinary("markdownlint-cli2", repoRoot, pathValue);
+}
+
+/**
+ * Whether the repo's own CI runs cspell: a tracked workflow under
+ * `.github/workflows/` with a `run:` or `uses:` step that names cspell.
+ * Comment lines are ignored. A repo with a cspell config but no such step
+ * is not blocked by cspell, since its required CI never runs it.
+ */
+export async function repoCiRunsCspell(
+  repoRoot: string,
+  tracked: readonly string[],
+): Promise<boolean> {
+  for (const path of tracked) {
+    if (!path.startsWith(".github/workflows/")) continue;
+    if (!/\.ya?ml$/.test(path)) continue;
+    let text: string;
+    try {
+      text = await Deno.readTextFile(`${repoRoot}/${path}`);
+    } catch {
+      continue;
+    }
+    if (workflowRunsCspell(text)) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether one workflow file's text runs cspell: a `run:` or `uses:` step
+ * whose command or action names cspell, on the same line or inside a
+ * block scalar (`run: |`) under it. Comment lines are ignored. A cspell run
+ * reached only through a script the step calls (`npm run spellcheck`) is not
+ * detected, and the docs say so.
+ */
+export function workflowRunsCspell(text: string): boolean {
+  const stepKey = /^(\s*)(?:-\s+)?(?:run|uses)\s*:(.*)$/;
+  const cspellWord = /\bcspell\b/i;
+  let blockIndent: number | null = null;
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    if (blockIndent !== null) {
+      if (line.trim() === "") continue;
+      const indent = line.length - line.trimStart().length;
+      if (indent > blockIndent) {
+        if (!line.trimStart().startsWith("#") && cspellWord.test(line)) {
+          return true;
+        }
+        continue;
+      }
+      blockIndent = null;
+    }
+    const step = stepKey.exec(line);
+    if (!step) continue;
+    const rest = (step[2] ?? "").trim();
+    if (/^[|>][-+0-9]*$/.test(rest)) {
+      blockIndent = (step[1] ?? "").length;
+      continue;
+    }
+    if (cspellWord.test(rest)) return true;
+  }
+  return false;
+}
+
+/** Find a runnable `cspell`: the repo's own install first, then `PATH`. */
+export function findCspellBinary(
+  repoRoot: string,
+  pathValue: string,
+): Promise<string | null> {
+  return findBinary("cspell", repoRoot, pathValue);
+}
+
+async function findBinary(
+  name: string,
+  repoRoot: string,
+  pathValue: string,
+): Promise<string | null> {
+  const local = `${repoRoot}/node_modules/.bin/${name}`;
   try {
     if ((await Deno.stat(local)).isFile && await canRunBinary(local)) {
       return local;
@@ -371,7 +555,7 @@ export async function findMarkdownlintBinary(
   }
   for (const dir of pathValue.split(":")) {
     if (dir === "") continue;
-    const candidate = `${dir}/markdownlint-cli2`;
+    const candidate = `${dir}/${name}`;
     try {
       if (
         (await Deno.stat(candidate)).isFile && await canRunBinary(candidate)
@@ -400,6 +584,14 @@ export async function runPrePushGate(opts: {
   runner?: PreFlightRunner;
   git?: PrePushGit;
   findMarkdownlint?: (repoRoot: string) => Promise<string | null>;
+  findCspell?: (repoRoot: string) => Promise<string | null>;
+  /** Default branch ref for the sweptAt check; resolved from origin/HEAD when absent. */
+  defaultRef?: string;
+  /**
+   * Check every non-merge commit ahead of this ref instead of only commits on
+   * no remote-tracking ref (Issue #3689: the completion phase's pre-PR check).
+   */
+  baseRef?: string;
 }): Promise<Result<{ checksRun: string[] }, Error>> {
   const git = opts.git ?? defaultPrePushGit;
   const fail = (message: string): Result<never, Error> => ({
@@ -407,15 +599,25 @@ export async function runPrePushGate(opts: {
     error: new Error(message),
   });
 
+  const infrastructureFail = (message: string): Result<never, Error> => ({
+    ok: false,
+    error: new PrePushGateInfrastructureError(message),
+  });
+
   const refs = parsePrePushRefs(opts.stdin);
   if (!refs.ok) return fail(refs.error);
 
-  const changed = await listPushedFiles(refs.value, opts.cwd, git);
-  if (!changed.ok) return fail(changed.error);
+  const changed = await listPushedFiles(
+    refs.value,
+    opts.cwd,
+    git,
+    opts.baseRef,
+  );
+  if (!changed.ok) return infrastructureFail(changed.error);
 
   const lsFiles = await git(["ls-files", "-z"], opts.cwd);
   if (lsFiles.code !== 0) {
-    return fail(
+    return infrastructureFail(
       `git ls-files failed (exit ${lsFiles.code}): ${lsFiles.stderr.trim()}`,
     );
   }
@@ -432,12 +634,39 @@ export async function runPrePushGate(opts: {
     markdownlintBinary = await find(opts.cwd);
   }
 
+  const cspellInCi = await repoCiRunsCspell(opts.cwd, tracked);
+  const needsCspell = cspellInCi &&
+    changed.value.some((p) => hasExtension(p, CSPELL_EXTENSIONS)) &&
+    [...CSPELL_ROOT_CONFIGS, ...CSPELL_NESTED_CONFIGS].some((n) =>
+      tracked.includes(n)
+    );
+  let cspellBinary: string | null = null;
+  if (needsCspell) {
+    const find = opts.findCspell ??
+      ((root: string) => findCspellBinary(root, Deno.env.get("PATH") ?? ""));
+    cspellBinary = await find(opts.cwd);
+  }
+
   const plan = planChangedFileChecks(changed.value, tracked, {
     repoRoot: opts.cwd,
     markdownlintBinary,
+    cspellBinary,
+    cspellInCi,
     denoScopes: await loadDenoScopes(opts.cwd, tracked),
   });
   if (!plan.ok) return fail(plan.error);
+
+  const sweep = await checkSweptAtAncestry({
+    cwd: opts.cwd,
+    changed: changed.value,
+    git,
+    defaultRef: opts.defaultRef,
+  });
+  if (!sweep.ok) {
+    return sweep.infrastructure
+      ? infrastructureFail(sweep.error)
+      : fail(sweep.error);
+  }
 
   const checksRun: string[] = [];
   for (const check of plan.value) {

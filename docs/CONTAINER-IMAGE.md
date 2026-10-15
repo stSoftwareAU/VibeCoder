@@ -51,8 +51,8 @@ The fetch-verify-extract toolchains in that block are **fragments**
 `RUN bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci`
 and a separate `RUN … rust` install them, so the two layers keep the
 least-to-most-churn split while the Containerfile carries ids instead of `ARG`
-blocks. `markdownlint-cli2` and `graft` sit between the two runs, unchanged —
-both are installed from npm, not fetched and extracted, and both are after the
+blocks. `markdownlint-cli2`, `cspell` and `graft` sit between the two runs, unchanged —
+all are installed from npm, not fetched and extracted, and all are after the
 Node/npm layer they depend on rather than immediately after it, so bumping
 either reuses the provider and fragment layers' cache. The Rust run removes the
 installer and the fragments once it is done, so none of them survive into the

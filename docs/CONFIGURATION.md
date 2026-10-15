@@ -4577,7 +4577,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |
 | `nice`                  | integer | Per-repo rotation tier. **Lower runs sooner** (Unix-`nice` semantics); default `0`. Gates new-work selection only, and orders repos **within** a label tier — the label tier (`top-priority` > `work-on` > `low-priority` > `idle-task`) is decided first, fleet-wide, so `nice` never lets one repo's routine backlog outrank another's `top-priority` (Issue #1063). See [Per-repo `nice` rotation tier](#%EF%B8%8F-per-repo-nice-rotation-tier).                                                                                                                                                                         |
 | `ciProviders`           | array   | Per-repo CI log providers consulted when a PR's CI fails, before invoking the `ci_fix` prompt. Each entry is `{ "provider": "<id>", "checkNamePattern"?: "<regex>", "jobPath"?: "<path>" }`; only `provider` is required. `jobPath` is passed through untouched — whether a provider needs one, and what shape it takes, is that provider's business. GitHub Actions is the built-in default and needs no entry; any other CI system registers its provider from a [private extension](PRIVATE-EXTENSIONS.md). Malformed entries are rejected with a named-field error at config load. See [Adding a CI log provider](EXTENDING.md#-adding-a-ci-log-provider). |
-| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint. The first non-zero exit **blocks both the commit and the push** — there is no override flag. The same commands also gate the agent's own `git push` through a per-run `pre-push` hook (see the section below). A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
+| `pre-flight`            | array   | Mandatory pre-flight commands run in the repo working tree immediately before the worker's automated commit, at the `assertSafeToCommit()` chokepoint, and again before the worker pushes commits it did not just make (Step 1b of `commitAndPushPending`, and the issue completion phase's first and retry pushes). The first non-zero exit **blocks both the commit and the push** — there is no override flag. The same commands also gate the agent's own `git push` through a per-run `pre-push` hook (see the section below). A missing / non-executable / unstartable command or a timeout is a block, never a pass. See [Pre-flight enforcement gate](#-pre-flight-enforcement-gate). |
 | `ci_failure_labels`     | array   | Issue labels that mark a CI-failure report (e.g. `["develop-build-failure"]`). When an issue carries one, the worker parses the build reference from the issue body, fetches the **full** console log through the repo's configured CI log provider, and routes to the CI diagnosis-and-fix framing. Omit or leave empty to disable. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `ci_failure_job_path`   | string  | Fallback target handed to the CI log provider when a CI-failure issue body carries a build number but no `Build URL`. Used only when the repo's `ciProviders` entry names no `jobPath` of its own; opaque to core. See [CI-failure issue log fetch](ci-failure-issue-log-fetch.md). |
 | `max_auto_fix_attempts` | integer | Per-repo auto-fix attempt cap, overriding the global `max_auto_fix_attempts`. Non-positive values fall back to the global setting. See [Auto-fix attempt cap](#-auto-fix-attempt-cap).                                                                                                                           |
@@ -4632,9 +4632,20 @@ pushed is even reported. The `pre-flight` gate refuses to commit or push work
 that is already known to be broken, so the failure is caught locally in
 seconds instead of downstream in the build.
 
-The gate runs at two points: the worker's own commit chokepoint, and the
-agent's own `git push` through a per-run `pre-push` hook (see
-[Agent pre-push hook](#agent-pre-push-hook-and-the-changed-files-check)).
+The gate runs at four points:
+
+1. the worker's own commit chokepoint (Step 1 of `commitAndPushPending`);
+2. Step 1b of `commitAndPushPending`, which gates commits that are already
+   made but unpushed (the agent committed them and never pushed) and re-runs
+   the pre-flight commands when Step 1 committed nothing;
+3. the issue completion phase's `gateBeforePush()`, before the first push and
+   again before the retry push that follows push-rejection recovery, over every
+   non-merge commit ahead of the PR base (including commits the execute
+   phase's ungated WIP checkpoint pushes already put on origin);
+4. the agent's own `git push` through a per-run `pre-push` hook.
+
+Points 2–4 are described in
+[Agent pre-push hook](#agent-pre-push-hook-and-the-changed-files-check).
 
 Configure it per repo with a list of commands (kebab-case `pre-flight`,
 snake_case `pre_flight`, or camelCase `preFlight` are all accepted):
@@ -4656,8 +4667,14 @@ repo-specific commands in the worker.
   chokepoint as `assertSafeToCommit()`, immediately before the worker's
   automated commit. Execution stops at the **first non-zero exit**. When the
   only pending changes were worker-owned state files, they are unstaged before
-  the gate (Issue #1661) and nothing is left to commit — the gate, the
-  pre-flight commands and the commit are all skipped.
+  the gate (Issue #1661) and nothing is left to commit — the commit-time gate,
+  the commit-time pre-flight commands and the commit are all skipped. Step 1b
+  then still gates any commits that are already made but unpushed, re-running
+  the pre-flight commands because Step 1 did not; when Step 1 did commit, the
+  pre-flight commands already ran there and Step 1b runs only the changed-file
+  checks. The issue completion phase runs the commands again before each push
+  it makes (the first, and the retry after recovery), even if they already ran
+  at the commit chokepoint earlier in the run.
 - A non-zero exit is a **hard block**: it aborts both the commit **and** the
   push. The worker must fix and retry — there is deliberately **no** override
   or force flag and **no** environment escape hatch.
@@ -4669,8 +4686,11 @@ repo-specific commands in the worker.
 - The failing command's stdout/stderr is **captured and surfaced** on the
   returned error so the retry/diagnosis path sees the real compiler error, not
   a bare "pre-flight failed".
-- A repo with **no** `pre-flight` entry is unaffected — zero added latency, no
-  gate.
+- A repo with **no** `pre-flight` entry has no commands to run, but is not
+  fully unaffected: the issue completion phase's push (and Step 1b, for
+  callers that pass a pre-flight spec) still runs the changed-file checks
+  described below, and a failure there fails the run. Pushes that pass no spec
+  (such as WIP-preservation pushes) stay ungated.
 
 Commands run directly (not through a shell), so each entry is a program plus
 arguments; shell features (pipes, redirects, globs) are not interpreted. Wrap
@@ -4692,13 +4712,18 @@ flowchart TD
     N -->|no| S["no commit —<br/>reported honestly"]
     N -->|yes| C["assertSafeToCommit()"]
     C --> D{"pre-flight<br/>configured?"}
-    D -->|no| G["git commit → git push"]
+    D -->|no| G["git commit"]
     D -->|yes| E["run pre-flight commands<br/>in order"]
     E --> F{"all exit 0?"}
     F -->|yes| G
     F -->|"non-zero / missing /<br/>timeout"| H["BLOCK commit + push<br/>surface output to fixer"]
+    G --> B1["Step 1b / completion gate:<br/>changed-file checks on unpushed commits<br/>(pre-flight re-runs if Step 1 committed nothing)"]
+    S --> B1
+    B1 --> K{"pass?"}
+    K -->|yes| P["git push"]
+    K -->|no| H
+    style P fill:#14532d,stroke:#052e16,color:#fff
     style H fill:#7f1d1d,stroke:#450a0a,color:#fff
-    style G fill:#14532d,stroke:#052e16,color:#fff
     style S fill:#495057,stroke:#212529,color:#fff
 ```
 
@@ -4710,15 +4735,42 @@ every agent run, the worker writes a per-run
 `pre-push` hook into a temporary directory and enables it in the **agent's
 environment only**, through git's environment config (`GIT_CONFIG_COUNT`,
 `GIT_CONFIG_KEY_n=core.hooksPath`, `GIT_CONFIG_VALUE_n`). Every `git push` the
-agent runs goes through it. The worker's own pushes (its final-mile
-commit-and-push and WIP preservation) do not carry the agent's environment and
-are not gated by the hook; they keep the pre-flight at the commit chokepoint.
+agent runs goes through it. The worker's own pushes do not carry the agent's
+environment, so the hook does not gate them; instead its final-mile
+commit-and-push (`commitAndPushPending`, when given a pre-flight spec) runs the
+same changed-files check through `runPrePushGate` on the already-committed
+unpushed commits before pushing, and refuses the push on failure (Issue #3689).
+WIP-preservation pushes (no pre-flight spec) stay ungated so work is not lost.
+Step 1b runs only when a pre-flight spec exists, so callers passing no spec
+(such as WIP-preservation pushes) are not gated there. The completion phase's
+`gateBeforePush()` also runs this gate before the first push and the retry push,
+and falls back to `{ commands: [] }` when a repo has no pre-flight commands, so
+the changed-file checks (listed under the hook's first stage below: deno
+fmt/lint, cargo fmt, markdownlint, cspell and sweep ledger `sweptAt`
+ancestry) still run and can fail the run. Unlike Step 1b, the completion gate
+checks every non-merge commit the branch has ahead of the PR base
+(`git log --no-merges <base>..HEAD`), not only commits on no remote-tracking
+ref. The execute phase's WIP checkpoints (periodic, and once more at phase end)
+push the agent's commits through `commitAndPushPending` with no spec, so those
+pushes are ungated and the commits are usually already on origin when the
+completion phase runs; the whole-branch range is what keeps them from reaching
+`gh pr create` unchecked (PR #3716 review). If the base ref cannot be resolved,
+the completion gate falls back to the unpushed-only check. The completion gate
+does nothing when the branch has no commit of its own ahead of the base, and in
+that whole-branch mode it does not look up the branch's remote head. A git or
+remote lookup that fails (a network error, a timeout) is not reported as the
+branch failing its checks: it fails the run as a push failure, which is retried
+in-run (PR #3716 review). In Step 1b the pre-flight commands
+re-run only when Step 1 committed nothing; in the completion phase they run
+before every push.
 
 The hook runs two stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
    files changed by the commits being pushed that are not already on any
-   remote-tracking ref (merge commits and deleted files excluded), then runs
+   remote-tracking ref (merge commits and deleted files excluded; the issue
+   completion phase widens the range to every non-merge commit ahead of the PR
+   base, see above), then runs
    the repo's own tools on just those files (deno gets only the files its own
    config would check, see below):
    - `deno fmt --check --permit-no-files` (ts, tsx, js, jsx, mjs, cjs, mts,
@@ -4738,7 +4790,31 @@ The hook runs two stages:
    - `markdownlint-cli2` on changed `.md` / `.markdown` files when the repo
      root carries a markdownlint config (`.markdownlint-cli2.*` or
      `.markdownlint.*`), using the repo's `node_modules/.bin/markdownlint-cli2`
-     first, else the one on `PATH`.
+     first, else the one on `PATH`;
+   - `cspell` on changed `.md`, `.markdown`, `.html`, `.js`, `.ts`, `.css` and
+     `.sh` files (the Spelling workflow's glob) when the repo tracks a cspell
+     config and its own CI runs cspell: a tracked workflow under
+     `.github/workflows/` has a `run:` or `uses:` step naming cspell, on that
+     line or inside a `run: |` block. A repo with a cspell config but no such
+     step gets no cspell run, so it is never blocked on a tool its required CI
+     does not run. A cspell run reached only through a script the step calls
+     (for example `npm run spellcheck`) is not detected. The config is a root one
+     cspell finds itself (`cspell.json`, `.cspell.json`,
+     `cSpell.json`, `cspell.{yaml,yml}`, `[.]cspell.config.*`) or
+     `docs/cspell.json`, which is passed with `--config docs/cspell.json`. It
+     runs from the repo root with `--no-progress --no-summary
+     --no-must-find-files`, using the repo's `node_modules/.bin/cspell` first,
+     else the one on `PATH`. No tracked config, or no matching changed file,
+     means no cspell run;
+   - **sweep ledger `sweptAt` ancestry**, only when the push changes
+     `docs/audits/lib-sweep-coverage.json` or a
+     `docs/audits/lib-sweep-coverage/top-up-*.json`: it checks that the
+     `sweptAt` of just the slices those files contribute is an ancestor of the
+     default branch (`origin/HEAD`, resolved with
+     `git symbolic-ref --short refs/remotes/origin/HEAD`), the same check CI's
+     "Sweep ledger sweptAt ancestry" step makes, so a branch commit recorded as
+     `sweptAt` is caught before the push. A shallow clone is deepened first.
+     When no ledger file changed, this check makes no git calls.
 2. **Configured `pre-flight` commands.** The commands are resolved by the
    run's repo from `repo_config`, so every agent run that names its repo gets
    that repo's `pre-flight` commands in the hook; a run that names no repo gets
@@ -4746,7 +4822,11 @@ The hook runs two stages:
 
 It fails closed, by the same rules as pre-flight: a check that fails, cannot
 start, or times out refuses the push; markdownlint configured but
-`markdownlint-cli2` not found refuses the push; a missing hook module, spec or
+`markdownlint-cli2` not found refuses the push; cspell configured and run by
+the repo's CI but `cspell` not found refuses the push (a cspell config alone
+does not); a changed sweep ledger file whose default branch
+cannot be resolved, whose history cannot be deepened, or whose slice `sweptAt`
+is not on the default branch refuses the push; a missing hook module, spec or
 `deno` binary refuses the push. Refusals print lines starting
 `[PRE_PUSH_BLOCKED]`. The checks run in the same filtered environment as
 pre-flight (the hook reuses `runPreFlightGate`).
