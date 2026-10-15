@@ -661,3 +661,56 @@ Deno.test("gateUnpushedCommits - a failed git lookup inside the gate is returned
     await Deno.remove(tmp, { recursive: true });
   }
 });
+
+// Step 1a (follow-up to #3806): the PR processors' formatter hook runs after
+// Step 1's commit and before Step 1b's gate, and can never fail the call.
+
+Deno.test("commitAndPushPending - Step 1a hook runs after Step 1's commit, before the gate", async () => {
+  const branch = "issue-3806-hook-order";
+  const { tmp, downstream } = await makeRepo("preflight_hook_order_", branch);
+  try {
+    await Deno.writeTextFile(`${downstream}/feature.txt`, "work\n");
+    let dirtyWhenHookRan: string | undefined;
+    const result = await commitAndPushPending(
+      branch,
+      "Auto-commit (hook order)",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      { commands: [], runner: passRunner },
+      undefined,
+      async () => {
+        dirtyWhenHookRan =
+          (await runGit(["status", "--porcelain"], downstream)).stdout;
+      },
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    assertEquals(dirtyWhenHookRan, "", "Step 1 must have committed first");
+    if (result.ok) assertEquals(result.value.finalUnpushedCount, 0);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("commitAndPushPending - a Step 1a hook that throws never fails the push", async () => {
+  const branch = "issue-3806-hook-throws";
+  const { tmp, downstream } = await makeRepo("preflight_hook_throws_", branch);
+  try {
+    await Deno.writeTextFile(`${downstream}/feature.txt`, "work\n");
+    const result = await commitAndPushPending(
+      branch,
+      "Auto-commit (hook throws)",
+      { cwd: downstream, env: NO_HOST_GIT_CONFIG },
+      false,
+      undefined,
+      undefined,
+      () => Promise.reject(new Error("formatter exploded")),
+    );
+    assert(result.ok, result.ok ? "" : result.error.message);
+    if (result.ok) {
+      assertEquals(result.value.committedNewChanges, true);
+      assertEquals(result.value.finalUnpushedCount, 0);
+    }
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});

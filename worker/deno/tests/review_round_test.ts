@@ -5,7 +5,12 @@
  * the next subscription with budget.
  */
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { type ReviewRoundDeps, runReviewRound } from "../lib/review_round.ts";
+import {
+  renderStreamLine,
+  type ReviewRoundDeps,
+  type ReviewRunRecord,
+  runReviewRound,
+} from "../lib/review_round.ts";
 
 const USAGE_LIMIT = "You've hit your usage limit · resets 1:50pm (UTC)";
 
@@ -216,4 +221,115 @@ Deno.test("runReviewRound never engages the fallback for a non-usage-limit failu
   const { deps, calls } = fakeDeps([{ code: 3, output: "model overloaded" }]);
   assertEquals(await runReviewRound("p", [], deps), 3);
   assertEquals(calls.length, 1);
+});
+
+// ---------------------------------------------------------------------------
+// Which provider and model wrote each review, and what it cost: a round given
+// its directory records each attempt there before it starts and its exit
+// status when it ends, and streams that attempt's CLI output to its own file,
+// so post.ts names the attempt posting and the runner prices it afterwards.
+// ---------------------------------------------------------------------------
+
+function recordingDeps(
+  outcomes: { code: number; output: string }[],
+  options: { next?: string | null } = {},
+) {
+  const base = fakeDeps(outcomes, options);
+  const records: ReviewRunRecord[] = [];
+  const streams: (string | undefined)[] = [];
+  const deps: ReviewRoundDeps = {
+    ...base.deps,
+    runClaude: (args, env, streamFile) => {
+      streams.push(streamFile);
+      // What post.ts would read mid-attempt: the attempt has no status yet.
+      records.push(structuredClone(lastRecord));
+      return base.deps.runClaude(args, env, streamFile);
+    },
+    recordRun: (_dir, record) => {
+      lastRecord = structuredClone(record);
+      return Promise.resolve();
+    },
+  };
+  let lastRecord: ReviewRunRecord = { round: "", attempts: [] };
+  return { deps, records, streams, final: () => lastRecord, calls: base.calls };
+}
+
+const ROUND_ARGS = [
+  "--model",
+  "claude-opus-5-5",
+  "--effort",
+  "xhigh",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+];
+
+Deno.test("runReviewRound records the attempt it is running, with provider, model and effort", async () => {
+  const { deps, records, streams, final } = recordingDeps([
+    { code: 0, output: "Round done" },
+  ]);
+  const code = await runReviewRound("p", ROUND_ARGS, deps, {
+    roundDir: "/logs/review-fleet-prs/rounds/20261016-101500",
+  });
+  assertEquals(code, 0);
+  assertEquals(records[0]!.round, "20261016-101500");
+  assertEquals(records[0]!.attempts, [{
+    attempt: 1,
+    provider: "claude",
+    model: "claude-opus-5-5",
+    effort: "xhigh",
+    stream: "stream-1.jsonl",
+  }]);
+  assertEquals(streams, [
+    "/logs/review-fleet-prs/rounds/20261016-101500/stream-1.jsonl",
+  ]);
+  assertEquals(final().attempts[0]!.code, 0);
+});
+
+Deno.test("runReviewRound records a DeepSeek fallback attempt as deepseek, not claude (Issue #3632)", async () => {
+  const { deps, records, final } = recordingDeps(
+    [
+      { code: 1, output: USAGE_LIMIT },
+      { code: 0, output: "Round done on the fallback" },
+    ],
+    { next: null },
+  );
+  assertEquals(
+    await runReviewRound("p", ROUND_ARGS, deps, { roundDir: "/r/x" }),
+    0,
+  );
+  const fallback = records[1]!.attempts[1]!;
+  assertEquals(fallback.provider, "deepseek");
+  assertEquals(fallback.model, "deepseek-v4-pro");
+  assertEquals(fallback.effort, "xhigh");
+  assertEquals(fallback.stream, "stream-2.jsonl");
+  assertEquals(final().attempts.map((a) => [a.provider, a.code]), [
+    ["claude", 1],
+    ["deepseek", 0],
+  ]);
+});
+
+Deno.test("runReviewRound without a round directory records nothing and streams to no file", async () => {
+  const { deps, streams, final } = recordingDeps([{ code: 0, output: "" }]);
+  assertEquals(await runReviewRound("p", ROUND_ARGS, deps), 0);
+  assertEquals(streams, [undefined]);
+  assertEquals(final().attempts, []);
+});
+
+Deno.test("renderStreamLine keeps the round's log readable: result text and non-JSON lines only", () => {
+  assertEquals(
+    renderStreamLine(
+      '{"type":"result","subtype":"success","result":"Approved owner/repo#7"}',
+    ),
+    "Approved owner/repo#7",
+  );
+  assertEquals(
+    renderStreamLine('{"type":"assistant","message":{"content":[]}}'),
+    null,
+  );
+  assertEquals(
+    renderStreamLine("cannot run claude: boom"),
+    "cannot run claude: boom",
+  );
+  assertEquals(renderStreamLine(""), null);
 });
