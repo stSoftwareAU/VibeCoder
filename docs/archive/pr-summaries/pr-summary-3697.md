@@ -84,11 +84,14 @@ Red checks (each change was made temporarily and then restored):
 - New closure sentence removed from the recovery prompt: the summary-rule retry test went red.
 - Drift pins: each pinned phrase ("closed only by fixing it", "not red-checked", "A verifier finding is closed only by fixing it or by disputing it with evidence", "Auto-merge is held") is new text this diff adds, absent from the base versions of `pre_pr_verifier.ts` and `summary_rule_gate_retry.ts`.
 
-No existing assertion is removed or edited.
+- Held comment built unconditionally (the line-819 ternary forced to its non-empty arm): the cleared-finding test went red, because it asserts that no PR comment contains "Auto-merge is held".
+- Standing-violation operand forced to `false`: the existing #3382 hold tests in `worker/deno/tests/completion_phase_summary_incomplete_test.ts` went red.
+
+No existing assertion is removed or edited. `worker/deno/tests/completion_phase_merged_pr_closure_test.ts` only gains `heldFindingsComment: ""` on its five `recoverAndFinaliseExistingPr` calls, because the new option is required.
 
 Results on the final head:
 
-- `deno task test:unit tests/completion_phase_pre_pr_verifier_3395_test.ts tests/pre_pr_verifier_3395_test.ts tests/completion_phase_summary_incomplete_test.ts tests/completion_phase_summary_rule_retry_test.ts tests/summary_rule_gate_retry_test.ts < /dev/null`: passed.
-- `./quality.sh`: see the line below.
+- The targeted completion-phase, verifier, retry-prompt and merged-PR-closure test files: passed.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. The only skipped stage is `config integration`; deno tests, lint, type check, fmt, markdownlint, mermaid and semgrep all passed.
 
 <!-- vibe-branch-outcomes -->
