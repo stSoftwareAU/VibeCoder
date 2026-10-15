@@ -116,6 +116,6 @@ back-reference to #3087 is unchanged and needs no companion pointer.
   `worker/deno/tests/existing_rule_conflicts_3077_test.ts`, every test that
   reads the issue prompt's PR Summary File section, and the nine tests that
   read `docs/workflows/issue-processing.md`. All passed.
-- `./quality.sh < /dev/null` on the final code head: `Result: PASSED (with skipped checks)`. Every stage passed (deno fmt, lint, type check, tests, markdownlint, mermaid, semgrep and the rest) except `config integration`, which was skipped.
+- `./quality.sh < /dev/null` on the final code head: `Result: PASSED (with skipped checks)`. Every stage passed (deno fmt, lint, type check, tests, markdownlint, mermaid, semgrep and the rest) except `config integration`, which was skipped with "deno or .config.json not available" (no worker `.config.json` in this checkout).
 
 <!-- vibe-branch-outcomes -->
