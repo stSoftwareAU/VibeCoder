@@ -1750,6 +1750,8 @@ Deno.test("falsePositives - a malformed evidence citation is refused before the 
     "worker/lib/guard.ts:3",
     [3],
     [":".repeat(100_000)],
+    ["worker\\lib\\guard.ts:3"],
+    ["worker/lib/gu\u0000ard.ts:3"],
   ];
   for (const evidence of malformed) {
     const { baseline, errors } = parseOneFalsePositive(
@@ -1765,8 +1767,16 @@ Deno.test("falsePositives - a malformed evidence citation is refused before the 
       "a long citation must be truncated in the error",
     );
     assertEquals(baseline.falsePositives.length, 0);
+    // Asserted per case, so each refusal operand is shown to stop the
+    // citation before the counter, independently of the others.
+    assertEquals(
+      calls,
+      [],
+      `malformed citation reached the counter: ${
+        JSON.stringify(evidence).slice(0, 40)
+      }`,
+    );
   }
-  assertEquals(calls, [], "no malformed citation reaches the counter");
 
   const control = parseOneFalsePositive(validFalsePositive(), recording);
   assertEquals(control.errors, []);

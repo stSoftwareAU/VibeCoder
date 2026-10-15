@@ -53,6 +53,11 @@ import { runWithTimeout } from "./subprocess_timeout.ts";
 import { runGhCommand } from "./github.ts";
 import { guardedLabelArgs } from "./guarded_issue_labels.ts";
 import {
+  isAtOrAbove,
+  normalisePath as normaliseHostPath,
+  pathStyleFor,
+} from "./host_path_style.ts";
+import {
   listAllOpenIssueTitles,
   listKnownOpenFindingIds,
 } from "./idle_task_snapshot.ts";
@@ -1191,9 +1196,7 @@ function isRepoRelativePath(path: string): boolean {
 
 /** Quote a value for an error message, truncated when it is long. */
 function quoteCitation(value: unknown): string {
-  const text = typeof value === "string"
-    ? value
-    : (JSON.stringify(value) ?? "");
+  const text = typeof value === "string" ? value : JSON.stringify(value);
   const shown = text.length > CITATION_QUOTE_LENGTH
     ? `${text.slice(0, CITATION_QUOTE_LENGTH)}...`
     : text;
@@ -1280,7 +1283,17 @@ export function countTreeLines(repoDir: string, path: string): number | null {
   try {
     const root = Deno.realPathSync(repoDir);
     const target = Deno.realPathSync(`${root}/${path}`);
-    if (!target.startsWith(`${root}/`)) return null;
+    const style = pathStyleFor(root);
+    // At-or-above: a target equal to the root is refused by the isFile check.
+    if (
+      !isAtOrAbove(
+        normaliseHostPath(root, style),
+        normaliseHostPath(target, style),
+        style,
+      )
+    ) {
+      return null;
+    }
     if (!Deno.statSync(target).isFile) return null;
     const text = Deno.readTextFileSync(target);
     if (text === "") return 0;

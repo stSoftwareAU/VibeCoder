@@ -156,23 +156,24 @@ specific code location, the finding is not eliminated"
 downgrade a finding until every call site of the sink has been checked
 ("Downgrade discipline"). README.md, "The Closed Loop" → "Capability Filter".
 
-**What VibeCoder has today.** A sweep `falsePositives` entry needs a `path`, a
-`rule` and a `reason` of at least `MIN_REASON_LENGTH` (10) characters
-(`validateEntry`, `security_tree_sweep.ts:1105`; constant at `:366`). Nothing
-asks where the defence is. An entry with neither `line` nor `snippet` matches
-every finding of that rule anywhere in the file (`entryMatches`,
+**What VibeCoder had at evaluation time (before #3658).** A sweep
+`falsePositives` entry needed a `path`, a `rule` and a `reason` of at least
+`MIN_REASON_LENGTH` (10) characters (at the evaluated revision:
+`validateEntry`, `security_tree_sweep.ts:1105`; constant at `:366`). Nothing
+asked where the defence was. An entry with neither `line` nor `snippet`
+matched every finding of that rule anywhere in the file (`entryMatches`,
 `security_tree_sweep.ts:1229`, at `:1244`). The template the filed issue
-offers asks only for `reason: "<why this is benign>"` (`buildSweepIssueBody`,
+offered asked only for `reason: "<why this is benign>"` (`buildSweepIssueBody`,
 `security_tree_sweep.ts:1741`). On a pull request,
-`.github/workflows/security-tree-sweep.yml` runs the sweep against the PR's
-own checkout and blocks on findings in its changed files
+`.github/workflows/security-tree-sweep.yml` ran the sweep against the PR's
+own checkout and blocked on findings in its changed files
 (`splitByChangedFiles`, `security_tree_sweep.ts:2089`). The code-scanning
-feed filters on the tool's severity alone (`code_scanning_alerts.ts:176`).
+feed filtered on the tool's severity alone (`code_scanning_alerts.ts:176`).
 
-**Gap.** A run blocked by a sweep finding in its own changed file can add a
+**Gap.** A run blocked by a sweep finding in its own changed file could add a
 10-character `falsePositives` entry in the same PR and turn the gate green.
-No evidence is needed, and a line-less entry suppresses the whole file. That
-is #3512's "loosen the check" route.
+No evidence was needed, and a line-less entry suppressed the whole file. That
+was #3512's "loosen the check" route.
 
 **Verdict: Adopt — #3658.** Require each `falsePositives` entry to cite the
 eliminating defence as a `path:line` that resolves in the tree, and reject
