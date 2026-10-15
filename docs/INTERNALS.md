@@ -1014,6 +1014,9 @@ flowchart LR
   of the reviewed PR. `ci_fix_tier_runs` /
   `ci_fix_tier_usd` are `ci_fix` runs and their estimated USD per tier of the
   PR; `pr_feedback_tier_usd` is `pr_feedback` runs' estimated USD per tier.
+  Each of those runs also posts its figures on the PR as a
+  `## Ci-fix run model stats` or `## Pr-feedback run model stats` comment,
+  priced the same way, so a send-back's cost is readable on GitHub too.
   `merged_tier_prs` counts merged PRs per tier from the merged-PR listing
   branch cleanup already fetches. `cost_per_merged_pr` is (issue + `pr_feedback` +
   `ci_fix` USD) ÷ merged PRs for that tier, to 4 decimal places, or `n/a` when
