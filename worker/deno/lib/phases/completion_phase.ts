@@ -162,11 +162,14 @@ import {
 } from "../issue_sub_agent_degradation.ts";
 import {
   buildSecurityFixGateMessage,
+  citedSecurityTests,
+  citedTestIdentifierInDiff,
   evaluateSecurityFixGate,
   hasSecurityLabel,
   isTestFilePath,
   matchedTestDeclarations,
   referencesFindingId,
+  type SecurityFixDiffEvidence,
 } from "../security_fix_gate.ts";
 import {
   buildMutationGateComment,
@@ -218,6 +221,10 @@ import {
   clearSecurityFixGateBlock,
   resolveSecurityGateStateDir,
 } from "../security_fix_gate_feedback.ts";
+import {
+  DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+  type SecurityFixDiscrimination,
+} from "../security_fix_discrimination.ts";
 import { recoverFromSecurityGateBlock } from "../security_fix_gate_retry.ts";
 import { recoverFromSummaryRuleBlock } from "../summary_rule_gate_retry.ts";
 import {
@@ -300,6 +307,76 @@ async function lookupPrState(
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
+  }
+}
+
+/**
+ * Execute the cited security test red→green (Issue #3659). Never throws: any
+ * failure to run is reported as `not_checked`, which the pure gate blocks on,
+ * so an unrunnable check can never read as a pass.
+ */
+async function runSecurityDiscrimination(input: {
+  comparableBase: Awaited<ReturnType<typeof resolveComparableBaseRef>>;
+  securityDiff: SecurityFixDiffEvidence;
+  prBody: string;
+  repo: string;
+  repoPath: string;
+  qualityCredentials: Parameters<typeof resolveRepoCredentials>[1];
+  deps: WorkerDeps;
+}): Promise<SecurityFixDiscrimination> {
+  const { comparableBase, securityDiff, prBody, repo, repoPath, deps } = input;
+  const logger = deps.logger;
+  const notChecked = (reason: string): SecurityFixDiscrimination => {
+    logger.warn("Security-fix discrimination check did not run", { reason });
+    return { kind: "not_checked", reason };
+  };
+  if (!comparableBase.ok) {
+    return notChecked(
+      `the base ref is unresolvable: ${comparableBase.error.message}`,
+    );
+  }
+  const runner = deps.quality.runSecurityFixDiscrimination;
+  if (!runner) {
+    return notChecked("the security-fix discrimination runner is not wired");
+  }
+  try {
+    const credentials = await resolveRepoCredentials(
+      repo,
+      input.qualityCredentials,
+    );
+    if (!credentials.ok) {
+      return notChecked(
+        `the repository's quality_credentials could not be resolved (${credentials.error.message})`,
+      );
+    }
+    const result = await runner({
+      repoPath,
+      baseRef: comparableBase.value,
+      productionFiles: securityDiff.changedFiles.filter((f) =>
+        !isTestFilePath(f)
+      ),
+      tests: citedSecurityTests(prBody, securityDiff.testDiffText),
+      budgetSeconds: DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+      credentialEnv: credentials.value.env,
+    });
+    if (result.kind === "checked") {
+      logger.info("Security-fix discrimination check ran", {
+        test: result.test,
+        preFix: result.preFix,
+        postFix: result.postFix,
+      });
+    } else {
+      logger.warn("Security-fix discrimination check did not run", {
+        reason: result.reason,
+      });
+    }
+    return result;
+  } catch (error) {
+    return notChecked(
+      `discrimination runner failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }
 
@@ -2359,8 +2436,9 @@ async function completionBody(
   // `SEC-<hex>` finding id) must demonstrate that the fault is genuinely
   // closed. The decisive evidence is machine-checkable against the branch
   // diff — a test file is changed, and the test identifier the summary names
-  // really appears in that diff — with the prose linkage kept as a secondary
-  // human-review aid. Fail loud rather than mask a fault as success (Issue
+  // really appears in that diff — and that test is then executed red→green
+  // against the base and the fix (Issue #3659). The prose regression linkage
+  // was dropped: a sentence cannot show a test discriminates. Fail loud rather than mask a fault as success (Issue
   // #3234). Per-repo only (Issue #3239); opt out with the
   // `skip_security_fix_check` repo config.
   //
@@ -2390,10 +2468,30 @@ async function completionBody(
       });
     }
 
+    // Execute the cited test red→green only when the pure gate will want the
+    // record: a diff, a changed test file and a declared cited identifier.
+    let discrimination: SecurityFixDiscrimination | null = null;
+    if (
+      gateActive && securityDiff &&
+      securityDiff.changedFiles.some(isTestFilePath) &&
+      citedTestIdentifierInDiff(prBody, securityDiff.testDiffText)
+    ) {
+      discrimination = await runSecurityDiscrimination({
+        comparableBase,
+        securityDiff,
+        prBody,
+        repo,
+        repoPath: state.repoPath,
+        qualityCredentials: config.repoConfig?.[repo]?.qualityCredentials,
+        deps,
+      });
+    }
+
     const securityGate = evaluateSecurityFixGate({
       prSummaryContent: prBody,
       issueLabels,
       diff: securityDiff,
+      discrimination,
     });
     // The verdict is carried in worker run state so the next attempt reads it
     // from a trusted channel (Issue #4057). The gate's issue comment cannot
@@ -2417,11 +2515,15 @@ async function completionBody(
       // owns the persistence, the comment and any escalation (Issue #1575).
       state.securityGateBlocks = [
         ...(state.securityGateBlocks ?? []),
-        { missing: securityGate.missing, declarations },
+        { missing: securityGate.missing, declarations, discrimination },
       ];
       return {
         status: "failure",
-        reason: buildSecurityFixGateMessage(securityGate.missing, declarations),
+        reason: buildSecurityFixGateMessage(
+          securityGate.missing,
+          declarations,
+          discrimination,
+        ),
       };
     }
 

@@ -13,6 +13,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   buildSecurityFixGateMessage,
+  citedSecurityTests,
   citedTestIdentifierInDiff,
   evaluateSecurityFixGate,
   extractTestIdentifiers,
@@ -22,6 +23,15 @@ import {
   referencesFindingId,
   type SecurityFixDiffEvidence,
 } from "../lib/security_fix_gate.ts";
+import type { SecurityFixDiscrimination } from "../lib/security_fix_discrimination.ts";
+
+/** The worker-executed record a discriminating test produces: red then green. */
+const RED_GREEN: SecurityFixDiscrimination = {
+  kind: "checked",
+  test: { file: "tests/db_test.ts", name: "rejects_injection" },
+  preFix: "fail",
+  postFix: "pass",
+};
 
 /** A PR summary that satisfies both required evidence items. */
 const GOOD_SUMMARY = `## Summary
@@ -347,6 +357,7 @@ Deno.test("evaluateSecurityFixGate - inactive for non-security PR", () => {
     prSummaryContent: "## Summary\nAdded a button. Closes #1.",
     issueLabels: "enhancement,work-on",
     diff: null,
+    discrimination: null,
   });
   assertEquals(result.isSecurityFix, false);
   assertEquals(result.ok, true);
@@ -360,6 +371,7 @@ Deno.test("evaluateSecurityFixGate - passes when prose and diff evidence agree (
     prSummaryContent: GOOD_SUMMARY,
     issueLabels: "security,work-on",
     diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, true);
@@ -372,6 +384,7 @@ Deno.test("evaluateSecurityFixGate - active via SEC id even without label", () =
     prSummaryContent: summary,
     issueLabels: "work-on",
     diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, true);
@@ -386,12 +399,12 @@ Deno.test("evaluateSecurityFixGate - perfect prose alone does not pass the gate"
     prSummaryContent: GOOD_SUMMARY,
     issueLabels: "security",
     diff: { changedFiles: ["worker/deno/lib/db.ts"], testDiffText: "" },
+    discrimination: RED_GREEN,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing.includes("test-file-changed"), true);
   assertEquals(result.missing.includes("test-identifier-in-diff"), true);
-  // The prose items are satisfied — only the machine checks fail.
-  assertEquals(result.missing.includes("regression-test"), false);
+  // The trigger-closed statement is satisfied — only the machine checks fail.
   assertEquals(result.missing.includes("trigger-closed"), false);
 });
 
@@ -403,6 +416,7 @@ Deno.test("evaluateSecurityFixGate - test file changed but cited test absent fro
       changedFiles: ["tests/db_test.ts"],
       testDiffText: '+Deno.test("some unrelated case", () => {});',
     },
+    discrimination: RED_GREEN,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["test-identifier-in-diff"]);
@@ -422,6 +436,7 @@ original trigger is now closed with no trivial bypass.`;
       changedFiles: ["tests/anything_test.ts"],
       testDiffText: '+Deno.test("unrelated name", () => {});',
     },
+    discrimination: RED_GREEN,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["test-identifier-in-diff"]);
@@ -439,6 +454,7 @@ bypass.`;
       changedFiles: ["tests/db_test.ts"],
       testDiffText: '+Deno.test("rejects_injection", () => {});',
     },
+    discrimination: RED_GREEN,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["test-identifier-in-diff"]);
@@ -449,6 +465,7 @@ Deno.test("evaluateSecurityFixGate - blocks when the diff could not be collected
     prSummaryContent: GOOD_SUMMARY,
     issueLabels: "security",
     diff: null,
+    discrimination: RED_GREEN,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["diff-unavailable"]);
@@ -456,29 +473,17 @@ Deno.test("evaluateSecurityFixGate - blocks when the diff could not be collected
 
 // --- evaluateSecurityFixGate: active + missing prose ------------------------
 
-Deno.test("evaluateSecurityFixGate - flags both missing prose items on a bare summary", () => {
+Deno.test("evaluateSecurityFixGate - flags a missing trigger-closed statement on a bare summary", () => {
   const result = evaluateSecurityFixGate({
     prSummaryContent:
       "## Summary\nFixed the vulnerability in `tests/db_test.ts::rejects_injection`. Closes #100.",
     issueLabels: "security,work-on",
     diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, false);
-  assertEquals(result.missing.sort(), ["regression-test", "trigger-closed"]);
-});
-
-Deno.test("evaluateSecurityFixGate - flags missing regression test only", () => {
-  const summary = `## Summary
-Fixed the flaw in \`tests/db_test.ts::rejects_injection\`. The original attack
-input is now rejected and there is no trivial bypass.`;
-  const result = evaluateSecurityFixGate({
-    prSummaryContent: summary,
-    issueLabels: "security",
-    diff: GOOD_DIFF,
-  });
-  assertEquals(result.ok, false);
-  assertEquals(result.missing, ["regression-test"]);
+  assertEquals(result.missing, ["trigger-closed"]);
 });
 
 Deno.test("evaluateSecurityFixGate - flags missing trigger-closed only", () => {
@@ -489,23 +494,94 @@ against the unfixed code and passes after the fix.`;
     prSummaryContent: summary,
     issueLabels: "security",
     diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["trigger-closed"]);
 });
 
-Deno.test("evaluateSecurityFixGate - regression test needs before/after linkage, not just a test mention", () => {
-  const summary = `## Summary
-Added a test in \`tests/db_test.ts::rejects_injection\`. The original trigger is
-now closed with no bypass.`;
-  const result = evaluateSecurityFixGate({
-    prSummaryContent: summary,
+// --- evaluateSecurityFixGate: executed red -> green record (Issue #3659) ----
+
+/** Evaluate GOOD_SUMMARY and GOOD_DIFF under a given discrimination record. */
+function evaluateWith(discrimination: SecurityFixDiscrimination | null) {
+  return evaluateSecurityFixGate({
+    prSummaryContent: GOOD_SUMMARY,
     issueLabels: "security",
     diff: GOOD_DIFF,
+    discrimination,
   });
-  // "test" without regression/reproduction wording or fail-before/pass-after
-  // linkage must not satisfy the regression-test requirement.
-  assertEquals(result.missing, ["regression-test"]);
+}
+
+Deno.test("evaluateSecurityFixGate - a red then green record passes (Issue #3659)", () => {
+  const result = evaluateWith(RED_GREEN);
+  assertEquals(result.ok, true);
+  assertEquals(result.missing, []);
+});
+
+Deno.test("evaluateSecurityFixGate - green then green does not discriminate (Issue #3659)", () => {
+  const result = evaluateWith({
+    ...RED_GREEN,
+    preFix: "pass",
+    postFix: "pass",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["test-discriminates"]);
+});
+
+Deno.test("evaluateSecurityFixGate - red then red does not discriminate (Issue #3659)", () => {
+  const result = evaluateWith({
+    ...RED_GREEN,
+    preFix: "fail",
+    postFix: "fail",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["test-discriminates"]);
+});
+
+Deno.test("evaluateSecurityFixGate - green then red does not discriminate (Issue #3659)", () => {
+  const result = evaluateWith({
+    ...RED_GREEN,
+    preFix: "pass",
+    postFix: "fail",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["test-discriminates"]);
+});
+
+Deno.test("evaluateSecurityFixGate - a not_checked record blocks and is never counted as red (Issue #3659)", () => {
+  const result = evaluateWith({
+    kind: "not_checked",
+    reason: "runner timed out",
+  });
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["discrimination-not-checked"]);
+});
+
+Deno.test("evaluateSecurityFixGate - a null record blocks as not checked (Issue #3659)", () => {
+  const result = evaluateWith(null);
+  assertEquals(result.ok, false);
+  assertEquals(result.missing, ["discrimination-not-checked"]);
+});
+
+Deno.test("evaluateSecurityFixGate - a missing identifier adds no discrimination kind (Issue #3659)", () => {
+  for (
+    const discrimination of [
+      null,
+      { kind: "not_checked", reason: "x" } as const,
+      { ...RED_GREEN, preFix: "pass" } as const,
+    ]
+  ) {
+    const result = evaluateSecurityFixGate({
+      prSummaryContent: GOOD_SUMMARY,
+      issueLabels: "security",
+      diff: {
+        changedFiles: ["tests/db_test.ts"],
+        testDiffText: '+Deno.test("some unrelated case", () => {});',
+      },
+      discrimination,
+    });
+    assertEquals(result.missing, ["test-identifier-in-diff"]);
+  }
 });
 
 Deno.test("evaluateSecurityFixGate - tolerates empty content", () => {
@@ -513,27 +589,105 @@ Deno.test("evaluateSecurityFixGate - tolerates empty content", () => {
     prSummaryContent: "",
     issueLabels: "security",
     diff: GOOD_DIFF,
+    discrimination: RED_GREEN,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, false);
   // Empty prose cites no test identifier either.
   assertEquals(result.missing.sort(), [
-    "regression-test",
     "test-identifier-in-diff",
     "trigger-closed",
   ]);
 });
 
+// --- citedSecurityTests (Issue #3659) ---------------------------------------
+
+Deno.test("citedSecurityTests - returns the file and raw name per cited declaration", () => {
+  const diff = `--- a/tests/other_test.ts
++++ b/tests/other_test.ts
+@@ -0,0 +1,2 @@
++Deno.test("unrelated name", () => {});
+--- a/tests/db_test.ts
++++ b/tests/db_test.ts
+@@ -0,0 +1,3 @@
++Deno.test("rejects_injection", () => {
++  assertThrows(() => query("' OR 1=1 --"));
++});`;
+  assertEquals(citedSecurityTests(GOOD_SUMMARY, diff), [
+    { file: "tests/db_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - keeps the same name declared in two files apart", () => {
+  const diff = `+++ b/tests/a_test.ts
++Deno.test("rejects_injection", () => {});
++++ b/tests/b_test.ts
++Deno.test("rejects_injection", () => {});
++Deno.test("rejects_injection", () => {});`;
+  assertEquals(citedSecurityTests(GOOD_SUMMARY, diff), [
+    { file: "tests/a_test.ts", name: "rejects_injection" },
+    { file: "tests/b_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - reads a name deno fmt wrapped onto the next line", () => {
+  const diff = `+++ b/tests/db_test.ts
++Deno.test(
++  "rejects_injection",
++  async () => {},
++);`;
+  assertEquals(citedSecurityTests(GOOD_SUMMARY, diff), [
+    { file: "tests/db_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a Rust test fn has no string name and yields nothing", () => {
+  const summary =
+    "Added `tests/index_test.rs::rejects_oob_index` as the regression test.";
+  const diff = `+++ b/tests/index_test.rs
++#[test]
++fn rejects_oob_index() {}`;
+  assertEquals(citedSecurityTests(summary, diff), []);
+});
+
+Deno.test("citedSecurityTests - a name present only in an assertion body yields nothing", () => {
+  const diff = `+++ b/tests/db_test.ts
++Deno.test("unrelated name", () => {
++  assertThrows(() => rejects_injection());
++});`;
+  assertEquals(citedSecurityTests(GOOD_SUMMARY, diff), []);
+});
+
+Deno.test("citedSecurityTests - a deleted file section is skipped", () => {
+  const diff = `+++ /dev/null
++Deno.test("rejects_injection", () => {});`;
+  assertEquals(citedSecurityTests(GOOD_SUMMARY, diff), []);
+});
+
+Deno.test("citedSecurityTests - caps the number of cited tests", () => {
+  const names = Array.from({ length: 15 }, (_, i) => `rejects_injection_${i}`);
+  const summary = "`tests/db_test.ts::rejects_injection`";
+  const lines = names.map((n) =>
+    `+Deno.test("rejects_injection ${n}", () => {});`
+  );
+  const diff = `+++ b/tests/db_test.ts\n${lines.join("\n")}`;
+  assertEquals(citedSecurityTests(summary, diff).length, 10);
+});
+
 // --- buildSecurityFixGateMessage --------------------------------------------
 
 Deno.test("buildSecurityFixGateMessage - names each missing item", () => {
-  const message = buildSecurityFixGateMessage([
-    "test-file-changed",
-    "test-identifier-in-diff",
-    "regression-test",
-    "trigger-closed",
-  ]);
-  assertStringIncludes(message, "regression test");
+  const message = buildSecurityFixGateMessage(
+    [
+      "test-file-changed",
+      "test-identifier-in-diff",
+      "test-discriminates",
+      "trigger-closed",
+    ],
+    [],
+    null,
+  );
+  assertStringIncludes(message, "must FAIL against the base branch");
   assertStringIncludes(message, "ORIGINAL TRIGGER");
   assertStringIncludes(message, "TEST FILE");
   assertStringIncludes(message, "TEST IDENTIFIER");
@@ -541,7 +695,44 @@ Deno.test("buildSecurityFixGateMessage - names each missing item", () => {
 });
 
 Deno.test("buildSecurityFixGateMessage - explains an uncollectable diff", () => {
-  const message = buildSecurityFixGateMessage(["diff-unavailable"]);
+  const message = buildSecurityFixGateMessage(["diff-unavailable"], [], null);
   assertStringIncludes(message, "git fetch origin");
   assertStringIncludes(message, "blocked rather than assumed good");
+});
+
+Deno.test("buildSecurityFixGateMessage - shows the recorded runs for a checked record (Issue #3659)", () => {
+  const message = buildSecurityFixGateMessage(
+    ["test-discriminates"],
+    [],
+    { ...RED_GREEN, preFix: "pass", postFix: "pass" },
+  );
+  assertStringIncludes(message, "Recorded discrimination runs");
+  assertStringIncludes(message, "tests/db_test.ts::rejects_injection");
+  assertStringIncludes(message, "base production files: pass (expected fail)");
+  assertStringIncludes(message, "head: pass (expected pass)");
+});
+
+Deno.test("buildSecurityFixGateMessage - shows the reason for a not_checked record (Issue #3659)", () => {
+  const message = buildSecurityFixGateMessage(
+    ["discrimination-not-checked"],
+    [],
+    { kind: "not_checked", reason: "base ref origin/main did not resolve" },
+  );
+  assertStringIncludes(message, "Recorded discrimination runs");
+  assertStringIncludes(message, "base ref origin/main did not resolve");
+});
+
+Deno.test("buildSecurityFixGateMessage - omits the recorded runs when discrimination is not at fault", () => {
+  const message = buildSecurityFixGateMessage(
+    ["trigger-closed"],
+    [],
+    RED_GREEN,
+  );
+  assertEquals(message.includes("Recorded discrimination runs"), false);
+});
+
+Deno.test("buildSecurityFixGateMessage - describes who runs each check, not that no execution is required (Issue #3659)", () => {
+  const message = buildSecurityFixGateMessage(["trigger-closed"], [], null);
+  assertEquals(message.includes("No execution is required"), false);
+  assertStringIncludes(message, "executed by the worker");
 });

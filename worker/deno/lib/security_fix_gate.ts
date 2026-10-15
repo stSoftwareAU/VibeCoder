@@ -11,7 +11,8 @@
  * This module is the lightweight per-repo gate (Issue #3239 — no cross-repo
  * centralisation). It activates only when the PR closes a security finding
  * (the issue carries the `security` label, or the PR summary references a
- * `SEC-<hex>` finding id) and then requires two kinds of evidence:
+ * `SEC-<hex>` finding id) and then requires machine-checked evidence plus one
+ * self-reported statement:
  *
  * **Machine-checkable (the gate proper, Issue #3652)** — asserted against the
  * branch diff, which the agent cannot satisfy by writing prose:
@@ -21,31 +22,50 @@
  *     declared** in the added lines of that test diff — matched on whole
  *     tokens of a test-declaration line, with generic tokens (`test`, `spec`,
  *     `case`, …) rejected outright, so neither the `test` inside `Deno.test`
- *     nor a name borrowed from an assertion body satisfies it (Issue #1279).
+ *     nor a name borrowed from an assertion body satisfies it (Issue #1279);
+ *     and
+ *  3. **the cited test discriminates the fix (Issue #3659)** — the worker, not
+ *     the agent, executed the cited test twice in a disposable checkout: once
+ *     against the base branch's versions of the changed non-test files (it must
+ *     FAIL) and once at the head (it must PASS). Only a red → green record
+ *     satisfies it; green → green, red → red and green → red all block, and a
+ *     run the worker could not perform is `discrimination-not-checked`, never
+ *     counted as the red run. This check is only due once items 1 and 2 hold,
+ *     because it needs a test that exists and is named.
  *
- * **Self-reported prose (a human-review aid, kept as a secondary requirement)**
- * — a regression-test fail-before/pass-after linkage, and an original-trigger-
- * closed statement. Prose alone is no longer sufficient: the summary is written
- * by the same party the evidence is about, and the finding body that steers it
- * is untrusted input, so it is treated as untrusted text here (bounded regexes
- * over a capped slice, never executed).
+ * The earlier prose requirement — a summary sentence linking the regression
+ * test to a fail-before/pass-after result — was dropped in Issue #3659: the
+ * executed record in item 3 replaces it, and a sentence written by the party
+ * the evidence is about proved nothing the run did not.
+ *
+ * **Self-reported prose (a human-review aid)** — only the original-trigger-
+ * closed statement remains. The summary is written by the same party the
+ * evidence is about, and the finding body that steers it is untrusted input,
+ * so it is treated as untrusted text here (bounded regexes over a capped
+ * slice, never executed).
  *
  * Aligns with the "fail loud / never mask a fault as success" principle
  * (Issue #3234): a security-fix PR that cannot show the fault is genuinely
  * closed must not sail through as a clean success — including when the diff
  * evidence could not be collected at all.
  *
- * Pure functions, no I/O. Australian English throughout.
+ * Pure functions, no I/O (the discrimination record is produced elsewhere and
+ * passed in). Australian English throughout.
  */
 
 import { codeFenceFor, scrubUntrustedText } from "./prompt_delimiter.ts";
+import type {
+  CitedSecurityTest,
+  SecurityFixDiscrimination,
+} from "./security_fix_discrimination.ts";
 
 /** Distinct evidence items the gate requires of a security-fix PR. */
 export type SecurityFixEvidenceKind =
-  | "regression-test"
   | "trigger-closed"
   | "test-file-changed"
   | "test-identifier-in-diff"
+  | "test-discriminates"
+  | "discrimination-not-checked"
   | "diff-unavailable";
 
 /**
@@ -87,6 +107,11 @@ export interface SecurityFixGateInput {
    * accident, and `null` blocks rather than silently passing (Issue #3652).
    */
   diff: SecurityFixDiffEvidence | null;
+  /**
+   * The worker-executed red → green record for the cited test (Issue #3659), or
+   * `null` when the check was not run. `null` blocks whenever the check is due.
+   */
+  discrimination: SecurityFixDiscrimination | null;
 }
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
@@ -94,18 +119,6 @@ const MAX_SCAN_CHARS = 200_000;
 
 /** Stable `SEC-<hex>` finding id, e.g. `SEC-a1b2c3d4e5f6` (Issue #1938). */
 const FINDING_ID_PATTERN = /\bSEC-[0-9a-f]{6,}\b/i;
-
-/** A test that reproduces the flaw (regression / failing test reference). */
-const REGRESSION_TEST_REFERENCE =
-  /\b(regression test|reproduc\w+|failing test|test that fails)\b/i;
-
-/**
- * Fail-before / pass-after linkage — the static analogue of "PoC no longer
- * fires". Matches explicit before/after-the-fix wording, unfixed/pre-fix
- * phrasing, or a "fails … passes" sequence.
- */
-const BEFORE_AFTER_LINKAGE =
-  /\b(before|after|without|with)\s+(the\s+)?(fix|patch|change)\b|\bunfixed\b|\bpre-fix\b|\bpost-fix\b|fails?\b[\s\S]{0,80}\bpasses?\b/i;
 
 /**
  * Original trigger closed with no trivial bypass — the static analogue of
@@ -354,6 +367,77 @@ function containsWholeToken(haystack: string, needle: string): boolean {
 }
 
 /**
+ * Most cited tests {@link citedSecurityTests} returns (Issue #3659). Bounds the
+ * number of runs the worker may be asked to perform on agent-authored input.
+ */
+export const MAX_CITED_SECURITY_TESTS = 10;
+
+/**
+ * The string-named test declarations, per file, that the PR summary cites and
+ * the added lines of the test diff declare (Issue #3659).
+ *
+ * The file sections come from the `+++ b/<path>` headers of the unified diff;
+ * `+++ /dev/null` (a deletion) names no file and is skipped. The match rule is
+ * the one {@link citedTestIdentifierInDiff} applies: a summary identifier must
+ * be a whole token of the normalised declaration line. The name returned is the
+ * first string literal on that line, as written.
+ *
+ * Only string-named declarations are returned because those are the ones the
+ * worker can run by name; a Rust `#[test] fn` or a pytest `def test_x` is a
+ * valid citation for the static gate but yields nothing here. The result is
+ * deduplicated by file and name, kept in diff order and capped at
+ * {@link MAX_CITED_SECURITY_TESTS}. Bounded patterns over a capped slice only —
+ * both inputs are untrusted.
+ */
+export function citedSecurityTests(
+  content: string,
+  testDiffText: string,
+): CitedSecurityTest[] {
+  const identifiers = extractTestIdentifiers(content);
+  if (identifiers.length === 0) return [];
+
+  const sections: { file: string; lines: string[] }[] = [];
+  for (const line of testDiffText.slice(0, MAX_SCAN_CHARS).split("\n")) {
+    if (line.startsWith("+++ ")) {
+      const target = line.slice(4).trim();
+      if (target === "/dev/null") {
+        sections.push({ file: "", lines: [] });
+      } else {
+        sections.push({
+          file: target.startsWith("b/") ? target.slice(2) : target,
+          lines: [],
+        });
+      }
+    } else {
+      sections[sections.length - 1]?.lines.push(line);
+    }
+  }
+
+  const found: CitedSecurityTest[] = [];
+  const seen = new Set<string>();
+  for (const section of sections) {
+    if (!section.file) continue;
+    for (const declaration of testDeclarationLines(section.lines.join("\n"))) {
+      const normalised = normalise(declaration);
+      if (!identifiers.some((id) => containsWholeToken(normalised, id))) {
+        continue;
+      }
+      const name = STRING_NAME_PATTERN.exec(declaration)?.[2] ?? "";
+      if (!name.trim()) continue;
+      const key = `${section.file}\u0000${name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      found.push({ file: section.file, name });
+      if (found.length >= MAX_CITED_SECURITY_TESTS) return found;
+    }
+  }
+  return found;
+}
+
+/** The first string literal on a declaration line; group 2 is its content. */
+const STRING_NAME_PATTERN = /(["'`])([^"'`\n]*)\1/;
+
+/**
  * Whether any identifier cited in the summary actually names a test declared
  * in the added lines of the test diff — the coupling that prose alone cannot
  * fake. The match is on whole tokens of a declaration line, so neither the
@@ -421,11 +505,23 @@ export function evaluateSecurityFixGate(
     }
   }
 
-  // Self-reported prose — retained as a human-review aid, not the gate.
-  const hasRegressionTest = REGRESSION_TEST_REFERENCE.test(content) &&
-    BEFORE_AFTER_LINKAGE.test(content);
-  if (!hasRegressionTest) missing.push("regression-test");
+  // Executed red → green record (Issue #3659). Due only once a test file is
+  // changed and a cited test is declared: those are the preconditions for the
+  // worker having anything to run, and each already reports its own fault.
+  if (
+    input.diff &&
+    !missing.includes("test-file-changed") &&
+    !missing.includes("test-identifier-in-diff")
+  ) {
+    const record = input.discrimination;
+    if (!record || record.kind === "not_checked") {
+      missing.push("discrimination-not-checked");
+    } else if (!(record.preFix === "fail" && record.postFix === "pass")) {
+      missing.push("test-discriminates");
+    }
+  }
 
+  // Self-reported prose — retained as a human-review aid, not the gate.
   if (!TRIGGER_CLOSED.test(content)) missing.push("trigger-closed");
 
   return { isSecurityFix: true, ok: missing.length === 0, missing };
@@ -448,22 +544,25 @@ export const SECURITY_FIX_EVIDENCE_DESCRIPTIONS: Record<
     "Name the ACTUAL TEST IDENTIFIER you added, in the form `path/to/foo_test.ts::the test name`, and make sure that name matches the declaration of a test added in this branch's diff. A generic token (`test`, `spec`, `case`, …) or a name that only appears inside a test body does not count. The summary either names no test or names one that does not declare a test in the added lines.",
   "diff-unavailable":
     "The branch diff could not be computed against the base branch, so the machine-checkable test assertion could not run. Ensure the base branch is fetched (`git fetch origin <base>`) and retry — an uncheckable security fix is blocked rather than assumed good.",
-  "regression-test":
-    'Add a regression test that FAILS against the unfixed code and PASSES after the fix (state the test\'s linkage explicitly, per the TDD standard — e.g. "Added `tests/foo_test.ts::rejects_injection` which reproduces the flaw, fails against the unfixed code and passes after the fix").',
+  "test-discriminates":
+    "The cited test must FAIL against the base branch's versions of the changed non-test files and PASS at the head. The worker ran it both ways in a disposable checkout and it did not go red then green, so it does not discriminate the fix. Make the test exercise the vulnerable code path the fix changes, so that it fails on the unfixed code.",
+  "discrimination-not-checked":
+    "The worker could not run the cited test against both the base and the head (runner error, unresolvable base ref, timeout, or no runnable string-named Deno test), so whether it discriminates the fix is unchecked. An unchecked security fix is blocked, never assumed good, and never counted as the red run. Today the worker can execute only Deno tests: a `Deno.test` with a string name in a `*_test.*` or `*.test.*` file under a `deno.json`, `deno.jsonc` or `deno.lock` project.",
   "trigger-closed":
     'Add a short statement that the ORIGINAL TRIGGER is closed with no trivial bypass (static reasoning over the changed code path — e.g. "the original attack input is now rejected by the allowlist and no equivalent bypass exists").',
 };
 
 /**
  * Evidence items a security-fix PR must positively supply, in the order the
- * prompt states them (Issue #4057). `diff-unavailable` is excluded: it reports
- * an environment fault, not something the PR summary can be written to satisfy.
+ * prompt states them (Issue #4057). `diff-unavailable` and
+ * `discrimination-not-checked` are excluded because they report an environment
+ * fault the summary cannot be written to satisfy.
  */
 export const REQUIRED_SECURITY_FIX_EVIDENCE:
   readonly SecurityFixEvidenceKind[] = [
     "test-file-changed",
     "test-identifier-in-diff",
-    "regression-test",
+    "test-discriminates",
     "trigger-closed",
   ];
 
@@ -476,12 +575,37 @@ export function isSecurityFixEvidenceKind(
 }
 
 /**
+ * Render the recorded discrimination runs (Issue #3659). The test name and the
+ * reason are agent-authored or tool output, so they are scrubbed and
+ * code-fenced exactly as {@link formatMatchedTestDeclarations} does.
+ */
+function formatDiscriminationRecord(
+  discrimination: SecurityFixDiscrimination,
+): string {
+  const lines = discrimination.kind === "checked"
+    ? [
+      `${discrimination.test.file}::${discrimination.test.name}`,
+      `base production files: ${discrimination.preFix} (expected fail)`,
+      `head: ${discrimination.postFix} (expected pass)`,
+    ]
+    : [discrimination.reason];
+  const body = scrubUntrustedText(lines.join("\n"));
+  const fence = codeFenceFor(body);
+  return `Recorded discrimination runs:
+
+${fence}text
+${body}
+${fence}`;
+}
+
+/**
  * Build the operator-facing failure message for a blocked security-fix PR.
  * Lists exactly what the PR summary must add so the retry is productive.
  */
 export function buildSecurityFixGateMessage(
   missing: SecurityFixEvidenceKind[],
-  declarations: readonly string[] = [],
+  declarations: readonly string[],
+  discrimination: SecurityFixDiscrimination | null,
 ): string {
   const items = missing
     .map((kind) => `- ${SECURITY_FIX_EVIDENCE_DESCRIPTIONS[kind]}`)
@@ -491,11 +615,15 @@ export function buildSecurityFixGateMessage(
   const matched = missing.includes("test-identifier-in-diff")
     ? `\n\n${formatMatchedTestDeclarations(declarations)}`
     : "";
+  const recorded = (missing.includes("test-discriminates") ||
+      missing.includes("discrimination-not-checked")) && discrimination
+    ? `\n\n${formatDiscriminationRecord(discrimination)}`
+    : "";
   return `PR creation blocked: this PR closes a security-labelled finding but is missing required vulnerability-fix verification evidence.
 
 Any PR that closes a \`security\` finding must show — in the branch diff, not only in prose — that the fault is genuinely closed (fail loud — never mask a fault as success, Issue #3234):
 
-${items}${matched}
+${items}${matched}${recorded}
 
-Fix the branch (and \`docs/archive/pr-summaries/pr-summary-<issue>.md\`), then retry. No execution is required: the test assertions are static checks over \`git diff\`, and the trigger-closed statement is static reasoning over the changed code path.`;
+Fix the branch (and \`docs/archive/pr-summaries/pr-summary-<issue>.md\`), then retry. The test-file and test-identifier assertions are static checks over \`git diff\`; the discrimination check is executed by the worker (not the agent) in a disposable checkout; the trigger-closed statement is static reasoning over the changed code path.`;
 }
