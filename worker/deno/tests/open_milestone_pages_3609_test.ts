@@ -161,8 +161,8 @@ Deno.test("open_milestone_pages - a failed second page rejects rather than retur
 // ============================================================================
 
 /**
- * Serve the two fresh authoritative open-children reads added in Issue #3908:
- * `GET repos/<repo>/milestones/<n>` and
+ * Serve the two fresh authoritative open-children reads the completion scan makes
+ * (copied from milestone_completion_test.ts): `GET repos/<repo>/milestones/<n>` and
  * `GET repos/<repo>/issues?milestone=<n>&state=open`.
  *
  * Returns null when `key` is neither, so a stub can fall through to its own
