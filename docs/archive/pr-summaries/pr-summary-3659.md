@@ -252,5 +252,6 @@ test.
 - Edited expectations: the gate-block `missing` list in
   `completion_phase_security_gate_test.ts` still goes red when the identifier
   guard is removed.
+- `./quality.sh < /dev/null` on commit `19fd7c89`: passed — every stage passed (parallel and serial Deno test passes included) except `config integration`, which skipped because the checkout has no `.config.json`.
 
 <!-- vibe-branch-outcomes -->
