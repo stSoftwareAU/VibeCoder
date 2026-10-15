@@ -125,6 +125,10 @@ Mutation check, deletions that cannot be told apart at runtime:
 
 No existing assertion is removed or weakened. `worker/deno/tests/completion_phase_merged_pr_closure_test.ts` only gains `heldFindingsComment: ""` on its `recoverAndFinaliseExistingPr` calls, because the new option is required.
 
-Results on the final head: RESULTS_FILLED_AFTER_RUN
+Results on the final head:
+
+- `deno task test:unit` on the 13 completion-phase, verifier, retry-prompt, PR-feedback processor and supersession test files: 216 passed, 0 failed. The two scan test files: 81 passed, 0 failed.
+- `deno task check:manifests`: passed. `sweep-drift --default-branch origin/main` exited 0, so the new slice's `sweptAt` passes the ancestry check.
+- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. The only skipped stage is `config integration` (no `.config.json` on this host). Deno tests, lint, type check, fmt, markdownlint, mermaid, semgrep and the completeness checks all passed.
 
 <!-- vibe-branch-outcomes -->
