@@ -52,8 +52,8 @@ flowchart TD
   - Passing `false` at the locked call site turned only the locked-path test red.
   - Passing `false` at the no-worker-id call site turned only the no-worker-id test red.
 - `deno task test:unit tests/pr_ci_processor_standing_violation_test.ts tests/pr_ci_processor_test.ts tests/pr_ci_processor_lock_test.ts tests/pr_ci_processor_milestones_test.ts` passed: 55 passed, 0 failed.
-- Call sites checked: both `_processCiFailureLocked` calls in `processCiFailure`, and the one `_processCiWithHeartbeat` call. `enableAutoMerge` has no other production caller in `worker/deno/lib` outside the PR manager.
+- Call sites checked: both `_processCiFailureLocked` calls in `processCiFailure`, and the one `_processCiWithHeartbeat` call. This is the only `deps.pr.enableAutoMerge` call in `worker/deno/lib`.
 - New members: `standingViolationHold` is set in `processCiFailure` and read in `_processCiWithHeartbeat`.
-- `./quality.sh`: see the gate result line below.
+- `./quality.sh < /dev/null` on the code head: PASSED (config integration skipped by the gate itself; deno tests, lint, type check, fmt, semgrep and markdownlint all passed).
 
 <!-- vibe-branch-outcomes -->
