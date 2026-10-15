@@ -18,9 +18,15 @@ import { fetchPRBranchStateBatch } from "./pr_branch_state.ts";
 import { decideMilestoneBaseMerge } from "./milestone_children_gate.ts";
 import {
   forkSyncDowngradeWarning,
+  isMergeCommitNotAllowed,
   isMilestoneSyncBranch,
   mergeMethodFlagForHead,
 } from "./milestone_sync_pr.ts";
+import { isMilestoneFixBranch } from "./milestone_branch_names.ts";
+import {
+  milestoneFixMergeCommitRefusal,
+  milestoneFixMergeMethod,
+} from "./milestone_fix_pr.ts";
 import {
   type ApprovedDefaultBranchPolicy,
   fetchPrReviews,
@@ -138,6 +144,8 @@ export interface PreMergeGateOutcome {
    * deviation; absent reads as "not established" and squashes.
    */
   headIsSameRepository?: boolean;
+  /** Base branch of the PR; decides whether a `milestone-fix/**` head needs a merge commit (Issue #3596). */
+  baseRefName?: string;
 }
 
 /** Operator overrides for the pre-merge gate (Issue #3705). */
@@ -675,7 +683,7 @@ export async function enforcePreMergeRequirements(
   //    oriented base-to-head, so the head ref is not optional (Issue #470).
   let baseRefName: string;
   let headRefName: string;
-  let headIsSameRepository = false;
+  let headIsSameRepository: boolean | undefined;
   try {
     const raw = await ghCommandFn([
       "pr",
@@ -700,9 +708,12 @@ export async function enforcePreMergeRequirements(
     headRefName = typeof parsed.headRefName === "string"
       ? parsed.headRefName.trim()
       : "";
-    // Absent or non-boolean reads as "cannot show it is same-repository",
-    // which selects the squash default rather than the deviation.
-    headIsSameRepository = parsed.isCrossRepository === false;
+    // Absent or non-boolean is reported as unknown (undefined), not as a fork:
+    // directMergePr refuses an unknown milestone-fix head (Issue #3596), and
+    // the sync path reads it as `?? false`, the squash default.
+    headIsSameRepository = typeof parsed.isCrossRepository === "boolean"
+      ? parsed.isCrossRepository === false
+      : undefined;
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     return {
@@ -814,9 +825,14 @@ export async function enforcePreMergeRequirements(
   const headSha = ci.value.headSha ?? recency?.headSha;
   return {
     ok: true,
-    value: headSha
-      ? { allowed: true, headSha, headRefName, headIsSameRepository }
-      : { allowed: true, headRefName, headIsSameRepository },
+    // The key is omitted, not set to undefined, when same-repository is unknown.
+    value: {
+      allowed: true,
+      ...(headSha ? { headSha } : {}),
+      headRefName,
+      ...(headIsSameRepository === undefined ? {} : { headIsSameRepository }),
+      baseRefName,
+    },
   };
 }
 
@@ -826,7 +842,8 @@ export async function enforcePreMergeRequirements(
 
 /**
  * Merge the PR directly via `gh pr merge --squash` (without --auto), or
- * `--merge` when the head is a milestone sync branch (Issue #1048).
+ * `--merge` when the head is a milestone sync branch (Issue #1048) or a
+ * milestone-fix branch that merges the default branch (Issue #3596).
  *
  * Only call this when all checks have passed.
  *
@@ -961,6 +978,21 @@ export async function directMergePr(
     };
   }
 
+  // A milestone-fix head whose same-repository evidence the gate could not read
+  // is refused, not squashed as if it were a fork (Issue #3596).
+  if (
+    isMilestoneFixBranch(gate.value.headRefName ?? "") &&
+    (gate.value.baseRefName ?? "").startsWith("milestone/") &&
+    gate.value.headIsSameRepository === undefined
+  ) {
+    return {
+      ok: false,
+      error: new Error(
+        `Refusing to direct-merge milestone fix PR #${prNumber} in ${repo}: whether its head lives in ${repo} could not be read. Failing closed so a default-branch merge is never squashed (Issue #3596).`,
+      ),
+    };
+  }
+
   // A milestone sync lands as a merge commit so the default branch is a
   // genuine ancestor of the milestone branch (Issue #1048); every other PR
   // squashes as before. The deviation also needs a same-repository head
@@ -974,6 +1006,34 @@ export async function directMergePr(
     );
   }
 
+  let mergeMethod = mergeMethodFlagForHead(
+    gate.value.headRefName,
+    headIsSameRepository,
+  );
+  // A milestone-fix head that merges the default branch lands as a merge
+  // commit (Issue #3596), read from the gated head SHA: the exact commit merged.
+  // Unreadable, it fails closed rather than squashing.
+  const fixShaped = isMilestoneFixBranch(gate.value.headRefName ?? "") &&
+    headIsSameRepository &&
+    (gate.value.baseRefName ?? "").startsWith("milestone/");
+  if (fixShaped) {
+    const method = await milestoneFixMergeMethod(
+      repo,
+      gate.value.baseRefName ?? "",
+      headSha,
+      ghCommandFn,
+    );
+    if (!method.ok) {
+      return {
+        ok: false,
+        error: new Error(
+          `Refusing to direct-merge milestone fix PR #${prNumber} in ${repo}: ${method.error.message}. Failing closed so a default-branch merge is never squashed; will retry on the next maintenance scan (Issue #3596).`,
+        ),
+      };
+    }
+    mergeMethod = method.value;
+  }
+
   try {
     await ghCommandFn([
       "pr",
@@ -981,7 +1041,7 @@ export async function directMergePr(
       String(prNumber),
       "--repo",
       repo,
-      mergeMethodFlagForHead(gate.value.headRefName, headIsSameRepository),
+      mergeMethod,
       // Pin the merge to the checked commit — GitHub refuses the merge if the
       // head moved after the checks were read (Issue #3946).
       "--match-head-commit",
@@ -995,6 +1055,18 @@ export async function directMergePr(
       // expected race, not a fault: leave the PR open so the next maintenance
       // cycle re-reads the checks for the new head.
       return { ok: true, value: { merged: false, blocked: "head_moved" } };
+    }
+    // A milestone fix that cannot take a merge commit is refused, never
+    // retried as a squash (Issue #3596).
+    if (
+      fixShaped && mergeMethod === "--merge" && isMergeCommitNotAllowed(message)
+    ) {
+      return {
+        ok: false,
+        error: new Error(
+          milestoneFixMergeCommitRefusal(repo, prNumber, message),
+        ),
+      };
     }
     return {
       ok: false,

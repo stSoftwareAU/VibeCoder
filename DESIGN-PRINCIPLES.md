@@ -867,7 +867,9 @@ late: the deploy/publish workflows have already fired. Enforcement is
   authorship.
 - **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
-  `gh pr merge --squash --match-head-commit <sha>`, so a push landing between
+  `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a
+  milestone sync (Issue #1048) and for a same-repository `milestone-fix/**`
+  head that merges the default branch (Issue #3596), so a push landing between
   the check read and the merge cannot be merged on unevaluated checks. A moved
   head is a deferral (`head_moved`), a missing SHA is a refusal.
 - **Read-only default branch.** No direct commits — no formatting, version, or
@@ -3129,7 +3131,8 @@ immediately.
 the single place every worker `gh` call passes through, so the idle-task
 wrapper closure, close-on-merge, the self-healing closes and the stale-workflow
 purge are all covered without each remembering to invalidate for itself. The
-same hook drops the repo's `issues_all` / `issues_closed_all` and the per-issue
+same hook drops the repo's `issues_all` / `issues_closed_all`, every
+per-milestone closed list (`issues_closed_milestone_<n>`) and the per-issue
 cache entries. The claim's own open-state check (`fetchIssueState`) reads
 through the **uncached** `runGhCommand`: a stale "OPEN" there is exactly what
 lets a closed issue be claimed.

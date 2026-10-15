@@ -929,8 +929,16 @@ function fixRuleRun(head: string, base: string) {
       decision: "allow",
       milestoneBranch: base,
     } as never),
+    // Answers like a same-repository fleet fix head on a milestone base: the
+    // head is in this repository, the default branch is `main`, and the
+    // milestone branch is behind it (content-only, so the arm is a squash).
+    // Issue #3596: an unreadable same-repository answer is not armed.
     ghCommandFn: async (args) => {
       calls.push(args);
+      if (args.join(" ").includes("isCrossRepository")) return "false";
+      if (args[0] === "api" && args[1] === "repos/owner/repo") return "main";
+      if (args.includes(".merge_base_commit.sha")) return "a".repeat(40);
+      if (args.includes(".status")) return "behind";
       return "";
     },
   });
