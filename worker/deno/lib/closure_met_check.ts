@@ -143,7 +143,7 @@ export function closureGapFindings(
   const unreported: MetClosureItem[] = [];
   for (const item of items) {
     const matching = byKey.get(keyOf(item.criterion));
-    if (!matching || matching.length === 0) {
+    if (!matching) {
       unreported.push(item);
       continue;
     }

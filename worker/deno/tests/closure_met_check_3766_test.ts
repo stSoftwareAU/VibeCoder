@@ -76,7 +76,21 @@ Deno.test("parseClosureEntryVerdicts validates the reply array", () => {
   assertEquals(parseClosureEntryVerdicts(undefined), []);
   assertEquals(parseClosureEntryVerdicts(null), []);
   assertThrows(() => parseClosureEntryVerdicts("nope"), Error, "closure");
-  assertThrows(() => parseClosureEntryVerdicts([1]), Error, "closure[0]");
+  assertThrows(
+    () => parseClosureEntryVerdicts([1]),
+    Error,
+    "closure[0] is not an object",
+  );
+  assertThrows(
+    () => parseClosureEntryVerdicts([null]),
+    Error,
+    "closure[0] is not an object",
+  );
+  assertThrows(
+    () => parseClosureEntryVerdicts([["A"]]),
+    Error,
+    "closure[0] is not an object",
+  );
   assertThrows(
     () => parseClosureEntryVerdicts([{ criterion: "A", verdict: "probably" }]),
     Error,
@@ -216,4 +230,47 @@ Deno.test("metClosureItems strips trailing separators in linear time on hostile 
   );
   assert(spaces.some((i) => i.criterion.startsWith("Subject")));
   assert(spaces.every((i) => !/[\s—]$/.test(i.criterion)));
+});
+
+Deno.test("closureGapFindings: a verdict with no note leaves no dangling separator", () => {
+  const out = closureGapFindings(
+    ITEMS,
+    [v("Every run files a follow-up", "partial")],
+    PATH,
+  );
+  assertEquals(out.length, 1);
+  assert(out[0]!.problem.endsWith('follow-up"'));
+});
+
+Deno.test("closureGapFindings: when verdicts repeat for one criterion, none is overwritten", () => {
+  const out = closureGapFindings(
+    ITEMS,
+    [
+      v("Every run files a follow-up", "partial"),
+      v("Every run files a follow-up", "met"),
+    ],
+    PATH,
+  );
+  assertEquals(out.length, 1);
+  assertStringIncludes(out[0]!.problem, "rated partial");
+});
+
+Deno.test("closureGapFindings: missing outranks partial for the same criterion", () => {
+  for (
+    const order of [["partial", "missing"], ["missing", "partial"]] as const
+  ) {
+    const out = closureGapFindings(
+      ITEMS,
+      order.map((x) => v("Every run files a follow-up", x)),
+      PATH,
+    );
+    assertEquals(out.length, 1);
+    assertStringIncludes(out[0]!.problem, "rated missing");
+  }
+});
+
+Deno.test("closureGapFindings: a single unreported entry reads in the singular", () => {
+  const out = closureGapFindings(ITEMS, [], PATH);
+  assertEquals(out.length, 1);
+  assertStringIncludes(out[0]!.problem, "1 of 1 closure entry marked met");
 });
