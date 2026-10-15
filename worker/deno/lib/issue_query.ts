@@ -780,11 +780,18 @@ export async function fetchAllClosedIssues(
 }
 
 /**
- * Fetch closed issues for a specific milestone (Issue #1786, batched
- * via `fetchAllClosedIssues` in Issue #1908).
+ * Fetch closed issues for a specific milestone, matched by title (Issue #1786,
+ * batched via `fetchAllClosedIssues` in Issue #1908).
  *
- * Used by the milestone-completion / progress / health helpers and by
- * `findActiveMilestones`. Pre-#1908 this issued one
+ * Callers: `milestone_progress.ts`, `milestone_health.ts`, and the
+ * `getClosedIssues` helper in `milestone_completion.ts`.
+ *
+ * Bounded by the 500-issue repo-wide batch: a milestone whose closed issues
+ * are older than the newest 500 closed issues in the repo gets none of them
+ * back here. For an unbounded read by milestone number, use
+ * `fetchClosedIssuesByMilestoneNumber` (Issue #3662).
+ *
+ * Pre-#1908 this issued one
  * `gh issue list --milestone X --state closed` per milestone; now it
  * filters the shared `fetchAllClosedIssues` batch so concurrent
  * milestone scans within a single iteration share one round-trip.
@@ -813,6 +820,109 @@ export async function fetchClosedIssuesByMilestone(
       title: issue.title,
       ...(issue.updatedAt !== undefined ? { updatedAt: issue.updatedAt } : {}),
     }));
+}
+
+/**
+ * Fetch every closed issue in one milestone, read by milestone NUMBER through
+ * paginated REST (Issue #3662).
+ *
+ * Unlike `fetchClosedIssuesByMilestone`, this is not bounded by the 500-issue
+ * repo-wide batch: `repos/<repo>/issues?milestone=N&state=closed` pages through
+ * every closed issue in the milestone, so an older milestone whose issues have
+ * fallen out of the newest-first batch still reads in full. Pull requests are
+ * dropped by the `--jq` filter.
+ *
+ * Failure throws, unlike `fetchClosedIssuesByMilestone` which swallows gh
+ * failures into an uncached []. A failed read must not look like "no closed
+ * issues", so a blank or unparseable page, or a gh error, propagates to the
+ * caller. Nothing is cached on a failure.
+ *
+ * Cache: stored under `issues_closed_milestone_<N>`, one entry per milestone.
+ * `closeInvalidatedCacheKeys(issueNumber)` is keyed by issue number and does
+ * not know the milestone number, so a close or reopen does not invalidate this
+ * key. A close or reopen is seen only once the cache entry's TTL expires
+ * (600 seconds by default).
+ *
+ * @param repo - Repository in "owner/repo" format
+ * @param milestoneNumber - The milestone's number, not its title; must be a
+ *   positive integer because it is interpolated into a REST path
+ * @param cache - Optional file cache, keyed per milestone
+ * @param ghCommandFn - Runs `gh` (injectable for testing)
+ * @returns Closed issues in the milestone across every page, in page order
+ * @throws When `milestoneNumber` is not a positive integer, when gh fails, or
+ *   when any page is blank, not JSON, or not an array
+ */
+export async function fetchClosedIssuesByMilestoneNumber(
+  repo: string,
+  milestoneNumber: number,
+  cache?: IssueCache,
+  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
+): Promise<Array<{ number: number; title: string; updatedAt?: string }>> {
+  // Checked before any gh call or cache read: the number goes into a REST path.
+  if (false as boolean) { // MUTATION (c): integer check dropped
+    throw new Error(
+      `fetchClosedIssuesByMilestoneNumber(${repo}): milestone number must be ` +
+        `a positive integer, got ${milestoneNumber}`,
+    );
+  }
+
+  const cacheKey = `issues_closed_milestone_${milestoneNumber}`;
+  const context =
+    `fetchClosedIssuesByMilestoneNumber(${repo}, ${milestoneNumber})`;
+
+  if (cache) {
+    const cached = await cache.read<
+      Array<{ number: number; title: string; updatedAt?: string }>
+    >(repo, cacheKey);
+    if (Array.isArray(cached)) return cached;
+  }
+
+  // Errors propagate: no try/catch here, so a failed read is never an [].
+  const output = await ghCommandFn([
+    "api",
+    `repos/${repo}/issues?milestone=${milestoneNumber}&state=closed&per_page=100`,
+    "--paginate",
+    "--jq",
+    '[.[] | select(has("pull_request") | not) | {number, title, updated_at}]',
+  ]);
+
+  // `--paginate` prints one JSON array per page, one per line, so the payload
+  // is validated line by line: assertListOutput parses the whole string and
+  // would reject a multi-page payload. Blank output has no lines at all and
+  // must still throw rather than read as "no closed issues" (Issue #4257).
+  const lines = output.split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length === 0) {
+    throw new Error(
+      `${context}: gh returned no output — treating as a failed call, ` +
+        `not an empty list (Issue #4257)`,
+    );
+  }
+
+  const issues: Array<{ number: number; title: string; updatedAt?: string }> =
+    [];
+  for (const line of lines) {
+    assertListOutput(line, context);
+    const page: unknown = JSON.parse(line);
+    if (!Array.isArray(page)) {
+      throw new Error(`${context}: a page was not a JSON array`);
+    }
+    for (const item of page) {
+      if (!isRecord(item) || typeof item.number !== "number") continue;
+      issues.push({
+        number: item.number,
+        title: typeof item.title === "string" ? item.title : "",
+        ...(typeof item.updated_at === "string" && item.updated_at !== ""
+          ? { updatedAt: item.updated_at }
+          : {}),
+      });
+    }
+  }
+
+  // Written only after every page parsed: a failure above never reaches here.
+  if (cache) await cache.write(repo, cacheKey, issues);
+  return issues;
 }
 
 /**
