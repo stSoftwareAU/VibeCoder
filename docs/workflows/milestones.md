@@ -562,13 +562,33 @@ Two things hold this in place:
   `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
   `sync/milestone-*` head that lives in this repository, and `--squash` for
   everything else, and every auto-merge and direct-merge path routes through
-  it. A fork names its own branches, so a cross-repository head cannot claim
-  the merge-commit deviation by its name (Issue #1249); when one tries, the
-  squash is announced rather than silent. This needs **merge
+  it. A milestone-fix head is the exception to that default: its callers pick
+  the method with `milestoneFixMergeMethod` instead (next bullet). A fork names
+  its own branches, so a cross-repository head cannot claim the merge-commit
+  deviation by its name (Issue #1249); when one tries, the squash is announced
+  rather than silent. This needs **merge
   commits to be permitted on the repository** (Settings → Pull Requests →
   Allow merge commits). Where they are not, the sync is armed as a squash with
   a warning naming the setting, and the check below is what catches the
   consequence.
+- **A milestone-fix PR merges as a merge commit when its head merges the
+  default branch** (Issue #3596). `milestoneFixMergeMethod` in
+  `worker/deno/lib/milestone_fix_pr.ts` reads the default branch, the fix
+  head's merge base with it, and whether that merge base is already in the
+  milestone branch. When `compare` reports `ahead` or `diverged` (the merge
+  base is not in the milestone branch yet), the PR merges with `--merge`; when
+  it reports `identical` or `behind`, the PR squashes; any other status is an
+  unreadable method (below), never a squash. Creation arming has no
+  same-repository check, because the worker pushed the branch itself. The
+  Auto-Merge sweep and the direct merge apply the rule only to same-repository
+  heads, so a fork's fix-shaped head still squashes as before. Where merge
+  commits are forbidden the fix PR is refused, never downgraded: at creation
+  with a warning and a PR comment; on the sweep with a logged warning and a
+  failed result; in the direct merge with an error. Each names the setting
+  (Settings → Pull Requests → Allow merge commits). An unreadable method fails
+  closed: at creation the PR is not armed, with a warning and a PR comment; the
+  sweep returns a failed result and re-reads next scan; the direct merge is
+  refused with an error and retried on the next maintenance scan.
 - **A resurrection is detected directly.** The `check-resurrected-files`
   command fails when a branch carries a file the default branch deleted and
   whose deleting commit is already in the branch's ancestry:
@@ -624,7 +644,7 @@ A fleet PR is also **not** retargeted when merging its head onto the milestone b
 
 ### Milestone-fix PRs only target their milestone branch (Issue #3433)
 
-A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch.
+A milestone-fix PR (`milestone-fix/<milestone>/pr-<N>-…`) is raised into its milestone branch to deliver a fix to the milestone's final PR #N. Its diff against the default branch is the whole milestone, so it must only ever target that milestone branch. Its merge method follows its head: a merge commit when the head merges the default branch, so the default branch stays an ancestor (see [the sync rule](#the-sync-must-record-the-default-branch-as-an-ancestor)).
 
 - **The fleet never moves a PR off a milestone branch.** `spawnGh` (the worker's single `gh` chokepoint, [`gh_spawn.ts`](../../worker/deno/lib/gh_spawn.ts)) reads the PR's head and base before any base change and refuses, with `[SECURITY] [PR_BASE_CHANGE_REFUSED]`, moving a `milestone-fix/**` head to anything but its own milestone branch, or any other PR off a `milestone/**` base onto a non-milestone branch. An unreadable PR fails closed. The coding agent's `gh` guard refuses every base change outright (`gh pr edit --base`, `-B`, REST `PATCH` or `POST …/pulls/N` (or `repositories/<id>/pulls/N`) with `base`, including `gh api`'s default POST when a field is given without `-X`, and any GraphQL request (`graphql`, `/graphql` or the absolute `api.github.com/graphql` URL) that may carry an `updatePullRequest` mutation, including a document read from a file or stdin that cannot be read, and an `--input` JSON body that spells the name with `\uXXXX` escapes), whether or not the write-repo allowlist is active.
 
