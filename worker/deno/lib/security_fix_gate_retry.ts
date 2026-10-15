@@ -21,6 +21,7 @@
  */
 
 import { SECURITY_FIX_GATE_MARKER } from "./failure_diagnosis.ts";
+import type { SecurityFixDiscrimination } from "./security_fix_discrimination.ts";
 import {
   buildSecurityFixGateMessage,
   type SecurityFixEvidenceKind,
@@ -48,6 +49,11 @@ export interface SecurityGateRunVerdict {
   missing: SecurityFixEvidenceKind[];
   /** Test declarations the gate matched in the branch diff (capped). */
   declarations: string[];
+  /**
+   * The worker-executed red → green record for this verdict (Issue #3659), or
+   * `null` when the check was not run.
+   */
+  discrimination: SecurityFixDiscrimination | null;
 }
 
 /**
@@ -80,7 +86,11 @@ export function buildSecurityFixGateBlockComment(
       "buildSecurityFixGateBlockComment requires at least one verdict",
     );
   }
-  const body = buildSecurityFixGateMessage(last.missing, last.declarations);
+  const body = buildSecurityFixGateMessage(
+    last.missing,
+    last.declarations,
+    last.discrimination,
+  );
   if (verdicts.length === 1) return body;
 
   const earlier = verdicts

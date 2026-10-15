@@ -150,6 +150,37 @@ Deno.test("gate feedback - unknown evidence kinds in state are discarded", async
   });
 });
 
+/** Overwrite the persisted file for an issue with an old-shape block. */
+async function seedOldShapeBlock(
+  stateDir: string,
+  missing: string[],
+): Promise<void> {
+  await recordSecurityFixGateBlock(stateDir, REPO, 4030, ["trigger-closed"]);
+  const [file] = [...Deno.readDirSync(stateDir)].map((entry) => entry.name);
+  await Deno.writeTextFile(
+    `${stateDir}/${file}`,
+    JSON.stringify({ version: 1, missing, blockCount: 2 }),
+  );
+}
+
+Deno.test("gate feedback - an old block carrying the dropped regression-test kind keeps only the live kinds (Issue #3659)", async () => {
+  await withStateDir(async (stateDir) => {
+    await seedOldShapeBlock(stateDir, ["regression-test", "trigger-closed"]);
+    const block = await readSecurityFixGateBlock(stateDir, REPO, 4030);
+    assertEquals(block?.missing, ["trigger-closed"]);
+  });
+});
+
+Deno.test("gate feedback - an old block holding only the dropped regression-test kind reads as absent (Issue #3659)", async () => {
+  await withStateDir(async (stateDir) => {
+    await seedOldShapeBlock(stateDir, ["regression-test"]);
+    assertEquals(
+      await readSecurityFixGateBlock(stateDir, REPO, 4030),
+      undefined,
+    );
+  });
+});
+
 Deno.test("gate feedback - an unconfigured store fails loud on write", async () => {
   const read = await readSecurityFixGateBlock("", REPO, 4030);
   assertEquals(read, undefined);
@@ -172,7 +203,7 @@ Deno.test("gate feedback - the contract states every required evidence item", ()
     const kind of [
       "test-file-changed",
       "test-identifier-in-diff",
-      "regression-test",
+      "test-discriminates",
       "trigger-closed",
     ] as const
   ) {

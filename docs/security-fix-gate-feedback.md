@@ -45,7 +45,7 @@ sequenceDiagram
     B-->>E: prompt stating exactly what the gate demands
     E->>Cl: run Claude
     Cl-->>C: branch + PR summary
-    C->>G: evaluateSecurityFixGate({ summary, labels, diff })
+    C->>G: evaluateSecurityFixGate({ prSummaryContent, issueLabels, diff, discrimination })
     alt evidence missing (first block this run)
         G-->>C: missing[] + the declarations it matched
         C->>S: recordSecurityFixGateBlock(missing, countsAsBlockedRun=false)
@@ -78,8 +78,47 @@ gate would have posted after blocking it.
 
 The section is emitted only when the issue carries the `security` label — the
 same `hasSecurityLabel()` predicate the gate activates on — so non-security
-issues see no extra prompt weight. `diff-unavailable` is excluded: it reports an
-environment fault, not something a PR summary can be written to satisfy.
+issues see no extra prompt weight. `diff-unavailable` and
+`discrimination-not-checked` are excluded: they report environment faults, not
+something a PR summary can be written to satisfy. The required kinds are
+`test-file-changed`, `test-identifier-in-diff`, `test-discriminates` and
+`trigger-closed`.
+
+## The executed red-to-green check (Issue #3659)
+
+When the gate is active, the diff was collected, a test file changed and the
+summary names a test declared in the diff's added lines, the completion phase
+(the worker, not the agent) runs that named test twice in a disposable checkout
+(`runSecurityFixDiscrimination` in `security_fix_discrimination.ts`): a
+`git clone --shared` of the issue checkout, detached at the head commit, with no
+remote and deleted afterwards. The issue checkout itself is untouched.
+
+- At the head, the test must pass.
+- With the merge-base versions of the branch's changed non-test files restored,
+  it must fail. Files the branch added have no base version and stay at head.
+
+The run reuses the mutation gate's runner seams (`MutationRunnerSeams`,
+allowlisted child environment) and executes
+`deno test --no-check -A --filter <name> <file>` from the test's nearest
+`deno.json`, `deno.jsonc` or `deno.lock` directory. An outcome counts only when
+deno reports the named test's own `<name> ... ok` or `<name> ... FAILED` line.
+The base ref comes from the completion phase's `resolveComparableBaseRef`, which
+fetches `origin/<base>` when the shallow checkout lacks it (Issue #3494).
+
+Red then green passes. Green then green, red then red and green then red block
+with `test-discriminates`. A run that cannot execute blocks with
+`discrimination-not-checked` and is never counted as the red run (the #3615
+shape): a runner error, an unresolvable base ref or merge base, a timeout, the
+600 s budget exhausted, a cited test deno does not report, no string-named Deno
+test cited, or no runner wired. Only Deno tests can be executed today, so a
+security fix in a non-Deno repo blocks as not checked unless the repo sets
+`skip_security_fix_check`.
+
+Both outcomes are recorded on the block verdict in run state
+(`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`) and
+rendered in the block message as "Recorded discrimination runs". The prose
+`regression-test` evidence kind is gone; the self-reported `trigger-closed`
+statement remains.
 
 ## The verdict store
 

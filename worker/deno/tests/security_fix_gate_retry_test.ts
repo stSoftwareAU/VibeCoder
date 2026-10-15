@@ -53,7 +53,7 @@ Deno.test("gate retry - the prompt replays the verdict and forbids new work", ()
 
 Deno.test("gate retry - one verdict renders the ordinary block message", () => {
   const comment = buildSecurityFixGateBlockComment([
-    { missing: ["trigger-closed"], declarations: [] },
+    { missing: ["trigger-closed"], declarations: [], discrimination: null },
   ]);
 
   assertStringIncludes(comment, "PR creation blocked");
@@ -63,8 +63,8 @@ Deno.test("gate retry - one verdict renders the ordinary block message", () => {
 
 Deno.test("gate retry - two verdicts ride in one comment", () => {
   const comment = buildSecurityFixGateBlockComment([
-    { missing: ["test-file-changed"], declarations: [] },
-    { missing: ["trigger-closed"], declarations: [] },
+    { missing: ["test-file-changed"], declarations: [], discrimination: null },
+    { missing: ["trigger-closed"], declarations: [], discrimination: null },
   ]);
 
   assertStringIncludes(comment, "ORIGINAL TRIGGER");
@@ -132,8 +132,12 @@ async function recover(launchFails: boolean) {
       baselineQualityPassed: true,
       baselineQualityOutput: "",
       securityGateBlocks: [
-        { missing: ["test-file-changed"], declarations: [] },
-        { missing: ["trigger-closed"], declarations: [] },
+        {
+          missing: ["test-file-changed"],
+          declarations: [],
+          discrimination: null,
+        },
+        { missing: ["trigger-closed"], declarations: [], discrimination: null },
       ],
     };
     const deps = createMockDeps({
