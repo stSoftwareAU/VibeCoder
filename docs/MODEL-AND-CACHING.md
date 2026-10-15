@@ -1621,15 +1621,36 @@ suppressed, and from the second stats comment onward each block carries the
 cumulative issue total so the issue's cost is readable without adding comments
 up by hand.
 
+**PR-cycle rounds post on the PR.** A `pr_feedback` round (a review reply) and
+a `ci_fix` round (a red check) used to feed only the per-host tier counters, so
+what a send-back cost was invisible on GitHub — the one place cost per merged
+PR can be compared week over week. Each such round in which the agent ran now
+posts the same block on **the PR** it worked on, headed
+`## Pr-feedback run model stats` or `## Ci-fix run model stats`, costed through
+the same attribution as an issue run (a resumed session included). A round that
+pushed nothing still posts: it spent the tokens all the same. A round that
+never reached the agent — the PR closed, the comment claimed elsewhere, the
+branch not checked out — spent nothing and posts nothing. The marker's run id
+carries the round (`<run id>.<phase>-<comment or check-run id>`), so a repeat
+post of the same round inside one run is suppressed while a CI fix after a
+review reply in the same run still reports its own cost; from the second round
+on, the block carries the **PR total** across the PR's run-stats comments. The
+issue run's own comment stays on the issue, so a PR's cost is its issue
+comment's figure plus that PR total. Attributing the same cycles to the
+assignment in the run ledger is a separate, open route,
+[#3720](https://github.com/stSoftwareAU/VibeCoder/issues/3720).
+
 ```mermaid
 flowchart TD
-    A["Worker wraps an issue up"] --> B{"Which path?"}
+    A["Worker wraps an issue up<br/>or finishes a PR round"] --> B{"Which path?"}
     B -->|work-on| C["PR raised<br/>completion_phase.ts"]
     B -->|already complete| D["Worker closes the issue<br/>handle_no_changes_phase.ts"]
     B -->|grill-me / question /<br/>refinement / revision /<br/>clarification| E["Round finished<br/>phase_run_stats.ts"]
+    B -->|pr_feedback / ci_fix| P["Round finished, on the PR<br/>postPrRoundRunStats()"]
     C --> F["postIssueRunStatsComment()"]
     D --> F
     E --> F
+    P --> F
     F --> G{"Did <b>this run</b> already<br/>post its stats?"}
     G -->|yes| H["Skip — one per run"]
     G -->|no| I["Post the shared stats block<br/>+ run marker + issue total<br/>+ estimate disclaimer"]
@@ -1652,7 +1673,8 @@ flowchart TD
 - **Estimate disclaimer.** KISS on multi-worker coverage — no cross-worker
   aggregation infrastructure. Each comment states that the figures are an
   estimate covering the run that posted them, and that the total only sums the
-  comments visible on the issue.
+  comments visible on the issue — or, on a PR-cycle round's comment, the round
+  that posted it and the comments visible on the PR.
 - **The run's Graft figures.** When the run collected a Graft bundle
   ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection)),
   one extra bullet — `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
@@ -1719,9 +1741,11 @@ flowchart TD
 - Implementation:
   [`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)
   (`buildIssueRunStatsComment`, `postIssueRunStatsComment`,
-  `ghIssueCommentLister`), wired into
+  `ghIssueCommentLister`, `ghPrCommentLister`), wired into
   [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts) (all six
-  planning-shaped phases),
+  planning-shaped phases, and `postPrRoundRunStats` for the PR-cycle rounds of
+  [`pr_feedback_processor.ts`](../worker/deno/lib/pr_feedback_processor.ts) and
+  [`pr_ci_processor.ts`](../worker/deno/lib/pr_ci_processor.ts)),
   [`phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)
   (PR-raise time),
   [`phases/handle_no_changes_phase.ts`](../worker/deno/lib/phases/handle_no_changes_phase.ts)
