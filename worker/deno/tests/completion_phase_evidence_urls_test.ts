@@ -231,11 +231,11 @@ Deno.test(
 );
 
 Deno.test(
-  "completion - the default (sonnet) host config stamps exactly one sonnet tier marker on the PR (Issue #3403)",
+  "completion - the default (haiku) host config stamps exactly one haiku tier marker on the PR (Issues #3403, #3473)",
   async () => {
     const body = await createPrWithConfig({});
     assertEquals(tierMarkerOccurrences(body), [
-      buildSubAgentTierMarker("sonnet"),
+      buildSubAgentTierMarker("haiku"),
     ]);
   },
 );
