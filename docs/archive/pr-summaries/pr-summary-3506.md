@@ -76,7 +76,7 @@ Backend/CLI change only; no UI files are touched.
 ```mermaid
 flowchart TD
     R["Completion phase"] --> D{"Degraded?"}
-    D -- yes --> G["Existing degraded guard (unchanged)"]
+    D -- yes --> G["Degraded guard: a no-criteria issue now files for its partial/missing entries; the follow-up joins the parent's milestone; a stale claim closes it"]
     D -- no --> H{"assessReportedGaps:<br/>any partial or missing entry?"}
     H -- no --> P["PR as before"]
     H -- yes --> C{"Issue is itself a<br/>partial-delivery follow-up?<br/>(PR #3676 review)"}
@@ -117,9 +117,9 @@ and `pr_body_sync.ts` module doc now name it; the PR #3676 review fix (the re-sy
 `worker/deno/lib/degraded_delivery.ts`, `worker/deno/lib/pr_body_sync.ts` and
 `worker/deno/lib/phases/completion_phase.ts`. Hits left in place, each still
 true because it names the guard, which still runs for degraded runs:
-- `CODING-STANDARDS.md:809`, `prompts/coding_guidelines/prompt.md:1466` and
+- `CODING-STANDARDS.md:835`, `prompts/coding_guidelines/prompt.md:1492` and
   `prompts/pr_feedback/prompt.md:64` list it as an example guard.
-- `docs/workflows/issue-processing.md:2617`–`:2621` (the paragraph "A degraded
+- `docs/workflows/issue-processing.md:2641`–`:2645` (the paragraph "A degraded
   run, or a healthy run with its own `partial`/`missing` gaps … is the
   exception to `summary_incomplete`") and the outcome table below it describe
   the guard's failure handling, which now covers both cases.
