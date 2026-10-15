@@ -576,15 +576,6 @@ async function fetchBaseRefName(
 }
 
 /**
- * Whether the PR's head branch lives in **this** repository (Issue #1249,
- * finding 10).
- *
- * Only a same-repository head is evidence about who created the branch —
- * pushing it needed write access here — so only it may select the
- * merge-commit deviation. An unreadable answer is `false`: the deviation is
- * refused rather than granted on a field that could not be read.
- */
-/**
  * Whether the PR head lives in this repository, read as three states
  * (Issue #3596): `true`/`false` when GitHub answers, `null` when the read failed
  * or did not give a boolean. A milestone-fix head must not treat `null` as a
@@ -615,6 +606,15 @@ async function readHeadIsSameRepository(
   }
 }
 
+/**
+ * Whether the PR's head branch lives in **this** repository (Issue #1249,
+ * finding 10).
+ *
+ * Only a same-repository head is evidence about who created the branch —
+ * pushing it needed write access here — so only it may select the
+ * merge-commit deviation. An unreadable answer is `false`: the deviation is
+ * refused rather than granted on a field that could not be read.
+ */
 async function fetchHeadIsSameRepository(
   repo: string,
   prNumber: number,
