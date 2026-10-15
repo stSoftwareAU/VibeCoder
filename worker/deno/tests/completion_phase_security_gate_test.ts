@@ -22,9 +22,10 @@ import {
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result, WorkerConfig } from "../types.ts";
-import type {
-  DiscriminationRunInput,
-  SecurityFixDiscrimination,
+import {
+  DEFAULT_DISCRIMINATION_BUDGET_SECONDS,
+  type DiscriminationRunInput,
+  type SecurityFixDiscrimination,
 } from "../lib/security_fix_discrimination.ts";
 import type { SecurityGateRunVerdict } from "../lib/security_fix_gate_retry.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
@@ -132,6 +133,10 @@ interface Scenario {
   discrimination?: SecurityFixDiscrimination;
   /** Make the stub throw this message instead of returning. */
   discriminationThrows?: string;
+  /** Make `rev-parse` and `fetch` fail so the base ref cannot be resolved. */
+  baseRefUnresolvable?: boolean;
+  /** Make every `diff --name-only` fail so no branch diff is collected. */
+  diffUnavailable?: boolean;
 }
 
 interface Outcome {
@@ -141,6 +146,8 @@ interface Outcome {
   comments: string[];
   /** Every input the discrimination runner was called with. */
   discriminationInputs: DiscriminationRunInput[];
+  /** The repo path the run used. */
+  repoPath: string;
   /** The verdicts the gate recorded on run state. */
   securityGateBlocks: SecurityGateRunVerdict[];
 }
@@ -207,8 +214,18 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
             ok: true as const,
             value: { code: 0, stdout, stderr: "" },
           });
+        const fails = () =>
+          Promise.resolve({
+            ok: true as const,
+            value: { code: 128, stdout: "", stderr: "bad revision" },
+          });
+        if (
+          scenario.baseRefUnresolvable &&
+          (cmdArgs[0] === "rev-parse" || cmdArgs[0] === "fetch")
+        ) return fails();
         if (cmdArgs[0] === "rev-parse") return ok(`${SHA}\n`);
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
+          if (scenario.diffUnavailable) return fails();
           // The gate tries `origin/main...HEAD` first; a worker clone that has
           // no origin ref falls back to the local range, so only answer the
           // local one to exercise that fallback.
@@ -241,6 +258,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     prCreateCalls,
     comments,
     discriminationInputs,
+    repoPath,
     securityGateBlocks: state.securityGateBlocks ?? [],
   };
 }
@@ -452,6 +470,146 @@ Deno.test(
     assertEquals(input.productionFiles, ["worker/deno/lib/sanitise.ts"]);
     assertEquals(input.tests, [CITED_TEST]);
     assertEquals(input.baseRef, "origin/main");
+    assertEquals(input.repoPath, outcome.repoPath);
+    assertEquals(input.budgetSeconds, DEFAULT_DISCRIMINATION_BUDGET_SECONDS);
+  },
+);
+
+Deno.test(
+  "completion - a declared quality credential reaches the discrimination runner (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["security"],
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      configure: (config) => {
+        config.repoConfig = {
+          "stSoftwareAU/VibeCoder": {
+            qualityCredentials: { mint: "printf 'DECLARED_KEY=minted\\n'" },
+          },
+        };
+      },
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.discriminationInputs.length, 1);
+    assertEquals(outcome.discriminationInputs[0]!.credentialEnv, {
+      DECLARED_KEY: "minted",
+    });
+  },
+);
+
+Deno.test(
+  "completion - unresolvable quality credentials block without running the cited test (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["security"],
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      configure: (config) => {
+        config.repoConfig = {
+          "stSoftwareAU/VibeCoder": { qualityCredentials: { mint: "exit 7" } },
+        };
+      },
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.discriminationInputs.length, 0);
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "quality_credentials could not be resolved",
+    );
+  },
+);
+
+Deno.test(
+  "completion - an unresolvable base ref blocks without running the cited test (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["security"],
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      baseRefUnresolvable: true,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.discriminationInputs.length, 0);
+    assertStringIncludes(outcome.reason ?? "", "the base ref is unresolvable");
+  },
+);
+
+// Each operand of the run condition keeps the runner from executing a test the
+// gate does not need a record for.
+
+Deno.test(
+  "completion - the runner is not called when the gate is inactive (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["work-on"],
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1);
+    assertEquals(outcome.discriminationInputs.length, 0);
+  },
+);
+
+Deno.test(
+  "completion - the runner is not called when no branch diff is collected (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["security"],
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      diffUnavailable: true,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.discriminationInputs.length, 0);
+  },
+);
+
+Deno.test(
+  "completion - the runner is not called when no test file changed (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["security"],
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: ["worker/deno/lib/sanitise.ts"],
+      discrimination: RED_GREEN,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.discriminationInputs.length, 0);
+    assertStringIncludes(outcome.reason ?? "", "TEST FILE");
+  },
+);
+
+Deno.test(
+  "completion - the runner is not called when the cited test is not declared in the diff (Issue #3659)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: ["security"],
+      summary: COMPLIANT_SUMMARY.replace("rejects_injection", "rejects_other"),
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+    });
+
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    assertEquals(outcome.discriminationInputs.length, 0);
+    assertStringIncludes(outcome.reason ?? "", "TEST IDENTIFIER");
   },
 );
 

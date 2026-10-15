@@ -45,7 +45,7 @@ sequenceDiagram
     B-->>E: prompt stating exactly what the gate demands
     E->>Cl: run Claude
     Cl-->>C: branch + PR summary
-    C->>G: evaluateSecurityFixGate({ summary, labels, diff })
+    C->>G: evaluateSecurityFixGate({ prSummaryContent, issueLabels, diff, discrimination })
     alt evidence missing (first block this run)
         G-->>C: missing[] + the declarations it matched
         C->>S: recordSecurityFixGateBlock(missing, countsAsBlockedRun=false)

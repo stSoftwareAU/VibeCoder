@@ -2469,11 +2469,11 @@ async function completionBody(
     }
 
     // Execute the cited test red→green only when the pure gate will want the
-    // record: a diff, a changed test file and a declared cited identifier.
+    // record. securityDiff is non-null only when the gate is active, and its
+    // testDiffText is empty unless a test file changed, so these two suffice.
     let discrimination: SecurityFixDiscrimination | null = null;
     if (
-      gateActive && securityDiff &&
-      securityDiff.changedFiles.some(isTestFilePath) &&
+      securityDiff &&
       citedTestIdentifierInDiff(prBody, securityDiff.testDiffText)
     ) {
       discrimination = await runSecurityDiscrimination({

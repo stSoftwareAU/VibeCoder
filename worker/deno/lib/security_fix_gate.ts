@@ -397,7 +397,34 @@ export function citedSecurityTests(
   if (identifiers.length === 0) return [];
 
   const sections: { file: string; lines: string[] }[] = [];
+  // Hunk-aware split: inside a hunk every line is content, so an added line
+  // whose text is `++ b/other_test.ts` (rendered `+++ b/other_test.ts`) cannot
+  // re-attribute later declarations to another file. Only outside a hunk may
+  // `+++ ` open a new file section.
+  let oldRemaining = 0;
+  let newRemaining = 0;
   for (const line of testDiffText.slice(0, MAX_SCAN_CHARS).split("\n")) {
+    if (oldRemaining > 0 || newRemaining > 0) {
+      const marker = line[0];
+      if (marker === "\\") {
+        // "\ No newline at end of file" consumes neither count.
+      } else if (marker === "+") {
+        newRemaining--;
+      } else if (marker === "-") {
+        oldRemaining--;
+      } else {
+        oldRemaining--;
+        newRemaining--;
+      }
+      sections[sections.length - 1]?.lines.push(line);
+      continue;
+    }
+    const hunk = HUNK_HEADER.exec(line);
+    if (hunk) {
+      oldRemaining = hunk[1] === undefined ? 1 : Number(hunk[1]);
+      newRemaining = hunk[2] === undefined ? 1 : Number(hunk[2]);
+      continue;
+    }
     if (line.startsWith("+++ ")) {
       const target = line.slice(4).trim();
       if (target === "/dev/null") {
@@ -433,6 +460,9 @@ export function citedSecurityTests(
   }
   return found;
 }
+
+/** A unified-diff hunk header; groups 1 and 2 are the optional old/new line counts. */
+const HUNK_HEADER = /^@@ -\d{1,9}(?:,(\d{1,9}))? \+\d{1,9}(?:,(\d{1,9}))? @@/;
 
 /** The first string literal on a declaration line; group 2 is its content. */
 const STRING_NAME_PATTERN = /(["'`])([^"'`\n]*)\1/;

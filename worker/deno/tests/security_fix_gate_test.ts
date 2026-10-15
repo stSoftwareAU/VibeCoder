@@ -11,6 +11,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertLinearGrowth } from "./support/growth.ts";
 import {
   buildSecurityFixGateMessage,
   citedSecurityTests,
@@ -605,7 +606,7 @@ Deno.test("evaluateSecurityFixGate - tolerates empty content", () => {
 Deno.test("citedSecurityTests - returns the file and raw name per cited declaration", () => {
   const diff = `--- a/tests/other_test.ts
 +++ b/tests/other_test.ts
-@@ -0,0 +1,2 @@
+@@ -0,0 +1 @@
 +Deno.test("unrelated name", () => {});
 --- a/tests/db_test.ts
 +++ b/tests/db_test.ts
@@ -735,4 +736,84 @@ Deno.test("buildSecurityFixGateMessage - describes who runs each check, not that
   const message = buildSecurityFixGateMessage(["trigger-closed"], [], null);
   assertEquals(message.includes("No execution is required"), false);
   assertStringIncludes(message, "executed by the worker");
+});
+
+// --- citedSecurityTests: hunk-aware file sections (Issue #3659) -------------
+
+const INJECTION_SUMMARY = GOOD_SUMMARY;
+
+Deno.test("citedSecurityTests - an added line reading '++ b/…' cannot re-attribute the file", () => {
+  const diff = [
+    "diff --git a/tests/a_test.ts b/tests/a_test.ts",
+    "--- a/tests/a_test.ts",
+    "+++ b/tests/a_test.ts",
+    "@@ -0,0 +1,2 @@",
+    "+++ b/tests/evil_test.ts",
+    '+Deno.test("rejects_injection", () => {});',
+  ].join("\n");
+  assertEquals(citedSecurityTests(INJECTION_SUMMARY, diff), [
+    { file: "tests/a_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a removed '-- a/x' line plus an added '++ b/…' line cannot re-attribute the file", () => {
+  const diff = [
+    "--- a/tests/a_test.ts",
+    "+++ b/tests/a_test.ts",
+    "@@ -1,1 +1,2 @@",
+    "--- a/x",
+    "+++ b/tests/evil_test.ts",
+    '+Deno.test("rejects_injection", () => {});',
+  ].join("\n");
+  assertEquals(citedSecurityTests(INJECTION_SUMMARY, diff), [
+    { file: "tests/a_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - real headers after hunks still start new file sections", () => {
+  const diff = [
+    "diff --git a/tests/a_test.ts b/tests/a_test.ts",
+    "--- a/tests/a_test.ts",
+    "+++ b/tests/a_test.ts",
+    "@@ -1,2 +1,3 @@",
+    " context",
+    '+Deno.test("rejects_injection", () => {});',
+    " more",
+    "diff --git a/tests/b_test.ts b/tests/b_test.ts",
+    "--- a/tests/b_test.ts",
+    "+++ b/tests/b_test.ts",
+    "@@ -0,0 +1 @@",
+    '+Deno.test("rejects_injection", () => {});',
+  ].join("\n");
+  assertEquals(citedSecurityTests(INJECTION_SUMMARY, diff), [
+    { file: "tests/a_test.ts", name: "rejects_injection" },
+    { file: "tests/b_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a hunk header with omitted counts defaults each to one", () => {
+  const diff = [
+    "--- /dev/null",
+    "+++ b/tests/a_test.ts",
+    "@@ -0,0 +1 @@",
+    '+Deno.test("rejects_injection", () => {});',
+    "+++ b/tests/b_test.ts",
+    '+Deno.test("rejects_injection", () => {});',
+  ].join("\n");
+  assertEquals(citedSecurityTests(INJECTION_SUMMARY, diff), [
+    { file: "tests/a_test.ts", name: "rejects_injection" },
+    { file: "tests/b_test.ts", name: "rejects_injection" },
+  ]);
+});
+
+Deno.test("citedSecurityTests - a long unclosed quote run on a declaration line grows linearly", () => {
+  const result = assertLinearGrowth(
+    "STRING_NAME_PATTERN over an unclosed quote run",
+    (chars) =>
+      "+++ b/tests/a_test.ts\n+Deno.test(rejects_injection " +
+      '"'.repeat(chars) + "\n",
+    (diff) => citedSecurityTests(INJECTION_SUMMARY, diff),
+    { baseChars: 12_500 },
+  );
+  assertEquals(result.length <= 1, true);
 });
