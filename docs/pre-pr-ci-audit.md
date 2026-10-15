@@ -1,14 +1,23 @@
 # Pre-PR Quality Stages vs Actual CI Failures
 
-Evidence for Issue #3689, feeding the metrics in #3644. It audits whether the
-worker's pre-PR quality stages would have caught the failures that GitHub CI
-later reported on representative recent PRs in three repos.
+Evidence for Issues #3689 and #3717, feeding the metrics in #3644. It audits
+whether the worker's pre-PR quality stages would have caught the CI failures
+and blocking review findings that GitHub later reported on representative
+recent PRs in three repos: VibeCoder and two private fleet repos, called
+private-repo-A and private-repo-C here.
+
+VibeCoder is public, so this document links and quotes only VibeCoder's runs,
+reviews and code. A private repo's rows describe each failure at concept level,
+with no repo name, PR, review, commit or run number, link, file path, code
+identifier or product detail. The private evidence stays in those repos and on
+the worker host that gathered it.
 
 ## Method
 
-For each PR below, the run is the **first failing required CI job** on the
-named head SHA. For each, the audit asks whether a pre-PR worker stage ran an
-equivalent command. The stages are:
+For each VibeCoder row below, the run is the **first failing required CI job**
+on the named head SHA. For each row, the audit asks whether a pre-PR worker
+stage ran an equivalent command. Private-repo rows carry a concept-level
+failure ID (C1 to C8, A1 to A5) in place of a SHA and run link. The stages are:
 
 - the pre-flight gate (`lib/pre_flight_gate.ts`);
 - the agent pre-push hook (`lib/pre_push_gate.ts`, #3394);
@@ -38,9 +47,9 @@ Each failure is classed as one of:
 
 A stage that is skipped is reported as **SKIP**, never **PASS**.
 
-Run links have the form
-`https://github.com/stSoftwareAU/<repo>/actions/runs/<id>`. The dates are the
-UTC run creation dates (2026-10-07 to 2026-10-13).
+VibeCoder run links have the form
+`https://github.com/stSoftwareAU/VibeCoder/actions/runs/<id>`. The dates are
+the UTC run creation dates (2026-10-07 to 2026-10-13).
 
 ## The pre-PR path
 
@@ -56,33 +65,32 @@ flowchart TD
     F --> G["CI runs every required check independently"]
 ```
 
-## GRQ
+## private-repo-C
 
-| Run | First failing SHA | Check | Cause | Class | Pre-PR equivalent ran? | Outcome |
-| --- | --- | --- | --- | --- | --- | --- |
-| [38375639111](https://github.com/stSoftwareAU/GRQ/actions/runs/38375639111) | e9a7f8fd | Spelling | cspell: `pr-summary-5209.md:55` (fsmonitor, notrepo, emptyrepo) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
-| [38462363800](https://github.com/stSoftwareAU/GRQ/actions/runs/38462363800) | 6b3eeaef | Spelling | cspell: `pr-summary-5221.md:39` (mawk) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
-| [38030791481](https://github.com/stSoftwareAU/GRQ/actions/runs/38030791481) | 3e96c55d | Spelling | cspell: `pr-summary-5206.md:188` (unthresholded) | local | No | Fixed by the completion-phase whole-branch gate |
-| [37921633370](https://github.com/stSoftwareAU/GRQ/actions/runs/37921633370) | 3e313843 | Spelling | cspell: `pr-summary-5202.md:105` (unacted) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
-| [38395012672](https://github.com/stSoftwareAU/GRQ/actions/runs/38395012672) | 65d0d714 | Spelling | cspell: `pr-summary-5225.md:28` (nosemgrep) | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
-| [37865294665](https://github.com/stSoftwareAU/GRQ/actions/runs/37865294665) | 9e39e325 | Spelling | cspell: `CHANGELOG.md:240` (backtester) | local | No | Fixed by the completion-phase whole-branch gate |
-| [37770312438](https://github.com/stSoftwareAU/GRQ/actions/runs/37770312438) | 26c8f269 | Spelling | cspell | local | No | Fixed by the completion-phase whole-branch gate |
-| [37687047960](https://github.com/stSoftwareAU/GRQ/actions/runs/37687047960) | 1f92a0af | Spelling | cspell | local | No | Fixed by the completion-phase whole-branch gate |
+| Failure | Check | Cause | Class | Pre-PR equivalent ran? | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| C1 | Spelling | cspell: unknown words in an archived PR summary | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| C2 | Spelling | cspell: an unknown word in an archived PR summary | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| C3 | Spelling | cspell: an unknown word in an archived PR summary | local | No | Fixed by the completion-phase whole-branch gate |
+| C4 | Spelling | cspell: an unknown word in an archived PR summary | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| C5 | Spelling | cspell: an unknown word in an archived PR summary | local | No (checkpoint push, ungated) | Fixed by the completion-phase whole-branch gate |
+| C6 | Spelling | cspell: an unknown word in the changelog | local | No | Fixed by the completion-phase whole-branch gate |
+| C7 | Spelling | cspell: an unknown word in a shell test | local | No | Fixed by the completion-phase whole-branch gate |
+| C8 | Spelling | cspell: unknown words in a shell test | local | No | Fixed by the completion-phase whole-branch gate |
 
-The Spelling check runs cspell with `docs/cspell.json`. No pre-PR stage ran
-cspell. #3689 adds a cspell check to the pre-push gate and pins cspell in the
-worker image. e9a7f8fd, 3e313843 and 65d0d714 are
-"WIP checkpoint: periodic agent progress snapshot" commits and 6b3eeaef is
-"Merge remote WIP checkpoints" (read with `gh api repos/stSoftwareAU/GRQ/commits/<sha>`):
-the execute phase's periodic and phase-end checkpoint pushes
-(`commitAndPushPending` with no pre-flight spec) put the misspelt PR summaries
-on origin before the completion phase ran. Those pushes stay ungated on
-purpose, so work is never lost. The check therefore sits at the completion
+The Spelling check runs cspell with the repo's cspell config. No pre-PR stage
+ran cspell. #3689 adds a cspell check to the pre-push gate and pins cspell in
+the worker image. Three of the failing heads (C1, C4 and C5) are "WIP
+checkpoint: periodic agent progress snapshot" commits and one (C2) is "Merge
+remote WIP checkpoints": the execute phase's periodic and phase-end checkpoint
+pushes (`commitAndPushPending` with no pre-flight spec) put the misspelt PR
+summaries on origin before the completion phase ran. Those pushes stay ungated
+on purpose, so work is never lost. The check therefore sits at the completion
 phase, which gates every non-merge commit the branch has ahead of the PR base
 (`git log --no-merges origin/<base>..HEAD`), pushed or not, before
 `gh pr create`. `worker/deno/tests/git_push_preflight_test.ts` pins this with a
-bad commit already on origin through a checkpoint push. A GRQ "Worker tests" failure is also class local and is already
-covered by `quality.sh`.
+bad commit already on origin through a checkpoint push. A failure of the repo's
+worker test job is also class local and is already covered by `quality.sh`.
 
 ## VibeCoder
 
@@ -117,21 +125,188 @@ unpushed commits before that push (Step 1b, pre-flight spec required) and again
 in the completion phase (every repo). The completion-phase gate falls back to
 `{ commands: [] }` when no spec exists.
 
-## GRQ-AutoTrader
+## private-repo-A
 
-| Run | First failing SHA | Check | Cause | Class | Pre-PR equivalent ran? | Outcome |
-| --- | --- | --- | --- | --- | --- | --- |
-| [38486741580](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38486741580) | a85026a6 | rustfmt | `handler.rs:67` | local | No (final-mile Step 2 gap) | Fixed by #3689 |
-| [38484707749](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38484707749) | a3b78e09 | mermaid_blocks | invalid Mermaid block | local | Covered by `quality.sh` | No change needed |
-| [38407346744](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38407346744) | 82d4a6fd | bootstrap drift | drift against the remote bootstrap | network-only | No | Left to CI |
-| [38455750470](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38455750470) | 8b788065 | VERSION not bumped | compares to base PR state | GitHub-exclusive (compares against base PR state) | No | Left to CI — GRQ-AutoTrader's own `version-bump` job (#3248, closed) is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
-| [38357245453](https://github.com/stSoftwareAU/GRQ-AutoTrader/actions/runs/38357245453) | 2c0f586c | VERSION not bumped | compares to base PR state | GitHub-exclusive (compares against base PR state) | No | Left to CI — GRQ-AutoTrader's own `version-bump` job (#3248, closed) is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
+| Failure | Check | Cause | Class | Pre-PR equivalent ran? | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| A1 | rustfmt | a formatting diff in a Rust source file | local | No (final-mile Step 2 gap) | Fixed by #3689 |
+| A2 | Mermaid blocks | an invalid Mermaid block | local | Covered by `quality.sh` | No change needed |
+| A3 | bootstrap drift | drift against the remote bootstrap | network-only | No | Left to CI |
+| A4 | VERSION not bumped | compares to base PR state | GitHub-exclusive (compares against base PR state) | No | Left to CI: the repo's own `version-bump` job is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
+| A5 | VERSION not bumped | compares to base PR state | GitHub-exclusive (compares against base PR state) | No | Left to CI: the repo's own `version-bump` job is the designed enforcer; no demonstrated pre-PR gap, no follow-up filed |
+
+## Blocking review findings
+
+Issue #3717 adds the review side. The table rows are the reviews still in
+`CHANGES_REQUESTED` state when queried on 2026-10-15 at 07:11Z, on VibeCoderST
+PRs opened in the three repos from 2026-10-07 to 2026-10-14. The query, per
+repo, is `gh pr list -R stSoftwareAU/<repo> --author VibeCoderST --state all
+--search "created:2026-10-07..2026-10-14" --limit 500 --json number,reviews`
+(`--state all` includes PRs closed unmerged; the default `--limit` of 30 cuts
+the list short). The 12 standing reviews on 11 PRs are all by
+`stsoftware-pr-reviewer` (`/review-fleet-prs`). VibeCoder#3676's latest
+review (5527925145) was standing when this table was first built and has
+since been dismissed, so it is not a row.
+
+The table is a sample of standing reviews, not a census. The same query
+returns the reviews the fleet dismissed after the worker addressed them
+(`select(.state=="DISMISSED")` on each PR's `reviews`):
+
+| Repo | Standing `CHANGES_REQUESTED` | Dismissed |
+| --- | --- | --- |
+| private-repo-C | 0 reviews on 0 PRs | 22 reviews on 11 PRs |
+| private-repo-A | 9 reviews on 8 PRs | 60 reviews on 31 PRs |
+| VibeCoder | 3 reviews on 3 PRs | 105 reviews on 35 PRs |
+| Total | 12 reviews on 11 PRs | 187 reviews on 77 PRs |
+
+Each PR's issue timeline records the state a review had before it was
+dismissed, in the `review_dismissed` event's `dismissed_review.state`:
+
+```sh
+gh api repos/stSoftwareAU/<repo>/issues/<n>/timeline --paginate \
+  --jq '.[] | select(.event=="review_dismissed") | .dismissed_review.state'
+```
+
+Over the 77 PRs this gives 187 `review_dismissed` events, all
+`changes_requested`, so every dismissed review counted here was a request for
+changes. As a cross-check, all 187 bodies open with a `file:line` finding, as
+the model reviews in the table do. Nothing in this audit reads the dismissed
+set as a blocking-review rate. A reader of the table, including the metrics
+in #3644, must not read private-repo-C's 0 as "no blocking findings": it had
+no standing review, and 22 dismissed ones.
+
+One private-repo-A PR was closed without merging and has one standing review;
+it is listed in the table. The finding described is the first in the review.
+For VibeCoder rows, PR head is the commit reviewed.
+
+The dismissed set contains first-round reviews of heads the verifier had
+checked, so a verifier miss can sit in it and not in the table.
+[Pre-PR verifier: live runs](#pre-pr-verifier-live-runs) lists the misses
+found there.
+
+The pre-PR verifier (`lib/pre_pr_verifier.ts`, #3395) reached `main` on
+2026-10-11 at 10:04Z (ac214bd7, the #3584 milestone merge). Only the issue
+worker's completion phase calls it, so it does not check a milestone roll-up
+PR (head `milestone/...`) or a PR-feedback round. A roll-up's children were
+checked in their own issue runs; the child that introduced each line was not
+traced.
+
+A **judgement** finding needs the diff read against the code, the issue or a
+previous release. That is the verifier's brief, and no executable check gives
+it. **local** and **network-only** are as defined above.
+
+| Review | PR head | First finding | Class | Pre-PR stage | Outcome |
+| --- | --- | --- | --- | --- | --- |
+| private-repo-A, PR 1 | - | the PR was based on the wrong branch, so its diff carried the whole milestone, including an unrelated permission change | judgement | PR-feedback round (milestone-fix branch); the verifier never runs on one | Closed without merging; left to review |
+| private-repo-A, PR 2 | - | a derived figure was computed at a different cut-off from the values it is measured against | judgement | Milestone roll-up, opened before the verifier was deployed | Left to review |
+| private-repo-A, PR 3 | - | a doc claimed a style rule applies at every screen width; the rule exists only inside one media query | judgement | Verifier deployed; the run was on another host, so whether it ran is not recorded | Left to review |
+| private-repo-A, PR 4 | - | a Mermaid flowchart label mixing unquoted text with a quoted string does not parse | local | None: every CI check on the head passed, and VibeCoder's `check-mermaid` passes the same block | Gap, tracked in #3769 |
+| private-repo-A, PR 5 | - | a new button sits under a full-card link overlay, so tapping it follows the link instead | judgement (rendered layout) | Verifier ran on this head (this host's log, 2026-10-13 15:01Z) and did not block | Verifier miss |
+| private-repo-A, PR 6 | - | a top-of-page check ignores nested scrollers and fixed overlays | judgement | Milestone roll-up | Left to review |
+| private-repo-A, PR 7 | - | a time range includes data from outside the intended session | judgement | Verifier deployed; run on another host, not recorded | Left to review |
+| private-repo-A, PR 7 | - | new storage keys land where the previous release reads them and refuses | judgement (previous release) | Verifier deployed; run on another host, not recorded | Left to review |
+| private-repo-A, PR 8 | - | the dependency-audit CI job was red; sent back without a model review | network-only (advisory database) | None: a CI check, not a review judgement | Left to CI and the CI-fix run |
+| [VibeCoder#3440](https://github.com/stSoftwareAU/VibeCoder/pull/3440#pullrequestreview-5464965241) | 71a5356c | `worker/deno/lib/failure_diagnosis.ts:339`: the new gate-marker check runs after substring rules a quoted refusal can trip | judgement | Opened 2026-10-09, before the verifier was deployed | Left to review |
+| [VibeCoder#3640](https://github.com/stSoftwareAU/VibeCoder/pull/3640#pullrequestreview-5498282324) | 459e991e | `worker/deno/lib/milestone_completion.ts:1347`: every scan rebuilds and re-edits an existing summary PR body, re-reading timelines uncached | judgement | Verifier deployed; run on another host, not recorded | Left to review |
+| [VibeCoder#3707](https://github.com/stSoftwareAU/VibeCoder/pull/3707#pullrequestreview-5516189682) | ddc0ea4b | `prompts/issue/prompt.md:1399`: the facts-file switch contradicts the `pr-summary-check` instruction (the reviewer reproduced it with `pr_summary_check_cli`) | judgement | Milestone roll-up | Left to review |
+
+## Unattended worker path
+
+Issue #3717 checks the deployed stages on the path the unattended worker
+takes, not only through unit tests.
+
+### Executable checks: replay in disposable checkouts
+
+The completion phase's `gateBeforePush()` calls
+`gateUnpushedCommits(branch, { cwd }, spec, false, base)` (`lib/git_push.ts`).
+Each replay made that same call with the worker code at this branch, inside
+the worker container image (cspell, `markdownlint-cli2` v0.23.2, `cargo fmt`
+and Deno 2.9.6 on `PATH`). It ran on a disposable blobless clone checked out
+at the failing head. The base was the merge-base of that head with the PR's
+base branch (the repo's default branch). The
+spec was `{ commands: [] }`, the completion phase's fallback for a repo with
+no pre-flight commands, so only the changed-file checks and the sweptAt check
+ran. Repo-configured pre-flight commands come from a host's config and were
+not replayed. Replays ran on 2026-10-15.
+
+| Repo | Head | CI's first failure | Gate verdict | Gate output |
+| --- | --- | --- | --- | --- |
+| private-repo-C | C1 | Spelling | Block | cspell: the words CI reported, in the PR summary and a shell test |
+| private-repo-C | C8 | Spelling | Block | `deno fmt --check` on a PR summary first; with `deno fmt` committed, cspell blocked on the words CI reported |
+| VibeCoder | 035d0353 | markdownlint MD018 ([38476298053](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38476298053)) | Block | `docs/USAGE.md:117:1 error MD018/no-missing-space-atx` |
+| VibeCoder | 45bf3c6f | sweptAt ancestry ([38354507478](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38354507478)) | Block | `slice top-up-3535 (#3535): sweptAt d1cc7d24… is not an ancestor of origin/main` |
+| private-repo-A | A1 | rustfmt | Block | `cargo fmt --all --check`: the diff CI reported |
+| VibeCoder | 958fc276 | gitleaks ([38201375574](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38201375574)) | Pass (deno fmt, deno lint, markdownlint) | Expected: no pre-PR stage runs gitleaks, which confirms the gap tracked in #3725 |
+| VibeCoder | 7ba349e5 | None: every CI check passed | Pass (deno fmt, deno lint, markdownlint) | Control: the gate does not block a head CI accepted |
+
+private-repo-C's quality workflow applies `deno fmt` and commits the result
+instead of failing on it, so on C8 the gate first stops on a check CI fixes
+for itself. There the gate is stricter than CI, not weaker.
+
+To rerun one row: `git clone --filter=blob:none` the repo, `git checkout -b
+replay <sha>`, `git branch replay-base $(git merge-base <sha> origin/<base>)`,
+then from `worker/deno`:
+
+```sh
+deno eval 'import { gateUnpushedCommits } from "./lib/git_push.ts"; const r = await gateUnpushedCommits("replay", { cwd: Deno.args[0] }, { commands: [] }, false, "replay-base"); console.log(r.ok ? "PASS" : r.error.message);' <checkout>
+```
+
+### Pre-PR verifier: live runs
+
+This is single-host evidence: this worker host's logs from 2026-10-12 03:19Z
+to 2026-10-15 03:11Z. Other hosts' logs were not read, so the counts are not
+fleet-wide.
+
+- The verifier raised a blocking finding on 18 issue runs in the three repos:
+  2 in private-repo-C, 13 in private-repo-A, and VibeCoder#3535, #3652 and
+  #3741. The finding reaches the worker's recovery or failure message, for
+  example VibeCoder#3741: `Pre-PR verifier found 2 blocking finding(s):
+  worker/deno/lib/issue_routing_classifier.ts:238`.
+- `Pre-PR verifier blocked PR creation` was logged 6 times (5 private-repo-A
+  runs and VibeCoder#3741).
+- `not checked` was logged 0 times. `skipped: no PR summary file loaded` was
+  logged twice (one private-repo-A run and one private-repo-C run); both runs
+  then failed their completion gates.
+- Three verifier misses are recorded, each a head the verifier ran on without
+  blocking and a blocking review finding on that same head:
+  - private-repo-A, PR 5 (standing review in the table above).
+  - VibeCoder#3676, issue #3506: head d6203dc6 was committed at 12:10Z, the
+    verifier ran at 12:13Z (no `Pre-PR verifier blocked` line), the PR was
+    raised at 12:15Z, and review 5503578036 (12:35Z) found that
+    `rederiveReportedGapSection` reuses a stale follow-up number. The worker
+    later dismissed that review.
+  - A second private-repo-A PR: the head was committed at 08:07Z, the
+    verifier ran at 08:10Z to 08:11Z (no block line), and the first review
+    (08:26Z) found that a cache invalidation dropped a marker the next step
+    relies on. The worker later dismissed that review.
+- These three are a lower bound, not the verifier's miss rate. They come from
+  the first-round reviews of the 20 issues in the window whose runs on this
+  host show a verifier checkout, and only where the review's head matches the
+  commit the verifier saw (commit time before the verifier's first log line,
+  no later commit before the review) and the run logged no block. The log
+  line is an agent-progress tick that names the verifier's checkout path, so
+  a verifier run too short to tick is missed. Two other private-repo-A PRs
+  whose first review was dismissed were not counted: the verifier either
+  checked a later head or blocked. Other hosts' logs were not read.
+
+### Completion-phase pre-push gate: live runs
+
+The whole-branch gate reached `main` with PR #3716 on 2026-10-14 at 22:20Z.
+Four issue runs on this host then ran worker code that includes it (three in
+private-repo-A, one in private-repo-C), and none logged
+`Pre-push gate blocked the push`. One of the private-repo-A runs reached PR
+recovery
+(`IDEMPOTENT: recovering the PR`) at 03:06Z; `completionBody` gets there only
+after `gateBeforePush()` returns no block. The gate logs nothing when it
+passes, so the log cannot show which checks it reached on a live run. The
+replay above is the evidence for its checks, and #3770 tracks a log line for
+a pass.
 
 ## Checks the worker cannot run
 
 - **Network/credential-only**: bootstrap drift (against the remote bootstrap).
 - **GitHub-exclusive**: checks that compare against GitHub state, such as the
-  base PR's VERSION. This check is left to CI's version-bump job (#3248); no
+  base PR's VERSION. This check is left to the repo's own CI version-bump job; no
   pre-PR approximation exists or is claimed.
 
 ## Known remaining limits
@@ -171,26 +346,37 @@ in the completion phase (every repo). The completion-phase gate falls back to
   - Floci (run 38033819415): a deterministic `ValidationException` from
     `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
     binary. No pre-PR stage runs it. Tracked in #3727.
+- The pre-PR stages have no executable Mermaid parse that catches a flowchart
+  label mixing unquoted text with a quoted string (found by a private-repo-A
+  review); VibeCoder's own validator passes it. Tracked in #3769.
+- The pre-push gate logs nothing on a pass, so its checks on live runs are not
+  observable in the worker log. Tracked in #3770.
 
 CI still runs every required check independently after PR creation. Nothing in
 Issue #3689 weakens or removes a CI, review or security gate.
 
 ## Method and limits of this audit
 
-- Rows were derived from the failed GitHub Actions runs linked in the tables
-  (first failing job per run, log read via `gh`).
-- The rows for GRQ runs 37770312438 and 37687047960 record the failing check
-  (Spelling/cspell), but the individual unknown words were not retained.
-- No review-finding (blocking review) rows were audited, only CI jobs.
-- Reproduction ran the equivalent local command against the checked-out failing
-  file content in this repository's tests (fixtures), not by cloning each
-  failing PR in a disposable checkout.
-- The unattended worker path was verified by unit tests of `commitAndPushPending`
-  Step 1b and the completion phase `gateBeforePush()` (including a bad commit
-  already pushed by a checkpoint), not by a live end-to-end worker run.
-- This evidence is the input #3644 consumes: per-repo tables with one row per
-  failing run, giving the check name, first failing SHA, local, network or
-  GitHub-exclusive class, and whether pre-flight ran an equivalent.
+- Rows were derived from the failed GitHub Actions runs in the tables (first
+  failing job per run, log read via `gh`). Only VibeCoder's runs are linked.
+- Blocking review findings are audited in their own table (Issue #3717); the
+  verifier's live record comes from one host's logs only.
+- Fixtures in this repository's tests reproduce each fixed gap. Issue #3717
+  also replayed the completion-phase gate on seven real heads in disposable
+  checkouts (see Unattended worker path).
+- The unattended worker path is verified by unit tests of Step 1b and
+  `gateBeforePush()`, by the disposable-checkout replay, and by this host's
+  worker logs (see Unattended worker path). No live run on this host has yet
+  logged a pre-push gate block, and the gate logs nothing on a pass (#3770).
+- #3644 consumes two kinds of evidence. The CI tables have one row per failing
+  run. VibeCoder rows give the check name, first failing SHA, run link, local,
+  network or GitHub-exclusive class, and whether pre-flight ran an equivalent.
+  Private-repo rows give the check name, cause, class and pre-PR outcome under
+  a concept-level failure ID (C1 to C8, A1 to A5), with no SHA or run link. The review
+  table has one row per standing review, with its class and pre-PR stage, and
+  no private-repo-C row because it has no standing review. #3644 takes the
+  per-repo dismissed counts from the separate table in "Blocking review
+  findings", where private-repo-C's standing count is 0 against 22 dismissed.
 - Bootstrap drift and the GitHub-exclusive VERSION-not-bumped check are left to
   CI with no follow-up, because they need the remote bootstrap or base PR state
   and no pre-PR gap was demonstrated. The gitleaks, semgrep and
