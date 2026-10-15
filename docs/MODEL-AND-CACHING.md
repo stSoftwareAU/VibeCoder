@@ -1699,6 +1699,17 @@ flowchart TD
   heading marked `(partial — see below)` — rather than presenting the
   advisor-only figure as the run's cost; cost data recorded before Issue #3603
   counts the advisor only.
+- **A resumed session is costed for its own invocation only.** The CLI's
+  `modelUsage` is the whole session's running total — a resumed session's first
+  result already carries every earlier invocation, retired models included — so
+  the runner saves each session's totals under
+  `$WORK_DIR/.claude-sessions/model-usage/` and a resumed invocation records
+  only the difference. With no saved baseline (a session opened before the
+  baseline existed, a forked session) or totals that went backwards (a
+  `/clear`), the breakdown is withheld: the run is costed from `usage` and a
+  multi-model run is flagged `sub-agents: not costed`. Issue-run cost data
+  recorded between Issue #3603 (merged 2026-10-11) and this fix re-billed the
+  stream's history on every resumed invocation and over-states the spend.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
