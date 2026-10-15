@@ -1,0 +1,12 @@
+{
+  "issue": 3742,
+  "chunk": "top-up-3742",
+  "title": "top-up: issue-routing GitHub context",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3742",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/issue_routing_github.ts, the duplicate search and write-permission check for issue routing (#3742)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/issue_routing_github.ts"
+  ],
+  "sweptAt": "f2919825e5ff7bd05739b5410487acb33c489cc1"
+}

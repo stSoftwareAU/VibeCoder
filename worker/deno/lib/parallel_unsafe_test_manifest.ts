@@ -173,6 +173,9 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // against an untrusted issue body; only a growth measurement separates
   // those linear patterns from a backtracking one on hostile runs (#3741).
   "tests/issue_routing_classifier_test.ts",
+  // The title normaliser runs a pattern over an untrusted draft title; only a
+  // growth measurement separates it from a backtracking one (#3742).
+  "tests/issue_routing_github_test.ts",
   // The closure-block render scans an agent-authored summary line by line for
   // the two review headings; only a growth measurement separates that scan
   // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
