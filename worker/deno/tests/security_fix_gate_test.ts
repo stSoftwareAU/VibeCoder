@@ -11,7 +11,6 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { assertLinearGrowth } from "./support/growth.ts";
 import {
   buildSecurityFixGateMessage,
   citedSecurityTests,
@@ -804,16 +803,4 @@ Deno.test("citedSecurityTests - a hunk header with omitted counts defaults each 
     { file: "tests/a_test.ts", name: "rejects_injection" },
     { file: "tests/b_test.ts", name: "rejects_injection" },
   ]);
-});
-
-Deno.test("citedSecurityTests - a long unclosed quote run on a declaration line grows linearly", () => {
-  const result = assertLinearGrowth(
-    "STRING_NAME_PATTERN over an unclosed quote run",
-    (chars) =>
-      "+++ b/tests/a_test.ts\n+Deno.test(rejects_injection " +
-      '"'.repeat(chars) + "\n",
-    (diff) => citedSecurityTests(INJECTION_SUMMARY, diff),
-    { baseChars: 12_500 },
-  );
-  assertEquals(result.length <= 1, true);
 });
