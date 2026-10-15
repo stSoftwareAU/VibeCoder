@@ -1,0 +1,12 @@
+{
+  "issue": 3766,
+  "chunk": "top-up-3766",
+  "title": "top-up: independent check of closure entries marked met",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3766",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: closure_met_check.ts (#3766)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/closure_met_check.ts"
+  ],
+  "sweptAt": "823f764fc95ce87692be2e84ffc394ca564e9b82"
+}
