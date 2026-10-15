@@ -168,6 +168,44 @@ Deno.test("enableAutoMerge - an unreadable default branch neither closes nor arm
   assertEquals(s.armed, []);
 });
 
+Deno.test("enableAutoMerge - a sync head whose base cannot be read is deferred, never armed (Issue #3614)", async () => {
+  const s = sink();
+  const calls: string[][] = [];
+  let direct = 0;
+  const result = await enableAutoMerge({
+    repo: REPO,
+    prNumber: 1957,
+    headRefName: "sync/milestone-clean-up",
+    log: () => {},
+    isBaseProtectedFn: () => Promise.resolve(true),
+    decideMilestoneBaseFn: () =>
+      Promise.resolve({ decision: "allow" } as never),
+    directMergeFn: () => {
+      direct++;
+      return Promise.resolve({ merged: true } as never);
+    },
+    ghCommandFn: (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "pr" && args[1] === "view") {
+        return Promise.reject(new Error("HTTP 502"));
+      }
+      return Promise.resolve("");
+    },
+  });
+
+  // Positive control: the base read ran, and failed.
+  assert(
+    calls.some((c) => c[0] === "pr" && c[1] === "view"),
+    "a pr view was attempted",
+  );
+  assertEquals(result.result, AutoMergeResult.Deferred, result.message);
+  assertEquals(result.deferral, "sync-base-unreadable");
+  assert(!calls.some((c) => c.includes("--auto")), "no --auto issued");
+  assert(!calls.some((c) => c.join(" ").startsWith("pr close")), "not closed");
+  assertEquals(direct, 0);
+  assertEquals(s.closed, []);
+});
+
 Deno.test("enableAutoMerge - a close that GitHub refuses fails loud rather than arming (Issue #1967)", async () => {
   const s = sink();
   const result = await enableAutoMerge(
