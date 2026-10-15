@@ -288,7 +288,7 @@ function buildOrchestrationGhStub(
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
       return JSON.stringify({ open_issues: 0 });
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "v1.0", number: 1 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
