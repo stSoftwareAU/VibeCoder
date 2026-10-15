@@ -123,10 +123,9 @@ that an independent verifier for the *hunt* phase is still on its roadmap
 
 **What VibeCoder has today.** `evaluateSecurityFixGate`
 (`security_fix_gate.ts`) has a machine-checked half: a test file changed, a
-named test declared in the added lines (`citedTestIdentifierInDiff`) and, since
-#3659, that test discriminating when executed (section 5). The "original
-trigger is closed" evidence is the `TRIGGER_CLOSED` regex matched against the
-PR summary. The agent whose
+named test declared in the added lines (`citedTestIdentifierInDiff`) and, since #3659,
+that test discriminating when executed (section 5). The "original trigger is
+closed" evidence is the `TRIGGER_CLOSED` regex matched against the PR summary. The agent whose
 fix is being judged writes that summary.
 
 **Gap.** The fixer judges its own fix. Writing "no bypass exists" satisfies

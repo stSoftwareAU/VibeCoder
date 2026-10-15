@@ -2438,9 +2438,9 @@ async function completionBody(
   // diff — a test file is changed, and the test identifier the summary names
   // really appears in that diff — and that test is then executed red→green
   // against the base and the fix (Issue #3659). The prose regression linkage
-  // was dropped: a sentence cannot show a test discriminates. Fail loud rather than mask a fault as success (Issue
-  // #3234). Per-repo only (Issue #3239); opt out with the
-  // `skip_security_fix_check` repo config.
+  // was dropped: a sentence cannot show a test discriminates. Fail loud rather
+  // than mask a fault as success (Issue #3234). Per-repo only (Issue #3239);
+  // opt out with the `skip_security_fix_check` repo config.
   //
   // It runs **first** of the five PR gates (Issue #1140). The three summary
   // gates below stop being a hard failure once the run has raised its PR, and
