@@ -590,14 +590,15 @@ Deno.test("fileDegradedFollowUp - a failed create is an error, not a silent pass
 // ---------------------------------------------------------------------------
 
 Deno.test("assessDegradedDelivery - a run served a previous generation of the expected tier files no follow-up", () => {
-  // A container whose CLI still resolves `opus` to Opus 5 is flagged stale by
-  // the run-stats comment, but the run was not served a fallback model: it
-  // ran on the tier it asked for, so its delivery is not in question.
+  // A container whose CLI still resolves `sonnet` (the issue manager's tier
+  // since #3473) to Sonnet 5 is flagged stale by the run-stats comment, but
+  // the run was not served a fallback model: it ran on the tier it asked for,
+  // so its delivery is not in question.
   const verdict = assessDegradedDelivery({
     claudeResults: [{
       runStats: {
-        servedModels: ["claude-opus-5"],
-        requestedModel: "opus",
+        servedModels: ["claude-sonnet-5"],
+        requestedModel: "sonnet",
         wallClockMs: 1000,
       },
     }],

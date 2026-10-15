@@ -64,6 +64,7 @@ import {
   PrePushGateBlockedError,
   resolvePreFlightSpec,
 } from "../git_push.ts";
+import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
@@ -1972,6 +1973,15 @@ async function completionBody(
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
+    // The repo's own formatters first (part of #2932): a formatting-only miss
+    // is fixed and committed here rather than failing the gate, or shipping
+    // to review and CI. Same files as the gate, never Markdown; a formatter
+    // that fails or throws is logged and the gate below still reports it.
+    await formatBeforeGate(
+      deps,
+      state.repoPath,
+      comparableBase.ok ? comparableBase.value : undefined,
+    );
     const gate = await deps.git.gateUnpushedCommits(
       state.branchName,
       { cwd: state.repoPath },

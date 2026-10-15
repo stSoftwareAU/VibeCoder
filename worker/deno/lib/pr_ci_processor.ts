@@ -50,6 +50,7 @@ import {
 } from "./config_defaults.ts";
 import { recordCiFixRun } from "./fleet_telemetry.ts";
 import { estimatePhaseRunUsd } from "./phase_run_usd.ts";
+import { postPrRoundRunStats } from "./phase_run_stats.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import type { RunStats } from "./run_stats.ts";
 import {
@@ -1002,7 +1003,42 @@ async function _processCiFailureLocked(
   } finally {
     await stopHeartbeat(heartbeatHandle);
     await recordCiFixTierRun(input, processorDeps, carrier);
+    await postCiFixRunStats(input, processorDeps, carrier, graftSlot);
   }
+}
+
+/**
+ * Post this round's run-stats comment on the PR, so what a CI fix cost is
+ * readable on GitHub beside the issue run's own figures. A round in which the
+ * agent never ran spent nothing and posts nothing; one that pushed nothing
+ * still posts. Never throws ({@link postPrRoundRunStats}).
+ */
+async function postCiFixRunStats(
+  input: CiFixInput,
+  processorDeps: CiProcessorDeps,
+  carrier: CiRunCarrier,
+  graftSlot: GraftContextSlot,
+): Promise<void> {
+  if (!carrier.agentRan) return;
+  const { deps, logger } = processorDeps;
+  const fleet = processorDeps.fleetLogins ?? [];
+  await postPrRoundRunStats({
+    repo: input.repo,
+    prNumber: input.prNumber,
+    phase: "ci_fix",
+    roundId: input.checkRunId,
+    runStats: carrier.runStats ?? [],
+    runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+    logger,
+    // The fleet the attempt tally trusts also sums the PR total (Issue #1249,
+    // finding 12); unresolved, the configured fleet is read instead.
+    ...(fleet.length > 0 ? { authorOptions: { fleetAuthors: fleet } } : {}),
+    ...(graftSlot.result ? { graft: graftSlot.result } : {}),
+    ...(carrier.codegraphContext
+      ? { codegraph: carrier.codegraphContext }
+      : {}),
+    ...(carrier.rtkOutput ? { rtk: carrier.rtkOutput } : {}),
+  });
 }
 
 /**
