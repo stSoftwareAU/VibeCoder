@@ -2765,8 +2765,10 @@ still standing, the worker does not arm auto-merge on that PR and labels it
 unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR
-(Issue #3517). Only the sweep checks the label: the CI-fix pass still
-re-arms auto-merge after it pushes a fix, without reading it.
+(Issue #3517). The CI-fix pass honours the label too: after it pushes a fix
+it does not re-arm auto-merge on a PR that carried the label when the pass
+claimed it, and logs the hold instead (Issue #3685). Disarming an already
+armed PR is left to the sweep.
 The Issue #3196 gate itself is unchanged; it still cannot see the diff.
 
 All nine summary gates route through it: closure (#518), independent review
