@@ -3230,7 +3230,8 @@ async function completionBody(
   // verdict, with any departure from that verdict recorded out loud. The
   // Standards axis is reported under its own heading: a change can pass one
   // axis and fail the other, and merging them lets one mask the other.
-  // Issues with no criteria are unaffected.
+  // An issue with no criteria skips the Spec axis, but a `## Standards Review`
+  // the summary carries is still held to the violation rules (Issue #3761).
   // ---------------------------------------------------------------------
   const review = validateIndependentReview({
     issueBody: ctx.issueBody,

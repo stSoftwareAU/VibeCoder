@@ -215,13 +215,45 @@ Deno.test("findOwnLineStandingViolations - routing against a diff", async () => 
   assert(failed.notChecked?.includes("128"));
 
   const calls2 = calls;
-  const inapplicable = await findOwnLineStandingViolations({
+  const noCriteria = await findOwnLineStandingViolations({
     ...base,
     issueBody: "## Problem\n\nNo criteria.",
     prSummaryContent: standards(viol("`worker/deno/lib/foo.ts:12`", "stands")),
   });
-  assertEquals(inapplicable, { violations: [], notChecked: null });
-  assertEquals(calls, calls2);
+  assertEquals(noCriteria.violations.length, 1, "no criteria still routes");
+  assertEquals(
+    noCriteria.violations[0]!.cited,
+    [{ path: "worker/deno/lib/foo.ts", start: 12, end: 12 }],
+  );
+  assertEquals(noCriteria.notChecked, null);
+  assertEquals(calls, calls2 + 1, "the diff is read once (Issue #3761)");
+});
+
+Deno.test("findOwnLineStandingViolations - an issue with no criteria heading still returns an own-line violation (Issue #3761)", async () => {
+  const runGit = (_args: string[]) =>
+    Promise.resolve({ code: 0, stdout: DIFF, stderr: "" });
+  const base = {
+    issueBody: "## Problem\n\nNo criteria heading.\n",
+    base: "origin/main",
+    runGit,
+  };
+
+  const refused = await findOwnLineStandingViolations({
+    ...base,
+    prSummaryContent: standards(
+      viol("`worker/deno/lib/foo.ts:12`", "not fixed in this diff"),
+    ),
+  });
+  assertEquals(refused.violations.length, 1);
+  assertEquals(refused.notChecked, null);
+
+  const settled = await findOwnLineStandingViolations({
+    ...base,
+    prSummaryContent: standards(
+      viol("`worker/deno/lib/foo.ts:12`", "fixed in this diff"),
+    ),
+  });
+  assertEquals(settled, { violations: [], notChecked: null });
 });
 
 type GitOut = { code: number; stdout: string; stderr: string };
