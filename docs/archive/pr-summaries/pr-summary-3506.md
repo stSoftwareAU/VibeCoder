@@ -108,9 +108,9 @@ and `pr_body_sync.ts` module doc now name it; the PR #3676 review fix (the re-sy
 `worker/deno/lib/degraded_delivery.ts`, `worker/deno/lib/pr_body_sync.ts` and
 `worker/deno/lib/phases/completion_phase.ts`. Hits left in place, each still
 true because it names the guard, which still runs for degraded runs:
-- `CODING-STANDARDS.md:706`, `prompts/coding_guidelines/prompt.md:1425` and
+- `CODING-STANDARDS.md:809`, `prompts/coding_guidelines/prompt.md:1466` and
   `prompts/pr_feedback/prompt.md:64` list it as an example guard.
-- `docs/workflows/issue-processing.md:2531`–`:2535` (the paragraph "A degraded
+- `docs/workflows/issue-processing.md:2617`–`:2621` (the paragraph "A degraded
   run, or a healthy run with its own `partial`/`missing` gaps … is the
   exception to `summary_incomplete`") and the outcome table below it describe
   the guard's failure handling, which now covers both cases.
@@ -254,9 +254,12 @@ true because it names the guard, which still runs for degraded runs:
     reason and its shortfall count (Issue #3506)". `runCompletion` now records
     `logger.warn` calls.
   - Each of the 22 listed mutants was applied in turn and its test file run:
-    all 22 went red (`degraded_delivery.ts:297`–`315` and `:499`–`505`,
-    `completion_phase.ts:896`–`898`, and the re-derivation log call at
-    `pr_body_sync.ts:634`–`645`).
+    all 22 went red (the healthy follow-up body in `buildDegradedFollowUpIssue`
+    and `buildReportedGapPrSection` in `degraded_delivery.ts`, the
+    reported-gap branch of `applyDegradedDeliveryGuard` in
+    `completion_phase.ts`, and the re-derivation log call in
+    `syncPrBodyFromSummary`; named by function because their line numbers
+    moved when main was merged in).
     The three test files then passed in full: 127 passed, 0 failed.
 - Red checks (each break applied, the tests run, then the code restored):
   - Healthy wiring in `applyDegradedDeliveryGuard`: replacing
@@ -281,16 +284,22 @@ true because it names the guard, which still runs for degraded runs:
   naming on failure and the no-finalise-on-failure rule. The existing-PR
   ordering for a healthy run is covered by the edited independent-review-gate
   test.
-- Callers checked: `assessReportedGaps` is called by
-  `applyDegradedDeliveryGuard` (`completion_phase.ts:853`) and
-  `rederiveReportedGapSection` (`degraded_delivery.ts:557`).
+- Callers checked (re-grepped at the final head): `assessReportedGaps` is
+  called by `applyDegradedDeliveryGuard` (`completion_phase.ts:894`),
+  `rederiveReportedGapSection` (`degraded_delivery.ts:567`) and
+  `rederiveFollowUpChainStopSection` (`degraded_delivery.ts:719`).
   `buildReportedGapPrSection` is called by `applyDegradedDeliveryGuard`
-  (`completion_phase.ts:907`) and `rederiveReportedGapSection`
-  (`degraded_delivery.ts:565`). `syncPrBodyFromSummary` reaches both only
-  through `rederiveReportedGapSection`.
-  `REPORTED_GAP_SECTION_HEADING` is used by `buildReportedGapPrSection`,
-  `buildReportedGapStaleFollowUpSection` (`degraded_delivery.ts:526`) and
-  `syncPrBodyFromSummary`. All are production readers.
+  (`completion_phase.ts:989`) and `rederiveReportedGapSection`
+  (`degraded_delivery.ts:575`). `syncPrBodyFromSummary` reaches
+  `assessReportedGaps` through whichever of `rederiveReportedGapSection` or
+  `rederiveFollowUpChainStopSection` matches the live leading section
+  (`pr_body_sync.ts:679`–`:689`); only the chain-stop path then calls
+  `withholdIssueClose` (`pr_body_sync.ts:709`), which rewrites the closing
+  keyword to `Part of`.
+  `REPORTED_GAP_SECTION_HEADING` is used by `buildReportedGapPrSection`
+  (`degraded_delivery.ts:508`), `buildReportedGapStaleFollowUpSection`
+  (`degraded_delivery.ts:536`) and `syncPrBodyFromSummary`
+  (`pr_body_sync.ts:635`). All are production readers.
 - Applied the new prompt sentence to this PR's own diff and summary: each
   `partial` or `missing` entry above carries a reason that says what is left.
   Nothing else was found.
