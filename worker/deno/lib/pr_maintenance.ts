@@ -1168,9 +1168,10 @@ async function findActionableComment(
 
   for (const comment of comments) {
     // A pre-PR verifier held-PR comment is read only when its author is in
-    // the fleet set, which always holds this host's own login plus the
-    // allowed authors, fleet PR authors and service accounts, and only when
-    // its body opens with the marker (Issue #3697). Only the completion phase
+    // the scan's maintenance set (`resolveFleetMaintenanceAuthorSet`): this
+    // host's own login plus `fleet_pr_authors`. `allowed_authors` is
+    // deliberately excluded (Issue #4075), so a trusted human's marker is not
+    // read here. The body must also open with the marker (Issue #3697). Only the completion phase
     // writes that marker, and the fleet's 👀 marks the comment processed, so
     // the own-comment loop guard below still holds for every other own comment.
     const held = commentType === "issue" &&

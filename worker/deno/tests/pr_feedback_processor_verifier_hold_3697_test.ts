@@ -14,7 +14,7 @@ import {
   processPrFeedback,
 } from "../lib/pr_feedback_processor.ts";
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
-import type { Logger } from "../types.ts";
+import type { LogContext, Logger } from "../types.ts";
 import type {
   ClaudeDeps,
   GitDeps,
@@ -42,6 +42,8 @@ interface CapturedGh {
 interface CapturedLog {
   info: string[];
   errors: string[];
+  /** The context object passed with each error, in call order. */
+  errorContexts: (LogContext | undefined)[];
 }
 
 function makeCapturingLogger(captured: CapturedLog): Logger {
@@ -51,8 +53,9 @@ function makeCapturingLogger(captured: CapturedLog): Logger {
       captured.info.push(message);
     },
     warn: noop,
-    error: (message: string) => {
+    error: (message: string, context?: LogContext) => {
       captured.errors.push(message);
+      captured.errorContexts.push(context);
     },
     debug: noop,
     security: noop,
@@ -206,7 +209,7 @@ async function runOnce(options: {
   failLabelRemoval?: boolean;
 }) {
   const captured: CapturedGh = { calls: [], comments: [] };
-  const capturedLog: CapturedLog = { info: [], errors: [] };
+  const capturedLog: CapturedLog = { info: [], errors: [], errorContexts: [] };
   const gitCalls: string[][] = [];
 
   const deps = createMockDeps({
@@ -323,4 +326,11 @@ Deno.test("processPrFeedback - a failed label removal is logged as an error and 
     capturedLog.errors.join("\n"),
     "could not remove the standing-violation label",
   );
+  // The error names the PR and carries the thrown Error's message (not its
+  // `Error: …` string form), so an operator can find and retry the removal.
+  assertEquals(capturedLog.errorContexts, [{
+    repo: "org/repo",
+    prNumber: PR_NUMBER,
+    error: "HTTP 500: label removal failed",
+  }]);
 });

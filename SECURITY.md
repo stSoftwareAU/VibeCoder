@@ -66,7 +66,7 @@ flowchart TD
     L1["🔐 Layer 1: Author Verification\n• Issue author must be a trusted author\n• OR work-on label added by a trusted author"]
     L2["🏷️ Layer 2: Label Verification\n• Issue must have configured label\n• Label presence verified via GitHub API"]
     L3["👤 Layer 3: Assignment Check\n• Issue must be unassigned or assigned to worker\n• Prevents double-processing"]
-    L4["💬 Layer 4: PR Comment Verification\n• Comment author in AUTHORIZED_COMMENTERS\n• OR comment has thumbs-up from authorised user\n• OR fleet-authored verifier held-PR comment (marker at body start)"]
+    L4["💬 Layer 4: PR Comment Verification\n• Comment author in AUTHORIZED_COMMENTERS\n• OR comment has thumbs-up from authorised user\n• OR review comment from a trusted review bot\n• OR verifier held-PR comment by own login or fleet_pr_authors (marker at body start)"]
     L5["🛡️ Layer 5: Safe Parameter Handling\n• jq --arg for safe variable passing\n• Base64 encoding for comment bodies\n• No shell interpolation in filters"]
 
     API --> L1 --> L2 --> L3 --> L4 --> L5

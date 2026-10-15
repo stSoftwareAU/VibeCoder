@@ -166,8 +166,12 @@ match wins and the loop restarts.
    silent) makes the review actionable again.
    A top-level comment whose body **opens with** the pre-PR verifier held
    marker (`<!-- vibe-pre-pr-verifier-held releasable="…" -->`, Issue #3697)
-   is actionable even when the worker or a fleet author wrote it; the fleet
-   eyes-reaction de-duplication still applies. Once the pass pushes a verified
+   is actionable when its author is the worker's own login or a
+   `fleet_pr_authors` login (the scan's maintenance set; `allowed_authors` is
+   excluded). The marker is read only for those authors, so the same comment
+   from anyone else gets no trust from it and is actionable only through the
+   usual authorised-commenter or thumbs-up check. The fleet eyes-reaction
+   de-duplication still applies. Once the pass pushes a verified
    fix on the PR's own head (not a milestone fix branch), a comment whose marker
    says `releasable="true"` (the verifier finding alone held the PR) removes the
    `standing-violation` label through the labels endpoint, and the Priority 1.65
