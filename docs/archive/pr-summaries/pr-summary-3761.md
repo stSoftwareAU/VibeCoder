@@ -79,7 +79,7 @@ Tests added:
   - with no criteria, a standing violation is still refused, and the same entry with `fixed in this diff` passes;
   - with no criteria, provenance and a finding are not required;
   - with no criteria, the Spec rules stay gated;
-  - a no-criteria refusal gets the Standards-only comment.
+  - a no-criteria refusal gets the Standards-only comment, with its layout pinned line by line.
 - `worker/deno/tests/standing_violation_routing_test.ts`: an issue with no criteria heading still returns an own-line violation, with a `fixed in this diff` negative control.
 - `worker/deno/tests/completion_phase_summary_incomplete_test.ts`: an issue with no criteria heading still holds auto-merge on an own-line standing violation.
 
@@ -96,6 +96,7 @@ Red checks for the new tests:
 - Forcing `applicable: true` on the no-criteria path turned "does not apply when the issue states no criteria" and "no criteria keeps the Spec rules gated" red.
 - Emptying the no-criteria `problems` turned the gate refusal test, the comment test and the completion hold test red. The completion test went red at its first assertion: status `continue`, so the PR was not held.
 - Inverting the `criteriaStated` branch in `buildIndependentReviewComment` turned two comment tests red.
+- Deleting each element of the Standards-only comment body in turn (`independent_review_gate.ts:544` to `:547`: the blank line before the problems, the problems, the blank line after them, and the "Each `violation` names its `file:line` evidence" line) turned "a no-criteria refusal gets the Standards-only comment" red. That test now pins the comment's layout line by line.
 
 Results:
 

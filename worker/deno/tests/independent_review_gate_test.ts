@@ -18,6 +18,7 @@ import {
   buildIndependentReviewComment,
   parseStandardsEntries,
   validateIndependentReview,
+  VIOLATION_REASON_LINES,
 } from "../lib/independent_review_gate.ts";
 
 const ISSUE_WITH_CRITERIA = [
@@ -521,6 +522,21 @@ Deno.test("buildIndependentReviewComment - a no-criteria refusal gets the Standa
   assert(
     !comment.includes("This issue states acceptance criteria"),
     `the criteria opener must not appear, got ${comment}`,
+  );
+  // The layout is pinned line by line: the opener, a blank line, every
+  // problem, a blank line, then the reason forms the violation must take.
+  assert(refused.problems.length > 0, "the refusal must name its problems");
+  const [opener, ...rest] = comment.split("\n");
+  assertStringIncludes(opener ?? "", "Standards violation left standing");
+  assertEquals(
+    rest.join("\n"),
+    [
+      "",
+      ...refused.problems.map((p) => `- ${p}`),
+      "",
+      "Each `violation` names its `file:line` evidence and one of:",
+      ...VIOLATION_REASON_LINES.map((line) => `- ${line}`),
+    ].join("\n"),
   );
 
   const criteriaBlocked = validateIndependentReview({
