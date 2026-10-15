@@ -1,0 +1,12 @@
+{
+  "issue": 3603,
+  "chunk": "top-up-3603",
+  "title": "top-up: resumed-session model usage scope",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3603",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: model_usage_scope.ts (#3603 follow-up)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/model_usage_scope.ts"
+  ],
+  "sweptAt": "e5928f0ad2cef334ce571a378adc6d6de729b5a5"
+}

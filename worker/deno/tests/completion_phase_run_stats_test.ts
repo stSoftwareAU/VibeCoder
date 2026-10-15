@@ -494,8 +494,21 @@ Deno.test("completion - records the resolved sub-agent tier (Issue #3403)", asyn
   assertEquals(snapshot.issuePhaseSonnetRuns, 0);
 });
 
-Deno.test("completion - the default config records a sonnet-tier run (Issue #3403)", async () => {
+Deno.test("completion - the default config records a haiku-tier run (Issues #3403, #3473)", async () => {
   const ctx = makeContext();
+  const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
+
+  resetFleetTelemetry();
+  await workOnIssueCompletion(ctx, state, makeDeps([]));
+
+  const snapshot = getFleetTelemetry();
+  assertEquals(snapshot.issuePhaseHaikuRuns, 1);
+  assertEquals(snapshot.issuePhaseSonnetRuns, 0);
+});
+
+Deno.test("completion - a sonnet-tier config records a sonnet-tier run (Issue #3403)", async () => {
+  const ctx = makeContext();
+  ctx.config.issueSubAgentTier = "sonnet";
   const state = makeState({ claudeRunStats: [claudeRun(["claude-opus-4-8"])] });
 
   resetFleetTelemetry();
@@ -613,8 +626,9 @@ Deno.test("completion - a repo_config haiku override on a sonnet host does the s
   assert(addedDegradedLabel(ghCalls, ctx.issueNumber));
 });
 
-Deno.test("completion - the default sonnet tier never labels or renders the Haiku line (Issue #3405)", async () => {
+Deno.test("completion - a sonnet tier never labels or renders the Haiku line (Issue #3405)", async () => {
   const ctx = makeContext();
+  ctx.config.issueSubAgentTier = "sonnet";
   const state = makeState({ claudeRunStats: [claudeRun(STALE_HAIKU_SERVED)] });
   const comments: RecordedComment[] = [];
   const ghCalls: string[][] = [];
