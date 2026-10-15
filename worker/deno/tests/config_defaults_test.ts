@@ -571,7 +571,14 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
     "clarification",
   ]);
   const haikuPhases = new Set(["spelling_fix", "summarise", "health"]);
-  const sonnetPhases = new Set(["ci_fix", "pr_feedback", "quality_fix"]);
+  // Owner decision on #3473: the `issue` manager joins them on Sonnet, with
+  // Haiku executors under it and the PR reviewer on Opus.
+  const sonnetPhases = new Set([
+    "ci_fix",
+    "pr_feedback",
+    "quality_fix",
+    "issue",
+  ]);
   for (const [phase, model] of Object.entries(PHASE_MODEL_DEFAULTS)) {
     if (topTierPhases.has(phase)) {
       assertEquals(
@@ -583,7 +590,7 @@ Deno.test("config_defaults - PHASE_MODEL_DEFAULTS routes planning-shaped phases 
       assertEquals(
         model,
         "sonnet",
-        `Reactive phase "${phase}" should run on Sonnet (Issue #2812)`,
+        `Sonnet phase "${phase}" should run on Sonnet (Issues #2812, #3473)`,
       );
     } else if (haikuPhases.has(phase)) {
       assertEquals(
@@ -1000,8 +1007,8 @@ Deno.test("config_defaults - effort-first: effort tiers rank by phase complexity
 // Full fifteen-phase model + effort table (Issues #3229, #4112)
 //
 // A single exhaustive table so any future drift in either map is caught at
-// once. The eight planning-shaped phases and issue run on opus + high; the
-// three reactive phases (ci_fix, pr_feedback, quality_fix) on sonnet + high
+// once. The eight planning-shaped phases run on opus + high; issue runs on
+// sonnet + high; the three reactive phases (ci_fix, pr_feedback, quality_fix) on sonnet + high
 // (Issue #2812); the three trivial phases on haiku + low.
 // =============================================================================
 
@@ -1017,8 +1024,9 @@ Deno.test("config_defaults - fifteen-phase model + effort defaults table (Issues
     revision: { model: "opus", effort: "high" },
     question: { model: "opus", effort: "high" },
     clarification: { model: "opus", effort: "high" },
-    // Implementation phase → Opus base tier at high.
-    issue: { model: "opus", effort: "high" },
+    // Implementation phase → Sonnet manager at high; Haiku executors
+    // (issueSubAgentTier) and an Opus PR reviewer around it (owner, #3473).
+    issue: { model: "sonnet", effort: "high" },
     // Reactive phases → Sonnet 5.5 at high (Issue #2812).
     ci_fix: { model: "sonnet", effort: "high" },
     pr_feedback: { model: "sonnet", effort: "high" },
