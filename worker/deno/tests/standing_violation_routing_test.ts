@@ -130,6 +130,16 @@ Deno.test("ownLineStandingViolations - placement rules", () => {
     "unplaceable path fails closed",
   );
   assertEquals(run("`worker/deno/lib/foo.ts:40`").length, 0, "still outside");
+  assertEquals(
+    run("`lib/foo.ts:40`").length,
+    0,
+    "suffix of a diff file, outside ranges",
+  );
+  assertEquals(
+    run("`lib/other.ts:12`").length,
+    0,
+    "suffix of an unchanged file at HEAD",
+  );
 });
 
 Deno.test("ownLineStandingViolations - a path rewritten with spaces fails closed (Issue #3613)", () => {
