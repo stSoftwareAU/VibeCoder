@@ -1750,6 +1750,7 @@ Deno.test("falsePositives - a malformed evidence citation is refused before the 
     "worker/lib/guard.ts:3",
     [3],
     [":".repeat(100_000)],
+    ["42"],
     ["worker\\lib\\guard.ts:3"],
     ["worker/lib/gu\u0000ard.ts:3"],
   ];

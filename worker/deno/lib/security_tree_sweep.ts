@@ -1183,11 +1183,11 @@ const CITATION_QUOTE_LENGTH = 120;
 const CITATION_LINE = /^[1-9][0-9]*$/;
 
 /**
- * True for a plain repository-relative path: non-empty, not absolute, no
- * backslash or NUL, and no empty, `.` or `..` segment (Issue #3658).
+ * True for a plain repository-relative path: no backslash or NUL, and no
+ * empty, `.` or `..` segment (Issue #3658). An empty or absolute path is
+ * refused because it has an empty segment (`""` and `/x` both split into one).
  */
 function isRepoRelativePath(path: string): boolean {
-  if (path === "" || path.startsWith("/")) return false;
   if (path.includes("\\") || path.includes("\0")) return false;
   return path.split("/").every((segment) =>
     segment !== "" && segment !== "." && segment !== ".."
@@ -1242,7 +1242,7 @@ function validateFalsePositive(
       continue;
     }
     const colon = citation.lastIndexOf(":");
-    const path = colon === -1 ? "" : citation.slice(0, colon);
+    const path = citation.slice(0, colon);
     const line = colon === -1 ? "" : citation.slice(colon + 1);
     if (!isRepoRelativePath(path) || !CITATION_LINE.test(line)) {
       errors.push(
