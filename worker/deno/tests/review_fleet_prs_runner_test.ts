@@ -54,7 +54,10 @@ async function fixture(
   *app_token.ts*) printf '%s' '${tokenOutput}'
     [ ${tokenExit} = 0 ] || echo "reviewer App token: Bad credentials" >&2
     exit ${tokenExit} ;;
-  *post.ts*) for a in "$@"; do case "$a" in --input=*) cat "\${a#--input=}" >> "$HOME/post-inputs"; echo >> "$HOME/post-inputs" ;; esac; done
+  *review_cost.ts*) echo "GH_TOKEN=\${GH_TOKEN:-} $*" >> "$HOME/cost-args"
+    echo '{"round":"r","attempts":[],"amended":0,"errors":[]}'; exit 0 ;;
+  *post.ts*) echo "$*" >> "$HOME/post-args"
+    for a in "$@"; do case "$a" in --input=*) cat "\${a#--input=}" >> "$HOME/post-inputs"; echo >> "$HOME/post-inputs" ;; esac; done
     echo '{"posted":true,"outcome":"changes_requested"}'; exit 0 ;;
   *container-launch-plan*) out=""; prev=""
     for a in "$@"; do [ "$prev" = "--out" ] && out="$a"; prev="$a"; done
@@ -657,4 +660,57 @@ Deno.test("run.sh's root-level shim still installs the scripts/run.sh path (Issu
   assert(execStart, unit);
   assert(execStart!.endsWith("/scripts/run.sh"), execStart);
   assertEquals(execStart!.includes(SHIM), false, execStart);
+});
+
+// ---------------------------------------------------------------------------
+// Which model wrote each review, and what it cost: the round streams
+// stream-json, so its own result carries its per-model usage, and once it is
+// over the runner adds each review's share of that cost (review_cost.ts).
+// ---------------------------------------------------------------------------
+
+Deno.test("run.sh asks the round for stream-json, so its result carries per-model usage", async () => {
+  const home = await fixture(READY);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const args = (await claudeArgs(home))!;
+  assertStringIncludes(args, '"--output-format","stream-json","--verbose"');
+  assertStringIncludes(args, '"--model","claude-opus-5-5","--effort","xhigh"');
+});
+
+Deno.test("run.sh prices the round's reviews once the round is over, as the reviewer App", async () => {
+  const home = await fixture(READY, 0, APP_TOKEN);
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  const cost = (await recorded(home, "cost-args"))!;
+  assert(cost, "review_cost.ts was not run");
+  assertStringIncludes(cost, "GH_TOKEN=ghs_test");
+  assertStringIncludes(
+    cost,
+    `--round-dir=${home}/logs/review-fleet-prs/rounds/`,
+  );
+  assertStringIncludes(await runnerLog(home), "round cost: ");
+});
+
+Deno.test("run.sh still prices a failed round's reviews, and the round stays failed", async () => {
+  const home = await fixture(READY);
+  await claudeStub(home, "exit 3");
+  const { code } = await run(home, "--once");
+  assertEquals(code, 1);
+  assert(await recorded(home, "cost-args"), "review_cost.ts was not run");
+});
+
+Deno.test("run.sh prices nothing when nothing is ready", async () => {
+  const home = await fixture(JSON.stringify({ ready: [], skipped: {} }));
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertEquals(await recorded(home, "cost-args"), null);
+});
+
+Deno.test("run.sh posts an audit send-back as a review with no model run", async () => {
+  const home = await fixture(
+    JSON.stringify({ ready: [], auditBlocked: [AUDIT_BLOCKED], skipped: {} }),
+  );
+  const { code, output } = await run(home, "--once");
+  assertEquals(code, 0, output);
+  assertStringIncludes((await recorded(home, "post-args"))!, "--no-model");
 });
