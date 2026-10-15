@@ -408,7 +408,7 @@ function makeCompletionGh(
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
       return Promise.resolve(JSON.stringify({ open_issues: 1 }));
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return Promise.resolve(JSON.stringify([{ title: "scan", number: 5 }]));
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
