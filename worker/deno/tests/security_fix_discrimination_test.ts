@@ -150,8 +150,22 @@ interface Recorded {
 
 type FakeDeno = (cwd: string) => Promise<ProcessResult>;
 
+/**
+ * The env the real runner filters, with the running deno's directory on PATH.
+ * The runner spawns `deno` by name from an allowlisted env, so a CI runner
+ * whose PATH lacks the toolchain directory otherwise fails to find it.
+ */
+function envWithDenoOnPath(): Record<string, string> {
+  const env = Deno.env.toObject();
+  const denoDir = Deno.execPath().replace(/\/[^/]*$/, "");
+  return {
+    ...env,
+    PATH: [denoDir, env.PATH ?? ""].filter((p) => p !== "").join(":"),
+  };
+}
+
 function recordingSeams(fakeDeno: FakeDeno | null): Recorded {
-  const real = defaultMutationRunnerSeams();
+  const real = defaultMutationRunnerSeams(envWithDenoOnPath());
   const calls: Recorded["calls"] = [];
   const tempDirs: string[] = [];
   const seams: MutationRunnerSeams = {
