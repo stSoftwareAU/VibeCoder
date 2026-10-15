@@ -1136,10 +1136,10 @@ export async function findPrCommentsToFix(
  *   an authorised thumbs-up or authorisation, because top-level comments
  *   are the higher-injection-risk surface.
  * - the comment is a top-level issue comment whose body opens with the
- *   pre-PR verifier held-PR marker, and whose author is this worker's own
- *   login or a fleet author (Issue #3697). The fourth path lets the
- *   PR-feedback pass act on a verifier hold; the marker is parsed only at
- *   index 0 of the body. Such a comment is actionable even though it is
+ *   pre-PR verifier held-PR marker, and whose author is in the fleet set
+ *   (which always includes this worker's own login) (Issue #3697). The
+ *   fourth path lets the PR-feedback pass act on a verifier hold; the marker
+ *   is parsed only at index 0 of the body. Such a comment is actionable even though it is
  *   the worker's own, and it carries `releasesVerifierHold` when the marker
  *   says the hold is releasable.
  */
@@ -1167,14 +1167,14 @@ async function findActionableComment(
   );
 
   for (const comment of comments) {
-    // A pre-PR verifier held-PR comment is read only when it is the worker's
-    // own or a fleet author's, and only when its body opens with the marker
-    // (Issue #3697). Only the completion phase writes that marker, and the
-    // fleet's 👀 marks the comment processed, so the own-comment loop guard
-    // below still holds for every other own comment.
+    // A pre-PR verifier held-PR comment is read only when its author is in
+    // the fleet set, which always holds this host's own login plus the
+    // allowed authors, fleet PR authors and service accounts, and only when
+    // its body opens with the marker (Issue #3697). Only the completion phase
+    // writes that marker, and the fleet's 👀 marks the comment processed, so
+    // the own-comment loop guard below still holds for every other own comment.
     const held = commentType === "issue" &&
-        (comment.login === githubUser ||
-          isFleetAuthor(comment.login, [...fleetAuthors]))
+        isFleetAuthor(comment.login, [...fleetAuthors])
       ? parsePrePrVerifierHeldMarker(comment.body)
       : null;
 
