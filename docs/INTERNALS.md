@@ -120,6 +120,15 @@ markdownlint, and semgrep.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
+Before each gate attempt in an issue run, the quality-gate phase runs the
+repository's own formatters over the branch's changed code files and commits
+the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
+formatting-only failure does not spend the agent's one remediation round. It
+never touches Markdown, and a formatter that fails is only logged: the gate
+still runs and reports. The completion phase does the same before its pre-push
+gate; see "Agent pre-push hook and the changed-files check" in
+[CONFIGURATION.md](CONFIGURATION.md).
+
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same
 `detect-non-literal-regexp` rule: `semgrep.yml` is a blocking PR check, so
