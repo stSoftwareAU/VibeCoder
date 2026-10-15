@@ -1,0 +1,12 @@
+{
+  "issue": 3726,
+  "chunk": "top-up-3726",
+  "title": "top-up: quality-gate stage outcomes",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3726",
+  "definition": "modules added to worker/deno/lib/ after 12dd recorded their coverage: gate_stage_outcome.ts (#3726)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/gate_stage_outcome.ts"
+  ],
+  "sweptAt": "12dd65c6a7ac2761b4aab3d12997fca253482a3f"
+}
