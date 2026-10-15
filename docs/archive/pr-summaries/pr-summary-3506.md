@@ -40,9 +40,9 @@ re-sync re-derives that section. Closes #3506.
   lists each `met` entry's subject as delivered (PR #3676 review).
   `assessReportedGaps` filters that to the `partial`/`missing` ones, so a
   `met` entry alone files nothing on a healthy run. A degraded run with such an
-  entry files a follow-up instead of the "No follow-up was filed because the
-  issue states no acceptance criteria" section; with no such entry it still
-  gets that section. Delivered lines are therefore the issue's scope items or,
+  entry files a follow-up instead of the no-follow-up section for an issue
+  that states no acceptance criteria; with no such entry it still gets that
+  section. Delivered lines are therefore the issue's scope items or,
   with no scope, the agent-written `met` subjects; both are untrusted and
   neutralised by `neutraliseAgentMarkers`.
 - A healthy run on an issue that is itself a partial-delivery follow-up (its
@@ -335,8 +335,8 @@ true because it names the guard, which still runs for degraded runs:
   `assessScopeShortfalls`.
   Tests: `deno task test:unit` over `degraded_delivery_test.ts`,
   `completion_phase_degraded_delivery_test.ts`, `follow_up_chain_stop_test.ts`
-  and `pr_body_sync_test.ts`: 165 passed, 0 failed; `deno fmt --check` and
-  `deno lint` passed on the changed files. With only `lib/degraded_delivery.ts`
+  and `pr_body_sync_test.ts`: 167 passed, 0 failed (re-run on the head);
+  `deno fmt --check` and `deno lint` passed on the changed files. With only `lib/degraded_delivery.ts`
   stashed, the new unit test and the new completion test went red. The full gate
   was not re-run on this push.
 - PR #3676 review push (eighth round, degraded run on an issue with no
