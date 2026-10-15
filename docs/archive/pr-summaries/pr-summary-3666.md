@@ -51,6 +51,7 @@ Applied the rule to this PR's own diff: the new drift test reads six documents. 
   - `prompts/pr_review_brief/prompt.md` § Review Mode — one change against its linked issue: "gets past every earlier step giving the same outcome".
   - `docs/workflows/issue-processing.md` § Reproduction status on a bug fix: "break only its own step and leave the earlier ones in place".
 - No existing test was edited and no assertion was removed.
+- `./quality.sh` ran on the final head: `Result: PASSED (with skipped checks)`. Only `config integration` was skipped, which is the gate's own environment skip and not related to this diff.
 
 <!-- vibe-branch-outcomes -->
 
