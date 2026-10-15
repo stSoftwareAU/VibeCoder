@@ -98,8 +98,10 @@ import { PLANNING_HANDOFF_LABEL } from "./planning_handoff_trust.ts";
  *     it finalises a PR as `summary_incomplete` with a Standards violation
  *     still standing on the branch's own lines, in place of arming
  *     auto-merge (Issue #3382); also applied when a pre-PR verifier finding
- *     survives the recovery turn (Issue #3697). The Priority 1.65 sweep skips and disarms a
- *     PR carrying it (Issue #3517). Same class as `merge-conflict` and
+ *     survives the recovery turn (Issue #3697); for that verifier-only hold the
+ *     PR-feedback pass removes it after a verified fix on the PR's own head.
+ *     The Priority 1.65 sweep skips and disarms a PR carrying it (Issue #3517).
+ *     Same class as `merge-conflict` and
  *     `blocked`: a worker-owned marker, not a pickup-priority label.
  */
 export const WORKER_APPLIABLE_LABEL_LITERALS: ReadonlySet<string> = new Set([

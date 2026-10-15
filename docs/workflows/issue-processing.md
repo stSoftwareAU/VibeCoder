@@ -1235,9 +1235,12 @@ existing PR, with the comment on the issue thread. A `summary_incomplete`
 over an existing PR because of a surviving verifier finding does not arm
 auto-merge: the PR is labelled `standing-violation` (the hold of Issue #3382,
 so the Priority 1.65 sweep and the CI-fix pass honour it unchanged) and the
-findings are posted on the PR as well as the issue (Issue #3697). This holds
-whether the verifier blocked on its own or was folded into an earlier gate's
-block. A verifier finding is closed only by fixing it or disputing it with
+findings are posted on the PR as well as the issue (Issue #3697). The
+PR-feedback pass releases a verifier-only hold: once it pushes a verified fix
+on the PR's own head, it removes the label and the Priority 1.65 sweep arms the
+PR. A hold that also covers a standing Standards violation is not released
+this way; it stays until a human removes the label. This holds whether the
+verifier blocked on its own or was folded into an earlier gate's block. A verifier finding is closed only by fixing it or disputing it with
 evidence; marking a criterion `partial`, listing a known gap, or noting a test
 as "not red-checked" does not close it. `testChanges: meaningful`
 is not a finding and does not block.
@@ -2772,7 +2775,10 @@ still standing, the worker does not arm auto-merge on that PR and labels it
 `standing-violation` instead, logging a warning; the rest of finalisation is
 unchanged. The same hold applies to a pre-PR verifier finding that survives
 the recovery turn (Issue #3697; see
-[Pre-PR verifier](#pre-pr-verifier-issue-3395)). The Priority 1.65
+[Pre-PR verifier](#pre-pr-verifier-issue-3395)), and that verifier-only hold is
+released by a verified fix on the PR's own head, as the Pre-PR verifier section
+describes; a hold that also covers a standing violation stays until a human
+removes the label. The Priority 1.65
 auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR

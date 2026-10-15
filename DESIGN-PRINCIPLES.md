@@ -3086,7 +3086,9 @@ a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
 is labelled `standing-violation` rather than auto-merged (Issue #3382). A pre-PR verifier finding that survives
 that turn is held the same way, with the findings posted on the PR as well as
-the issue (Issue #3697).
+the issue (Issue #3697). The PR-feedback pass releases a verifier-only hold
+once it pushes a verified fix on the PR's own head; a hold that also covers a
+standing violation stays until a human removes the label.
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

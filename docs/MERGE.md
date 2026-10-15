@@ -663,10 +663,13 @@ sweep's live `gh pr view`, the branch-update pass's batched GraphQL state — an
 log the skip at info.
 
 A PR labelled `standing-violation` (Issue #3382, also applied for a pre-PR
-verifier finding that survived the recovery turn, Issue #3697) is **held** by the sweep
-(Issue #3517): it is skipped, never armed or branch-updated, and one already
-armed is disarmed with `gh pr merge --disable-auto`. The label comes from the
-sweep's live `gh pr view` read, and the hold is logged once per process.
+verifier finding that survived the recovery turn, Issue #3697) is **held** by
+the sweep (Issue #3517): it is skipped, never armed or branch-updated, and one
+already armed is disarmed with `gh pr merge --disable-auto`. The label comes
+from the sweep's live `gh pr view` read, and the hold is logged once per
+process. The PR-feedback pass removes that label for a verifier-only hold once
+it pushes a verified fix on the PR's own head (Issue #3697); a hold that also
+covers a standing violation stays until a human removes the label.
 The CI-fix pass honours the label too: after pushing a fix to a labelled PR
 it skips re-arming auto-merge (the label comes from its claim-point live read)
 and logs the hold (Issue #3685). It does not disarm; the sweep does.

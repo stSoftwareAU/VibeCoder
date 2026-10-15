@@ -47,7 +47,8 @@ flowchart TD
   failures (e.g. shellcheck, Deno quality checks), and merge issues (without
   waiting for user feedback), keeps those PRs mergeable, and enables auto-merge
   only after merge issues are resolved.
-- **Scope:** PR comment feedback (with thumbs-up or authorised commenter),
+- **Scope:** PR comment feedback (with thumbs-up or authorised commenter), a
+  fleet-authored pre-PR verifier held-findings comment (Issue #3697),
   CHANGES_REQUESTED reviews; **proactive** spelling and quality (shellcheck,
   Deno quality checks) fix; PR branch updates and mergeability; auto-merge (only
   when mergeable).
@@ -83,8 +84,9 @@ monitor the PR — author is sufficient.
 
 - **Triggers (in priority order):** (1) PR feedback — an **open PR authored by
   the configured GitHub user** has unprocessed feedback (comment with thumbs-up
-  or from authorised commenter, or CHANGES_REQUESTED review **from an
-  authorised commenter**). (1.5)
+  or from authorised commenter, CHANGES_REQUESTED review **from an authorised
+  commenter**, or a fleet-authored pre-PR verifier held-findings comment whose
+  body opens with the held marker (Issue #3697)). (1.5)
   Spelling/quality — such a PR has a failed check: **spelling** (a
   spelling-named check whose failing step is codespell, cspell or typos) or
   **quality** (e.g. shellcheck, Deno quality checks) — fixed automatically. (1.6) Branch updates — the PR branch is behind base or
@@ -134,7 +136,8 @@ match wins and the loop restarts.
 ### 🔴 Priority 1 — PR feedback
 
 1. **Discover** — Find an open PR by this user that has unprocessed feedback
-   (comment with thumbs-up or from authorised commenter, or CHANGES_REQUESTED
+   (comment with thumbs-up or from authorised commenter, a fleet-authored
+   pre-PR verifier held-findings comment (Issue #3697), or CHANGES_REQUESTED
    review). A review body goes straight into the feedback prompt, so — like a
    PR comment — it is only actioned when its author is an **authorised
    commenter**; an unauthorised reviewer's `CHANGES_REQUESTED` body is skipped
@@ -161,6 +164,16 @@ match wins and the loop restarts.
    (Issue #3383) is skipped too — not yet dismissed, just claimed by a run
    still in flight; a lapsed lease (the run timed out, crashed or went
    silent) makes the review actionable again.
+   A top-level comment whose body **opens with** the pre-PR verifier held
+   marker (`<!-- vibe-pre-pr-verifier-held releasable="…" -->`, Issue #3697)
+   is actionable even when the worker or a fleet author wrote it; the fleet
+   eyes-reaction de-duplication still applies. Once the pass pushes a verified
+   fix on the PR's own head (not a milestone fix branch), a comment whose marker
+   says `releasable="true"` (the verifier finding alone held the PR) removes the
+   `standing-violation` label through the labels endpoint, and the Priority 1.65
+   sweep arms the PR on its next pass. A `releasable="false"` hold (a standing
+   Standards violation also held it) keeps the label until a human removes it.
+   A failed label removal is logged as an error and the PR stays held.
 
    ```mermaid
    flowchart TD

@@ -416,8 +416,9 @@ it does not change behaviour.
 
 The worker enforces **author checks** (only allowed authors trigger
 implementation), **label and assignee checks**, **one PR per target branch**,
-and **PR comment verification** (only authorised commenters or thumbs-up trigger
-feedback). Config and tokens are protected; we use safe parameter handling (e.g.
+and **PR comment verification** (only authorised commenters, a thumbs-up from
+one, or the fleet's own pre-PR verifier held-PR comment trigger feedback).
+Config and tokens are protected; we use safe parameter handling (e.g.
 jq `--arg`), input validation and suspicious-pattern detection for prompt
 injection, and audit logging. See [SECURITY.md](../SECURITY.md) for the full
 threat model, defence-in-depth, and resolved issues.

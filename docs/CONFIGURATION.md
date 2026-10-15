@@ -4271,9 +4271,10 @@ flowchart LR
 ```
 
 The self-comparison stays narrow: a scan that skips the worker's **own**
-comments and reviews still compares against `github_user` alone, so widening the
-scan set never makes a host reply to a fleet sibling's comment unless that
-comment passes the usual authorised-commenter / thumbs-up / trusted-bot check.
+comments and reviews (bar a verifier held-PR comment, Issue #3697) still
+compares against `github_user` alone, so widening the scan set never makes a
+host reply to a fleet sibling's comment unless that comment passes the usual
+authorised-commenter / thumbs-up / trusted-bot check.
 
 ### Handing your own PR to the worker
 
