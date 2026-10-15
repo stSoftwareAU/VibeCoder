@@ -15,6 +15,10 @@ import {
   CONTAINERFILE_SIZE_CAP_BYTES,
   stripContainerfile,
 } from "../lib/containerfile_strip.ts";
+import {
+  AGENT_PROVIDERS_BUILD_ARG,
+  agentProviderIds,
+} from "../lib/agent_provider.ts";
 
 Deno.test("stripContainerfile - drops comment and blank lines, keeps instructions and continuations (Issue #4393)", () => {
   const input = [
@@ -76,6 +80,45 @@ Deno.test("Containerfile - the STRIPPED committed file stays under Apple contain
     if (line.trim() === "" || line.trimStart().startsWith("#")) continue;
     assert(stripped.includes(line), `instruction dropped by strip: ${line}`);
   }
+});
+
+// Apple container 1.2.2 sends the Dockerfile JSON-escaped, together with the
+// build arguments, in one request. Measured on GRQ-23 on 2026-10-15: the
+// request with AGENT_PROVIDERS=claude,deepseek was accepted with the file at
+// 15,822 escaped characters and dropped ("Stream unexpectedly closed") at
+// 15,824 — the committed file then, 15,000 raw bytes.
+const MEASURED_ESCAPED_REQUEST_LIMIT = 15_822 +
+  `${AGENT_PROVIDERS_BUILD_ARG}=claude,deepseek`.length;
+
+Deno.test("Containerfile - the stripped file plus every provider's build argument fits Apple container's request with headroom", async () => {
+  const path = new URL("../../../container/Containerfile", import.meta.url);
+  const stripped = stripContainerfile(await Deno.readTextFile(path));
+  const widestBuildArg = `${AGENT_PROVIDERS_BUILD_ARG}=${
+    agentProviderIds().join(",")
+  }`;
+  const request = JSON.stringify(stripped).length + widestBuildArg.length;
+  const headroom = 250;
+  assert(
+    request + headroom <= MEASURED_ESCAPED_REQUEST_LIMIT,
+    `stripped Containerfile escapes to ${
+      JSON.stringify(stripped).length
+    } characters; with ${widestBuildArg} the request is ${request}, within ${headroom} of the ${MEASURED_ESCAPED_REQUEST_LIMIT} Apple container drops — trim instructions`,
+  );
+});
+
+Deno.test("CONTAINERFILE_SIZE_CAP_BYTES - a file at the cap still fits the measured request limit once escaped", () => {
+  // The cap is the guard CI enforces, so a file exactly at it must build on a
+  // multi-provider host. Escaping grows the committed file by about 5.5%.
+  const escapedAtCap = Math.ceil(
+    CONTAINERFILE_SIZE_CAP_BYTES * (15_824 / 15_000),
+  );
+  const widestBuildArg = `${AGENT_PROVIDERS_BUILD_ARG}=${
+    agentProviderIds().join(",")
+  }`;
+  assert(
+    escapedAtCap + widestBuildArg.length <= MEASURED_ESCAPED_REQUEST_LIMIT,
+    `a ${CONTAINERFILE_SIZE_CAP_BYTES}-byte file escapes to about ${escapedAtCap}; with ${widestBuildArg} that exceeds ${MEASURED_ESCAPED_REQUEST_LIMIT}`,
+  );
 });
 
 // ---------------------------------------------------------------------------
