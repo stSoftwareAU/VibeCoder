@@ -82,7 +82,7 @@ sequenceDiagram
 - Red checks (one flip at a time, then restored): the millisecond cutoff, `--include-prs`, the search catch returning `[]`, `READ` allowed, the limit check, a null `closedAt` accepted, the raw title in the query, the closed search dropped, and each guard listed in the branch outcomes below. Each turned at least one named test red.
 - Fake built from observed gh output (see Evidence). The production implementation it stands in for is `runGhCommand` in `worker/deno/lib/github.ts`, which throws `gh command failed (exit N): <stderr>` on failure.
 - `deno test -A tests/issue_routing_github_test.ts tests/lib_sweep_top_up_files_test.ts tests/lib_sweep_coverage_test.ts tests/parallel_unsafe_test_manifest_test.ts` (from `worker/deno`): passed.
-- `./quality.sh`: the result line is added after the final run on the head.
+- `./quality.sh < /dev/null` on head `cd37c2ca`: passed (`Result: PASSED (with skipped checks)`; the only skip is `config integration`, which is skipped in this environment).
 
 <!-- vibe-branch-outcomes -->
 
