@@ -167,7 +167,10 @@ VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
 switching model families per phase. Model tier is the *secondary* lever, and
 since Issue #2560 it is applied at the cheap extreme only: the three trivial
-phases stay on **Haiku**, and every other phase runs on **Opus**. The **eight
+phases stay on **Haiku**, the three reactive fixes (`ci_fix`, `pr_feedback`,
+`quality_fix`, Issue #2812) and the `issue` manager (Issue #3473) run on
+**Sonnet**, with the `issue` run's executors on Haiku, and the planning-shaped
+phases run on **Opus**. The **eight
 planning-shaped phases** (`planning`, `grill_me`, `refinement`, `revision`,
 `question`, `clarification`, `quorum`, `quorum_judge`) are marked out by `high`
 effort — wherever the Vibe Coder interprets the user's words into an
