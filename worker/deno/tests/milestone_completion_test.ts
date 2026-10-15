@@ -3193,7 +3193,7 @@ Deno.test("Issue #1133 - tracking issue left open when summary PR creation fails
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "v4.0", number: 1 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3281,7 +3281,7 @@ Deno.test(
       if (authoritative !== null) return authoritative;
 
       // List milestones — one idle-task milestone with zero open issues.
-      if (key.includes("api") && key.endsWith("/milestones")) {
+      if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
         return JSON.stringify([
           {
             title: "idle-task: security-scan",
@@ -3351,7 +3351,7 @@ Deno.test(
       const authoritative = authoritativeStub(key);
       if (authoritative !== null) return authoritative;
 
-      if (key.includes("api") && key.endsWith("/milestones")) {
+      if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
         return JSON.stringify([
           {
             title: "idle-task: security-scan",
@@ -3414,7 +3414,7 @@ Deno.test(
       const authoritative = authoritativeStub(key);
       if (authoritative !== null) return authoritative;
 
-      if (key.includes("api") && key.endsWith("/milestones")) {
+      if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
         return JSON.stringify([
           {
             title: "v2.0",
@@ -3688,7 +3688,7 @@ Deno.test("checkAndHandleMilestoneCompletions - self-heals a deadlocked issue-on
       if (match) closedMilestones.push(Number(match[1]));
       return "{}";
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "scan", number: 5, open_issues: 1 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3766,7 +3766,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "Milestone 3", number: 3 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3856,7 +3856,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes a premature tracker when 
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "TPMUM-715", number: 8 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3993,7 +3993,7 @@ async function run3474(sc: Scenario3474) {
       }
       return "{}";
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{
         title: "scan",
         number: 1,
@@ -4134,7 +4134,7 @@ Deno.test("close-out - a failing abandoned-PR comment does not stop the close (I
         const a = authoritativeStub(key);
         if (a !== null) return a;
         if (key.includes("-X PATCH")) return "{}";
-        if (key.includes("api") && key.endsWith("/milestones")) {
+        if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
           return JSON.stringify([{ title: "scan", number: 1 }]);
         }
         if (key.includes(".default_branch")) return "main";
@@ -4535,7 +4535,7 @@ function vetoScenarioGhFn(
     const authored = authoritative(key);
     if (authored !== null) return authored;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "v1.0", number: 1, open_issues: 0 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -4783,7 +4783,7 @@ function scriptDeadlockGh(
     calls.push(args);
     const key = args.join(" ");
 
-    if (key.includes("api") && /\/milestones$/.test(key)) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return Promise.resolve(
         JSON.stringify([
           { title: "Crates API", number: 1 },
@@ -5004,7 +5004,7 @@ Deno.test("milestone deadlock rollup - the final rollup still fires after a merg
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return Promise.resolve(authoritative);
 
-    if (key.includes("api") && /\/milestones$/.test(key)) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return Promise.resolve(
         JSON.stringify([{ title: MILESTONE, number: 2 }]),
       );

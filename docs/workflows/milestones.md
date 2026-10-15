@@ -160,6 +160,8 @@ Once **all** issues for a milestone are completed (merged to the milestone branc
 4. **CI (Continuous Integration) monitoring** — The final PR is monitored for CI/integration test failures. This is particularly important because **repositories that only run integration tests on the default branch** will have those tests exercised for the first time against the milestone's combined changes. The worker automatically detects and fixes CI failures at priority 1.55 in the main loop — see [CI/integration test failure detection](#-ciintegration-test-failure-monitoring).
 5. **After merge** — Close the GitHub milestone (when the final PR is merged).
 
+The completion scan lists every open milestone in pages of 100, up to 10 pages (1,000 open milestones); a repository past that bound gets a `WARNING` in the worker log naming it, and milestones beyond the bound wait (Issue #3609).
+
 This final PR is monitored like all other PRs **authored by the configured GitHub user** (see [pr-feedback.md](pr-feedback.md)): spelling, quality (shellcheck, Deno quality checks), CI/integration test failures, and merge issues are fixed automatically; auto-merge is enabled once the PR is mergeable.
 
 ## 🔒 Issue closure for milestone issues

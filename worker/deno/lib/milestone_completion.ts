@@ -74,6 +74,7 @@ import {
   NOT_PLANNED_DOCS_UNVERIFIED_NOTE,
   renderNotPlannedDocSection,
 } from "./milestone_not_planned_refs.ts";
+import { fetchOpenMilestonePages } from "./open_milestone_pages.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2099,16 +2100,21 @@ async function processRepoMilestones(
     return;
   }
 
-  // List open milestones
+  // Issue #3609: every open milestone, in bounded pages — the default page of
+  // 30 hid the rest from completion and deadlock detection.
   let milestones: GitHubMilestone[];
   try {
-    const output = await ghCommandFn([
-      "api",
-      `repos/${repo}/milestones`,
-    ]);
-    milestones = JSON.parse(output) as GitHubMilestone[];
-  } catch {
-    return; // No milestones or API failure — nothing to do
+    milestones = await fetchOpenMilestonePages(
+      repo,
+      ghCommandFn,
+      log,
+    ) as GitHubMilestone[];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    log(
+      `WARNING: could not list open milestones for ${repo} — skipping milestone check: ${message}`,
+    );
+    return;
   }
 
   for (const milestone of milestones) {

@@ -299,7 +299,7 @@ function completionGh(sink: {
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
       return Promise.resolve(JSON.stringify({ open_issues: 0 }));
     }
-    if (key.endsWith("/milestones")) {
+    if (/\/milestones(\?|$)/.test(key)) {
       return Promise.resolve(JSON.stringify([{ title: "scan", number: 5 }]));
     }
     if (key.includes(".default_branch")) return Promise.resolve("main");
