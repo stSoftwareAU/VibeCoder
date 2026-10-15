@@ -173,6 +173,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // the two review headings; only a growth measurement separates that scan
   // from the ambiguous `\s*:?\s*$` tail it deliberately does not copy (#2242).
   "tests/closure_verdict_test.ts",
+  // The met-closure criterion extraction strips trailing separators from an
+  // agent-written PR-summary entry with a backwards scan; only a growth
+  // measurement (assertLinearGrowth) separates that linear strip from a
+  // backtracking trailing-run regex (Issue #3766).
+  "tests/closure_met_check_3766_test.ts",
   // The described-code-change path scan returns the right answer on a long
   // hostile line, only quadratically slowly — so only growth can pin it (#2826).
   "tests/described_code_change_test.ts",

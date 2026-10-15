@@ -1208,7 +1208,19 @@ raised. The agent dispatches nothing for it.
   `review-checklists.json` themselves, whatever the model replied. A
   `missing` verdict blocks the PR even with no matching finding. A failed read
   of the base or head ref makes the verifier "not checked" rather than a
-  finding.
+  finding. It also asks for a `closure` array (Issue #3766): the worker parses
+  the summary's `## Acceptance Criteria` closure block and lists every entry
+  the agent marked `met` in the brief, and the reply carries one
+  `{criterion, verdict, note}` per listed entry, `verdict` being `met`,
+  `partial` or `missing`; `met` only when the change delivers every case, path
+  and test the criterion names
+  ([`closure_met_check.ts`](../../worker/deno/lib/closure_met_check.ts)). The
+  worker adds a blocking finding on the PR summary for each listed entry rated
+  `partial` or `missing`, and one for the entries left without a verdict (a
+  reply without the array counts as no verdicts), whatever the model's own
+  findings say. A summary that marks no entry `met`, or has no closure block,
+  lists none and owes no verdict. The fleet reviewer shares the brief and so
+  the instruction, but its `post.ts` does not check the array.
 - **Disposable checkout.** A `git clone --shared` of the issue checkout at the
   head commit, with its `origin` remote removed, holding the exact PR summary
   text the gates read. The verifier may run commands there: tests, flipping a
@@ -1231,7 +1243,8 @@ raised. The agent dispatches nothing for it.
 | Can execute | No (read-only tools) | Yes, in the disposable clone; `gh`, `git push`, `curl`, `wget`, WebFetch/WebSearch and sub-agents denied by a `disallowedTools` denylist (not a network sandbox) |
 | Reads the PR summary | No | Yes |
 
-**What blocks.** Any `findings` entry is a blocking finding, a late
+**What blocks.** Any `findings` entry, including those the worker adds for the
+checklist and closure verdicts above, is a blocking finding, a late
 summary-rule verdict. It is folded into whichever earlier summary gate blocks
 first, or blocks on its own after the summary claim check. It reaches the run's
 single [in-run recovery](#-the-in-run-recovery-from-a-summary-rule-block) turn

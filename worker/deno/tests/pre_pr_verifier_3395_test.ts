@@ -45,9 +45,10 @@ const FIELDS: ReviewBriefFields = {
   TEST_CHANGES: "TESTS-VALUE",
   PREVIOUS_FINDINGS: "PREV-VALUE",
   REVIEW_CHECKLISTS: "CHECKLIST-VALUE",
+  CLOSURE_ENTRIES: "CLOSURE-VALUE",
 };
 
-Deno.test("renderReviewBrief fills all five fields and strips the leading comment", () => {
+Deno.test("renderReviewBrief fills all six fields and strips the leading comment", () => {
   const out = renderReviewBrief(TEMPLATE, FIELDS);
   for (const v of Object.values(FIELDS)) assertStringIncludes(out, v);
   assert(!out.includes("<!--"));
@@ -240,12 +241,19 @@ Deno.test("runPrePrVerifier runs the brief in a disposable, remote-less checkout
 Deno.test("runPrePrVerifier: a clean reply is checked and not blocked", async () => {
   const f = await makeRepo();
   try {
+    let prompt = "";
     const result = await runPrePrVerifier(
       inputFor(f),
-      makeDeps(() => Promise.resolve(okRun({ output: REPLY_CLEAN })), []),
+      makeDeps((o) => {
+        prompt = o.prompt;
+        return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+      }, []),
     );
     assertEquals(result.status, "checked");
     assert(!prePrVerifierBlocked(result));
+    // A summary with no closure block gets no closure section (Issue #3766).
+    assert(prompt.length > 0);
+    assert(!prompt.includes("### Closure entries marked"));
   } finally {
     await f.cleanup();
   }
@@ -464,6 +472,7 @@ const PROMPT_BASE = {
   summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
   boundaryId: "0123456789ab",
   reviewChecklists: "",
+  closureEntries: "",
 };
 const NO_TEST_NOTE = "The change touches code but adds no test";
 
@@ -823,7 +832,9 @@ Deno.test("runPrePrVerifier passes maxRetries to ask and caps the timeout at 180
 
 Deno.test("the fleet reviewer's parser and audit send-back survive the shared parser", () => {
   const audit = auditSendBack("dependency audit");
-  assertEquals(parseFableReview(JSON.stringify(audit)), audit);
+  // The shared parser now reads an absent `closure` as [] (Issue #3766).
+  const auditRead = { ...audit, closure: [] };
+  assertEquals(parseFableReview(JSON.stringify(audit)), auditRead);
 
   const reply = {
     summary: "The summary claims a retry that the head does not do.",
@@ -847,8 +858,12 @@ Deno.test("the fleet reviewer's parser and audit send-back survive the shared pa
     }],
     checklist: [],
   };
-  assertEquals(parseFableReview(JSON.stringify(reply)), reply);
-  assertEquals(parseFableReview(`Review:\n${JSON.stringify(reply)}\n`), reply);
+  const expected = { ...reply, closure: [] };
+  assertEquals(parseFableReview(JSON.stringify(reply)), expected);
+  assertEquals(
+    parseFableReview(`Review:\n${JSON.stringify(reply)}\n`),
+    expected,
+  );
 });
 
 // ---- production wiring ----------------------------------------------------
@@ -1421,4 +1436,93 @@ Deno.test("a git failure reading the head copy makes the verifier not checked", 
   } finally {
     await f.cleanup();
   }
+});
+
+// ---- the code owes a verdict on each closure entry marked met (Issue #3766) --
+
+const MET_SUMMARY =
+  "## Acceptance Criteria\n\n- **met** — Every run files a follow-up — evidence: `a.ts` — reviewer: met\n";
+const MET_CRITERION = "Every run files a follow-up";
+
+const closureReview = async (closure?: unknown) => {
+  const f = await makeRepo();
+  try {
+    let prompt = "";
+    const result = await runPrePrVerifier(
+      inputFor(f, { summaryContent: MET_SUMMARY }),
+      makeDeps((o) => {
+        prompt = o.prompt;
+        return Promise.resolve(okRun({
+          output: JSON.stringify({
+            summary: "fine",
+            findings: [],
+            testChanges: "none",
+            ...(closure === undefined ? {} : { closure }),
+          }),
+        }));
+      }, []),
+    );
+    return { result, prompt, summaryPath: inputFor(f).summaryPath };
+  } finally {
+    await f.cleanup();
+  }
+};
+
+Deno.test("a met closure entry the verifier rates partial blocks, with a finding on the summary", async () => {
+  const { result, prompt, summaryPath } = await closureReview([
+    {
+      criterion: MET_CRITERION,
+      verdict: "partial",
+      note: "the retry path files none",
+    },
+  ]);
+  assertStringIncludes(prompt, MET_CRITERION);
+  assertStringIncludes(prompt, "### Closure entries marked");
+  assertEquals(result.status, "checked");
+  assert(prePrVerifierBlocked(result));
+  if (result.status !== "checked") throw new Error("not checked");
+  const finding = result.review.findings.find((x) => x.file === summaryPath);
+  assert(finding, "a finding on the summary path");
+  assertStringIncludes(finding.problem, MET_CRITERION);
+  assertStringIncludes(finding.problem, "the retry path files none");
+});
+
+Deno.test("a clean reply with no closure array blocks: no verdict on a met entry is never a pass", async () => {
+  const { result } = await closureReview();
+  assertEquals(result.status, "checked");
+  assert(prePrVerifierBlocked(result));
+  if (result.status !== "checked") throw new Error("not checked");
+  assertStringIncludes(
+    result.review.findings[0]!.problem,
+    "No verdict was reported",
+  );
+});
+
+Deno.test("a clean reply with a met closure verdict is not blocked", async () => {
+  const { result } = await closureReview([
+    { criterion: MET_CRITERION, verdict: "met", note: "every path covered" },
+  ]);
+  assertEquals(result.status, "checked");
+  assert(!prePrVerifierBlocked(result));
+});
+
+Deno.test("parseReviewReply parses a closure array, defaults to [] and rejects a bad verdict", () => {
+  const base = { summary: "ok", findings: [], testChanges: "none" };
+  const parsed = parseReviewReply(JSON.stringify({
+    ...base,
+    closure: [{ criterion: "A", verdict: "partial", note: "n" }],
+  }));
+  assertEquals(parsed.closure, [
+    { criterion: "A", verdict: "partial", note: "n" },
+  ]);
+  assertEquals(parseReviewReply(JSON.stringify(base)).closure, []);
+  assertThrows(
+    () =>
+      parseReviewReply(JSON.stringify({
+        ...base,
+        closure: [{ criterion: "A", verdict: "probably" }],
+      })),
+    Error,
+    "probably",
+  );
 });
