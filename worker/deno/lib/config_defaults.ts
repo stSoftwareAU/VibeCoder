@@ -511,7 +511,7 @@ export const OPERATIONAL_DEFAULTS = {
    * resolved tier in fleet telemetry (per-tier runs and USD) and stamps it
    * on the PR body as a `vibe-sub-agent-tier` marker (Issue #3403).
    */
-  issueSubAgentTier: "sonnet" as IssueSubAgentTier,
+  issueSubAgentTier: "haiku" as IssueSubAgentTier,
   /**
    * Whether `issue`-phase runs dispatch the Spec and Standards reviewers as
    * defined cheaper sub-agents (Issue #2575). On by default (Issue #2812);
@@ -1086,15 +1086,19 @@ export function defaultQuorumJudge(): string {
 }
 
 /**
- * Issue (coding/implementation) phase model — Opus base tier (effort: high,
- * Issue #2709).
+ * Issue (coding/implementation) phase model — the Sonnet manager (effort:
+ * high).
  *
- * The coding run now routes through `phase: "issue"`, so this pins the
- * implementation tier explicitly rather than relying on the CLI default.
- * Effort is the primary lever (PHASE_EFFORT_DEFAULTS.issue = "high"); model
- * stays on the single Opus base tier like every other non-extreme phase.
+ * The coding run routes through `phase: "issue"`, so this pins the
+ * implementation tier explicitly rather than relying on the CLI default. Since
+ * the owner's decision on #3473 the run is Sonnet managing Haiku executors
+ * ({@link OPERATIONAL_DEFAULTS}.issueSubAgentTier), with the PR reviewer on
+ * Opus: an Opus manager cost about a whole solo Opus run on its own, so the
+ * subscription ran out and the fleet fell back to DeepSeek, while the Opus
+ * review is what keeps merged quality high. `phase_model_overrides.issue:
+ * "opus"` restores the Opus manager.
  */
-export const DEFAULT_CLAUDE_MODEL_ISSUE = DEFAULT_CLAUDE_MODEL;
+export const DEFAULT_CLAUDE_MODEL_ISSUE = "sonnet" as const;
 
 /**
  * Refinement phase model — Opus top tier (effort: high, Issues #3229, #2560).
