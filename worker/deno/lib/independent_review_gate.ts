@@ -32,8 +32,11 @@
  *     carry the other's findings.
  *
  * It runs beside `acceptance_criteria_gate.ts` at the same PR-creation
- * chokepoint in `phases/completion_phase.ts` and applies to the same issues:
- * those whose body states acceptance criteria.
+ * chokepoint in `phases/completion_phase.ts`. The Spec axis applies to the
+ * issues whose body states acceptance criteria. The Standards axis is judged
+ * against the diff, not the issue's criteria, so a `## Standards Review` the
+ * summary carries is held to the `violation` rules whatever the issue states
+ * (Issue #3761).
  *
  * All exported functions are pure — the caller supplies the issue body and the
  * assembled PR body, so the whole path is unit-tested without a network. The PR
@@ -83,8 +86,13 @@ export interface ReviewEntry {
 
 /** Verdict of the independent-review gate. */
 export interface IndependentReviewResult {
-  /** True when the issue body states criteria, so the gate applies. */
+  /**
+   * True when the gate applies: the issue states criteria, or the PR summary
+   * carries a `## Standards Review` section (Issue #3761).
+   */
   applicable: boolean;
+  /** True when the issue body states criteria, so the Spec axis applies (Issue #3761). */
+  criteriaStated: boolean;
   /** True when the gate passes (always true when it does not apply). */
   valid: boolean;
   /** True when the criteria block records the Spec reviewer's provenance. */
@@ -344,10 +352,48 @@ function countForeignEntries(
 }
 
 /**
+ * The Standards `violation` rules (Issue #3196): each `violation` names its
+ * evidence, and a reason that settles it. Shared by the criteria path and the
+ * no-criteria path, so the rules exist once (Issue #3761).
+ *
+ * @param entries - The Standards entries of the PR summary.
+ * @returns One line per rule broken, empty when every `violation` passes.
+ */
+function violationProblems(entries: ReviewEntry[]): string[] {
+  const problems: string[] = [];
+  for (const entry of entries) {
+    if (entry.status !== "violation") continue;
+    if (!entry.hasEvidence) {
+      problems.push(
+        `\`violation\` finding names no evidence: "${entry.text}"`,
+      );
+    }
+    if (!entry.hasReason) {
+      problems.push(
+        `\`violation\` finding carries no reason saying whether it was fixed: "${entry.text}"`,
+      );
+    } else if (!violationReasonSettles(entry.reason!)) {
+      problems.push(
+        `\`violation\` finding is neither fixed nor filed — a breach in a ` +
+          `line this diff adds or changes is fixed in this diff, never left ` +
+          `standing; write ${VIOLATION_REASON_LINES.join(", or ")}: ` +
+          `"${entry.text}"`,
+      );
+    }
+  }
+  return problems;
+}
+
+/**
  * Verify that the PR summary reports an independent review on both axes.
  *
  * Rules, all deterministic:
- *   1. The issue states no criteria → the gate does not apply and passes.
+ *   1. The issue states no criteria → the Spec rules (2–4 and the Spec half of
+ *      6) do not apply, and the gate passes unless the summary carries a
+ *      `## Standards Review` that breaks rule 5's `violation` rules. The
+ *      Standards axis is judged against the diff, so it is not gated on the
+ *      issue's criteria; a summary with no Standards Review passes (Issue
+ *      #3761).
  *   2. The `## Acceptance Criteria` block carries the Spec reviewer's
  *      provenance marker, naming the inputs it was given.
  *   3. Every Spec entry names the reviewer's verdict (`reviewer: <status>`).
@@ -366,25 +412,33 @@ export function validateIndependentReview(opts: {
   prSummaryContent: string;
 }): IndependentReviewResult {
   const criteria = extractAcceptanceCriteria(opts.issueBody);
-  if (criteria.length === 0) {
+  const criteriaStated = criteria.length > 0;
+  const summary = opts.prSummaryContent.slice(0, MAX_SCAN_CHARS);
+  const standardsSection = extractSection(summary, STANDARDS_HEADING_RE);
+  const standardsEntries = parseStandardsEntries(summary);
+  const standardsProvenance = hasProvenance(standardsSection, "standards");
+
+  // No criteria: the Spec axis does not apply, but a Standards finding is
+  // judged against the diff, so only the `violation` rules are held (Issue
+  // #3761). The Standards section, its provenance and a finding are not
+  // required here, and the axis-separation checks are not run.
+  if (!criteriaStated) {
+    const noCriteriaProblems = violationProblems(standardsEntries);
     return {
-      applicable: false,
-      valid: true,
+      applicable: standardsSection !== null,
+      criteriaStated: false,
+      valid: noCriteriaProblems.length === 0,
       specProvenance: false,
-      standardsProvenance: false,
+      standardsProvenance,
       specEntries: [],
-      standardsEntries: [],
-      problems: [],
+      standardsEntries,
+      problems: noCriteriaProblems,
     };
   }
 
-  const summary = opts.prSummaryContent.slice(0, MAX_SCAN_CHARS);
   const specSection = extractSection(summary, SPEC_HEADING_RE);
-  const standardsSection = extractSection(summary, STANDARDS_HEADING_RE);
   const specEntries = parseSpecEntries(summary);
-  const standardsEntries = parseStandardsEntries(summary);
   const specProvenance = hasProvenance(specSection, "spec");
-  const standardsProvenance = hasProvenance(standardsSection, "standards");
   const problems: string[] = [];
 
   // --- the Spec axis ---
@@ -432,26 +486,7 @@ export function validateIndependentReview(opts: {
       );
     }
   }
-  for (const entry of standardsEntries) {
-    if (entry.status !== "violation") continue;
-    if (!entry.hasEvidence) {
-      problems.push(
-        `\`violation\` finding names no evidence: "${entry.text}"`,
-      );
-    }
-    if (!entry.hasReason) {
-      problems.push(
-        `\`violation\` finding carries no reason saying whether it was fixed: "${entry.text}"`,
-      );
-    } else if (!violationReasonSettles(entry.reason!)) {
-      problems.push(
-        `\`violation\` finding is neither fixed nor filed — a breach in a ` +
-          `line this diff adds or changes is fixed in this diff, never left ` +
-          `standing; write ${VIOLATION_REASON_LINES.join(", or ")}: ` +
-          `"${entry.text}"`,
-      );
-    }
-  }
+  problems.push(...violationProblems(standardsEntries));
 
   // --- axis separation, both directions ---
   const mergedIntoSpec = countForeignEntries(
@@ -477,6 +512,7 @@ export function validateIndependentReview(opts: {
 
   return {
     applicable: true,
+    criteriaStated: true,
     valid: problems.length === 0,
     specProvenance,
     standardsProvenance,
@@ -499,6 +535,19 @@ export function buildIndependentReviewComment(
   result: IndependentReviewResult,
 ): string {
   const problems = result.problems.map((p) => `- ${p}`).join("\n");
+  if (!result.criteriaStated) {
+    return [
+      "⚠️ **Standards violation left standing.** This issue states no " +
+      "acceptance criteria, but the PR summary's `## Standards Review` lists a " +
+      "`violation` the gate refuses — a Standards finding is judged against the " +
+      "diff, whatever headings the issue uses (Issue #3761):",
+      "",
+      problems,
+      "",
+      "Each `violation` names its `file:line` evidence and one of:",
+      ...VIOLATION_REASON_LINES.map((line) => `- ${line}`),
+    ].join("\n");
+  }
   return [
     "⚠️ **Independent review missing.** This issue states acceptance criteria, " +
     "so the Spec and Standards axes must each be judged by their own reviewer " +

@@ -728,9 +728,10 @@ reference in someone else's CI. So:
 
 You wrote the code, so you are the worst-placed reader of it: the context that
 produced a change is the context most likely to believe it. When the issue body
-carries acceptance criteria, **before you write the PR summary**, dispatch **two
-reviewer sub-agents in parallel** (one `Agent` message, two tool calls) and let
-their verdicts — not your recollection — populate the summary.
+carries acceptance criteria (an `## Acceptance Criteria` or `## Definition of
+done` list), **before you write the PR summary**, dispatch **two reviewer
+sub-agents in parallel** (one `Agent` message, two tool calls) and let their
+verdicts — not your recollection — populate the summary.
 
 Each reviewer gets the finished diff and nothing else from your context. Do not
 pass your implementation transcript, your reasoning, or your own assessment: a
@@ -841,7 +842,9 @@ the summary says who judged it:
   marker for a review you did not run is the over-claim this gate exists to
   prevent.
 - **Issues with no acceptance criteria are unaffected** — no reviewers, neither
-  block.
+  block. A `## Standards Review` the summary carries anyway is still read: each
+  `violation` in it is held to the reason rules above, so an own-line breach
+  left standing blocks the PR and holds auto-merge (Issue #3761).
 
 A gate reads both blocks before the PR is raised and blocks PR creation when one
 of these rules is broken, commenting on the issue with every rule it found
@@ -867,7 +870,9 @@ summary match.
 
 If the issue body carries a `## Acceptance Criteria` (or `## Acceptance
 criteria`) section, those criteria are the target this run is measured against.
-The `## Acceptance Criteria` block inside
+A `## Definition of done` list counts the same way when the issue has no
+Acceptance Criteria list (Issue #3761). The `## Acceptance Criteria` block
+inside
 `docs/archive/pr-summaries/pr-summary-{{ISSUE_NUMBER}}.md` records the Spec
 reviewer's verdict on each one — one entry per stated criterion, in this shape:
 
@@ -908,7 +913,8 @@ one is broken:
   your status differs from its verdict, the departure is recorded, never
   silent.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
-  when the issue states criteria.
+  when the issue states criteria (an Acceptance Criteria or Definition of done
+  list).
 
 One more rule no gate parses — a reviewer sends the PR back for it:
 
@@ -1256,7 +1262,8 @@ The file MUST contain:
    reviewer's block described in [Independent Review Before the PR](#independent-review-before-the-pr--spec-and-standards-on-separate-axes)
    — its provenance marker, then each `violation` with evidence and outcome, and
    the `clean` areas it checked. Kept on its own heading: the two axes are never
-   merged or reranked
+   merged or reranked. A Standards Review included for an issue without criteria
+   is still checked for `violation` reasons (Issue #3761)
 7. **Test Plan**: List the tests added or modified. Write a result line only
    after the command has run on the final head, and state the actual outcome
    (passed, or failed with its first error) — never write a placeholder token

@@ -989,7 +989,8 @@ inside the existing implementation run rather than as a new loop (see
 [SPEC-KIT-COMPARISON.md](../SPEC-KIT-COMPARISON.md)).
 
 **What the run must produce.** When the issue body carries a
-`## Acceptance Criteria` section, `prompts/issue/` requires the run to walk
+`## Acceptance Criteria` section (or, with none, a `## Definition of done`
+list, Issue #3761), `prompts/issue/` requires the run to walk
 each criterion before writing the PR summary and record the assessment as a
 `## Acceptance Criteria` block in
 `docs/archive/pr-summaries/pr-summary-<issue>.md`:
@@ -1009,7 +1010,8 @@ fewer assessments than criteria, with a `met`/`partial` entry that names no
 evidence, or with a gap that carries no reason — an unexplained gap is a failure
 to surface, not a pass. The gate comments on the issue naming every rule broken
 and the required shape, so the next attempt is productive. Issues with **no**
-acceptance criteria are unaffected: the gate does not apply and nothing changes.
+acceptance criteria (neither list) are unaffected: the gate does not apply and
+nothing changes.
 
 **One shape, both gates.** The remediation comment prints
 [`REVIEW_BLOCK_TEMPLATE`](../../worker/deno/lib/review_block_template.ts) — the
@@ -1147,8 +1149,14 @@ when a `violation` names no evidence or a reason that is neither
 `fixed in this diff` nor a linked follow-up issue, or when either axis carries the
 other's findings — never merged, never reranked, because a change can pass one
 axis and fail the other and reporting them together lets one mask the other.
-Issues with **no** acceptance criteria are unaffected: no reviewers, no blocks,
-no gate.
+Issues with **no** acceptance criteria get no reviewers and no Spec block, and
+the Spec-axis rules and the axis-separation rule do not apply. A `## Standards
+Review` the summary carries anyway is still read (Issue #3761): each `violation`
+in it is held to the reason rules above, a refused one blocks PR creation, and
+the completion phase's standing-violation routing (Issue #3382, below) applies
+to it. Without criteria the gate does not require the Standards section, its
+provenance marker or a finding, and a summary with no `## Standards Review` on
+such an issue is not checked at all.
 
 ```mermaid
 flowchart TD
@@ -2424,10 +2432,11 @@ flowchart TD
     G -- "no — all unassessed" --> N["No follow-up; PR body opens with a<br/>'Degraded run — no follow-up filed'<br/>section saying why"]
 ```
 
-- **The scope** is the issue's `## Acceptance Criteria`, or — for an issue
-  refined by grill-me — its `### Accepted scope so far` list, or its
-  `## Done when` list (Issue #3486). An issue stating none of these is named
-  whole as the one unverified item.
+- **The scope** is the issue's `## Acceptance Criteria`, or — when that
+  heading is absent or lists nothing — its `## Definition of done` list (Issue
+  #3761), or — for an issue refined by grill-me — its
+  `### Accepted scope so far` list, or its `## Done when` list (Issue #3486).
+  An issue stating none of these is named whole as the one unverified item.
 - **Delivered** means the PR summary's closure block marks the item `met`. A
   `partial` or `missing` entry, or no entry at all (no summary, as on #2543),
   is a shortfall. Entries are matched to scope items by their words, not by
@@ -2769,7 +2778,9 @@ skips a PR carrying `standing-violation` and disarms one that is already armed
 it does not re-arm auto-merge on a PR that carried the label when the pass
 claimed it, and logs the hold instead (Issue #3685). Disarming an already
 armed PR is left to the sweep.
-The Issue #3196 gate itself is unchanged; it still cannot see the diff.
+The Issue #3196 reason rules still cannot see the diff. This routing runs
+whatever headings the linked issue uses, so an issue that states no criteria
+still has its summary's `## Standards Review` read (Issue #3761, NEAT-AI#4065).
 
 All nine summary gates route through it: closure (#518), independent review
 (#663), reproduction status (#521), docs sweep (#3073), removed test
