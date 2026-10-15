@@ -139,7 +139,11 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {
+        docsSweepHitsComment: "",
+        holdAutoMerge: false,
+        heldFindingsComment: "",
+      },
     );
 
     assertEquals(result, { status: "continue" });
@@ -210,7 +214,11 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {
+        docsSweepHitsComment: "",
+        holdAutoMerge: false,
+        heldFindingsComment: "",
+      },
     );
 
     assertEquals(result, { status: "continue" });
@@ -260,7 +268,11 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       deps,
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {
+        docsSweepHitsComment: "",
+        holdAutoMerge: false,
+        heldFindingsComment: "",
+      },
     );
 
     assertEquals(result, { status: "continue" });
@@ -302,7 +314,11 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {
+        docsSweepHitsComment: "",
+        holdAutoMerge: false,
+        heldFindingsComment: "",
+      },
     );
 
     assertEquals(result, { status: "continue" });
@@ -343,7 +359,11 @@ Deno.test(
       state,
       "## Summary\n\nCloses #11.\n",
       createMockDeps({ github: { runGhCommand: gh.runGhCommand } }),
-      { docsSweepHitsComment: "", holdAutoMerge: false },
+      {
+        docsSweepHitsComment: "",
+        holdAutoMerge: false,
+        heldFindingsComment: "",
+      },
     );
 
     const closeCall = gh.calls.find(

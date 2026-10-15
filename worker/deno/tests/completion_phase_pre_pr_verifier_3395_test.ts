@@ -661,6 +661,10 @@ Deno.test(
       ),
       false,
     );
+    assertEquals(
+      outcome.prComments.some((c) => c.includes("Auto-merge is held")),
+      false,
+    );
   },
 );
 

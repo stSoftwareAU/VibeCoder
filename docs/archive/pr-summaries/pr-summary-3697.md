@@ -1,0 +1,94 @@
+## Summary
+
+A pre-PR verifier (#3395) finding that is still present after the run's one
+in-run recovery turn no longer ships with auto-merge armed. When that block
+finalises an existing PR as `summary_incomplete`, the worker now withholds
+auto-merge and labels the PR `standing-violation` (the #3382 hold path, so the
+Priority 1.65 auto-merge sweep and the CI-fix pass honour it with no change to
+either). It also posts the verifier's findings on the PR as well as on the
+issue. This holds whether the verifier blocked on its own or was folded into an
+earlier summary gate's block. The verifier gate comment and the recovery-turn
+prompt now say plainly that a verifier finding is closed only by fixing it or
+disputing it with evidence. Marking a criterion `partial`, listing a known gap
+or noting a test as "not red-checked" does not close it. Closes #3697.
+
+The issue's optional third step, a second recovery turn scoped to the
+verifier's findings, is not in this PR.
+
+## Spec
+
+### Intent and Rationale
+
+- The worker already holds a reviewer-grade "changes requested" verdict before the PR exists. Shipping over it cost a full fleet-review round trip on five PRs in a day.
+- The PR reuses the `standing-violation` hold instead of adding a sibling label. The auto-merge sweep (#3517) and the CI-fix pass (#3685) already honour that label, so the new hold needs no change to either consumer.
+
+### Essential Design Decisions
+
+- `SummaryRuleBlock.prePrVerifierFindings` is a required field: the verifier's gate comment, or `""`. Both block builders set it: `foldInLateSummaryVerdicts` (fold path) and the standalone verifier gate. The compiler therefore names any future builder that omits it.
+- The hold is decided at the existing-PR finalise in `reportSummaryRuleBlock`, which runs only on the run's second (or later) block, after the recovery turn. A first block still gets its recovery turn. With no PR, a surviving block still fails the run, unchanged.
+- `recoverAndFinaliseExistingPr`'s new `heldFindingsComment` option has no default. Its two other callers pass `""`. A failure to post the comment is logged at error, and the label hold still stands.
+
+### Undiscoverable Facts
+
+- The PR-feedback pass skips comments the worker's own account posts (`worker/deno/lib/pr_maintenance.ts:1163`, `if (comment.login === githubUser) continue;`). The findings comment on the PR is therefore a visible record for the PR's next reader. It does not trigger the pr_feedback pass on its own.
+
+## Evidence
+
+Backend-only change: no UI files are touched. The behaviour is shown by the
+completion-phase tests below, which drive `workOnIssueCompletion` with a
+scripted verifier.
+
+```mermaid
+flowchart TD
+  A["Completion attempt 1:<br/>verifier blocks"] --> B["One in-run recovery turn"]
+  B --> C["Completion attempt 2:<br/>verifier re-runs"]
+  C -->|clean| D["PR raised / finalised,<br/>auto-merge armed"]
+  C -->|still blocked, no PR| E["failure (unchanged)"]
+  C -->|still blocked, PR exists| F["summary_incomplete:<br/>auto-merge withheld,<br/>label standing-violation,<br/>findings posted on PR + issue"]
+```
+
+**Docs sweep** — grep: `standing-violation`, `holdAutoMerge`, "pre-PR verifier", "arm\w* auto-merge", `summary_incomplete`; section: `docs/workflows/issue-processing.md#pre-pr-verifier-issue-3395`; siblings: `standingViolations`, `allowsTestChanges`; updated: `README.md`, `DESIGN-PRINCIPLES.md`, `docs/MERGE.md`, `docs/workflows/issue-processing.md`, `worker/deno/lib/standing_violation_routing.ts`, `worker/deno/lib/worker_label_guard.ts`, `worker/deno/lib/summary_rule_gate_retry.ts`; `docs/workflows/pr-feedback.md:728` — still true because the sweep skips any PR carrying the label, whatever applied it; `docs/INTERNALS.md:1895` — still true because it describes the claim-point label read, unchanged
+
+Issue numbers cited as provenance:
+
+- #3697: A pre-PR verifier finding that survives the recovery turn still ships with auto-merge armed, and the fleet reviewer sends the same finding back (NEAT-AI-Discovery#2407, VibeCoder#3695 and three private fleet PRs)
+
+Related existing rules checked: the #3382 standing-violation hold in
+`recoverAndFinaliseExistingPr`, and step 2 of the recovery prompt in
+`summary_rule_gate_retry.ts` (the Issue #3395 code-fix exception for a verifier
+item). The new closure sentence extends that exception and does not contradict
+it. I applied the new rule to this PR's own summary and found nothing it would
+flag: no criterion is marked `partial`, and no gap is recorded in place of a
+fix.
+
+## Test Plan
+
+New tests:
+
+- `worker/deno/tests/completion_phase_pre_pr_verifier_3395_test.ts`
+  - "completion - verifier findings that survive the recovery turn over an existing PR hold auto-merge, label the PR and post the findings on it (Issue #3697)". The verifier blocks on both the first run and the re-run, with an existing PR. Asserts `summary_incomplete`, no `finalisePr` call (auto-merge not armed), a `standing-violation` label call, and one PR comment carrying the verifier heading and the finding.
+  - "completion - verifier findings folded into an earlier gate's block still hold the existing PR (Issue #3697)". The verifier is folded into a surviving result-placeholder block, and the same hold assertions apply.
+  - "completion - a verifier finding cleared by the recovery turn does not hold the PR (Issue #3697)". The placeholder survives and the verifier is clean on the re-run. Auto-merge is armed, with no label and no verifier comment on the PR.
+  - "completion - a failed PR comment is logged and the hold still stands (Issue #3697)".
+- `worker/deno/tests/pre_pr_verifier_3395_test.ts`
+  - "the gate comment says a finding is closed only by a fix or evidence (Issue #3697)"
+  - "the held-PR comment names the hold, the label and carries the gate comment (Issue #3697)"
+- `worker/deno/tests/summary_rule_gate_retry_test.ts`
+  - "summary-rule retry - a verifier finding is closed only by a fix or a dispute (Issue #3697)"
+
+Red checks (each change was made temporarily and then restored):
+
+- Hold condition reduced to `standingViolations.length > 0` (verifier dropped): the surviving-findings, folded and failed-comment tests went red.
+- `foldInLateSummaryVerdicts` never sets `prePrVerifierFindings`: only the folded test went red. The standalone test stayed green, as expected, because it uses the other builder.
+- Post-on-PR block removed: the surviving-findings, folded and failed-comment tests went red.
+- New closure sentence removed from the recovery prompt: the summary-rule retry test went red.
+- Drift pins: each pinned phrase ("closed only by fixing it", "not red-checked", "A verifier finding is closed only by fixing it or by disputing it with evidence", "Auto-merge is held") is new text this diff adds, absent from the base versions of `pre_pr_verifier.ts` and `summary_rule_gate_retry.ts`.
+
+No existing assertion is removed or edited.
+
+Results on the final head:
+
+- `deno task test:unit tests/completion_phase_pre_pr_verifier_3395_test.ts tests/pre_pr_verifier_3395_test.ts tests/completion_phase_summary_incomplete_test.ts tests/completion_phase_summary_rule_retry_test.ts tests/summary_rule_gate_retry_test.ts < /dev/null`: passed.
+- `./quality.sh`: see the line below.
+
+<!-- vibe-branch-outcomes -->
