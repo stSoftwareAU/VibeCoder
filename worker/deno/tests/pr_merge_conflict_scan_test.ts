@@ -956,6 +956,52 @@ Deno.test("findConflictingPr - a disrupted attempt is re-attempted, not counted 
   );
 });
 
+Deno.test("findConflictingPr - an open takeover attempt awaiting its fix PR is logged at info, not warned (Issue #3596)", async () => {
+  const now = Date.parse("2026-08-20T12:00:00Z");
+  const old = new Date(now - 48 * 3600_000).toISOString();
+  for (
+    const [headRefName, pass, comments, level] of [
+      ["milestone/3596-x", "takeover", 1, "info"],
+      ["milestone/3596-x", "ladder", 1, "warn"],
+      ["milestone/3596-x", "takeover", 2, "warn"],
+      // An ordinary-route takeover raises no fix PR: open, it was disrupted.
+      ["issue-16-fix", "takeover", 1, "warn"],
+    ] as const
+  ) {
+    const state = makeState({
+      prs: [{
+        number: 48,
+        headRefName,
+        baseRefName: "main",
+        baseRefOid: BASE_TIP,
+      }],
+      comments: {
+        48: Array.from({ length: comments }, () => ({
+          body: `${CONFLICT_ATTEMPT_MARKER} n="1" pass="${pass}" -->`,
+          created_at: old,
+        })),
+      },
+    });
+    const fake = makeFakeGh(state);
+    const logger = makeRecordingLogger();
+
+    const result = await findConflictingPr(makeOptions(fake, { logger }));
+
+    assert(result.ok);
+    assertEquals(result.value.selected?.prNumber, 48);
+    const label = `${headRefName} ${pass} x${comments}`;
+    const awaiting = logger.entries.filter((e) =>
+      e.message.includes("awaiting its fix PR")
+    );
+    const disrupted = logger.entries.filter((e) =>
+      e.level === "warn" && e.message.includes("disrupted merge-conflict")
+    );
+    assertEquals(awaiting.length, level === "info" ? 1 : 0, label);
+    assertEquals(disrupted.length, level === "warn" ? 1 : 0, label);
+    if (level === "info") assertEquals(awaiting[0]!.level, "info", label);
+  }
+});
+
 Deno.test("findConflictingPr - repeated disruption is logged and left queued, not escalated", async () => {
   const now = Date.parse("2026-08-20T12:00:00Z");
   const old = new Date(now - 48 * 3600_000).toISOString();

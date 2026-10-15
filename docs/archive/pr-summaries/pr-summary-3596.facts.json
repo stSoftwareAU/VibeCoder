@@ -1,0 +1,352 @@
+{
+ "version": 1,
+ "branchOutcomes": {
+  "noneAdded": false,
+  "entries": [
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 267,
+    "outcome": "invalid repo is rejected with no gh call",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - an invalid repo is rejected with no gh call (Issue #3596)",
+    "flipWentRed": "deleting the REPO_PATTERN check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 273,
+    "outcome": "non-milestone base is rejected with no gh call",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - a non-milestone branch is rejected with no gh call (Issue #3596)",
+    "flipWentRed": "without the guard the gh calls run and the zero-call assertion fails"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 282,
+    "outcome": "unsafe ref is rejected with no gh call",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - a head outside the allowed character set is rejected with no gh call (Issue #3596)",
+    "flipWentRed": "dropping the character-set check turned it red; the '..' test covers the other half of isSafeRef"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 303,
+    "outcome": "unreadable or empty default branch is an error",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - a failed default-branch read is an error after one gh call (Issue #3596)",
+    "flipWentRed": "replacing the failure return with a throw turned it red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 314,
+    "outcome": "failed merge-base compare leaves the fix PR unarmed",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "raiseMilestoneFixPr - an unreadable merge-method check is not armed and warns (Issue #3596)",
+    "flipWentRed": "arming with a guessed method made a pr merge call and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 317,
+    "outcome": "merge base that is not a sha is an error",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - a merge base that is not a sha is an error (Issue #3596)",
+    "flipWentRed": "removing the COMMIT_SHA check returned an ok result and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 329,
+    "outcome": "failed status compare is an error",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - a failed comparison-status read is an error after three gh calls (Issue #3596)",
+    "flipWentRed": "replacing the failure return with a throw turned it red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 332,
+    "outcome": "identical or behind merge base squashes",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - an identical merge base is --squash (Issue #3596)",
+    "flipWentRed": "returning --merge for this arm turned it and the existing --squash creation test red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 335,
+    "outcome": "ahead or diverged merge base needs a merge commit",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "raiseMilestoneFixPr - a head that merges the default branch is armed with --merge, never --squash (Issue #3596)",
+    "flipWentRed": "hard-coding --squash turned it red; 'diverged history is --merge' covers the diverged operand"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 335,
+    "outcome": "unexpected compare status is an error",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "milestoneFixMergeMethod - an unexpected comparison status is an error (Issue #3596)",
+    "flipWentRed": "defaulting an unknown status to a method turned it red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 470,
+    "outcome": "refused merge commit is reported and never retried as a squash",
+    "test": "worker/deno/tests/milestone_fix_pr_test.ts",
+    "testName": "raiseMilestoneFixPr - a merge refused by a repository that bans merge commits is not squashed (Issue #3596)",
+    "flipWentRed": "adding a --squash retry turned it red; returning undefined instead of the refusal also turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 369,
+    "outcome": "unreadable behind count throws",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an unreadable behind count rejects with no fix PR (Issue #3596)",
+    "flipWentRed": "treating the unreadable answer as 0 raised a fix PR and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 371,
+    "outcome": "fractional behind count throws",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a fractional behind count rejects with no fix PR, naming the value (Issue #3596)",
+    "flipWentRed": "dropping the Number.isInteger operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 371,
+    "outcome": "negative behind count throws",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a negative behind count rejects with no fix PR, naming the value (Issue #3596)",
+    "flipWentRed": "dropping the behindBy < 0 operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 745,
+    "outcome": "fix branch still behind its base concludes failed with no fix PR",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a fix branch still behind its base raises no fix PR (Issue #3596)",
+    "flipWentRed": "removing the behindBy > 0 branch turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 745,
+    "outcome": "level fix branch raises the fix PR and posts no resolved marker",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - gated milestone head raises a fix PR, never touches the head",
+    "flipWentRed": "moving the check after the raise turned its ordering assertion red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 763,
+    "outcome": "refused merge commit at creation concludes failed, not resolved",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a fix PR whose merge commit is refused is failed, not resolved (Issue #3596)",
+    "flipWentRed": "removing the refusal branch turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 417,
+    "outcome": "empty or unparsable fix PR listing throws naming the branch, posting nothing",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an empty or unparsable fix PR listing for an open attempt names the branch and posts nothing (Issue #3596)",
+    "flipWentRed": "reading empty output as [] turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 424,
+    "outcome": "unreadable fix PR listing for an open attempt throws, posting nothing",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an unreadable fix PR listing for an open attempt posts nothing (Issue #3596)",
+    "flipWentRed": "skipping the shape check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 430,
+    "outcome": "a fork, foreign-author, other-branch, number- or url-less, or unknown-state PR is not the attempt's fix PR",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an open attempt with no fleet fix PR of its own runs a fresh attempt (Issue #3596)",
+    "flipWentRed": "dropping the isCrossRepository operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 435,
+    "outcome": "a merged fix PR wins over a closed one",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a landed fix PR with the milestone branch 0 behind concludes resolved (Issue #3596)",
+    "flipWentRed": "returning the first listed PR turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 468,
+    "outcome": "open attempt with no fleet fix PR of its own runs a fresh attempt",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an open attempt with no fleet fix PR of its own runs a fresh attempt (Issue #3596)",
+    "flipWentRed": "returning a fix-pr-reused for a missing PR turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 469,
+    "outcome": "open attempt whose fix PR is still open stands down as fix-pr-reused, posting nothing",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an open attempt whose fix PR is still open stands down, posting nothing (Issue #3596)",
+    "flipWentRed": "skipping the OPEN check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 477,
+    "outcome": "fix PR closed without landing concludes failed, no compare read",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a fix PR closed without landing concludes failed (Issue #3596)",
+    "flipWentRed": "treating every fix PR as merged turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 484,
+    "outcome": "landed fix PR with the milestone branch still behind concludes failed naming the count",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a landed fix PR with the milestone branch still behind concludes failed, never resolved (Issue #3596)",
+    "flipWentRed": "posting resolved whatever the count turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 484,
+    "outcome": "landed fix PR with the milestone branch 0 behind concludes resolved",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - a landed fix PR with the milestone branch 0 behind concludes resolved (Issue #3596)",
+    "flipWentRed": "inverting the check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 680,
+    "outcome": "an open ladder attempt is not concluded as a fix PR",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an open ladder attempt is not concluded as a fix PR (Issue #3596)",
+    "flipWentRed": "dropping the pass operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 680,
+    "outcome": "an open takeover attempt on a non-milestone head is not concluded as a fix PR",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an open takeover attempt on a non-milestone head is not concluded as a fix PR (Issue #3596)",
+    "flipWentRed": "dropping the useFixRoute operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/conflict_takeover.ts",
+    "line": 824,
+    "outcome": "raised fix PR leaves the attempt open, no resolved marker",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - gated milestone head raises a fix PR, never touches the head",
+    "flipWentRed": "posting the resolved marker on fix-pr-raised turned it red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_children_gate.ts",
+    "line": 939,
+    "outcome": "empty behind_by is not ok (extracted readCompareBehindBy, behaviour unchanged)",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an unreadable behind count rejects with no fix PR (Issue #3596)",
+    "flipWentRed": "reading an empty answer as Number('') = 0 raised a fix PR and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/pr_auto_merge.ts",
+    "line": 1152,
+    "outcome": "fix-shaped head is recognised and its repository read",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "enableAutoMerge - a milestone-fix head that merges the default branch arms --merge (Issue #3596)",
+    "flipWentRed": "dropping the fixShaped override armed --squash and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/pr_auto_merge.ts",
+    "line": 1158,
+    "outcome": "unreadable head repository is not armed",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "enableAutoMerge - a milestone-fix head whose same-repository answer is unreadable is not armed (Issue #3596)",
+    "flipWentRed": "removing the guard armed the PR and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/pr_auto_merge.ts",
+    "line": 1176,
+    "outcome": "fork fix head keeps --squash and reads no comparison",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "enableAutoMerge - a fork milestone-fix head keeps --squash and reads no comparison (Issue #3596)",
+    "flipWentRed": "reading the method for a fork head made a compare call and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/pr_auto_merge.ts",
+    "line": 1183,
+    "outcome": "unreadable method is not armed",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "enableAutoMerge - a milestone-fix head whose method cannot be read is not armed (Issue #3596)",
+    "flipWentRed": "dropping the override armed the PR and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/pr_auto_merge.ts",
+    "line": 1235,
+    "outcome": "refused merge commit fails the arming, no squash downgrade",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "enableAutoMerge - a milestone-fix --merge the repo refuses is not armed, never squashed (Issue #3596)",
+    "flipWentRed": "letting the fix case fall through to the sync squash downgrade turned it red"
+   },
+   {
+    "path": "worker/deno/lib/direct_merge.ts",
+    "line": 985,
+    "outcome": "fix head whose repository is unknown is refused",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "directMergePr - a milestone-fix gate that cannot say whether the head is same-repository is refused (Issue #3596)",
+    "flipWentRed": "removing the guard merged the PR and the test went red"
+   },
+   {
+    "path": "worker/deno/lib/direct_merge.ts",
+    "line": 1017,
+    "outcome": "fork fix head squashes and reads no comparison",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "directMergePr - a fork milestone-fix head keeps --squash and reads no comparison (Issue #3596)",
+    "flipWentRed": "deleting the headIsSameRepository operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/direct_merge.ts",
+    "line": 1018,
+    "outcome": "fix head on a non-milestone base squashes and reads no comparison",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "directMergePr - a same-repository milestone-fix head on a non-milestone base squashes and reads no comparison (Issue #3596)",
+    "flipWentRed": "deleting the milestone-base operand turned it red"
+   },
+   {
+    "path": "worker/deno/lib/direct_merge.ts",
+    "line": 1019,
+    "outcome": "fix head that merges the default branch merges as a merge commit pinned to the gated sha",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "directMergePr - a milestone-fix head that merges the default branch merges as a merge commit, pinned to the gated head (Issue #3596)",
+    "flipWentRed": "dropping the override turned it red"
+   },
+   {
+    "path": "worker/deno/lib/direct_merge.ts",
+    "line": 1026,
+    "outcome": "unreadable method refuses the direct merge",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "directMergePr - a milestone-fix head whose method cannot be read is refused, not merged (Issue #3596)",
+    "flipWentRed": "dropping the override turned it red"
+   },
+   {
+    "path": "worker/deno/lib/direct_merge.ts",
+    "line": 1062,
+    "outcome": "refused merge commit returns the refusal, no squash retry",
+    "test": "worker/deno/tests/merge_method_arming_test.ts",
+    "testName": "directMergePr - a milestone-fix --merge the repo refuses fails loudly and is never squashed (Issue #3596)",
+    "flipWentRed": "dropping the override turned it red"
+   },
+   {
+    "path": "worker/deno/lib/milestone_fix_pr.ts",
+    "line": 125,
+    "outcome": "fork or unattributed listing entry is not the fleet's fix PR (extracted isFleetFixPrListing, behaviour unchanged)",
+    "test": "worker/deno/tests/conflict_takeover_test.ts",
+    "testName": "runConflictTakeover - an open attempt with no fleet fix PR of its own runs a fresh attempt (Issue #3596)",
+    "flipWentRed": "dropping the isCrossRepository check turned it red"
+   },
+   {
+    "path": "worker/deno/lib/pr_merge_conflict_scan.ts",
+    "line": 1733,
+    "outcome": "a lone open takeover attempt on a milestone head is logged at info as awaiting its fix PR; any other disruption still warns",
+    "test": "worker/deno/tests/pr_merge_conflict_scan_test.ts",
+    "testName": "findConflictingPr - an open takeover attempt awaiting its fix PR is logged at info, not warned (Issue #3596)",
+    "flipWentRed": "dropping the pass, count or isMilestoneHead operand turned it red"
+   }
+  ]
+ }
+}
