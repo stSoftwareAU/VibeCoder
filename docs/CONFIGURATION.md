@@ -4778,8 +4778,15 @@ files changed. Markdown is never formatted: `deno fmt` re-wraps whole documents
 and trips markdownlint MD018, so a Markdown miss is left to the check to report.
 Only the formatted paths are staged. A formatter that is missing, fails or
 throws never fails the run on its own: it is logged, and the gate that follows
-still runs every check and reports what was left unfixed. The PR feedback and
-CI-fix push paths do not run the formatters yet.
+still runs every check and reports what was left unfixed.
+
+The PR-feedback and CI-fix rounds do the same through `commitAndPushPending`
+(follow-up to #3806): the processors pass a Step 1a hook that runs the
+formatters after Step 1 commits the round's work and before Step 1b's gate. Its
+scope is Step 1b's own: the commits on no remote-tracking ref. It runs whether
+or not the repo configures a pre-flight, so a repo with no Step 1b gate still
+has the miss fixed before CI sees it. A hook that throws is logged, and Step 1b
+still checks everything. WIP-preservation pushes pass no hook.
 
 The hook runs two stages:
 
