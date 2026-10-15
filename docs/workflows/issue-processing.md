@@ -1231,7 +1231,15 @@ as its own numbered REQUIRED ITEM. That turn may change code for a verifier item
 (the recovery prompt allows it for this item only), and the quality gate re-runs
 afterwards. Findings still present on the re-run are reported like other
 summary-gate blocks: a `failure` with no PR, or `summary_incomplete` over an
-existing PR, with the comment on the issue thread. `testChanges: meaningful`
+existing PR, with the comment on the issue thread. A `summary_incomplete`
+over an existing PR because of a surviving verifier finding does not arm
+auto-merge: the PR is labelled `standing-violation` (the hold of Issue #3382,
+so the Priority 1.65 sweep and the CI-fix pass honour it unchanged) and the
+findings are posted on the PR as well as the issue (Issue #3697). This holds
+whether the verifier blocked on its own or was folded into an earlier gate's
+block. A verifier finding is closed only by fixing it or disputing it with
+evidence; marking a criterion `partial`, listing a known gap, or noting a test
+as "not red-checked" does not close it. `testChanges: meaningful`
 is not a finding and does not block.
 
 **When it cannot run.** A pass that cannot run (brief missing, git failure,
@@ -2534,7 +2542,7 @@ reported as what it is — the work is done, the summary is short:
 | Outcome | When | What follows |
 | --- | --- | --- |
 | `no_pr` | the run failed | failure label, cooldown, failure streak, run-failure issue |
-| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed; issue stays attached to the PR |
+| `summary_incomplete` | a PR exists, a summary rule is unmet on the run's **second** such block — or, when the claim check alone still blocks on the summary's own sentences, after the one summary-only correction turn (Issue #3324) — and any degraded-run follow-up was filed or was not needed | PR finalised and auto-merge armed (not armed, and the PR labelled `standing-violation`, for a standing own-line violation or a surviving pre-PR verifier finding); issue stays attached to the PR |
 | `pr` + `blocked` | a PR exists and a *defect* gate refused | the run still fails, and the release comment names the PR and the finding (Issue #2044) |
 | `no_pr` (`timeout`) | the deadline was exceeded | the timeout cooldown ladder |
 
@@ -2647,7 +2655,7 @@ flowchart TD
     CC -->|yes| CT["One summary-only correction<br/>turn, commit, quality gate,<br/>completion again (Issue #3324)"]
     CT --> G
     CC -->|no| Q{"Does this run's branch<br/>already carry a PR?"}
-    Q -->|yes| S["Finalise that PR, arm auto-merge<br/>outcome summary_incomplete<br/>issue stays on the PR"]
+    Q -->|yes| S["Finalise that PR, arm auto-merge<br/>(held if standing violation<br/>or verifier finding)<br/>outcome summary_incomplete<br/>issue stays on the PR"]
     Q -->|no| F["Blocked: comment names the rule<br/>run fails, next attempt rewrites"]
     style SEC fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
     style WF fill:#b892c8,stroke:#4a2d5a,color:#1a1a1a
@@ -2762,7 +2770,10 @@ changed tree before completion re-runs. If a later block in the same run
 finalises an existing PR as `summary_incomplete` while such a violation is
 still standing, the worker does not arm auto-merge on that PR and labels it
 `standing-violation` instead, logging a warning; the rest of finalisation is
-unchanged. The Priority 1.65 auto-merge sweep honours the label too: it
+unchanged. The same hold applies to a pre-PR verifier finding that survives
+the recovery turn (Issue #3697; see
+[Pre-PR verifier](#pre-pr-verifier-issue-3395)). The Priority 1.65
+auto-merge sweep honours the label too: it
 skips a PR carrying `standing-violation` and disarms one that is already armed
 (`gh pr merge --disable-auto`), so the sweep never arms a held PR
 (Issue #3517). The CI-fix pass honours the label too: after it pushes a fix

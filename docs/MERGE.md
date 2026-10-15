@@ -662,7 +662,8 @@ the owner's review. Both read the decision from a call they already make — the
 sweep's live `gh pr view`, the branch-update pass's batched GraphQL state — and
 log the skip at info.
 
-A PR labelled `standing-violation` (Issue #3382) is **held** by the sweep
+A PR labelled `standing-violation` (Issue #3382, also applied for a pre-PR
+verifier finding that survived the recovery turn, Issue #3697) is **held** by the sweep
 (Issue #3517): it is skipped, never armed or branch-updated, and one already
 armed is disarmed with `gh pr merge --disable-auto`. The label comes from the
 sweep's live `gh pr view` read, and the hold is logged once per process.

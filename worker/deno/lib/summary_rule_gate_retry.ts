@@ -23,8 +23,10 @@
  * #3163) — replays the gate's remediation comment into one short agent
  * invocation, re-runs the quality gate, and re-runs completion once. A second
  * block in the same run ends the run exactly as before (a `failure` with no
- * PR, or `summary_incomplete` over an existing PR), with the comment already
- * on the thread.
+ * PR, or `summary_incomplete` over an existing PR, which is held with
+ * auto-merge withheld and the `standing-violation` label when a standing
+ * own-line violation or a pre-PR verifier finding survives; Issues #3382,
+ * #3697), with the comment already on the thread.
  *
  * Each gate's comment builder prints its own template plus problem lines
  * quoting the branch's own PR summary — and that PR summary carries entries
@@ -294,7 +296,7 @@ ${itemBlocks.join("\n\n")}
 ${standingSection}Do exactly this, and nothing else:
 
 1. Read \`${summaryPath}\` — the summary the gate just read — and \`git diff\` against the base branch, so the block you write describes the change that is actually on the branch.
-${step2} One exception (Issue #3395): a REQUIRED ITEM headed \`${PRE_PR_VERIFIER_HEADING_WORDS}\` can name a defect in the code itself. For that item only, fix the code and its tests where a finding asks for it, run the tests covering what you changed, then make the summary describe the head; the worker re-runs the quality gate and the verifier afterwards.
+${step2} One exception (Issue #3395): a REQUIRED ITEM headed \`${PRE_PR_VERIFIER_HEADING_WORDS}\` can name a defect in the code itself. For that item only, fix the code and its tests where a finding asks for it, run the tests covering what you changed, then make the summary describe the head; the worker re-runs the quality gate and the verifier afterwards. A verifier finding is closed only by fixing it or by disputing it with evidence in your final message (Issue #3697): marking an acceptance criterion \`partial\`, listing the finding as a known gap, or noting a test as "not red-checked" in the summary does not close it, and a finding still present on the re-run stops the PR from shipping — an existing PR is held with auto-merge withheld.
 3. Where a REQUIRED ITEM asks for the \`## Acceptance Criteria\` or \`## Standards Review\` block, dispatch the two reviewer sub-agents first and write their verdicts down. Never invent a \`reviewer:\` verdict — a fabricated review is the over-claim those blocks exist to prevent.
 4. Before you commit, re-read the summary against ${itemRef} in turn, checking that item is actually fixed. In your final message, name ${itemRef} by number and say what you changed for it.
 5. Commit the change, referencing #${issueNumber}. Do not create the PR yourself, do not close the issue, and do not start new work. The worker commits whatever you leave in the tree, so nothing you write here is lost — but a summary that still misses a REQUIRED ITEM will be asked for as a structured verdict instead, which costs the run another turn.

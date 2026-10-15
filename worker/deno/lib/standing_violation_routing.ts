@@ -31,7 +31,8 @@ import {
 
 /**
  * The PR label the worker applies when it finalises a PR with an own-line
- * standing violation instead of arming auto-merge. The Priority 1.65 sweep
+ * standing violation instead of arming auto-merge. It is also applied when a
+ * pre-PR verifier finding survives the recovery turn (Issue #3697). The Priority 1.65 sweep
  * skips and disarms a PR carrying it (Issue #3517), and the CI-fix pass does
  * not re-arm one after pushing a fix (Issue #3685).
  */

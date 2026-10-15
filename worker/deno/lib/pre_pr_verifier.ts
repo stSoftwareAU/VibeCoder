@@ -47,6 +47,7 @@ import {
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import {
   checklistGapFindings,
   type ChecklistLoad,
@@ -806,5 +807,17 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
     "3. Run the tests covering what you changed.",
     "4. Make the PR summary describe the head.",
     "5. If you have evidence a finding is wrong, say so in your final message, naming the finding and the evidence — the verifier runs again on the next completion attempt.",
+    "",
+    'A finding is closed only by fixing it (steps 2-4) or by disputing it with evidence (step 5). Marking an acceptance criterion `partial`, listing the finding as a known gap, or noting a test as "not red-checked" in the PR summary does not close it: a finding still present when the verifier re-runs stops the PR from shipping — with no PR the run fails, and an existing PR is held with auto-merge withheld.',
   ].join("\n");
+}
+
+/**
+ * The comment posted on an existing PR that is held because a pre-PR verifier
+ * finding survived the run's recovery turn (Issue #3697). It leads with the
+ * hold and its label, then carries the verifier's gate comment verbatim.
+ */
+export function buildPrePrVerifierHeldPrComment(gateComment: string): string {
+  return `**Auto-merge is held on this PR** (label \`${STANDING_VIOLATION_LABEL}\`): the pre-PR verifier's findings below were still present after the run's recovery turn (Issue #3697). Fix each finding, or dispute it with evidence; recording it in the PR summary as a known gap does not close it.` +
+    "\n\n" + gateComment;
 }

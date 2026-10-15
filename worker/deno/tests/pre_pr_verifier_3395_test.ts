@@ -13,6 +13,7 @@ import {
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
 import {
   buildPrePrVerifierGateComment,
+  buildPrePrVerifierHeldPrComment,
   buildPrePrVerifierPrompt,
   defaultPrePrVerifierDeps,
   parseReviewReply,
@@ -1421,4 +1422,27 @@ Deno.test("a git failure reading the head copy makes the verifier not checked", 
   } finally {
     await f.cleanup();
   }
+});
+
+Deno.test("the gate comment says a finding is closed only by a fix or evidence (Issue #3697)", () => {
+  const comment = buildPrePrVerifierGateComment(
+    {
+      summary: "one problem",
+      findings: [{ file: "a.ts", line: 1, problem: "p", fix: "f" }],
+      testChanges: "none",
+      testChangeNotes: [],
+      unrelatedIssues: [],
+      checklist: [],
+    } as Parameters<typeof buildPrePrVerifierGateComment>[0],
+  );
+  assertStringIncludes(comment, "closed only by fixing it");
+  assertStringIncludes(comment, "`partial`");
+  assertStringIncludes(comment, "not red-checked");
+});
+
+Deno.test("the held-PR comment names the hold, the label and carries the gate comment (Issue #3697)", () => {
+  const comment = buildPrePrVerifierHeldPrComment("X-GATE");
+  assertStringIncludes(comment, "X-GATE");
+  assertStringIncludes(comment, "standing-violation");
+  assertStringIncludes(comment, "Auto-merge is held");
 });

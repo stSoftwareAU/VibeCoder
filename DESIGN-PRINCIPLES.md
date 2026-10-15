@@ -3084,7 +3084,9 @@ summary-only correction turn (Issue #3324), and only a block that survives it
 finalises the PR. A standing Standards violation on the branch's own lines is
 a defect in the change, not a documentation shortfall, so that recovery turn
 may fix the code for it, and an existing PR finalised with one still standing
-is labelled `standing-violation` rather than auto-merged (Issue #3382).
+is labelled `standing-violation` rather than auto-merged (Issue #3382). A pre-PR verifier finding that survives
+that turn is held the same way, with the findings posted on the PR as well as
+the issue (Issue #3697).
 
 **Satisfy the rule mechanically where you can.** An `unrequested` entry with no
 `reviewer:` is a template filled in wrongly, so the fix belongs in

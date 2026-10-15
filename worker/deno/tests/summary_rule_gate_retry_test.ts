@@ -83,6 +83,16 @@ Deno.test("summary-rule retry - an existing PR says the worker will not finalise
   );
 });
 
+Deno.test("summary-rule retry - a verifier finding is closed only by a fix or a dispute (Issue #3697)", () => {
+  const prompt = buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 7);
+
+  assertStringIncludes(
+    prompt,
+    "A verifier finding is closed only by fixing it or by disputing it with evidence",
+  );
+  assertStringIncludes(prompt, "not red-checked");
+});
+
 Deno.test("summary-rule retry - an unusable issue number fails loud", () => {
   assertThrows(
     () => buildSummaryRuleRetryPrompt(VERDICT, "org/repo", 0),

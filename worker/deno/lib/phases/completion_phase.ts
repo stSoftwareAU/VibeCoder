@@ -52,6 +52,7 @@ import {
 import { DRIFT_CHECK_DISALLOWED_TOOLS } from "../pr_feedback_drift_check.ts";
 import {
   buildPrePrVerifierGateComment,
+  buildPrePrVerifierHeldPrComment,
   prePrVerifierBlocked,
   prePrVerifierBlockReason,
   type PrePrVerifierResult,
@@ -563,6 +564,14 @@ interface SummaryRuleBlock {
    */
   standingViolations: readonly StandingViolation[];
   /**
+   * The pre-PR verifier's gate comment when its verdict is among the gates
+   * this block carries (Issue #3697), or `""` when it is not. Non-empty on
+   * the existing-PR finalise means a verifier finding survived the recovery
+   * turn: auto-merge is withheld, the PR labelled `standing-violation`, and
+   * the findings posted on the PR as well as the issue.
+   */
+  prePrVerifierFindings: string;
+  /**
    * True when a blocked gate in `sections` is fixed by changing tests (the
    * mutation gate, Issue #3393), so the recovery prompt allows test changes.
    */
@@ -609,8 +618,9 @@ interface SummaryRuleBlock {
  *   guard succeeds is the PR finalised the way the recovery path finalises
  *   it (body, labels, link, auto-merge — except that auto-merge is withheld
  *   and the PR labelled `standing-violation` when a Standards violation on
- *   the branch's own lines survived the recovery turn, Issue #3382), and the
- *   run reports
+ *   the branch's own lines survived the recovery turn, Issue #3382, or a
+ *   pre-PR verifier finding did, Issue #3697 — whose findings are also posted
+ *   on the PR), and the run reports
  *   `summary_incomplete`: the work is done, the summary is short, and the
  *   issue stays attached to its PR instead of going back in the queue. If
  *   the guard itself cannot file its follow-up, this reports `failure`
@@ -657,8 +667,14 @@ async function reportSummaryRuleBlock(
   // comment; the existing-PR finalise below is a path that posts it too.
   docsSweepHitsComment = "",
 ): Promise<PhaseResult> {
-  const { reason, comment, sections, standingViolations, allowsTestChanges } =
-    block;
+  const {
+    reason,
+    comment,
+    sections,
+    standingViolations,
+    prePrVerifierFindings,
+    allowsTestChanges,
+  } = block;
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
   const client = deps.github.createClient(logger);
@@ -798,7 +814,11 @@ async function reportSummaryRuleBlock(
     deps,
     {
       docsSweepHitsComment,
-      holdAutoMerge: block.standingViolations.length > 0,
+      holdAutoMerge: standingViolations.length > 0 ||
+        prePrVerifierFindings !== "",
+      heldFindingsComment: prePrVerifierFindings === ""
+        ? ""
+        : buildPrePrVerifierHeldPrComment(prePrVerifierFindings),
     },
   );
   if (recovered.status !== "continue") return recovered;
@@ -963,6 +983,12 @@ async function postDocsSweepHitsComment(
  * is then NOT armed and the PR is labelled `standing-violation` for the next
  * run to fix. The flag has no default: every caller states it.
  *
+ * Issue #3697: the hold is also set when a pre-PR verifier finding survived the
+ * recovery turn. `finalise.heldFindingsComment`, when non-empty, is that
+ * finding's comment for the PR; it is posted on the PR so the findings sit
+ * where the PR's next reader looks, not only on the issue. Every caller states
+ * it (`""` when there is nothing to post).
+ *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.
  */
@@ -972,9 +998,13 @@ export async function recoverAndFinaliseExistingPr(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-  finalise: { docsSweepHitsComment: string; holdAutoMerge: boolean },
+  finalise: {
+    docsSweepHitsComment: string;
+    holdAutoMerge: boolean;
+    heldFindingsComment: string;
+  },
 ): Promise<PhaseResult> {
-  const { docsSweepHitsComment, holdAutoMerge } = finalise;
+  const { docsSweepHitsComment, holdAutoMerge, heldFindingsComment } = finalise;
   const { repo, issueNumber, githubUser, milestoneTitle, issueLabels } = ctx;
   const logger = deps.logger;
   const prNumber = prNumberFromUrl(prUrl);
@@ -1029,13 +1059,15 @@ export async function recoverAndFinaliseExistingPr(
     // Issue #1136: arm auto-merge here, on the recovery path too — see the
     // note on the creation path below.
     if (prNumber > 0 && holdAutoMerge) {
-      // Issue #3382: a standing violation on this branch's own lines — hold
-      // the merge and make the hold visible on the PR. The label is also what
-      // the Priority 1.65 sweep reads to keep it held (Issue #3517).
+      // Issue #3382: a standing violation on this branch's own lines, or
+      // (Issue #3697) a pre-PR verifier finding that survived the recovery
+      // turn — hold the merge and make the hold visible on the PR. The label
+      // is also what the Priority 1.65 sweep reads to keep it held (#3517).
       logger.warn(
-        "Auto-merge NOT armed: a Standards violation is still standing on " +
-          "this branch's own lines — PR labelled standing-violation for the " +
-          "next run to fix (Issue #3382)",
+        "Auto-merge NOT armed: a blocking finding survived the recovery " +
+          "turn (a Standards violation on this branch's own lines, or a " +
+          "pre-PR verifier finding) — PR labelled standing-violation for " +
+          "the next run to fix (Issues #3382, #3697)",
         { repo, prNumber },
       );
       const ensured = await deps.github.ensureLabelExists(
@@ -1059,6 +1091,27 @@ export async function recoverAndFinaliseExistingPr(
       }
     } else if (prNumber > 0) {
       await armAutoMergeAtCreation(ctx, state, prNumber, deps);
+    }
+
+    // Issue #3697: surviving pre-PR verifier findings go on the PR too, so
+    // they sit where the PR's next reader looks, not only on the issue.
+    if (heldFindingsComment !== "" && prNumber > 0) {
+      try {
+        await deps.github.createClient(logger).postComment(
+          repo,
+          prNumber,
+          heldFindingsComment,
+        );
+      } catch (err) {
+        logger.error(
+          "Could not post the surviving pre-PR verifier findings on the PR (Issue #3697)",
+          {
+            repo,
+            prNumber,
+            error: err instanceof Error ? err.message : String(err),
+          },
+        );
+      }
     }
 
     // Issue #3237: advisory docs-sweep stale-hits comment, posted once.
@@ -3154,7 +3207,8 @@ async function completionBody(
    * Fold every blocked late verdict (docs sweep, removed assertions, result
    * placeholder, branch outcomes, mutation check, summary claim check, pre-PR
    * verifier — in that order) other than those in `skip` into an earlier
-   * gate's block.
+   * gate's block. `prePrVerifierFindings` carries the verifier's comment when
+   * its verdict was folded in (Issue #3697), else `""`.
    * `allowsTestChanges` is set on the result when the block, or any verdict
    * folded in, is one that only a test change satisfies (the mutation check).
    */
@@ -3169,11 +3223,15 @@ async function completionBody(
     // `skip` names the verdicts already represented by `reason`/`comment`, so a
     // blocked mutation verdict there still means the recovery turn must test.
     let allowsTestChanges = skip.some((v) => v.blocked && v.needsTestChanges);
+    let prePrVerifierFindings = "";
     for (const verdict of lateSummaryVerdicts) {
       if (skip.includes(verdict) || !verdict.blocked) continue;
       if (verdict.needsTestChanges) allowsTestChanges = true;
       foldedReason = `${foldedReason}; ${verdict.reason}`;
       const verdictComment = verdict.comment();
+      if (verdict === prePrVerifierVerdict) {
+        prePrVerifierFindings = verdictComment;
+      }
       foldedComment = `${foldedComment}\n\n---\n\n${verdictComment}`;
       sections.push(verdictComment);
     }
@@ -3182,6 +3240,7 @@ async function completionBody(
       comment: foldedComment,
       sections,
       standingViolations,
+      prePrVerifierFindings,
       ...(allowsTestChanges ? { allowsTestChanges } : {}),
     };
   }
@@ -3568,7 +3627,8 @@ async function completionBody(
   // This runs the fleet reviewer's own brief with execution rights after the
   // summary is written. Its findings reach the single recovery turn and, if
   // still present on the re-run, are reported like any other summary-rule
-  // block. Last in the late-summary chain, so nothing further folds in.
+  // block; over an existing PR they also hold auto-merge and are posted on the
+  // PR (Issue #3697). Last in the late-summary chain, so nothing further folds in.
   // ---------------------------------------------------------------------
   if (prePrVerifierVerdict.blocked && prePrVerifier?.status === "checked") {
     logger.warn("Pre-PR verifier blocked PR creation (Issue #3395)", {
@@ -3581,6 +3641,7 @@ async function completionBody(
         comment,
         sections: [comment],
         standingViolations,
+        prePrVerifierFindings: comment,
       },
       ctx,
       state,
@@ -3688,7 +3749,11 @@ async function completionBody(
       state,
       prBody,
       deps,
-      { docsSweepHitsComment, holdAutoMerge: false },
+      {
+        docsSweepHitsComment,
+        holdAutoMerge: false,
+        heldFindingsComment: "",
+      },
     );
   }
 
@@ -3823,7 +3888,11 @@ async function completionBody(
           state,
           prBody,
           deps,
-          { docsSweepHitsComment, holdAutoMerge: false },
+          {
+            docsSweepHitsComment,
+            holdAutoMerge: false,
+            heldFindingsComment: "",
+          },
         );
       } else if (isSecondaryRateLimitMessage(errorMsg)) {
         // The latch's own cool-down names both limits (Issue #1456), so it

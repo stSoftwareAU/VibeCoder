@@ -113,7 +113,13 @@ const NOT_CHECKED: PrePrVerifierResult = {
   reason: "the verifier timed out",
 };
 
-function stubClient(comments: string[]): GitHubClient {
+const PR_NUMBER = 4412;
+
+function stubClient(
+  comments: string[],
+  prComments: string[] = [],
+  prCommentFails = false,
+): GitHubClient {
   return {
     getIssue: () => {
       throw new Error("stub");
@@ -121,8 +127,12 @@ function stubClient(comments: string[]): GitHubClient {
     getIssueComments: () => Promise.resolve([]),
     addLabel: () => Promise.resolve(),
     removeLabel: () => Promise.resolve(),
-    postComment: (_repo: string, _issue: number, body: string) => {
+    postComment: (_repo: string, issue: number, body: string) => {
+      if (issue === PR_NUMBER && prCommentFails) {
+        return Promise.reject(new Error("PR comment failed"));
+      }
       comments.push(body);
+      if (issue === PR_NUMBER) prComments.push(body);
       return Promise.resolve(undefined);
     },
     editIssue: () => Promise.resolve(),
@@ -149,6 +159,8 @@ interface Scenario {
   claimReply?: string;
   /** Model configured for the run (default: the config default). */
   claudeModel?: string;
+  /** When true, posting a comment on the PR rejects (Issue #3697). */
+  prCommentFails?: boolean;
 }
 
 interface Outcome {
@@ -159,6 +171,11 @@ interface Outcome {
   verifierInputs: PrePrVerifierInput[];
   prCreateCalls: number;
   comments: string[];
+  /** Comments posted on the PR itself (Issue #3697). */
+  prComments: string[];
+  labelCalls: string[][];
+  finaliseCalls: number;
+  errors: string[];
   summaryText: string;
   claudeRunStats: PhaseState["claudeRunStats"];
   config: ReturnType<typeof buildDefaultWorkerConfig>;
@@ -176,6 +193,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   }
 
   const comments: string[] = [];
+  const prComments: string[] = [];
+  const labelCalls: string[][] = [];
+  const errors: string[] = [];
+  let finaliseCalls = 0;
   let prCreateCalls = 0;
   const claudePrompts: string[] = [];
   const verifierInputs: PrePrVerifierInput[] = [];
@@ -209,8 +230,16 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   };
 
   const deps = createMockDeps({
+    logger: {
+      error: (message: string) => {
+        errors.push(message);
+      },
+    },
     github: {
-      createClient: () => stubClient(comments),
+      ensureLabelExists: () =>
+        Promise.resolve({ ok: true as const, value: undefined }),
+      createClient: () =>
+        stubClient(comments, prComments, scenario.prCommentFails ?? false),
       runGhCommand: (args: string[]) => {
         if (args[0] === "pr" && args[1] === "create") prCreateCalls++;
         if (args[0] === "pr" && args[1] === "view") {
@@ -294,11 +323,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           : Promise.resolve({ ok: false as const, error: new Error("none") }),
       recoverExistingPr: () =>
         Promise.resolve({ ok: true, value: "recovered" }),
-      finalisePr: () =>
-        Promise.resolve({
+      updatePrLabels: (_repo: string, _pr: number, labels: string[]) => {
+        labelCalls.push([...labels]);
+        return Promise.resolve({ ok: true as const, value: undefined });
+      },
+      finalisePr: () => {
+        finaliseCalls++;
+        return Promise.resolve({
           ok: true,
           value: { result: AutoMergeResult.Enabled, message: "armed" },
-        }),
+        });
+      },
     },
   });
 
@@ -328,6 +363,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     verifierInputs,
     prCreateCalls,
     comments,
+    prComments,
+    labelCalls,
+    finaliseCalls,
+    errors,
     summaryText,
     claudeRunStats: state.claudeRunStats,
     config,
@@ -547,6 +586,100 @@ Deno.test(
     assertEquals(
       outcome.comments.some((c) => c.includes(PRE_PR_VERIFIER_COMMENT_HEADING)),
       false,
+    );
+  },
+);
+
+/** Assert the existing PR was held and the findings posted on it (Issue #3697). */
+function assertHeld(outcome: Outcome): void {
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.outcomeKind, "summary_incomplete");
+  assertEquals(outcome.finaliseCalls, 0, "auto-merge is not armed");
+  assert(
+    outcome.labelCalls.some((l) => l.includes("standing-violation")),
+    "the PR is labelled standing-violation",
+  );
+}
+
+// (k)
+Deno.test(
+  "completion - verifier findings that survive the recovery turn over an existing PR hold auto-merge, label the PR and post the findings on it (Issue #3697)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [checked([FINDING])],
+      existingPr: true,
+    });
+
+    assertHeld(outcome);
+    assertEquals(outcome.claudePrompts.length, 1, "one recovery turn");
+    assertEquals(outcome.verifierInputs.length, 2);
+    assertEquals(outcome.prComments.length, 1);
+    const posted = outcome.prComments[0]!;
+    assertStringIncludes(posted, PRE_PR_VERIFIER_COMMENT_HEADING);
+    assertStringIncludes(posted, FINDING.problem);
+    assertStringIncludes(posted, "Auto-merge is held");
+  },
+);
+
+// (l)
+Deno.test(
+  "completion - verifier findings folded into an earlier gate's block still hold the existing PR (Issue #3697)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_PLACEHOLDER,
+      verifier: [checked([FINDING])],
+      existingPr: true,
+    });
+
+    assertHeld(outcome);
+    assertEquals(outcome.prComments.length, 1);
+    assertStringIncludes(outcome.prComments[0]!, FINDING.problem);
+  },
+);
+
+// (m)
+Deno.test(
+  "completion - a verifier finding cleared by the recovery turn does not hold the PR (Issue #3697)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_PLACEHOLDER,
+      verifier: [checked([FINDING]), checked([])],
+      existingPr: true,
+    });
+
+    assertEquals(outcome.status, "early_exit");
+    assertEquals(outcome.outcomeKind, "summary_incomplete");
+    assertEquals(outcome.finaliseCalls, 1);
+    assertEquals(
+      outcome.labelCalls.some((l) => l.includes("standing-violation")),
+      false,
+    );
+    assertEquals(
+      outcome.prComments.some((c) =>
+        c.includes(PRE_PR_VERIFIER_COMMENT_HEADING)
+      ),
+      false,
+    );
+  },
+);
+
+// (n)
+Deno.test(
+  "completion - a failed PR comment is logged and the hold still stands (Issue #3697)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_CLEAN,
+      verifier: [checked([FINDING])],
+      existingPr: true,
+      prCommentFails: true,
+    });
+
+    assertHeld(outcome);
+    assert(
+      outcome.errors.some((e) =>
+        e.includes("Could not post the surviving pre-PR verifier findings")
+      ),
     );
   },
 );
