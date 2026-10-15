@@ -34,6 +34,13 @@ import { createClaudeCredentialPool } from "./claude_credential_pool.ts";
 import { detectUsageLimit } from "./claude_executor.ts";
 import { DEEPSEEK_PROVIDER_ID } from "./agent_provider.ts";
 import { buildDeepSeekChildEnv } from "./deepseek_env.ts";
+import {
+  REVIEW_RUN_FILE,
+  type ReviewRunAttempt,
+  type ReviewRunRecord,
+} from "./review_run_record.ts";
+
+export { REVIEW_RUN_FILE, type ReviewRunAttempt, type ReviewRunRecord };
 
 /**
  * The fallback provider's model for a round (Issue #3632): DeepSeek's best.
@@ -41,6 +48,15 @@ import { buildDeepSeekChildEnv } from "./deepseek_env.ts";
  * anyway — asking for the model the operator chose is the honest spelling.
  */
 export const REVIEW_FALLBACK_MODEL = "deepseek-v4-pro";
+
+/** Options for {@link runReviewRound}. */
+export interface ReviewRoundOptions {
+  /**
+   * The round's own directory. When set, each attempt is recorded in its
+   * {@link REVIEW_RUN_FILE} and streams to its own file there.
+   */
+  roundDir?: string;
+}
 
 /** What one `claude -p` attempt ended with. */
 export interface ReviewRoundAttempt {
@@ -78,11 +94,17 @@ export interface ReviewRoundDeps {
   exportFallbackCredential(
     setEnv: (name: string, value: string) => void,
   ): Promise<{ providerId: string; env: Record<string, string> } | null>;
-  /** Run `claude` with these arguments and this added environment. */
+  /**
+   * Run `claude` with these arguments and this added environment, writing
+   * its raw output to `streamFile` when one is given.
+   */
   runClaude(
     args: string[],
     env: Record<string, string>,
+    streamFile?: string,
   ): Promise<ReviewRoundAttempt>;
+  /** Save the round's attempt log in its directory. */
+  recordRun?(roundDir: string, record: ReviewRunRecord): Promise<void>;
   /** Where the round's own lines go. */
   log(message: string): void;
 }
@@ -94,12 +116,15 @@ export interface ReviewRoundDeps {
  * @param prompt - The round's prompt, built by the runner.
  * @param claudeArgs - The remaining CLI arguments (model, tools).
  * @param deps - The seams; production passes {@link createReviewRoundDeps}.
+ * @param options.roundDir - The round's directory, where each attempt is
+ *   recorded and streams its output.
  * @returns The exit status of the last attempt.
  */
 export async function runReviewRound(
   prompt: string,
   claudeArgs: readonly string[],
   deps: ReviewRoundDeps,
+  options: ReviewRoundOptions = {},
 ): Promise<number> {
   // `claude -p` otherwise stops waiting for its reviewer agents 600s in and
   // ends the round with their PRs unreviewed; the runner's alarm is the
@@ -111,12 +136,44 @@ export async function runReviewRound(
     env[name] = value;
   };
   const args = ["-p", prompt, ...claudeArgs];
+  const roundDir = options.roundDir?.replace(/\/+$/, "");
+  const record: ReviewRunRecord = {
+    round: roundDir?.split("/").pop() ?? "",
+    attempts: [],
+  };
+  // Each attempt is recorded before it starts, so a review posted while it
+  // runs can name its provider and model, and again with its exit status.
+  const runAttempt = async (
+    attemptArgs: string[],
+    attemptEnv: Record<string, string>,
+    provider: string,
+  ): Promise<ReviewRoundAttempt> => {
+    if (roundDir === undefined) return deps.runClaude(attemptArgs, attemptEnv);
+    const n = record.attempts.length + 1;
+    const entry: ReviewRunAttempt = {
+      attempt: n,
+      provider,
+      model: argValue(attemptArgs, "--model"),
+      effort: argValue(attemptArgs, "--effort"),
+      stream: `stream-${n}.jsonl`,
+    };
+    record.attempts.push(entry);
+    await deps.recordRun?.(roundDir, record);
+    const result = await deps.runClaude(
+      attemptArgs,
+      attemptEnv,
+      `${roundDir}/${entry.stream}`,
+    );
+    entry.code = result.code;
+    await deps.recordRun?.(roundDir, record);
+    return result;
+  };
 
   const held = await deps.exportStartCredential(setEnv);
   if (held !== undefined) {
     deps.log(`round on Claude subscription ${held}`);
   }
-  let attempt = await deps.runClaude(args, env);
+  let attempt = await runAttempt(args, env, CLAUDE_PROVIDER_ID);
   // A token that came from no pool file cannot say which one ran out, so
   // rotating could hand it straight back: only a held label is rotated.
   if (
@@ -128,7 +185,7 @@ export async function runReviewRound(
     const next = await deps.switchCredential(held, setEnv);
     if (next !== null && next !== held) {
       deps.log(`retrying the round once on subscription ${next}`);
-      attempt = await deps.runClaude(args, env);
+      attempt = await runAttempt(args, env, CLAUDE_PROVIDER_ID);
     } else {
       deps.log("no other subscription has budget");
     }
@@ -143,9 +200,10 @@ export async function runReviewRound(
     const fallback = await deps.exportFallbackCredential(setEnv);
     if (fallback !== null) {
       deps.log(`round fell back to provider ${fallback.providerId}`);
-      attempt = await deps.runClaude(
+      attempt = await runAttempt(
         withModel(args, REVIEW_FALLBACK_MODEL),
         fallback.env,
+        fallback.providerId,
       );
     } else {
       deps.log("no other subscription has budget; the round stays failed");
@@ -171,6 +229,34 @@ function withModel(claudeArgs: readonly string[], model: string): string[] {
   return args;
 }
 
+/** The value after `flag` in a CLI argument list, or null when absent. */
+function argValue(args: readonly string[], flag: string): string | null {
+  const idx = args.indexOf(flag);
+  return idx >= 0 && idx + 1 < args.length ? args[idx + 1]! : null;
+}
+
+/**
+ * One line of the CLI's stream-json output as the round's log shows it, or
+ * null to leave it out. The runner's logs keep what the text output used to
+ * show: each `result` line's text (the round's report, or the usage-limit
+ * refusal {@link detectUsageLimit} reads), plus any line that is not JSON at
+ * all. The full stream is in the attempt's own file.
+ */
+export function renderStreamLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (trimmed === "") return null;
+  if (!trimmed.startsWith("{")) return line;
+  let parsed: { type?: unknown; result?: unknown };
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return line;
+  }
+  return parsed.type === "result" && typeof parsed.result === "string"
+    ? parsed.result
+    : null;
+}
+
 /** How much of the CLI's output is kept for the usage-limit check. */
 const OUTPUT_TAIL_BYTES = 64 * 1024;
 
@@ -178,10 +264,15 @@ const OUTPUT_TAIL_BYTES = 64 * 1024;
  * Run `claude`, passing its output straight through to this process's own
  * stdout and stderr (the runner logs the container's output) while keeping
  * the tail for {@link detectUsageLimit}.
+ *
+ * With `streamFile`, stdout is the CLI's stream-json: it is written there in
+ * full, and only its readable lines ({@link renderStreamLine}) are passed
+ * through and kept for the usage-limit check.
  */
 export async function runClaudeCli(
   args: string[],
   env: Record<string, string>,
+  streamFile?: string,
 ): Promise<ReviewRoundAttempt> {
   let child: Deno.ChildProcess;
   try {
@@ -201,6 +292,32 @@ export async function runClaudeCli(
   }
   let tail = "";
   const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  // Best effort: a stream file that cannot be opened leaves the attempt
+  // uncosted ("cost unknown"), never a failed round.
+  const file = streamFile === undefined ? undefined : await Deno.open(
+    streamFile,
+    { write: true, create: true, truncate: true },
+  ).catch(() => undefined);
+  const pumpStream = async (stream: ReadableStream<Uint8Array>) => {
+    const lineDecoder = new TextDecoder();
+    let pending = "";
+    const emit = async (line: string) => {
+      const shown = renderStreamLine(line);
+      if (shown === null) return;
+      await Deno.stdout.write(encoder.encode(`${shown}\n`));
+      tail = (tail + shown + "\n").slice(-OUTPUT_TAIL_BYTES);
+    };
+    for await (const chunk of stream) {
+      await file?.write(chunk).catch(() => 0);
+      pending += lineDecoder.decode(chunk, { stream: true });
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      for (const line of lines) await emit(line);
+    }
+    await emit(pending + lineDecoder.decode());
+    file?.close();
+  };
   const pump = async (
     stream: ReadableStream<Uint8Array>,
     sink: { write(p: Uint8Array): Promise<number> },
@@ -213,7 +330,9 @@ export async function runClaudeCli(
   };
   const [status] = await Promise.all([
     child.status,
-    pump(child.stdout, Deno.stdout),
+    file === undefined
+      ? pump(child.stdout, Deno.stdout)
+      : pumpStream(child.stdout),
     pump(child.stderr, Deno.stderr),
   ]);
   return { code: status.code, output: tail };
@@ -280,6 +399,14 @@ export function createReviewRoundDeps(
       return { providerId: DEEPSEEK_PROVIDER_ID, env };
     },
     runClaude: runClaudeCli,
+    recordRun: async (roundDir, record) => {
+      // Best effort: an unwritable round directory leaves the reviews
+      // without a named model ("cost unknown"), never a failed round.
+      await Deno.writeTextFile(
+        `${roundDir}/${REVIEW_RUN_FILE}`,
+        JSON.stringify(record) + "\n",
+      ).catch((error) => log(`could not record the round's attempt: ${error}`));
+    },
     log,
   };
 }
