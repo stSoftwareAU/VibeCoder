@@ -37,7 +37,7 @@ verifier's findings, is not in this PR.
 
 ### Essential Design Decisions
 
-- The marker is parsed only at index 0 of a comment body, and only from the worker's own login or a fleet author's comment. Agent-written finding text sits later in the body and cannot forge it. An outsider's comment carrying the marker is not trusted through this path.
+- The marker is parsed only at index 0 of a comment body, and only on a comment whose author is in the scan's fleet set. That set always holds the worker's own login, plus the allowed authors, fleet PR authors and service accounts (`resolveFleetAuthors`). Agent-written finding text sits later in the body and cannot forge the marker. A comment from an author outside that set is not trusted through this path.
 - Label removal follows "remove only what you can prove you added". The marker comment, written by the completion phase when it applied the label, is the provenance. `releasable` is `false` whenever a standing violation also held the PR, so a verifier fix never lifts a hold it does not own.
 - Release happens only after a push the processor verified on the remote, and only on the PR's own head. A fix delivered through a milestone fix branch has not reached the PR yet, so it does not release. A failed removal is logged at error, and the PR stays held.
 - `SummaryRuleBlock.prePrVerifierFindings` is a required field. Both block builders set it (the fold path and the standalone verifier gate), so the compiler names any future builder that omits it.
@@ -68,6 +68,10 @@ flowchart TD
 ```
 
 **Docs sweep** — grep: `standing-violation`, `holdAutoMerge`, "pre-PR verifier", "arm\w* auto-merge", `summary_incomplete`, "own comments", "thumbs-up", "remov\w* the label"; section: `docs/workflows/pr-feedback.md#-priority-1--pr-feedback`, `docs/workflows/issue-processing.md#pre-pr-verifier-issue-3395`; siblings: `standingViolations`, `allowsTestChanges`, `commentCreatedAt`, `failingCheckName`, "trusted-bot"; updated: `README.md`, `DESIGN-PRINCIPLES.md`, `SECURITY.md`, `docs/MERGE.md`, `docs/OVERVIEW.md`, `docs/CONFIGURATION.md`, `docs/workflows/issue-processing.md`, `docs/workflows/pr-feedback.md`, `worker/deno/lib/standing_violation_routing.ts`, `worker/deno/lib/worker_label_guard.ts`, `worker/deno/lib/summary_rule_gate_retry.ts`; `docs/INTERNALS.md:584` — still true because it is a one-line summary row that already omitted the trusted-review-bot path, and the full list is in `docs/workflows/pr-feedback.md`; `docs/OVERVIEW.md:195` — still true for the same reason; `docs/workflows/README.md:196` — still true for the same reason; `README.md:663` — still true because it is about non-authorised human commenters; `docs/INTERNALS.md:1895` — still true because it describes the claim-point label read, unchanged; `SECURITY.md:800` — still true because it is about `authorized_commenters` bots
+
+The new module `worker/deno/lib/pre_pr_verifier_hold.ts` is registered with
+the lib sweep ledger in `docs/audits/lib-sweep-coverage/top-up-3697.json`,
+whose `sweptAt` is a default-branch commit, as the ancestry check requires.
 
 Issue numbers cited as provenance:
 
@@ -100,7 +104,7 @@ New and extended tests:
 - `worker/deno/tests/completion_phase_docs_sweep_test.ts` — "completion - a PR found after a failed creation is armed, not held, and gets only the advisory comment (#3237, #3697)".
 - `worker/deno/tests/pre_pr_verifier_3395_test.ts` — the gate-comment closure sentence, and the held-PR comment for both `releasable` values.
 - `worker/deno/tests/pre_pr_verifier_hold_3697_test.ts` — the marker round-trips; it is rejected when it is not at index 0, for another value or name, and for an empty body; a hostile run of 100,000 spaces is rejected; a later second marker does not override the first.
-- `worker/deno/tests/pr_maintenance_verifier_hold_3697_test.ts` — the scan acts on a held comment written by the worker's own login or a sibling fleet author. It ignores one by an outsider, one whose marker is not at index 0, one already marked with a fleet 👀, an own comment without the marker, and an own inline review comment. It sets `releasesVerifierHold` only for `releasable="true"`.
+- `worker/deno/tests/pr_maintenance_verifier_hold_3697_test.ts` — the scan acts on a held comment written by the worker's own login or a sibling fleet author. It ignores one by an outsider, one whose marker is not at index 0, one already marked with a fleet 👀, an own comment without the marker, and an own inline review comment. It sets `releasesVerifierHold` only for `releasable="true"`, logs `trustReason: "verifier-hold"`, and makes no reactions call for a held comment that has a thumbs-up.
 - `worker/deno/tests/pr_feedback_processor_verifier_hold_3697_test.ts` — a verified fix on the PR's own head removes the label. Nothing is removed when the flag is unset, when the push did not land, or when the fix went through a fix branch. A failed removal is logged at error and the result is still processed.
 - `worker/deno/tests/summary_rule_gate_retry_test.ts` — "summary-rule retry - a verifier finding is closed only by a fix or a dispute (Issue #3697)".
 
@@ -108,7 +112,8 @@ Red checks (each change was made temporarily and then restored):
 
 - Hold condition reduced to `standingViolations.length > 0`: the surviving-findings, folded and failed-comment tests went red.
 - `releasable` argument forced to `true`: the both-survive test went red.
-- Scan: `|| held !== null` dropped from the actionable condition → the own-login, sibling-fleet and non-releasable cases went red. `&& held === null` dropped from the own-comment skip → the own-login cases went red. The `releasesVerifierHold` spread dropped → the own-login and sibling cases went red on the flag.
+- Scan: `|| held !== null` dropped from the actionable condition → the own-login, sibling-fleet and non-releasable cases went red. `&& held === null` dropped from the own-comment skip → the own-login cases went red. The `releasesVerifierHold` spread dropped → the own-login and sibling cases went red on the flag. `commentType === "issue" &&` deleted → the own inline review comment case went red. `isFleetAuthor(...)` replaced with `false` → the sibling-fleet case went red. `held === null &&` deleted from the thumbs-up guard → the thumbs-up case went red on its reactions request. `held !== null` in the `trustReason` ternary replaced with `false` → the own-login case went red on `trustReason`. An earlier `comment.login === githubUser ||` operand never decided anything, because the fleet set always contains the worker's own login, so it was removed rather than tested.
+- Held-PR comment: the `releaseSentence` ternary arms swapped → both held-PR comment tests in `worker/deno/tests/pre_pr_verifier_3395_test.ts` went red. The marker regex's `^` anchor dropped → the not-at-index-0 parser test went red.
 - Processor: the `releaseVerifierHold` call deleted → the verified-fix and failed-removal tests went red. `!fixBranch` removed → the fix-branch test went red. `input.releasesVerifierHold === true &&` removed → the without-flag test went red.
 - Drift pins: each pinned phrase ("closed only by fixing it", "not red-checked", "A verifier finding is closed only by fixing it or by disputing it with evidence", "Auto-merge is held") is new text this diff adds, absent from the base versions of `pre_pr_verifier.ts` and `summary_rule_gate_retry.ts`.
 

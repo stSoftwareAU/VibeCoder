@@ -1,0 +1,12 @@
+{
+  "issue": 3697,
+  "chunk": "top-up-3697",
+  "title": "top-up: pre-PR verifier held-PR marker",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3697",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: pre_pr_verifier_hold.ts (#3697)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/pre_pr_verifier_hold.ts"
+  ],
+  "sweptAt": "4fc16d150a4b9b7e735f35cf871fe8aae67f484c"
+}
