@@ -274,3 +274,23 @@ Deno.test("closureGapFindings: a single unreported entry reads in the singular",
   assertEquals(out.length, 1);
   assertStringIncludes(out[0]!.problem, "1 of 1 closure entry marked met");
 });
+
+Deno.test("metClosureItems strips each trailing separator kind from the criterion", () => {
+  const items = metClosureItems(block(
+    "- **met** — En dash item – evidence: a — reviewer: met",
+    "- **met** — Hyphen item - evidence: a — reviewer: met",
+    "- **met** — Colon item: evidence: a — reviewer: met",
+    "- **met** — Em dash item — evidence: a — reviewer: met",
+    "- **met** — Tab item\t–\t\tevidence: a — reviewer: met",
+    "- **met** — — – evidence: z — reviewer: met",
+  ));
+  assertEquals(items.map((i) => i.criterion).slice(0, 5), [
+    "En dash item",
+    "Hyphen item",
+    "Colon item",
+    "Em dash item",
+    "Tab item",
+  ]);
+  assertEquals(items.length, 6);
+  assertStringIncludes(items[5]!.criterion, "evidence: z");
+});
