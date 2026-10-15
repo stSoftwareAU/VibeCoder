@@ -62,6 +62,12 @@ function scriptGh(
     if (key.includes("api repos/") && key.includes(".default_branch")) {
       return Promise.resolve("main");
     }
+    // The milestone's closed issues, read by milestone number (Issue #3662).
+    if (key.includes("/issues?milestone=") && key.includes("state=closed")) {
+      return Promise.resolve(
+        JSON.stringify([{ number: 10, title: "Add login" }]),
+      );
+    }
     // The open-children gate's authoritative reads (Issue #3908/#3909).
     if (key.includes("/issues?milestone=")) return Promise.resolve("[]");
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
@@ -279,6 +285,7 @@ Deno.test("summary PR arming - an existing summary PR is left untouched", async 
             number: PR_NUMBER,
             title: `Milestone: ${MILESTONE}`,
             headRefName: MILESTONE_BRANCH,
+            isCrossRepository: false,
             state: "OPEN",
           },
         ]),
