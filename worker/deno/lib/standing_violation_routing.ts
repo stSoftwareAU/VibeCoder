@@ -1,5 +1,5 @@
 /**
- * Standing-violation routing (Issues #3382, #3196).
+ * Standing-violation routing (Issues #3382, #3196, #3613).
  *
  * The #3196 gate refuses a Standards `violation` that is left standing, but it
  * reads only the PR summary and cannot see the diff. This module reads the
@@ -10,6 +10,11 @@
  *
  * A violation on unchanged context is not routed here: its remedy is
  * `pre-existing, filed #<n>`, which is a summary change, not a code change.
+ *
+ * A violation whose cited location cannot be placed (its path matches no file
+ * in the diff and no file at HEAD) is treated as on the branch's own lines, so
+ * an unplaceable citation fails closed rather than arming auto-merge (Issue
+ * #3613).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -56,16 +61,39 @@ const REASON_CUT_RE = /\breason\s*[:\-—]/i;
 const LOCATION_RE = /([\w.\/-]{1,300}):(\d{1,7})(?:[-–](\d{1,7}))?/g;
 
 /**
+ * The text between an opening backtick and a citation, when the citation was
+ * cut short by a space in a backticked path (Issue #3613).
+ */
+const SPACED_PATH_PREFIX_RE = /^[\w.\/ -]+$/;
+
+/**
  * Every `path:line` (or `path:line-end`) the evidence names, in order. Text
- * from the entry's `reason:` onward is ignored.
+ * from the entry's `reason:` onward is ignored. A path with spaces inside
+ * backticks (for example `` `dir/run callback x.ts:3` ``, where the writer
+ * meant underscores) is reported whole, so a rewritten path stays unresolvable
+ * rather than shrinking to a tail that might match a real file (Issue #3613).
  */
 export function citedLocations(evidence: string): CitedLocation[] {
   let text = evidence.slice(0, MAX_EVIDENCE_CHARS);
   const cut = text.search(REASON_CUT_RE);
   if (cut >= 0) text = text.slice(0, cut);
+  const ticks: number[] = [];
+  for (let i = text.indexOf("`"); i >= 0; i = text.indexOf("`", i + 1)) {
+    ticks.push(i);
+  }
+  // Matches arrive in order, so `next` only moves forward: it counts the
+  // backticks before the current match.
+  let next = 0;
   const out: CitedLocation[] = [];
   for (const m of text.matchAll(LOCATION_RE)) {
-    const path = m[1]!.replace(/^\.\//, "");
+    const at = m.index;
+    while (next < ticks.length && ticks[next]! < at) next++;
+    let path = m[1]!;
+    if (next % 2 === 1) {
+      const prefix = text.slice(ticks[next - 1]! + 1, at);
+      if (SPACED_PATH_PREFIX_RE.test(prefix)) path = prefix + path;
+    }
+    path = path.replace(/^\.\//, "");
     if (!/[./]/.test(path)) continue;
     const a = Number(m[2]!);
     const b = m[3] === undefined ? a : Number(m[3]);
@@ -74,31 +102,54 @@ export function citedLocations(evidence: string): CitedLocation[] {
   return out;
 }
 
+/** True when `cited` names `file` or a path ending in `/` + `cited`. */
+function pathMatches(file: string, cited: string): boolean {
+  return file === cited || file.endsWith("/" + cited);
+}
+
 /**
  * The standing violations on lines the branch adds or changes. A violation
  * that cites no `path:line` is kept (fail closed): one the worker cannot place
- * is treated as on the branch's own lines.
+ * is treated as on the branch's own lines. So is a violation whose cited
+ * location cannot be placed: none of its cited paths matches a diff file or a
+ * file at HEAD (Issue #3613). A citation of a real file at HEAD that the diff
+ * does not change is not own-line, and neither is a citation of a diff file
+ * outside its changed ranges.
  *
  * @param entries - Standards entries; non-standing ones are skipped.
  * @param changed - New-side changed line ranges per file, from the diff.
+ * @param headFiles - Repo-relative paths of every file at HEAD.
  */
 export function ownLineStandingViolations(
   entries: readonly ReviewEntry[],
   changed: ReadonlyMap<string, ReadonlyArray<readonly [number, number]>>,
+  headFiles: ReadonlySet<string>,
 ): StandingViolation[] {
+  const placeable = (path: string): boolean => {
+    for (const file of changed.keys()) {
+      if (pathMatches(file, path)) return true;
+    }
+    for (const file of headFiles) {
+      if (pathMatches(file, path)) return true;
+    }
+    return false;
+  };
+  const overlapsChanged = (loc: CitedLocation): boolean => {
+    for (const [p, ranges] of changed) {
+      if (!pathMatches(p, loc.path)) continue;
+      if (ranges.some(([s, e]) => loc.start <= e && loc.end >= s)) {
+        return true;
+      }
+    }
+    return false;
+  };
   const out: StandingViolation[] = [];
   for (const entry of entries) {
     if (!isStandingViolation(entry)) continue;
     const cited = citedLocations(entry.evidence ?? "");
-    const onOwnLines = cited.length === 0 || cited.some((loc) => {
-      for (const [p, ranges] of changed) {
-        if (p !== loc.path && !p.endsWith("/" + loc.path)) continue;
-        if (ranges.some(([s, e]) => loc.start <= e && loc.end >= s)) {
-          return true;
-        }
-      }
-      return false;
-    });
+    const onOwnLines = cited.length === 0 ||
+      cited.some(overlapsChanged) ||
+      !cited.some((loc) => placeable(loc.path));
     if (onOwnLines) out.push({ text: entry.text, cited });
   }
   return out;
@@ -107,7 +158,9 @@ export function ownLineStandingViolations(
 /**
  * Find the standing violations on the branch's own lines, reading the diff
  * against `base`. When the diff cannot be read, every standing violation is
- * returned and `notChecked` says why (fail closed).
+ * returned and `notChecked` says why (fail closed). The same holds when the
+ * HEAD file listing is needed (a standing violation cites no path the diff
+ * changes) and cannot be read (Issue #3613).
  */
 export async function findOwnLineStandingViolations(opts: {
   issueBody: string;
@@ -153,15 +206,48 @@ export async function findOwnLineStandingViolations(opts: {
       `git diff exited ${result.code}: ${result.stderr.trim()}`,
     );
   }
+  let changed: Map<string, Array<[number, number]>>;
   try {
-    const changed = parseChangedLines(result.stdout);
-    return {
-      violations: ownLineStandingViolations(standing, changed),
-      notChecked: null,
-    };
+    changed = parseChangedLines(result.stdout);
   } catch (error) {
     return failClosed(
       `diff unreadable: ${error instanceof Error ? error.message : error}`,
     );
   }
+
+  // The HEAD listing is needed only when some violation cites a location and
+  // none of its citations names a changed file (Issue #3613).
+  const diffPaths = [...changed.keys()];
+  const needsHead = standing.some((e) => {
+    const cited = citedLocations(e.evidence ?? "");
+    return cited.length > 0 &&
+      !cited.some((loc) => diffPaths.some((p) => pathMatches(p, loc.path)));
+  });
+  let headFiles: ReadonlySet<string> = new Set<string>();
+  if (needsHead) {
+    let listing: { code: number; stdout: string; stderr: string };
+    try {
+      listing = await opts.runGit([
+        "ls-tree",
+        "-r",
+        "-z",
+        "--name-only",
+        "HEAD",
+      ]);
+    } catch (error) {
+      return failClosed(
+        `git ls-tree failed: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    if (listing.code !== 0) {
+      return failClosed(
+        `git ls-tree exited ${listing.code}: ${listing.stderr.trim()}`,
+      );
+    }
+    headFiles = new Set(listing.stdout.split("\0").filter((f) => f !== ""));
+  }
+  return {
+    violations: ownLineStandingViolations(standing, changed, headFiles),
+    notChecked: null,
+  };
 }

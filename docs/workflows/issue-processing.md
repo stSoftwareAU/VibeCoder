@@ -2742,11 +2742,17 @@ run, the completion phase now finds each Standards `violation` left standing
 (no reason, or a reason that neither records a fix nor links a filed issue)
 whose `file:line` evidence lies on a line `git diff --unified=0 <base>...HEAD`
 adds or changes; a cited path matches a diff path exactly or as a path
-suffix. A violation whose evidence names no `path:line`, or any standing
-violation when the base ref cannot be resolved or the diff cannot be read, is
-treated as on the branch's own lines (fail closed; the not-checked case is
-logged at error). On the run's first summary-rule block the recovery prompt
-lists those violations as fenced `CODE FIX` items: the turn may edit the cited
+suffix. A violation whose evidence names no `path:line`, a violation none of
+whose cited paths matches a diff path or a file at HEAD (read only when some
+violation cites no diff file, via `git ls-tree -r --name-only HEAD`), or any
+standing violation when the base ref cannot be resolved, the diff cannot be
+read or that HEAD listing cannot be read, is treated as on the branch's own
+lines (fail closed; the not-checked case is logged at error). A path written
+with spaces inside backticks is read whole, so a reworded path such as
+`worker/deno/lib/run callback telemetry.ts` stays unplaceable rather than
+shrinking to a tail (Issue #3613). On the run's first summary-rule block the
+recovery prompt lists those violations as fenced `CODE FIX` items: the turn may
+edit the cited
 files and add the tests the finding or reason names, re-dispatch the Standards
 reviewer over the new diff, and write `reason: fixed in this diff` only for a
 breach it actually fixed. Every other `REQUIRED ITEM` keeps the
