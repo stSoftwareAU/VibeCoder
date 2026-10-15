@@ -14,9 +14,10 @@ the worker host that gathered it.
 
 ## Method
 
-For each PR below, the run is the **first failing required CI job** on the
-named head SHA. For each, the audit asks whether a pre-PR worker stage ran an
-equivalent command. The stages are:
+For each VibeCoder row below, the run is the **first failing required CI job**
+on the named head SHA. For each row, the audit asks whether a pre-PR worker
+stage ran an equivalent command. Private-repo rows carry a concept-level
+failure ID (C1 to C8, A1 to A5) in place of a SHA and run link. The stages are:
 
 - the pre-flight gate (`lib/pre_flight_gate.ts`);
 - the agent pre-push hook (`lib/pre_push_gate.ts`, #3394);
@@ -368,8 +369,10 @@ Issue #3689 weakens or removes a CI, review or security gate.
   worker logs (see Unattended worker path). No live run on this host has yet
   logged a pre-push gate block, and the gate logs nothing on a pass (#3770).
 - #3644 consumes two kinds of evidence. The CI tables have one row per failing
-  run, giving the check name, first failing SHA, local, network or
-  GitHub-exclusive class, and whether pre-flight ran an equivalent. The review
+  run. VibeCoder rows give the check name, first failing SHA, run link, local,
+  network or GitHub-exclusive class, and whether pre-flight ran an equivalent.
+  Private-repo rows give the check name, cause, class and pre-PR outcome under
+  a concept-level failure ID (C1 to C8, A1 to A5), with no SHA or run link. The review
   table has one row per standing review, with its class and pre-PR stage, and
   no private-repo-C row because it has no standing review. #3644 takes the
   per-repo dismissed counts from the separate table in "Blocking review

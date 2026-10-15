@@ -141,20 +141,20 @@ updated index row.
 ## Test Plan
 
 - No test added or modified: the diff changes docs only.
-- `markdownlint-cli2 docs/pre-pr-ci-audit.md README.md` passed with 0 issues
-  on the final head.
 - The disposable-checkout replays and the `deno eval` rerun line were run as
   described under Evidence.
-- `./quality.sh < /dev/null` ran at 9cc9690c and printed `Result: PASSED (with
-  skipped checks)`. Mermaid, markdownlint, semgrep, deno tests, lint, type
-  check and fmt passed; "config integration" was SKIPPED. Later commits
-  changed documentation only and `./quality.sh` was not rerun after them: the
-  review-table rows and counts (03c0a1fb), the selection-rule paragraph
-  (15f01f30), this round's dismissed-review counts, verifier-miss list and
-  summary, and the concept-level rewording of every private-repo row. `markdownlint-cli2 docs/pre-pr-ci-audit.md README.md` passes on
-  the head.
+- Local `./quality.sh < /dev/null` printed `Result: PASSED (with skipped
+  checks)` on an earlier head of this branch, before the documentation was
+  reworded: Mermaid, markdownlint, semgrep, deno tests, lint, type check and
+  fmt passed; "config integration" was SKIPPED. It has not been rerun on this
+  head.
+- CI passed all 21 checks, including markdownlint and the Mermaid check, on
+  the head before the last documentation fixes. `markdownlint-cli2` on
+  `docs/pre-pr-ci-audit.md`, `docs/archive/pr-summaries/pr-summary-3717.md`
+  and `README.md` reports 0 issues on the head this summary describes.
 - `deno task pr-summary-check` reported 0 gates blocked. The summary claim
   check was not checked, because it needs a model call.
+
 
 <!-- vibe-branch-outcomes -->
 
