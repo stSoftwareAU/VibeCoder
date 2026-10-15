@@ -155,10 +155,12 @@ usually closed or merged by the next pass.
   firing left (the follow-up worked and closed, the rollup merged and synced
   back) and assert that it files, raises, pushes or applies nothing.
 
-Past regressions: VibeCoder#2898's `createPartialRollup` raised a partial rollup
-whenever the milestone was `ahead_by > 0`, and the merged rollup synced back
-left it `ahead_by > 0` again while the issue-only deadlock still stood, so every
-scan raised another empty rollup PR; VibeCoder#3676 filed a `Finish #N`
+Past regressions: VibeCoder#2898's `createPartialRollup`, at the head first
+reviewed (`09139e46`), raised a partial rollup whenever the milestone was
+`ahead_by > 0`, and a merged rollup synced back would leave it `ahead_by > 0`
+again while the issue-only deadlock still stood, so every scan would raise
+another empty rollup PR — the merged version defers with `nothing-to-roll-up`
+when the milestone changes no files; VibeCoder#3676 filed a `Finish #N`
 follow-up for a healthy run's `partial` or `missing` closure entry, and a
 follow-up run that still could not deliver the item filed
 `Finish #F1: Finish #N`, because the finding id was keyed on the immediate

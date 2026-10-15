@@ -25,7 +25,7 @@ VibeCoder#2898 and VibeCoder#3676 under "Past regressions". Closes #3692.
 
 ### Undiscoverable Facts
 
-- `#2898` is the merged milestone PR that added `createPartialRollup`. `#3676` is still open, and its review (2026-10-13) found the `Finish #F1: Finish #N` cascade.
+- `#2898` is the merged milestone PR that added `createPartialRollup`. Its unbounded re-fire was in the head first reviewed (`09139e46`), which deferred only when `aheadBy === 0`. The merged version (`worker/deno/lib/milestone_partial_rollup.ts`, `counts.filesChanged === 0`) defers with `nothing-to-roll-up`, so the standards scope that regression to the reviewed head. `#3676` is still open, and its review (2026-10-13) found the `Finish #F1: Finish #N` cascade.
 
 ## Evidence
 
