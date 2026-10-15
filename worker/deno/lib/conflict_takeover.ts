@@ -585,7 +585,7 @@ export async function runConflictTakeover(
               pass: "merge-conflict resolution",
             }, milestoneDeps);
             if (!raised.ok) throw raised.error;
-            if (false) {
+            if (raised.value.mergeCommitRefusal) {
               // The fix PR exists but cannot land, so no resolved marker is
               // posted (Issue #3596).
               outcome = {
