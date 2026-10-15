@@ -2024,6 +2024,20 @@ Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber concatenates pages i
   ]);
 });
 
+Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber skips a page entry with no numeric number (Issue #3662)", async () => {
+  const issues = await fetchClosedIssuesByMilestoneNumber(
+    "org/repo",
+    7,
+    undefined,
+    () =>
+      Promise.resolve(
+        '[null,{"title":"no number"},{"number":"5","title":"string number"},' +
+          '{"number":6,"title":"F"}]\n',
+      ),
+  );
+  assertEquals(issues, [{ number: 6, title: "F" }]);
+});
+
 Deno.test("issue_query - fetchClosedIssuesByMilestoneNumber blank output throws and is not cached (Issue #3662)", async () => {
   const { cache, cleanup } = await makeTempCache();
   try {
