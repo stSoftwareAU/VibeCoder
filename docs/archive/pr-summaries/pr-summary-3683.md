@@ -86,6 +86,9 @@ best-practice-ignore marker, but the gate can never honour one) and #1859
   passed on the final head: 135 passed, 0 failed.
 - `deno fmt`, `deno lint` and `deno check` passed on the five changed TypeScript
   files, and `markdownlint-cli2` reported 0 issues on the edited manual.
+- `./quality.sh` passed, with skipped checks: deno tests, lint, type check,
+  fmt, semgrep and markdownlint all passed. The manual edit landed after that
+  run started, so `markdownlint-cli2` was run on it separately: 0 issues.
 - No production branch, field or parameter was added; only message text and
   doc comments changed.
 
