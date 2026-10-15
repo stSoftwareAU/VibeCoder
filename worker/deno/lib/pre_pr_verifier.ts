@@ -137,9 +137,9 @@ export interface ReviewReply {
   checklist: ChecklistVerdict[];
   /**
    * Per-entry verdicts on the closure entries the summary marks `met`
-   * (Issue #3766); absent reads as [].
+   * (Issue #3766); [] when none are listed or the reply omits the array.
    */
-  closure?: ClosureEntryVerdict[];
+  closure: ClosureEntryVerdict[];
 }
 
 /** At most this many unrelated issues are kept from one review. */
@@ -556,6 +556,7 @@ export async function runPrePrVerifier(
           testChangeNotes: [],
           unrelatedIssues: [],
           checklist: [],
+          closure: [],
         },
         ...(outcome.run ? { run: outcome.run } : {}),
       };
@@ -752,7 +753,7 @@ async function verifyInCheckout(
     // or left without a verdict (Issue #3766).
     const gaps = [
       ...checklistGaps,
-      ...closureGapFindings(metItems, parsed.closure ?? [], input.summaryPath),
+      ...closureGapFindings(metItems, parsed.closure, input.summaryPath),
     ];
     return {
       status: "checked",
