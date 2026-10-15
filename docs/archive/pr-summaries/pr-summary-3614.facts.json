@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/pr_auto_merge.ts",
+        "line": 966,
+        "outcome": "a milestone-sync head with an unreadable base returns Deferred sync-base-unreadable and is never armed",
+        "test": "worker/deno/tests/pr_auto_merge_sync_pr_retarget_test.ts",
+        "testName": "enableAutoMerge - a sync head whose base cannot be read is deferred, never armed (Issue #3614)",
+        "flipWentRed": "removing the guard armed the PR with --auto (actual enabled, expected deferred); the test went red"
+      },
+      {
+        "path": "worker/deno/lib/pr_auto_merge.ts",
+        "line": 966,
+        "outcome": "operand isMilestoneSyncBranch false: a non-sync head with no readable base falls through to the old arming path",
+        "test": "worker/deno/tests/pr_auto_merge_test.ts",
+        "testName": "pr_auto_merge - enableAutoMerge returns NotAllowed for unprotected branch",
+        "flipWentRed": "forcing isMilestoneSyncBranch true deferred non-sync heads; 6 tests in pr_auto_merge_test.ts went red, including this one"
+      },
+      {
+        "path": "worker/deno/lib/pr_auto_merge.ts",
+        "line": 966,
+        "outcome": "operand !baseRefName false: a sync head with a readable base falls through to the #1967 guard and arming",
+        "test": "worker/deno/tests/pr_auto_merge_sync_pr_retarget_test.ts",
+        "testName": "enableAutoMerge - a sync PR still targeting its milestone branch is armed as before (Issue #1967)",
+        "flipWentRed": "forcing !baseRefName true deferred readable-base sync heads; 5 tests went red, including this one"
+      }
+    ]
+  }
+}

@@ -505,7 +505,8 @@ log marker rather than withholding the arming.
   arming path goes through — closes a same-repository `sync/milestone-*` head
   on the default branch before either GitHub's `--auto` or the gated direct
   merge is reached, posting the reason on the PR. A default branch it cannot
-  read defers as `sync-base-unreadable` rather than arming. See
+  read, or a sync PR whose own base cannot be read (Issue #3614), defers as
+  `sync-base-unreadable` rather than arming. See
   [INTERNALS](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
 - **An unreadable comparison defers as `lookup-failed`**, exactly as an
   unreadable route does (Issue #477). "I could not read it" is never actioned.

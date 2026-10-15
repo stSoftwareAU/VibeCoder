@@ -461,9 +461,10 @@ export interface EnableAutoMergeResult {
    * the PR, but the child is armed either way — the milestone ruleset's
    * strict up-to-date policy holds the merge itself until the branch levels.
    *
-   * `sync-base-unreadable` is the same kind of hold (Issue #1967): a
-   * sync-shaped head whose base could not be compared with the default
-   * branch is neither armed nor escalated — it is re-read next scan.
+   * `sync-base-unreadable` is the same kind of hold (Issues #1967, #3614): a
+   * sync-shaped head whose base could not be read at all, or could not be
+   * compared with the default branch, is neither armed nor escalated — it
+   * is re-read next scan.
    *
    * `fix-base-unreadable` is the same hold for a `milestone-fix/**` head
    * whose base could not be read (Issue #3433): it may have been moved off
@@ -955,6 +956,21 @@ export async function enableAutoMerge(
       result: AutoMergeResult.HeldBaseRetargeted,
       message:
         `PR #${prNumber} has a milestone-fix head '${options.headRefName}' on base '${baseRefName}', not a milestone branch — not armed, not merged, auto-merge disarmed (Issue #3433)`,
+    };
+  }
+
+  // Issue #3614: a sync head whose base could not be read (an empty
+  // `baseRefName`, e.g. a failed `pr view`) might be the retargeted PR the
+  // #1967 guard below closes, so it is not armed: nothing is disarmed,
+  // closed or merged, and the next scan reads it again.
+  if (isMilestoneSyncBranch(options.headRefName) && !baseRefName) {
+    return {
+      result: AutoMergeResult.Deferred,
+      deferral: "sync-base-unreadable",
+      message:
+        `PR #${prNumber} has a milestone-sync head '${options.headRefName}' ` +
+        `whose base could not be read — not armed, re-read next scan ` +
+        `(Issue #3614)`,
     };
   }
 

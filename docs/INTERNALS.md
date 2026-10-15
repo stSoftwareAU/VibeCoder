@@ -4326,10 +4326,10 @@ flowchart TD
   maintenance scan classifies as `sync_pr_retired`: nothing to wait for,
   nothing to escalate. Two conditions keep the destructive verb honest — the
   head must live in **this repository** (a fork names its own branches, Issue
-  #1249), and a default branch that cannot be read defers as
-  `sync-base-unreadable` rather than arming, because the one PR that must never
-  merge into the default branch is the one whose base could not be compared
-  with it.
+  #1249), and a default branch that cannot be read, or a sync PR whose own base
+  cannot be read (Issue #3614), defers as `sync-base-unreadable` rather than
+  arming, because the one PR that must never merge into the default branch is
+  the one whose base could not be compared with it.
 
   Two details make that reachable and make it stick. `ensureAutoMergeOnOpenPrs`
   skips a PR that already has auto-merge armed — except a `sync/milestone-*`
