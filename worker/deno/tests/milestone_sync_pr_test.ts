@@ -484,6 +484,10 @@ interface Scenario {
   headAncestorCode?: number;
   /** Exit codes of `merge-base --is-ancestor <parent> R`, by parent. */
   parentAncestorCode?: Record<string, number>;
+  /** Stdout of `rev-list --parents -n 1 HEAD`; null makes the call fail. */
+  revListLine?: string | null;
+  /** Stdout of the remote `rev-parse --verify` (default the remote head). */
+  remoteStdout?: string;
   openPrs?: string;
   /** Exit code of the baseline `fetch` (default 0). */
   fetchCode?: number;
@@ -511,7 +515,7 @@ function scriptedDeps(scenario: Scenario) {
         if (args[0] === "fetch" || args[0] === "push") return ok();
         if (args[0] === "rev-parse" && args[1] === "--verify") {
           return (scenario.remoteCode ?? 0) === 0
-            ? ok(`${REMOTE_HEAD}\n`)
+            ? ok(scenario.remoteStdout ?? `${REMOTE_HEAD}\n`)
             : fail(scenario.remoteCode!);
         }
         if (joined === "rev-parse HEAD^{tree}") {
@@ -525,6 +529,10 @@ function scriptedDeps(scenario: Scenario) {
           return t === null ? fail(128) : ok(`${t}\n`);
         }
         if (joined === "rev-list --parents -n 1 HEAD") {
+          if (scenario.revListLine === null) return fail(128);
+          if (scenario.revListLine !== undefined) {
+            return ok(`${scenario.revListLine}\n`);
+          }
           return ok(`${HEAD_SHA} ${PARENT_MILESTONE} ${PARENT_DEFAULT}\n`);
         }
         if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
@@ -678,6 +686,23 @@ Deno.test("syncBranchAlreadyCarries - classifies each comparison (Issue #3690)",
   );
   assertEquals(await run({ headTree: null }), "unknown");
   assertEquals(await run({ headAncestorCode: 128 }), "unknown");
+  // A parent's ancestry check errors out.
+  assertEquals(
+    await run({ parentAncestorCode: { [PARENT_MILESTONE]: 128 } }),
+    "unknown",
+  );
+  // The remote ref resolves but is not a full sha.
+  assertEquals(await run({ remoteStdout: "not-a-sha\n" }), "unknown");
+  // HEAD is not an ancestor and its parents cannot be listed.
+  assertEquals(
+    await run({ headAncestorCode: 1, revListLine: null }),
+    "unknown",
+  );
+  // HEAD is not an ancestor and is a root commit: no parents to compare.
+  assertEquals(
+    await run({ headAncestorCode: 1, revListLine: HEAD_SHA }),
+    "unknown",
+  );
   // A git that returns no stdout at all (the rollback path) reads unknown.
   assertEquals(
     await syncBranchAlreadyCarries(
