@@ -783,8 +783,8 @@ export async function fetchAllClosedIssues(
  * Fetch closed issues for a specific milestone, matched by title (Issue #1786,
  * batched via `fetchAllClosedIssues` in Issue #1908).
  *
- * Callers: `milestone_progress.ts`, `milestone_health.ts`, and the
- * `getClosedIssues` helper in `milestone_completion.ts`.
+ * Callers: `milestone_progress.ts` and `milestone_health.ts`. Milestone
+ * completion reads by number instead (`fetchClosedIssuesByMilestoneNumber`).
  *
  * Bounded by the 500-issue repo-wide batch: a milestone whose closed issues
  * are older than the newest 500 closed issues in the repo gets none of them
