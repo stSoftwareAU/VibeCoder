@@ -608,3 +608,63 @@ Deno.test("milestoneFixMergeMethod - a non-milestone branch is rejected with no 
   assert(!result.ok);
   assertEquals(calls.length, 0);
 });
+
+Deno.test("milestoneFixMergeMethod - an invalid repo is rejected with no gh call (Issue #3596)", async () => {
+  const { gh, calls } = fakeGh({});
+  const result = await milestoneFixMergeMethod(
+    "not a repo",
+    MILESTONE,
+    "fix-branch",
+    gh,
+  );
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "invalid repo");
+  assertEquals(calls.length, 0);
+});
+
+Deno.test("milestoneFixMergeMethod - a head outside the allowed character set is rejected with no gh call (Issue #3596)", async () => {
+  for (const head of ["milestone-fix/x/pr-1-a b", "fix?x=1"]) {
+    const { gh, calls } = fakeGh({});
+    const result = await milestoneFixMergeMethod(REPO, MILESTONE, head, gh);
+    assert(!result.ok, head);
+    assertStringIncludes(
+      result.error.message,
+      "is not a safe branch name or sha",
+    );
+    assertEquals(calls.length, 0, head);
+  }
+});
+
+Deno.test("milestoneFixMergeMethod - a failed default-branch read is an error after one gh call (Issue #3596)", async () => {
+  const calls: string[][] = [];
+  const gh = (args: string[]): Promise<string> => {
+    calls.push(args);
+    return Promise.reject(new Error("HTTP 503 default"));
+  };
+  const result = await milestoneFixMergeMethod(
+    REPO,
+    MILESTONE,
+    "fix-branch",
+    gh,
+  );
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "could not tell whether");
+  assertStringIncludes(result.error.message, "HTTP 503 default");
+  assertEquals(calls.length, 1, JSON.stringify(calls));
+});
+
+Deno.test("milestoneFixMergeMethod - a failed comparison-status read is an error after three gh calls (Issue #3596)", async () => {
+  const { gh, calls } = fakeGh({
+    compare: (args) =>
+      jqOf(args) === ".status" ? new Error("HTTP 504 status") : "b".repeat(40),
+  });
+  const result = await milestoneFixMergeMethod(
+    REPO,
+    MILESTONE,
+    "fix-branch",
+    gh,
+  );
+  assert(!result.ok);
+  assertStringIncludes(result.error.message, "HTTP 504 status");
+  assertEquals(calls.length, 3, JSON.stringify(calls));
+});

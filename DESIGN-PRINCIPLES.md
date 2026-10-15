@@ -867,7 +867,9 @@ late: the deploy/publish workflows have already fired. Enforcement is
   authorship.
 - **The merge is pinned to the checked commit.** The gate reports
   the head SHA it read the checks for, and `directMergePr()` merges with
-  `gh pr merge --squash --match-head-commit <sha>`, so a push landing between
+  `gh pr merge --squash --match-head-commit <sha>`, or with `--merge` for a
+  milestone sync (Issue #1048) and for a same-repository `milestone-fix/**`
+  head that merges the default branch (Issue #3596), so a push landing between
   the check read and the merge cannot be merged on unevaluated checks. A moved
   head is a deferral (`head_moved`), a missing SHA is a refusal.
 - **Read-only default branch.** No direct commits — no formatting, version, or

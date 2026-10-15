@@ -4245,10 +4245,11 @@ Three defences, each independent of the others:
   it, so no arming path can quietly squash a sync. A `milestone-fix/**` head on
   a `milestone/**` base is the exception: it takes its method from
   [`milestoneFixMergeMethod`](../worker/deno/lib/milestone_fix_pr.ts) instead,
-  a merge commit when its head merges the default branch (Issue #3596). Where
-  merge commits are forbidden it is refused with a warning, never downgraded to
-  a squash. The same-repository
-  condition is Issue #1249, finding 10: a fork chooses its own branch names, so
+  a merge commit when its head merges the default branch (Issue #3596). The
+  sweep and the direct merge read it for same-repository heads only. Where
+  merge commits are forbidden it is refused (a warning or a failed result, never
+  a squash). The same-repository condition is Issue #1249, finding 10: a fork
+  chooses its own branch names, so
   the name alone cannot select a deviation on a path that bypasses branch
   protection. A sync-shaped head that fails it is squashed with
   `forkSyncDowngradeWarning` — loudly, by the same rule as the setting-based

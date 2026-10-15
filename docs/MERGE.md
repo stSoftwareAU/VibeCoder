@@ -276,8 +276,8 @@ The gate therefore reports the head SHA it read (`headSha` on both
 `CiStatusResult` and `PreMergeGateOutcome`), and `directMergePr()` merges with
 `gh pr merge --squash --match-head-commit <sha>` — or `--merge` when the head
 is a `sync/milestone-*` branch, which must land as a merge commit
-(Issue #1048), or a `milestone-fix/**` head that merges the default branch
-(Issue #3596). GitHub refuses the merge if
+(Issue #1048), or a same-repository `milestone-fix/**` head that merges the
+default branch (Issue #3596). GitHub refuses the merge if
 the head has moved, so the merge is only ever performed on the exact commit the
 verdict was formed against.
 
@@ -943,16 +943,21 @@ What each pass does with a `milestone/**` head:
     that exact branch name, which recurs solely on a retried attempt at the
     same comment.
 - **The fix PR's merge method follows its head** (Issue #3596). A
-  `milestone-fix/**` PR into a `milestone/**` base is armed at creation, by the
-  Auto-Merge sweep (same-repository heads only) and by the direct merge
-  (same-repository heads only) as a merge commit when its head merges the
-  default branch, and as a squash otherwise (`milestoneFixMergeMethod` in
-  `milestone_fix_pr.ts`). A squash of a head that carries a merge of the
-  default branch drops that ancestry, so the final PR stays CONFLICTING. Where
-  the repository forbids merge commits, a fix PR that needs a merge commit is
-  refused with a warning and a PR comment naming Settings → Pull Requests →
-  Allow merge commits, and is never squashed. If the method cannot be read, the
-  fix PR is not armed or merged that pass, and the sweep re-checks.
+  `milestone-fix/**` PR into a `milestone/**` base merges as a merge commit when
+  its head merges the default branch, and as a squash otherwise
+  (`milestoneFixMergeMethod` in `milestone_fix_pr.ts`). A squash of a head that
+  carries a merge of the default branch drops that ancestry, so the final PR
+  stays CONFLICTING. Creation arming has no same-repository check, because the
+  worker pushed the branch itself. The Auto-Merge sweep and the direct merge
+  apply the rule only to same-repository heads, so a fork's fix-shaped head
+  still squashes as before. Where the repository forbids merge commits, a fix
+  PR that needs one is refused and never squashed: at creation with a warning
+  and a PR comment; on the sweep with a logged warning and a failed result; in
+  the direct merge with an error. Each names Settings → Pull Requests → Allow
+  merge commits. If the method cannot be read, the PR is not armed or merged:
+  at creation with a warning and a PR comment; on the sweep as a failed result,
+  re-read next scan; in the direct merge refused with an error, retried on the
+  next maintenance scan.
 - **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
   commit and pushes it to the head, so on VibeCoder#1741's own milestone head
   it was refused with GH013 every cycle the PR stayed a nudge candidate. The

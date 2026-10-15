@@ -575,14 +575,17 @@ Two things hold this in place:
   `worker/deno/lib/milestone_fix_pr.ts` reads the default branch, the fix
   head's merge base with it, and whether that merge base is already in the
   milestone branch. If it is not (`compare` reports `ahead` or `diverged`), the
-  PR merges with `--merge`; otherwise it squashes. The rule applies wherever a
-  `milestone-fix/**` PR is raised or armed into a `milestone/**` base: at
-  creation, on the Auto-Merge sweep and in the direct merge (same-repository
-  heads only). Where merge commits are forbidden the fix PR is refused, not
-  downgraded: a warning and a PR comment name the setting (Settings → Pull
-  Requests → Allow merge commits), and the PR is never squashed. An unreadable
-  method fails closed: the PR is not armed or merged that pass, and the sweep
-  re-checks.
+  PR merges with `--merge`; otherwise it squashes. Creation arming has no
+  same-repository check, because the worker pushed the branch itself. The
+  Auto-Merge sweep and the direct merge apply the rule only to same-repository
+  heads, so a fork's fix-shaped head still squashes as before. Where merge
+  commits are forbidden the fix PR is refused, never downgraded: at creation
+  with a warning and a PR comment; on the sweep with a logged warning and a
+  failed result; in the direct merge with an error. Each names the setting
+  (Settings → Pull Requests → Allow merge commits). An unreadable method fails
+  closed: at creation the PR is not armed, with a warning and a PR comment; the
+  sweep returns a failed result and re-reads next scan; the direct merge is
+  refused with an error and retried on the next maintenance scan.
 - **A resurrection is detected directly.** The `check-resurrected-files`
   command fails when a branch carries a file the default branch deleted and
   whose deleting commit is already in the branch's ancestry:

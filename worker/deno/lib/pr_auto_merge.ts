@@ -1131,8 +1131,9 @@ export async function enableAutoMerge(
   // rule (Issue #3596): its method is read from the head's ancestry, and a
   // repository that refuses merge commits fails the arming rather than
   // squashing. A fork fix head keeps the squash default, with no compare calls.
-  const fixShaped = isMilestoneFixBranch(options.headRefName ?? "") &&
-    (baseRefName ?? "").startsWith("milestone/");
+  // The Issue #3433 guards above have already returned for a fix head on any
+  // other base, so only a milestone base reaches here.
+  const fixShaped = isMilestoneFixBranch(options.headRefName ?? "");
   const headIsSameRepository = syncShaped || fixShaped
     ? await fetchHeadIsSameRepository(repo, prNumber, ghCommandFn)
     : false;

@@ -850,6 +850,9 @@ Deno.test("direct_merge - enforcePreMergeRequirements allows when CI passed and 
   assertEquals(result.ok, true);
   if (result.ok) {
     assertEquals(result.value.allowed, true);
+    // Issue #3596: directMergePr reads the base from the allowed outcome to
+    // decide whether a milestone-fix head needs a merge commit.
+    assertEquals(result.value.baseRefName, "milestone/x");
   }
 });
 
