@@ -79,6 +79,6 @@ flowchart LR
 - Callers checked for the now-required `ReviewReply.closure` and `buildPrePrVerifierPrompt`'s required `closureEntries`: the synthetic review in `pre_pr_verifier.ts`, `createMockDeps` in `lib/issue_worker_wiring.ts`, and `tests/completion_phase_pre_pr_verifier_3395_test.ts`. All three now pass `closure: []`. `deno check` over `lib/`, `tests/` and the fleet scripts passes.
 - A dead operand (`matching.length === 0`) found by flip checks was removed.
 - Targeted run on the final head: `deno task test:unit tests/closure_met_check_3766_test.ts tests/pre_pr_verifier_3395_test.ts tests/pr_review_brief_shared_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_log_2678_test.ts` passed: parallel pass 110 passed, 0 failed; serial pass 18 passed, 0 failed.
-- `./quality.sh` on the final code head (`af5063ed`): Result PASSED (config integration skipped).
+- `./quality.sh` on the final head, after merging the milestone base (#3761 Standards Review change): Result PASSED (config integration skipped). The targeted run above, plus `tests/independent_review_gate_test.ts`, passed again after the merge: 138 passed in the parallel pass, 19 in the serial pass.
 
 <!-- vibe-branch-outcomes -->
