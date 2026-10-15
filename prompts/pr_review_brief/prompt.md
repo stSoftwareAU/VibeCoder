@@ -26,7 +26,11 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    contract. Prefer user-visible browser behaviour and semantic locators
    for UI, positive and negative contracts for APIs; visual baselines are
    appropriate when appearance is an explicit requirement and the baseline
-   is reviewable.
+   is reviewable. When a change adds the same handling at more than one step
+   of a path (a check up front and on each iteration, a limit on the connect
+   and on each read), confirm that each new test named for a later step has a
+   fixture that gets past every earlier step giving the same outcome; a test
+   an earlier step stops leaves its own step untested, which is a finding.
 5. Judge every change to an existing test: {{TEST_CHANGES}}, plus any
    inline test module (e.g. Rust `#[cfg(test)]`) the diff touches. A change
    is **meaningful** if it removes a test case, weakens or deletes an
