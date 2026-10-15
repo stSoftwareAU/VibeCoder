@@ -19,7 +19,8 @@
  * branch still behind would leave the PR conflicting again once it lands
  * (Issue #3596). Raising the fix PR does not conclude the attempt: it stays
  * open until a later pass finds the fix PR landed, and is `resolved` only
- * when the PR's head is then 0 commits behind its base (Issue #3596).
+ * when the PR's head is then 0 commits behind the fix PR's own head commit,
+ * which was level with the base when raised (Issue #3596).
  *
  * **The shared budget (Issue #2996).** This pass spends from the same
  * {@link CONFLICT_RESOLUTION_BUDGET} every other conflict-resolution pass
@@ -202,15 +203,16 @@ export type ConflictTakeoverOutcome =
   | { kind: "fix-pr-raised"; fixPr: MilestoneFixPr }
   /**
    * The ordinary (non-gated) route resolved the conflict directly, or an
-   * earlier attempt's fix PR landed and left the head 0 commits behind the
-   * base (Issue #3596).
+   * earlier attempt's fix PR landed with its ancestry, leaving the head 0
+   * commits behind the fix PR's own head commit (Issue #3596).
    */
   | { kind: "resolved" }
   /**
    * Either route ran and did not resolve the conflict, or the gated route
    * resolved but its fix branch was still behind the base or its fix PR
    * cannot land, or an earlier attempt's fix PR was closed unmerged or landed
-   * with the head still behind the base (Issue #3596).
+   * without its ancestry, leaving the head behind the fix PR's own head
+   * commit (Issue #3596).
    */
   | {
     kind: "failed";
@@ -279,8 +281,8 @@ function buildResolvedComment(headSha: string, detail: string): string {
 function buildFixPrRaisedComment(pr: ConflictTakeoverPr, url: string): string {
   return `⏳ **Conflict takeover raised a fix PR** — ${url} carries the ` +
     `resolution into \`${pr.headRefName}\`. This attempt is reported ` +
-    `resolved only once that PR has landed and \`${pr.headRefName}\` is 0 ` +
-    `commits behind \`${pr.baseRefName}\`.`;
+    `resolved only once that PR has landed and \`${pr.headRefName}\` holds ` +
+    `its head, carrying the \`${pr.baseRefName}\` it was level with.`;
 }
 
 /** The conclusion comment body for a failed outcome. */
@@ -382,6 +384,8 @@ interface TakeoverFixPrState {
   number: number;
   url: string;
   state: "OPEN" | "CLOSED" | "MERGED";
+  /** The fix PR's head commit; the landing check measures against it. */
+  headRefOid?: unknown;
 }
 
 /**
@@ -408,7 +412,7 @@ async function readTakeoverFixPr(
     "--head",
     fixBranch,
     "--json",
-    "number,url,state,headRefName,isCrossRepository,author",
+    "number,url,state,headRefName,headRefOid,isCrossRepository,author",
     "--limit",
     "20",
   ]);
@@ -440,8 +444,12 @@ async function readTakeoverFixPr(
  * (Issue #3596).
  *
  * `resolved` is posted only when the fix PR merged and the PR's head is now 0
- * commits behind its base; a head still behind, or a fix PR closed without
- * landing, concludes `failed` instead. Both conclusions name the head the
+ * commits behind the fix PR's own head commit. That commit was confirmed 0
+ * behind the base before the fix PR was raised, so this reads whether the
+ * landing carried the base's ancestry into the head — a merge commit does, a
+ * squash does not — and is not thrown off by the base moving on since. A head
+ * still behind that commit, or a fix PR closed without landing, concludes
+ * `failed` instead. Both conclusions name the head the
  * attempt ran against. A fix PR still open stands down as `fix-pr-reused`,
  * posting nothing. Returns `undefined`, posting nothing, when that attempt has
  * no fix PR: it was then disrupted, not delivered, and a fresh attempt runs.
@@ -475,9 +483,18 @@ async function concludePendingFixPr(
 
   let detail: string;
   if (fixPr.state === "MERGED") {
+    const fixHeadOid = typeof fixPr.headRefOid === "string"
+      ? fixPr.headRefOid.trim().toLowerCase()
+      : "";
+    if (!isConflictHeadSha(fixHeadOid)) {
+      throw new Error(
+        `concludePendingFixPr: merged fix PR ${fixPr.url} reports no usable ` +
+          `head commit (${JSON.stringify(fixPr.headRefOid)})`,
+      );
+    }
     const behindBy = await branchBehindBase(
       pr.repo,
-      pr.baseRefName,
+      fixHeadOid,
       pr.headRefName,
       gh,
     );
@@ -487,14 +504,17 @@ async function concludePendingFixPr(
         buildResolvedComment(
           pendingHeadSha,
           `fix PR ${fixPr.url} landed and '${pr.headRefName}' is 0 commits ` +
-            `behind '${pr.baseRefName}'`,
+            `behind its head \`${shortSha(fixHeadOid)}\`, which was level ` +
+            `with '${pr.baseRefName}' when raised`,
         ),
         gh,
       );
       return { kind: "resolved" };
     }
     detail = `fix PR ${fixPr.url} landed but '${pr.headRefName}' is still ` +
-      `${behindBy} commit(s) behind '${pr.baseRefName}' (Issue #3596)`;
+      `${behindBy} commit(s) behind its head \`${shortSha(fixHeadOid)}\`, ` +
+      `so it landed without the ancestry of '${pr.baseRefName}' it carried ` +
+      "(Issue #3596)";
   } else {
     detail = `fix PR ${fixPr.url} was closed without landing`;
   }
@@ -823,7 +843,7 @@ export async function runConflictTakeover(
       );
     } else if (outcome.kind === "fix-pr-raised") {
       // Not resolved yet: the attempt stays open until a later pass sees the
-      // fix PR land with the head 0 commits behind the base (Issue #3596).
+      // fix PR land with its ancestry in the head (Issue #3596).
       await postComment(
         pr,
         buildFixPrRaisedComment(pr, outcome.fixPr.url),

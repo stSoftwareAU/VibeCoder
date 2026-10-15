@@ -892,6 +892,8 @@ Deno.test("runConflictTakeover - a fix branch up to its base raises the fix PR (
 /** The head the open attempt ran against, before its fix PR landed. */
 const PENDING_SHA = "0123456789ab0123456789ab0123456789ab0123";
 const PENDING_FIX_BRANCH = "milestone-fix/2965-x/pr-48-takeover-0123456789ab";
+/** The landed fix PR's head commit, level with the base when it was raised. */
+const FIX_HEAD_OID = "fedcba9876543210fedcba9876543210fedcba98";
 
 function pendingAttemptComments(): unknown[] {
   return [trustedComment(conflictAttemptMarker(1, "takeover", PENDING_SHA))];
@@ -907,6 +909,7 @@ function takeoverFixPr(
     url: `https://github.com/org/repo/pull/${number}`,
     state,
     headRefName: PENDING_FIX_BRANCH,
+    headRefOid: FIX_HEAD_OID,
     isCrossRepository: false,
     author: { login: TRUSTED },
     ...overrides,
@@ -938,17 +941,37 @@ Deno.test("runConflictTakeover - a landed fix PR with the milestone branch still
     assertStringIncludes(outcome.detail, "pull/901 landed");
     assertStringIncludes(
       outcome.detail,
-      "'milestone/2965-x' is still 2 commit(s) behind 'main'",
+      "'milestone/2965-x' is still 2 commit(s) behind its head `fedcba987654`",
     );
+    assertStringIncludes(outcome.detail, "without the ancestry of 'main'");
   }
   const listCall = fake.calls.find((a) =>
     a[0] === "pr" && a[1] === "list" && a.includes("--head")
   )!;
-  assertEquals(listCall[listCall.indexOf("--head") + 1], PENDING_FIX_BRANCH);
-  assertEquals(listCall[listCall.indexOf("--base") + 1], "milestone/2965-x");
-  assertEquals(listCall[listCall.indexOf("--state") + 1], "all");
+  assertEquals(listCall, [
+    "pr",
+    "list",
+    "--repo",
+    REPO,
+    "--state",
+    "all",
+    "--base",
+    "milestone/2965-x",
+    "--head",
+    PENDING_FIX_BRANCH,
+    "--json",
+    "number,url,state,headRefName,headRefOid,isCrossRepository,author",
+    "--limit",
+    "20",
+  ]);
+  // Measured against the fix PR's own head, never the base's current tip.
   assert(
     fake.calls.some((a) =>
+      a[1] === `repos/${REPO}/compare/${FIX_HEAD_OID}...milestone/2965-x`
+    ),
+  );
+  assert(
+    !fake.calls.some((a) =>
       a[1] === `repos/${REPO}/compare/main...milestone/2965-x`
     ),
   );
@@ -991,6 +1014,62 @@ Deno.test("runConflictTakeover - a landed fix PR with the milestone branch 0 beh
   // The conclusion names the head the attempt ran against, as the failed one does.
   assertStringIncludes(body, `head="${PENDING_SHA}"`);
   assertStringIncludes(body, "pull/901 landed");
+});
+
+Deno.test("runConflictTakeover - a fix PR landed with its ancestry concludes resolved though the base has moved on since (Issue #3596)", async () => {
+  // The PR conflicts again only because the base moved: the current tip of
+  // 'main' is ahead of the milestone branch, but the fix PR's own head (level
+  // with 'main' when raised) is fully in it, so the fix worked.
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("MERGED")],
+  });
+  const gh = (args: string[]) => {
+    const path = String(args[1]);
+    if (path === `repos/${REPO}/compare/${FIX_HEAD_OID}...milestone/2965-x`) {
+      fake.calls.push(args);
+      return Promise.resolve("0");
+    }
+    if (path === `repos/${REPO}/compare/main...milestone/2965-x`) {
+      fake.calls.push(args);
+      return Promise.resolve("5");
+    }
+    return fake.gh(args);
+  };
+
+  const outcome = await runConflictTakeover(
+    gatedPr(),
+    concludingDeps({ gh, calls: fake.calls }),
+  );
+
+  assertEquals(outcome.kind, "resolved");
+  const comments = commentsCalls(fake.calls);
+  assertEquals(comments.length, 1);
+  const body = commentBody(comments[0]!);
+  assertStringIncludes(body, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(body, "behind its head `fedcba987654`");
+  assert(!body.includes(CONFLICT_FAILED_MARKER));
+});
+
+Deno.test("runConflictTakeover - a merged fix PR with no usable head commit posts nothing (Issue #3596)", async () => {
+  for (const headRefOid of [undefined, "", "not-a-sha", 42]) {
+    const fake = makeFakeGh({
+      gated: true,
+      openFixPr: null,
+      comments: pendingAttemptComments(),
+      takeoverFixPrs: [takeoverFixPr("MERGED", { headRefOid })],
+    });
+
+    await assertRejects(
+      () => runConflictTakeover(gatedPr(), concludingDeps(fake)),
+      Error,
+      "pull/901 reports no usable head commit",
+    );
+    assertEquals(commentsCalls(fake.calls).length, 0);
+    assert(!fake.calls.some((a) => String(a[1]).includes("/compare/")));
+  }
 });
 
 Deno.test("runConflictTakeover - a fix PR closed without landing concludes failed (Issue #3596)", async () => {
