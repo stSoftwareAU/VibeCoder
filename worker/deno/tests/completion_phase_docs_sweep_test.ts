@@ -138,6 +138,11 @@ interface Scenario {
    * parked for the next cycle's drain (Issue #1951).
    */
   prCreateRefusedBySecondaryLimit?: boolean;
+  /**
+   * When true, `gh pr create` fails with a non-rate-limit error and the PR
+   * is found by the issue-number lookup that follows (Issue #386 self-heal).
+   */
+  prCreateFailsButPrExists?: boolean;
 }
 
 interface Outcome {
@@ -154,6 +159,8 @@ interface Outcome {
   warnLogs: string[];
   /** PRs parked for the next cycle's drain when creation was deferred. */
   deferred: DeferredPrRecord[];
+  /** Label sets applied to the PR (Issue #3697). */
+  labelCalls: string[][];
 }
 
 /** Drive the live completion phase over a (possibly) blocked docs-sweep gate. */
@@ -174,6 +181,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const claudePrompts: string[] = [];
   const events = scenario.events ?? [];
   const warnLogs: string[] = [];
+  const labelCalls: string[][] = [];
+  let prCreateFailed = false;
 
   const config = buildDefaultWorkerConfig();
   config.workDir = workDir;
@@ -222,6 +231,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
           events.push("pr-create");
           if (scenario.prCreateRefusedBySecondaryLimit) {
             return Promise.reject(new Error(SECONDARY_LIMIT_ERROR));
+          }
+          if (scenario.prCreateFailsButPrExists) {
+            prCreateFailed = true;
+            return Promise.reject(new Error("a pull request already exists"));
           }
         }
         if (args[0] === "pr" && args[1] === "view") {
@@ -312,7 +325,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     },
     pr: {
       findExistingPrForIssue: () =>
-        Promise.resolve({ ok: false, error: new Error("none") }),
+        Promise.resolve(
+          prCreateFailed
+            ? { ok: true as const, value: PR_URL }
+            : { ok: false as const, error: new Error("none") },
+        ),
       findExistingPrForBranch: () =>
         Promise.resolve(
           scenario.prExistsForBranch
@@ -322,6 +339,10 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       recoverExistingPr: () => {
         events.push("recover");
         return Promise.resolve({ ok: true, value: "recovered" });
+      },
+      updatePrLabels: (_repo: string, _pr: number, labels: string[]) => {
+        labelCalls.push([...labels]);
+        return Promise.resolve({ ok: true as const, value: undefined });
       },
       finalisePr: () => {
         events.push("finalise");
@@ -356,6 +377,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     events,
     warnLogs,
     deferred,
+    labelCalls,
   };
 }
 
@@ -634,6 +656,40 @@ Deno.test(
       1,
       "exactly one comment posted to the existing PR",
     );
+    assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
+  },
+);
+
+Deno.test(
+  "completion - a PR found after a failed creation is armed, not held, and gets only the advisory comment (#3237, #3697)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_LINE,
+      changedFiles: "crates/report/src/decisions.rs",
+      grepOutput: STALE_HIT,
+      prCreateFailsButPrExists: true,
+    });
+
+    assertEquals(outcome.status, "continue");
+    assertEquals(outcome.prCreateCalls, 1, "creation was attempted once");
+    assertEquals(
+      outcome.events.includes("recover"),
+      true,
+      "the PR found after the failed creation is recovered",
+    );
+    assertEquals(
+      outcome.events.includes("finalise"),
+      true,
+      "auto-merge is armed on the recovered PR",
+    );
+    assertEquals(
+      outcome.labelCalls.some((l) => l.includes("standing-violation")),
+      false,
+      "the recovered PR is not held",
+    );
+    const prNumber = Number(PR_URL.split("/").pop());
+    const prPosts = outcome.commentPosts.filter((p) => p.number === prNumber);
+    assertEquals(prPosts.length, 1, "only the advisory comment is posted");
     assertStringIncludes(prPosts[0]!.body, "docs/reporting-api.md:320");
   },
 );

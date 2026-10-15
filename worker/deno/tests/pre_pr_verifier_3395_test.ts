@@ -1436,6 +1436,8 @@ Deno.test("the gate comment says a finding is closed only by a fix or evidence (
     } as Parameters<typeof buildPrePrVerifierGateComment>[0],
   );
   assertStringIncludes(comment, "closed only by fixing it");
+  // Its own paragraph, set apart from the procedure's last step.
+  assertStringIncludes(comment, "\n\nA finding is closed only by fixing it");
   assertStringIncludes(comment, "`partial`");
   assertStringIncludes(comment, "not red-checked");
 });

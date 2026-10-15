@@ -175,7 +175,8 @@ interface Outcome {
   prComments: string[];
   labelCalls: string[][];
   finaliseCalls: number;
-  errors: string[];
+  /** `logger.error` calls, with the context each was logged with. */
+  errors: { message: string; context?: Record<string, unknown> }[];
   summaryText: string;
   claudeRunStats: PhaseState["claudeRunStats"];
   config: ReturnType<typeof buildDefaultWorkerConfig>;
@@ -195,7 +196,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const comments: string[] = [];
   const prComments: string[] = [];
   const labelCalls: string[][] = [];
-  const errors: string[] = [];
+  const errors: Outcome["errors"] = [];
   let finaliseCalls = 0;
   let prCreateCalls = 0;
   const claudePrompts: string[] = [];
@@ -231,8 +232,8 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 
   const deps = createMockDeps({
     logger: {
-      error: (message: string) => {
-        errors.push(message);
+      error: (message: string, context?: Record<string, unknown>) => {
+        errors.push({ message, context });
       },
     },
     github: {
@@ -680,10 +681,16 @@ Deno.test(
     });
 
     assertHeld(outcome);
-    assert(
-      outcome.errors.some((e) =>
-        e.includes("Could not post the surviving pre-PR verifier findings")
-      ),
+    const logged = outcome.errors.find((e) =>
+      e.message.includes(
+        "Could not post the surviving pre-PR verifier findings",
+      )
     );
+    assert(logged !== undefined, "the failed post is logged at error");
+    assertEquals(logged.context, {
+      repo: REPO,
+      prNumber: PR_NUMBER,
+      error: "PR comment failed",
+    });
   },
 );

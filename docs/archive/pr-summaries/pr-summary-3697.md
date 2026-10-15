@@ -69,9 +69,11 @@ New tests:
   - "completion - verifier findings that survive the recovery turn over an existing PR hold auto-merge, label the PR and post the findings on it (Issue #3697)". The verifier blocks on both the first run and the re-run, with an existing PR. Asserts `summary_incomplete`, no `finalisePr` call (auto-merge not armed), a `standing-violation` label call, and one PR comment carrying the verifier heading and the finding.
   - "completion - verifier findings folded into an earlier gate's block still hold the existing PR (Issue #3697)". The verifier is folded into a surviving result-placeholder block, and the same hold assertions apply.
   - "completion - a verifier finding cleared by the recovery turn does not hold the PR (Issue #3697)". The placeholder survives and the verifier is clean on the re-run. Auto-merge is armed, with no label and no verifier comment on the PR.
-  - "completion - a failed PR comment is logged and the hold still stands (Issue #3697)".
+  - "completion - a failed PR comment is logged and the hold still stands (Issue #3697)". It also asserts the error is logged with the context `{ repo, prNumber, error: "PR comment failed" }`.
+- `worker/deno/tests/completion_phase_docs_sweep_test.ts`
+  - "completion - a PR found after a failed creation is armed, not held, and gets only the advisory comment (#3237, #3697)". `gh pr create` fails, the issue-number lookup then finds the PR, and the self-heal path recovers it. Asserts auto-merge is armed (`finalise`), no `standing-violation` label, and exactly one PR comment: the docs-sweep advisory one.
 - `worker/deno/tests/pre_pr_verifier_3395_test.ts`
-  - "the gate comment says a finding is closed only by a fix or evidence (Issue #3697)"
+  - "the gate comment says a finding is closed only by a fix or evidence (Issue #3697)". It also pins the blank line that sets the closure sentence apart as its own paragraph.
   - "the held-PR comment names the hold, the label and carries the gate comment (Issue #3697)"
 - `worker/deno/tests/summary_rule_gate_retry_test.ts`
   - "summary-rule retry - a verifier finding is closed only by a fix or a dispute (Issue #3697)"
@@ -87,11 +89,24 @@ Red checks (each change was made temporarily and then restored):
 - Held comment built unconditionally (the line-819 ternary forced to its non-empty arm): the cleared-finding test went red, because it asserts that no PR comment contains "Auto-merge is held".
 - Standing-violation operand forced to `false`: the existing #3382 hold tests in `worker/deno/tests/completion_phase_summary_incomplete_test.ts` went red.
 
-No existing assertion is removed or edited. `worker/deno/tests/completion_phase_merged_pr_closure_test.ts` only gains `heldFindingsComment: ""` on its five `recoverAndFinaliseExistingPr` calls, because the new option is required.
+Mutation check: the gate listed 10 surviving mutants. Each was applied in turn and run with `deno test --no-check`, as the gate runs it, then restored:
+
+- `completion_phase.ts:1109` (delete `repo`), `:1110` (delete `prNumber`), `:1111` (negate the `instanceof` ternary; delete `error`): the failed-PR-comment test went red on its logged-context assertion.
+- `completion_phase.ts:3892` (delete `docsSweepHitsComment`): the new failed-creation test went red, because no advisory comment was posted.
+- `completion_phase.ts:3893` (`false` -> `true`): the failed-creation test went red, because auto-merge was not armed.
+- `completion_phase.ts:3894` (delete `heldFindingsComment`): the failed-creation test went red, because a second PR comment was posted.
+- `pre_pr_verifier.ts:810` (delete the `""` element): the gate-comment test went red on the blank-line pin.
+
+Two deletion mutants cannot be told apart from the original at runtime:
+
+- `worker/deno/lib/phases/completion_phase.ts:3754` exempt (untestable): deleting `holdAutoMerge: false` leaves the field `undefined`, which the `prNumber > 0 && holdAutoMerge` guard reads exactly as `false`, so the deletion has no runtime effect and only the type checker (the field is required) can reject it.
+- `worker/deno/lib/phases/completion_phase.ts:3893` exempt (untestable): the same deletion of `holdAutoMerge: false` has no runtime effect, for the same reason. The other mutant on this line, `false` -> `true`, is killed by the failed-creation test above.
+
+No existing assertion is removed or weakened. The failed-PR-comment test's message check now also checks the logged context. `worker/deno/tests/completion_phase_merged_pr_closure_test.ts` only gains `heldFindingsComment: ""` on its five `recoverAndFinaliseExistingPr` calls, because the new option is required.
 
 Results on the final head:
 
-- The targeted completion-phase, verifier, retry-prompt and merged-PR-closure test files: passed.
-- `./quality.sh < /dev/null`: `Result: PASSED (with skipped checks)`. The only skipped stage is `config integration`; deno tests, lint, type check, fmt, markdownlint, mermaid and semgrep all passed.
+- The targeted completion-phase (verifier, docs-sweep, summary-incomplete, merged-PR-closure), `issue_worker`, verifier and retry-prompt test files: passed, along with `deno fmt`, `deno lint` and `deno check` on the changed test files.
+- `./quality.sh < /dev/null` on the previous head: `Result: PASSED (with skipped checks)`. The only skipped stage is `config integration`; deno tests, lint, type check, fmt, markdownlint, mermaid and semgrep all passed. The mutation-check follow-up only adds tests, and the worker re-runs the quality gate on this head.
 
 <!-- vibe-branch-outcomes -->
