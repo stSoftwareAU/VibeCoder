@@ -142,6 +142,29 @@ another path applied the same labels (#2938), a `needs-human` flag set after an
 idempotent `gh pr edit --add-label` (#2949), and stall repair ignoring a
 hand-applied `needs-human` (#2866).
 
+**Automation that creates fleet work must not re-fire on its own output.** When
+code files an issue, raises a PR, pushes a ref or applies a label that the fleet
+itself will act on, say in the PR summary what stops the trigger from firing
+again on the state that work leaves behind. Typical answers: a fleet-authored
+marker on the output that the trigger reads and skips; a generation or depth
+cap; a check that the output changes something (a non-empty diff, a still-open
+parent). Deduping against *open* items is not enough, because the output is
+usually closed or merged by the next pass.
+
+- **Test the second pass** — run the trigger again against the state the first
+  firing left (the follow-up worked and closed, the rollup merged and synced
+  back) and assert that it files, raises, pushes or applies nothing.
+
+Past regressions: VibeCoder#2898's `createPartialRollup` raised a partial rollup
+whenever the milestone was `ahead_by > 0`, and the merged rollup synced back
+left it `ahead_by > 0` again while the issue-only deadlock still stood, so every
+scan raised another empty rollup PR; VibeCoder#3676 filed a `Finish #N`
+follow-up for a healthy run's `partial` or `missing` closure entry, and a
+follow-up run that still could not deliver the item filed
+`Finish #F1: Finish #N`, because the finding id was keyed on the immediate
+parent and nothing checked whether that parent was already a worker-filed
+follow-up (Issue #3692).
+
 ## Log Levels Are a Promise About What the Reader Must Do
 
 A log level tells the person scanning a fleet log what to do next. Use them
