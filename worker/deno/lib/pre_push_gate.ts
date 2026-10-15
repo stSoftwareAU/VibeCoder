@@ -34,7 +34,6 @@
  */
 
 import type { Result } from "../types.ts";
-import { outermostConfigDirs } from "./repo_formatters.ts";
 import { canRunBinary } from "./markdownlint_check.ts";
 import { runGitCommand, TIMEOUT_EXIT_CODE } from "./git_timeout.ts";
 import { type PreFlightRunner, runPreFlightGate } from "./pre_flight_gate.ts";
@@ -57,6 +56,39 @@ export class PrePushGateInfrastructureError extends Error {
     super(message);
     this.name = "PrePushGateInfrastructureError";
   }
+}
+
+/**
+ * Pick the outermost directories tracked config files live in.
+ *
+ * A nested `a/b/Cargo.toml` under an already-kept `a/Cargo.toml` is dropped —
+ * `cargo fmt --all` at `a` already reaches it via the workspace — but
+ * `webx/deno.json` is never treated as nested under a kept `web`.
+ *
+ * @param paths - Repo-relative paths, `/`-separated (as `git ls-files` prints).
+ * @param configNames - Basenames that mark a formatter's root (e.g. `Cargo.toml`).
+ */
+export function outermostConfigDirs(
+  paths: string[],
+  configNames: readonly string[],
+): string[] {
+  const dirs = new Set<string>();
+  for (const path of paths) {
+    const slash = path.lastIndexOf("/");
+    const base = slash === -1 ? path : path.slice(slash + 1);
+    if (!configNames.includes(base)) continue;
+    const dir = slash === -1 ? "." : path.slice(0, slash);
+    dirs.add(dir === "" ? "." : dir);
+  }
+  const sorted = [...dirs].sort();
+  const kept: string[] = [];
+  for (const dir of sorted) {
+    const hasKeptAncestor = kept.some((k) =>
+      k === "." || dir.startsWith(`${k}/`)
+    );
+    if (!hasKeptAncestor) kept.push(dir);
+  }
+  return kept;
 }
 
 /** One ref line from git's pre-push hook stdin. */
@@ -213,6 +245,15 @@ const DENO_FORMAT_EXTENSIONS = [
 ];
 const DENO_LINT_EXTENSIONS = DENO_FORMAT_EXTENSIONS.slice(0, 8);
 const MARKDOWN_EXTENSIONS = [".md", ".markdown"];
+/**
+ * What the worker's own formatters may rewrite: the code half of the
+ * `deno fmt` list. Markdown is never handed to `deno fmt` — it re-wraps whole
+ * documents and trips markdownlint MD018 — so a Markdown miss is left to the
+ * check to report.
+ */
+const DENO_CODE_FORMAT_EXTENSIONS = DENO_FORMAT_EXTENSIONS.filter((ext) =>
+  !MARKDOWN_EXTENSIONS.includes(ext)
+);
 
 /** Extensions the Spelling workflow's glob covers (`**\/*.{md,html,js,ts,css,sh}`). */
 const CSPELL_EXTENSIONS = [
@@ -432,12 +473,77 @@ export function planChangedFileChecks(
   return { ok: true, value: checks };
 }
 
+/** One formatter invocation that fixes what a changed-file check would flag. */
+export interface FormatterFix {
+  tool: "cargo fmt" | "deno fmt";
+  /** Repo-relative directory the formatter runs in; "." for the root. */
+  dir: string;
+  /** Argv, run without a shell. */
+  cmd: string[];
+  /** Repo-relative pathspecs the formatter may rewrite (for staging). */
+  paths: string[];
+}
+
+/**
+ * Plan the formatter runs that fix what {@link planChangedFileChecks}'s
+ * `deno fmt --check` and `cargo fmt --check` would flag, over the same files:
+ * `deno fmt` gets the changed code files under each deno root that the
+ * repo's own fmt scope covers (never Markdown), and `cargo fmt --all` runs
+ * for a cargo root whose `.rs` files changed — the same whole-workspace scope
+ * its check enforces.
+ */
+export function planFormatterFixes(
+  changed: readonly string[],
+  tracked: string[],
+  denoScopes: Record<string, DenoScopeConfig> = {},
+): FormatterFix[] {
+  const fixes: FormatterFix[] = [];
+  for (
+    const root of outermostConfigDirs(tracked, ["deno.json", "deno.jsonc"])
+  ) {
+    const scope = denoScopes[root];
+    const files = changed.filter((p) =>
+      (root === "." || p.startsWith(`${root}/`)) &&
+      hasExtension(p, DENO_CODE_FORMAT_EXTENSIONS)
+    ).map((p) => ({
+      repoPath: p,
+      rel: root === "." ? p : p.slice(root.length + 1),
+    })).filter((f) => scope === undefined || inDenoScope(f.rel, scope, "fmt"));
+    if (files.length === 0) continue;
+    fixes.push({
+      tool: "deno fmt",
+      dir: root,
+      cmd: [
+        "deno",
+        "fmt",
+        "--permit-no-files",
+        // A leading dash would be read as an option.
+        ...files.map((f) => f.rel.startsWith("-") ? `./${f.rel}` : f.rel),
+      ],
+      paths: files.map((f) => f.repoPath),
+    });
+  }
+  for (const root of outermostConfigDirs(tracked, ["Cargo.toml"])) {
+    const touched = changed.some((p) =>
+      hasExtension(p, [".rs"]) && (root === "." || p.startsWith(`${root}/`))
+    );
+    if (!touched) continue;
+    fixes.push({
+      tool: "cargo fmt",
+      dir: root,
+      cmd: ["cargo", "fmt", "--all"],
+      paths: [root],
+    });
+  }
+  return fixes;
+}
+
 /**
  * Parse each deno root's `deno.json` / `deno.jsonc` scope from the working
  * tree. A root whose config is unreadable or unparseable is left out, so its
  * files are checked unfiltered and deno itself reports the broken config.
  */
-async function loadDenoScopes(
+export async function loadDenoScopes(
   repoRoot: string,
   tracked: string[],
 ): Promise<Record<string, DenoScopeConfig>> {
