@@ -496,5 +496,15 @@ Container Build does the same through `mod.ts strip-containerfile`. The
 strip removes comment lines and blank lines only — the Dockerfile parser
 discards both itself, continuations included, so the build is byte-for-byte
 the same recipe — and keeps `# syntax=`/`# escape=` directives at the top.
-`tests/containerfile_strip_test.ts` caps the *stripped* text at 15,000 bytes;
+`tests/containerfile_strip_test.ts` caps the *stripped* text at 14,600 bytes;
 the readable file may grow.
+
+The real limit is lower than 16,384 bytes. The CLI sends the file
+JSON-escaped, in one request with the build arguments, and drops a request
+that is too large with only `Error: unavailable: "Stream unexpectedly
+closed."`. A host that enables more than one agent provider passes an
+`AGENT_PROVIDERS` build argument, so it fails first: at 15,000 stripped bytes
+GRQ-23 (`claude,deepseek`) could not build while single-provider hosts still
+could. The test also checks the escaped file plus the widest provider list
+against that measured limit, and `container-build-heal` names the dropped
+request instead of retrying it.

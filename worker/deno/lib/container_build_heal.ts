@@ -78,6 +78,13 @@ export const BUILDER_STORAGE_SIGNATURES: readonly string[] = [
   "resource exhausted",
 ];
 
+/**
+ * How Apple `container` reports a build request it would not take, an
+ * over-size Containerfile among them: the CLI names no size, only the
+ * dropped stream.
+ */
+const DROPPED_REQUEST_RE = /stream unexpectedly closed/i;
+
 /** What a failed build turned out to be. */
 /**
  * `builder-storage`: the builder's own storage failed (the signatures above).
@@ -229,8 +236,13 @@ export async function healBuilderStorage(
 ): Promise<BuildHealOutcome> {
   const classification = classifyBuildFailure(options.buildLog);
   if (classification.class === "other") {
-    const detail = "the build did not fail on builder storage, and its " +
-      "failing step reported itself — leaving it to fail as it always has";
+    const detail = DROPPED_REQUEST_RE.test(options.buildLog)
+      ? "the runtime dropped the build request (Stream unexpectedly " +
+        "closed) — on Apple container that is a stripped Containerfile " +
+        "plus build arguments too large to send; a builder restart cannot " +
+        "help, so trim instructions below CONTAINERFILE_SIZE_CAP_BYTES"
+      : "the build did not fail on builder storage, and its " +
+        "failing step reported itself — leaving it to fail as it always has";
     deps.log(`[container-build-heal] ${detail}`);
     return { healable: false, steps: [], ok: false, detail };
   }
