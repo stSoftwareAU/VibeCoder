@@ -433,42 +433,41 @@ export async function raiseMilestoneSyncPr(
   // Force-with-lease: the sync branch is this function's alone, and a stale
   // one from an earlier cycle carries a merge that is no longer current.
   // `--force-with-lease` still refuses if somebody else moved it.
-  let push: { code: number; stderr: string; stdout?: string } = {
-    code: 0,
-    stderr: "",
-  };
-  if (!skipPush) push = await pushBranch();
-  const pushWasStale = () =>
-    push.code !== 0 && isStaleInfoPush(`${push.stderr}\n${push.stdout ?? ""}`);
-  // `stale info` means another actor moved the branch after the fetch above.
-  // Refetch the new baseline and retry once (Issue #2613).
-  let staleRetried = false;
-  if (pushWasStale()) {
-    staleRetried = true;
-    await fetchBaseline();
-    push = await pushBranch();
-  }
-  if (push.code !== 0) {
-    const detail = push.stderr.trim() || push.stdout?.trim() ||
-      `git exited ${push.code} and printed nothing`;
-    const stale = staleRetried && pushWasStale();
-    return {
-      ok: false,
-      error: new Error(
+  const pushWithStaleRetry = async (): Promise<Error | null> => {
+    let push = await pushBranch();
+    const pushWasStale = () =>
+      push.code !== 0 &&
+      isStaleInfoPush(`${push.stderr}\n${push.stdout ?? ""}`);
+    // `stale info` means another actor moved the branch after the fetch
+    // above. Refetch the new baseline and retry once (Issue #2613).
+    let staleRetried = false;
+    if (pushWasStale()) {
+      staleRetried = true;
+      await fetchBaseline();
+      push = await pushBranch();
+    }
+    if (push.code !== 0) {
+      const detail = push.stderr.trim() || push.stdout?.trim() ||
+        `git exited ${push.code} and printed nothing`;
+      const stale = staleRetried && pushWasStale();
+      return new Error(
         stale
           ? `Could not push the milestone sync branch '${branch}': the push ` +
             `was rejected with stale info — another actor updated the branch ` +
             `— and was still rejected after it was refetched and retried: ${detail}`
           : `Could not push the milestone sync branch '${branch}': ${detail}`,
-      ),
-    };
-  }
-  if (staleRetried) {
-    deps.log?.(
-      `Milestone sync branch '${branch}': the push was rejected with stale ` +
-        `info (another actor moved the branch); refetched and retried — accepted.`,
-    );
-  }
+      );
+    }
+    if (staleRetried) {
+      deps.log?.(
+        `Milestone sync branch '${branch}': the push was rejected with stale ` +
+          `info (another actor moved the branch); refetched and retried — accepted.`,
+      );
+    }
+    return null;
+  };
+  const pushError = skipPush ? null : await pushWithStaleRetry();
+  if (pushError) return { ok: false, error: pushError };
 
   // One open PR per milestone branch: a sync that is still open is updated by
   // the push above, and re-filing would leave two PRs merging the same thing.

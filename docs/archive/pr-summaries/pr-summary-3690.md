@@ -24,8 +24,14 @@ overlap experiment was run; the data for one is recorded.
 ### Essential Design Decisions
 
 - "Carries" needs a successful baseline fetch, an equal tree, and HEAD (or
-  every parent of HEAD) already in the remote head. Anything git cannot answer
-  logs and pushes as before (fail towards syncing, like `milestone_sync_claim.ts`).
+  every parent of HEAD) already in the remote head. Anything else pushes as
+  before (fail towards syncing, like `milestone_sync_claim.ts`). A remote ref
+  `rev-parse --verify --quiet` cannot resolve (any non-zero exit) reads
+  `differs` and pushes with no log line; a read that fails after the ref
+  resolves reads `unknown` and is logged as "could not be read" first.
+- The push and its stale-info retry sit in one `pushWithStaleRetry` closure
+  that runs only when the guard did not read `carries`, so the skipped path
+  carries no placeholder push result.
 - 0-file sync PRs are not skipped: they still record the default branch in the
   milestone's ancestry (Issue #1048).
 
@@ -57,9 +63,20 @@ Observed git behaviour the guard relies on (git 2.x, scratch repo):
 exits 128 (`fatal: Not a valid commit name`).
 
 Callers of `raiseMilestoneSyncPr` checked: `lib/git_pull.ts`
-(`pushSyncedMilestoneBranch`, reads `pushed` through `syncPrLandingNote`) and
+(`pushSyncedMilestoneBranch`, reads `pushed` through `syncPrLandingNote`),
 `lib/milestone_rollback.ts` (its git wrapper now passes `stdout`, so the guard
-can read git there; a rebuilt roll-back branch reads `differs` and pushes).
+can read git there; a rebuilt roll-back branch reads `differs` and pushes) and
+`lib/conflict_milestone_rebuild.ts` (`abandonAndRebuildMilestone`, through
+`deps.raiseSyncPr ?? raiseMilestoneSyncPr`). The rebuild copies only `branch`
+and `opened` into its `delivery` and ignores `pushed`. That is safe: when any
+sub-PR replays, HEAD's first parent is a cherry-pick made in that call (this
+run's committer time), so no remote sync head contains it, the guard reads
+`differs` and the push goes ahead as before. When no sub-PR replays and an
+earlier identical rebuild already sits on the sync branch, the guard reads
+`carries` and skips the push. The open sync PR then already holds that exact
+tree and tips, so the rebuild's report, which names the sync PR carrying the
+rebuild, is still true. Its "updated" wording just means no new commit was
+pushed.
 Fixtures returning the outcome type updated:
 `worker/deno/tests/fixtures/conflict_replay_driver.ts`,
 `worker/deno/tests/conflict_abandon_restart_test.ts`.
@@ -109,15 +126,44 @@ it); updated: `docs/workflows/milestones.md`, `README.md`,
   simultaneous workers, base advance, milestone advance, interrupted sync,
   fast-forward, unknown state (unreadable ancestry, unreadable tree), stale
   remote-tracking ref and first run; a classifier test for
-  `syncBranchAlreadyCarries`; one test per `syncPrLandingNote` outcome.
+  `syncBranchAlreadyCarries`; one test per `syncPrLandingNote` outcome. The
+  scripted git fake only answers the exact
+  `rev-parse --verify --quiet refs/remotes/origin/<branch>` lookup, and refuses
+  (exit 129, as git does) a `merge-base --is-ancestor` that does not name the
+  remote head, so dropping `--quiet` or the remote head turns the classifier
+  and guard tests red.
+- `worker/deno/tests/milestone_sync_ancestry_test.ts::syncMilestoneBranchWithDefault - a rule-refused push says the sync PR was raised (Issues #589, #3690)`:
+  real git with a pre-receive hook refusing `milestone/*`, and `gh` stubbed at
+  the process boundary (`_setGhSpawnRunner`); asserts the sync's message
+  carries `syncPrLandingNote`'s "RAISED a sync PR from 'sync/milestone-…'".
+- `worker/deno/tests/milestone_rollback_test.ts::executeRollback - an existing sync branch is compared through the roll-back's own git, then updated (Issue #3690)`:
+  a sync branch left on the remote by an earlier cycle, so the guard runs
+  through the roll-back's git wrapper; asserts nothing logs "could not be
+  read" (a wrapper without `stdout` reads every comparison as `unknown`) and
+  that the rebuilt merge is pushed to the sync branch.
+- Mutation check: each of the five listed survivors was applied by hand and
+  re-run. Dropping `value` at `lib/git_pull.ts:297` turned the ancestry test
+  above red. Dropping `stdout` at `lib/milestone_rollback.ts:615` turned the
+  roll-back test above red. Dropping `--quiet` or `remoteHead` in
+  `syncBranchAlreadyCarries` turned 4 tests red each in
+  `milestone_sync_pr_test.ts`. The `stderr: ""` placeholder push result
+  (`lib/milestone_sync_pr.ts:438`) was dead, since it was never read when the
+  push was skipped. It is gone (see `pushWithStaleRetry` above).
   Required-status-check protection is covered by the existing tests that
   reach `raiseMilestoneSyncPr` only after a rule-refused push; conflict
   takeover is untouched by this change.
 - Red checks: forcing the guard to always return `differs` turned 4 tests red
   (fast-forward, interrupted sync, simultaneous workers, unreadable ancestry);
-  always `carries` turned 12 red (7 existing push tests, 5 new). Making the
-  fetch condition always true turned only the stale-ref test red. Each
-  `unknown` return flipped to `carries` turned the classifier test red.
+  forcing `carries` as the guard's answer in the `carried` assignment (the
+  fetch-failure path left as `differs`) turned 10 red in
+  `milestone_sync_pr_test.ts`. That is 5 existing tests (pushes a sync branch,
+  establishes the lease baseline, the two stale-info tests, any other push
+  failure) and 5 new ones (base advance, milestone advance, the two unknown
+  states, first run). Forcing `return "carries"` at the top of
+  `syncBranchAlreadyCarries` turned 11 red: the same 10 plus the classifier
+  test. Making the fetch condition always true turned only the stale-ref test
+  red. Each `unknown` return flipped to `carries` turned the classifier test
+  red.
 - Edited existing test "raiseMilestoneSyncPr - a stale-info rejection is
   refetched and retried, then the PR is raised (Issue #2613)": removed
   `const verbs = git.map((args) => args[0]);` and
@@ -127,10 +173,23 @@ it); updated: `docs/workflows/milestones.md`, `README.md`,
   push). Replaced by the same checks over `fetch`/`push` verbs only
   (`fetches[1]` against `fetches[0]`); the expected `["fetch", "push", "fetch",
   "push"]` is unchanged and still goes red if the stale-info retry is removed.
+- Edited existing test "executeRollback - a ruleset-rejected push lands
+  through the sync PR": its inline pre-receive hook moved, unchanged, into the
+  `gateMilestoneRefs` helper that the new roll-back test shares. No assertion
+  changed.
 - Fixture edits (`pushed: true`) in
   `worker/deno/tests/fixtures/conflict_replay_driver.ts` and
   `worker/deno/tests/conflict_abandon_restart_test.ts`: no assertion changed.
-- `deno test --allow-all tests/milestone_sync_pr_test.ts < /dev/null` (from
-  `worker/deno`): 30 passed, 0 failed.
+- From `worker/deno`, with `< /dev/null`: `deno test --allow-all
+  tests/milestone_sync_pr_test.ts tests/milestone_rollback_test.ts
+  tests/milestone_sync_ancestry_test.ts` gave 30 + 19 + 8 passed, 0 failed.
+  The 22 test files that reach `raiseMilestoneSyncPr`,
+  `syncMilestoneBranchWithDefault`, `executeRollback` or
+  `abandonAndRebuildMilestone` gave 262 passed, 1 failed. The failure is
+  `milestone_sync_conflict_resolution_test.ts::syncMilestoneBranchWithDefault - two appended ledger slices are unioned by value, not escalated (Issue #2013)`:
+  its fixture's own `git push` is refused by this host's `core.hooksPath`
+  pre-push hook (`PRE_PUSH_BLOCKED … refs/remotes/origin/HEAD is not a
+  symbolic ref`), and it fails the same way on the unchanged head. `deno
+  check` and `deno lint` are clean on the changed files.
 
 <!-- vibe-branch-outcomes -->

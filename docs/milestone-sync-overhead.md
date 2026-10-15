@@ -123,10 +123,15 @@ the same tree as the local merge and already contains the local merge's parents
 (or the merge itself, for a fast-forward), nothing is pushed and the open sync
 PR's checks keep running. The PR listing and creation run as before, so an
 interrupted sync whose branch exists but whose PR was never opened still gets
-its PR. Any comparison git cannot answer is logged and the push goes ahead as
-before (fail towards syncing). The remote branch is the shared, fleet-wide
-identity, so it covers sibling hosts and restarts that the per-host tip record
-does not.
+its PR. The guard fails towards syncing: whenever it does not read "carries",
+the push goes ahead as before. If `git rev-parse --verify --quiet` cannot
+resolve `refs/remotes/origin/<branch>` (any non-zero exit, a missing branch or
+an unreadable ref alike) the guard reads "differs" and pushes without a log
+line. Once that ref resolves, a read that fails after it (a ref that is not a
+full SHA, an unreadable tree, parent list or ancestry check) reads "unknown",
+which is logged as "could not be read" before the push. The remote branch is
+the shared, fleet-wide identity, so it covers sibling hosts and restarts that
+the per-host tip record does not.
 
 The comparison is only trusted after the baseline fetch of the sync branch
 succeeds. When that fetch fails (no branch on the remote, or a network fault)

@@ -474,6 +474,7 @@ const PARENT_DEFAULT = "c".repeat(40);
 const HEAD_SHA = "d".repeat(40);
 const TREE = "1".repeat(40);
 const OTHER_TREE = "2".repeat(40);
+const BRANCH = syncBranchFor(MILESTONE);
 
 interface Scenario {
   /** Exit code of `rev-parse --verify` for the remote sync branch. */
@@ -513,7 +514,11 @@ function scriptedDeps(scenario: Scenario) {
           return fail(scenario.fetchCode!);
         }
         if (args[0] === "fetch" || args[0] === "push") return ok();
-        if (args[0] === "rev-parse" && args[1] === "--verify") {
+        // Only the exact quiet lookup answers: a missing ref then exits 1
+        // with no output, rather than printing `fatal` (Issue #3690).
+        if (
+          joined === `rev-parse --verify --quiet refs/remotes/origin/${BRANCH}`
+        ) {
           return (scenario.remoteCode ?? 0) === 0
             ? ok(scenario.remoteStdout ?? `${REMOTE_HEAD}\n`)
             : fail(scenario.remoteCode!);
@@ -536,6 +541,8 @@ function scriptedDeps(scenario: Scenario) {
           return ok(`${HEAD_SHA} ${PARENT_MILESTONE} ${PARENT_DEFAULT}\n`);
         }
         if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+          // Git refuses an ancestry check without both commits (usage, 129).
+          if (args.length !== 4 || args[3] !== REMOTE_HEAD) return fail(129);
           const commit = args[2]!;
           const code = commit === "HEAD"
             ? scenario.headAncestorCode ?? 1
