@@ -4764,6 +4764,23 @@ in-run (PR #3716 review). In Step 1b the pre-flight commands
 re-run only when Step 1 committed nothing; in the completion phase they run
 before every push.
 
+Before each of those completion-phase gate runs, and before every quality-gate
+attempt (`./quality.sh`), the issue run first runs the repository's own
+formatters over the same changed files and commits the result as one
+`style: apply repository formatters` commit (`formatBeforeGate` in
+`repo_formatters.ts`, part of #2932). A formatting-only miss is fixed there
+rather than failing the gate, or reaching review and CI and costing another
+round. The formatters cover exactly what the gate's format checks would flag:
+`deno fmt` on the changed code files (`.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`,
+`.cjs`, `.mts`, `.cts`, `.json`, `.jsonc`) that the deno root's own fmt
+`include`/`exclude` covers, and `cargo fmt --all` for a cargo root whose `.rs`
+files changed. Markdown is never formatted: `deno fmt` re-wraps whole documents
+and trips markdownlint MD018, so a Markdown miss is left to the check to report.
+Only the formatted paths are staged. A formatter that is missing, fails or
+throws never fails the run on its own: it is logged, and the gate that follows
+still runs every check and reports what was left unfixed. The PR feedback and
+CI-fix push paths do not run the formatters yet.
+
 The hook runs two stages:
 
 1. **Always-on changed-files check, whatever the run budget.** It lists the
