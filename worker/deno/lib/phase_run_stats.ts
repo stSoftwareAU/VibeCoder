@@ -54,8 +54,11 @@ import { applyDegradedModelLabel } from "./planning_degraded_label.ts";
 import {
   buildIssueRunStatsComment,
   ghIssueCommentLister,
+  ghPrCommentLister,
+  type IssueRunStatsPostResult,
   postIssueRunStatsComment,
 } from "./issue_run_stats_comment.ts";
+import { getRunId } from "./run_id.ts";
 
 /** The completed-Claude-invocation fields a planning-shaped round exposes. */
 export interface PhaseClaudeResult {
@@ -287,4 +290,81 @@ export async function reportPhaseDegradation(args: {
   }
 
   return verdict;
+}
+
+/**
+ * Post a completed PR-cycle round's run-stats comment on the PR it worked on.
+ *
+ * `pr_feedback` and `ci_fix` rounds used to feed only the per-host tier
+ * counters, so what a send-back cost was invisible on GitHub — the one place
+ * cost per merged PR can be compared week over week. This posts the same
+ * `## <Phase> run model stats` block an issue run posts, through the same
+ * renderer and poster ({@link postIssueRunStatsComment}), so the figures are
+ * attributed exactly as an issue run's are, a resumed session included.
+ *
+ * A round that pushed nothing still posts: it spent the tokens all the same.
+ *
+ * **One comment per round.** The marker's run id carries the round
+ * (`<run id>.<phase>-<round id>`), so a repeat post of the same round inside
+ * one run is suppressed while a second round on the same PR in the same run
+ * — a CI fix after a review reply — still reports its own cost. From the
+ * second comment on, the block carries the PR total across the rounds.
+ *
+ * Non-fatal by contract: nothing here throws, so a GitHub failure is logged
+ * and never fails the round.
+ *
+ * @param args.phase - `pr_feedback` or `ci_fix`; drives the heading and the
+ *   expected-model routing
+ * @param args.roundId - What distinguishes this round within the run: the
+ *   comment id for feedback, the check-run id for a CI fix
+ * @param args.runStats - The stats of every agent invocation the round made
+ * @returns What happened, so callers and tests can assert on it
+ */
+export async function postPrRoundRunStats(args: {
+  repo: string;
+  prNumber: number;
+  phase: string;
+  roundId: string;
+  runStats: readonly (RunStats | undefined)[];
+  runGhCommand: (args: string[]) => Promise<string>;
+  logger: Logger;
+  /** Fleet identity for the PR total's author check; omitted reads the config. */
+  authorOptions?: AlertDedupAuthorOptions;
+  graft?: GraftContextResult;
+  codegraph?: CodegraphContextResult;
+  rtk?: RtkOutputResult;
+  /** Run the round belongs to; defaults to the canonical {@link getRunId}. */
+  runId?: string;
+}): Promise<IssueRunStatsPostResult> {
+  const { repo, prNumber, phase, runGhCommand, logger } = args;
+  try {
+    return await postIssueRunStatsComment({
+      repo,
+      issueNumber: prNumber,
+      phase,
+      scope: "pr",
+      claudeResults: args.runStats
+        .filter((stats): stats is RunStats => stats !== undefined)
+        .map((stats) => ({ runStats: stats })),
+      runId: `${args.runId ?? getRunId()}.${phase}-${args.roundId}`,
+      getIssueComments: ghPrCommentLister(runGhCommand),
+      postComment: (r, n, body) =>
+        runGhCommand(["pr", "comment", String(n), "--repo", r, "--body", body]),
+      logger,
+      ...(args.authorOptions ? { authorOptions: args.authorOptions } : {}),
+      ...(args.graft ? { graft: args.graft } : {}),
+      ...(args.codegraph ? { codegraph: args.codegraph } : {}),
+      ...(args.rtk ? { rtk: args.rtk } : {}),
+    });
+  } catch (err) {
+    // The poster already catches its GitHub calls; this covers the render, so
+    // a malformed stats object can never fail the round either.
+    logger.warn("Failed to post PR round run stats comment (non-fatal)", {
+      repo,
+      prNumber,
+      phase,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return { posted: false, reason: "error" };
+  }
 }
