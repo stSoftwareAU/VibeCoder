@@ -38,20 +38,21 @@ flowchart TD
     E -- no --> G[enableAutoMerge]
 ```
 
-- `worker/deno/tests/pr_ci_processor_standing_violation_test.ts`: a labelled PR is not re-armed, on both the no-worker-id path and the locked path, and an unlabelled PR still is.
+- `worker/deno/tests/pr_ci_processor_standing_violation_test.ts`: a labelled PR is not re-armed, on both the no-worker-id path and the locked path. An unlabelled PR is still re-armed with its head branch (`headRefName`), and a failed re-arm is warned with `{ repo, prNumber }` rather than failing the pass.
 - Issue numbers cited: #3685: CI-fix pass re-arms auto-merge on a PR held with the standing-violation label; #3517: Auto-merge sweep ignores the standing-violation hold label, so a held PR can still be armed (#3382 follow-up); #3382: Standing-violation refusal (#3196) is routed to a recovery turn that may not change code, so the self-flagged breach ships as summary_incomplete (VibeCoder#3308, #3380).
 
 **Docs sweep**: grep: "Only the sweep checks the label", "without reading it", "re-arm\w* auto-merge", `STANDING_VIOLATION_LABEL`, `standing-violation`; section: `docs/workflows/issue-processing.md#-the-in-run-recovery-from-a-summary-rule-block`; siblings: none, because no existing set gained a member; updated: `README.md`, `docs/workflows/issue-processing.md`, `docs/MERGE.md`, `docs/INTERNALS.md`, `worker/deno/lib/standing_violation_routing.ts`, `worker/deno/lib/pr_live_state.ts`. `docs/workflows/pr-feedback.md:727` is still true because it describes only the sweep's hold, which is unchanged.
 
 ## Test Plan
 
-- Added `worker/deno/tests/pr_ci_processor_standing_violation_test.ts` with three tests. No existing test was edited.
+- Added `worker/deno/tests/pr_ci_processor_standing_violation_test.ts` with four tests. No existing test was edited.
 - Red checks, each restored afterwards:
   - Forcing the guard to always arm turned the labelled tests (no-worker-id path and locked path) red.
   - Forcing it to never arm turned the unlabelled test red.
   - Passing `false` at the locked call site turned only the locked-path test red.
   - Passing `false` at the no-worker-id call site turned only the no-worker-id test red.
-- `deno task test:unit tests/pr_ci_processor_standing_violation_test.ts tests/pr_ci_processor_test.ts tests/pr_ci_processor_lock_test.ts tests/pr_ci_processor_milestones_test.ts` passed: 55 passed, 0 failed.
+  - Mutation check: deleting `headRefName` from the `enableAutoMerge` call (`worker/deno/lib/pr_ci_processor.ts:2175`) turned the unlabelled test red. Deleting the `logger.warn` call (`:2178`), or `repo` from its context, turned the failed re-arm test red.
+- `deno task test:unit tests/pr_ci_processor_standing_violation_test.ts tests/pr_ci_processor_test.ts tests/pr_ci_processor_lock_test.ts tests/pr_ci_processor_milestones_test.ts` passed: 56 passed, 0 failed.
 - Call sites checked: both `_processCiFailureLocked` calls in `processCiFailure`, and the one `_processCiWithHeartbeat` call. This is the only `deps.pr.enableAutoMerge` call in `worker/deno/lib`.
 - New members: `standingViolationHold` is set in `processCiFailure` and read in `_processCiWithHeartbeat`.
 - `./quality.sh < /dev/null` on the code head: PASSED (config integration skipped by the gate itself; deno tests, lint, type check, fmt, semgrep and markdownlint all passed).

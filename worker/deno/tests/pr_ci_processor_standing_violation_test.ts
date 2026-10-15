@@ -38,14 +38,28 @@ const PROMPTS_DIR = new URL("../../../prompts", import.meta.url).pathname;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** A logger that records every info message so the hold can be asserted. */
-function makeRecordingLogger(infoLines: string[]): Logger {
+/** A `warn` call the pass made: its message and structured context. */
+interface WarnCall {
+  message: string;
+  context: unknown;
+}
+
+/**
+ * A logger that records every info message so the hold can be asserted, and
+ * every warning (with its context) so a failed re-arm can be asserted.
+ */
+function makeRecordingLogger(
+  infoLines: string[],
+  warnings: WarnCall[] = [],
+): Logger {
   const noop = () => {};
   return {
     info: (message: string) => {
       infoLines.push(message);
     },
-    warn: noop,
+    warn: (message: string, context?: unknown) => {
+      warnings.push({ message, context });
+    },
     error: noop,
     debug: noop,
     security: noop,
@@ -90,16 +104,19 @@ const REMOTE_CONFIRMS_PUSH = () =>
 interface ArmCall {
   repo: string;
   prNumber: number;
+  headRefName?: string;
 }
 
 /**
  * Build the mock fleet for a CI fix whose claim-point read reports an open PR
  * carrying `labels`. Every other `gh` call answers "", and each
- * `enableAutoMerge` call is recorded into `arms`.
+ * `enableAutoMerge` call is recorded into `arms` — then throws when
+ * `armThrows` is set, so the failed re-arm path can be exercised.
  */
 function makeDeps(
   labels: string[],
   arms: ArmCall[],
+  armThrows = false,
 ): ReturnType<typeof createMockDeps> {
   const payload = JSON.stringify({
     autoMergeRequest: null,
@@ -135,7 +152,14 @@ function makeDeps(
     },
     pr: {
       enableAutoMerge: ((options: ArmCall) => {
-        arms.push({ repo: options.repo, prNumber: options.prNumber });
+        arms.push({
+          repo: options.repo,
+          prNumber: options.prNumber,
+          headRefName: options.headRefName,
+        });
+        if (armThrows) {
+          return Promise.reject(new Error("gh pr merge --auto failed"));
+        }
         return Promise.resolve({
           result: AutoMergeResult.Enabled,
           message: "armed",
@@ -210,7 +234,9 @@ Deno.test("processCiFailure - an unlabelled PR is still re-armed after a CI-fix 
     }
     assertEquals(
       arms,
-      [{ repo: "org/repo", prNumber: 42 }],
+      // Issue #3909: the head branch is passed so the milestone
+      // open-children gate needs no extra lookup.
+      [{ repo: "org/repo", prNumber: 42, headRefName: "issue-42-fix-bug" }],
       "an unlabelled PR must still have auto-merge re-armed exactly once",
     );
   } finally {
@@ -267,6 +293,45 @@ Deno.test("processCiFailure - a labelled PR is not re-armed on the locked path (
       throw new Error("the standing-violation hold was not logged");
     }
     assertStringIncludes(holdLine, "not re-arming");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("processCiFailure - a failed re-arm on an unlabelled PR is warned, not thrown (Issue #3685)", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "vibe-standing-violation-" });
+  try {
+    const arms: ArmCall[] = [];
+    const warnings: WarnCall[] = [];
+    const processorDeps: CiProcessorDeps = {
+      promptsDir: PROMPTS_DIR,
+      logger: makeRecordingLogger([], warnings),
+      deps: makeDeps(["bug"], arms, true),
+      stateDir: `${tmpDir}/.ci_check_state`,
+      workDir: tmpDir,
+      workRoot: tmpDir,
+      verifyPushFn: REMOTE_CONFIRMS_PUSH,
+    };
+
+    const result = await processCiFailure(makeInput(), processorDeps);
+
+    // The pushed fix still counts: a failed re-arm never fails the pass.
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.changesPushed, true);
+    }
+    assertEquals(arms.length, 1, "the re-arm must have been attempted once");
+    const rearmWarnings = warnings.filter((warning) =>
+      warning.message === "Could not re-enable auto-merge"
+    );
+    assertEquals(
+      rearmWarnings,
+      [{
+        message: "Could not re-enable auto-merge",
+        context: { repo: "org/repo", prNumber: 42 },
+      }],
+      "a failed re-arm must be warned once, naming the repo and PR",
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
