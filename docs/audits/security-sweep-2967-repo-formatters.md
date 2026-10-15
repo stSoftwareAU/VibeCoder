@@ -15,7 +15,8 @@ over the files the branch changed, in their outermost tracked config
 directories, and, if any tracked file differs afterwards, commits the result as
 one `style: apply repository formatters` commit. A #2932 follow-up wired it
 into the issue run, before each quality-gate attempt and before the completion
-phase's pre-push gate. It formats only the code files (never Markdown) that the
+phase's pre-push gate; a #3806 follow-up added the PR-feedback and CI-fix
+rounds, between `commitAndPushPending`'s commit and its Step 1b gate. It formats only the code files (never Markdown) that the
 pre-push gate's `deno fmt --check` would check, and runs `cargo fmt --all` only
 for a cargo root whose `.rs` files changed.
 

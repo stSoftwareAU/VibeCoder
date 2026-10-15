@@ -17,11 +17,13 @@
  * Markdown is never handed to `deno fmt`: it re-wraps whole documents and
  * trips markdownlint MD018. A Markdown miss is left to the check to report.
  *
- * Callers: the quality-gate phase, before every `./quality.sh` attempt, and
- * the completion phase's `gateBeforePush()`, before every pre-push gate run.
- * A formatter that is missing or fails never fails the run on its own: it is
- * logged, and the gate that follows still runs and reports the problem. The
- * PR feedback and CI-fix push paths do not run it yet.
+ * Callers: the quality-gate phase, before every `./quality.sh` attempt; the
+ * completion phase's `gateBeforePush()`, before every pre-push gate run; and
+ * the PR-feedback and CI-fix processors, as `commitAndPushPending`'s Step 1a
+ * hook between its commit and its Step 1b gate (scoped, like that gate, to
+ * the commits on no remote). A formatter that is missing or fails never fails
+ * the run on its own: it is logged, and the gate that follows still runs and
+ * reports the problem.
  */
 
 import {
@@ -279,8 +281,10 @@ export async function runRepoFormatters(
  * Run the formatters over every file the branch changed, then commit.
  *
  * The file list is the pre-push gate's own (`listPushedFiles`): every
- * non-merge commit ahead of `baseRef`, or — when the PR base could not be
- * resolved — every commit on no remote-tracking ref, so the formatters and
+ * non-merge commit ahead of `baseRef`, or — with no `baseRef` (the PR base
+ * could not be resolved, or a PR round whose `commitAndPushPending` Step 1b
+ * gate checks only these) — every commit on no remote-tracking ref, so the
+ * formatters and
  * the gate that follows always agree on scope. Files merged in from the base
  * are never reformatted. Never throws.
  */

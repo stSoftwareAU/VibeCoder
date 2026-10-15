@@ -151,6 +151,7 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
@@ -1893,12 +1894,20 @@ async function _processCiWithHeartbeat(
   // chokepoint — a non-zero exit blocks both this commit and the push so a
   // known-broken CI "fix" is never pushed back into the expensive build.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  // The repo's own formatters run between the commit and the gate (follow-up
+  // to #3806): a formatting-only miss in this round is fixed and committed
+  // rather than failing the push or reaching CI. Same files the gate checks
+  // (the unpushed commits), never Markdown; never fatal.
+  const formatRound = () =>
+    formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
     { cwd: processorDeps.workDir },
     false,
     preFlight,
+    undefined,
+    formatRound,
   );
 
   let pushSucceeded = false;
@@ -1946,6 +1955,8 @@ async function _processCiWithHeartbeat(
           { cwd: processorDeps.workDir },
           false,
           preFlight,
+          undefined,
+          formatRound,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;

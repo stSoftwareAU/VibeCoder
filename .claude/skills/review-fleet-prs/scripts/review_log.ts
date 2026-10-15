@@ -20,6 +20,7 @@ import {
   MAX_UNRELATED_ISSUES,
   parseReviewReply,
 } from "../../../../worker/deno/lib/pre_pr_verifier.ts";
+import { runFooter, type RunInfo } from "./review_cost.ts";
 
 export const REVIEW_MARKER = "Automated review by /review-fleet-prs";
 
@@ -349,7 +350,8 @@ export function reviewBody(
   review: FableReview,
   removedTests: readonly string[],
   filed: readonly FiledIssue[] = [],
-  opts: { autoReleased?: boolean } = {},
+  // `run`: the model run that wrote the review, for its run footer.
+  opts: { autoReleased?: boolean; run?: RunInfo } = {},
 ): string {
   const lines: string[] = [];
   if (outcome === "changes_requested") {
@@ -402,6 +404,9 @@ export function reviewBody(
     );
   }
   lines.push("", `_${REVIEW_MARKER}._`);
+  // Which model wrote it and what it cost (review_cost.ts), after the marker
+  // line, which stays as it was.
+  if (opts.run) lines.push("", runFooter(opts.run));
   return lines.join("\n");
 }
 
