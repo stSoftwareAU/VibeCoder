@@ -34,6 +34,7 @@ import {
 } from "../lib/semgrep_check.ts";
 import { SEMGREP_IMAGE, SEMGREP_IMAGE_TAG } from "../lib/pinned_actions.ts";
 import { formatSummary, recordCheck } from "../lib/quality_helpers.ts";
+import { detectFailureCategory } from "../lib/failure_diagnosis.ts";
 import { runQualityGate } from "../lib/quality_gate.ts";
 
 // ---------------------------------------------------------------------------
@@ -313,6 +314,7 @@ Deno.test("runSemgrepCheck - SKIPPED loudly when semgrep cannot be run", async (
   const result = await runSemgrepCheck("/repo", {
     git: gitWithChangedFile("worker/deno/lib/a.ts"),
     detectInvocation: () => Promise.resolve(null),
+    env: () => undefined,
   });
 
   assertEquals(result.status, "SKIPPED");
@@ -321,10 +323,48 @@ Deno.test("runSemgrepCheck - SKIPPED loudly when semgrep cannot be run", async (
   assertStringIncludes(result.skipReason ?? "", SEMGREP_IMAGE);
 });
 
+Deno.test("runSemgrepCheck - no semgrep inside the fleet container image is FAILED, named as a missing tool", async () => {
+  const result = await runSemgrepCheck("/repo", {
+    git: gitWithChangedFile("worker/deno/lib/a.ts"),
+    detectInvocation: () => Promise.resolve(null),
+    env: (name) => name === "VIBE_IMAGE_AGENT_PROVIDERS" ? "claude" : undefined,
+  });
+
+  assertEquals(result.status, "FAILED");
+  assertStringIncludes(result.output, "not installed or not in PATH");
+  assertEquals(detectFailureCategory(result.output), "missing_tools");
+});
+
+Deno.test("runSemgrepCheck - a blank container stamp is a host run — no semgrep stays SKIPPED", async () => {
+  const result = await runSemgrepCheck("/repo", {
+    git: gitWithChangedFile("worker/deno/lib/a.ts"),
+    detectInvocation: () => Promise.resolve(null),
+    env: () => "",
+  });
+
+  assertEquals(result.status, "SKIPPED");
+});
+
+Deno.test("runSemgrepCheck - inside the container an unreachable registry stays SKIPPED", async () => {
+  const result = await runSemgrepCheck("/repo", {
+    git: gitWithChangedFile("worker/deno/lib/a.ts"),
+    detectInvocation: fixedInvocation({
+      exitCode: 2,
+      stdout: "",
+      stderr: "Failed to download config from https://semgrep.dev/c/p/default",
+    }),
+    env: () => "claude",
+  });
+
+  assertEquals(result.status, "SKIPPED");
+  assertStringIncludes(result.skipReason ?? "", "could not be fetched");
+});
+
 Deno.test("runSemgrepCheck - SKIPPED outside a git repository", async () => {
   const result = await runSemgrepCheck("/tmp/not-a-repo", {
     git: fakeGit({ "rev-parse --is-inside-work-tree": { exitCode: 128 } }),
     detectInvocation: () => Promise.resolve(null),
+    env: () => undefined,
   });
 
   assertEquals(result.status, "SKIPPED");

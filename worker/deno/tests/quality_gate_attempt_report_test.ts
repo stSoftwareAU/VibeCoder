@@ -204,3 +204,62 @@ Deno.test("quality gate - a gate that could not run at all records failed", asyn
   // the report says `failed` rather than staying silent.
   assertEquals(state.qualityGateOutcome, { status: "failed" });
 });
+
+Deno.test("quality gate - records the stage outcomes of the last gate run (Issue #3726)", async () => {
+  const state = makeState({ baselineFailedChecks: [] });
+  const secondRun = () =>
+    Promise.resolve({
+      ok: true as const,
+      value: {
+        checks: [
+          {
+            name: "semgrep",
+            status: "SKIPPED",
+            output: "semgrep: SKIPPED (offline)",
+          },
+          { name: "deno lint", status: "PASSED" },
+        ] as CheckResult[],
+        summary: { text: "passed", passed: true },
+        passed: true,
+        output: "All checks passed",
+      },
+    });
+
+  const result = await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    makeDeps([failedGate, secondRun]),
+  );
+
+  assertEquals(result.status, "continue");
+  assertEquals(state.qualityGateStages, [
+    {
+      name: "semgrep",
+      status: "SKIPPED",
+      reason: "semgrep: SKIPPED (offline)",
+    },
+    { name: "deno lint", status: "PASSED" },
+  ]);
+});
+
+Deno.test("quality gate - stale stage outcomes are cleared when the gate errors (Issue #3726)", async () => {
+  const state = makeState({
+    qualityGateStages: [{ name: "semgrep", status: "PASSED" }],
+  });
+  const erroring = () =>
+    Promise.resolve({ ok: false as const, error: new Error("boom") });
+
+  const result = await workOnIssueQualityGate(
+    makeContext(),
+    state,
+    createMockDeps({
+      quality: {
+        runQualityGate: erroring as never,
+        collectDiffableGateFindings: () => Promise.resolve([]),
+      },
+    }),
+  );
+
+  assertEquals(result.status, "failure");
+  assertEquals(state.qualityGateStages, undefined);
+});

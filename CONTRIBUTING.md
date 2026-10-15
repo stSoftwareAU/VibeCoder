@@ -151,7 +151,9 @@ flowchart LR
   never pulled by the gate — a mid-run download is exactly the
   critical-path cost this stage must not add. With neither available the
   stage reports `SKIPPED` and names both remedies; `--strict` turns that
-  into a failure.
+  into a failure. Inside the fleet container image, where semgrep is baked
+  in, a missing binary is `FAILED` (an image fault, Issue #3726); an
+  unreachable rule registry or an over-deadline scan stays `SKIPPED`.
 - **A docs-only change costs nothing.** No scannable changed file means
   no scan.
 - **`detect-non-literal-regexp` has one standard remedy.** Build the

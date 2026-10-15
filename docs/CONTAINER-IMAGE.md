@@ -260,6 +260,14 @@ runtime to run the CI image with, so on a fleet run that stage reported
 `SKIPPED` — loudly, and `--strict` promoted it to `FAILED`, but agents still met
 SAST findings only after a red PR.
 
+Because the image bakes semgrep in, a fleet run that finds no semgrep is an
+image fault: inside the image (detected by the container stamp) the stage
+reports `FAILED`, named as a missing tool so the run is treated as a host fault
+rather than blamed on the issue (Issue #3726). Rebuild the image to fix it. An
+unreachable rule registry or an over-deadline scan stays `SKIPPED` there, so a
+third-party outage or an oversized scan does not fail every fleet run; the
+blocking `semgrep.yml` remains the backstop.
+
 `SEMGREP_VERSION` is not a free choice: it must equal `SEMGREP_IMAGE_TAG` in
 `worker/deno/lib/pinned_actions.ts`, the `semgrep/semgrep` image `semgrep.yml`
 runs, because that is what makes a local pass predict a CI pass — the gate

@@ -25,6 +25,10 @@ import {
   GATE_EXCERPT_TAIL_CHARS,
 } from "../quality_helpers.ts";
 import { formatDetailedFailureMessage } from "../failure_message.ts";
+import {
+  formatGateStageOutcomes,
+  stageOutcomesFrom,
+} from "../gate_stage_outcome.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import {
   detectFailureCategory,
@@ -436,6 +440,9 @@ async function runQualityGateBody(
   // rather than leaving the run-stats comment silent about a gate that ran.
   // The two passing exits overwrite it with the attempt they passed on.
   state.qualityGateOutcome = { status: "failed" };
+  // Issue #3726: stages from an earlier run must not outlive a gate that
+  // errors before reporting its own.
+  delete state.qualityGateStages;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const qualityResult = await deps.quality.runQualityGate({
@@ -451,6 +458,14 @@ async function runQualityGateBody(
         },
       };
     }
+
+    // Issue #3726: what each stage did, so an audit can tell a skipped stage
+    // from a passed one.
+    state.qualityGateStages = stageOutcomesFrom(qualityResult.value.checks);
+    logger.info("Quality gate stage outcomes", {
+      attempt,
+      stages: formatGateStageOutcomes(state.qualityGateStages),
+    });
 
     if (qualityResult.value.passed) {
       logger.info("Quality gate passed", { attempt });
