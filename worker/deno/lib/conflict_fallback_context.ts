@@ -282,6 +282,6 @@ export async function readPrDiffSummary(
 }
 
 /** Whether a ref is safe to interpolate into an API path. */
-function isSafeRef(ref: string): boolean {
+export function isSafeRef(ref: string): boolean {
   return SAFE_REF.test(ref) && !ref.includes("..");
 }

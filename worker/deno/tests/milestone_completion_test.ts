@@ -134,6 +134,7 @@ Deno.test("hasExistingMilestoneSummaryPr - returns PR number when found", async 
           number: 100,
           title: "Milestone: v1.0",
           headRefName: "milestone/v1-0",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -150,6 +151,39 @@ Deno.test("hasExistingMilestoneSummaryPr - returns PR number when found", async 
   if (result.ok) {
     assertEquals(result.value, 100);
   }
+});
+
+Deno.test("hasExistingMilestoneSummaryPr - a fork-headed PR reusing the milestone branch name is not an existing final PR (Issue #3595)", async () => {
+  const ghFor = (isCrossRepository: boolean) => (args: string[]) =>
+    Promise.resolve(
+      args.join(" ").includes("pr list")
+        ? JSON.stringify([{
+          number: 100,
+          title: "Milestone: v1.0",
+          headRefName: "milestone/v1-0",
+          isCrossRepository,
+        }])
+        : "[]",
+    );
+
+  const fork = await hasExistingMilestoneSummaryPr(
+    "owner/repo",
+    "v1.0",
+    "milestone/v1-0",
+    ghFor(true),
+  );
+  assertEquals(fork.ok, true);
+  if (fork.ok) assertEquals(fork.value, null);
+
+  // Positive control: the same row from this repository does count.
+  const same = await hasExistingMilestoneSummaryPr(
+    "owner/repo",
+    "v1.0",
+    "milestone/v1-0",
+    ghFor(false),
+  );
+  assertEquals(same.ok, true);
+  if (same.ok) assertEquals(same.value, 100);
 });
 
 Deno.test("hasExistingMilestoneSummaryPr - returns null when no PR exists", async () => {
@@ -607,6 +641,17 @@ Deno.test("classifyClosedIssues - flags an issue whose timeline cannot be read r
 // ============================================================================
 
 /**
+ * Issue #3662: the milestone's closed issues are read over REST by milestone
+ * number (`repos/<repo>/issues?milestone=<n>&state=closed`, paginated), where
+ * the title-based path used the repo-wide `issue list --state closed` batch.
+ * Matches either read, so a fake answers both with the same closed issues.
+ */
+function isClosedIssueRead(key: string): boolean {
+  return (key.includes("issue list") && key.includes("--state closed")) ||
+    (key.includes("issues?milestone=") && key.includes("state=closed"));
+}
+
+/**
  * Serve the two fresh authoritative open-children reads added in Issue #3908:
  * `GET repos/<repo>/milestones/<n>` and
  * `GET repos/<repo>/issues?milestone=<n>&state=open`.
@@ -621,7 +666,13 @@ function authoritativeStub(
   openIssues = 0,
   children: unknown[] = [],
 ): string | null {
-  if (key.includes("/issues?milestone=")) return JSON.stringify(children);
+  // The closed read (Issue #3662) is left to each fake's own closed branch, so
+  // it is never answered with the open-children list.
+  if (
+    key.includes("/issues?milestone=") && !key.includes("state=closed")
+  ) {
+    return JSON.stringify(children);
+  }
   if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
     return JSON.stringify({ open_issues: openIssues });
   }
@@ -673,7 +724,7 @@ Deno.test("checkAndHandleMilestoneCompletions - creates tracking issue and summa
     // Issue #1908: closed issues are fetched as a single batch
     // (`--state closed` without `--milestone`); milestone metadata is
     // included on each issue so callers can filter locally.
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -812,7 +863,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds on a pendi
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -902,7 +953,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes unverifiab
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -1010,7 +1061,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body cites a doc line
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
       ]);
@@ -1105,7 +1156,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes the not-pl
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
       ]);
@@ -1208,7 +1259,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body notes an uncheck
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Dropped feature", milestone: { title: "v1.0" } },
       ]);
@@ -1307,7 +1358,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body omits not-planne
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -1413,7 +1464,7 @@ Deno.test("checkAndHandleMilestoneCompletions - summary PR body holds and cites 
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
         {
@@ -1493,7 +1544,7 @@ Deno.test("checkAndHandleMilestoneCompletions - reuses existing tracker with dri
       return "[]";
     }
     // Closed issues exist (milestone was worked on).
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 50, title: "Done work", milestone: { title: "Milestone 3" } },
       ]);
@@ -1767,7 +1818,7 @@ Deno.test("checkAndHandleMilestoneCompletions - reuses existing tracking issue",
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 10,
         title: "Add login",
@@ -1850,7 +1901,7 @@ Deno.test("checkAndHandleMilestoneCompletions - skips milestones with no issues 
       return "[]";
     }
     // No closed issues either — empty milestone
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return "[]";
     }
     if (key.includes("pr list") && key.includes("--state all")) {
@@ -1898,7 +1949,7 @@ Deno.test("Issue #1133 - tracking issue closed immediately after summary PR crea
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 10,
         title: "Feature A",
@@ -1981,7 +2032,7 @@ Deno.test("Issue #1133 - tracking issue closed when summary PR already exists", 
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 20,
         title: "Feature B",
@@ -2007,6 +2058,7 @@ Deno.test("Issue #1133 - tracking issue closed when summary PR already exists", 
           number: 601,
           title: "Milestone: v3.0",
           headRefName: "milestone/v3-0",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -2078,7 +2130,7 @@ Deno.test("checkAndHandleMilestoneCompletions - refreshes the existing summary P
     }
     // The milestone's own tracker is closed in the scan that raised the
     // summary PR, so it sits in the closed list on every later scan.
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 20,
         title: "Feature B",
@@ -2107,6 +2159,7 @@ Deno.test("checkAndHandleMilestoneCompletions - refreshes the existing summary P
           number: 601,
           title: "Milestone: v3.0",
           headRefName: "milestone/v3-0",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -2199,7 +2252,7 @@ function reopenedListedIssueGhFn(
           : [],
       );
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 20,
         title: "Feature B",
@@ -2290,7 +2343,7 @@ Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone does not
   const ghFn = async (args: string[]): Promise<string> => {
     const key = args.join(" ");
     // A failed or empty closed-issue read — indistinguishable from "none".
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return "[]";
     }
     return await inner(args);
@@ -2335,8 +2388,8 @@ Deno.test("checkAndHandleMilestoneCompletions - a cached all-state row with no s
     const editedBodies: string[] = [];
     const calls: string[] = [];
     const inner = reopenedListedIssueGhFn(editedBodies, true);
-    // A cache entry written before `state` joined the row.
-    await cache.write("owner/repo", "prs_all_branch_milestone/v3-0", [{
+    // A cached row whose read carried no `state`.
+    await cache.write("owner/repo", "prs_all_branch_v2_milestone/v3-0", [{
       number: 601,
       title: "Milestone: v3.0",
       headRefName: "milestone/v3-0",
@@ -2403,12 +2456,12 @@ function completedMilestoneWithRollupGhFn(
     if (key.includes("issue list") && key.includes("--state open")) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 20,
         title: "Feature B",
         milestone: { title: "v3.0" },
-        updatedAt,
+        updated_at: updatedAt,
       }]);
     }
     if (
@@ -2505,12 +2558,12 @@ Deno.test("checkAndHandleMilestoneCompletions - a changed classification rewrite
     let reopened = false;
     const ghFn = async (args: string[]): Promise<string> => {
       const key = args.join(" ");
-      if (key.includes("issue list") && key.includes("--state closed")) {
+      if (isClosedIssueRead(key)) {
         return JSON.stringify([{
           number: 20,
           title: "Feature B",
           milestone: { title: "v3.0" },
-          updatedAt,
+          updated_at: updatedAt,
         }]);
       }
       if (reopened && key.includes("/timeline")) {
@@ -2530,10 +2583,11 @@ Deno.test("checkAndHandleMilestoneCompletions - a changed classification rewrite
     assertEquals(edits(), 1);
     assertStringIncludes(live.body, "### Issues addressed\n- #20:");
 
-    // GitHub reports a newer updatedAt and the closed list is re-read.
+    // GitHub reports a newer updatedAt and the closed list is re-read (Issue
+    // #3662: the closed read is cached per milestone number, here 1).
     reopened = true;
     updatedAt = "2026-10-07T00:00:00Z";
-    await cache.invalidate("owner/repo", "issues_closed_all");
+    await cache.invalidate("owner/repo", "issues_closed_milestone_1");
     await checkAndHandleMilestoneCompletions(deps);
     assertEquals(edits(), 2);
     assertStringIncludes(live.body, "predates a later reopen");
@@ -2607,6 +2661,262 @@ Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone's second
   assertEquals(editedBodies.length, 1);
   await checkAndHandleMilestoneCompletions(deps);
   assertEquals(editedBodies.length, 1);
+});
+
+/**
+ * Issue #3662: a complete milestone (no open issues, one closed issue) whose
+ * closed issues come from the REST read by milestone number. `closedRead`
+ * decides what that read does: it returns a JSON list or throws. The repo-wide
+ * `issue list --state closed` batch answers with another milestone's issue
+ * only, so a fake that still reads the batch cannot pass by accident.
+ *
+ * `closableWhenEmpty` makes the milestone one an empty closed list would close
+ * outright: created well past the empty-milestone grace window, and with no
+ * milestone branch (nothing to merge).
+ */
+function completeMilestoneRestReadGhFn(
+  closedRead: () => string,
+  calls: string[],
+  { closableWhenEmpty = false }: { closableWhenEmpty?: boolean } = {},
+): (args: string[]) => Promise<string> {
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    calls.push(key);
+    const authoritative = authoritativeStub(key);
+    if (authoritative !== null) return authoritative;
+    if (key.includes("api") && key.includes("/milestones")) {
+      return JSON.stringify([{
+        title: "v1.0",
+        number: 1,
+        ...(closableWhenEmpty ? { created_at: "2026-01-01T00:00:00Z" } : {}),
+      }]);
+    }
+    if (closableWhenEmpty && key.includes("/branches/milestone")) {
+      throw new Error("HTTP 404: Branch not found");
+    }
+    if (key.includes("api repos/") && key.includes(".default_branch")) {
+      return "main";
+    }
+    if (key.includes("issue list") && key.includes("--state open")) {
+      return "[]";
+    }
+    if (key.includes("issues?milestone=") && key.includes("state=closed")) {
+      return closedRead();
+    }
+    if (key.includes("issue list") && key.includes("--state closed")) {
+      return JSON.stringify([
+        { number: 99, title: "Other work", milestone: { title: "v2.0" } },
+      ]);
+    }
+    if (key.includes("issue list") && key.includes("--state all")) {
+      return "[]";
+    }
+    if (key.includes("pr list") && key.includes("in:title")) return "[]";
+    if (key.includes("pr list") && key.includes("--state all")) return "[]";
+    if (key.includes("/branches/milestone")) {
+      return JSON.stringify({ name: "milestone/v1-0" });
+    }
+    if (key.includes("issue create")) {
+      return "https://github.com/owner/repo/issues/300";
+    }
+    if (key.includes("pr create")) {
+      return "https://github.com/owner/repo/pull/301";
+    }
+    if (key.includes("issue close")) return "";
+    return "[]";
+  };
+}
+
+const COMPLETE_MILESTONE_CLOSED_ROW = JSON.stringify([{
+  number: 10,
+  title: "Add login",
+  milestone: { title: "v1.0" },
+  updated_at: "2026-10-05T00:00:00Z",
+}]);
+
+Deno.test("Issue #3662 - a complete milestone raises its tracker and summary PR from the REST closed read, though the repo-wide closed batch omits its issue", async () => {
+  const calls: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: completeMilestoneRestReadGhFn(
+        () => COMPLETE_MILESTONE_CLOSED_ROW,
+        calls,
+      ),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assert(
+    calls.some((c) => c.includes("issues?milestone=1&state=closed")),
+    "the closed issues must be read by milestone number",
+  );
+  const prCreates = calls.filter((c) => c.includes("pr create"));
+  assertEquals(prCreates.length, 1);
+  assert(
+    prCreates[0]!.includes("#10"),
+    "the summary PR must carry the milestone's own closed issue",
+  );
+  assertEquals(calls.filter((c) => c.includes("issue create")).length, 1);
+  assert(
+    calls.some((c) => c.includes("issue close") && c.includes("300")),
+    "the tracking issue must be closed",
+  );
+});
+
+Deno.test("Issue #3662 - a failed closed-issue read skips a complete milestone: no tracker, summary PR or close, and a WARNING is logged", async () => {
+  const calls: string[] = [];
+  const logs: string[] = [];
+  // An old milestone with nothing to merge: read as [] it would be closed, so
+  // only the null skip keeps it open.
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: completeMilestoneRestReadGhFn(
+        () => {
+          throw new Error("HTTP 502: Bad Gateway");
+        },
+        calls,
+        { closableWhenEmpty: true },
+      ),
+      log: (msg) => logs.push(msg),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(calls.filter((c) => c.includes("issue create")), []);
+  assertEquals(calls.filter((c) => c.includes("pr create")), []);
+  assertEquals(calls.filter((c) => c.includes("issue close")), []);
+  // Zero open issues, past the grace window and nothing to merge: only the
+  // skip keeps it open.
+  assertEquals(
+    calls.filter((c) => c.includes("-X PATCH")),
+    [],
+    "a milestone whose closed read failed must not be closed",
+  );
+  assert(
+    logs.some((m) =>
+      m.includes("Milestone 'v1.0'") &&
+      m.includes("closed-issue read failed") &&
+      m.includes("(Issue #3662)")
+    ),
+    `expected the skip WARNING, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("Issue #3662 - the closable fixture is closed when its closed read is an empty list, so the failed-read skip is what keeps it open", async () => {
+  const calls: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: completeMilestoneRestReadGhFn(
+        () => "[]",
+        calls,
+        { closableWhenEmpty: true },
+      ),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assert(
+    calls.some((c) =>
+      c.includes("-X PATCH") && c.includes("milestones/1") &&
+      c.includes("state=closed")
+    ),
+    "an old, empty milestone with nothing to merge must be closed",
+  );
+});
+
+Deno.test("Issue #3662 - the same complete milestone with a readable closed list still raises its tracker and summary PR", async () => {
+  const calls: string[] = [];
+  const logs: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: completeMilestoneRestReadGhFn(
+        () => COMPLETE_MILESTONE_CLOSED_ROW,
+        calls,
+      ),
+      log: (msg) => logs.push(msg),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(calls.filter((c) => c.includes("issue create")).length, 1);
+  assertEquals(calls.filter((c) => c.includes("pr create")).length, 1);
+  assert(calls.some((c) => c.includes("issue close") && c.includes("300")));
+  assertEquals(
+    logs.some((m) => m.includes("closed-issue read failed")),
+    false,
+    "a readable list must not log the skip WARNING",
+  );
+});
+
+/**
+ * Issue #3662: an incomplete milestone (child #21 still open) with an OPEN
+ * summary PR, so the refresh path is the only writer. `closedRead` decides
+ * what the REST closed-issue read does: it returns a JSON list or throws.
+ */
+function refreshWhileIncompleteGhFn(
+  closedRead: () => string,
+  editedBodies: string[],
+): (args: string[]) => Promise<string> {
+  const inner = reopenedListedIssueGhFn(editedBodies, true);
+  return async (args: string[]): Promise<string> => {
+    const key = args.join(" ");
+    if (key.includes("issues?milestone=") && key.includes("state=closed")) {
+      return closedRead();
+    }
+    return await inner(args);
+  };
+}
+
+Deno.test("Issue #3662 - a failed closed-issue read leaves an open summary PR body as it is and logs a WARNING", async () => {
+  const editedBodies: string[] = [];
+  const logs: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: refreshWhileIncompleteGhFn(
+        () => {
+          throw new Error("HTTP 502: Bad Gateway");
+        },
+        editedBodies,
+      ),
+      log: (msg) => logs.push(msg),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(
+    editedBodies,
+    [],
+    "a failed read must not publish a body over the open summary PR",
+  );
+  assert(
+    logs.some((m) =>
+      m.includes("could not refresh summary PR body") &&
+      m.includes("closed-issue read failed") && m.includes("(Issue #3662)")
+    ),
+    `expected the refresh WARNING, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("Issue #3662 - a readable closed-issue list still refreshes an open summary PR body", async () => {
+  const editedBodies: string[] = [];
+  const logs: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: refreshWhileIncompleteGhFn(
+        () =>
+          JSON.stringify([{
+            number: 20,
+            title: "Feature B",
+            milestone: { title: "v3.0" },
+            updated_at: "2026-10-05T00:00:00Z",
+          }]),
+        editedBodies,
+      ),
+      log: (msg) => logs.push(msg),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assertEquals(editedBodies.length, 1);
+  assertStringIncludes(editedBodies[0]!, "#20");
+  assertEquals(
+    logs.some((m) => m.includes("closed-issue read failed")),
+    false,
+  );
 });
 
 Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone with no summary PR makes no uncached PR read (PR #3640 review)", async () => {
@@ -2902,7 +3212,7 @@ Deno.test("Issue #1210 - milestone closed when summary PR is merged", async () =
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 10,
         title: "Improve search",
@@ -2928,6 +3238,7 @@ Deno.test("Issue #1210 - milestone closed when summary PR is merged", async () =
           number: 1069,
           title: "Milestone: Better Discovery",
           headRefName: "milestone/better-discovery",
+          isCrossRepository: false,
         },
       ]);
     }
@@ -2997,7 +3308,7 @@ Deno.test("Issue #1210 - milestone NOT closed when summary PR is still open", as
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 10,
         title: "Feature X",
@@ -3084,7 +3395,7 @@ Deno.test("Issue #1210 - milestone NOT closed when summary PR was just created",
     ) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 10,
         title: "Feature Y",
@@ -3156,7 +3467,7 @@ Deno.test("Issue #1133 - tracking issue left open when summary PR creation fails
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "v4.0", number: 1 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3165,7 +3476,7 @@ Deno.test("Issue #1133 - tracking issue left open when summary PR creation fails
     if (key.includes("issue list") && key.includes("--state open")) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([{
         number: 30,
         title: "Feature C",
@@ -3244,7 +3555,7 @@ Deno.test(
       if (authoritative !== null) return authoritative;
 
       // List milestones — one idle-task milestone with zero open issues.
-      if (key.includes("api") && key.endsWith("/milestones")) {
+      if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
         return JSON.stringify([
           {
             title: "idle-task: security-scan",
@@ -3314,7 +3625,7 @@ Deno.test(
       const authoritative = authoritativeStub(key);
       if (authoritative !== null) return authoritative;
 
-      if (key.includes("api") && key.endsWith("/milestones")) {
+      if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
         return JSON.stringify([
           {
             title: "idle-task: security-scan",
@@ -3377,7 +3688,7 @@ Deno.test(
       const authoritative = authoritativeStub(key);
       if (authoritative !== null) return authoritative;
 
-      if (key.includes("api") && key.endsWith("/milestones")) {
+      if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
         return JSON.stringify([
           {
             title: "v2.0",
@@ -3397,7 +3708,7 @@ Deno.test(
       ) {
         return "[]";
       }
-      if (key.includes("issue list") && key.includes("--state closed")) {
+      if (isClosedIssueRead(key)) {
         return JSON.stringify([
           { number: 11, title: "real work", milestone: { title: "v2.0" } },
         ]);
@@ -3651,7 +3962,7 @@ Deno.test("checkAndHandleMilestoneCompletions - self-heals a deadlocked issue-on
       if (match) closedMilestones.push(Number(match[1]));
       return "{}";
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "scan", number: 5, open_issues: 1 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3673,7 +3984,7 @@ Deno.test("checkAndHandleMilestoneCompletions - self-heals a deadlocked issue-on
         },
       ]);
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 100, title: "did work", milestone: { title: "scan" } },
       ]);
@@ -3729,7 +4040,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "Milestone 3", number: 3 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3761,7 +4072,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes duplicate trackers each p
         },
       ]);
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 50, title: "work", milestone: { title: "Milestone 3" } },
       ]);
@@ -3819,7 +4130,7 @@ Deno.test("checkAndHandleMilestoneCompletions - closes a premature tracker when 
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "TPMUM-715", number: 8 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -3956,7 +4267,7 @@ async function run3474(sc: Scenario3474) {
       }
       return "{}";
     }
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{
         title: "scan",
         number: 1,
@@ -3998,7 +4309,7 @@ async function run3474(sc: Scenario3474) {
       }
       return JSON.stringify(open);
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify(
         sc.closedIssues === false
           ? []
@@ -4097,11 +4408,11 @@ Deno.test("close-out - a failing abandoned-PR comment does not stop the close (I
         const a = authoritativeStub(key);
         if (a !== null) return a;
         if (key.includes("-X PATCH")) return "{}";
-        if (key.includes("api") && key.endsWith("/milestones")) {
+        if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
           return JSON.stringify([{ title: "scan", number: 1 }]);
         }
         if (key.includes(".default_branch")) return "main";
-        if (key.includes("issue list") && key.includes("--state closed")) {
+        if (isClosedIssueRead(key)) {
           return JSON.stringify([
             { number: 100, title: "w", milestone: { title: "scan" } },
           ]);
@@ -4369,7 +4680,7 @@ function completeMilestoneGhFn(writes: string[]) {
     if (key.includes("issue list") && key.includes("--state open")) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -4498,7 +4809,7 @@ function vetoScenarioGhFn(
     const authored = authoritative(key);
     if (authored !== null) return authored;
 
-    if (key.includes("api") && key.endsWith("/milestones")) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return JSON.stringify([{ title: "v1.0", number: 1, open_issues: 0 }]);
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
@@ -4508,7 +4819,7 @@ function vetoScenarioGhFn(
     if (key.includes("issue list") && key.includes("--state open")) {
       return "[]";
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
@@ -4746,7 +5057,7 @@ function scriptDeadlockGh(
     calls.push(args);
     const key = args.join(" ");
 
-    if (key.includes("api") && /\/milestones$/.test(key)) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return Promise.resolve(
         JSON.stringify([
           { title: "Crates API", number: 1 },
@@ -4760,7 +5071,7 @@ function scriptDeadlockGh(
     if (key.includes("issue list") && key.includes("--state open")) {
       return Promise.resolve(JSON.stringify(DEADLOCK_OPEN_ISSUES));
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return Promise.resolve(JSON.stringify(DEADLOCK_CLOSED_ISSUES));
     }
     // Partial-rollup idempotency check.
@@ -4967,7 +5278,7 @@ Deno.test("milestone deadlock rollup - the final rollup still fires after a merg
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return Promise.resolve(authoritative);
 
-    if (key.includes("api") && /\/milestones$/.test(key)) {
+    if (key.includes("api") && /\/milestones(\?|$)/.test(key)) {
       return Promise.resolve(
         JSON.stringify([{ title: MILESTONE, number: 2 }]),
       );
@@ -4980,7 +5291,7 @@ Deno.test("milestone deadlock rollup - the final rollup still fires after a merg
     if (key.includes("issue list") && key.includes("--state open")) {
       return Promise.resolve("[]");
     }
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    if (isClosedIssueRead(key)) {
       return Promise.resolve(JSON.stringify(closedIssues));
     }
     // The partial rollup's own idempotency search — merged, and no open one.
@@ -5064,6 +5375,7 @@ Deno.test("close-out - a final PR the fleet's roll-back closed is superseded: a 
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   assertEquals(r.comments, [], "no 'closed without merging' close-out");
@@ -5113,6 +5425,7 @@ Deno.test("close-out - a roll-back close comment posted by a non-fleet account i
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   assertEquals(r.patched, [1], "abandoned close-out closes the milestone");
@@ -5135,6 +5448,7 @@ Deno.test("close-out - an unresolved fleet set classes a roll-back-commented fin
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   assertEquals(r.patched, [], "the milestone is not closed");
@@ -5151,6 +5465,35 @@ Deno.test("close-out - an unresolved fleet set classes a roll-back-commented fin
   );
 });
 
+Deno.test("close-out - a fork-headed PR on the milestone branch name does not stop the final PR being raised (Issue #3595)", async () => {
+  const forkRow = (isCrossRepository: boolean) => ({
+    number: 77,
+    title: "Milestone: scan",
+    headRefName: BRANCH_3474,
+    isCrossRepository,
+  });
+  const r = await run3474({
+    prs: [pr3474(77, "OPEN", BRANCH_3474, true)],
+    branchExists: true,
+    allStatePrs: [forkRow(true)],
+  });
+  assert(
+    r.calls.some((c) => c.includes("pr create")),
+    "a fork-headed PR is not the milestone's final PR, so one is raised",
+  );
+
+  // Positive control: the same PR from this repository is the final PR.
+  const same = await run3474({
+    prs: [pr3474(77, "OPEN", BRANCH_3474, false)],
+    branchExists: true,
+    allStatePrs: [forkRow(false)],
+  });
+  assert(
+    !same.calls.some((c) => c.includes("pr create")),
+    "a same-repository final PR already exists, so none is raised",
+  );
+});
+
 Deno.test("close-out - the superseded arm retires an open sync PR before the fresh final PR is raised (PR #3592 review, #1967)", async () => {
   const r = await run3474({
     prs: [pr3474(77, "CLOSED")],
@@ -5163,6 +5506,7 @@ Deno.test("close-out - the superseded arm retires an open sync PR before the fre
       number: 77,
       title: "Milestone: scan",
       headRefName: BRANCH_3474,
+      isCrossRepository: false,
     }],
   });
   const closeAt = r.calls.findIndex((c) => c.startsWith("pr close 1957"));

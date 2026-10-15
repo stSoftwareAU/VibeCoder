@@ -141,6 +141,19 @@ class FakeGh {
     if (args.includes("GET")) {
       return Promise.resolve('{"users":[],"teams":[]}');
     }
+    // Default-branch read and compare probes (Issue #3596): the fix branch is
+    // level with the default branch, and the head merges it, so it lands as
+    // --merge.
+    if (a0 === "api" && args[1] === `repos/${REPO}`) {
+      return Promise.resolve("Develop");
+    }
+    if (a0 === "api" && String(args[1]).includes("/compare/")) {
+      if (args.includes(".behind_by")) return Promise.resolve("0");
+      if (args.includes(".merge_base_commit.sha")) {
+        return Promise.resolve("a".repeat(40));
+      }
+      if (args.includes(".status")) return Promise.resolve("ahead");
+    }
     return Promise.resolve("");
   };
 
