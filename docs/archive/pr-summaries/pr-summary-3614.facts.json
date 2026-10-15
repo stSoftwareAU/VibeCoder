@@ -17,7 +17,7 @@
         "outcome": "operand isMilestoneSyncBranch false: a non-sync head with no readable base falls through to the old arming path",
         "test": "worker/deno/tests/pr_auto_merge_test.ts",
         "testName": "pr_auto_merge - enableAutoMerge returns NotAllowed for unprotected branch",
-        "flipWentRed": "forcing isMilestoneSyncBranch true deferred non-sync heads; 6 tests in pr_auto_merge_test.ts went red, including this one"
+        "flipWentRed": "forcing isMilestoneSyncBranch true deferred non-sync heads; 6 tests in worker/deno/tests/pr_auto_merge_test.ts went red, including this one"
       },
       {
         "path": "worker/deno/lib/pr_auto_merge.ts",
