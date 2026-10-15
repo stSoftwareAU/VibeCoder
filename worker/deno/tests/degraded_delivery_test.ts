@@ -1082,6 +1082,23 @@ Deno.test("assessReportedGaps - an issue stating no criteria keeps each partial 
   );
 });
 
+Deno.test("assessScopeShortfalls - an issue stating no criteria lists its met entries as delivered and keeps its partial gap (PR #3676 review)", () => {
+  const verdict = assessScopeShortfalls(
+    ISSUE_WITHOUT_SCOPE,
+    MET_SUMMARY +
+      "- **partial** — the quarterly emailer — reviewer: partial — reason: not wired up\n",
+  );
+  assertEquals(verdict.delivered.length, 1);
+  assertStringIncludes(verdict.delivered[0]!, "the export works");
+  assertEquals(verdict.shortfalls.length, 2);
+  assertEquals(verdict.shortfalls[0], {
+    criterion: UNSTATED_SCOPE_ITEM,
+    status: "unassessed",
+  });
+  assertStringIncludes(verdict.shortfalls[1]!.criterion, "quarterly emailer");
+  assertEquals(verdict.shortfalls[1]!.status, "partial");
+});
+
 Deno.test("buildDegradedFollowUpIssue - a healthy verdict gets the reported-gap body under the same finding id (Issue #3506)", () => {
   const verdict = assessReportedGaps(
     TWO_CRITERIA_ISSUE,

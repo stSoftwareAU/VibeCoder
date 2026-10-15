@@ -45,7 +45,9 @@
  * delivered only when it is matched to a `met` entry (and nothing worse); a
  * `partial` or `missing` match, or no match at all, is a shortfall. A
  * degraded run on an issue that states no scope names the issue itself as
- * unverified, since there is nothing narrower to name.
+ * unverified, since there is nothing narrower to name, and still files a
+ * follow-up for each `partial` or `missing` entry its summary reports, named
+ * by that entry's subject (PR #3676 review).
  *
  * Only a `partial` or `missing` shortfall files a follow-up (Issue #2695). An
  * `unassessed` item carries no evidence of a gap — the run said nothing about
@@ -91,7 +93,7 @@ import {
   extractAcceptedScope,
   parseClosureEntries,
 } from "./acceptance_criteria_gate.ts";
-import { matchClosureEntries } from "./closure_criterion_match.ts";
+import { gapSubject, matchClosureEntries } from "./closure_criterion_match.ts";
 import { neutraliseAgentMarkers } from "./agent_marker_neutralisation.ts";
 import { IMPLEMENTATION_RUN_STATS_PHASE } from "./issue_run_stats_comment.ts";
 import {
@@ -151,21 +153,40 @@ export function assessScopeShortfalls(
   prBody: string,
 ): { delivered: string[]; shortfalls: DegradedShortfall[] } {
   const stated = extractAcceptedScope(issueBody);
-  const scope = stated.length > 0 ? stated : [UNSTATED_SCOPE_ITEM];
+  const entries = parseClosureEntries(prBody);
+
+  if (stated.length === 0) {
+    // An issue that states no scope has no criterion to match, so every entry
+    // is unassigned (PR #3676 review). Each `met` entry is what the run says it
+    // delivered, and each `partial` or `missing` entry is a shortfall named by
+    // its own subject, so a degraded run keeps the gap it reported.
+    const { unassignedGaps } = matchClosureEntries([], entries);
+    return {
+      delivered: entries
+        .filter((entry) => entry.status === "met")
+        .map((entry) => gapSubject(entry)),
+      shortfalls: [
+        { criterion: UNSTATED_SCOPE_ITEM, status: "unassessed" },
+        ...unassignedGaps.map((gap) => ({
+          criterion: gap.subject,
+          status: gap.status,
+        })),
+      ],
+    };
+  }
+
   // Closure entries are matched to criteria by their words, not by list
   // position (Issue #3128): an entry that matches no criterion, or more than
   // one equally well, assesses nothing, so its criterion is `unassessed`; a
   // criterion split across several entries takes their worst status. A
   // `partial` or `missing` entry left unassigned is still a shortfall, named
   // by its own subject, so a paraphrased gap is not dropped.
-  const match = stated.length > 0
-    ? matchClosureEntries(stated, parseClosureEntries(prBody))
-    : { statuses: [], unassignedGaps: [] };
+  const match = matchClosureEntries(stated, entries);
 
   const delivered: string[] = [];
   const shortfalls: DegradedShortfall[] = [];
-  scope.forEach((criterion, index) => {
-    const status = stated.length > 0 ? match.statuses[index] : undefined;
+  stated.forEach((criterion, index) => {
+    const status = match.statuses[index];
     if (status === "met") {
       delivered.push(criterion);
     } else if (status === "partial" || status === "missing") {
@@ -190,29 +211,14 @@ export const REPORTED_GAP_SECTION_HEADING =
  * marks `partial` or `missing`, matched exactly as assessScopeShortfalls does.
  * `unassessed` items are dropped — the run said nothing about them (Issue #2695).
  *
- * An issue that states no scope has no criterion to match against, so each
- * `partial` or `missing` entry is kept as an unassigned gap, named by its own
- * subject (PR #3676 review). Nothing is delivered then: no entry is matched to
- * a criterion.
+ * An issue that states no scope keeps each `partial` or `missing` entry as a
+ * gap named by its own subject, and lists its `met` entries as delivered (PR
+ * #3676 review); {@link assessScopeShortfalls} does that for both cases.
  */
 export function assessReportedGaps(
   issueBody: string,
   prBody: string,
 ): DegradedDeliveryVerdict {
-  if (extractAcceptedScope(issueBody).length === 0) {
-    const { unassignedGaps } = matchClosureEntries(
-      [],
-      parseClosureEntries(prBody),
-    );
-    return {
-      degraded: false,
-      delivered: [],
-      shortfalls: unassignedGaps.map((gap) => ({
-        criterion: gap.subject,
-        status: gap.status,
-      })),
-    };
-  }
   const { delivered, shortfalls } = assessScopeShortfalls(issueBody, prBody);
   return {
     degraded: false,

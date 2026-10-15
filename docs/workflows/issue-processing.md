@@ -2456,6 +2456,9 @@ flowchart TD
   (with the unassessed items listed). It references no follow-up, and the PR
   closes the issue as a healthy PR would. Where a `partial` or `missing` item
   exists, unassessed items are still listed in the follow-up alongside it.
+  An issue that states no scope is no exception: each `partial` or `missing`
+  entry its summary reports is a shortfall named by its own subject, so the
+  follow-up is filed and the PR names it (PR #3676 review).
 - **The follow-up** carries the `idle-task` label — the one work-trigger label
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
