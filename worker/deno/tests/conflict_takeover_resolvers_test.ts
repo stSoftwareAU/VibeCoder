@@ -382,6 +382,18 @@ Deno.test("a gated takeover resolves a genuine conflict into a fix PR (Issue #30
       ) {
         return Promise.resolve("");
       }
+      // Default-branch read and compare probes (Issues #3596): the fix branch
+      // is 0 behind main, and the head merges main, so it lands as --merge.
+      if (args[0] === "api" && args[1] === "repos/acme/widgets") {
+        return Promise.resolve("main");
+      }
+      if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+        if (args.includes(".behind_by")) return Promise.resolve("0");
+        if (args.includes(".merge_base_commit.sha")) {
+          return Promise.resolve("a".repeat(40));
+        }
+        if (args.includes(".status")) return Promise.resolve("ahead");
+      }
       return Promise.resolve("");
     };
 

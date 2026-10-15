@@ -16,6 +16,7 @@ import {
   issueNumberFromCloseArgs,
   noteGhIssueClose,
 } from "../lib/issue_close_notifier.ts";
+import { fetchClosedIssuesByMilestoneNumber } from "../lib/issue_query.ts";
 import { ProcessedIssueRegistry } from "../lib/processed_issue_registry.ts";
 
 /** A cache in a throwaway directory, pre-seeded with the close-sensitive keys. */
@@ -289,4 +290,92 @@ Deno.test("close notifier - a REST close on gh's {owner}/{repo} placeholder warn
   assertEquals(registry.size(), 0);
   assertEquals(warnings.length, 1);
   assert(warnings[0]!.includes("cannot_note_issue-close"));
+});
+
+// ---------------------------------------------------------------------------
+// Per-milestone closed lists (Issue #3662)
+// ---------------------------------------------------------------------------
+
+Deno.test("close notifier - a close makes the next per-milestone closed read include the issue (Issue #3662)", async () => {
+  const repo = "o/r";
+  const dir = await Deno.makeTempDir({ prefix: "vibe-close-notifier-" });
+  const cache = new IssueCache(dir);
+  try {
+    let closed = [{ number: 10, title: "done" }];
+    let calls = 0;
+    const fakeGh = (): Promise<string> => {
+      calls++;
+      return Promise.resolve(JSON.stringify(closed));
+    };
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber(repo, 4, cache, fakeGh),
+      [{ number: 10, title: "done" }],
+    );
+
+    // The worker closes #21 through the gh close path.
+    closed = [{ number: 10, title: "done" }, { number: 21, title: "last" }];
+    await noteGhIssueClose(
+      ["issue", "close", "21", "--repo", repo],
+      0,
+      { registry: new ProcessedIssueRegistry(), cache },
+    );
+
+    assertEquals(
+      await fetchClosedIssuesByMilestoneNumber(repo, 4, cache, fakeGh),
+      [{ number: 10, title: "done" }, { number: 21, title: "last" }],
+    );
+    assertEquals(calls, 2, "the cached list must not be served after a close");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("close notifier - a reopen drops every per-milestone closed list in the repo, and only those (Issue #3662)", async () => {
+  const repo = "o/r";
+  const dir = await Deno.makeTempDir({ prefix: "vibe-close-notifier-" });
+  const cache = new IssueCache(dir);
+  try {
+    await cache.write(repo, "issues_closed_milestone_1", [{ number: 5 }]);
+    await cache.write(repo, "issues_closed_milestone_12", [{ number: 6 }]);
+    await cache.write(repo, "issue_body_v1_99", "body");
+    await cache.write("o/other", "issues_closed_milestone_1", [{ number: 7 }]);
+
+    await noteGhIssueClose(
+      ["api", "-X", "PATCH", "repos/o/r/issues/21", "-f", "state=open"],
+      0,
+      { registry: new ProcessedIssueRegistry(), cache },
+    );
+
+    assertEquals(await cache.read(repo, "issues_closed_milestone_1"), null);
+    assertEquals(await cache.read(repo, "issues_closed_milestone_12"), null);
+    assertEquals(await cache.read(repo, "issue_body_v1_99"), "body");
+    assertEquals(
+      await cache.read("o/other", "issues_closed_milestone_1"),
+      [{ number: 7 }],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("close notifier - a failed close leaves the per-milestone closed lists cached (Issue #3662)", async () => {
+  const repo = "o/r";
+  const dir = await Deno.makeTempDir({ prefix: "vibe-close-notifier-" });
+  const cache = new IssueCache(dir);
+  try {
+    await cache.write(repo, "issues_closed_milestone_1", [{ number: 5 }]);
+
+    await noteGhIssueClose(
+      ["issue", "close", "21", "--repo", repo],
+      1,
+      { registry: new ProcessedIssueRegistry(), cache },
+    );
+
+    assertEquals(
+      await cache.read(repo, "issues_closed_milestone_1"),
+      [{ number: 5 }],
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
 });
