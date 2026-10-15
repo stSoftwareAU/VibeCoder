@@ -1294,12 +1294,18 @@ The file MUST contain:
    line per edited expectation, and an edited test that stays green without
    its guard is a blocking self-review finding — add an assertion that goes
    red, or move the lost check to a test that still covers it and name that
-   test. Every new test added to guard a
-   change (a fix, a new guard, a new rule) counts only once you have seen it go
-   red with only its change removed (see **A new test must go red without its
-   change** in the
-   guidelines); one that stays green without its change is a blocking
-   self-review finding. For a documentation-drift test that check is per
+   test. Every new test added to guard a change (a fix, a new guard, a new
+   rule) counts only once you have seen it go red with only its change removed
+   (see **A new test must go red without its change** in the guidelines); one
+   that stays green without its change is a blocking self-review finding. When
+   the change adds the same handling at more than one step of a path, a new
+   test named for one step counts only once it goes red with only that step
+   broken and the earlier steps left in place — reverting the whole change
+   does not show which step a test reached — and, when the steps share one
+   mechanism, only once it also asserts that the run got past the earlier
+   steps (see **A test named for one step must reach that step** in the
+   guidelines); record one line per such test naming the step, the step-only
+   break and the result. For a documentation-drift test that check is per
    pinned phrase, not per test: look for each phrase in the base branch's
    version of the section the test reads (`git show <base>:<doc>`, narrowed
    to the same section title; in the Vibe Coder repository, `deno task
