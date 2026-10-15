@@ -520,16 +520,21 @@ flowchart TD
   `behind_by`). A branch still behind concludes `failed` with no PR raised; an
   unreadable answer throws (Issue #3596). Once raised, the PR's merge method
   follows its head: a merge commit when the head merges the default branch,
-  which leaves the milestone branch 0 behind the default branch.
+  which leaves the milestone branch 0 behind the default branch. Where the
+  repository forbids merge commits, the `--merge` arming is refused:
+  `raiseMilestoneFixPr` reports that on its result (`mergeCommitRefusal`), and
+  the takeover concludes `failed` rather than `resolved` (below).
 - Any other head: the ordinary ladder resolve path (`resolveViaLadder`). Both
   resolver seams are marker-free by contract — the takeover owns the attempt
   and conclusion markers, so one takeover spends at most one unit of the
   shared budget.
 - A judged exit after the attempt marker posts a conclusion marker:
   `resolved` (`pass="takeover"`) when the merge was pushed or the fix PR was
-  raised, `failed` when the resolver could not resolve or the fix branch is
-  still behind its base (no PR raised), and `failed` when anything threw — then
-  the error is re-raised, never swallowed. A cut-short agent
+  raised and can land, `failed` when the resolver could not resolve, when the
+  fix branch is still behind its base (no PR raised), or when the fix PR was
+  raised but cannot land because the repository forbids merge commits (the
+  conclusion names it: `fix PR <url> was raised but cannot land: …`), and
+  `failed` when anything threw — then the error is re-raised, never swallowed. A cut-short agent
   (`AGENT_RUN_ENDED_BY_WORKER`) or a provider refusal
   (`AGENT_PROVIDER_UNAVAILABLE`) withdraws the attempt marker instead, so
   that attempt is not charged (Issues #1693, #2613).

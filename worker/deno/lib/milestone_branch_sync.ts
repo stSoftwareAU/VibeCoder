@@ -1022,10 +1022,11 @@ async function prepareRollbackWorktree(
 /**
  * Build a {@link DefaultBranchFn} that resolves via the injected
  * `ghCommandFn`. Used as a fallback for tests that stub only
- * `ghCommandFn` — production wiring passes `getRepoDefaultBranch`
+ * `ghCommandFn`, and for the merge-method read in milestone_fix_pr.ts
+ * (Issue #3596). Production wiring passes `getRepoDefaultBranch`
  * directly so the persistent cache is used (Issue #1509).
  */
-function makeGhDefaultBranchFn(ghFn: GhCommandFn): DefaultBranchFn {
+export function makeGhDefaultBranchFn(ghFn: GhCommandFn): DefaultBranchFn {
   return async (repo: string): Promise<Result<string>> => {
     try {
       const out = await ghFn([

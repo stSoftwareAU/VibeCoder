@@ -444,6 +444,7 @@ Deno.test("raiseMilestoneFixPr - a head that merges the default branch is armed 
   }, { gh });
 
   assert(result.ok, result.ok ? "" : result.error.message);
+  assertEquals(result.value.mergeCommitRefusal, undefined);
   const merge = calls.find((a) => a[1] === "merge");
   assert(merge, JSON.stringify(calls));
   assert(merge.includes("--auto"), merge.join(" "));
@@ -476,6 +477,10 @@ Deno.test("raiseMilestoneFixPr - a merge refused by a repository that bans merge
   }, { gh, warn: (m) => warnings.push(m) });
 
   assert(result.ok);
+  assertStringIncludes(
+    result.value.mergeCommitRefusal ?? "",
+    "NOT squashed",
+  );
   const merges = calls.filter((a) => a[1] === "merge");
   assertEquals(merges.length, 1, JSON.stringify(merges));
   assert(!merges[0]!.includes("--squash"), merges[0]!.join(" "));

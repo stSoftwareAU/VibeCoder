@@ -30,12 +30,14 @@
  */
 
 import type { Result } from "../types.ts";
+import { isSafeRef } from "./conflict_fallback_context.ts";
 import { isFleetAuthor } from "./fleet_authors.ts";
 import {
   isMilestoneFixBranch,
   milestoneFixPrefixFor,
   sanitiseSegment,
 } from "./milestone_branch_names.ts";
+import { makeGhDefaultBranchFn } from "./milestone_branch_sync.ts";
 import { clearMilestoneReviewRequests } from "./milestone_pr_reviewers.ts";
 import { isMergeCommitNotAllowed } from "./milestone_sync_pr.ts";
 
@@ -106,6 +108,8 @@ export interface MilestoneFixPr {
   url: string;
   /** True when this call opened the PR rather than reusing an open one. */
   opened: boolean;
+  /** Set when arming was refused because the repository forbids the merge commit this head needs (Issue #3596): the fix PR cannot land until merge commits are allowed. */
+  mergeCommitRefusal?: string;
 }
 
 /**
@@ -231,9 +235,6 @@ export interface RaiseMilestoneFixPrOptions {
 /** The merge method a milestone fix PR is armed with (Issue #3596). */
 export type MilestoneFixMergeMethod = "--merge" | "--squash";
 
-/** A branch name or commit sha that is safe to put in a `gh api` path. */
-const GIT_REF_CHARS = /^[A-Za-z0-9._\/-]+$/;
-
 /** A full commit sha, as the compare API returns it. */
 const COMMIT_SHA = /^[0-9a-f]{40}$/i;
 
@@ -267,7 +268,7 @@ export async function milestoneFixMergeMethod(
     };
   }
   for (const ref of [milestoneBranch, head]) {
-    if (!GIT_REF_CHARS.test(ref) || ref.includes("..")) {
+    if (!isSafeRef(ref)) {
       return {
         ok: false,
         error: new Error(
@@ -287,18 +288,9 @@ export async function milestoneFixMergeMethod(
     ),
   });
 
-  let defaultBranch: string;
-  try {
-    defaultBranch = (await gh([
-      "api",
-      `repos/${repo}`,
-      "--jq",
-      ".default_branch",
-    ])).trim();
-  } catch (error) {
-    return fail(error);
-  }
-  if (!defaultBranch) return fail("GitHub returned no default branch");
+  const defaultRead = await makeGhDefaultBranchFn(gh)(repo);
+  if (!defaultRead.ok) return fail(defaultRead.error);
+  const defaultBranch = defaultRead.value;
 
   let mergeBase: string;
   try {
@@ -394,7 +386,8 @@ async function reportFixPrNotArmed(
  *
  * The merge method follows the head (Issue #3596): `--merge` when it merges
  * the default branch, `--squash` otherwise. A repository that refuses merge
- * commits is reported, never retried with `--squash`.
+ * commits is reported, never retried with `--squash`, and the refusal text is
+ * returned so the caller can surface it.
  */
 async function armMilestoneFixPrAutoMerge(
   repo: string,
@@ -402,7 +395,7 @@ async function armMilestoneFixPrAutoMerge(
   milestoneBranch: string,
   fixBranch: string,
   deps: MilestoneFixPrDeps,
-): Promise<void> {
+): Promise<string | undefined> {
   let base: unknown;
   try {
     const raw = await deps.gh([
@@ -423,7 +416,7 @@ async function armMilestoneFixPrAutoMerge(
       `its base could not be read (${message.trim()}) (Issue #3433)`,
       deps,
     );
-    return;
+    return undefined;
   }
   if (base !== milestoneBranch) {
     await reportFixPrNotArmed(
@@ -434,7 +427,7 @@ async function armMilestoneFixPrAutoMerge(
       }', not its milestone branch '${milestoneBranch}' (Issue #3433)`,
       deps,
     );
-    return;
+    return undefined;
   }
   const method = await milestoneFixMergeMethod(
     repo,
@@ -449,7 +442,7 @@ async function armMilestoneFixPrAutoMerge(
       `whether its head merges the default branch could not be read (${method.error.message}), so it is not armed rather than risk squashing a default-branch merge (Issue #3596)`,
       deps,
     );
-    return;
+    return undefined;
   }
   try {
     await deps.gh([
@@ -464,16 +457,13 @@ async function armMilestoneFixPrAutoMerge(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (method.value === "--merge" && isMergeCommitNotAllowed(message)) {
-      await reportFixPrNotArmed(
-        repo,
-        prNumber,
-        milestoneFixMergeCommitRefusal(repo, prNumber, message),
-        deps,
-      );
-      return;
+      const refusal = milestoneFixMergeCommitRefusal(repo, prNumber, message);
+      await reportFixPrNotArmed(repo, prNumber, refusal, deps);
+      return refusal;
     }
     await reportFixPrNotArmed(repo, prNumber, message.trim(), deps);
   }
+  return undefined;
 }
 
 /**
@@ -586,7 +576,7 @@ export async function raiseMilestoneFixPr(
       };
     }
 
-    await armMilestoneFixPrAutoMerge(
+    const mergeCommitRefusal = await armMilestoneFixPrAutoMerge(
       repo,
       number,
       milestoneBranch,
@@ -607,7 +597,15 @@ export async function raiseMilestoneFixPr(
       `milestone fix: raised PR ${created.trim()} to deliver the ${pass} ` +
         `into '${milestoneBranch}' for ${repo}#${milestonePrNumber} (Issue #2907)`,
     );
-    return { ok: true, value: { number, url: created.trim(), opened: true } };
+    return {
+      ok: true,
+      value: {
+        number,
+        url: created.trim(),
+        opened: true,
+        ...(mergeCommitRefusal ? { mergeCommitRefusal } : {}),
+      },
+    };
   } catch (error) {
     return {
       ok: false,

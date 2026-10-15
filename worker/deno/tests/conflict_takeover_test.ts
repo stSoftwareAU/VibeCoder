@@ -83,6 +83,8 @@ interface FakeGhOptions {
   labelsOnPr?: string[];
   /** The `.behind_by` reply for compare calls; a string can be garbage. */
   behindBy?: number | string;
+  /** Refuse a `pr merge --merge`: the repository forbids merge commits. */
+  mergeCommitRefused?: boolean;
 }
 
 interface FakeGh {
@@ -158,6 +160,11 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
 
     // pr merge --auto.
     if (args[0] === "pr" && args[1] === "merge") {
+      if (options.mergeCommitRefused && args.includes("--merge")) {
+        return Promise.reject(
+          new Error("Merge commits are not allowed on this repository"),
+        );
+      }
       return Promise.resolve("");
     }
 
@@ -789,6 +796,35 @@ Deno.test("runConflictTakeover - an unreadable behind count rejects with no fix 
   assert(
     comments.some((call) => commentBody(call).includes(CONFLICT_FAILED_MARKER)),
   );
+});
+
+Deno.test("runConflictTakeover - a fix PR whose merge commit is refused is failed, not resolved (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    mergeCommitRefused: true,
+  });
+  const deps = makeDeps(fake);
+
+  const outcome = await runConflictTakeover(gatedPr(), deps);
+
+  assertEquals(outcome.kind, "failed");
+  if (outcome.kind === "failed") {
+    assertEquals(outcome.route, "milestone-fix");
+    assertStringIncludes(outcome.detail, "cannot land");
+    assertStringIncludes(outcome.detail, "NOT squashed");
+  }
+  const merges = fake.calls.filter((a) => a[0] === "pr" && a[1] === "merge");
+  assert(merges.some((a) => a.includes("--merge")));
+  assert(!merges.some((a) => a.includes("--squash")));
+
+  // Only the takeover PR's own thread: the fix PR's refusal comment is posted
+  // to PR 900 and is not the conclusion.
+  const comments = commentsCalls(fake.calls).filter((a) => a[2] === "48");
+  assertEquals(comments.length, 2);
+  const concludeBody = commentBody(comments[1]!);
+  assertStringIncludes(concludeBody, CONFLICT_FAILED_MARKER);
+  assert(!concludeBody.includes(CONFLICT_RESOLVED_MARKER));
 });
 
 Deno.test("runConflictTakeover - a fix branch up to its base raises the fix PR (Issue #3596)", async () => {

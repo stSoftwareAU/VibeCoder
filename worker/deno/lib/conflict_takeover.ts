@@ -76,6 +76,7 @@ import {
   raiseMilestoneFixPr,
 } from "./milestone_fix_pr.ts";
 import { grantAgentRun } from "./milestone_branch_sync.ts";
+import { readCompareBehindBy } from "./milestone_children_gate.ts";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -200,7 +201,8 @@ export type ConflictTakeoverOutcome =
   | { kind: "resolved" }
   /**
    * Either route ran and did not resolve the conflict, or the gated route
-   * resolved but its fix branch was still behind the base (Issue #3596).
+   * resolved but its fix branch was still behind the base or its fix PR
+   * cannot land (Issue #3596).
    */
   | {
     kind: "failed";
@@ -343,20 +345,16 @@ export async function fixBranchBehindBase(
   fixBranch: string,
   gh: ConflictTakeoverDeps["gh"],
 ): Promise<number> {
-  const raw = await gh([
-    "api",
-    `repos/${repo}/compare/${baseRefName}...${fixBranch}`,
-    "--jq",
-    ".behind_by",
-  ]);
-  const reply = raw.trim();
-  if (!/^\d+$/.test(reply)) {
+  const reading = await readCompareBehindBy(repo, baseRefName, fixBranch, gh);
+  if (!reading.ok) throw new Error(`fixBranchBehindBase: ${reading.detail}`);
+  const { behindBy } = reading;
+  if (!Number.isInteger(behindBy) || behindBy < 0) {
     throw new Error(
-      `fixBranchBehindBase: could not read how far '${fixBranch}' is behind ` +
-        `'${baseRefName}' in ${repo} — the reply was ${JSON.stringify(raw)}`,
+      `fixBranchBehindBase: ${repo} reported '${fixBranch}' as ${behindBy} ` +
+        `commit(s) behind '${baseRefName}', which is not a non-negative integer`,
     );
   }
-  return Number(reply);
+  return behindBy;
 }
 
 /**
@@ -587,11 +585,22 @@ export async function runConflictTakeover(
               pass: "merge-conflict resolution",
             }, milestoneDeps);
             if (!raised.ok) throw raised.error;
-            outcome = {
-              kind: "fix-pr-raised",
-              fixPr: raised.value,
-              fixBranch,
-            };
+            if (false) {
+              // The fix PR exists but cannot land, so no resolved marker is
+              // posted (Issue #3596).
+              outcome = {
+                kind: "failed",
+                route: "milestone-fix",
+                detail: `fix PR ${raised.value.url} was raised but cannot ` +
+                  `land: ${raised.value.mergeCommitRefusal}`,
+              };
+            } else {
+              outcome = {
+                kind: "fix-pr-raised",
+                fixPr: raised.value,
+                fixBranch,
+              };
+            }
           }
         }
       } else {

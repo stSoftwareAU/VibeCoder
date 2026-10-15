@@ -110,6 +110,27 @@ async function runReplay(
   });
 
   const repl = new ReplayGitHub(fake, fixture);
+  // The shared driver answers a compare with a status-only reply, which the
+  // fix-branch staleness read and the merge-method probes cannot parse
+  // (Issue #3596). Only those reads are answered here, so the milestone sync's
+  // own compare keeps the driver's reply; every other call passes through.
+  const driverGh = repl.gh;
+  repl.gh = (args: string[]) => {
+    if (args[0] === "api" && args.includes(".default_branch")) {
+      return Promise.resolve(fixture.pr.base);
+    }
+    const head = /\/compare\/[^.]+\.\.\.(.+)$/.exec(String(args[1]))?.[1];
+    if (args[0] === "api" && head?.startsWith("milestone-fix/")) {
+      if (args.includes(".behind_by")) return Promise.resolve("0");
+      if (args.includes(".merge_base_commit.sha")) {
+        return Promise.resolve("a".repeat(40));
+      }
+    }
+    if (args[0] === "api" && head === "a".repeat(40)) {
+      if (args.includes(".status")) return Promise.resolve("ahead");
+    }
+    return driverGh(args);
+  };
   const calls: string[][] = [];
   const gh = (args: string[]): Promise<string> => {
     calls.push(args);

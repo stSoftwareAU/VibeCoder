@@ -9,7 +9,7 @@
  *
  * A milestone-fix head whose head merges the default branch takes `--merge` on
  * `enableAutoMerge` and `directMergePr` too (Issue #3596; creation arming is
- * covered in `milestone_fix_pr_test.ts`).
+ * covered in `worker/deno/tests/milestone_fix_pr_test.ts`).
  *
  * Uses Australian English throughout (behaviour, colour, organisation).
  */

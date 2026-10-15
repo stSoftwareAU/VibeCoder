@@ -561,11 +561,12 @@ Two things hold this in place:
 - **The sync PR merges as a merge commit.** `mergeMethodFlagForHead` in
   `worker/deno/lib/milestone_sync_pr.ts` returns `--merge` for a
   `sync/milestone-*` head that lives in this repository, and `--squash` for
-  everything else except a milestone-fix PR (next bullet), and every auto-merge
-  and direct-merge path routes through it. A fork names its own branches, so a
-  cross-repository head cannot claim the merge-commit deviation by its name
-  (Issue #1249); when one tries, the
-  squash is announced rather than silent. This needs **merge
+  everything else, and every auto-merge and direct-merge path routes through
+  it. A milestone-fix head is the exception to that default: its callers pick
+  the method with `milestoneFixMergeMethod` instead (next bullet). A fork names
+  its own branches, so a cross-repository head cannot claim the merge-commit
+  deviation by its name (Issue #1249); when one tries, the squash is announced
+  rather than silent. This needs **merge
   commits to be permitted on the repository** (Settings → Pull Requests →
   Allow merge commits). Where they are not, the sync is armed as a squash with
   a warning naming the setting, and the check below is what catches the
