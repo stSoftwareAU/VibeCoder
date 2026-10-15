@@ -34,6 +34,8 @@ async function runPhase(
     hostTier?: IssueSubAgentTier;
     repoTier?: unknown;
     logs?: string[];
+    /** Keep the shipped default tier instead of pinning sonnet. */
+    defaultTier?: boolean;
   } = {},
 ): Promise<Record<string, unknown> | undefined> {
   const config = buildDefaultWorkerConfig();
@@ -41,6 +43,10 @@ async function runPhase(
   config.issueReviewerAgents = reviewerAgents;
   if (tierOptions.hostTier !== undefined) {
     config.issueSubAgentTier = tierOptions.hostTier;
+  } else if (!tierOptions.defaultTier) {
+    // These cases pin the Sonnet tier's shapes; the default is haiku since
+    // the owner's decision on #3473, and has its own case below.
+    config.issueSubAgentTier = "sonnet";
   }
   if (repoValue !== undefined || tierOptions.repoTier !== undefined) {
     config.repoConfig = {
@@ -292,19 +298,30 @@ Deno.test("execute_phase - a haiku host tier carries the haiku executor, haiku s
   assertEquals(agents[SPEC_REVIEWER_AGENT_NAME]!.effort, "medium");
 });
 
-Deno.test("execute_phase - a default config carries no explorer and a sonnet executor (Issue #3402)", async () => {
-  const executor = executorOf(await runPhase(true));
+Deno.test("execute_phase - a default config carries the explorer and a haiku executor (Issues #3402, #3473)", async () => {
+  const options = await runPhase(true, undefined, false, { defaultTier: true });
+  const executor = executorOf(options);
   assert(executor, "the split run carries the executor");
-  assertEquals(executor.model, "sonnet");
-  assertEquals(executor.effort, "medium");
-
-  const options = await runPhase(true);
+  assertEquals(executor.model, "haiku");
+  assertEquals(executor.effort, "high");
   const agents = options?.agents as Record<string, AgentDefinition>;
   assertEquals(
     Object.keys(agents).includes(EXPLORER_AGENT_NAME),
-    false,
-    "the default tier carries no explorer",
+    true,
+    "the default haiku tier carries the explorer",
   );
+});
+
+Deno.test("execute_phase - a sonnet tier carries no explorer and a sonnet executor (Issue #3402)", async () => {
+  const options = await runPhase(true, undefined, false, {
+    hostTier: "sonnet",
+  });
+  const executor = executorOf(options);
+  assert(executor, "the split run carries the executor");
+  assertEquals(executor.model, "sonnet");
+  assertEquals(executor.effort, "medium");
+  const agents = options?.agents as Record<string, AgentDefinition>;
+  assertEquals(Object.keys(agents).includes(EXPLORER_AGENT_NAME), false);
 });
 
 Deno.test("execute_phase - a repo tier of sonnet beats a host-wide haiku (Issue #3402)", async () => {

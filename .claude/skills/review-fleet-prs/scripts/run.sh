@@ -197,8 +197,12 @@ round_container() {
 # container itself is then killed by name.
 run_round() {
   local log=$1 rc claude_args
+  # stream-json: the round's own result carries its per-model usage, which
+  # price_round turns into each review's cost; the driver keeps the full
+  # stream in the round's directory and logs only its readable lines.
   claude_args=$(jq -nc --arg edit "Edit(/$C_DIR/**)" '["--model",
-    "claude-opus-5-5", "--effort", "xhigh", "--allowedTools", "Agent",
+    "claude-opus-5-5", "--effort", "xhigh", "--output-format", "stream-json",
+    "--verbose", "--allowedTools", "Agent",
     "Read", "Grep", "Glob", $edit, "Bash(deno run:*)", "Bash(gh:*)",
     "Bash(jq:*)", "Bash(cat:*)"]')
   perl -e 'alarm shift; exec @ARGV or die "cannot run $ARGV[0]: $!\n"' \
@@ -210,6 +214,19 @@ run_round() {
   rc=${PIPESTATUS[0]}
   [[ $rc -eq 142 ]] && "$RUNTIME" kill "$ROUND_NAME" >/dev/null 2>&1
   return "$rc"
+}
+
+# Adds each review the round posted its share of the round's estimated cost
+# (review_cost.ts), now the round's own result says what it used. Runs after
+# every round, as the reviewer App that posted the reviews; a review it
+# cannot price or update keeps "cost unknown", and never fails the pass.
+price_round() {
+  local dir=$1 out
+  out=$(cd "$SCRIPTS_DIR" && deno run --allow-run=gh --allow-read --allow-write \
+    review_cost.ts --round-dir="$dir" 2>"$STATE_DIR/price-error")
+  [[ -s "$STATE_DIR/price-error" ]] && errors <"$STATE_DIR/price-error"
+  [[ -n "$out" ]] && log "round cost: $out"
+  return 0
 }
 
 # One pass: a gate check, then a Claude round if anything is ready.
@@ -267,7 +284,7 @@ pass() {
     log "audit send-back: $(jq -r '"\(.repo)#\(.number)"' <<<"$entry"): $(
       cd "$SCRIPTS_DIR" && deno run --allow-run=gh,osascript --allow-read \
         --allow-write --allow-env=HOME,XDG_STATE_HOME post.ts \
-        --input="$input" 2>&1)"
+        --input="$input" --no-model 2>&1)"
   done < <(jq -c '.auditBlocked[]?' <<<"$ready" 2>/dev/null)
   ready=$(jq -c 'del(.auditBlocked)' <<<"$ready" 2>/dev/null || echo "$ready")
   if [[ $(jq '.ready | length' <<<"$ready" 2>/dev/null) == 0 ]]; then
@@ -301,12 +318,14 @@ $ready
 Follow the skill's 'Reviewing the ready PRs' section (Review, post,
 learn from recurring findings, report) for the ready PRs above. Run post.ts
 from $C_BASE/.claude/skills/review-fleet-prs/scripts with --state-dir=$C_STATE_DIR,
-and write its input files under $C_DIR. Skip the PushNotification step: this
+and write its input files directly in $C_DIR (not a sub-directory: post.ts
+reads the round's attempt log beside its input). Skip the PushNotification step: this
 session is headless. Finish with the one-line round report.
 PROMPT
 
   run_round "$dir/claude.log"
   round_rc=$?
+  price_round "$dir"
   if [[ $round_rc -eq 142 ]]; then
     # 128 + SIGALRM: the alarm above killed a hung round.
     LAST_ERROR="round timed out after ${ROUND_TIMEOUT}s"

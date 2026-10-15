@@ -50,6 +50,7 @@ import {
 } from "./config_defaults.ts";
 import { recordCiFixRun } from "./fleet_telemetry.ts";
 import { estimatePhaseRunUsd } from "./phase_run_usd.ts";
+import { postPrRoundRunStats } from "./phase_run_stats.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import type { RunStats } from "./run_stats.ts";
 import {
@@ -151,6 +152,7 @@ import { stripReservedLabelsFromModelFollowUp } from "./escape_hatch_label_strip
 import { loadMonitoredReposBestEffort } from "./monitored_repos_allowlist.ts";
 import { getCiProviders } from "./repo_config.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   formatPrFailureActionsExcerpt,
   type PrFailureActionResult,
@@ -1027,7 +1029,42 @@ async function _processCiFailureLocked(
   } finally {
     await stopHeartbeat(heartbeatHandle);
     await recordCiFixTierRun(input, processorDeps, carrier);
+    await postCiFixRunStats(input, processorDeps, carrier, graftSlot);
   }
+}
+
+/**
+ * Post this round's run-stats comment on the PR, so what a CI fix cost is
+ * readable on GitHub beside the issue run's own figures. A round in which the
+ * agent never ran spent nothing and posts nothing; one that pushed nothing
+ * still posts. Never throws ({@link postPrRoundRunStats}).
+ */
+async function postCiFixRunStats(
+  input: CiFixInput,
+  processorDeps: CiProcessorDeps,
+  carrier: CiRunCarrier,
+  graftSlot: GraftContextSlot,
+): Promise<void> {
+  if (!carrier.agentRan) return;
+  const { deps, logger } = processorDeps;
+  const fleet = processorDeps.fleetLogins ?? [];
+  await postPrRoundRunStats({
+    repo: input.repo,
+    prNumber: input.prNumber,
+    phase: "ci_fix",
+    roundId: input.checkRunId,
+    runStats: carrier.runStats ?? [],
+    runGhCommand: processorDeps.ghCommandFn ?? deps.github.runGhCommand,
+    logger,
+    // The fleet the attempt tally trusts also sums the PR total (Issue #1249,
+    // finding 12); unresolved, the configured fleet is read instead.
+    ...(fleet.length > 0 ? { authorOptions: { fleetAuthors: fleet } } : {}),
+    ...(graftSlot.result ? { graft: graftSlot.result } : {}),
+    ...(carrier.codegraphContext
+      ? { codegraph: carrier.codegraphContext }
+      : {}),
+    ...(carrier.rtkOutput ? { rtk: carrier.rtkOutput } : {}),
+  });
 }
 
 /**
@@ -1885,12 +1922,20 @@ async function _processCiWithHeartbeat(
   // chokepoint — a non-zero exit blocks both this commit and the push so a
   // known-broken CI "fix" is never pushed back into the expensive build.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  // The repo's own formatters run between the commit and the gate (follow-up
+  // to #3806): a formatting-only miss in this round is fixed and committed
+  // rather than failing the push or reaching CI. Same files the gate checks
+  // (the unpushed commits), never Markdown; never fatal.
+  const formatRound = () =>
+    formatBeforeGate(deps, processorDeps.workDir ?? Deno.cwd(), undefined);
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Fix CI failure: ${checkName}\n\nAutomated final-mile commit for PR #${prNumber} (Issue #1643).`,
     { cwd: processorDeps.workDir },
     false,
     preFlight,
+    undefined,
+    formatRound,
   );
 
   let pushSucceeded = false;
@@ -1938,6 +1983,8 @@ async function _processCiWithHeartbeat(
           { cwd: processorDeps.workDir },
           false,
           preFlight,
+          undefined,
+          formatRound,
         );
         if (retryFinalise.ok && retryFinalise.value.finalUnpushedCount === 0) {
           hasChanges = true;
