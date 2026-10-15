@@ -15,7 +15,6 @@ import type { Logger } from "../types.ts";
 import {
   type ConflictTakeoverDeps,
   type ConflictTakeoverPr,
-  fixBranchBehindBase,
   runConflictTakeover,
   takeoverAgentTimeoutSeconds,
 } from "../lib/conflict_takeover.ts";
@@ -86,6 +85,10 @@ interface FakeGhOptions {
   behindBy?: number | string;
   /** Refuse a `pr merge --merge`: the repository forbids merge commits. */
   mergeCommitRefused?: boolean;
+  /** The `pr list --head` reply for an open attempt's fix PR (Issue #3596). */
+  takeoverFixPrs?: unknown[];
+  /** The `.behind_by` reply for the milestone head itself (Issue #3596). */
+  headBehindBy?: number | string;
 }
 
 interface FakeGh {
@@ -144,6 +147,14 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
       return Promise.resolve("");
     }
 
+    // pr list for one fix branch, any state (Issue #3596).
+    if (
+      args[0] === "pr" && args[1] === "list" &&
+      args[args.indexOf("--state") + 1] === "all"
+    ) {
+      return Promise.resolve(JSON.stringify(options.takeoverFixPrs ?? []));
+    }
+
     // pr list (findOpenMilestoneFixPr / raiseMilestoneFixPr reuse check).
     if (args[0] === "pr" && args[1] === "list") {
       if (options.openFixPr === undefined || options.openFixPr === null) {
@@ -191,6 +202,12 @@ function makeFakeGh(options: FakeGhOptions = {}): FakeGh {
 
     // Compare reads: fix-branch staleness (Issue #3596) and merge-method probes.
     if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+      if (
+        args.includes(".behind_by") &&
+        String(args[1]).endsWith("...milestone/2965-x")
+      ) {
+        return Promise.resolve(String(options.headBehindBy ?? 0));
+      }
       if (args.includes(".behind_by")) {
         return Promise.resolve(String(options.behindBy ?? 0));
       }
@@ -302,8 +319,16 @@ Deno.test("runConflictTakeover - gated milestone head raises a fix PR, never tou
   assertStringIncludes(attemptBody, CONFLICT_ATTEMPT_MARKER);
   assertStringIncludes(attemptBody, 'pass="takeover"');
   assertStringIncludes(attemptBody, HEAD_SHA);
-  assertStringIncludes(concludeBody, CONFLICT_RESOLVED_MARKER);
-  assertStringIncludes(concludeBody, 'pass="takeover"');
+  // Raising the fix PR is not resolving the conflict: the attempt stays open
+  // until a later pass sees the fix PR land (Issue #3596).
+  assert(!concludeBody.includes(CONFLICT_RESOLVED_MARKER));
+  assert(!concludeBody.includes(CONFLICT_FAILED_MARKER));
+  assertStringIncludes(concludeBody, "https://github.com/org/repo/pull/900");
+  const attempts = readResolutionAttempts(
+    comments.map((call) => trustedComment(commentBody(call))),
+    (login) => isFleetAuthor(login, [TRUSTED]),
+  );
+  assertEquals(attempts.map((a) => a.outcome), ["open"]);
 });
 
 Deno.test("runConflictTakeover - an already-open fix PR is reused, nothing attempted", async () => {
@@ -789,7 +814,7 @@ Deno.test("runConflictTakeover - an unreadable behind count rejects with no fix 
   await assertRejects(
     () => runConflictTakeover(gatedPr(), deps),
     Error,
-    "fixBranchBehindBase",
+    "branchBehindBase",
   );
 
   assert(!fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
@@ -828,24 +853,26 @@ Deno.test("runConflictTakeover - a fix PR whose merge commit is refused is faile
   assert(!concludeBody.includes(CONFLICT_RESOLVED_MARKER));
 });
 
-Deno.test("fixBranchBehindBase - a fractional behind count rejects, naming the value (Issue #3596)", async () => {
-  const gh = (_args: string[]) => Promise.resolve("1.5");
+Deno.test("runConflictTakeover - a fractional behind count rejects with no fix PR, naming the value (Issue #3596)", async () => {
+  const fake = makeFakeGh({ gated: true, openFixPr: null, behindBy: "1.5" });
 
   await assertRejects(
-    () => fixBranchBehindBase(REPO, "main", "milestone-fix/x", gh),
+    () => runConflictTakeover(gatedPr(), makeDeps(fake)),
     Error,
-    "1.5",
+    "as 1.5 commit(s) behind 'main'",
   );
+  assert(!fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
-Deno.test("fixBranchBehindBase - a negative behind count rejects, naming the value (Issue #3596)", async () => {
-  const gh = (_args: string[]) => Promise.resolve("-1");
+Deno.test("runConflictTakeover - a negative behind count rejects with no fix PR, naming the value (Issue #3596)", async () => {
+  const fake = makeFakeGh({ gated: true, openFixPr: null, behindBy: "-1" });
 
   await assertRejects(
-    () => fixBranchBehindBase(REPO, "main", "milestone-fix/x", gh),
+    () => runConflictTakeover(gatedPr(), makeDeps(fake)),
     Error,
-    "-1",
+    "as -1 commit(s) behind 'main'",
   );
+  assert(!fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
 });
 
 Deno.test("runConflictTakeover - a fix branch up to its base raises the fix PR (Issue #3596)", async () => {
@@ -856,4 +883,282 @@ Deno.test("runConflictTakeover - a fix branch up to its base raises the fix PR (
 
   assertEquals(outcome.kind, "fix-pr-raised");
   assert(fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
+});
+
+// ---------------------------------------------------------------------------
+// A raised fix PR is concluded by a later pass (Issue #3596)
+// ---------------------------------------------------------------------------
+
+/** The head the open attempt ran against, before its fix PR landed. */
+const PENDING_SHA = "0123456789ab0123456789ab0123456789ab0123";
+const PENDING_FIX_BRANCH = "milestone-fix/2965-x/pr-48-takeover-0123456789ab";
+
+function pendingAttemptComments(): unknown[] {
+  return [trustedComment(conflictAttemptMarker(1, "takeover", PENDING_SHA))];
+}
+
+function takeoverFixPr(
+  state: string,
+  overrides: Record<string, unknown> = {},
+): unknown {
+  const number = state === "MERGED" ? 901 : 902;
+  return {
+    number,
+    url: `https://github.com/org/repo/pull/${number}`,
+    state,
+    headRefName: PENDING_FIX_BRANCH,
+    isCrossRepository: false,
+    author: { login: TRUSTED },
+    ...overrides,
+  };
+}
+
+function concludingDeps(fake: FakeGh): ConflictTakeoverDeps {
+  return makeDeps(fake, {
+    resolveOnFixBranch: () => {
+      throw new Error("no fresh attempt may run while concluding one");
+    },
+  });
+}
+
+Deno.test("runConflictTakeover - a landed fix PR with the milestone branch still behind concludes failed, never resolved (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("MERGED")],
+    headBehindBy: 2,
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), concludingDeps(fake));
+
+  assertEquals(outcome.kind, "failed");
+  if (outcome.kind === "failed") {
+    assertEquals(outcome.route, "milestone-fix");
+    assertStringIncludes(outcome.detail, "pull/901 landed");
+    assertStringIncludes(
+      outcome.detail,
+      "'milestone/2965-x' is still 2 commit(s) behind 'main'",
+    );
+  }
+  const listCall = fake.calls.find((a) =>
+    a[0] === "pr" && a[1] === "list" && a.includes("--head")
+  )!;
+  assertEquals(listCall[listCall.indexOf("--head") + 1], PENDING_FIX_BRANCH);
+  assertEquals(listCall[listCall.indexOf("--base") + 1], "milestone/2965-x");
+  assertEquals(listCall[listCall.indexOf("--state") + 1], "all");
+  assert(
+    fake.calls.some((a) =>
+      a[1] === `repos/${REPO}/compare/main...milestone/2965-x`
+    ),
+  );
+  assert(!fake.calls.some((a) => a[0] === "pr" && a[1] === "create"));
+
+  const comments = commentsCalls(fake.calls);
+  assertEquals(comments.length, 1);
+  const body = commentBody(comments[0]!);
+  assert(!body.includes(CONFLICT_RESOLVED_MARKER));
+  assertStringIncludes(
+    body,
+    conflictFailedMarker(1, "takeover", PENDING_SHA),
+  );
+  // The failure is charged once, and closes the open attempt.
+  const attempts = readResolutionAttempts(
+    [...pendingAttemptComments(), trustedComment(body)],
+    (login) => isFleetAuthor(login, [TRUSTED]),
+  );
+  assertEquals(attempts.map((a) => a.outcome), ["failed"]);
+  assertEquals(spentConflictAttempts(attempts), 1);
+});
+
+Deno.test("runConflictTakeover - a landed fix PR with the milestone branch 0 behind concludes resolved (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("CLOSED"), takeoverFixPr("MERGED")],
+    headBehindBy: 0,
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), concludingDeps(fake));
+
+  assertEquals(outcome.kind, "resolved");
+  const comments = commentsCalls(fake.calls);
+  assertEquals(comments.length, 1);
+  const body = commentBody(comments[0]!);
+  assertStringIncludes(body, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(body, 'pass="takeover"');
+  // The conclusion names the head the attempt ran against, as the failed one does.
+  assertStringIncludes(body, `head="${PENDING_SHA}"`);
+  assertStringIncludes(body, "pull/901 landed");
+});
+
+Deno.test("runConflictTakeover - a fix PR closed without landing concludes failed (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("CLOSED")],
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), concludingDeps(fake));
+
+  assertEquals(outcome.kind, "failed");
+  if (outcome.kind === "failed") {
+    assertStringIncludes(outcome.detail, "pull/902 was closed without landing");
+  }
+  assert(!fake.calls.some((a) => String(a[1]).includes("/compare/")));
+  const comments = commentsCalls(fake.calls);
+  assertEquals(comments.length, 1);
+  assertStringIncludes(commentBody(comments[0]!), CONFLICT_FAILED_MARKER);
+});
+
+Deno.test("runConflictTakeover - an unreadable milestone behind count after a landing posts nothing (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("MERGED")],
+    headBehindBy: "",
+  });
+
+  await assertRejects(
+    () => runConflictTakeover(gatedPr(), concludingDeps(fake)),
+    Error,
+    "branchBehindBase",
+  );
+  assertEquals(commentsCalls(fake.calls).length, 0);
+});
+
+Deno.test("runConflictTakeover - an open attempt with no fleet fix PR of its own runs a fresh attempt (Issue #3596)", async () => {
+  for (
+    const listed of [
+      [],
+      [takeoverFixPr("MERGED", { isCrossRepository: true })],
+      [takeoverFixPr("MERGED", { author: { login: "stranger" } })],
+      [takeoverFixPr("MERGED", { headRefName: `${PENDING_FIX_BRANCH}-x` })],
+      [takeoverFixPr("MERGED", { url: 901 })],
+      [takeoverFixPr("MERGED", { number: "901" })],
+      [takeoverFixPr("REOPENED")],
+    ]
+  ) {
+    const fake = makeFakeGh({
+      gated: true,
+      openFixPr: null,
+      comments: pendingAttemptComments(),
+      takeoverFixPrs: listed,
+    });
+
+    const outcome = await runConflictTakeover(gatedPr(), makeDeps(fake));
+
+    assertEquals(outcome.kind, "fix-pr-raised", JSON.stringify(listed));
+    const bodies = commentsCalls(fake.calls).map(commentBody);
+    assert(!bodies.some((body) => body.includes(CONFLICT_RESOLVED_MARKER)));
+    assert(!bodies.some((body) => body.includes(CONFLICT_FAILED_MARKER)));
+  }
+});
+
+Deno.test("runConflictTakeover - an open ladder attempt is not concluded as a fix PR (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: [
+      trustedComment(conflictAttemptMarker(1, "ladder", PENDING_SHA)),
+    ],
+    takeoverFixPrs: [takeoverFixPr("MERGED")],
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), makeDeps(fake));
+
+  assertEquals(outcome.kind, "fix-pr-raised");
+  assert(!fake.calls.some((a) => a.includes(PENDING_FIX_BRANCH)));
+});
+
+Deno.test("runConflictTakeover - an open takeover attempt on a non-milestone head is not concluded as a fix PR (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("MERGED")],
+  });
+
+  const outcome = await runConflictTakeover(nonGatedPr(), makeDeps(fake));
+
+  assertEquals(outcome.kind, "resolved");
+  assert(
+    !fake.calls.some((a) =>
+      a[0] === "pr" && a[1] === "list" && a.includes("all")
+    ),
+  );
+});
+
+Deno.test("runConflictTakeover - an unreadable fix PR listing for an open attempt posts nothing (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+  });
+  const gh = (args: string[]) =>
+    args[0] === "pr" && args[1] === "list" && args.includes("--head")
+      ? Promise.resolve('{"not":"a list"}')
+      : fake.gh(args);
+
+  await assertRejects(
+    () => runConflictTakeover(gatedPr(), makeDeps({ gh, calls: fake.calls })),
+    Error,
+    "unexpected PR listing shape",
+  );
+  assertEquals(commentsCalls(fake.calls).length, 0);
+});
+
+Deno.test("runConflictTakeover - the raised fix PR names the milestone PR and the pass (Issue #3596)", async () => {
+  const fake = makeFakeGh({ gated: true, openFixPr: null });
+
+  const outcome = await runConflictTakeover(gatedPr(), makeDeps(fake));
+
+  assertEquals(outcome.kind, "fix-pr-raised");
+  const create = fake.calls.find((a) => a[0] === "pr" && a[1] === "create")!;
+  assertEquals(
+    create[create.indexOf("--title") + 1],
+    "Address #48 merge-conflict resolution on milestone/2965-x",
+  );
+});
+
+Deno.test("runConflictTakeover - an open attempt whose fix PR is still open stands down, posting nothing (Issue #3596)", async () => {
+  const fake = makeFakeGh({
+    gated: true,
+    openFixPr: null,
+    comments: pendingAttemptComments(),
+    takeoverFixPrs: [takeoverFixPr("OPEN")],
+  });
+
+  const outcome = await runConflictTakeover(gatedPr(), concludingDeps(fake));
+
+  assertEquals(outcome.kind, "fix-pr-reused");
+  if (outcome.kind === "fix-pr-reused") {
+    assertEquals(outcome.fixPr.number, 902);
+    assertEquals(outcome.fixPr.url, "https://github.com/org/repo/pull/902");
+    assertEquals(outcome.fixPr.opened, false);
+  }
+  assertEquals(commentsCalls(fake.calls).length, 0);
+  assert(!fake.calls.some((a) => String(a[1]).includes("/compare/")));
+});
+
+Deno.test("runConflictTakeover - an empty or unparsable fix PR listing for an open attempt names the branch and posts nothing (Issue #3596)", async () => {
+  for (const reply of ["", "not json"]) {
+    const fake = makeFakeGh({
+      gated: true,
+      openFixPr: null,
+      comments: pendingAttemptComments(),
+    });
+    const gh = (args: string[]) =>
+      args[0] === "pr" && args[1] === "list" && args.includes("all")
+        ? Promise.resolve(reply)
+        : fake.gh(args);
+
+    await assertRejects(
+      () => runConflictTakeover(gatedPr(), makeDeps({ gh, calls: fake.calls })),
+      Error,
+      `could not parse the PR listing for '${PENDING_FIX_BRANCH}'`,
+    );
+    assertEquals(commentsCalls(fake.calls).length, 0);
+  }
 });

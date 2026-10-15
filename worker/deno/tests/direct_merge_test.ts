@@ -856,6 +856,65 @@ Deno.test("direct_merge - enforcePreMergeRequirements allows when CI passed and 
   }
 });
 
+/** {@link baseRefMock}, with the PR view also answering `isCrossRepository`. */
+function crossRepositoryMock(
+  isCrossRepository: unknown,
+): (args: string[]) => Promise<string> {
+  return (args) => {
+    const key = args.join(" ");
+    if (key.includes("baseRefName") && !key.includes("--head")) {
+      return Promise.resolve(
+        JSON.stringify({
+          baseRefName: "milestone/x",
+          headRefName: "issue-1-feature",
+          isCrossRepository,
+        }),
+      );
+    }
+    return baseRefMock(args);
+  };
+}
+
+Deno.test("direct_merge - enforcePreMergeRequirements reports the head and whether it is same-repository (Issue #3596)", async () => {
+  for (
+    const [isCrossRepository, expected] of [
+      [false, true],
+      [true, false],
+    ] as const
+  ) {
+    const result = await enforcePreMergeRequirements(
+      "owner/repo",
+      42,
+      crossRepositoryMock(isCrossRepository),
+      {},
+      ciStub("passed"),
+      branchStub(0),
+    );
+    assertEquals(result.ok, true);
+    if (result.ok) {
+      assertEquals(result.value.allowed, true);
+      assertEquals(result.value.headRefName, "issue-1-feature");
+      assertEquals(result.value.headIsSameRepository, expected);
+    }
+  }
+});
+
+Deno.test("direct_merge - enforcePreMergeRequirements omits the same-repository answer it could not read (Issue #3596)", async () => {
+  const result = await enforcePreMergeRequirements(
+    "owner/repo",
+    42,
+    crossRepositoryMock("yes"),
+    {},
+    ciStub("passed"),
+    branchStub(0),
+  );
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.value.allowed, true);
+    assertEquals("headIsSameRepository" in result.value, false);
+  }
+});
+
 Deno.test("direct_merge - enforcePreMergeRequirements blocks when CI pending", async () => {
   const result = await enforcePreMergeRequirements(
     "owner/repo",

@@ -413,6 +413,7 @@ Deno.test("directMergePr - a milestone-fix --merge the repo refuses fails loudly
     gh,
     allowingGate(FIX_HEAD, true, FIX_BASE),
   );
+  assertEquals(result.ok, false);
   assert(!result.ok, "a refused merge commit must not report success");
   assertStringIncludes(result.error.message, "NOT squashed");
   assertEquals(mergeAttempts(calls), ["--merge"]);
@@ -428,6 +429,7 @@ Deno.test("directMergePr - a milestone-fix head whose method cannot be read is r
     gh,
     allowingGate(FIX_HEAD, true, FIX_BASE),
   );
+  assertEquals(result.ok, false);
   assert(!result.ok, "an unreadable method must not merge");
   assertStringIncludes(result.error.message, "Issue #3596");
   assertEquals(mergeAttempts(calls), []);
@@ -478,6 +480,7 @@ Deno.test("directMergePr - a milestone-fix gate that cannot say whether the head
       },
     });
   const result = await directMergePr("owner/repo", 52, gh, unknownGate);
+  assertEquals(result.ok, false);
   assert(!result.ok, "an unknown same-repository answer must not merge");
   assertStringIncludes(result.error.message, "could not be read");
   assertEquals(mergeAttempts(calls), []);

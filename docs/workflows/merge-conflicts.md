@@ -406,14 +406,19 @@ settle still reaches no agent and now consults no issue either.
 - The attempt is recorded as a marker comment on the PR **before** the merge
   starts. That marker *opens* the attempt; it does not spend it.
 - Every attempt posts a **conclusion**: a resolved marker when the merge lands,
-  or a failure comment naming the conflicted files and what went wrong. Only a
+  or a failure comment naming the conflicted files and what went wrong. The
+  exception is a takeover attempt that raised a milestone-fix PR: it stays
+  open until a later takeover concludes it (Issue #3596, under the conflict
+  takeover below). Only a
   conclusion spends one of the three attempts. An agent that runs out **its
   own** timeout has been judged and is charged; a run the **worker** kills at
   the cycle deadline is withdrawn and charged nothing (Issue #2305).
 - History lives on the PR, not in host-local state, so the bounds hold across
   worker restarts and across fleet hosts.
 - A successful merge posts a resolved marker, which resets both budgets — a PR
-  that conflicts again months later starts from a full budget.
+  that conflicts again months later starts from a full budget. A raised
+  milestone-fix PR posts none (Issue #3596), so on that route the budget is
+  not reset when the fix lands; see the conflict takeover below.
 - The final *concluded* failure runs **abandon-and-restart** first. Neither the
   resolution processor nor the scan asks a person when that rung declines or
   fails: the processor logs a loud WARN and leaves the PR open with no label —
@@ -515,7 +520,7 @@ flowchart TD
   (`milestone-fix/<leaf>/pr-<N>-takeover-<sha12>`), resolves and pushes only
   that branch, and opens a PR into the milestone branch with
   `raiseMilestoneFixPr` (Issue #2907). Nothing is pushed to the head branch.
-  Before it raises the PR, `fixBranchBehindBase` checks that the resolved fix
+  Before it raises the PR, `branchBehindBase` checks that the resolved fix
   branch is 0 commits behind the PR's base (`compare <base>...<fixBranch>`,
   `behind_by`). A branch still behind concludes `failed` with no PR raised; an
   unreadable answer throws (Issue #3596). Once raised, the PR's merge method
@@ -524,13 +529,45 @@ flowchart TD
   repository forbids merge commits, the `--merge` arming is refused:
   `raiseMilestoneFixPr` reports that on its result (`mergeCommitRefusal`), and
   the takeover concludes `failed` rather than `resolved` (below).
+- Raising the fix PR does **not** conclude the attempt (Issue #3596). The
+  takeover posts a plain "raised a fix PR" comment with no conclusion marker,
+  so the `pass="takeover"` attempt stays open while the fix PR is open. A later
+  takeover on the same PR finds no open fix PR, takes the lock, and, when the
+  newest trusted marker is that open takeover attempt, reads the fleet's own
+  same-repository PR from its fix branch (`milestone-fix/<leaf>/pr-<N>-takeover-<sha12>`
+  of the attempt's head, `gh pr list --state all`; a merged one wins over a
+  closed one). If it merged, the takeover reads `compare <base>...<head>`
+  `behind_by` for the PR itself: `0` posts `resolved`; anything above `0`
+  posts `failed` naming the count, which spends one unit of the shared budget
+  even when the base simply moved on after the landing. A fix PR closed
+  without landing posts `failed`. Both conclusions name the head the attempt
+  ran against, so the next attempt is due at once on a moved head. Either way
+  no new attempt runs in that call; the next takeover starts one. A fix PR
+  that is still open stands down as `fix-pr-reused`, posting nothing. An
+  empty, unparsable or unreadable listing, or an unreadable behind count,
+  throws and posts nothing. When that attempt has no such PR, it was
+  disrupted, not delivered, and a fresh attempt runs. Until a later takeover
+  runs, the open attempt reads as one disruption in the scan's tally
+  (Issue #395), not a spent attempt; when it is the only one and the head is a
+  `milestone/**` branch, the scan logs it at INFO as awaiting its fix PR rather
+  than warning. The takeover runs only on a PR that is `CONFLICTING`, and a
+  head 0 commits behind its base cannot conflict, so in practice `resolved` is
+  posted here only on a stale `CONFLICTING` verdict. A fix PR that lands and
+  clears the conflict leaves its attempt open, with no marker reset: the
+  failures before it stay counted, and the PR's next conflict, if it comes,
+  concludes that attempt `failed` with the behind count. A milestone sync that
+  posts its single attempt-and-conclusion comment after the fix PR lands
+  closes that open attempt with its own verdict (as `readResolutionAttempts`
+  pairs a conclusion with the open attempt before it), and the takeover then
+  has nothing left to conclude.
 - Any other head: the ordinary ladder resolve path (`resolveViaLadder`). Both
   resolver seams are marker-free by contract — the takeover owns the attempt
   and conclusion markers, so one takeover spends at most one unit of the
   shared budget.
 - A judged exit after the attempt marker posts a conclusion marker:
-  `resolved` (`pass="takeover"`) when the merge was pushed or the fix PR was
-  raised and can land, `failed` when the resolver could not resolve, when the
+  `resolved` (`pass="takeover"`) when the ordinary route pushed the merge (a
+  raised fix PR that can land posts none, above), `failed` when the resolver
+  could not resolve, when the
   fix branch is still behind its base (no PR raised), or when the fix PR was
   raised but cannot land because the repository forbids merge commits (the
   conclusion names it: `fix PR <url> was raised but cannot land: …`), and
@@ -579,13 +616,17 @@ flowchart TD
     F --> G[Conclusion marker]
     D -- "Yes" --> H{"Open takeover<br/>fix PR?"}
     H -- "Yes" --> I["Reuse it<br/>(no marker)"]
-    H -- "No" --> J[Post attempt marker]
+    H -- "No" --> P{"Newest marker an open takeover<br/>attempt with its own fix PR?<br/>(Issue #3596)"}
+    P -- "Merged, PR head 0 behind base" --> R["Resolved conclusion"]
+    P -- "Merged but behind, or closed" --> PF["Failed conclusion<br/>(judged, no throw)"]
+    P -- "Fix PR still open" --> I
+    P -- "No" --> J[Post attempt marker]
     J --> K[Resolve on<br/>milestone-fix branch]
     K --> Q{"Fix branch 0 behind<br/>PR base? (Issue #3596)"}
     Q -- "No (still behind)" --> N
     Q -. "unreadable: throw" .-> N
     Q -- "Yes" --> L["Raise fix PR<br/>(Issue #2907)"]
-    L --> M[Conclusion marker]
+    L --> M["Raised comment<br/>(attempt stays open)"]
     E -. "throw" .-> N["Failed conclusion"]
     N -. "re-raise" .-> O[Error propagates]
     J -. "throw" .-> N

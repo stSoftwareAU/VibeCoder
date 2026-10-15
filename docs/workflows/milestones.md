@@ -575,8 +575,10 @@ Two things hold this in place:
   default branch** (Issue #3596). `milestoneFixMergeMethod` in
   `worker/deno/lib/milestone_fix_pr.ts` reads the default branch, the fix
   head's merge base with it, and whether that merge base is already in the
-  milestone branch. If it is not (`compare` reports `ahead` or `diverged`), the
-  PR merges with `--merge`; otherwise it squashes. Creation arming has no
+  milestone branch. When `compare` reports `ahead` or `diverged` (the merge
+  base is not in the milestone branch yet), the PR merges with `--merge`; when
+  it reports `identical` or `behind`, the PR squashes; any other status is an
+  unreadable method (below), never a squash. Creation arming has no
   same-repository check, because the worker pushed the branch itself. The
   Auto-Merge sweep and the direct merge apply the rule only to same-repository
   heads, so a fork's fix-shaped head still squashes as before. Where merge

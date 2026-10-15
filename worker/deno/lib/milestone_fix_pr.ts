@@ -113,6 +113,27 @@ export interface MilestoneFixPr {
 }
 
 /**
+ * Whether one `gh pr list` entry is a fix PR this fleet raised: same
+ * repository, and opened by one of `fleetAuthors` (Issue #2965). Missing or
+ * true `isCrossRepository` is a fork, or an answer that did not say, and
+ * neither is this fleet's fix PR.
+ */
+export function isFleetFixPrListing(
+  entry: { isCrossRepository?: unknown; author?: unknown },
+  fleetAuthors: readonly string[],
+): boolean {
+  if (entry.isCrossRepository !== false) return false;
+  const author = entry.author;
+  const login = typeof author === "string"
+    ? author
+    : author !== null && typeof author === "object" &&
+        typeof (author as { login?: unknown }).login === "string"
+    ? (author as { login: string }).login
+    : undefined;
+  return login !== undefined && isFleetAuthor(login, [...fleetAuthors]);
+}
+
+/**
  * Find the open fix PR (if any) already raised for this milestone PR.
  *
  * Fails loud, not null: an unreadable listing must not be mistaken for "no
@@ -194,17 +215,7 @@ export async function findOpenMilestoneFixPr(
       return false;
     }
     if (!fleetAuthors) return true;
-    // Same repository only. Missing or true is a fork, or an answer that
-    // did not say, and neither is this fleet's fix PR.
-    if (entry.isCrossRepository !== false) return false;
-    const author = entry.author;
-    const login = typeof author === "string"
-      ? author
-      : author !== null && typeof author === "object" &&
-          typeof (author as { login?: unknown }).login === "string"
-      ? (author as { login: string }).login
-      : undefined;
-    return login !== undefined && isFleetAuthor(login, [...fleetAuthors]);
+    return isFleetFixPrListing(entry, fleetAuthors);
   });
   if (
     !match || typeof match.number !== "number" ||
