@@ -1891,8 +1891,8 @@ passes — **CI fix**, **review feedback**, **merge conflict** and **auto-merge*
 — therefore reach `readPrLiveState(repo, prNumber, gh)` at their claim point,
 before the first write: one `gh pr view --json` call, no cache, for the six
 fields `state,mergeable,autoMergeRequest,mergeStateStatus,reviewDecision,labels`
-(the last is what the auto-merge sweep reads for the `standing-violation` hold,
-Issue #3517; still one round trip). The
+(the last is what the auto-merge sweep and the CI-fix pass read for the
+`standing-violation` hold, Issues #3517, #3685; still one round trip). The
 two processors call it directly through `guardPrStillOpen`; the drain and the
 sweep take it as a **required** injected seam, wired to the same function in
 `run_core_production_deps.ts`, so neither can be left unguarded by omission. A `CLOSED` or

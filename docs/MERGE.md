@@ -666,6 +666,9 @@ A PR labelled `standing-violation` (Issue #3382) is **held** by the sweep
 (Issue #3517): it is skipped, never armed or branch-updated, and one already
 armed is disarmed with `gh pr merge --disable-auto`. The label comes from the
 sweep's live `gh pr view` read, and the hold is logged once per process.
+The CI-fix pass honours the label too: after pushing a fix to a labelled PR
+it skips re-arming auto-merge (the label comes from its claim-point live read)
+and logs the hold (Issue #3685). It does not disarm; the sweep does.
 
 The scan lists PRs authored by the worker only, so **human-authored PRs are
 never commented on or escalated** by this path.
