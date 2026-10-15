@@ -912,6 +912,19 @@ where the label already exists before the add and assert it is not removed
 later. `CODING-STANDARDS.md` → **Automation and Shared GitHub State** holds the
 full rule.
 
+**Automation that creates fleet work must not re-fire on its own output.** When
+code you write files an issue, raises a PR, pushes a ref or applies a label
+that the fleet itself will act on, say in the PR summary what stops the trigger
+from firing again on the state that work leaves behind. Typical answers: a
+fleet-authored marker on the output that the trigger reads and skips; a
+generation or depth cap; a check that the output changes something (a non-empty
+diff, a still-open parent). Deduping against *open* items is not enough, because
+the output is usually closed or merged by the next pass.
+
+- **Test the second pass** — run the trigger again against the state the first
+  firing left (the follow-up worked and closed, the rollup merged and synced
+  back) and assert that it files, raises, pushes or applies nothing.
+
 <!-- guidelines-layer: code -->
 
 ## Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
