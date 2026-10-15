@@ -202,11 +202,11 @@ Rules the sweep enforces:
   past the end of the file. Any of these is a baseline error and the sweep
   fails. A citation is pinned to a line, so an edit that shortens the cited
   file below that line makes the baseline error until the citation is
-  re-pointed. The rule follows the VulnHunter Phase 2b rule (see
+  re-pointed. This follows VulnHunter's Phase 2b rule (see
   [the methodology evaluation](security/vulnhunter-methodology-evaluation.md)):
-  a finding is dismissed by naming what eliminates it. Without it, a pull
-  request whose own change trips the sweep could silence the finding with a
-  10-character reason, which is the route #3512 took.
+  a finding is eliminated only by naming what eliminates it. Without it, a
+  pull request whose own change trips the sweep could silence the finding with
+  a 10-character reason — the "loosen the check" route #3512 documents.
 - `accepted` entries need no `evidence`: they are real risks, not eliminations.
 - `reason` is mandatory and at least 10 characters. `accepted` entries should
   carry the tracking `issue`.
