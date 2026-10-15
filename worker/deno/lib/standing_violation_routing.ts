@@ -178,7 +178,7 @@ export async function findOwnLineStandingViolations(opts: {
     prSummaryContent: opts.prSummaryContent,
   });
   const standing = review.standardsEntries.filter(isStandingViolation);
-  if (!review.applicable || standing.length === 0) {
+  if (standing.length === 0) {
     return { violations: [], notChecked: null };
   }
   const failClosed = (notChecked: string) => ({
