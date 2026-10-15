@@ -1,0 +1,12 @@
+{
+  "issue": 3609,
+  "chunk": "top-up-3609",
+  "title": "top-up: bounded open-milestone listing",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3609",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: open_milestone_pages.ts (#3609)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/open_milestone_pages.ts"
+  ],
+  "sweptAt": "e92051d3665c4793601b66821f9fa1250a39d575"
+}
