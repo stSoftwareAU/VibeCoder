@@ -15,7 +15,9 @@
  *      the scan excludes it and the claim path refuses it regardless of any
  *      cache TTL; and
  *   2. the repo's close-sensitive cache entries are removed, so the next scan
- *      re-reads the list from GitHub.
+ *      re-reads the list from GitHub. That includes every per-milestone
+ *      closed list (`issues_closed_milestone_<n>`, Issue #3662), since a
+ *      close does not say which milestone the issue is in.
  *
  * A `gh issue reopen` does the reverse: the entry is dropped and the same
  * cache keys are invalidated, so a deliberately reopened issue is claimable
@@ -38,7 +40,10 @@ import {
 } from "./audit_mutation_classifier.ts";
 import { classifyIssueLifecycle } from "./gh_issue_lifecycle.ts";
 import type { IssueCache } from "./issue_cache.ts";
-import { ISSUE_STATE_CACHE_PREFIX } from "./issue_cache.ts";
+import {
+  CLOSED_MILESTONE_CACHE_PREFIX,
+  ISSUE_STATE_CACHE_PREFIX,
+} from "./issue_cache.ts";
 import {
   type ProcessedIssueRegistry,
   sharedProcessedIssues,
@@ -206,6 +211,9 @@ export async function noteGhIssueClose(
     for (const key of closeInvalidatedCacheKeys(issueNumber)) {
       await cache.invalidate(repo, key);
     }
+    // Issue #3662: the per-milestone closed lists are keyed by milestone
+    // number, which a close or reopen does not carry, so all of them go.
+    await cache.invalidatePrefix(repo, CLOSED_MILESTONE_CACHE_PREFIX);
   } catch (err) {
     warn(
       `[issue_close_notifier] note_failed error=${
