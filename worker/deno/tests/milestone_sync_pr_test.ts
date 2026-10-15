@@ -22,6 +22,7 @@ import {
   SYNC_BRANCH_PREFIX,
   syncBranchAlreadyCarries,
   syncBranchFor,
+  syncPrLandingNote,
 } from "../lib/milestone_sync_pr.ts";
 
 const REPO = "org/repo";
@@ -684,5 +685,33 @@ Deno.test("syncBranchAlreadyCarries - classifies each comparison (Issue #3690)",
       () => Promise.resolve({ code: 0, stderr: "" }),
     ),
     "unknown",
+  );
+});
+
+Deno.test("syncPrLandingNote - not pushed and not opened says already in the open sync PR", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: false, pushed: false }),
+    "ALREADY IN the open sync PR",
+  );
+});
+
+Deno.test("syncPrLandingNote - not pushed but opened says raised from the existing head", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: true, pushed: false }),
+    "from the existing",
+  );
+});
+
+Deno.test("syncPrLandingNote - pushed and opened says raised a sync PR", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: true, pushed: true }),
+    "RAISED a sync PR from '",
+  );
+});
+
+Deno.test("syncPrLandingNote - pushed but not opened says updated the open sync PR", () => {
+  assertStringIncludes(
+    syncPrLandingNote({ branch: "sync/x", opened: false, pushed: true }),
+    "UPDATED the open sync PR",
   );
 });

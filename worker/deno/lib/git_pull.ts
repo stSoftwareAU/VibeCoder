@@ -16,6 +16,7 @@ import { spawnGh } from "./gh_spawn.ts";
 import {
   isRuleViolationPush,
   raiseMilestoneSyncPr,
+  syncPrLandingNote,
 } from "./milestone_sync_pr.ts";
 import type { GitCommandOptions } from "./git_timeout.ts";
 import { ensureDefaultBranchCurrent } from "./git_push.ts";
@@ -293,17 +294,7 @@ async function pushSyncedMilestoneBranch(
   }
   return {
     ok: true,
-    value: !raised.value.pushed && !raised.value.opened
-      ? `ALREADY IN the open sync PR from '${raised.value.branch}' — its ` +
-        `head holds this merge, so nothing was pushed and its checks were ` +
-        `not restarted (Issue #3690) — `
-      : !raised.value.pushed
-      ? `RAISED a sync PR from the existing '${raised.value.branch}' head, ` +
-        `which already held this merge — nothing was pushed (Issue #3690) — `
-      : raised.value.opened
-      ? `RAISED a sync PR from '${raised.value.branch}' — the branch is ` +
-        `gated, so the push became a pull request (Issue #589) — `
-      : `UPDATED the open sync PR from '${raised.value.branch}' (Issue #589) — `,
+    value: syncPrLandingNote(raised.value),
   };
 }
 

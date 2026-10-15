@@ -565,3 +565,25 @@ export async function raiseMilestoneSyncPr(
     };
   }
 }
+
+/**
+ * The sentence fragment describing how a sync landed, chosen from the four
+ * `pushed` x `opened` outcomes of {@link raiseMilestoneSyncPr} (Issues #589,
+ * #3690). Ends with " — " so the caller can append its own detail.
+ */
+export function syncPrLandingNote(outcome: MilestoneSyncPrOutcome): string {
+  if (!outcome.pushed && !outcome.opened) {
+    return `ALREADY IN the open sync PR from '${outcome.branch}' — its ` +
+      `head holds this merge, so nothing was pushed and its checks were ` +
+      `not restarted (Issue #3690) — `;
+  }
+  if (!outcome.pushed) {
+    return `RAISED a sync PR from the existing '${outcome.branch}' head, ` +
+      `which already held this merge — nothing was pushed (Issue #3690) — `;
+  }
+  if (outcome.opened) {
+    return `RAISED a sync PR from '${outcome.branch}' — the branch is ` +
+      `gated, so the push became a pull request (Issue #589) — `;
+  }
+  return `UPDATED the open sync PR from '${outcome.branch}' (Issue #589) — `;
+}
