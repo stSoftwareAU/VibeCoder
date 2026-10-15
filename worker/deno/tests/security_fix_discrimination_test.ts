@@ -431,6 +431,134 @@ Deno.test("discrimination: a zero budget is not_checked", async () => {
   );
 });
 
+const BRANCH_FILES = {
+  "src/sanitise.ts": FIXED,
+  "tests/sanitise_test.ts": TEST_SRC,
+};
+
+Deno.test("discrimination: a repo with no Deno marker is not_checked", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    await run("git", ["rm", "-q", "deno.json"], root);
+    await commit(root, "drop deno.json");
+    const rec = recordingSeams(markerDeno);
+    const r = await runSecurityFixDiscrimination(input(root), rec.seams);
+    assertStringIncludes(
+      reasonOf(r),
+      "no deno.json, deno.jsonc or deno.lock above tests/sanitise_test.ts",
+    );
+    assertEquals(rec.calls.filter((c) => c.cmd === "deno").length, 0);
+  });
+});
+
+Deno.test("discrimination: a timed-out git step is not_checked", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    const rec = recordingSeams(markerDeno);
+    const wrapped: MutationRunnerSeams = {
+      ...rec.seams,
+      runProcess(cmd, args, opts) {
+        if (cmd === "git" && args[0] === "clone") {
+          return Promise.resolve({
+            code: 0,
+            stdout: "",
+            stderr: "",
+            timedOut: true,
+          });
+        }
+        return rec.seams.runProcess(cmd, args, opts);
+      },
+    };
+    const r = await runSecurityFixDiscrimination(input(root), wrapped);
+    assertEquals(reasonOf(r), "git clone timed out");
+  });
+});
+
+Deno.test("discrimination: no production files means no ls-tree and the base run is the head tree", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    const rec = recordingSeams(markerDeno);
+    const r = await runSecurityFixDiscrimination(
+      input(root, { productionFiles: [] }),
+      rec.seams,
+    );
+    assertEquals(r, {
+      kind: "checked",
+      test: CITED,
+      preFix: "pass",
+      postFix: "pass",
+    });
+    assertEquals(
+      rec.calls.filter((c) => c.cmd === "git" && c.args[0] === "ls-tree")
+        .length,
+      0,
+    );
+    assertEquals(rec.calls.filter((c) => c.cmd === "deno").length, 2);
+  });
+});
+
+Deno.test("discrimination: only a branch-added production file means no base restore", async () => {
+  await withRepo(
+    { "src/sanitise.ts": FIXED },
+    { ...BRANCH_FILES, "src/added.ts": "export const added = 1;\n" },
+    async (root) => {
+      const rec = recordingSeams(markerDeno);
+      const r = await runSecurityFixDiscrimination(
+        input(root, { productionFiles: ["src/added.ts"] }),
+        rec.seams,
+      );
+      assertEquals(r.kind, "checked");
+      const gitCalls = rec.calls.filter((c) => c.cmd === "git");
+      assertEquals(gitCalls.filter((c) => c.args[0] === "ls-tree").length, 1);
+      assertEquals(
+        gitCalls.filter((c) =>
+          c.args[0] === "checkout" && c.args.includes("--") &&
+          !c.args.includes("--detach")
+        ).length,
+        0,
+      );
+    },
+  );
+});
+
+Deno.test("discrimination: stderr without an error line reports its first line", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    const rec = recordingSeams(() =>
+      Promise.resolve({
+        code: 1,
+        stdout: "",
+        stderr: "\n  Download failed somewhere\nsecond line\n",
+        timedOut: false,
+      })
+    );
+    const r = await runSecurityFixDiscrimination(input(root), rec.seams);
+    assertStringIncludes(reasonOf(r), "Download failed somewhere");
+    assert(!reasonOf(r).includes("was reported"));
+  });
+});
+
+Deno.test("discrimination: empty stderr and no named line says no test was reported", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    const rec = recordingSeams(() =>
+      Promise.resolve({ code: 0, stdout: "", stderr: "", timedOut: false })
+    );
+    const r = await runSecurityFixDiscrimination(input(root), rec.seams);
+    assertStringIncludes(
+      reasonOf(r),
+      `no test named "${TEST_NAME}" was reported`,
+    );
+  });
+});
+
+Deno.test("discrimination: an unexpected throw is wrapped as a runner failure", async () => {
+  await withRepo({ "src/sanitise.ts": VULN }, BRANCH_FILES, async (root) => {
+    const rec = recordingSeams(markerDeno);
+    const wrapped: MutationRunnerSeams = {
+      ...rec.seams,
+      makeTempDir: () => Promise.reject(new Error("disk full")),
+    };
+    const r = await runSecurityFixDiscrimination(input(root), wrapped);
+    assertEquals(reasonOf(r), "discrimination runner failed: disk full");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // End to end with real deno
 // ---------------------------------------------------------------------------
