@@ -44,6 +44,13 @@ export interface PrCommentToFix {
    * already answered.
    */
   commentCreatedAt?: string;
+  /**
+   * Set (true) only by `findActionableComment` when the comment is a
+   * fleet-authored pre-PR verifier held-findings comment whose marker says
+   * releasable (Issue #3697). The PR-feedback pass then removes the
+   * `standing-violation` label after it pushes a verified fix.
+   */
+  releasesVerifierHold?: boolean;
 }
 
 /** Default gh command function — routed through the shared chokepoint. */

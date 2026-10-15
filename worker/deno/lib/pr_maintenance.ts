@@ -68,6 +68,7 @@ import { listInvitedHumanPrs } from "./pr_invitation_lookup.ts";
 import { listBotPrs } from "./pr_bot_lookup.ts";
 import { resolveCiCheckStateDir } from "./ci_check_state_dir.ts";
 import { isHumanGateParkedAt } from "./ci_fix_attempt_markers.ts";
+import { parsePrePrVerifierHeldMarker } from "./pre_pr_verifier_hold.ts";
 import { findParkedChecks } from "./ci_fix_pr_markers.ts";
 import { repoCheckoutPath } from "./repo_checkout_path.ts";
 import { readWorkflowFiles } from "./workflow_scan_common.ts";
@@ -1134,6 +1135,13 @@ export async function findPrCommentsToFix(
  *   line-level review comments — top-level issue comments still require
  *   an authorised thumbs-up or authorisation, because top-level comments
  *   are the higher-injection-risk surface.
+ * - the comment is a top-level issue comment whose body opens with the
+ *   pre-PR verifier held-PR marker, and whose author is this worker's own
+ *   login or a fleet author (Issue #3697). The fourth path lets the
+ *   PR-feedback pass act on a verifier hold; the marker is parsed only at
+ *   index 0 of the body. Such a comment is actionable even though it is
+ *   the worker's own, and it carries `releasesVerifierHold` when the marker
+ *   says the hold is releasable.
  */
 async function findActionableComment(
   repo: string,
@@ -1159,8 +1167,21 @@ async function findActionableComment(
   );
 
   for (const comment of comments) {
-    // Skip own comments to avoid infinite loops
-    if (comment.login === githubUser) continue;
+    // A pre-PR verifier held-PR comment is read only when it is the worker's
+    // own or a fleet author's, and only when its body opens with the marker
+    // (Issue #3697). Only the completion phase writes that marker, and the
+    // fleet's 👀 marks the comment processed, so the own-comment loop guard
+    // below still holds for every other own comment.
+    const held = commentType === "issue" &&
+        (comment.login === githubUser ||
+          isFleetAuthor(comment.login, [...fleetAuthors]))
+      ? parsePrePrVerifierHeldMarker(comment.body)
+      : null;
+
+    // Skip own comments to avoid infinite loops. The held-PR comment is the
+    // one own comment the scan must act on (Issue #3697); the 👀 dedup below
+    // stops it being acted on twice.
+    if (comment.login === githubUser && held === null) continue;
 
     const isAuthorised = isAuthorisedCommenter(comment.login);
     const isTrustedReviewBot = commentType === "review" &&
@@ -1171,8 +1192,12 @@ async function findActionableComment(
     // reactor is an authorised user (Issue #2484). Resolve reactors only
     // when there is a count to check and the comment is not already
     // trusted by another path, to avoid a needless reactions API call.
+    // A held-PR comment is trusted by its marker, so no reactor call either.
     let hasAuthorisedThumbsUp = false;
-    if (!isAuthorised && !isTrustedReviewBot && (comment.thumbs_up ?? 0) > 0) {
+    if (
+      !isAuthorised && !isTrustedReviewBot && held === null &&
+      (comment.thumbs_up ?? 0) > 0
+    ) {
       const reactors = await fetchCommentThumbsUpReactors(
         repo,
         comment.id,
@@ -1184,7 +1209,10 @@ async function findActionableComment(
       );
     }
 
-    if (isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot) {
+    if (
+      isAuthorised || hasAuthorisedThumbsUp || isTrustedReviewBot ||
+      held !== null
+    ) {
       // The comment is actionable — unless the fleet has already processed
       // it. The `eyes` marker is the worker's own, so a count is not the
       // test: any account can add 👀 and would otherwise have removed this
@@ -1229,6 +1257,8 @@ async function findActionableComment(
         ? "authorised"
         : hasAuthorisedThumbsUp
         ? "thumbs-up"
+        : held !== null
+        ? "verifier-hold"
         : "trusted-bot";
       logger.info("Found actionable PR comment", {
         repo,
@@ -1248,6 +1278,7 @@ async function findActionableComment(
         encodedBody,
         commentAuthor: comment.login,
         commentCreatedAt: comment.created_at,
+        ...(held?.releasable === true ? { releasesVerifierHold: true } : {}),
       };
     } else {
       logger.debug(

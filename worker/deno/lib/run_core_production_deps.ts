@@ -2333,6 +2333,7 @@ export async function createProductionRunCoreDeps(
             commentType: comment.commentType,
             commentId: comment.commentId,
             commentBody: decodedBody,
+            releasesVerifierHold: comment.releasesVerifierHold === true,
           },
           {
             logger,

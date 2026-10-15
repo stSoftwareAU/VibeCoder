@@ -66,6 +66,7 @@ import {
   milestoneFixBranchFor,
   raiseMilestoneFixPr,
 } from "./milestone_fix_pr.ts";
+import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import {
   type HeartbeatHandle,
   startHeartbeat,
@@ -133,6 +134,14 @@ export interface PrFeedbackInput {
    * can route to `needs-human` for code-fix-required findings.
    */
   failingCheckName?: string;
+  /**
+   * Issue #3697: true only when the caller's scan set `releasesVerifierHold`
+   * on the comment — a fleet-authored pre-PR verifier hold whose marker is
+   * releasable. A verified fix on this PR's own head then removes the
+   * `standing-violation` label. The CLI single-comment command does not know
+   * the comment author, so it does not set this.
+   */
+  releasesVerifierHold?: boolean;
 }
 
 /** Result of PR feedback processing. */
@@ -1809,6 +1818,13 @@ async function _processFeedbackWithHeartbeat(
       }
     }
   } else if (hasChanges && pushSucceeded) {
+    // Issue #3697: a verified fix on this PR's own head releases the verifier
+    // hold. A fix on a fix branch does not release: it is a gated milestone
+    // head's fix, which has not reached this PR's head yet. Runs whether or
+    // not the reply below posts.
+    if (input.releasesVerifierHold === true && !fixBranch) {
+      await releaseVerifierHold(repo, prNumber, deps, logger);
+    }
     const posted = await replyWithResult(
       repo,
       prNumber,
@@ -1966,6 +1982,44 @@ async function _processFeedbackWithHeartbeat(
         : `Reviewed PR #${prNumber} feedback — no changes needed`,
     },
   };
+}
+
+/**
+ * Issue #3697: removes the `standing-violation` label a pre-PR verifier
+ * finding applied, once a verified fix has landed on this PR's head. The
+ * Priority 1.65 auto-merge sweep then arms the PR on its next pass. Uses the
+ * labels endpoint, as `removeLabel` in `custom_label_pr_dispatch.ts` does. A
+ * failed removal is logged as an error and the PR stays held; it is never
+ * swallowed.
+ */
+async function releaseVerifierHold(
+  repo: string,
+  prNumber: number,
+  deps: WorkerDeps,
+  logger: Logger,
+): Promise<void> {
+  try {
+    await deps.github.runGhCommand([
+      "api",
+      "-X",
+      "DELETE",
+      `repos/${repo}/issues/${prNumber}/labels/${STANDING_VIOLATION_LABEL}`,
+    ]);
+    logger.info(
+      "PR feedback: released the pre-PR verifier hold — the standing-violation " +
+        "label is removed, and the auto-merge sweep arms the PR on its next pass",
+      { repo, prNumber },
+    );
+  } catch (error) {
+    logger.error(
+      "PR feedback: could not remove the standing-violation label — the PR stays held",
+      {
+        repo,
+        prNumber,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
