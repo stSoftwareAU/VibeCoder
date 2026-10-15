@@ -68,11 +68,10 @@ best-practice-ignore marker, but the gate can never honour one) and #1859
   - Red-check: restoring the old marker sentence in
     `buildChangedWorkflowGateMessage` turned this test red at
     `tests/changed_workflow_gate_test.ts:365`.
-- Edited: `worker/deno/tests/failure_diagnosis_test.ts`, which removes the
-  assertion `getFailureDiagnosis("workflow_gate"),` /
-  `"best-practice-ignore",` (the `assertStringIncludes(` call). Issue #3683
-  requires that `failure_diagnosis.ts` drop the marker remedy, so this
-  assertion no longer holds. It is replaced by an inclusion check for
+- Removed from `worker/deno/tests/failure_diagnosis_test.ts`:
+  `assertStringIncludes( getFailureDiagnosis("workflow_gate"), "best-practice-ignore", );`
+  — #3683 requires that `failure_diagnosis.ts` drop the marker remedy, so the
+  old value is untrue. It is replaced by an inclusion check for
   `needs a human` and an exclusion check for `best-practice-ignore`.
   - Red-check: restoring the old diagnosis bullet turned this test red at
     `tests/failure_diagnosis_test.ts:718`.
