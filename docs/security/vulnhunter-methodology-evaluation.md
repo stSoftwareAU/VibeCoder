@@ -53,7 +53,10 @@ The three follow-ups are open issues in this repository:
 [stSoftwareAU/VibeCoder#3659](https://github.com/stSoftwareAU/VibeCoder/issues/3659)
 (security-fix gate: execute the named test red→green). Older code comments
 cite the same numbers from an earlier tracker; those are unrelated. The
-diagram shows the planned flow once all three land; none of it exists yet.
+diagram shows the planned flow once all three land. #3658's baseline check now
+ships (parse-time `evidence` and line/snippet validation in
+`worker/deno/lib/security_tree_sweep.ts`), while #3657 and #3659 (both still
+open) are planned.
 
 ```mermaid
 flowchart LR
@@ -62,7 +65,7 @@ flowchart LR
     W --> G{security_fix_gate}
     G -->|"planned #3659: test red<br/>on base, green at head"| G2{verifier verdict}
     G2 -->|"planned #3657: FIXED only"| PR[PR raised]
-    S -.->|"planned #3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
+    S -.->|"#3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
 ```
 
 ## 1. Falsification engine — Skip
@@ -177,7 +180,8 @@ line-less, snippet-less entries. **Closes #3512:** no, but it closes that
 issue's sweep-baseline route. **Closes #3615:** no. #3658 makes a citation
 that resolves to nothing a baseline error. That applies the #3613 lesson (a
 cited path that matches no file must fail closed) so the new rule is not
-itself a #3615 instance.
+itself a #3615 instance. That check landed via #3658 (parse-time `evidence` and
+line/snippet validation in `worker/deno/lib/security_tree_sweep.ts`).
 
 ## 4. Evidence-backed remediation mapping — Skip
 

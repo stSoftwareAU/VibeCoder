@@ -165,6 +165,7 @@ one list:
       "path": "worker/deno/lib/pr_body.ts",
       "rule": "unsafe-regex",
       "line": 28,
+      "evidence": ["worker/deno/lib/pr_body.ts:27"],
       "reason": "Only an issue number is interpolated — digits only."
     }
   ],
@@ -185,9 +186,28 @@ Rules the sweep enforces:
 - `path` and `rule` are required. `rule` is a **family** (`command-injection`,
   `unsafe-regex`, …) or a tool-native rule id — the family suppresses the
   finding whichever tool reports it; the rule id is narrower.
-- `line` is optional and matches within the 10-line window, so a small edit
-  above the site does not orphan the entry; a moved finding does, and shows up
-  as **stale** plus a NEW finding — re-anchor it.
+- `line` is optional on `accepted` entries and matches within the 10-line
+  window, so a small edit above the site does not orphan the entry; a moved
+  finding does, and shows up as **stale** plus a NEW finding — re-anchor it.
+- A `falsePositives` entry needs a `line` or a `snippet` (the normalised
+  source line: whitespace collapsed and trimmed). A `snippet` is matched
+  instead of `line` when present. An entry with neither would suppress every
+  finding of the rule in the file, so it is a baseline error.
+- `evidence` is mandatory on a `falsePositives` entry: one or more
+  repository-relative `path:line` citations of the defence, type constraint or
+  non-attacker origin that eliminates the finding. Each path must resolve to a
+  regular file inside the tree, and the line must be no greater than that
+  file's line count. An absolute path, a `.`, `..` or empty segment, or a path
+  that escapes the tree through `..` or a symlink is rejected, and so is a line
+  past the end of the file. Any of these is a baseline error and the sweep
+  fails. A citation is pinned to a line, so an edit that shortens the cited
+  file below that line makes the baseline error until the citation is
+  re-pointed. The rule follows the VulnHunter Phase 2b rule (see
+  [the methodology evaluation](security/vulnhunter-methodology-evaluation.md)):
+  a finding is dismissed by naming what eliminates it. Without it, a pull
+  request whose own change trips the sweep could silence the finding with a
+  10-character reason, which is the route #3512 took.
+- `accepted` entries need no `evidence`: they are real risks, not eliminations.
 - `reason` is mandatory and at least 10 characters. `accepted` entries should
   carry the tracking `issue`.
 - Malformed baselines fail the run and suppress nothing.
@@ -200,7 +220,9 @@ the run but should be removed.
 Triage each NEW finding in this order:
 
 1. **Fix it** — the finding disappears on the next run.
-2. **False positive** — add a `falsePositives` entry with the reason.
+2. **False positive** — add a `falsePositives` entry with the reason, the
+   `evidence` citation and a `line` or `snippet`. A finding with no location to
+   anchor (no `line` or `snippet`) can only go under `accepted`.
 3. **Accepted risk** — add an `accepted` entry with the reason and the issue.
 
 `--file-issues` files one issue per NEW cluster, most important first

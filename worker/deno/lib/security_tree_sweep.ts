@@ -147,7 +147,8 @@ export interface SweepBaselineEntry {
   /** Rule family (e.g. `command-injection`) or a tool-native rule id. */
   rule: string;
   /**
-   * Optional line anchor; matches within the dedup line window.
+   * Line anchor; matches within the dedup line window. A falsePositives
+   * entry needs a `line` or a `snippet` (Issue #3658); `accepted` may omit both.
    *
    * Advisory once {@link SweepBaselineEntry.snippet} is present (Issue #619):
    * a line number describes the file's current layout, not the finding, so an
@@ -178,9 +179,16 @@ export interface SweepAcceptedEntry extends SweepBaselineEntry {
 /** The baseline file contents. */
 export interface SweepBaseline {
   note?: string;
+  /** Evidence and the line/snippet anchor are validated at parse time (Issue #3658). */
   falsePositives: SweepBaselineEntry[];
   accepted: SweepAcceptedEntry[];
 }
+
+/**
+ * Line count of a repository-relative file, or null when the path does not
+ * resolve to a regular file inside the tree (Issue #3658).
+ */
+export type TreeLineCounter = (path: string) => number | null;
 
 /** A scanner invocation, as data so it can be asserted on and stubbed. */
 export interface SweepCommand {
@@ -1019,9 +1027,15 @@ export async function dedupeFindings(
  * Parse and structurally validate the baseline file. A non-empty error list
  * is fatal to the caller — a malformed baseline must never silently suppress
  * findings.
+ *
+ * Each falsePositives entry must carry a line or snippet anchor and `evidence`
+ * citing the defence that makes it benign; `countLines` checks that every
+ * citation resolves inside the tree (Issue #3658). It is required, so a
+ * caller cannot skip that check by accident.
  */
 export function parseSweepBaseline(
   json: string,
+  countLines: TreeLineCounter,
 ): { baseline: SweepBaseline; errors: string[] } {
   const empty: SweepBaseline = { falsePositives: [], accepted: [] };
   let parsed: unknown;
@@ -1046,8 +1060,13 @@ export function parseSweepBaseline(
       errors,
     ).entries()
   ) {
-    const base = validateEntry(entry, `falsePositives[${index}]`, errors);
-    if (base !== null) falsePositives.push(base);
+    const label = `falsePositives[${index}]`;
+    const base = validateEntry(entry, label, errors);
+    if (base === null) continue;
+    if (!validateFalsePositive(entry, base, label, errors, countLines)) {
+      continue;
+    }
+    falsePositives.push(base);
   }
   const accepted: SweepAcceptedEntry[] = [];
   for (
@@ -1150,6 +1169,125 @@ function validateEntry(
       ? { snippet: normaliseSnippet(snippet) }
       : {}),
   };
+}
+
+/** Longest citation quoted back in an error, so a huge value stays short. */
+const CITATION_QUOTE_LENGTH = 120;
+
+/** A 1-based line number with no leading zero. */
+const CITATION_LINE = /^[1-9][0-9]*$/;
+
+/**
+ * True for a plain repository-relative path: non-empty, not absolute, no
+ * backslash or NUL, and no empty, `.` or `..` segment (Issue #3658).
+ */
+function isRepoRelativePath(path: string): boolean {
+  if (path === "" || path.startsWith("/")) return false;
+  if (path.includes("\\") || path.includes("\0")) return false;
+  return path.split("/").every((segment) =>
+    segment !== "" && segment !== "." && segment !== ".."
+  );
+}
+
+/** Quote a value for an error message, truncated when it is long. */
+function quoteCitation(value: unknown): string {
+  const text = typeof value === "string"
+    ? value
+    : (JSON.stringify(value) ?? "");
+  const shown = text.length > CITATION_QUOTE_LENGTH
+    ? `${text.slice(0, CITATION_QUOTE_LENGTH)}...`
+    : text;
+  return JSON.stringify(shown);
+}
+
+/**
+ * The Issue #3658 rules for a falsePositives entry, beyond validateEntry: a
+ * line or snippet anchor, and `evidence` citing `path:line` locations that
+ * resolve inside the tree. Every problem is recorded; returns true when none
+ * is. A malformed citation is refused before `countLines` sees it.
+ */
+function validateFalsePositive(
+  entry: Record<string, unknown>,
+  base: SweepBaselineEntry,
+  label: string,
+  errors: string[],
+  countLines: TreeLineCounter,
+): boolean {
+  let valid = true;
+  if (base.line === undefined && base.snippet === undefined) {
+    errors.push(
+      `${label}: a falsePositives entry needs a "line" or a "snippet" — ` +
+        "without either it suppresses every finding of that rule in the whole file",
+    );
+    valid = false;
+  }
+  const evidence = entry["evidence"];
+  if (!Array.isArray(evidence) || evidence.length === 0) {
+    errors.push(
+      `${label}: "evidence" must be one or more "path:line" citations of the ` +
+        "defence that eliminates the finding",
+    );
+    return false;
+  }
+  for (const citation of evidence) {
+    const quoted = quoteCitation(citation);
+    if (typeof citation !== "string") {
+      errors.push(
+        `${label}: "evidence" entry ${quoted} must be a "path:line" string`,
+      );
+      valid = false;
+      continue;
+    }
+    const colon = citation.lastIndexOf(":");
+    const path = colon === -1 ? "" : citation.slice(0, colon);
+    const line = colon === -1 ? "" : citation.slice(colon + 1);
+    if (!isRepoRelativePath(path) || !CITATION_LINE.test(line)) {
+      errors.push(
+        `${label}: evidence ${quoted} is not a "path:line" citation of a ` +
+          "repo-relative file",
+      );
+      valid = false;
+      continue;
+    }
+    const count = countLines(path);
+    if (count === null) {
+      errors.push(
+        `${label}: evidence ${quoted} does not resolve to a file in the tree`,
+      );
+      valid = false;
+    } else if (Number(line) > count) {
+      errors.push(
+        `${label}: evidence ${quoted} — line ${line} is past the end of ` +
+          `${path} (${count} lines)`,
+      );
+      valid = false;
+    }
+  }
+  return valid;
+}
+
+/**
+ * Line count of `path` inside `repoDir`, or null when it does not resolve to
+ * a regular file inside the tree (Issue #3658).
+ *
+ * The shape is checked first, then the path is resolved through symlinks and
+ * the resolved target must still sit under the resolved root. Checking the
+ * resolved path (not the joined string) refuses a symlink that points out of
+ * the tree. Any failure to resolve or read is null; the caller reports it.
+ */
+export function countTreeLines(repoDir: string, path: string): number | null {
+  if (!isRepoRelativePath(path)) return null;
+  try {
+    const root = Deno.realPathSync(repoDir);
+    const target = Deno.realPathSync(`${root}/${path}`);
+    if (!target.startsWith(`${root}/`)) return null;
+    if (!Deno.statSync(target).isFile) return null;
+    const text = Deno.readTextFileSync(target);
+    if (text === "") return 0;
+    return text.split("\n").length - (text.endsWith("\n") ? 1 : 0);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1576,7 +1714,8 @@ export function renderSweepReport(options: RenderSweepReportOptions): string {
       "",
       "Not in the baseline. Fix, or triage into",
       `\`${relativise(baselinePath, repoDir)}\` as a \`falsePositives\` entry`,
-      "(with a reason) or an `accepted` entry (with a reason and, ideally, a",
+      "(with a reason and `evidence`) or an `accepted` entry (with a reason",
+      "and, ideally,",
       "tracking issue).",
       "",
     );
@@ -1776,7 +1915,7 @@ export function buildSweepIssueBody(
     "",
     "1. **Fix it** — close this issue from the fixing PR.",
     `2. **False positive** — add to \`${baselineRelPath}\` under`,
-    "   `falsePositives` with a `reason`, then close this issue:",
+    "   `falsePositives` with a `reason` and `evidence`, then close this issue:",
     "",
     "   ```json",
     ...JSON.stringify(
@@ -1784,12 +1923,21 @@ export function buildSweepIssueBody(
         path: row.path,
         rule: suggestedBaselineRule(row),
         ...(row.lineStart !== null ? { line: row.lineStart } : {}),
+        ...(row.snippet !== undefined ? { snippet: row.snippet } : {}),
         reason: "<why this is benign>",
+        evidence: ["<path:line of the defence that makes this benign>"],
       },
       null,
       2,
     ).split("\n").map((l) => `   ${l}`),
     "   ```",
+    ...(row.lineStart === null && row.snippet === undefined
+      ? [
+        "",
+        "   An unlocated finding has no `line` or `snippet` to anchor a",
+        "   `falsePositives` entry, so it goes under `accepted`.",
+      ]
+      : []),
     "",
     '3. **Accepted risk** — same shape under `accepted`, with `"issue"`',
     "   set to this issue's number so the sweep can cite it.",
@@ -2308,7 +2456,10 @@ export async function runSecurityTreeSweep(
 ): Promise<SweepRunResult> {
   const sources = new Set<SweepSource>(options.sources ?? SWEEP_SOURCES);
   const baselineText = await readBaseline(options.baselinePath);
-  const { baseline, errors: baselineErrors } = parseSweepBaseline(baselineText);
+  const { baseline, errors: baselineErrors } = parseSweepBaseline(
+    baselineText,
+    (path) => countTreeLines(options.repoDir, path),
+  );
   const coverage = await measureCoverage(options.repoDir, deps.runner);
 
   const findings: SweepFinding[] = [];
