@@ -758,7 +758,9 @@ reviewer its path.
   question: where does the diff depart from a documented standard in a way that
   affects correctness, security or the stated requirements? Ask it to return
   one `violation` entry per such departure, with the `file:line` it saw, and the
-  `clean` areas it checked and found compliant. A rule the target
+  `clean` areas it checked and found compliant. Ask it to name each `file:line`
+  with the repo-relative path exactly as `git diff --name-only` prints it, in
+  backticks, never reworded. A rule the target
   repository's standards say is **enforced by review** — no lint, formatter or
   CI check catches it, in words such as "by review only" or "a finding a
   reader has to raise" — is the exception to that question: there the review
@@ -824,6 +826,11 @@ the summary says who judged it:
   `file:line`, then `reason: fixed in this diff`, or, only for a breach the
   Standards reviewer saw in unchanged context already on the base branch,
   `reason: pre-existing, filed #<n>` linking the follow-up issue you filed.
+  The evidence names the repo-relative path exactly as `git diff --name-only`
+  prints it, in backticks, with no prose rewording (no spaces for underscores,
+  no shortened directory): the worker places the breach against the diff by
+  that path, and one it cannot match to a changed file or a file at HEAD is
+  treated as on the branch's own lines and holds auto-merge (Issue #3613).
   A breach in a line this diff adds or changes may not be deferred: "stands",
   "left for a follow-up" and "out of scope" are not reasons, and the gate
   blocks PR creation on any reason that neither records a fix nor links an

@@ -68,6 +68,31 @@ Deno.test("citedLocations - no path:line gives []", () => {
 Deno.test("citedLocations - hostile input returns promptly", () => {
   assertEquals(citedLocations("a".repeat(50_000) + "!"), []);
   assertEquals(citedLocations("/".repeat(50_000) + ":x"), []);
+  const spaced = citedLocations("`" + "a ".repeat(900) + "x.ts:1`");
+  assertEquals(spaced.length, 1);
+  assert(spaced[0]!.path.endsWith("x.ts"));
+});
+
+Deno.test("citedLocations - a backticked path with spaces is reported whole (Issue #3613)", () => {
+  assertEquals(
+    citedLocations("`worker/deno/lib/run callback telemetry.ts:100-112`"),
+    [{
+      path: "worker/deno/lib/run callback telemetry.ts",
+      start: 100,
+      end: 112,
+    }],
+  );
+});
+
+Deno.test("citedLocations - separate backticked paths are not joined (Issue #3613)", () => {
+  assertEquals(citedLocations("`a/foo.ts:1`, `b/bar.ts:2`"), [
+    { path: "a/foo.ts", start: 1, end: 1 },
+    { path: "b/bar.ts", start: 2, end: 2 },
+  ]);
+  assertEquals(citedLocations("`a/foo.ts:1, b/bar.ts:2`"), [
+    { path: "a/foo.ts", start: 1, end: 1 },
+    { path: "b/bar.ts", start: 2, end: 2 },
+  ]);
 });
 
 Deno.test("isStandingViolation - fixed, filed, unsettled, absent, clean", () => {
@@ -89,8 +114,9 @@ Deno.test("isStandingViolation - fixed, filed, unsettled, absent, clean", () => 
 
 Deno.test("ownLineStandingViolations - placement rules", () => {
   const changed = new Map([["worker/deno/lib/foo.ts", [[11, 13] as const]]]);
+  const head = new Set(["worker/deno/lib/foo.ts", "worker/deno/lib/other.ts"]);
   const run = (evidence: string, reason = "not fixed") =>
-    ownLineStandingViolations(entries(viol(evidence, reason)), changed);
+    ownLineStandingViolations(entries(viol(evidence, reason)), changed, head);
 
   assertEquals(run("`worker/deno/lib/foo.ts:12`").length, 1);
   assertEquals(run("`lib/foo.ts:12`").length, 1, "suffix path match");
@@ -98,6 +124,43 @@ Deno.test("ownLineStandingViolations - placement rules", () => {
   assertEquals(run("`worker/deno/lib/other.ts:12`").length, 0, "not in diff");
   assertEquals(run("the whole module").length, 1, "fail closed");
   assertEquals(run("`worker/deno/lib/foo.ts:12`", "fixed in this diff"), []);
+  assertEquals(
+    run("`worker/deno/lib/missing.ts:12`").length,
+    1,
+    "unplaceable path fails closed",
+  );
+  assertEquals(run("`worker/deno/lib/foo.ts:40`").length, 0, "still outside");
+  assertEquals(
+    run("`lib/foo.ts:40`").length,
+    0,
+    "suffix of a diff file, outside ranges",
+  );
+  assertEquals(
+    run("`lib/other.ts:12`").length,
+    0,
+    "suffix of an unchanged file at HEAD",
+  );
+});
+
+Deno.test("ownLineStandingViolations - a path rewritten with spaces fails closed (Issue #3613)", () => {
+  const changed = new Map([
+    ["worker/deno/lib/run_callback_telemetry.ts", [[81, 114] as const]],
+  ]);
+  const head = new Set([
+    "worker/deno/lib/run_callback_telemetry.ts",
+    "worker/deno/lib/telemetry.ts",
+  ]);
+  const violations = ownLineStandingViolations(
+    entries(
+      viol(
+        "`worker/deno/lib/run callback telemetry.ts:100-112`",
+        "outstanding",
+      ),
+    ),
+    changed,
+    head,
+  );
+  assertEquals(violations.length, 1);
 });
 
 Deno.test("findOwnLineStandingViolations - routing against a diff", async () => {
@@ -159,4 +222,80 @@ Deno.test("findOwnLineStandingViolations - routing against a diff", async () => 
   });
   assertEquals(inapplicable, { violations: [], notChecked: null });
   assertEquals(calls, calls2);
+});
+
+type GitOut = { code: number; stdout: string; stderr: string };
+
+/** Dispatches `ls-tree` to `ls`; every other call is the diff. */
+function gitStub(ls: () => Promise<GitOut>) {
+  const calls: string[][] = [];
+  const runGit = (args: string[]) => {
+    calls.push(args);
+    if (args[0] === "ls-tree") return ls();
+    return Promise.resolve({ code: 0, stdout: DIFF, stderr: "" });
+  };
+  return { calls, runGit };
+}
+
+Deno.test("findOwnLineStandingViolations - unplaceable path checks the HEAD listing (Issue #3613)", async () => {
+  const ok = () =>
+    Promise.resolve({
+      code: 0,
+      stdout: "worker/deno/lib/foo.ts\0worker/deno/lib/bar.ts\0",
+      stderr: "",
+    });
+  const lsCount = (calls: string[][]) =>
+    calls.filter((c) => c[0] === "ls-tree").length;
+  const check = (evidence: string, ls: () => Promise<GitOut>) => {
+    const git = gitStub(ls);
+    return findOwnLineStandingViolations({
+      issueBody: ISSUE,
+      prSummaryContent: standards(viol(evidence, "stands")),
+      base: "origin/main",
+      runGit: git.runGit,
+    }).then((result) => ({ result, git }));
+  };
+
+  const real = await check("`worker/deno/lib/bar.ts:5`", ok);
+  assertEquals(real.result, { violations: [], notChecked: null });
+  assertEquals(lsCount(real.git.calls), 1);
+  assertEquals(real.git.calls.find((c) => c[0] === "ls-tree"), [
+    "ls-tree",
+    "-r",
+    "-z",
+    "--name-only",
+    "HEAD",
+  ]);
+
+  const missing = await check("`worker/deno/lib/missing.ts:5`", ok);
+  assertEquals(missing.result.violations.length, 1);
+  assertEquals(missing.result.notChecked, null);
+
+  const exited = await check(
+    "`worker/deno/lib/missing.ts:5`",
+    () =>
+      Promise.resolve({
+        code: 128,
+        stdout: "",
+        stderr: "fatal: not a tree object",
+      }),
+  );
+  assertEquals(exited.result.violations.length, 1);
+  assert(exited.result.notChecked?.includes("not a tree object"));
+
+  const rejected = await check(
+    "`worker/deno/lib/missing.ts:5`",
+    () => Promise.reject(new Error("boom-ls")),
+  );
+  assertEquals(rejected.result.violations.length, 1);
+  assert(rejected.result.notChecked?.includes("boom-ls"));
+
+  const diffOnly = await check("`worker/deno/lib/foo.ts:99`", ok);
+  assertEquals(diffOnly.result.violations, []);
+  assertEquals(lsCount(diffOnly.git.calls), 0);
+
+  const uncited = await check("the whole module", ok);
+  assertEquals(uncited.result.violations.length, 1);
+  assertEquals(uncited.result.notChecked, null);
+  assertEquals(lsCount(uncited.git.calls), 0);
 });
