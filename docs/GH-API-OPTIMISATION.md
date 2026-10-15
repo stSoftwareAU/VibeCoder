@@ -88,6 +88,13 @@ client-side. This is implemented in
 - `fetchIssuesByLabel(repo, label, cache, …)` calls `fetchAllIssues`
   and applies the label filter in memory — it never issues a per-label
   GitHub call.
+- `fetchClosedIssuesByMilestoneNumber(repo, n, cache, …)` reads/writes the
+  `issues_closed_milestone_<n>` cache key, holding one milestone's closed
+  issues (PRs filtered out). It is read with `gh api
+  repos/<repo>/issues?milestone=<n>&state=closed&per_page=100 --paginate`, so it
+  is not bounded by the newest-500 repo-wide batch. A failed read throws and
+  is never cached. Invalidated by TTL only, not by issue number (see the note
+  under the invalidation table).
 
 The cost is one `gh issue list` per repo per TTL window (10 min),
 regardless of how many label scans the iteration performs. Issue
@@ -347,6 +354,13 @@ trade-off.
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
 | Worker label change to timeline (planned) | Timeline entry for the affected issue | `IssueCache.invalidate(repo, "${number}#timeline")` (future) |
+
+Note: `issues_closed_milestone_<n>` (Issue #3662, written by
+`fetchClosedIssuesByMilestoneNumber` in `worker/deno/lib/issue_query.ts`) is
+not in the close/reopen row. It is keyed by milestone number, which a close or
+reopen does not carry, so `noteGhIssueClose` cannot name it. The milestone
+completion read sees a close or reopen only once that entry's TTL (600 s)
+expires.
 
 The TTL itself is the second line of defence: even without explicit
 invalidation, every entry is automatically refreshed at most 10 minutes

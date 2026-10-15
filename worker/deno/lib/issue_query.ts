@@ -859,7 +859,7 @@ export async function fetchClosedIssuesByMilestoneNumber(
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
 ): Promise<Array<{ number: number; title: string; updatedAt?: string }>> {
   // Checked before any gh call or cache read: the number goes into a REST path.
-  if (false as boolean) { // MUTATION (c): integer check dropped
+  if (!Number.isInteger(milestoneNumber) || milestoneNumber <= 0) {
     throw new Error(
       `fetchClosedIssuesByMilestoneNumber(${repo}): milestone number must be ` +
         `a positive integer, got ${milestoneNumber}`,
