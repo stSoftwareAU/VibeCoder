@@ -1309,8 +1309,10 @@ export interface TitleSearchPR {
 
 /**
  * Minimal PR shape returned by the all-state branch helper
- * (Issue #1795). Matches the existing `hasExistingMilestoneSummaryPr`
- * call site which only needs `number,title,headRefName`.
+ * (Issue #1795). Rows are same-repository PRs only (Issue #3595): the
+ * fork-headed ones are dropped before caching, so no reader needs an
+ * `isCrossRepository` field. Carries `number`, `title`, `headRefName` and,
+ * when the read provided it, `state`.
  */
 export interface BranchPR {
   number: number;
@@ -1318,9 +1320,9 @@ export interface BranchPR {
   headRefName: string;
   /**
    * GitHub PR state (`OPEN`, `MERGED`, `CLOSED`) as of the read that filled the
-   * cache (PR #3640 review). Optional: a cache entry written before this field
-   * existed lacks it, and a reader must treat that as "unknown" and read the
-   * PR live rather than assume a state.
+   * cache (PR #3640 review). Optional: a row lacks it when the gh read omitted
+   * it or gave a non-string or empty value, and a reader must treat that as
+   * "unknown" and read the PR live rather than assume a state.
    */
   state?: string;
 }
@@ -1619,19 +1621,32 @@ export async function invalidatePRsForIssueByTitle(
   await cache.invalidate(repo, `prs_title_${state}_${issueNumber}`);
 }
 
+/** Cache key for the all-state branch lookup; `v2` retires pre-#3595 entries. */
+function allStateBranchCacheKey(branchName: string): string {
+  return `prs_all_branch_v2_${branchName}`;
+}
+
 /**
  * Fetch all-state PRs whose head branch is `branchName` (Issue #1795).
  *
  * Wraps `gh pr list --state all --head <branch> --limit 100`. Used by
  * `hasExistingMilestoneSummaryPr` (`milestone_completion.ts`) which
  * needs to detect a PR for the milestone branch in any state to avoid
- * recreating one. Cache key is `prs_all_branch_${branchName}` —
+ * recreating one. Cache key is `prs_all_branch_v2_${branchName}` —
  * distinct from the per-state branch helper so an all-state lookup
  * does not poison or get poisoned by single-state caches.
  *
+ * Only same-repository PRs are returned (Issue #3595):
+ * `gh pr list --head` matches the ref name alone, so a PR from a fork whose
+ * branch reuses `branchName` is listed too, and a fork-headed PR proves
+ * nothing about this repository's branch. A row whose `isCrossRepository` is
+ * not exactly `false` is dropped. The `v2` key means an entry written under
+ * the old `prs_all_branch_${branchName}` key, which may hold fork-headed rows,
+ * is never read.
+ *
  * Each row carries the PR `state` when the read provided it (PR #3640
- * review), so a caller can drop non-open PRs without a per-PR read; a row from
- * a cache entry written before that field existed has none. The state is as of
+ * review), so a caller can drop non-open PRs without a per-PR read; a row
+ * has none when the gh read omitted it or gave a non-string or empty value. The state is as of
  * the cached read, so a caller that acts on a PR still confirms it live.
  *
  * Returns an empty array on parse failure rather than throwing.
@@ -1642,7 +1657,7 @@ export async function fetchAllStatePRsByBranch(
   cache?: IssueCache,
   ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
 ): Promise<BranchPR[]> {
-  const cacheKey = `prs_all_branch_${branchName}`;
+  const cacheKey = allStateBranchCacheKey(branchName);
 
   if (cache) {
     const cached = await cache.read<BranchPR[]>(repo, cacheKey);
@@ -1661,7 +1676,7 @@ export async function fetchAllStatePRsByBranch(
       "--head",
       branchName,
       "--json",
-      "number,title,headRefName,state",
+      "number,title,headRefName,state,isCrossRepository",
       "--limit",
       "100",
     ]);
@@ -1681,6 +1696,8 @@ export async function fetchAllStatePRsByBranch(
   for (const item of parsed) {
     if (!isRecord(item)) continue;
     if (typeof item.number !== "number") continue;
+    // Issue #3595: a fork-headed PR proves nothing; keep only `false`.
+    if (item.isCrossRepository !== false) continue;
     prs.push({
       number: item.number,
       title: typeof item.title === "string" ? item.title : "",
@@ -1704,7 +1721,7 @@ export async function invalidateAllStatePRsByBranch(
   repo: string,
   branchName: string,
 ): Promise<void> {
-  await cache.invalidate(repo, `prs_all_branch_${branchName}`);
+  await cache.invalidate(repo, allStateBranchCacheKey(branchName));
 }
 
 /**

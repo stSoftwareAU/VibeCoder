@@ -361,6 +361,7 @@ Deno.test("checkAndHandleMilestoneCompletions - an unmerged final PR from an ear
             number: 1959,
             title: "Milestone: scan",
             headRefName: "milestone/scan",
+            isCrossRepository: false,
           }]),
         );
       }
