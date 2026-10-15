@@ -219,21 +219,34 @@ RUN set -eu; \
     TOOLCHAIN_MANIFEST=/tmp/toolchain-manifest.json \
       bash /tmp/install-toolchains.sh shellcheck,actionlint,cargo-deny,gitleaks,pwsh,bats-core,codespell,pyyaml,codegraph,rtk,floci
 
-# markdownlint-cli2 backs the check-markdownlint gate stage. The release
-# tarball is downloaded and checksum-verified first, then installed from that
-# local file — `npm install <name>@<version>` would take upstream's word for
-# the bytes. `--ignore-scripts` keeps a package lifecycle script from running
-# as root during the build.
+# markdownlint-cli2 backs the check-markdownlint gate stage; cspell (Issue
+# #3689) backs the pre-push gate's spelling stage for a repository that tracks
+# a cspell config and whose CI runs cspell (GRQ: docs/cspell.json). The gate
+# fails closed when that check is planned and cspell is missing.
+# Each release tarball is downloaded and checksum-verified first, then
+# installed from that local file — `npm install <name>@<version>` would take
+# upstream's word for the bytes. `--ignore-scripts` keeps a package lifecycle
+# script from running as root during the build. cspell is ESM and needs Node
+# >=22.18.0, which NODE_VERSION satisfies. Each tarball gets its own file name
+# and is removed once installed: CURL_RETRY carries `-C -`, which resumes from
+# an existing file, so a shared path made cspell resume from the
+# markdownlint-cli2 bytes and fail its checksum.
 ARG MARKDOWNLINT_CLI2_VERSION="0.23.2"
 ARG MARKDOWNLINT_CLI2_SHA256_NOARCH="b957e784d84c5ff2665f318e13cf00c1e7072016e315057f6917b7eb01ab6d09"
+ARG CSPELL_VERSION="10.3.6"
+ARG CSPELL_SHA256_NOARCH="b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb89517b10e9f"
 
 RUN set -eu; \
-    tarball="/tmp/markdownlint-cli2.tgz"; \
-    curl -fsSL ${CURL_RETRY} -o "${tarball}" "https://registry.npmjs.org/markdownlint-cli2/-/markdownlint-cli2-${MARKDOWNLINT_CLI2_VERSION}.tgz"; \
-    echo "${MARKDOWNLINT_CLI2_SHA256_NOARCH}  ${tarball}" | sha256sum -c -; \
-    npm install -g --ignore-scripts "${tarball}"; \
-    rm -rf /tmp/npmc "${tarball}"; \
-    markdownlint-cli2 --version
+    for spec in "markdownlint-cli2 ${MARKDOWNLINT_CLI2_VERSION} ${MARKDOWNLINT_CLI2_SHA256_NOARCH}" "cspell ${CSPELL_VERSION} ${CSPELL_SHA256_NOARCH}"; do \
+      set -- ${spec}; tgz="/tmp/$1-$2.tgz"; \
+      curl -fsSL ${CURL_RETRY} -o "${tgz}" "https://registry.npmjs.org/$1/-/$1-$2.tgz"; \
+      echo "$3  ${tgz}" | sha256sum -c -; \
+      npm install -g --ignore-scripts "${tgz}"; \
+      rm -f "${tgz}"; \
+    done; \
+    rm -rf /tmp/npmc; \
+    markdownlint-cli2 --version; \
+    cspell --version
 
 # Graft is a worker RUNTIME tool, not a repo gate tool: it builds the
 # tree-sitter code graph the repo-context injection reads. Same shape as

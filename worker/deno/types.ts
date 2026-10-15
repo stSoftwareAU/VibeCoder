@@ -1049,9 +1049,14 @@ export interface RepoConfig {
   ciProviders?: CiProviderConfig[];
   /**
    * Mandatory pre-flight commands run in the repo working tree immediately
-   * before the worker's automated commit (Issue #3577). Optional — omit or
-   * use an empty array to disable the gate, in which case the repo runs
-   * exactly as it does today with zero added latency.
+   * before the worker's automated commit (Issue #3577), and again before the
+   * worker pushes commits it did not just make: `commitAndPushPending` Step 1b
+   * and the issue completion phase's gate (Issue #3689). Optional — omit or
+   * use an empty array to configure no repo commands. That does NOT switch the
+   * changed-file checks off: Step 1b (for callers that pass a pre-flight spec)
+   * and the completion phase's gate still run deno/cargo fmt, markdownlint,
+   * cspell and `sweptAt` ancestry over the files the branch changes, and can
+   * fail the run, for a repo with no entry too.
    *
    * When set, every command runs in listed order at the same chokepoint as
    * `assertSafeToCommit()`; the **first non-zero exit blocks BOTH the commit

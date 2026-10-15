@@ -45,6 +45,7 @@ Every third-party action and reusable workflow referenced under `.github/`, keye
 | cargo-mutants | toolchain | 27.1.0 | amd64: dfe6dc37d0342c891d2829b5a695aa57c2d0edecef7e7d0399a30cc6e206411e | exact version + SHA-256 verified |
 | codegraph | toolchain | 1.6.0 | amd64: de3391f79ed42622d937e6cd5b7642a7ea8bb7d1473607e80b879ba73ef216b0<br>arm64: 6dc935a7b8f1a61e688a578b98ea34680eb2e36d7b91db079d64f4011f1a668f | exact version + SHA-256 verified |
 | codespell | toolchain | 2.4.3 | noarch: af2505b335e8573dbd2d384d1c4ef498f4006f4ba2d6fceca01e55b91f52628a | exact version + SHA-256 verified |
+| cspell | toolchain | 10.3.6 | noarch: b5d865984fa8a8c13d1ee2a25514b45a29c5186f64afa8586b0fb89517b10e9f | exact version + SHA-256 verified |
 | floci | toolchain | 2.2.0 | amd64: 3d7b4e5c9bde62c0005e5d15878a2c32f4914304818d50c05f89ab2b60280667<br>arm64: 7137285fac8d0baf4f6f7dc3f72868a551b28d1d1dddb424c009dc5a1cca48f7 | exact version + SHA-256 verified |
 | gitleaks | toolchain | 8.30.1 | amd64: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb<br>arm64: e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080 | exact version + SHA-256 verified |
 | graft | toolchain | 0.18.0 | noarch: 729bce7c74c730d72522abaced5b502478c04327d11a12471e15e0ade8d9facc | exact version + SHA-256 verified |
