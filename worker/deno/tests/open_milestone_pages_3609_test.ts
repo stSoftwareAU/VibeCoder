@@ -175,7 +175,13 @@ function authoritativeStub(
   openIssues = 0,
   children: unknown[] = [],
 ): string | null {
-  if (key.includes("/issues?milestone=")) return JSON.stringify(children);
+  // The closed read (Issue #3662) is left to the fake's own closed branch, so
+  // it is never answered with the open-children list.
+  if (
+    key.includes("/issues?milestone=") && !key.includes("state=closed")
+  ) {
+    return JSON.stringify(children);
+  }
   if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
     return JSON.stringify({ open_issues: openIssues });
   }
@@ -243,10 +249,9 @@ Deno.test(
       ) {
         return "[]";
       }
-      if (key.includes("issue list") && key.includes("--state closed")) {
-        return JSON.stringify([
-          { number: 11, title: "real work", milestone: { title: "v2.0" } },
-        ]);
+      // The milestone's closed issues, read by milestone number (Issue #3662).
+      if (key.includes("issues?milestone=3") && key.includes("state=closed")) {
+        return JSON.stringify([{ number: 11, title: "real work" }]);
       }
       if (
         key.includes("issue list") && key.includes("--state all") &&

@@ -295,6 +295,12 @@ function completionGh(sink: {
 }): (args: string[]) => Promise<string> {
   return (args: string[]): Promise<string> => {
     const key = args.join(" ");
+    // The milestone's closed issues, read by milestone number (Issue #3662).
+    if (key.includes("/issues?milestone=") && key.includes("state=closed")) {
+      return Promise.resolve(
+        JSON.stringify([{ number: 1959, title: "did work" }]),
+      );
+    }
     if (key.includes("/issues?milestone=")) return Promise.resolve("[]");
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
       return Promise.resolve(JSON.stringify({ open_issues: 0 }));

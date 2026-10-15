@@ -281,8 +281,9 @@ function buildOrchestrationGhStub(
   return async (args: string[]) => {
     const key = args.join(" ");
     // Issue #3908: the fresh authoritative open-children reads — GitHub agrees
-    // the milestone has no open children.
-    if (key.includes("/issues?milestone=")) {
+    // the milestone has no open children. Issue #3662: the closed read by
+    // milestone number is answered below, not here.
+    if (key.includes("/issues?milestone=") && !key.includes("state=closed")) {
       return "[]";
     }
     if (/api repos\/[^ ]+\/milestones\/\d+$/.test(key)) {
@@ -298,8 +299,12 @@ function buildOrchestrationGhStub(
       return "[]";
     }
     // Issue #1908: closed batch is fetched without --milestone; payload
-    // tags each issue with its milestone for local filtering.
-    if (key.includes("issue list") && key.includes("--state closed")) {
+    // tags each issue with its milestone for local filtering. Issue #3662:
+    // the milestone's own closed read is the REST one by milestone number.
+    if (
+      (key.includes("issue list") && key.includes("--state closed")) ||
+      (key.includes("issues?milestone=") && key.includes("state=closed"))
+    ) {
       return JSON.stringify([
         { number: 10, title: "Add login", milestone: { title: "v1.0" } },
       ]);
