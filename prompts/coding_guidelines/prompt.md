@@ -632,12 +632,12 @@ Use these patterns instead:
   tail -n 50 /tmp/run.log
   head -n 50 /tmp/run.log
   ```
-- **Live stream you must follow** — bound the wait with the project timeout
-  helper:
+- **Live stream you must follow** — bound the wait with a time limit:
   ```bash
-  $TIMEOUT_CMD 30 tail -f /tmp/run.log | head -50
+  timeout 30 tail -f /tmp/run.log | head -50
   ```
-  `$TIMEOUT_CMD` resolves to `gtimeout` on macOS and `timeout` on Linux.
+  On a macOS host with no `timeout`, use `gtimeout` (Homebrew coreutils).
+  Nothing sets a `$TIMEOUT_CMD` variable for you.
 
 **Never** write `tail -f … | head` (or any unbounded `tail -f`) in a Bash-tool
 command. Reach for `tail -n N <file>` first; only fall back to a guarded
@@ -674,12 +674,15 @@ Run only the test files relevant to your changes:
 
 ### Test Timeout Protection
 
-Wrap long-running test commands with `$TIMEOUT_CMD` (set to `gtimeout` on macOS,
-`timeout` on Linux):
+Wrap long-running test commands in a time bound — `timeout`, or `gtimeout` on a
+macOS host with no `timeout`:
 
 ```bash
-$TIMEOUT_CMD 900 npx cypress run --spec "cypress/e2e/specific-test.cy.ts" --config video=false
+timeout 900 npx cypress run --spec "cypress/e2e/specific-test.cy.ts" --config video=false
 ```
+
+In a committed script, pick the bounding command as the **`timeout` command**
+bullet under **Cross-Platform Bash Compatibility** shows.
 
 - Cap test execution at **10–15 minutes** (600–900 seconds).
 - On timeout, report the timeout rather than retrying blindly.
@@ -1207,8 +1210,32 @@ This project uses `set -euo pipefail` and must run on **macOS (bash 3.2)**,
 - **Empty arrays under `set -u`**: bash 3.2 treats `${arr[@]}` on an empty array
   as an unbound variable error. Use the safe pattern `${arr[@]+"${arr[@]}"}`, or
   guard access with `if [[ ${#arr[@]} -gt 0 ]]; then`.
-- **`timeout` command**: macOS has no native `timeout`. Use `$TIMEOUT_CMD`
-  (resolved to `gtimeout` on macOS by `check_dependencies()`).
+- **`timeout` command**: macOS has no native `timeout`; Homebrew coreutils
+  installs it as `gtimeout`. Do not rely on an inherited `$TIMEOUT_CMD` or a
+  shared helper to choose one: a script that bounds a command picks the
+  bounding command itself — `timeout`, else `gtimeout`, else run the command
+  unbounded — so a host with neither still runs it instead of failing:
+
+  ```bash
+  TIMEOUT_CMD=""
+  for candidate in timeout gtimeout; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      TIMEOUT_CMD="$candidate"
+      break
+    fi
+  done
+
+  # Usage: bounded <seconds> <command> [args...]
+  bounded() {
+    local seconds="$1"
+    shift
+    if [[ -n "$TIMEOUT_CMD" ]]; then
+      "$TIMEOUT_CMD" "$seconds" "$@"
+    else
+      "$@"
+    fi
+  }
+  ```
 - **GNU vs BSD tools**: prefer POSIX-compatible flags. Document the dependency
   when GNU-specific flags are needed, and give any GNU-only form in shell code a
   test runs a portable fallback: macOS fleet hosts run the same tests too, where
