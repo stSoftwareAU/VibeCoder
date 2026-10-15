@@ -87,6 +87,60 @@ ${CLAIM_SENTENCE}
 - manually verified
 `;
 
+/** An issue body with one acceptance criterion, so the standing check applies. */
+const ISSUE_WITH_CRITERIA = `## Problem
+
+Problems only the fleet reviewer sees surface after the PR is raised.
+
+## Acceptance criteria
+
+- [ ] The held PR says whether a later pass may release it.
+`;
+
+/**
+ * A summary whose Standards Review carries one `violation` on a line this
+ * branch adds (Issue #3382). Its evidence cites `run_outcome.ts:12`, which
+ * DIFF_ADDS_LINES_10_TO_15 adds.
+ */
+const SUMMARY_WITH_VIOLATION = `## Summary
+
+Changed the broker balance card. Closes #${ISSUE}.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — the held PR says whether a later pass may release it — evidence: \`worker/deno/lib/pre_pr_verifier.ts\` — reviewer: met
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — American spelling in the new code — evidence: \`worker/deno/lib/run_outcome.ts:12\` — reason: not fixed.
+
+**Docs sweep** — grep: \`recoverFromSummaryRuleBlock\`; section: \`docs/EXTENDING.md#summary-rule-recovery\`; no hits; siblings: none — no existing set gained a member
+
+**Branch outcomes:** none added
+
+## Test Plan
+
+- manually verified
+`;
+
+/** A unified=0 diff whose added lines are 10-15 of run_outcome.ts. */
+const DIFF_ADDS_LINES_10_TO_15 =
+  `diff --git a/worker/deno/lib/run_outcome.ts b/worker/deno/lib/run_outcome.ts
+--- a/worker/deno/lib/run_outcome.ts
++++ b/worker/deno/lib/run_outcome.ts
+@@ -9,0 +10,6 @@
++a
++b
++c
++d
++e
++f
+`;
+
 const FINDING: ReviewFinding = {
   file: "src/balance.ts",
   line: 42,
@@ -114,6 +168,13 @@ const NOT_CHECKED: PrePrVerifierResult = {
 };
 
 const PR_NUMBER = 4412;
+
+/** The held marker the PR comment opens with when only the verifier holds it. */
+const HELD_MARKER_RELEASABLE =
+  '<!-- vibe-pre-pr-verifier-held releasable="true" -->\n';
+/** ... and when a standing Standards violation also holds it (Issue #3697). */
+const HELD_MARKER_NOT_RELEASABLE =
+  '<!-- vibe-pre-pr-verifier-held releasable="false" -->\n';
 
 function stubClient(
   comments: string[],
@@ -161,6 +222,10 @@ interface Scenario {
   claudeModel?: string;
   /** When true, posting a comment on the PR rejects (Issue #3697). */
   prCommentFails?: boolean;
+  /** Issue body (default: one with no acceptance criteria). */
+  issueBody?: string;
+  /** Unified=0 diff the own-line standing-violation check reads. */
+  diffUnified0?: string;
 }
 
 interface Outcome {
@@ -212,7 +277,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repo: REPO,
     issueNumber: ISSUE,
     issueTitle: "Run a pre-PR verifier",
-    issueBody: ISSUE_BODY,
+    issueBody: scenario.issueBody ?? ISSUE_BODY,
     issueLabels: ["enhancement", "work-on"],
     issueComments: "",
     githubUser: "testbot",
@@ -267,6 +332,9 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
         if (cmdArgs[0] === "diff" && cmdArgs[1] === "--name-only") {
           if (cmdArgs.includes("--diff-filter=ACMR")) return ok("");
           return ok(scenario.changedFiles ?? "docs/notes.md");
+        }
+        if (cmdArgs.includes("diff") && cmdArgs.includes("--unified=0")) {
+          return ok(scenario.diffUnified0 ?? "");
         }
         return ok("");
       },
@@ -620,6 +688,10 @@ Deno.test(
     assertStringIncludes(posted, PRE_PR_VERIFIER_COMMENT_HEADING);
     assertStringIncludes(posted, FINDING.problem);
     assertStringIncludes(posted, "Auto-merge is held");
+    assert(
+      posted.startsWith(HELD_MARKER_RELEASABLE),
+      "the verifier alone holds the PR, so the marker says releasable",
+    );
   },
 );
 
@@ -636,6 +708,10 @@ Deno.test(
     assertHeld(outcome);
     assertEquals(outcome.prComments.length, 1);
     assertStringIncludes(outcome.prComments[0]!, FINDING.problem);
+    assert(
+      outcome.prComments[0]!.startsWith(HELD_MARKER_RELEASABLE),
+      "the verifier alone holds the PR, so the marker says releasable",
+    );
   },
 );
 
@@ -692,5 +768,35 @@ Deno.test(
       prNumber: PR_NUMBER,
       error: "PR comment failed",
     });
+  },
+);
+
+// (o)
+Deno.test(
+  "completion - a verifier finding and a standing own-line violation that both survive hold the existing PR as not releasable (Issue #3697)",
+  async () => {
+    const outcome = await runCompletion({
+      summary: SUMMARY_WITH_VIOLATION,
+      verifier: [checked([FINDING])],
+      existingPr: true,
+      issueBody: ISSUE_WITH_CRITERIA,
+      diffUnified0: DIFF_ADDS_LINES_10_TO_15,
+    });
+
+    assertHeld(outcome);
+    // The standing violation reached the recovery turn, and survived it.
+    assertStringIncludes(outcome.claudePrompts[0] ?? "", "CODE FIX 1 of 1");
+    assertEquals(outcome.prComments.length, 1);
+    const posted = outcome.prComments[0]!;
+    assert(
+      posted.startsWith(HELD_MARKER_NOT_RELEASABLE),
+      "a standing violation also holds the PR, so the marker says not releasable",
+    );
+    assertStringIncludes(posted, FINDING.problem);
+    assertStringIncludes(
+      posted,
+      "so the label stays after these findings are fixed until a human removes it.",
+    );
+    assertEquals(posted.includes("acts on this comment"), false);
   },
 );

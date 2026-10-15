@@ -818,7 +818,10 @@ async function reportSummaryRuleBlock(
         prePrVerifierFindings !== "",
       heldFindingsComment: prePrVerifierFindings === ""
         ? ""
-        : buildPrePrVerifierHeldPrComment(prePrVerifierFindings),
+        : buildPrePrVerifierHeldPrComment(
+          prePrVerifierFindings,
+          standingViolations.length === 0,
+        ),
     },
   );
   if (recovered.status !== "continue") return recovered;
@@ -986,8 +989,10 @@ async function postDocsSweepHitsComment(
  * Issue #3697: the hold is also set when a pre-PR verifier finding survived the
  * recovery turn. `finalise.heldFindingsComment`, when non-empty, is that
  * finding's comment for the PR; it is posted on the PR so the findings sit
- * where the PR's next reader looks, not only on the issue. Every caller states
- * it (`""` when there is nothing to post).
+ * where the PR's next reader looks, not only on the issue. The comment carries
+ * the held marker (`pre_pr_verifier_hold.ts`), which the PR-feedback pass picks
+ * up to release the hold once the findings are fixed. Every caller states it
+ * (`""` when there is nothing to post).
  *
  * Exported for unit testing — the primary entry point remains
  * `workOnIssueCompletion`.

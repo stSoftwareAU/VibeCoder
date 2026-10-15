@@ -1443,8 +1443,40 @@ Deno.test("the gate comment says a finding is closed only by a fix or evidence (
 });
 
 Deno.test("the held-PR comment names the hold, the label and carries the gate comment (Issue #3697)", () => {
-  const comment = buildPrePrVerifierHeldPrComment("X-GATE");
+  const comment = buildPrePrVerifierHeldPrComment("X-GATE", true);
   assertStringIncludes(comment, "X-GATE");
   assertStringIncludes(comment, "standing-violation");
   assertStringIncludes(comment, "Auto-merge is held");
+});
+
+Deno.test("the held-PR comment opens with the releasable=true marker and the release sentence (Issue #3697)", () => {
+  const comment = buildPrePrVerifierHeldPrComment("X-GATE", true);
+  assert(
+    comment.startsWith(
+      '<!-- vibe-pre-pr-verifier-held releasable="true" -->\n',
+    ),
+    "the marker is the first line",
+  );
+  assertStringIncludes(
+    comment,
+    "The PR-feedback pass acts on this comment; once it pushes a fix for these findings it removes the label, and the auto-merge sweep then arms the PR.",
+  );
+  assertEquals(comment.includes("label stays"), false);
+  assertStringIncludes(comment, "\n\nX-GATE");
+});
+
+Deno.test("the held-PR comment opens with the releasable=false marker and the label-stays sentence (Issue #3697)", () => {
+  const comment = buildPrePrVerifierHeldPrComment("X-GATE", false);
+  assert(
+    comment.startsWith(
+      '<!-- vibe-pre-pr-verifier-held releasable="false" -->\n',
+    ),
+    "the marker is the first line",
+  );
+  assertStringIncludes(
+    comment,
+    "A Standards violation on this branch's own lines also holds this PR, so the label stays after these findings are fixed until a human removes it.",
+  );
+  assertEquals(comment.includes("acts on this comment"), false);
+  assertStringIncludes(comment, "\n\nX-GATE");
 });

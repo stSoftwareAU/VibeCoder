@@ -47,6 +47,7 @@ import {
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import { prePrVerifierHeldMarkerLine } from "./pre_pr_verifier_hold.ts";
 import { STANDING_VIOLATION_LABEL } from "./standing_violation_routing.ts";
 import {
   checklistGapFindings,
@@ -814,10 +815,21 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
 
 /**
  * The comment posted on an existing PR that is held because a pre-PR verifier
- * finding survived the run's recovery turn (Issue #3697). It leads with the
- * hold and its label, then carries the verifier's gate comment verbatim.
+ * finding survived the run's recovery turn (Issue #3697). It opens with the
+ * held marker line (`prePrVerifierHeldMarkerLine`), then the hold and its
+ * label, then the verifier's gate comment verbatim. `releasable` is true only
+ * when the verifier finding alone holds the PR; it selects the release
+ * sentence, which says whether the PR-feedback pass lifts the label once the
+ * findings are fixed.
  */
-export function buildPrePrVerifierHeldPrComment(gateComment: string): string {
-  return `**Auto-merge is held on this PR** (label \`${STANDING_VIOLATION_LABEL}\`): the pre-PR verifier's findings below were still present after the run's recovery turn (Issue #3697). Fix each finding, or dispute it with evidence; recording it in the PR summary as a known gap does not close it.` +
+export function buildPrePrVerifierHeldPrComment(
+  gateComment: string,
+  releasable: boolean,
+): string {
+  const releaseSentence = releasable
+    ? "The PR-feedback pass acts on this comment; once it pushes a fix for these findings it removes the label, and the auto-merge sweep then arms the PR."
+    : "A Standards violation on this branch's own lines also holds this PR, so the label stays after these findings are fixed until a human removes it.";
+  return prePrVerifierHeldMarkerLine(releasable) + "\n" +
+    `**Auto-merge is held on this PR** (label \`${STANDING_VIOLATION_LABEL}\`): the pre-PR verifier's findings below were still present after the run's recovery turn (Issue #3697). Fix each finding, or dispute it with evidence; recording it in the PR summary as a known gap does not close it. ${releaseSentence}` +
     "\n\n" + gateComment;
 }
