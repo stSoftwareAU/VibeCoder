@@ -2497,9 +2497,10 @@ flowchart TD
   the issue states criteria. If the issue cannot be read, the re-sync fails
   (logged by the caller) rather than copying the old section. It still runs
   only when the summary changed, so an issue edit alone does not trigger it.
-- **A healthy run is untouched unless the issue states criteria and its
-  summary reports a `partial` or `missing` entry** (Issue #3506; see the next
-  subsection). A degraded run that showed every scope item `met` is left alone
+- **A healthy run is untouched unless its summary reports a `partial` or
+  `missing` entry** (Issue #3506; see the next subsection). An issue that
+  states no criteria is no exception: each such entry is kept and named by its
+  own subject. A degraded run that showed every scope item `met` is left alone
   only when it reported no unmatched `partial` or `missing` entry. An
   unmatched entry like that is still a shortfall, and the follow-up is filed.
 - **The "gh failed" branch still fails loud.** When the guard runs from

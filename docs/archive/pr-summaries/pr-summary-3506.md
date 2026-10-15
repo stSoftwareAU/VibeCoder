@@ -323,7 +323,7 @@ true because it names the guard, which still runs for degraded runs:
   No behaviour changed in this round, so no suite was re-run.
 - PR #3676 review push (seventh round, issue with no criteria): `assessReportedGaps`
   now keeps each `partial` or `missing` closure entry, named by its own subject,
-  when the issue states no scope (`degraded_delivery.ts:198`); the
+  when the issue states no scope (`degraded_delivery.ts:202`); the
   `issue-processing.md` Trigger bullet and the design bullet above say so.
   Tests: `deno task test:unit` over `degraded_delivery_test.ts`,
   `completion_phase_degraded_delivery_test.ts`, `follow_up_chain_stop_test.ts`
