@@ -861,7 +861,10 @@ completion attempt that has a PR summary to read, whether or not the issue
 carries acceptance criteria. You dispatch nothing for it. Its blocking findings
 come back as a REQUIRED ITEM in the one recovery turn and, unlike the other
 items, may need a code change: fix the code and its tests, then make the
-summary match.
+summary match. It is also handed every closure entry you marked `met` and
+judges each against the head: an entry it rates `partial` or `missing`, or
+leaves without a verdict, is a blocking finding. Mark `met` only when the diff
+delivers every case the criterion names.
 
 ## Acceptance-Criteria Closure — Answer the Criteria Before the PR
 
@@ -906,7 +909,8 @@ one is broken:
   by code in this diff; when in doubt, use `partial` and say what is left. The
   independent Spec reviewer above is the structural half of this rule — where
   your status differs from its verdict, the departure is recorded, never
-  silent.
+  silent — and the pre-PR verifier then re-judges each `met` entry; a `partial`,
+  `missing` or absent verdict from it blocks.
 - **Issues with no acceptance criteria are unaffected** — emit the block only
   when the issue states criteria.
 

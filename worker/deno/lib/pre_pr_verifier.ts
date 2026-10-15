@@ -26,6 +26,10 @@
  *   `git status` (untracked files included, ignored files not) or HEAD shows
  *   surfaces as a finding instead of being committed silently.
  *
+ * The review brief's fields (including the closure entries the summary marks
+ * `met`, which the verifier judges independently, Issue #3766) are listed in
+ * {@link REVIEW_BRIEF_FIELDS}.
+ *
  * A pass that cannot run is "not checked", never clean.
  *
  * @module
@@ -46,6 +50,13 @@ import {
   isBoundaryId,
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
+import {
+  type ClosureEntryVerdict,
+  closureGapFindings,
+  metClosureItems,
+  parseClosureEntryVerdicts,
+  renderClosureEntriesSection,
+} from "./closure_met_check.ts";
 import { loadPrompt } from "./prompt_manager.ts";
 import {
   checklistGapFindings,
@@ -71,6 +82,7 @@ export const REVIEW_BRIEF_FIELDS = [
   "TEST_CHANGES",
   "PREVIOUS_FINDINGS",
   "REVIEW_CHECKLISTS",
+  "CLOSURE_ENTRIES",
 ] as const;
 export type ReviewBriefField = typeof REVIEW_BRIEF_FIELDS[number];
 export type ReviewBriefFields = Record<ReviewBriefField, string>;
@@ -123,6 +135,11 @@ export interface ReviewReply {
   unrelatedIssues: ReviewUnrelatedIssue[];
   /** Per-item verdicts for the repo's review checklists; [] when none apply. */
   checklist: ChecklistVerdict[];
+  /**
+   * Per-entry verdicts on the closure entries the summary marks `met`
+   * (Issue #3766); absent reads as [].
+   */
+  closure?: ClosureEntryVerdict[];
 }
 
 /** At most this many unrelated issues are kept from one review. */
@@ -150,6 +167,7 @@ export function parseReviewReply(text: string): ReviewReply {
     testChangeNotes: r.testChangeNotes ?? [],
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
     checklist: parseChecklistVerdicts(r.checklist),
+    closure: parseClosureEntryVerdicts(r.closure),
   };
 }
 
@@ -279,6 +297,8 @@ export function buildPrePrVerifierPrompt(opts: {
   changedFiles: readonly string[] | null;
   /** Rendered checklist section; "" when none applies. */
   reviewChecklists: string;
+  /** Rendered closure-entry section; "" when the summary marks none met. */
+  closureEntries: string;
   boundaryId?: string;
 }): string {
   if (!Number.isInteger(opts.issueNumber) || opts.issueNumber <= 0) {
@@ -338,6 +358,7 @@ export function buildPrePrVerifierPrompt(opts: {
     TEST_CHANGES: testChanges,
     PREVIOUS_FINDINGS: "No earlier review of this change asked for fixes.",
     REVIEW_CHECKLISTS: opts.reviewChecklists,
+    CLOSURE_ENTRIES: opts.closureEntries,
   });
 
   return [
@@ -681,6 +702,7 @@ async function verifyInCheckout(
     input.changedFiles,
   );
   const checklistExpected = checklistState(checklists, input.changedFiles);
+  const metItems = metClosureItems(input.summaryContent);
   const prompt = buildPrePrVerifierPrompt({
     template,
     repo: input.repo,
@@ -693,6 +715,7 @@ async function verifyInCheckout(
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
     reviewChecklists,
+    closureEntries: renderClosureEntriesSection(metItems),
   });
 
   const asked = await deps.ask({
@@ -721,7 +744,16 @@ async function verifyInCheckout(
     const parsed = parseReviewReply(run.output ?? "");
     // The code, not the model, owes a finding for a checklist that was not
     // applied or an item left without a verdict (Issue #3594).
-    const gaps = checklistGapFindings(checklistExpected, parsed.checklist);
+    const checklistGaps = checklistGapFindings(
+      checklistExpected,
+      parsed.checklist,
+    );
+    // Likewise for a closure entry marked met that the verifier rated short
+    // or left without a verdict (Issue #3766).
+    const gaps = [
+      ...checklistGaps,
+      ...closureGapFindings(metItems, parsed.closure ?? [], input.summaryPath),
+    ];
     return {
       status: "checked",
       review: gaps.length === 0
