@@ -119,8 +119,8 @@ Red checks (each change was made temporarily and then restored):
 
 Mutation check, deletions that cannot be told apart at runtime:
 
-- `worker/deno/lib/phases/completion_phase.ts:3759` exempt (untestable): deleting `holdAutoMerge: false` leaves the field `undefined`, which the `prNumber > 0 && holdAutoMerge` guard reads exactly as `false`, so only the type checker (the field is required) can reject it.
-- `worker/deno/lib/phases/completion_phase.ts:3898` exempt (untestable): the same deletion of `holdAutoMerge: false`, for the same reason.
+- `worker/deno/lib/phases/completion_phase.ts:3760` exempt (untestable): deleting `holdAutoMerge: false` leaves the field `undefined`, which the `prNumber > 0 && holdAutoMerge` guard reads exactly as `false`, so only the type checker (the field is required) can reject it.
+- `worker/deno/lib/phases/completion_phase.ts:3899` exempt (untestable): the same deletion of `holdAutoMerge: false`, for the same reason.
 - `worker/deno/lib/run_core_production_deps.ts:2336` exempt (untestable): the production PR-feedback dispatch runs `setupRepo` and real `git fetch`/`checkout` before it calls the directly imported `processPrFeedback`, and neither is injectable. The harness search covered `worker/deno/tests/run_core_production_deps_test.ts`, `worker/deno/tests/pr_feedback_authorised_commenters_test.ts` and `worker/deno/tests/auto_merge_sweep_disarm_wiring_test.ts`, the tests that build `createProductionRunCoreDeps`. None of them can observe the `PrFeedbackInput` without real git and network access.
 
 No existing assertion is removed or weakened. `worker/deno/tests/completion_phase_merged_pr_closure_test.ts` only gains `heldFindingsComment: ""` on its `recoverAndFinaliseExistingPr` calls, because the new option is required.
