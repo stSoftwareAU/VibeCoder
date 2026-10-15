@@ -91,3 +91,16 @@ Deno.test("formatGateStageOutcomes - groups passed, skipped, failed and omits em
 Deno.test("formatGateStageOutcomes - empty input says none recorded", () => {
   assertEquals(formatGateStageOutcomes([]), "none recorded");
 });
+
+Deno.test("stageOutcomesFrom - a SKIPPED stage whose output is only whitespace carries no reason", () => {
+  const result = stageOutcomesFrom([{
+    name: "s",
+    status: "SKIPPED",
+    output: "  \n \t\n",
+  }]);
+  assertEquals(result, [{ name: "s", status: "SKIPPED" }]);
+  assertEquals(
+    formatGateStageOutcomes(result),
+    "skipped: `s` (no reason recorded)",
+  );
+});

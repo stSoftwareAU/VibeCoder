@@ -26,3 +26,23 @@ Deno.test("quality gate - a SKIPPED semgrep stage records its reason (Issue #372
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
+
+Deno.test("quality gate - SKIPPED Deno checks record why (Issue #3726)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const result = await runQualityGate({
+      scriptDir: tmpDir,
+      options: { strict: false, sequential: true, validatePrompts: false },
+    });
+    assert(result.ok, "quality gate should return a result");
+    const denoTests = result.value.checks.find((c) => c.name === "deno tests");
+    assert(denoTests, "the gate must record a deno tests check");
+    assertEquals(denoTests.status, "SKIPPED");
+    assertEquals(
+      denoTests.output,
+      "no Deno worker directory configured or found",
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
