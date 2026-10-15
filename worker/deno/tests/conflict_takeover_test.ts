@@ -15,6 +15,7 @@ import type { Logger } from "../types.ts";
 import {
   type ConflictTakeoverDeps,
   type ConflictTakeoverPr,
+  fixBranchBehindBase,
   runConflictTakeover,
   takeoverAgentTimeoutSeconds,
 } from "../lib/conflict_takeover.ts";
@@ -825,6 +826,26 @@ Deno.test("runConflictTakeover - a fix PR whose merge commit is refused is faile
   const concludeBody = commentBody(comments[1]!);
   assertStringIncludes(concludeBody, CONFLICT_FAILED_MARKER);
   assert(!concludeBody.includes(CONFLICT_RESOLVED_MARKER));
+});
+
+Deno.test("fixBranchBehindBase - a fractional behind count rejects, naming the value (Issue #3596)", async () => {
+  const gh = (_args: string[]) => Promise.resolve("1.5");
+
+  await assertRejects(
+    () => fixBranchBehindBase(REPO, "main", "milestone-fix/x", gh),
+    Error,
+    "1.5",
+  );
+});
+
+Deno.test("fixBranchBehindBase - a negative behind count rejects, naming the value (Issue #3596)", async () => {
+  const gh = (_args: string[]) => Promise.resolve("-1");
+
+  await assertRejects(
+    () => fixBranchBehindBase(REPO, "main", "milestone-fix/x", gh),
+    Error,
+    "-1",
+  );
 });
 
 Deno.test("runConflictTakeover - a fix branch up to its base raises the fix PR (Issue #3596)", async () => {
