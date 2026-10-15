@@ -1,0 +1,4 @@
+{"version":1,"branchOutcomes":{"noneAdded":false,"entries":[
+  {"path":"worker/deno/lib/issue_query.ts","line":1700,"outcome":"row whose isCrossRepository is true, missing or non-boolean is dropped","test":"worker/deno/tests/issue_query_all_state_cache_test.ts","testName":"fetchAllStatePRsByBranch - requests isCrossRepository and keeps only rows where it is exactly false (Issue #3595)","flipWentRed":"commenting out the continue turned it red: the fork, missing and string rows were returned alongside the false row"},
+  {"path":"worker/deno/lib/issue_query.ts","line":1700,"outcome":"row whose isCrossRepository is exactly false is kept","test":"worker/deno/tests/milestone_completion_test.ts","testName":"hasExistingMilestoneSummaryPr - a fork-headed PR reusing the milestone branch name is not an existing final PR (Issue #3595)","flipWentRed":"dropping every row turned it red: the same-repository positive control got null instead of 100"}
+]}}

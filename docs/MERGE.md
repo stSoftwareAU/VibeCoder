@@ -42,7 +42,7 @@ flowchart TD
     F -- "no checks at all" --> N[Blocked: unverified —<br/>escalate to a human]
     F -- passed --> H{behindBy > 0?}
     H -- yes --> I[Defer: branch-update maintenance<br/>merges target in, plain push →<br/>CI re-runs → retry next cycle]
-    H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync)<br/>--match-head-commit &lt;checked SHA&gt;"]
+    H -- no --> J["gh pr merge --squash<br/>(--merge for a milestone sync, or a milestone-fix PR<br/>whose head merges the default branch)<br/>--match-head-commit &lt;checked SHA&gt;"]
     J -- head moved --> L[Defer: re-read checks<br/>for the new head next cycle]
     D --> K[Default branch updated by verified merge only]
     J --> K
@@ -276,7 +276,8 @@ The gate therefore reports the head SHA it read (`headSha` on both
 `CiStatusResult` and `PreMergeGateOutcome`), and `directMergePr()` merges with
 `gh pr merge --squash --match-head-commit <sha>` — or `--merge` when the head
 is a `sync/milestone-*` branch, which must land as a merge commit
-(Issue #1048). GitHub refuses the merge if
+(Issue #1048), or a same-repository `milestone-fix/**` head that merges the
+default branch (Issue #3596). GitHub refuses the merge if
 the head has moved, so the merge is only ever performed on the exact commit the
 verdict was formed against.
 
@@ -504,7 +505,8 @@ log marker rather than withholding the arming.
   arming path goes through — closes a same-repository `sync/milestone-*` head
   on the default branch before either GitHub's `--auto` or the gated direct
   merge is reached, posting the reason on the PR. A default branch it cannot
-  read defers as `sync-base-unreadable` rather than arming. See
+  read, or a sync PR whose own base cannot be read (Issue #3614), defers as
+  `sync-base-unreadable` rather than arming. See
   [INTERNALS](INTERNALS.md#-a-sync-pr-never-outlives-the-branch-it-targets).
 - **An unreadable comparison defers as `lookup-failed`**, exactly as an
   unreadable route does (Issue #477). "I could not read it" is never actioned.
@@ -944,6 +946,22 @@ What each pass does with a `milestone/**` head:
     not stand this one down. `raiseMilestoneFixPr()`'s own reuse only matches
     that exact branch name, which recurs solely on a retried attempt at the
     same comment.
+- **The fix PR's merge method follows its head** (Issue #3596). A
+  `milestone-fix/**` PR into a `milestone/**` base merges as a merge commit when
+  its head merges the default branch, and as a squash otherwise
+  (`milestoneFixMergeMethod` in `milestone_fix_pr.ts`). A squash of a head that
+  carries a merge of the default branch drops that ancestry, so the final PR
+  stays CONFLICTING. Creation arming has no same-repository check, because the
+  worker pushed the branch itself. The Auto-Merge sweep and the direct merge
+  apply the rule only to same-repository heads, so a fork's fix-shaped head
+  still squashes as before. Where the repository forbids merge commits, a fix
+  PR that needs one is refused and never squashed: at creation with a warning
+  and a PR comment; on the sweep with a logged warning and a failed result; in
+  the direct merge with an error. Each names Settings → Pull Requests → Allow
+  merge commits. If the method cannot be read, the PR is not armed or merged:
+  at creation with a warning and a PR comment; on the sweep as a failed result,
+  re-read next scan; in the direct merge refused with an error, retried on the
+  next maintenance scan.
 - **The CI-nudge pass asks too** (Issue #1762). Its `none` path adds an empty
   commit and pushes it to the head, so on VibeCoder#1741's own milestone head
   it was refused with GH013 every cycle the PR stayed a nudge candidate. The

@@ -1726,7 +1726,20 @@ export async function findConflictingPr(
     // (Issue #2305), and it is re-attempted rather than waited out — so the
     // record says which of the disruptions is that one.
     const attemptOpen = history.pendingAttempt;
-    if (disruptedCount > 0) {
+    // A takeover attempt stays open while its fix PR lands, and the takeover
+    // concludes it on its next run (Issue #3596). That is the expected path,
+    // so when it is the only disruption it is not warned about.
+    const lastAttempt = attempts[attempts.length - 1];
+    const awaitingFixPr = attemptOpen && disruptedCount === 1 &&
+      isMilestoneHead(pr.headRefName) &&
+      lastAttempt?.outcome === "open" && lastAttempt.pass === "takeover";
+    if (awaitingFixPr) {
+      logger.info(
+        `PR #${pr.number} has an open takeover attempt awaiting its fix PR ` +
+          "— the takeover concludes it on its next run",
+        { repo, prNumber: pr.number, disruptedCount, attemptOpen },
+      );
+    } else if (disruptedCount > 0) {
       logger.warn(
         `PR #${pr.number} has ${disruptedCount} disrupted merge-conflict ` +
           "attempt(s) with no conclusion — re-attempting" +
