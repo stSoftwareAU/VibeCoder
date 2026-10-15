@@ -69,7 +69,46 @@ The round is given container paths: the skill at
 `/workspace/.claude/skills/review-fleet-prs`, and this state directory under
 the worker's log mount, which `scripts/post.ts` is told with `--state-dir`.
 The round's prompt is `prompt.md` in its round directory, beside
-`claude.log`. When the worker image for the current checkout is not built
+`claude.log`, which shows the round's readable output (each result's text);
+the CLI runs with `--output-format stream-json`, and each attempt's full
+stream is `stream-<n>.jsonl` there.
+
+## What each review cost
+
+Every review names the model run that wrote it, so a DeepSeek review is never
+read as an Opus one on GitHub, and carries its estimated cost, so cost per
+merged PR can include review. The driver records each `claude -p` attempt in
+the round directory's `review-run.json` before it starts (provider, `--model`,
+`--effort`, its stream file) and again with its exit status when it ends.
+`post.ts` reads the attempt still running and ends the review with a footer
+line and a hidden marker:
+
+```text
+_Review run: provider claude · model claude-opus-5-5 · effort xhigh · cost unknown._
+<!-- vibe-review-run round="20261016-101500" attempt="1" provider="claude" models="claude-opus-5-5" effort="xhigh" usd="unknown" -->
+```
+
+and appends the PR to the round's `posted.jsonl`. After the round, whether it
+succeeded or failed, `run.sh` runs `scripts/review_cost.ts --round-dir=<dir>`
+as the reviewer App, which prices each attempt that ended and edits each of
+its reviews on GitHub to the figure, e.g. `estimated cost $0.4100 (estimate
+only; this PR's 1/3 share of the round)` with `usd="0.4100" share="1/3"`, and
+logs `round cost: {...}` in `runner.log`.
+
+The split rule: one round is one CLI session whose main session starts one
+reviewer sub-agent per ready PR. The CLI's per-message stream usage
+under-reports output tokens, so no exact per-PR figure exists; its result
+`modelUsage` is exact for the whole session, sub-agents included. Each
+attempt is therefore priced from its last result line, with the worker's own
+pricing (`worker/deno/lib/cost_estimate.ts`, `token_usage.ts`), and split
+equally across the PRs the round was given (the gate's `ready` list). A
+round is never a resumed session, so `modelUsage` needs no baseline. The
+figure is an estimate only; a DeepSeek attempt's is labelled
+`API-equivalent estimate`, and a `claude-*` id a DeepSeek attempt reports
+(the reviewer agent's pinned model, answered by DeepSeek's endpoint) is named
+and priced as `deepseek-v4-pro`. A review keeps `cost unknown` (never `$0`)
+when its attempt never ended (the alarm killed it), its stream has no result
+line, a model has no pricing row, or the edit failed. When the worker image for the current checkout is not built
 yet, the pass fails with `round not started: the worker image is not built`;
 the worker's next launch builds it.
 
