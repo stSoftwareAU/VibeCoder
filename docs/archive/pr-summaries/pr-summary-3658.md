@@ -1,0 +1,166 @@
+## Summary
+
+Whole-tree security sweep `falsePositives` entries must now say where the
+defence is. Each entry needs an `evidence` list of repository-relative
+`path:line` citations of the defence, type constraint or non-attacker origin
+that eliminates the finding. Every citation must resolve to a regular file
+inside the swept tree, at a line inside that file. Each entry also needs a
+`line` or a `snippet`, so no entry suppresses a whole file. Any breach is a
+baseline error, and the sweep fails. `accepted` entries are unchanged. The
+committed `.github/security-tree-sweep-baseline.json` is migrated, and
+`docs/SECURITY-TREE-SWEEP.md` documents the new field. Closes #3658.
+
+## Spec
+
+### Intent and Rationale
+
+- Before this change, a PR whose own file tripped the sweep could add a
+  10-character `falsePositives` entry and turn the gate green. That is the
+  "loosen the check" route #3512 documents. VulnHunter's Phase 2b rule says
+  a finding is eliminated only by citing the file:line that eliminates it.
+- The check runs inside `parseSweepBaseline`, so a bad entry follows the
+  existing path for baseline errors: the run fails and the entry suppresses
+  nothing. No new reporting path was added.
+
+### Essential Design Decisions
+
+- `parseSweepBaseline(json, countLines)` takes the tree-line counter as a
+  **required** argument. With a default, a caller could leave the counter out
+  and skip the check, which would fail open.
+- `countTreeLines` checks the path shape first. Absolute paths, backslashes,
+  NUL, and empty, `.` or `..` segments are refused before any filesystem
+  access. It then resolves the path with `realPathSync`, confines it with the
+  existing `isAtOrAbove` owner from `host_path_style.ts`, and requires a
+  regular file. Any failure is `null`, which the parser reports as "does not
+  resolve". A citation that resolves to nothing is never treated as passing.
+- Evidence is validated but not stored on the parsed entry, because nothing in
+  production reads it after parsing.
+- An unlocated finding has no `line` or `snippet`, so it can no longer be a
+  false positive. The filed issue body says so and points to `accepted`.
+
+### Undiscoverable Facts
+
+- The migrated `line` and `snippet` anchors come from the latest
+  `security-tree-sweep` CI artefact, run 38474898022 (download it with
+  `gh run download 38474898022 -n security-tree-sweep`). Its report placed the
+  three `export_branding_test.ts` clusters at 57, 61 and 125,
+  `export_scrub_gate_test.ts` at 159, `planning_processor_test.ts` at 2923,
+  `planning_processor.ts` at 244 and `merge_conflict_deferrals.ts` at 393.
+- Citations are pinned to lines. An edit that shortens a cited file below the
+  cited line turns the baseline into an error until someone re-points the
+  citation. That is the intended fail-closed direction.
+
+## Evidence
+
+Backend/CLI change; no UI files touched.
+
+```mermaid
+flowchart LR
+    B[baseline JSON] --> P[parseSweepBaseline]
+    P --> V{falsePositives entry}
+    V -->|no line and no snippet| E[baseline error]
+    V -->|evidence missing / malformed| E
+    V -->|countTreeLines: no file in tree,<br/>escapes via .. or symlink| E
+    V -->|line past end of file| E
+    V -->|all citations resolve| K[entry suppresses its finding]
+    E --> F[sweep fails, suppresses nothing]
+```
+
+- **Real baseline against the real tree.** I ran the sweep locally on the CI
+  artefact's semgrep JSON and CodeQL SARIF:
+  `deno run -A mod.ts security-tree-sweep --repo ../.. --semgrep-json … --codeql-sarif … --sources semgrep,codeql`.
+  The report shows 12 `false positive (baselined)` rows, with no stale entries
+  and no baseline errors. The run listed 5 unbaselined findings (in
+  `completion_phase.ts`, `shared_clone_repair_history.ts`,
+  `pre_push_gate_cli_test.ts`, `prompt_best_practices_checklist_test.ts` and
+  `summary_rule_gate_retry_test.ts`). None of these files is in this diff, so
+  the PR gate's changed-files scope does not block on them.
+- **Issue numbers cited and looked up this run:** #3658: Security tree sweep:
+  falsePositives baseline entries must cite the eliminating defence as a
+  resolvable path:line. #3512: Fleet PRs silently edit, loosen or delete an
+  unrelated failing check to turn the gate green. #3657: Security-fix gate:
+  replace the agent-written trigger-closed prose with an independent
+  read-only verifier verdict (open). #3659: Security-fix gate: execute the
+  named test against base production files and require red→green (open).
+- **Docs sweep** — grep: `falsePositives`, `parseSweepBaseline`,
+  "with a reason", "Optional line anchor", `MIN_REASON_LENGTH`; section:
+  `docs/SECURITY-TREE-SWEEP.md#the-baseline` (plus "Triage and filing");
+  siblings: `snippet`, `reason`; updated: `docs/SECURITY-TREE-SWEEP.md`,
+  `docs/security/vulnhunter-methodology-evaluation.md`,
+  `.github/security-tree-sweep-baseline.json` (`note`), and doc comments in
+  `worker/deno/lib/security_tree_sweep.ts` (`SweepBaselineEntry.line`,
+  `SweepBaseline.falsePositives`, `parseSweepBaseline`). Hits left in place:
+  `docs/SECURITY-TREE-SWEEP.md:55` is still true because it says only that
+  baselined entries record a reason. `docs/SECURITY-TREE-SWEEP.md:270` is
+  still true because it is a dated triage record.
+
+## Acceptance Criteria
+
+<!-- vibe-spec-review inputs="diff+issue-body" -->
+
+- **met** — A `falsePositives` entry without `evidence`, or with an evidence path that does not resolve, is a baseline error and the sweep fails. — evidence: `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - an entry without evidence is refused (Issue #3658)`, `::falsePositives - evidence that does not resolve in the tree is refused (Issue #3658)`, `::sweep: a falsePositives entry whose evidence is absent from the tree fails the run (Issue #3658)` — reviewer: met
+- **met** — A `falsePositives` entry without `line` or `snippet` is a baseline error. — evidence: `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - an entry with neither a line nor a snippet is refused (Issue #3658)`, `::sweep: a falsePositives entry with no line or snippet fails the run (Issue #3658)` — reviewer: met
+- **met** — `accepted` entries are unchanged (they are real risks, not eliminations). — evidence: `worker/deno/tests/security_tree_sweep_test.ts::accepted - an entry needs no evidence and no anchor (Issue #3658)`; the `accepted` list in `.github/security-tree-sweep-baseline.json` is unchanged — reviewer: met
+- **met** — `docs/SECURITY-TREE-SWEEP.md` documents the new field. — evidence: `docs/SECURITY-TREE-SWEEP.md` "The baseline" rules and "Triage and filing" step 2 — reviewer: met
+- **unrequested** — the filed issue body's suggested triage JSON now carries `evidence` (and `snippet` when known), says an unlocated finding goes under `accepted`, and the report's "New findings" text asks for `evidence` — reviewer: unrequested — reason: without it the sweep's own template would suggest entries the new parser rejects
+- **unrequested** — `docs/security/vulnhunter-methodology-evaluation.md` now records that #3658's check ships, and its section 3 baseline description is in the past tense — reviewer: unrequested — reason: the report described the pre-#3658 behaviour as present, which this change makes false
+- **unrequested** — path hardening beyond "does not exist": `..`, symlink escape, backslash and NUL are refused, and quoted citations are truncated to 120 characters — reviewer: unrequested — reason: required by the repository's Path Confinement standard for a new path guard, and keeps a hostile value out of the report
+- **unrequested** — baseline entries re-anchored (`planning_processor.ts` 139→244, `merge_conflict_deferrals.ts` 394→393) and the `export_branding_test.ts` entry split into three — reviewer: unrequested — reason: the issue asks for the entries to be migrated; each now anchors the cluster the sweep actually reports
+
+The Spec reviewer marked the Proposal bullet "Migrate the existing baseline
+entries" `partial`. Its reason: three citations point near the defence rather
+than at a guard (`llm_usage_detection.ts:188`, where a match only records a
+review signal; `planning_processor_test.ts:2924`, the test literal that is the
+non-attacker origin; `parallel_unsafe_test_manifest.ts:414`, the scan pattern
+the split fixture avoids). I departed from that verdict. Each citation names
+the code the entry's `reason` relies on, which is the "non-attacker origin"
+form VulnHunter's rule allows. Every citation resolves.
+
+## Standards Review
+
+<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+
+- **violation** — Every outcome of a branch needs a test: the backslash and NUL operands of `isRepoRelativePath` had no test — evidence: `worker/deno/lib/security_tree_sweep.ts:1191` — reason: fixed in this diff (backslash and NUL cases added; deleting either operand turns the malformed-citation test red)
+- **violation** — Call the existing owner: the confinement check was hand-rolled instead of calling `isAtOrAbove` — evidence: `worker/deno/lib/security_tree_sweep.ts:1289` — reason: fixed in this diff (`countTreeLines` now calls `isAtOrAbove` with `pathStyleFor`, as `codebase_map.ts` does)
+- **violation** — A code change owes a docs change: the methodology report's section 3 still described the old behaviour in the present tense — evidence: `docs/security/vulnhunter-methodology-evaluation.md:159` — reason: fixed in this diff (now "had at evaluation time (before #3658)", past tense)
+- **clean** — Australian English; Path Confinement (shape check before access, realpath, confine, act on the resolved path; negative `..`, `missing/..` and symlink tests); fail loud (baseline errors are fatal); nothing exists only for a test (`countTreeLines` and `TreeLineCounter` are read by `runSecurityTreeSweep`); no removed assertions; temp dirs via `Deno.makeTempDir`; no hidden paths beyond `.github/`; regex on untrusted text is the digit-only `CITATION_LINE`, with a 100,000-character hostile case. Review-enforced rules checked: insertion placement, import merging, no unrequested refactor.
+
+## Test Plan
+
+- `worker/deno/tests/security_tree_sweep_test.ts` — 14 new tests named
+  `(Issue #3658)`. They cover missing evidence, unresolved evidence, a line
+  past the end (with the last line accepted), malformed citations, the
+  line/snippet anchor, `accepted` left unchanged, `countTreeLines`, two
+  end-to-end sweep runs and the issue-body template. They also include these
+  traversal cases:
+  - `../outside.ts`
+  - `sub/../file.ts`
+  - `missing/../file.ts`
+  - a symlink pointing out of the tree
+  - `missing/../link/file`
+  - a symlink pointing inside (positive control)
+- Each refusal test asserts its specific error text, and has a control that
+  makes only the probed value legal and expects no errors.
+- Existing tests: every `parseSweepBaseline` call now passes a counter, and
+  the valid `falsePositives` fixtures gained `evidence`. Fixtures that had no
+  anchor gained a `line`: `gone/away.ts:1`, plus `worker/lib/files.ts:40` and
+  `.github/workflows/ci.yml:7`, both matching `SEMGREP_JSON`. In "baselining
+  one unlocated finding leaves the others reported (Issue #1473)", the
+  `unknown` entry moved from `falsePositives` to `accepted`, because the
+  issue's line/snippet rule makes an unlocated false positive invalid. All of
+  that test's assertions are kept, and one was added for the
+  "goes under `accepted`" note. This diff removes no assertion from any
+  existing test.
+- Red checks: each new guard was broken on its own and the named test went
+  red; see the branch-outcomes list below. For #1473, I set the
+  unlocated-note condition to false and the test went red.
+- `deno task test:unit tests/security_tree_sweep_test.ts < /dev/null` on the
+  final head: `ok | 75 passed | 0 failed`. `deno fmt --check`, `deno lint` and
+  `deno check` on both files are clean.
+- `./quality.sh < /dev/null`: **Result: PASSED (with skipped checks)**, with
+  only `config integration` skipped. It was re-run on the final head after
+  the review fixes.
+
+<!-- vibe-branch-outcomes -->
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
