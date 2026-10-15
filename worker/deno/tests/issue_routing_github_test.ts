@@ -1,8 +1,9 @@
 /**
  * Tests for the GitHub context layer for issue routing (Issue #3742, part of
- * #3691). Every `gh` call goes through a fake that records its arguments, so
- * no test touches the network or the clock. Australian English spelling used
- * throughout.
+ * #3691). The fake `gh` models the real CLI over an in-memory store, so the
+ * tests assert what the worker decides (returned numbers, rejections, whether
+ * a write was attempted), not the request text it sent. No network, no real
+ * clock. Australian English spelling used throughout.
  */
 
 import {
@@ -14,60 +15,75 @@ import {
 import {
   findRoutingDuplicates,
   type GhCommandFn,
+  type IssueRoutingGithubDeps,
   IssueRoutingPermissionError,
   normaliseRoutingTitle,
   requireWriteAccess,
-  ROUTING_DUPLICATE_SEARCH_LIMIT,
 } from "../lib/issue_routing_github.ts";
 import { assertLinearGrowth } from "./support/growth.ts";
 
 const REPO = "stSoftwareAU/VibeCoder";
+const MISSING_REPO = "stSoftwareAU/NoSuchRepoZZ";
 const NOW = () => new Date("2026-10-15T00:00:00Z");
-const NO_SUCH_REPO_STDERR =
-  "GraphQL: Could not resolve to a Repository with the name 'stSoftwareAU/NoSuchRepoZZ'. (repository)";
-const MISSING_SEARCH_STDERR =
-  'gh command failed (exit 1): Invalid search query "( x ) repo:stSoftwareAU/NoSuchRepoZZ".\n' +
+const DRAFT = "Duplicate search for routing";
+
+/**
+ * The fake is built from observed gh output:
+ * - `gh search issues ... --json number,title,state,closedAt,isPullRequest`
+ *   returned `[{"closedAt":"2026-10-14T23:56:03Z","isPullRequest":true,
+ *   "number":3762,"state":"merged","title":"feat(routing): pure issue-routing
+ *   classifier with deterministic fixtures (#3741)"}]`, and a phrase search
+ *   matched that punctuated title from its words.
+ * - A search of a missing repository failed with `Invalid search query` and
+ *   "cannot be searched either because the resources do not exist".
+ * - `gh repo view R --json viewerPermission` returned `{"viewerPermission":"WRITE"}`
+ *   (and "READ" on a public repository); a missing repository failed with
+ *   "Could not resolve to a Repository with the name".
+ */
+
+const UNSEARCHABLE_MESSAGE =
   "The listed users and repositories cannot be searched either because the resources do not exist or you do not have permission to view them.";
 
-type Handler = (args: string[]) => string;
+interface StoredItem {
+  repo: string;
+  number: number;
+  title: string;
+  closedAt: string | null;
+  isPullRequest: boolean;
+  merged?: boolean;
+}
+
+interface Store {
+  items: StoredItem[];
+  viewerPermission: Record<string, string | null>;
+}
 
 interface FakeGh {
   ghCommandFn: GhCommandFn;
   calls: string[][];
 }
 
-/** A fake `gh` that records every args array and answers through `handler`. */
-function fakeGh(handler: Handler): FakeGh {
-  const calls: string[][] = [];
-  const ghCommandFn: GhCommandFn = async (args) => {
-    calls.push([...args]);
-    return handler(args);
-  };
-  return { ghCommandFn, calls };
-}
-
-/** The `--state` value of a search call, or undefined for other calls. */
-function stateOf(args: string[]): string | undefined {
-  const i = args.indexOf("--state");
-  return i === -1 ? undefined : args[i + 1];
-}
-
-function hit(
+/** A stored issue or PR in {@link REPO}, open unless `extra` closes it. */
+function item(
   number: number,
   title: string,
-  state = "open",
-  closedAt: string | null = null,
-): Record<string, unknown> {
-  return { number, title, state, closedAt };
+  extra: Partial<Omit<StoredItem, "repo" | "number" | "title">> = {},
+): StoredItem {
+  return {
+    repo: REPO,
+    number,
+    title,
+    closedAt: null,
+    isPullRequest: false,
+    ...extra,
+  };
 }
 
-/** A handler that answers the open search with `open` and the closed one with `closed`. */
-function searchReplies(open: unknown, closed: unknown): Handler {
-  return (args) => JSON.stringify(stateOf(args) === "open" ? open : closed);
-}
-
-function searchCalls(calls: string[][]): string[][] {
-  return calls.filter((c) => c[0] === "search");
+function storeOf(
+  items: StoredItem[] = [],
+  viewerPermission: Record<string, string | null> = { [REPO]: "WRITE" },
+): Store {
+  return { items, viewerPermission };
 }
 
 function valueAfter(args: string[], flag: string): string | undefined {
@@ -75,195 +91,322 @@ function valueAfter(args: string[], flag: string): string | undefined {
   return i === -1 ? undefined : args[i + 1];
 }
 
-function permissionHandler(permission: unknown): Handler {
-  return (args) => {
-    assertEquals(args[0], "repo");
-    return JSON.stringify({ viewerPermission: permission });
-  };
+/** Words of a phrase or title, folded the way gh tokenises them. */
+function words(text: string): string[] {
+  return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((w) => w !== "");
 }
 
-Deno.test("issue_routing_github - an open issue with a matching title is returned", async () => {
-  const fake = fakeGh(
-    searchReplies([hit(7, "Duplicate search for routing")], []),
-  );
-  const found = await findRoutingDuplicates(
-    REPO,
-    "Duplicate search for routing",
-    {
-      ghCommandFn: fake.ghCommandFn,
-      now: NOW,
-    },
-  );
-  assertEquals(found, [7]);
-  const open = searchCalls(fake.calls).find((c) => stateOf(c) === "open");
-  assert(open, "no open search recorded");
-  assertEquals(open[open.indexOf("--state") + 1], "open");
-  assertEquals(open[2], `"duplicate search for routing" in:title`);
-});
-
-Deno.test("issue_routing_github - an issue closed within 30 days is returned", async () => {
-  const fake = fakeGh(
-    searchReplies([], [
-      hit(9, "Duplicate search for routing", "closed", "2026-10-01T00:00:00Z"),
-    ]),
-  );
-  const found = await findRoutingDuplicates(
-    REPO,
-    "Duplicate search for routing",
-    {
-      ghCommandFn: fake.ghCommandFn,
-      now: NOW,
-    },
-  );
-  assertEquals(found, [9]);
-  const closed = searchCalls(fake.calls).find((c) => stateOf(c) === "closed");
-  assert(closed, "no closed search recorded");
-  assertEquals(valueAfter(closed, "--closed"), ">=2026-09-15");
-});
-
-Deno.test("issue_routing_github - an issue closed more than 30 days ago is ignored", async () => {
-  const fake = fakeGh(
-    searchReplies([], [
-      hit(20, "Duplicate search for routing", "closed", "2026-09-14T12:00:00Z"),
-      hit(21, "Duplicate search for routing", "closed", "2026-09-15T00:00:00Z"),
-    ]),
-  );
-  const found = await findRoutingDuplicates(
-    REPO,
-    "Duplicate search for routing",
-    {
-      ghCommandFn: fake.ghCommandFn,
-      now: NOW,
-    },
-  );
-  // 21 sits exactly on the cutoff, which counts as inside the window.
-  assertEquals(found, [21]);
-});
-
-Deno.test("issue_routing_github - a merged PR with a matching title is returned", async () => {
-  const fake = fakeGh(
-    searchReplies([], [
-      hit(
-        3762,
-        "FEAT(routing): Pure issue-routing classifier!",
-        "merged",
-        "2026-10-14T23:56:03Z",
-      ),
-    ]),
-  );
-  const found = await findRoutingDuplicates(
-    REPO,
-    "feat routing pure issue routing classifier",
-    { ghCommandFn: fake.ghCommandFn, now: NOW },
-  );
-  assertEquals(found, [3762]);
-  const searches = searchCalls(fake.calls);
-  assertEquals(searches.length, 2);
-  for (const call of searches) {
-    assert(call.includes("--include-prs"), `missing --include-prs: ${call}`);
+function containsPhrase(title: string, phrase: string[]): boolean {
+  if (phrase.length === 0) return false;
+  const tokens = words(title);
+  for (let i = 0; i + phrase.length <= tokens.length; i++) {
+    if (phrase.every((w, j) => tokens[i + j] === w)) return true;
   }
-});
+  return false;
+}
 
-Deno.test("issue_routing_github - titles match after case and punctuation are folded", async () => {
-  const fake = fakeGh(
-    searchReplies(
-      [
-        hit(1, "Fix: the Parser!"),
-        hit(2, "FIX — THE PARSER"),
-        hit(3, "Fix the parser and formatter"),
-      ],
-      [],
-    ),
-  );
-  const found = await findRoutingDuplicates(REPO, "Fix the parser", {
-    ghCommandFn: fake.ghCommandFn,
-    now: NOW,
-  });
-  assertEquals(found, [1, 2]);
-});
+const SEARCH_VALUE_FLAGS = new Set([
+  "--repo",
+  "--json",
+  "--limit",
+  "--state",
+  "--closed",
+]);
 
-Deno.test("issue_routing_github - results are unique and sorted ascending", async () => {
-  const fake = fakeGh(
-    searchReplies(
-      [hit(40, "Same title"), hit(3, "Same title")],
-      [
-        hit(12, "Same title", "closed", "2026-10-01T00:00:00Z"),
-        hit(3, "Same title", "closed", "2026-10-01T00:00:00Z"),
-      ],
-    ),
-  );
-  const found = await findRoutingDuplicates(REPO, "Same title", {
-    ghCommandFn: fake.ghCommandFn,
-    now: NOW,
-  });
-  assertEquals(found, [3, 12, 40]);
-});
-
-Deno.test("issue_routing_github - a title cannot inject search qualifiers", async () => {
-  const fake = fakeGh(searchReplies([], []));
-  await findRoutingDuplicates(REPO, `foo" is:closed repo:other/x`, {
-    ghCommandFn: fake.ghCommandFn,
-    now: NOW,
-  });
-  for (const call of searchCalls(fake.calls)) {
-    assertEquals(call[2], `"foo is closed repo other x" in:title`);
-    assertEquals(valueAfter(call, "--repo"), REPO);
+/** Answers `gh search issues`, modelling the phrase, state and day-granular rules. */
+function searchIssues(store: Store, args: string[]): string {
+  // args[0] is "issues"; args[1] is the query; flags follow.
+  const query = args[1] ?? "";
+  const flags = new Map<string, string>();
+  let includePrs = false;
+  for (let i = 2; i < args.length; i++) {
+    const flag = args[i] ?? "";
+    const value = args[i + 1];
+    if (flag === "--include-prs") {
+      includePrs = true;
+    } else if (SEARCH_VALUE_FLAGS.has(flag) && value !== undefined) {
+      flags.set(flag, value);
+      i++;
+    } else {
+      throw new Error(`gh command failed (exit 1): unknown flag ${flag}`);
+    }
   }
+  const repo = flags.get("--repo") ?? "";
+  if (!Object.hasOwn(store.viewerPermission, repo)) {
+    throw new Error(
+      `gh command failed (exit 1): Invalid search query "${query}".\n${UNSEARCHABLE_MESSAGE}`,
+    );
+  }
+  const match = /^"([^"]*)" in:title$/.exec(query);
+  if (!match) {
+    throw new Error(
+      `gh command failed (exit 1): Invalid search query "${query}".`,
+    );
+  }
+  const phrase = words(match[1] ?? "");
+  const state = flags.get("--state");
+  if (state !== undefined && state !== "open" && state !== "closed") {
+    throw new Error(`gh command failed (exit 1): invalid --state ${state}`);
+  }
+  let since: string | undefined;
+  const closedQualifier = flags.get("--closed");
+  if (closedQualifier !== undefined) {
+    const m = /^>=(\d{4}-\d{2}-\d{2})$/.exec(closedQualifier);
+    if (!m) {
+      throw new Error(
+        `gh command failed (exit 1): invalid --closed ${closedQualifier}`,
+      );
+    }
+    since = m[1];
+  }
+  const limit = Number(flags.get("--limit"));
+  if (!Number.isInteger(limit) || limit <= 0) {
+    throw new Error("gh command failed (exit 1): invalid --limit");
+  }
+  const fields = (flags.get("--json") ?? "").split(",");
+
+  const hits = store.items.filter((it) => {
+    if (it.repo !== repo) return false;
+    // Pull requests are only searched when asked for.
+    if (it.isPullRequest && !includePrs) return false;
+    if (!containsPhrase(it.title, phrase)) return false;
+    if (state === "open" && it.closedAt !== null) return false;
+    if (state === "closed" && it.closedAt === null) return false;
+    // --closed is day-granular: it compares the UTC calendar date.
+    if (since !== undefined) {
+      if (it.closedAt === null || it.closedAt.slice(0, 10) < since) {
+        return false;
+      }
+    }
+    return true;
+  }).slice(0, limit);
+
+  return JSON.stringify(hits.map((it) => projectFields(it, fields)));
+}
+
+function projectFields(
+  it: StoredItem,
+  fields: string[],
+): Record<string, unknown> {
+  const all: Record<string, unknown> = {
+    number: it.number,
+    title: it.title,
+    closedAt: it.closedAt,
+    state: it.merged ? "merged" : it.closedAt === null ? "open" : "closed",
+    isPullRequest: it.isPullRequest,
+  };
+  const out: Record<string, unknown> = {};
+  for (const field of fields) {
+    if (!Object.hasOwn(all, field)) {
+      throw new Error(`gh command failed (exit 1): unknown field ${field}`);
+    }
+    out[field] = all[field];
+  }
+  return out;
+}
+
+/** Answers `gh repo view R --json viewerPermission`. */
+function repoView(store: Store, args: string[]): string {
+  const repo = args[0] ?? "";
+  if (
+    args.length !== 3 || args[1] !== "--json" || args[2] !== "viewerPermission"
+  ) {
+    throw new Error("gh command failed (exit 1): unmodelled repo view flags");
+  }
+  if (!Object.hasOwn(store.viewerPermission, repo)) {
+    throw new Error(
+      `gh command failed (exit 1): GraphQL: Could not resolve to a Repository with the name '${repo}'. (repository)`,
+    );
+  }
+  return JSON.stringify({
+    viewerPermission: store.viewerPermission[repo] ?? null,
+  });
+}
+
+/**
+ * A fake `gh` over the store. It records every call and can be told to fail
+ * particular calls through `failWhen`. Anything it does not model throws.
+ */
+function fakeGh(
+  store: Store,
+  failWhen?: (args: string[]) => Error | undefined,
+): FakeGh {
+  const calls: string[][] = [];
+  const ghCommandFn: GhCommandFn = async (args) => {
+    calls.push([...args]);
+    const failure = failWhen?.(args);
+    if (failure) throw failure;
+    if (args[0] === "search" && args[1] === "issues") {
+      return searchIssues(store, args.slice(1));
+    }
+    if (args[0] === "repo" && args[1] === "view") {
+      return repoView(store, args.slice(2));
+    }
+    if (args[0] === "issue" && args[1] === "create") {
+      return "https://github.com/stSoftwareAU/VibeCoder/issues/1";
+    }
+    throw new Error(`fake gh: unmodelled command: gh ${args.join(" ")}`);
+  };
+  return { ghCommandFn, calls };
+}
+
+/**
+ * A raw fake for malformed output only: it answers with whatever `handler`
+ * returns, to model a broken gh. Used for the malformed-response cases.
+ */
+function rawGh(handler: (args: string[]) => string): GhCommandFn {
+  return async (args) => handler(args);
+}
+
+function depsFor(
+  gh: GhCommandFn,
+  now: () => Date = NOW,
+): IssueRoutingGithubDeps {
+  return { ghCommandFn: gh, now };
+}
+
+Deno.test("issue_routing_github - an open matching issue is returned and a non-matching one is not", async () => {
+  const gh = fakeGh(storeOf([
+    item(7, DRAFT),
+    item(8, "Something unrelated"),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [7],
+  );
 });
 
-Deno.test("issue_routing_github - a failed open search rejects and never returns an empty list", async () => {
-  const fake = fakeGh((args) => {
-    if (stateOf(args) === "open") throw new Error(MISSING_SEARCH_STDERR);
-    return "[]";
-  });
+Deno.test("issue_routing_github - an issue closed 10 days ago is returned", async () => {
+  const gh = fakeGh(storeOf([
+    item(9, DRAFT, { closedAt: "2026-10-05T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [9],
+  );
+});
+
+Deno.test("issue_routing_github - an issue closed 40 days ago is ignored", async () => {
+  const gh = fakeGh(storeOf([
+    item(20, DRAFT, { closedAt: "2026-09-05T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [],
+  );
+});
+
+Deno.test("issue_routing_github - the 30-day cutoff is exact to the millisecond", async () => {
+  // NOW is noon, so the cutoff is 2026-09-15T12:00Z. 06:00 on that day is on
+  // the day-granular qualifier but outside the window; 12:00 is exactly on it.
+  const noon = () => new Date("2026-10-15T12:00:00Z");
+  const gh = fakeGh(storeOf([
+    item(21, DRAFT, { closedAt: "2026-09-15T06:00:00Z" }),
+    item(22, DRAFT, { closedAt: "2026-09-15T12:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn, noon)),
+    [22],
+  );
+});
+
+Deno.test("issue_routing_github - a matching PR is returned, open or merged", async () => {
+  const gh = fakeGh(storeOf([
+    item(30, "Fix the parser", { isPullRequest: true }),
+    item(31, "Fix the parser", {
+      isPullRequest: true,
+      merged: true,
+      closedAt: "2026-10-10T00:00:00Z",
+    }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(
+      REPO,
+      "Fix the parser",
+      depsFor(gh.ghCommandFn),
+    ),
+    [30, 31],
+  );
+});
+
+Deno.test("issue_routing_github - titles match after case and punctuation are folded, longer titles are excluded", async () => {
+  const gh = fakeGh(storeOf([
+    item(1, "Fix: the Parser!"),
+    item(2, "FIX — THE PARSER"),
+    item(3, "Fix the parser and formatter"),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(
+      REPO,
+      "Fix: the Parser!",
+      depsFor(gh.ghCommandFn),
+    ),
+    [1, 2],
+  );
+});
+
+Deno.test("issue_routing_github - results from open and closed searches are sorted ascending", async () => {
+  const gh = fakeGh(storeOf([
+    item(40, "Same title"),
+    item(3, "Same title"),
+    item(12, "Same title", { closedAt: "2026-10-10T00:00:00Z" }),
+    item(5, "Same title", { closedAt: "2026-10-01T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, "Same title", depsFor(gh.ghCommandFn)),
+    [3, 5, 12, 40],
+  );
+});
+
+Deno.test("issue_routing_github - a title with injected quotes and qualifiers still finds its plain match", async () => {
+  const gh = fakeGh(storeOf([
+    item(50, "Foo is closed repo other x"),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(
+      REPO,
+      `foo" is:closed repo:other/x`,
+      depsFor(gh.ghCommandFn),
+    ),
+    [50],
+  );
+});
+
+Deno.test("issue_routing_github - a search in a repository that does not exist rejects", async () => {
+  const gh = fakeGh(storeOf([item(1, DRAFT)]));
   const err = await assertRejects(
-    () =>
-      findRoutingDuplicates("stSoftwareAU/NoSuchRepoZZ", "Some title", {
-        ghCommandFn: fake.ghCommandFn,
-        now: NOW,
-      }),
+    () => findRoutingDuplicates(MISSING_REPO, DRAFT, depsFor(gh.ghCommandFn)),
     Error,
     "cannot be searched either because the resources do not exist",
   );
-  assertStringIncludes(err.message, "stSoftwareAU/NoSuchRepoZZ");
+  assertStringIncludes(err.message, MISSING_REPO);
 });
 
-Deno.test("issue_routing_github - a failed closed search rejects with no partial list", async () => {
-  const fake = fakeGh((args) => {
-    if (stateOf(args) === "open") {
-      return JSON.stringify([hit(1, "Same title")]);
-    }
-    throw new Error("gh command failed (exit 1): HTTP 502: boom");
-  });
+Deno.test("issue_routing_github - a failed closed search rejects even though the open search matched", async () => {
+  const gh = fakeGh(
+    storeOf([item(1, DRAFT)]),
+    (args) =>
+      valueAfter(args, "--state") === "closed"
+        ? new Error("gh command failed (exit 1): HTTP 502: boom")
+        : undefined,
+  );
   const err = await assertRejects(
-    () =>
-      findRoutingDuplicates(REPO, "Same title", {
-        ghCommandFn: fake.ghCommandFn,
-        now: NOW,
-      }),
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
     Error,
     "boom",
   );
   assertStringIncludes(err.message, REPO);
 });
 
-Deno.test("issue_routing_github - a malformed search response rejects", async () => {
-  const cases: [string, unknown][] = [
-    ["not an array", { number: 1 }],
-    ["item missing number", [{
-      title: "Same title",
-      state: "open",
-      closedAt: null,
-    }]],
+Deno.test("issue_routing_github - malformed search output rejects", async () => {
+  const cases: [string, string][] = [
+    ["not an array", JSON.stringify({ number: 1 })],
+    ["item missing number", JSON.stringify([{ title: DRAFT, closedAt: null }])],
   ];
   for (const [label, body] of cases) {
-    const fake = fakeGh(() => JSON.stringify(body));
+    const gh = rawGh(() => body);
     await assertRejects(
-      () =>
-        findRoutingDuplicates(REPO, "Same title", {
-          ghCommandFn: fake.ghCommandFn,
-          now: NOW,
-        }),
+      () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh)),
       Error,
       "unexpected search response",
       label,
@@ -271,93 +414,81 @@ Deno.test("issue_routing_github - a malformed search response rejects", async ()
   }
 });
 
-Deno.test("issue_routing_github - a closed hit with closedAt null rejects", async () => {
-  const fake = fakeGh(
-    searchReplies([], [hit(5, "Same title", "closed", null)]),
+Deno.test("issue_routing_github - a closed hit with a null closedAt rejects", async () => {
+  const gh = rawGh((args) =>
+    valueAfter(args, "--state") === "closed"
+      ? JSON.stringify([{ number: 5, title: DRAFT, closedAt: null }])
+      : "[]"
   );
   await assertRejects(
-    () =>
-      findRoutingDuplicates(REPO, "Same title", {
-        ghCommandFn: fake.ghCommandFn,
-        now: NOW,
-      }),
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh)),
     Error,
     "closedAt",
   );
 });
 
-Deno.test("issue_routing_github - a search at the result limit rejects, one below it resolves", async () => {
-  const full = Array.from(
-    { length: ROUTING_DUPLICATE_SEARCH_LIMIT },
-    (_, i) => hit(i + 1, "Same title"),
+Deno.test("issue_routing_github - a search at the result limit rejects, one below it resolves empty", async () => {
+  const full = Array.from({ length: 100 }, (_, i) => ({
+    number: i + 1,
+    title: DRAFT,
+    closedAt: null,
+  }));
+  const atLimit = rawGh((args) =>
+    valueAfter(args, "--state") === "open" ? JSON.stringify(full) : "[]"
   );
-  const atLimit = fakeGh(searchReplies(full, []));
   await assertRejects(
-    () =>
-      findRoutingDuplicates(REPO, "Same title", {
-        ghCommandFn: atLimit.ghCommandFn,
-        now: NOW,
-      }),
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(atLimit)),
     Error,
     "would be missed",
   );
 
-  // Positive control: one hit below the limit, none matching, is a clean empty result.
-  const below = Array.from(
-    { length: ROUTING_DUPLICATE_SEARCH_LIMIT - 1 },
-    (_, i) => hit(i + 1, `unrelated ${i}`),
+  // Positive control: 99 unrelated hits is a clean empty result.
+  const below = Array.from({ length: 99 }, (_, i) => ({
+    number: i + 1,
+    title: `unrelated ${i}`,
+    closedAt: null,
+  }));
+  const belowLimit = rawGh((args) =>
+    valueAfter(args, "--state") === "open" ? JSON.stringify(below) : "[]"
   );
-  const belowFake = fakeGh(searchReplies(below, []));
-  const found = await findRoutingDuplicates(REPO, "Same title", {
-    ghCommandFn: belowFake.ghCommandFn,
-    now: NOW,
-  });
-  assertEquals(found, []);
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(belowLimit)),
+    [],
+  );
 });
 
 Deno.test("issue_routing_github - an invalid slug or an empty title is refused before any gh call", async () => {
   for (const repo of ["../x", "noslash"]) {
-    const fake = fakeGh(() => "[]");
+    const gh = fakeGh(storeOf([item(1, DRAFT)]));
     await assertRejects(
-      () =>
-        findRoutingDuplicates(repo, "Same title", {
-          ghCommandFn: fake.ghCommandFn,
-          now: NOW,
-        }),
+      () => findRoutingDuplicates(repo, DRAFT, depsFor(gh.ghCommandFn)),
       Error,
       "invalid repository",
     );
-    assertEquals(fake.calls.length, 0, `gh called for ${repo}`);
+    assertEquals(gh.calls.length, 0, `gh was called for ${repo}`);
   }
 
-  const fake = fakeGh(() => "[]");
+  const gh = fakeGh(storeOf([item(1, DRAFT)]));
   await assertRejects(
-    () =>
-      findRoutingDuplicates(REPO, "!!! ", {
-        ghCommandFn: fake.ghCommandFn,
-        now: NOW,
-      }),
+    () => findRoutingDuplicates(REPO, "!!! ", depsFor(gh.ghCommandFn)),
     Error,
     "empty after normalisation",
   );
-  assertEquals(fake.calls.length, 0);
+  assertEquals(gh.calls.length, 0);
 });
 
 Deno.test("issue_routing_github - WRITE, MAINTAIN and ADMIN pass the write-access check", async () => {
   for (const permission of ["WRITE", "MAINTAIN", "ADMIN"]) {
-    const fake = fakeGh(permissionHandler(permission));
-    await requireWriteAccess(REPO, { ghCommandFn: fake.ghCommandFn });
-    assertEquals(fake.calls, [
-      ["repo", "view", REPO, "--json", "viewerPermission"],
-    ]);
+    const gh = fakeGh(storeOf([], { [REPO]: permission }));
+    await requireWriteAccess(REPO, { ghCommandFn: gh.ghCommandFn });
   }
 });
 
 Deno.test("issue_routing_github - READ and TRIAGE are refused with IssueRoutingPermissionError", async () => {
   for (const permission of ["READ", "TRIAGE"]) {
-    const fake = fakeGh(permissionHandler(permission));
+    const gh = fakeGh(storeOf([], { [REPO]: permission }));
     const err = await assertRejects(
-      () => requireWriteAccess(REPO, { ghCommandFn: fake.ghCommandFn }),
+      () => requireWriteAccess(REPO, { ghCommandFn: gh.ghCommandFn }),
       IssueRoutingPermissionError,
       "needs write access",
     );
@@ -369,15 +500,15 @@ Deno.test("issue_routing_github - READ and TRIAGE are refused with IssueRoutingP
 });
 
 Deno.test("issue_routing_github - a null viewerPermission is reported as none", async () => {
-  const fake = fakeGh(permissionHandler(null));
+  const gh = fakeGh(storeOf([], { [REPO]: null }));
   const err = await assertRejects(
-    () => requireWriteAccess(REPO, { ghCommandFn: fake.ghCommandFn }),
+    () => requireWriteAccess(REPO, { ghCommandFn: gh.ghCommandFn }),
     IssueRoutingPermissionError,
   );
   assertEquals(err.permission, "none");
 });
 
-Deno.test("issue_routing_github - read-only access makes no write call", async () => {
+Deno.test("issue_routing_github - read-only access attempts no issue create, write access does", async () => {
   // Stands in for a caller that checks access, then files an issue.
   const fileIfAllowed = async (gh: GhCommandFn) => {
     await requireWriteAccess(REPO, { ghCommandFn: gh });
@@ -392,37 +523,25 @@ Deno.test("issue_routing_github - read-only access makes no write call", async (
       "b",
     ]);
   };
+  const isCreate = (c: string[]) => c[0] === "issue" && c[1] === "create";
 
-  const readOnly = fakeGh(permissionHandler("READ"));
+  const readOnly = fakeGh(storeOf([], { [REPO]: "READ" }));
   await assertRejects(
     () => fileIfAllowed(readOnly.ghCommandFn),
     IssueRoutingPermissionError,
   );
-  assert(
-    !readOnly.calls.some((c) => c.includes("create")),
-    "a create call was made with READ access",
-  );
+  assertEquals(readOnly.calls.filter(isCreate).length, 0);
 
-  // Positive control: with WRITE the create call is made.
-  const writer = fakeGh((args) =>
-    args[0] === "repo"
-      ? JSON.stringify({ viewerPermission: "WRITE" })
-      : "https://github.com/stSoftwareAU/VibeCoder/issues/1"
-  );
+  // Positive control: with WRITE the create is attempted.
+  const writer = fakeGh(storeOf([], { [REPO]: "WRITE" }));
   await fileIfAllowed(writer.ghCommandFn);
-  assert(
-    writer.calls.some((c) => c.includes("create")),
-    "the create call was not made with WRITE access",
-  );
+  assertEquals(writer.calls.filter(isCreate).length, 1);
 });
 
-Deno.test("issue_routing_github - a failed write-access check is a plain Error, not a permission refusal", async () => {
-  const repo = "stSoftwareAU/NoSuchRepoZZ";
-  const fake = fakeGh(() => {
-    throw new Error(`gh command failed (exit 1): ${NO_SUCH_REPO_STDERR}`);
-  });
+Deno.test("issue_routing_github - a repository that does not exist fails the check with a plain Error", async () => {
+  const gh = fakeGh(storeOf());
   const err = await assertRejects(
-    () => requireWriteAccess(repo, { ghCommandFn: fake.ghCommandFn }),
+    () => requireWriteAccess(MISSING_REPO, { ghCommandFn: gh.ghCommandFn }),
     Error,
     "Could not resolve to a Repository",
   );
@@ -430,27 +549,26 @@ Deno.test("issue_routing_github - a failed write-access check is a plain Error, 
     !(err instanceof IssueRoutingPermissionError),
     "a failed check must not look like a permission refusal",
   );
-  assertStringIncludes(err.message, NO_SUCH_REPO_STDERR);
 });
 
-Deno.test("issue_routing_github - malformed write-access responses and invalid slugs are refused", async () => {
+Deno.test("issue_routing_github - malformed write-access output is refused, and an invalid slug makes no call", async () => {
   for (const body of ["not json", "[]"]) {
-    const fake = fakeGh(() => body);
+    const gh = rawGh(() => body);
     await assertRejects(
-      () => requireWriteAccess(REPO, { ghCommandFn: fake.ghCommandFn }),
+      () => requireWriteAccess(REPO, { ghCommandFn: gh }),
       Error,
       REPO,
       body,
     );
   }
 
-  const fake = fakeGh(() => "{}");
+  const gh = fakeGh(storeOf());
   await assertRejects(
-    () => requireWriteAccess("../x", { ghCommandFn: fake.ghCommandFn }),
+    () => requireWriteAccess("../x", { ghCommandFn: gh.ghCommandFn }),
     Error,
     "invalid repository",
   );
-  assertEquals(fake.calls.length, 0);
+  assertEquals(gh.calls.length, 0);
 });
 
 Deno.test("issue_routing_github - the title normaliser stays linear on hostile punctuation", () => {

@@ -19,10 +19,10 @@ import { isValidRepoSlug, renderInertRepoSlug } from "./repo_slug.ts";
 export type GhCommandFn = (args: string[]) => Promise<string>;
 
 /** How far back a closed issue or PR still counts as a duplicate. */
-export const ROUTING_DUPLICATE_WINDOW_DAYS = 30;
+const ROUTING_DUPLICATE_WINDOW_DAYS = 30;
 
 /** Largest result page a duplicate search can return. */
-export const ROUTING_DUPLICATE_SEARCH_LIMIT = 100;
+const ROUTING_DUPLICATE_SEARCH_LIMIT = 100;
 
 /** Injection points; production defaults are `runGhCommand` and the wall clock. */
 export interface IssueRoutingGithubDeps {
@@ -55,7 +55,6 @@ export class IssueRoutingPermissionError extends Error {
 interface SearchHit {
   number: number;
   title: string;
-  state: string;
   closedAt: string | null;
 }
 
@@ -82,17 +81,16 @@ function parseHit(repo: string, item: unknown): SearchHit {
   const o = item as Record<string, unknown>;
   const n = o.number;
   const t = o.title;
-  const s = o.state;
   // A missing closedAt (an open item) is the same as null.
   const c = o.closedAt ?? null;
   if (
     typeof n !== "number" || !Number.isSafeInteger(n) || n <= 0 ||
-    typeof t !== "string" || typeof s !== "string" ||
+    typeof t !== "string" ||
     (c !== null && typeof c !== "string")
   ) {
     throw unexpectedSearchResponse(repo);
   }
-  return { number: n, title: t, state: s, closedAt: c };
+  return { number: n, title: t, closedAt: c };
 }
 
 /** Runs one search. Any failure throws; nothing here returns a partial list. */
@@ -123,7 +121,7 @@ async function runSearch(
   }
   if (!Array.isArray(parsed)) throw unexpectedSearchResponse(repo);
   const hits = parsed.map((item) => parseHit(repo, item));
-  // At the limit, anything beyond it is unseen, so a duplicate could be missed.
+  // SIMPLE-ON-PURPOSE: one page of 100 results, fail closed at the limit — upgrade when a title legitimately has 100+ open or recent matches
   if (hits.length >= ROUTING_DUPLICATE_SEARCH_LIMIT) {
     throw new Error(
       `Duplicate search in ${repo} returned the limit of ${ROUTING_DUPLICATE_SEARCH_LIMIT} results, so duplicates beyond it would be missed`,
@@ -170,7 +168,7 @@ export async function findRoutingDuplicates(
     repo,
     "--include-prs",
     "--json",
-    "number,title,state,closedAt",
+    "number,title,closedAt",
     "--limit",
     String(ROUTING_DUPLICATE_SEARCH_LIMIT),
   ];
