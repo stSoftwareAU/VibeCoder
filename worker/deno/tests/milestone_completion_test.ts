@@ -2669,10 +2669,15 @@ Deno.test("checkAndHandleMilestoneCompletions - an incomplete milestone's second
  * decides what that read does: it returns a JSON list or throws. The repo-wide
  * `issue list --state closed` batch answers with another milestone's issue
  * only, so a fake that still reads the batch cannot pass by accident.
+ *
+ * `closableWhenEmpty` makes the milestone one an empty closed list would close
+ * outright: created well past the empty-milestone grace window, and with no
+ * milestone branch (nothing to merge).
  */
 function completeMilestoneRestReadGhFn(
   closedRead: () => string,
   calls: string[],
+  { closableWhenEmpty = false }: { closableWhenEmpty?: boolean } = {},
 ): (args: string[]) => Promise<string> {
   return async (args: string[]): Promise<string> => {
     const key = args.join(" ");
@@ -2680,7 +2685,14 @@ function completeMilestoneRestReadGhFn(
     const authoritative = authoritativeStub(key);
     if (authoritative !== null) return authoritative;
     if (key.includes("api") && key.includes("/milestones")) {
-      return JSON.stringify([{ title: "v1.0", number: 1 }]);
+      return JSON.stringify([{
+        title: "v1.0",
+        number: 1,
+        ...(closableWhenEmpty ? { created_at: "2026-01-01T00:00:00Z" } : {}),
+      }]);
+    }
+    if (closableWhenEmpty && key.includes("/branches/milestone")) {
+      throw new Error("HTTP 404: Branch not found");
     }
     if (key.includes("api repos/") && key.includes(".default_branch")) {
       return "main";
@@ -2753,6 +2765,8 @@ Deno.test("Issue #3662 - a complete milestone raises its tracker and summary PR 
 Deno.test("Issue #3662 - a failed closed-issue read skips a complete milestone: no tracker, summary PR or close, and a WARNING is logged", async () => {
   const calls: string[] = [];
   const logs: string[] = [];
+  // An old milestone with nothing to merge: read as [] it would be closed, so
+  // only the null skip keeps it open.
   const result = await checkAndHandleMilestoneCompletions(
     createMockDeps({
       ghCommandFn: completeMilestoneRestReadGhFn(
@@ -2760,6 +2774,7 @@ Deno.test("Issue #3662 - a failed closed-issue read skips a complete milestone: 
           throw new Error("HTTP 502: Bad Gateway");
         },
         calls,
+        { closableWhenEmpty: true },
       ),
       log: (msg) => logs.push(msg),
     }),
@@ -2768,7 +2783,8 @@ Deno.test("Issue #3662 - a failed closed-issue read skips a complete milestone: 
   assertEquals(calls.filter((c) => c.includes("issue create")), []);
   assertEquals(calls.filter((c) => c.includes("pr create")), []);
   assertEquals(calls.filter((c) => c.includes("issue close")), []);
-  // The milestone has zero open issues, so only the skip keeps it open.
+  // Zero open issues, past the grace window and nothing to merge: only the
+  // skip keeps it open.
   assertEquals(
     calls.filter((c) => c.includes("-X PATCH")),
     [],
@@ -2781,6 +2797,27 @@ Deno.test("Issue #3662 - a failed closed-issue read skips a complete milestone: 
       m.includes("(Issue #3662)")
     ),
     `expected the skip WARNING, got: ${logs.join(" | ")}`,
+  );
+});
+
+Deno.test("Issue #3662 - the closable fixture is closed when its closed read is an empty list, so the failed-read skip is what keeps it open", async () => {
+  const calls: string[] = [];
+  const result = await checkAndHandleMilestoneCompletions(
+    createMockDeps({
+      ghCommandFn: completeMilestoneRestReadGhFn(
+        () => "[]",
+        calls,
+        { closableWhenEmpty: true },
+      ),
+    }),
+  );
+  assertEquals(result.ok, true);
+  assert(
+    calls.some((c) =>
+      c.includes("-X PATCH") && c.includes("milestones/1") &&
+      c.includes("state=closed")
+    ),
+    "an old, empty milestone with nothing to merge must be closed",
   );
 });
 

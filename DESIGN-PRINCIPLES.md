@@ -3131,7 +3131,8 @@ immediately.
 the single place every worker `gh` call passes through, so the idle-task
 wrapper closure, close-on-merge, the self-healing closes and the stale-workflow
 purge are all covered without each remembering to invalidate for itself. The
-same hook drops the repo's `issues_all` / `issues_closed_all` and the per-issue
+same hook drops the repo's `issues_all` / `issues_closed_all`, every
+per-milestone closed list (`issues_closed_milestone_<n>`) and the per-issue
 cache entries. The claim's own open-state check (`fetchIssueState`) reads
 through the **uncached** `runGhCommand`: a stale "OPEN" there is exactly what
 lets a closed issue be claimed.

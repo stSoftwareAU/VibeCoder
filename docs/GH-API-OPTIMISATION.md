@@ -93,8 +93,9 @@ client-side. This is implemented in
   issues (PRs filtered out). It is read with `gh api
   repos/<repo>/issues?milestone=<n>&state=closed&per_page=100 --paginate`, so it
   is not bounded by the newest-500 repo-wide batch. A failed read throws and
-  is never cached. Invalidated by TTL only, not by issue number (see the note
-  under the invalidation table).
+  is never cached. The entry is dropped by a worker close or reopen (see the
+  close/reopen row of the invalidation table), by `IssueCache.invalidateRepo`,
+  or by its 600 s TTL, whichever comes first.
 
 The cost is one `gh issue list` per repo per TTL window (10 min),
 regardless of how many label scans the iteration performs. Issue
@@ -349,7 +350,7 @@ trade-off.
 | Worker adds/removes a label | The repo's issue/PR list (so the next read sees the change) | `IssueCache.invalidate(repo, "issues_all")` or `IssueCache.invalidateRepo(repo)` |
 | Worker writes a claim comment | Repo's issue list (claim is reflected in the issue body / labels) | `IssueCache.invalidateRepo(repo)` |
 | Worker creates/closes a PR | Repo's PR list cache (`prs_${user}`, `prs_closed_${user}`) | `IssueCache.invalidate(repo, key)` |
-| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}` and `issue_state_v2_${number}` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818) |
+| Worker closes/reopens an issue | That repo's `issues_all`, `issues_closed_all`, `issue_labels_${number}`, `pr_linkage_open_v2_${number}`, `issue_state_v2_${number}` and every `issues_closed_milestone_<n>` | `noteGhIssueClose` at the `gh` chokepoint (Issue #181, #1818, #3662) |
 | Default-branch tip moves | Every milestone branch's "already synced" verdict (Issue #1776) | `git rev-parse origin/<default>` against the ledger's `lastSyncedDefaultSha` |
 | Rate-limit signal active | Pre-flight cache is bypassed unconditionally | Step 1 of `preflightGitHubRateLimit` |
 | Pre-flight remaining < 2× threshold | Pre-flight cache is bypassed for this call (re-checks fresh) | `readPreflightCache` returns null |
@@ -357,10 +358,12 @@ trade-off.
 
 Note: `issues_closed_milestone_<n>` (Issue #3662, written by
 `fetchClosedIssuesByMilestoneNumber` in `worker/deno/lib/issue_query.ts`) is
-not in the close/reopen row. It is keyed by milestone number, which a close or
-reopen does not carry, so `noteGhIssueClose` cannot name it. The milestone
-completion read sees a close or reopen only once that entry's TTL (600 s)
-expires.
+keyed by milestone number, which a close or reopen does not carry. So
+`noteGhIssueClose` drops every `issues_closed_milestone_` entry in the repo
+(`IssueCache.invalidatePrefix`), and the milestone completion read after a
+worker close or reopen fetches the list fresh. A close or reopen made outside
+the worker is seen once the entry's 600 s TTL expires, or sooner if
+`IssueCache.invalidateRepo` clears the repo first.
 
 The TTL itself is the second line of defence: even without explicit
 invalidation, every entry is automatically refreshed at most 10 minutes
@@ -390,7 +393,7 @@ apply, both driven from the single `gh` chokepoint (`spawnGh`):
 ```mermaid
 flowchart LR
     C["gh issue close<br/>(any close path)"] --> S["spawnGh chokepoint"]
-    S --> I["invalidate issues_all,<br/>issues_closed_all, per-issue keys"]
+    S --> I["invalidate issues_all,<br/>issues_closed_all, per-issue keys,<br/>issues_closed_milestone_*"]
     S --> R["ProcessedIssueRegistry<br/>(this run)"]
     P["processIssue terminal<br/>outcome"] --> R
     R --> F["findNextIssue excludes"]

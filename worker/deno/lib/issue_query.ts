@@ -26,7 +26,7 @@ import { isMilestoneSyncBranch } from "./milestone_sync_branch.ts";
 import { createMilestoneBranchName } from "./git_branch.ts";
 import { isHumanAuthoredPr } from "./fleet_authors.ts";
 export { createMilestoneBranchName };
-import { IssueCache } from "./issue_cache.ts";
+import { CLOSED_MILESTONE_CACHE_PREFIX, IssueCache } from "./issue_cache.ts";
 import type { IssueSubAgentTier, WorkerConfig } from "../types.ts";
 import { subAgentTierFromBody } from "./pr_body.ts";
 import type { FilterableIssue } from "./issue_filter.ts";
@@ -838,10 +838,10 @@ export async function fetchClosedIssuesByMilestone(
  * caller. Nothing is cached on a failure.
  *
  * Cache: stored under `issues_closed_milestone_<N>`, one entry per milestone.
- * `closeInvalidatedCacheKeys(issueNumber)` is keyed by issue number and does
- * not know the milestone number, so a close or reopen does not invalidate this
- * key. A close or reopen is seen only once the cache entry's TTL expires
- * (600 seconds by default).
+ * A worker close or reopen does not carry the milestone number, so
+ * `noteGhIssueClose` drops every `issues_closed_milestone_` key in the repo.
+ * Otherwise the entry lives until its TTL (600 seconds by default) or until
+ * `invalidateRepo` clears the whole repo.
  *
  * @param repo - Repository in "owner/repo" format
  * @param milestoneNumber - The milestone's number, not its title; must be a
@@ -866,7 +866,7 @@ export async function fetchClosedIssuesByMilestoneNumber(
     );
   }
 
-  const cacheKey = `issues_closed_milestone_${milestoneNumber}`;
+  const cacheKey = `${CLOSED_MILESTONE_CACHE_PREFIX}${milestoneNumber}`;
   const context =
     `fetchClosedIssuesByMilestoneNumber(${repo}, ${milestoneNumber})`;
 
