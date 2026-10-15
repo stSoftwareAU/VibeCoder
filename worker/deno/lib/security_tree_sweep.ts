@@ -1944,7 +1944,7 @@ export function buildSweepIssueBody(
       2,
     ).split("\n").map((l) => `   ${l}`),
     "   ```",
-    ...(row.lineStart === null && row.snippet === undefined
+    ...(row.lineStart === null
       ? [
         "",
         "   An unlocated finding has no `line` or `snippet` to anchor a",
