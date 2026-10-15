@@ -402,6 +402,8 @@ Deno.test("issue_routing_github - malformed search output rejects", async () => 
   const cases: [string, string][] = [
     ["not an array", JSON.stringify({ number: 1 })],
     ["item missing number", JSON.stringify([{ title: DRAFT, closedAt: null }])],
+    ["null item", JSON.stringify([null])],
+    ["number item", JSON.stringify([42])],
   ];
   for (const [label, body] of cases) {
     const gh = rawGh(() => body);
@@ -412,6 +414,29 @@ Deno.test("issue_routing_github - malformed search output rejects", async () => 
       label,
     );
   }
+});
+
+Deno.test("issue_routing_github - unparseable search output rejects and names the repository", async () => {
+  const gh = rawGh(() => "not json");
+  const err = await assertRejects(
+    () => findRoutingDuplicates(REPO, DRAFT, depsFor(gh)),
+    Error,
+    "invalid JSON",
+  );
+  assertStringIncludes(err.message, REPO);
+});
+
+Deno.test("issue_routing_github - a closed item with a different title is not returned", async () => {
+  // The closed item contains the draft's words, so the search returns it and
+  // only the title check keeps it out. It was closed 5 days ago, inside the window.
+  const gh = fakeGh(storeOf([
+    item(60, DRAFT),
+    item(61, `${DRAFT} and formatting`, { closedAt: "2026-10-10T00:00:00Z" }),
+  ]));
+  assertEquals(
+    await findRoutingDuplicates(REPO, DRAFT, depsFor(gh.ghCommandFn)),
+    [60],
+  );
 });
 
 Deno.test("issue_routing_github - a closed hit with a null closedAt rejects", async () => {
@@ -569,6 +594,22 @@ Deno.test("issue_routing_github - malformed write-access output is refused, and 
     "invalid repository",
   );
   assertEquals(gh.calls.length, 0);
+});
+
+Deno.test("issue_routing_github - non-object write-access output is refused as unexpected, not as a permission refusal", async () => {
+  for (const body of ["[]", "null", "42"]) {
+    const gh = rawGh(() => body);
+    const err = await assertRejects(
+      () => requireWriteAccess(REPO, { ghCommandFn: gh }),
+      Error,
+      "unexpected response",
+      body,
+    );
+    assert(
+      !(err instanceof IssueRoutingPermissionError),
+      `${body} was read as a permission refusal`,
+    );
+  }
 });
 
 Deno.test("issue_routing_github - the title normaliser stays linear on hostile punctuation", () => {
