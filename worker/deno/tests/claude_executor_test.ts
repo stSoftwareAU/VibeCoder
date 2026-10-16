@@ -556,12 +556,12 @@ Deno.test("claude executor - buildClaudeModelArgs uses refinement phase default 
   assertEquals(args, ["--model", "opus"]);
 });
 
-Deno.test("claude executor - buildClaudeModelArgs uses issue phase default opus (Issue #2709)", () => {
-  // The coding phase routes through `phase: "issue"`, which now carries the
-  // Opus base-tier default (Issue #2709) rather than falling through to the
-  // CLI default.
+Deno.test("claude executor - buildClaudeModelArgs uses issue phase default sonnet (Issues #2709, #3473)", () => {
+  // The coding phase routes through `phase: "issue"`, which carries an
+  // explicit default (Issue #2709) rather than falling through to the CLI
+  // default: the Sonnet manager since the owner's decision on #3473.
   const args = buildClaudeModelArgs("issue", emptyEnv);
-  assertEquals(args, ["--model", "opus"]);
+  assertEquals(args, ["--model", "sonnet"]);
 });
 
 Deno.test("claude executor - buildClaudeModelArgs CLAUDE_MODEL_ISSUE env override beats issue phase default (Issue #2709)", () => {
@@ -1149,14 +1149,15 @@ Deno.test("claude executor - switching repos replaces overrides without leaking 
       "xhigh",
     ]);
 
-    // Repo B: economy tier — must fully replace repo A's routing.
+    // Repo B: economy tier — must fully replace repo A's routing. Haiku, so
+    // repo C's Sonnet default below cannot be mistaken for a leftover.
     setActiveRepoModelEffortOverrides({
-      claudeModel: "sonnet",
+      claudeModel: "haiku",
       phaseEffortOverrides: { issue: "medium" },
     });
     assertEquals(buildClaudeModelArgs("issue", emptyEnv), [
       "--model",
-      "sonnet",
+      "haiku",
     ]);
     assertEquals(buildClaudeEffortArgs("issue", emptyEnv), [
       "--effort",
@@ -1164,11 +1165,14 @@ Deno.test("claude executor - switching repos replaces overrides without leaking 
     ]);
 
     // Repo C: no per-repo config — routing falls back to defaults, with no
-    // leftover from A or B. "issue" now carries the Opus base-tier default
-    // (Issue #2709); planning carries the top-tier default (Issue #2621),
-    // Opus since Issue #2560 — not repo A's "fable".
+    // leftover from A or B. "issue" carries the Sonnet manager default
+    // (Issues #2709, #3473); planning carries the top-tier default (Issue
+    // #2621), Opus since Issue #2560 — not repo A's "fable".
     setActiveRepoModelEffortOverrides(undefined);
-    assertEquals(buildClaudeModelArgs("issue", emptyEnv), ["--model", "opus"]);
+    assertEquals(buildClaudeModelArgs("issue", emptyEnv), [
+      "--model",
+      "sonnet",
+    ]);
     assertEquals(buildClaudeModelArgs("planning", emptyEnv), [
       "--model",
       "opus",
