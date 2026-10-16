@@ -452,7 +452,9 @@ Deno.test("runCoverageCarryOverCheck - a failed base test with no error line rep
   const f = fake({
     base: DENO_BASE,
     respond: (cmd, args) =>
-      cmd === "deno" && args[0] === "test" ? fail(1, "something odd\n") : undefined,
+      cmd === "deno" && args[0] === "test"
+        ? fail(1, "something odd\n")
+        : undefined,
   });
   const result = await runCoverageCarryOverCheck(
     input(DELETE_TEST_AND_INSERT_HEADER),
@@ -477,8 +479,7 @@ Deno.test("runCoverageCarryOverCheck - a failed base test with no stderr reports
   );
   assertEquals(result, {
     kind: "error",
-    reason:
-      "base tests fail at the merge base (tests/m_test.ts): exit code 2",
+    reason: "base tests fail at the merge base (tests/m_test.ts): exit code 2",
   });
 });
 
@@ -791,7 +792,8 @@ Deno.test("runCoverageCarryOverCheck - a changed test with no Deno project is sk
       "loose/tests/y_test.ts": 'Deno.test("y", () => {});\n',
     },
     baseLcov: `SF:${WT}/pkg/lib/m.ts\nDA:2,1\nDA:3,1\nDA:5,1\nend_of_record\n`,
-    headLcov: `SF:${REPO}/pkg/lib/m.ts\nDA:3,1\nDA:4,1\nDA:6,0\nend_of_record\n`,
+    headLcov:
+      `SF:${REPO}/pkg/lib/m.ts\nDA:3,1\nDA:4,1\nDA:6,0\nend_of_record\n`,
   });
   const result = await runCoverageCarryOverCheck(
     input(
@@ -822,7 +824,10 @@ Deno.test("runCoverageCarryOverCheck - a changed test with no Deno project is sk
 
 Deno.test("runCoverageCarryOverCheck - an edited test that no longer imports the module is still run at head, and its own lines are not carried", async () => {
   const f = fake({
-    base: { ...DENO_BASE, "tests/m_test.ts": "// fixture\n" + M_TEST_LINES.join("\n") + "\n" },
+    base: {
+      ...DENO_BASE,
+      "tests/m_test.ts": "// fixture\n" + M_TEST_LINES.join("\n") + "\n",
+    },
     head: {
       "deno.json": DENO_JSON,
       "lib/m.ts": "// header\n" + LIB_BASE,
@@ -851,7 +856,9 @@ Deno.test("runCoverageCarryOverCheck - an edited test that no longer imports the
     carried: 3,
     uncovered: [{ file: "lib/m.ts", line: 6 }],
   });
-  const headRun = f.calls.find((c) => isCall(c, "deno", "test") && c.cwd === REPO);
+  const headRun = f.calls.find((c) =>
+    isCall(c, "deno", "test") && c.cwd === REPO
+  );
   assertEquals(headRun?.args, [
     "test",
     "--no-check",
@@ -1127,6 +1134,67 @@ Deno.test("runCoverageCarryOverCheck - an unexpected throw becomes an error resu
     f.seams,
   );
   assertEquals(result, { kind: "error", reason: "disk full" });
+});
+
+Deno.test("runCoverageCarryOverCheck - an unexpected throw that is not an Error is reported as its string", async () => {
+  const f = fake({ base: DENO_BASE });
+  const seams = {
+    ...f.seams,
+    makeTempDir: () => Promise.reject("raw failure"),
+  };
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    seams,
+  );
+  assertEquals(result, { kind: "error", reason: "raw failure" });
+});
+
+Deno.test("runCoverageCarryOverCheck - a worktree remove that throws falls back to removing the directory and pruning", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: HEAD_WITH_OTHER_TEST,
+    baseLcov: BASE_LCOV,
+    headLcov: `SF:${REPO}/lib/m.ts\nDA:3,1\nDA:4,1\nDA:6,0\nend_of_record\n`,
+    respond: (cmd, args) => {
+      if (cmd === "git" && args[0] === "worktree" && args[1] === "remove") {
+        throw new Error("spawn failed");
+      }
+      return undefined;
+    },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result.kind, "completed");
+  assertEquals(
+    f.calls.some((c) => isCall(c, "git", "worktree", "prune")),
+    true,
+  );
+  assertEquals(f.removed.includes(TMP), true);
+});
+
+Deno.test("runCoverageCarryOverCheck - a worktree remove that times out falls back to removing the directory and pruning", async () => {
+  const f = fake({
+    base: DENO_BASE,
+    head: HEAD_WITH_OTHER_TEST,
+    baseLcov: BASE_LCOV,
+    headLcov: `SF:${REPO}/lib/m.ts\nDA:3,1\nDA:4,1\nDA:6,0\nend_of_record\n`,
+    respond: (cmd, args) =>
+      cmd === "git" && args[0] === "worktree" && args[1] === "remove"
+        ? { code: 0, stdout: "", stderr: "", timedOut: true }
+        : undefined,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(DELETE_TEST_AND_INSERT_HEADER),
+    f.seams,
+  );
+  assertEquals(result.kind, "completed");
+  assertEquals(
+    f.calls.some((c) => isCall(c, "git", "worktree", "prune")),
+    true,
+  );
+  assertEquals(f.removed.includes(TMP), true);
 });
 
 // ---------------------------------------------------------------------------
