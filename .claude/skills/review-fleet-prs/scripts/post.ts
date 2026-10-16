@@ -6,9 +6,10 @@
 // refreshes the summary, files an issue for each problem Fable noticed outside
 // the PR's scope (skipping one an open issue already covers), labels a held
 // PR `needs-human` and removes that label on a later approve/send-back only
-// when its log shows it added it, brings an approved fleet PR that is behind
-// its base up to date (review first, then update: Issue #3225), and raises a
-// desktop notification when a PR is sent back or held for the owner.
+// when its log shows it added it, brings an approved fleet or Dependabot PR
+// that is behind its base up to date (review first, then update: Issue #3225),
+// and raises a desktop notification when a PR is sent back or held for the
+// owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
@@ -319,14 +320,12 @@ export async function decidePostOutcome(
 // Review first, then up to date (Issue #3225): every fleet PR is armed with
 // auto-merge on CI green, approved and branch up to date, so an approval of
 // a PR that is behind its base would otherwise sit unmerged until something
-// else brought it up to date. Dependabot branches are never pushed to.
+// else brought it up to date. Dependabot PRs are updated too (Issue #3663).
 export function shouldUpdateBranch(
   outcome: Outcome,
-  kind: Input["pr"]["kind"],
   mergeStateStatus: string | undefined,
 ): boolean {
-  return outcome === "approved" && kind !== "dependabot" &&
-    mergeStateStatus === "BEHIND";
+  return outcome === "approved" && mergeStateStatus === "BEHIND";
 }
 
 // Exported, not just `import.meta.main`-gated, so the root-level forwarding
@@ -449,7 +448,7 @@ export async function main() {
   }
 
   let branchUpdate: BranchUpdateResult | undefined;
-  if (shouldUpdateBranch(outcome, pr.kind, live.mergeStateStatus)) {
+  if (shouldUpdateBranch(outcome, live.mergeStateStatus)) {
     branchUpdate = await updateBranch(pr, (args) => run("gh", args));
     if (!branchUpdate.updated) {
       console.error(

@@ -25,12 +25,13 @@
 // --sleep-first waits one interval before the first poll, so a PR whose
 // review just failed is retried after the interval instead of at once.
 // Output: one line of JSON, { ready: [...], auditBlocked: [...],
-// skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each pass also does the
-// Dependabot upkeep in dependabot.ts (rebase requests, arming auto-merge) and
-// brings a fleet PR that is approved at its head but behind its base up to
-// date (branch_update.ts), once per head; --dry-run reports that upkeep
-// without doing it. A failed upkeep action is reported in `upkeep` too, and
-// is not retried at the same head commit.
+// skipped: { <reason>: count }, upkeep: [...] }. Unlike the review itself, each
+// pass also does the Dependabot upkeep in dependabot.ts (arming auto-merge,
+// reporting conflicting PRs) and brings a fleet or Dependabot PR that is
+// approved at its head but behind its base up to date (branch_update.ts), once
+// per head; --dry-run reports that upkeep without doing it. A failed upkeep
+// action is reported in `upkeep` too, and is not retried at the same head
+// commit.
 
 // The helpers live at <checkout>/.claude/skills/review-fleet-prs/scripts/,
 // and the checkout's own .config.json is four levels up from there.
@@ -691,15 +692,11 @@ async function searchOpenPrs(
   return prs;
 }
 
-// Head commit a Dependabot rebase was last requested for, per PR, so the
-// request is not repeated while Dependabot works on it.
-const REBASE_FILE = "dependabot-rebase.json";
-
-// Head commit an upkeep action (rebase, auto-merge or branch update) last
-// failed at, per PR and action, so a failure is not retried every pass.
+// Head commit an upkeep action (auto-merge or branch update) last failed at,
+// per PR and action, so a failure is not retried every pass.
 const FAILED_FILE = "dependabot-failed.json";
 
-// Head commit a fleet PR's branch update was last requested at, per PR, so
+// Head commit a PR's branch update was last requested at, per PR, so
 // GitHub is asked once while CI runs on the merge commit (Issue #3225).
 const BRANCH_UPDATE_FILE = "branch-update.json";
 
@@ -747,7 +744,6 @@ export async function pass(
   const open = new Set<string>();
   const upkeep: string[] = [];
   const log = await readLog(dir);
-  const rebaseAsked = await readMemory(dir, REBASE_FILE);
   const updateAsked = await readMemory(dir, BRANCH_UPDATE_FILE);
   const failed = await readMemory(dir, FAILED_FILE);
   const single = repos.size === 1;
@@ -770,36 +766,13 @@ export async function pass(
       pr.baseRefName === pr.repository.defaultBranchRef?.name
     ) {
       const key = prKey(repo, pr.number);
-      const action = dependabotAction(pr, reviewer, rebaseAsked[key]);
-      const alreadyFailed = (action.kind === "rebase" ||
-        action.kind === "auto-merge") &&
-        failed[`${key} ${action.kind}`] === pr.headRefOid;
-      if (action.kind === "rebase" && !alreadyFailed) {
-        try {
-          if (!DRY_RUN) {
-            await callGh([
-              "pr",
-              "comment",
-              String(pr.number),
-              "-R",
-              repo,
-              "--body",
-              "@dependabot rebase",
-            ]);
-            rebaseAsked[key] = pr.headRefOid;
-          }
-          upkeep.push(`${key} rebase requested${DRY_RUN ? " (dry run)" : ""}`);
-          skipped["rebasing"] = (skipped["rebasing"] ?? 0) + 1;
-          continue;
-        } catch (e) {
-          failed[`${key} rebase`] = pr.headRefOid;
-          const line = `${key} rebase failed: ${
-            firstLine((e as Error).message)
-          }`;
-          upkeep.push(line);
-          console.error(line);
-          // Falls through to the normal skipReason check below.
-        }
+      const action = dependabotAction(pr, reviewer);
+      const alreadyFailed = action.kind === "auto-merge" &&
+        failed[`${key} auto-merge`] === pr.headRefOid;
+      if (action.kind === "conflicting") {
+        // Dependabot rebases it itself; the gate never comments on it.
+        upkeep.push(`${key} conflicting, waiting on Dependabot`);
+        // Falls through to the normal skipReason check below.
       } else if (action.kind === "auto-merge" && !alreadyFailed) {
         try {
           if (!DRY_RUN) {
@@ -836,13 +809,13 @@ export async function pass(
         ownDiffUnchanged(callGh, repo, pr.baseRefName, since, pr.headRefOid),
       (oid) => wasChangeRequestAt(log, repo, pr.number, oid),
     );
-    // Review first, then up to date (Issue #3225): a fleet PR approved at
-    // its head (by any host or by hand) but behind its base cannot merge,
-    // so the base is merged in once per head. An unapproved PR is reviewed
-    // as it is; post.ts brings it up to date after the approval.
+    // Review first, then up to date (Issue #3225): a fleet or Dependabot PR
+    // approved at its head (by any host or by hand) but behind its base cannot
+    // merge, so the base is merged in once per head. An unapproved PR is
+    // reviewed as it is; post.ts brings it up to date after the approval.
     const key = prKey(repo, pr.number);
     if (
-      needsBranchUpdate(pr, kind, updateAsked[key]) &&
+      needsBranchUpdate(pr, updateAsked[key]) &&
       failed[`${key} branch-update`] !== pr.headRefOid
     ) {
       const result = DRY_RUN ? { updated: true as const } : await updateBranch(
@@ -950,7 +923,6 @@ export async function pass(
   // A single --repo run sees only part of the fleet, so it leaves the
   // summary's open set alone.
   if (repos.size > 1) await writeSummary(dir, open);
-  await writeMemory(dir, REBASE_FILE, rebaseAsked);
   await writeMemory(dir, BRANCH_UPDATE_FILE, updateAsked);
   await writeMemory(dir, FAILED_FILE, failed);
   return { ready, auditBlocked, skipped, upkeep };

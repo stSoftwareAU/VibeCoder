@@ -94,17 +94,17 @@ reviewing as a GitHub App, and persistent failure escalation.
    posted it, and a PR anyone has approved at its head commit is skipped as
    `approved`: there is nothing left to review, and it merges once it is up
    to date.
-9. **Approve first, then bring the branch up to date.** Every fleet PR is
-   armed with auto-merge on three conditions: CI green, approved, and branch
-   up to date. The review is of the diff as it stands; when the outcome is an
-   approval and the PR is behind its base, `post.ts` then asks GitHub to merge
-   the base in (`update-branch`, at the reviewed head), so CI re-runs on the
-   merge commit and the PR merges with no further round. The gate does the
-   same once per head for a fleet PR already approved at its head but still
-   behind. A PR is never brought up to date before its review: the approval
-   would then be of a head nobody read. Dependabot branches are never pushed
-   to (see
-   [Dependabot PRs](references/edge-cases.md#dependabot-prs)).
+9. **Approve first, then bring the branch up to date.** Every fleet and
+   Dependabot PR is armed with auto-merge on three conditions: CI green,
+   approved, and branch up to date. The review is of the diff as it stands;
+   when the outcome is an approval and the PR is behind its base, `post.ts`
+   then asks GitHub to merge the base in (`update-branch`, at the reviewed
+   head), so CI re-runs on the merge commit and the PR merges with no further
+   round. The gate does the same once per head for a fleet or Dependabot PR
+   already approved at its head but still behind. A PR is never brought up to
+   date before its review: the approval would then be of a head nobody read.
+   See [Dependabot PRs](references/edge-cases.md#dependabot-prs) for what the
+   gate does with a conflicting one.
 10. **Repeated findings improve the VibeCoder.** Review findings are also
     feedback about the worker itself. After each round, compare blocking
     findings with recent review history. When the same underlying mistake has
@@ -151,13 +151,13 @@ a fleet account has had a PR in the last 30 days.
 
 Read
 [references/edge-cases.md#dependabot-prs](references/edge-cases.md#dependabot-prs)
-when a gate pass reports Dependabot upkeep (rebase requests, auto-merge
-arming or their failures).
+when a gate pass reports Dependabot upkeep (auto-merge arming, branch updates,
+conflicting PRs waiting on Dependabot, or their failures).
 
 Read
-[references/edge-cases.md#approved-fleet-prs-that-are-behind](references/edge-cases.md#approved-fleet-prs-that-are-behind)
-when an approved fleet PR is behind its base or the upkeep reports a branch
-update.
+[references/edge-cases.md#approved-prs-that-are-behind](references/edge-cases.md#approved-prs-that-are-behind)
+when an approved fleet or Dependabot PR is behind its base or the upkeep
+reports a branch update.
 
 ## The loop
 
@@ -289,9 +289,9 @@ The script does the rest, so do not post anything yourself:
   conditions all hold. The body opens "Auto-released: ..." and lists each
   change with its quoted criterion; there is no held comment and no
   `needs-human` label.
-- After an approval, when the PR is behind its base (and is not a Dependabot
-  PR), it asks GitHub to bring the branch up to date at the reviewed head
-  (rule 9), so the armed auto-merge can complete once CI re-runs. The result
+- After an approval, when the PR is behind its base, it asks GitHub to bring
+  the branch up to date at the reviewed head (rule 9), so the armed auto-merge
+  can complete once CI re-runs. The result
   is `branchUpdated: true` or `branchUpdateError: <first line>`; a refusal
   leaves the approval posted and the next gate pass retries the update.
 - After a held review posts, it labels the PR `needs-human`. When it later

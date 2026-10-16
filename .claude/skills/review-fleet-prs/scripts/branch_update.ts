@@ -5,8 +5,8 @@
 // is of the diff as reviewed; this module then asks GitHub to merge the base
 // into the PR (the `update-branch` endpoint, as the worker's own merge path
 // does), so the third condition clears and the PR merges once CI re-runs.
-// Dependabot branches are never pushed to: Dependabot stops updating a PR
-// someone else has pushed to, so dependabot.ts asks it to rebase instead.
+// The same update applies to Dependabot PRs (Issue #3663), since the reviewer
+// App's `@dependabot rebase` is refused.
 
 export type RunGh = (args: string[]) => Promise<string>;
 
@@ -33,16 +33,16 @@ export interface BranchStateLike {
   reviews: { nodes: readonly ReviewLike[] };
 }
 
-// Whether the gate should ask for an update this pass: a fleet PR, approved
-// at its head, behind its base, not a draft or conflicting, and not already
-// asked at this head (`askedFor` is the head an update was last requested
-// for, so GitHub is not asked again while CI runs on the merge commit).
+// Whether the gate should ask for an update this pass: a fleet or Dependabot
+// PR, approved at its head, behind its base, not a draft or conflicting, and
+// not already asked at this head (`askedFor` is the head an update was last
+// requested for, so GitHub is not asked again while CI runs on the merge
+// commit).
 export function needsBranchUpdate(
   pr: BranchStateLike,
-  kind: "dependabot" | "fleet",
   askedFor: string | undefined,
 ): boolean {
-  return kind === "fleet" && !pr.isDraft && pr.mergeable !== "CONFLICTING" &&
+  return !pr.isDraft && pr.mergeable !== "CONFLICTING" &&
     pr.mergeStateStatus === "BEHIND" &&
     approvedAtHead(pr.reviews.nodes, pr.headRefOid) &&
     askedFor !== pr.headRefOid;
