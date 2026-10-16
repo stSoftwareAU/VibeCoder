@@ -713,7 +713,7 @@ export async function createGitHubIssuesWithPartialFailures(
     } catch (error: unknown) {
       failures.push({
         title: improvement.title,
-        error: describeRoutingFailure(error),
+        error: "",
       });
     }
   }
