@@ -1360,7 +1360,18 @@ The file MUST contain:
    counts only once a named test reaches it and flipping that outcome on
    purpose turns the suite red (see **Every outcome of a branch you add needs
    a test that reaches it** in the guidelines); an outcome no test reaches is a
-   blocking self-review finding. Each operand of a compound condition
+   blocking self-review finding. A guard before an irreversible or outward
+   action (arming auto-merge, merging, pushing, claiming, closing) has its own
+   `unreadable` outcome when its input read can fail: a helper's `""`, `null`,
+   `[]`, `false` or "not gated" on a failed read must defer, hold or refuse, a
+   truthiness check such as `value && …` must not skip the guard, and its
+   `unreadable` line names a test whose stub makes the read fail and asserts
+   the action did not happen (see **A guard decides the unreadable case
+   itself** in the guidelines; a gate over text may instead report unread
+   input as not checked, as **A gate over text catches the variants and never
+   passes what it skipped** under Instructions says). A guard that goes ahead
+   when its input cannot be read is a blocking self-review finding. Each
+   operand of a compound condition
    (`a || b`, `a && b`, a chained `?:`) is its own outcome: its flip deletes
    that operand alone, or forces it to the value that lets the other operands
    decide, and its `Branch outcomes:` line names the operand — reverting the

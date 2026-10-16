@@ -194,6 +194,24 @@ a fault must never be masked as success.
 - **Absence of a success marker is not success.** Do not treat "no explicit
   failure" as "passed", and do not treat an unhandled non-zero exit as benign. A
   result is only successful when success is positively confirmed.
+- **A guard decides the unreadable case itself.** Some guards stand before an
+  irreversible or outward action: arming auto-merge, merging, pushing, claiming,
+  closing. When such a guard reads its input through a helper that returns an
+  empty or falsy value on a failed read (`""`, `null`, `[]`, `false`, "not
+  gated"), that failed read is one of the guard's outcomes. It does not mean the
+  guard does not apply. Make it fail closed: defer, hold or refuse, and never go
+  ahead with the action. Do not let a truthiness check such as `value && …` skip
+  the guard. List it as its own `unreadable` outcome under **Every outcome of a
+  branch you add needs a test that reaches it**: its own `unreadable` line in
+  `Branch outcomes:`, or its own facts-file entry. Name a test that makes the
+  read fail (the stub throws or exits non-zero) and asserts the action did not
+  happen; a stub stages that failure, so the outcome is never
+  `exempt (untestable)`. When the helper cannot tell "absent" from "failed", fix
+  the helper first, holding that change to **Narrowing a shared helper changes
+  every caller**, or check the failure at the guard. The one exception is a
+  deterministic gate over text (`CODING-STANDARDS.md` → **Writing a gate over
+  text**): its **No silent pass on unread input** rule also lets it report
+  unread input as not checked (Issue #3615).
 - **No silent fallback that masks a fault.** A missing `source` target, a
   skipped stage, an empty result standing in for real data, or a default value
   papering over a failed fetch must not be reported as a clean outcome.
@@ -1474,7 +1492,10 @@ a plain temporary directory that no longer reached the guard it pins
 
 **Every outcome of a branch you add needs a test that reaches it.** For each
 new condition, match arm, exit-code check or trait/interface default in the
-diff, list its outcomes (success, absent/empty, error, fail-closed default)
+diff, list its outcomes (success, absent/empty, error, fail-closed default and,
+for a guard whose input read can fail, `unreadable`: see
+**A guard decides the unreadable case itself** under
+**Never Fail Silently — Fail Loud**)
 and name the test that drives each one. A test double that overrides the
 default, or a stub that always returns the same code, does not reach the other
 outcomes. Flip each outcome on purpose (return the lenient value instead of
