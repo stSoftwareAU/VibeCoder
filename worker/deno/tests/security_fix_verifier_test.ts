@@ -4,10 +4,16 @@
  * a temporary repository and a scripted model.
  */
 
-import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assert,
+  assertEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import type { RetryOptions, RunClaudeOptions } from "../lib/claude_runner.ts";
 import type { ClaudeRunResult } from "../lib/claude_runner.ts";
 import {
+  buildSecurityFixVerifierPrompt,
   defaultSecurityFixVerifierDeps,
   MAX_VERIFIER_DIFF_CHARS,
   PR_SUMMARY_DIR,
@@ -498,6 +504,30 @@ Deno.test("security-fix verifier: an invalid issue number is not checked", async
   } finally {
     await f.cleanup();
   }
+});
+
+Deno.test("buildSecurityFixVerifierPrompt - throws on an issue number that is not a positive integer", () => {
+  const opts = {
+    repo: "owner/repo",
+    issueNumber: 7,
+    issueTitle: "SQL injection in buildQuery",
+    findingBody: "buildQuery interpolates the input straight into the SQL.",
+    diffText: "",
+    checkoutPath: "/tmp/checkout",
+    headSha: "a".repeat(40),
+    baseSha: "b".repeat(40),
+  };
+  for (const issueNumber of [0, 1.5]) {
+    assertThrows(
+      () => buildSecurityFixVerifierPrompt({ ...opts, issueNumber }),
+      Error,
+      "Invalid issue number",
+    );
+  }
+  assertEquals(
+    typeof buildSecurityFixVerifierPrompt({ ...opts, issueNumber: 7 }),
+    "string",
+  );
 });
 
 Deno.test("security-fix verifier: a failed git lookup at the head names git's cause", async () => {
