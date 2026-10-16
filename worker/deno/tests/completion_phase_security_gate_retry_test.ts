@@ -29,9 +29,29 @@ import {
 import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import type { GitHubClient, Result } from "../types.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { SecurityFixVerification } from "../lib/security_fix_verdict.ts";
+import type { SecurityFixVerifierInput } from "../lib/security_fix_verifier.ts";
 
 const SHA = "1f0c2b3a4d5e6f708192a3b4c5d6e7f8091a2b3c";
 const REPO = "stSoftwareAU/VibeCoder";
+
+/** The independent verifier's FIXED verdict: every gate passes (Issue #3657). */
+const FIX_CITATION = "worker/deno/lib/sanitise.ts:1";
+const passGate = (rationale: string) => ({
+  status: "pass" as const,
+  citation: FIX_CITATION,
+  rationale,
+});
+const FIXED: SecurityFixVerification = {
+  kind: "checked",
+  verdict: "FIXED",
+  gates: {
+    sink_mitigated: passGate("the sink only sees allowlisted input"),
+    reachability: passGate("the trigger passes the allowlist first"),
+    class_eliminated: passGate("every injection payload is refused"),
+    sweep_complete: passGate("no other query builds SQL from input"),
+  },
+};
 const ISSUE = 3939;
 
 /** A PR summary with no verification evidence at all — the gate blocks it. */
@@ -117,6 +137,13 @@ interface Scenario {
   retryInvocationFails?: boolean;
   /** Replace the declared test name in the branch diff. */
   testName?: string;
+  /**
+   * Stub for the independent security-fix verifier (Issue #3657). Omitted
+   * means the verifier is not wired, which the gate must block on.
+   */
+  verification?: SecurityFixVerification;
+  /** Make the verifier stub throw this message instead of returning. */
+  verifierThrows?: string;
 }
 
 interface Outcome {
@@ -128,6 +155,8 @@ interface Outcome {
   prCreateCalls: number;
   comments: string[];
   labels: string[];
+  /** Every input the independent verifier was called with (Issue #3657). */
+  verifierInputs: SecurityFixVerifierInput[];
 }
 
 /** Drive the live completion phase over a blocked security fix. */
@@ -143,6 +172,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let claudeCalls = 0;
   let qualityGateRuns = 0;
   const claudePrompts: string[] = [];
+  const verifierInputs: SecurityFixVerifierInput[] = [];
 
   const config = buildDefaultWorkerConfig();
   config.workDir = scenario.workDir;
@@ -207,6 +237,17 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
       },
     },
     claude: {
+      ...(scenario.verification || scenario.verifierThrows
+        ? {
+          runSecurityFixVerifier: (input: SecurityFixVerifierInput) => {
+            verifierInputs.push(input);
+            if (scenario.verifierThrows) {
+              return Promise.reject(new Error(scenario.verifierThrows));
+            }
+            return Promise.resolve({ verification: scenario.verification! });
+          },
+        }
+        : {}),
       runClaudeWithRetry: (options: { prompt: string }) => {
         claudeCalls++;
         claudePrompts.push(options.prompt);
@@ -270,6 +311,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     prCreateCalls,
     comments: recorded.comments,
     labels: recorded.labels,
+    verifierInputs,
   };
 }
 
@@ -291,6 +333,7 @@ Deno.test(
   async () => {
     await withWorkDir(async (workDir, stateDir) => {
       const outcome = await runCompletion({
+        verification: FIXED,
         summary: BARE_SUMMARY,
         retryWrites: COMPLIANT_SUMMARY,
         workDir,
