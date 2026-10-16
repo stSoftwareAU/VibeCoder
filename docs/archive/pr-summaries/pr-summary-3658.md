@@ -56,14 +56,14 @@ Backend/CLI change; no UI files touched.
 
 ```mermaid
 flowchart LR
-    B[baseline JSON] --> P[parseSweepBaseline]
-    P --> V{falsePositives entry}
-    V -->|no line and no snippet| E[baseline error]
-    V -->|evidence missing / malformed| E
-    V -->|countTreeLines: no file in tree,<br/>escapes via .. or symlink| E
-    V -->|line past end of file| E
-    V -->|all citations resolve| K[entry suppresses its finding]
-    E --> F[sweep fails, suppresses nothing]
+    B[baseline JSON] --․> P[parseSweepBaseline]
+    P --․> V{falsePositives entry}
+    V --․>|no line and no snippet| E[baseline error]
+    V --․>|evidence missing / malformed| E
+    V --․>|countTreeLines: no file in tree,<br/>escapes via .. or symlink| E
+    V --․>|line past end of file| E
+    V --․>|all citations resolve| K[entry suppresses its finding]
+    E --․> F[sweep fails, suppresses nothing]
 ```
 
 - **Real baseline against the real tree.** I ran the sweep locally on the CI
@@ -96,7 +96,7 @@ flowchart LR
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+<․!-- vibe-spec-review inputs="diff+issue-body" --․>
 
 - **met** — A `falsePositives` entry without `evidence`, or with an evidence path that does not resolve, is a baseline error and the sweep fails. — evidence: `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - an entry without evidence is refused (Issue #3658)`, `::falsePositives - evidence that does not resolve in the tree is refused (Issue #3658)`, `::sweep: a falsePositives entry whose evidence is absent from the tree fails the run (Issue #3658)` — reviewer: met
 - **met** — A `falsePositives` entry without `line` or `snippet` is a baseline error. — evidence: `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - an entry with neither a line nor a snippet is refused (Issue #3658)`, `::sweep: a falsePositives entry with no line or snippet fails the run (Issue #3658)` — reviewer: met
@@ -111,7 +111,7 @@ flowchart LR
 
 ## Standards Review
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+<․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
 - **violation** — Every outcome of a branch needs a test: the backslash and NUL operands of `isRepoRelativePath` had no test — evidence: `worker/deno/lib/security_tree_sweep.ts:1191` — reason: fixed in this diff (backslash and NUL cases added; deleting either operand turns the malformed-citation test red)
 - **violation** — Call the existing owner: the confinement check was hand-rolled instead of calling `isAtOrAbove` — evidence: `worker/deno/lib/security_tree_sweep.ts:1289` — reason: fixed in this diff (`countTreeLines` now calls `isAtOrAbove` with `pathStyleFor`, as `codebase_map.ts` does)
@@ -135,7 +135,8 @@ flowchart LR
   - `sub/../file.ts`
   - `missing/../file.ts`
   - a symlink pointing out of the tree
-  - `missing/../link/file`
+  - `missing/../linkdir/file.ts`, where `linkdir` is a symlinked directory
+    pointing out of the tree
   - a symlink pointing inside (positive control)
 - Each refusal test asserts its specific error text, and has a control that
   makes only the probed value legal and expects no errors.
@@ -242,6 +243,6 @@ flowchart LR
   `tests/security_tree_sweep_test.ts` changed since then, and the run above
   covers it. The worker re-runs the quality gate.
 
-<!-- vibe-branch-outcomes -->
+<․!-- vibe-branch-outcomes --․>
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
