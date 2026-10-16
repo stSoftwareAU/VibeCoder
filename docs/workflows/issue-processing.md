@@ -2398,7 +2398,10 @@ assertions, the placeholder-token gate, the branch-outcomes gate, the
 summary claim check and the pre-PR verifier (#3395) — still pre-empts the guard: a follow-up filed there
 would promise "that run's PR still completes #N on merge" for a PR any of
 those gates can still prevent from ever being raised, so whichever gate
-blocks first fails the run and the guard never runs. On an existing-PR
+blocks first fails the run and the guard never runs. The one stopper that
+runs after the guard is the claim-freshness re-check (Issue #344); the
+follow-up the guard filed before it is retracted when it stops the PR (see
+"A stale claim retracts a follow-up this run filed" below). On an existing-PR
 branch the guard instead runs from inside `reportSummaryRuleBlock` itself
 (Issue #3092), after whichever gate's own comment is posted but before that
 gate's recovery finalises the PR. Before Issue #3092, only the docs-sweep
@@ -2412,12 +2415,17 @@ or recovered:
 ```mermaid
 flowchart TD
     R["Implementation run<br/>reaches completion"] --> D{"Degraded?<br/>(the run-stats verdict)"}
-    D -- no --> P["PR as today"]
+    D -- no --> H{"Any closure entry<br/>partial or missing?<br/>(Issue #3506)"}
+    H -- no --> P["PR as today"]
+    H -- yes --> C{"Issue is itself a<br/>partial-delivery follow-up?"}
+    C -- no --> F
+    C -- "yes (chain stop)" --> CS["No nested follow-up; label<br/>needs-human; PR body opens<br/>'handed to a human', says 'Part of'"]
     D -- yes --> S{"Every scope item met<br/>and no unmatched<br/>partial/missing entry?"}
     S -- yes --> P
     S -- no --> G{"Any shortfall<br/>partial or missing?"}
     G -- yes --> F["File (or reuse and update)<br/>one idle-task follow-up<br/>naming each shortfall"]
-    F -- filed --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
+    F -- "filed (degraded)" --> B["PR body opens with a<br/>'Degraded run — partial delivery'<br/>section linking the follow-up"]
+    F -- "filed (healthy)" --> W["PR body opens with a<br/>'Partial delivery — follow-up filed'<br/>section linking the follow-up"]
     F -- "gh failed" --> Q{"Branch already<br/>has an open PR?"}
     Q -- no --> X["Run fails, no PR raised"]
     Q -- yes --> Y["Run fails, PR left unfinalised<br/>(auto-merge not armed);<br/>outcome pr + blocked"]
@@ -2448,6 +2456,9 @@ flowchart TD
   (with the unassessed items listed). It references no follow-up, and the PR
   closes the issue as a healthy PR would. Where a `partial` or `missing` item
   exists, unassessed items are still listed in the follow-up alongside it.
+  An issue that states no scope is no exception: each `partial` or `missing`
+  entry its summary reports is a shortfall named by its own subject, so the
+  follow-up is filed and the PR names it (PR #3676 review).
 - **The follow-up** carries the `idle-task` label — the one work-trigger label
   the worker may apply itself — so the fleet picks the residue up without a
   human, and a `finding-id` marker keyed on the parent, so a second degraded run
@@ -2460,11 +2471,27 @@ flowchart TD
   criterion line is copied
   from the untrusted issue body, or, for an unmatched or subjectless
   `partial`/`missing` gap, from the agent-written closure entry (its subject,
-  or its `reason:` when the subject has no words). Delivered lines are copied
-  from the issue body. Both are neutralised by `neutraliseAgentMarkers`
+  or its `reason:` when the subject has no words). Delivered lines are the
+  issue's own scope items or, when the issue states no scope, the subjects of
+  the summary's `met` closure entries. All of these are neutralised by
+  `neutraliseAgentMarkers`
   before they are copied (Issue #2778): only the worker's own marker is live,
   and a `finding-id` hidden in a criterion or a closure entry cannot suppress
   an unrelated finding.
+- **A milestone child's follow-up joins its milestone** (PR #3676 review). When
+  the parent belongs to a milestone, a newly filed follow-up is created with
+  `--milestone <title>`, so the fleet works it on the milestone branch where
+  the delivered half lives rather than on the default branch. A reused
+  follow-up keeps the milestone it was filed with.
+- **A stale claim retracts a follow-up this run filed** (PR #3676 review). The
+  guard files the follow-up before the claim-freshness re-check
+  (the Claim-freshness re-check section of [INTERNALS.md](../INTERNALS.md)).
+  If that re-check then finds the claim stale (the parent closed, or a merged PR
+  already carries the branch), `abortStaleClaim` closes the follow-up as "not
+  planned" with a comment saying why, best-effort: a failed close is warned
+  about and the abort stands. Only a follow-up the run newly filed is closed; a
+  reused one predates the run and is left open. This applies to degraded and
+  healthy runs alike.
 - **The PR is still raised** with its closing keyword: the delivered work is
   kept, and a PR that does not close its issue loops (Issue #520). The residue
   survives the merge in the follow-up instead. The one exception is a summary
@@ -2492,10 +2519,12 @@ flowchart TD
   the issue states criteria. If the issue cannot be read, the re-sync fails
   (logged by the caller) rather than copying the old section. It still runs
   only when the summary changed, so an issue edit alone does not trigger it.
-- **A healthy run is untouched**, whatever its summary says. A degraded run
-  that showed every scope item `met` is left alone only when it reported no
-  unmatched `partial` or `missing` entry. An unmatched entry like that is
-  still a shortfall, and the follow-up is filed.
+- **A healthy run is untouched unless its summary reports a `partial` or
+  `missing` entry** (Issue #3506; see the next subsection). An issue that
+  states no criteria is no exception: each such entry is kept and named by its
+  own subject. A degraded run that showed every scope item `met` is left alone
+  only when it reported no unmatched `partial` or `missing` entry. An
+  unmatched entry like that is still a shortfall, and the follow-up is filed.
 - **The "gh failed" branch still fails loud.** When the guard runs from
   `completionBody` after every summary gate has passed, the outcome is
   `pr` plus the block when the branch lookup succeeds and the URL yields a
@@ -2507,6 +2536,64 @@ flowchart TD
   (Issue #3136). Issue #3121 is the regression coverage for the
   `completionBody` cases. See "An exception still has to report the PR it
   blocked" below.
+
+### A healthy run's own gaps get a follow-up too (Issue #3506)
+
+A run on its primary model used to be left alone whatever its summary said, so
+a PR whose closure block honestly marked a criterion `partial` still closed the
+issue with the residue recorded only in a PR line nobody tracked. The same
+`applyDegradedDeliveryGuard`, at the same two call sites, now handles a healthy
+run:
+
+- **Trigger.** Any `partial` or `missing` entry in the PR summary's closure
+  block. Entries are matched to criteria by words exactly as on the degraded
+  path (`assessReportedGaps` calls `assessScopeShortfalls`); an unmatched
+  `partial` or `missing` entry is named by its own subject. `unassessed` items
+  file nothing and add nothing to the PR body. An issue that states no criteria
+  has nothing to match against, so each `partial` or `missing` entry is kept
+  and named by its own subject; a `met` entry alone files nothing.
+- **One shared follow-up.** The worker files (or reuses and rewrites) one
+  `idle-task` follow-up keyed on the parent with the same `finding-id` marker
+  as the degraded follow-up (`degraded-follow-up-<N>`), so a healthy and a
+  degraded run on one parent share a single follow-up. It lists only the
+  `partial`/`missing` items plus the delivered (`met`) ones.
+- **The PR body** opens with a `## ⚠️ Partial delivery — follow-up filed`
+  section naming each gap and the follow-up number. The PR keeps its closing
+  keyword (as on the degraded path), except that a `missing` entry still turns
+  `Closes` into `Part of` (Issue #3177).
+- **Fails loud.** If the follow-up cannot be filed or updated, the run fails
+  exactly as the degraded path does: no PR is raised, or an existing PR is
+  left unfinalised.
+- **Re-sync.** A later `syncPrBodyFromSummary` re-derives a leading
+  `Partial delivery — follow-up filed` section from the issue's current body
+  and the rebuilt summary (`rederiveReportedGapSection`). It is dropped when
+  no gap remains, with no call to the follow-up. When a gap remains but the
+  follow-up number cannot be read from its opening line, the live section is
+  kept unchanged. When a gap remains and the number can be read, a section
+  built from the same gaps stays as it is; any other gap set is rebuilt by
+  `buildReportedGapStaleFollowUpSection`, which keeps the number but says the
+  worker filed that follow-up when the PR was raised, that a re-sync does not
+  rewrite it, and that it may not list every item below. The sync only reads
+  the issue (`gh issue view`) and edits the PR body: it never files, edits or
+  lists the follow-up, because it would copy freshly fetched, unverified issue
+  text into an `idle-task` issue the fleet works as trusted (PR #3676
+  review; THREAT-MODEL AP-7).
+- **No nested follow-up.** When the issue being worked is itself a
+  partial-delivery follow-up (its body carries a `degraded-follow-up-<N>`
+  `finding-id` marker), a healthy run with a gap files no `Finish #F: Finish
+  #N: …` follow-up, because an item no run can deliver would otherwise chain
+  fleet runs without end (PR #3676 review). Instead it labels the issue
+  `needs-human`, comments naming the gaps (`handFollowUpToHuman`), and the PR
+  body opens with a `## ⚠️ Partial delivery — handed to a human` section
+  carrying a `vibe-follow-up-chain-stop` marker, and its closing keyword for
+  the issue becomes `Part of`. Both merged-PR closers read
+  that marker and leave the issue open, labelled `needs-human`, even when its
+  gaps are only `partial`. If the label or comment cannot be applied, the run
+  fails as above and raises no PR. A re-sync rebuilds this section from the
+  current gaps and drops it when none remains, so the merge then closes the
+  issue as usual. Authorship of the marker is not checked: a planted marker
+  only sends a run's gaps to a human instead of to a fleet follow-up. A
+  degraded run on a follow-up still files one, as before.
 
 ## 🧾 A summary shortfall after the PR is not a failed run
 
@@ -2551,10 +2638,11 @@ survives *that* turn finalises the PR. Either way the gate's
 remediation comment is posted, so the shortfall is on the issue thread rather
 than only in one host's log.
 
-A degraded run on an existing-PR branch is the exception to `summary_incomplete`.
-When its follow-up cannot be filed, the run fails and the PR is left unfinalised.
-The outcome is `pr` + `blocked` naming that PR, so the release comment does not
-report the run as having delivered nothing.
+A degraded run, or a healthy run with its own `partial`/`missing` gaps
+(Issue #3506), on an existing-PR branch is the exception to
+`summary_incomplete`. When its follow-up cannot be filed, the run fails and the
+PR is left unfinalised. The outcome is `pr` + `blocked` naming that PR, so the
+release comment does not report the run as having delivered nothing.
 
 An existing-PR branch whose URL cannot be numbered is a second exception: even
 once the degraded-run guard succeeds, `reportSummaryRuleBlock` fails the run
@@ -2589,7 +2677,8 @@ PR-then-later-step failure, not only this gate's.
 
 The degraded-run guard (see "A degraded run never closes an issue as
 complete" above) follows the same rule when it cannot file the follow-up
-that records a degraded run's undelivered scope (Issue #3092, #3119). The
+that records a degraded run's undelivered scope, or a healthy run's own
+`partial`/`missing` gaps (Issue #3092, #3119, #3506). The
 run still fails, and the PR is neither finalised nor auto-merged. When the
 guard runs from `completionBody` after every summary gate has passed, the
 outcome is `pr` with `prNumber` plus the block when the branch lookup
