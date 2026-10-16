@@ -27,7 +27,8 @@
  * carries labels or assignees across: the body gets a `Labels not migrated:`
  * note instead.
  *
- * Direct `gh issue create` call sites elsewhere in `worker/deno/lib` and
+ * Direct `gh issue create` call sites (and `gh api` REST or GraphQL issue
+ * creation) elsewhere in `worker/deno/lib` and
  * `worker/deno/commands` are gated by the `issue_create_routing_check.ts`
  * allowlist (Issue #3746): a new direct call site fails its test unless it is
  * routed through `fileRoutedIssue` or listed with a one-line reason.
