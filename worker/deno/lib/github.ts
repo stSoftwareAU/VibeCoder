@@ -40,11 +40,7 @@ import type { Improvement } from "../commands/suggest_improvements.ts";
 import { formatImprovementAsIssueBody } from "../commands/suggest_improvements.ts";
 import { defaultLogger } from "./logger.ts";
 import type { IssueRoutingContext } from "./issue_routing_classifier.ts";
-import {
-  fileRoutedIssue,
-  type RoutedIssueAction,
-  RoutedIssueFilingError,
-} from "./issue_routing_filing.ts";
+import type { RoutedIssueAction } from "./issue_routing_filing.ts";
 
 /**
  * Parse gh CLI issue JSON into a GitHubIssue object.
@@ -642,7 +638,11 @@ export interface CreateIssuesOptions {
 }
 
 /** The failure message for one improvement, with its routing reason when known. */
-function describeRoutingFailure(error: unknown): string {
+function describeRoutingFailure(
+  error: unknown,
+  RoutedIssueFilingError:
+    typeof import("./issue_routing_filing.ts").RoutedIssueFilingError,
+): string {
   const message = error instanceof Error ? error.message : String(error);
   if (error instanceof RoutedIssueFilingError && error.decision !== null) {
     return `${message} (routing: ${error.decision.reason})`;
@@ -671,6 +671,14 @@ export async function createGitHubIssuesWithPartialFailures(
   const createdIssues: number[] = [];
   const failures: Array<{ title: string; error: string }> = [];
   const routed: RoutedImprovement[] = [];
+  // Loaded lazily: a static import closes the cycle github.ts ->
+  // label_operations.ts -> needs_human_escalation.ts ->
+  // repo_fast_failure_issue.ts -> issue_routing_classifier.ts ->
+  // issue_routing_filing.ts -> github.ts. That leaves the classifier's marker
+  // constants uninitialised when a repo_fast_failure module loads first.
+  const { fileRoutedIssue, RoutedIssueFilingError } = await import(
+    "./issue_routing_filing.ts"
+  );
 
   for (const improvement of improvements) {
     try {
@@ -713,7 +721,7 @@ export async function createGitHubIssuesWithPartialFailures(
     } catch (error: unknown) {
       failures.push({
         title: improvement.title,
-        error: describeRoutingFailure(error),
+        error: describeRoutingFailure(error, RoutedIssueFilingError),
       });
     }
   }

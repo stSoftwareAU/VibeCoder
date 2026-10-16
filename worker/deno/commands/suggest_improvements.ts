@@ -188,7 +188,7 @@ export function formatImprovementAsIssueBody(improvement: Improvement): string {
 }
 
 /** The worker's own repository; worker improvements route here (Issue #3745). */
-const VIBE_CODER_REPO = "stSoftwareAU/VibeCoder";
+const WORKER_REPO = "stSoftwareAU/VibeCoder";
 
 /** `n` and a noun, pluralised for any count other than one. */
 function countOf(n: number, noun: string): string {
@@ -256,7 +256,7 @@ export function createSuggestImprovementsCommand(
         repo,
         {
           routingContext: {
-            vibeCoderRepo: VIBE_CODER_REPO,
+            vibeCoderRepo: WORKER_REPO,
             productRepos: config.repos,
           },
           dryRun,
