@@ -37,7 +37,10 @@ import {
 } from "./merged_sweep_watermark.ts";
 import { defaultLogger } from "./logger.ts";
 import { redactSecrets } from "./secret_redaction.ts";
-import { holdIssueOpenForMissingCriteria } from "./missing_criterion_close_guard.ts";
+import {
+  holdFollowUpOpenForHuman,
+  holdIssueOpenForMissingCriteria,
+} from "./missing_criterion_close_guard.ts";
 
 /** Build a canonical PR URL for the given repo and PR number. */
 function buildPrUrl(repo: string, prNumber: number): string {
@@ -1064,6 +1067,24 @@ export async function closeIssuesForMergedPrs(
               `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} ` +
                 `marks ${missing.length} criteria missing — left open ` +
                 `(${held}) (Issue #3177)`,
+            );
+            if (held === "held") mutated = true;
+            continue;
+          }
+
+          // PR #3676 review: the PR worked a partial-delivery follow-up and
+          // left gaps no further follow-up holds, so it stays open for a human.
+          if (pr.followUpChainStop) {
+            const held = await holdFollowUpOpenForHuman({
+              repo,
+              issueNumber,
+              issueLabels: issueData.labels.map((l) => l.name),
+              ghCommandFn,
+            });
+            options?.logFn?.(
+              `[close-merged-pr] ${repo}#${issueNumber}: PR #${pr.number} ` +
+                `worked a partial-delivery follow-up and left gaps — left ` +
+                `open (${held}) (PR #3676 review)`,
             );
             if (held === "held") mutated = true;
             continue;

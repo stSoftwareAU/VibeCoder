@@ -64,6 +64,7 @@ import {
   PrePushGateBlockedError,
   resolvePreFlightSpec,
 } from "../git_push.ts";
+import { formatBeforeGate } from "../repo_formatters.ts";
 import { redactedHeadTail } from "../redacted_text.ts";
 import { resolveRepoCredentials } from "../repo_credentials.ts";
 import { resolveIssueSubAgentTier } from "../issue_sub_agent_tier.ts";
@@ -81,7 +82,10 @@ import {
   buildClosureGateComment,
   validateAcceptanceClosure,
 } from "../acceptance_criteria_gate.ts";
-import { findMissingCriteria } from "../missing_criterion_close_guard.ts";
+import {
+  findMissingCriteria,
+  withholdIssueClose,
+} from "../missing_criterion_close_guard.ts";
 import {
   buildIndependentReviewComment,
   validateIndependentReview,
@@ -237,10 +241,15 @@ import {
 } from "../screenshot_gate_retry.ts";
 import {
   assessDegradedDelivery,
+  assessReportedGaps,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
+  buildFollowUpChainStopSection,
+  buildReportedGapPrSection,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
+  handFollowUpToHuman,
+  isPartialDeliveryFollowUp,
 } from "../degraded_delivery.ts";
 import { IDLE_TASK_LABEL } from "../idle_task_issue.ts";
 
@@ -824,9 +833,14 @@ async function reportSummaryRuleBlock(
  * (the work is kept, and a PR that does not close its issue loops — #520),
  * but every accepted scope item not shown `met`, and any unmatched
  * `partial` or `missing` closure entry, is filed as an `idle-task`
- * follow-up the fleet picks up, and the PR body names the gap. A healthy
- * run is untouched. A degraded run that met every scope item is left alone
- * only when it reported no unmatched `partial` or `missing` entry.
+ * follow-up the fleet picks up, and the PR body names the gap. A degraded
+ * run that met every scope item is left alone only when it reported no
+ * unmatched `partial` or `missing` entry.
+ *
+ * Issue #3506: a healthy run whose own summary closes out a criterion as
+ * `partial` or `missing` files the same follow-up (same finding-id key, so a
+ * re-run reuses it) and its PR body gains the partial-delivery section.
+ * `unassessed` items file nothing; otherwise a healthy run is untouched.
  *
  * Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
  *
@@ -839,8 +853,18 @@ async function reportSummaryRuleBlock(
  * added the mutation check as the fifth and Issue #3257 the summary claim
  * check as the sixth) pass, whether the PR is then raised or recovered.
  *
+ * PR #3676 review: a healthy run on an issue that is itself a
+ * partial-delivery follow-up files no nested one. It labels the issue
+ * `needs-human`, comments naming the gaps, and its PR body carries the
+ * chain-stop section, so the merge leaves the issue open.
+ *
+ * PR #3676 review: the follow-up joins the parent's milestone when it has
+ * one, so the fleet works it on the milestone branch. `followUp` on the
+ * success result lets `completionBody` retract a follow-up this call newly
+ * filed when the claim-freshness check then stops the PR (`abortStaleClaim`).
+ *
  * @returns `{ ok: true, prBody }` with the (possibly prefixed) PR body on
- *   success, or `{ ok: false, result }` carrying the failure `PhaseResult`
+ *   success (plus `followUp` when one was filed or reused), or `{ ok: false, result }` carrying the failure `PhaseResult`
  *   when the follow-up could not be filed.
  */
 async function applyDegradedDeliveryGuard(
@@ -848,8 +872,16 @@ async function applyDegradedDeliveryGuard(
   state: PhaseState,
   prBody: string,
   deps: WorkerDeps,
-): Promise<{ ok: true; prBody: string } | { ok: false; result: PhaseResult }> {
-  const { repo, issueNumber, issueTitle, issueBody } = ctx;
+): Promise<
+  | {
+    ok: true;
+    prBody: string;
+    /** The follow-up this call filed or reused, when it filed any. */
+    followUp?: { number: number; reused: boolean };
+  }
+  | { ok: false; result: PhaseResult }
+> {
+  const { repo, issueNumber, issueTitle, issueBody, milestoneTitle } = ctx;
   const logger = deps.logger;
 
   const degradedDelivery = assessDegradedDelivery({
@@ -857,14 +889,58 @@ async function applyDegradedDeliveryGuard(
     issueBody,
     prBody,
   });
-  if (degradedNeedsFollowUp(degradedDelivery)) {
+  // Issue #3506: a healthy run's own `partial`/`missing` closure entries file the same follow-up.
+  const verdict = degradedDelivery.degraded
+    ? degradedDelivery
+    : assessReportedGaps(issueBody, prBody);
+  if (
+    degradedNeedsFollowUp(verdict) && !verdict.degraded &&
+    isPartialDeliveryFollowUp(issueBody)
+  ) {
+    // PR #3676 review: this issue is itself a partial-delivery follow-up.
+    // Filing `Finish #F: Finish #N: …` would chain fleet runs without end on
+    // an item no run can deliver, so the gaps go to a human instead.
+    const handed = await handFollowUpToHuman({
+      repo,
+      issueNumber,
+      verdict,
+      runId: getRunId(),
+      gh: deps.github.runGhCommand,
+    });
+    if (!handed.ok) {
+      logger.error(
+        "Could not hand this partial-delivery follow-up to a human — failing the run without finalising a PR",
+        { error: handed.error.message },
+      );
+      return {
+        ok: false,
+        result: {
+          status: "failure",
+          reason:
+            `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing on a partial-delivery follow-up, and it could not be handed to a human: ${handed.error.message}`,
+        },
+      };
+    }
+    logger.warn(
+      "Run on a partial-delivery follow-up left gaps — handed to a human, no nested follow-up filed",
+      { shortfalls: verdict.shortfalls.length },
+    );
+    // The PR must not close the follow-up natively either: a merge into the
+    // default branch would otherwise close it with its closing keyword.
+    return {
+      ok: true,
+      prBody: buildFollowUpChainStopSection(verdict, issueNumber) +
+        withholdIssueClose(prBody, issueNumber),
+    };
+  }
+  if (degradedNeedsFollowUp(verdict)) {
     const labelled = await deps.github.ensureLabelExists(
       repo,
       IDLE_TASK_LABEL,
     );
     if (!labelled.ok) {
       logger.warn(
-        "Could not ensure the idle-task label for the degraded-run follow-up; filing anyway",
+        "Could not ensure the idle-task label for the follow-up; filing anyway",
         { error: labelled.error.message },
       );
     }
@@ -872,42 +948,47 @@ async function applyDegradedDeliveryGuard(
       repo,
       parentNumber: issueNumber,
       parentTitle: issueTitle,
-      verdict: degradedDelivery,
+      verdict,
       runId: getRunId(),
       gh: deps.github.runGhCommand,
       dedupAuthors: { fleetAuthors: fleetAuthorsFor(ctx) },
+      ...(milestoneTitle ? { milestoneTitle } : {}),
     });
     if (!followUp.ok) {
       // Raising the PR now would close the issue with the residue recorded
       // nowhere — the exact silent loss this guard exists to stop.
       logger.error(
-        "Degraded run: could not file the follow-up for its undelivered scope — failing the run without finalising a PR",
-        { error: followUp.error.message },
+        "Could not file the follow-up for this run's undelivered scope — failing the run without finalising a PR",
+        { degraded: verdict.degraded, error: followUp.error.message },
       );
       return {
         ok: false,
         result: {
           status: "failure",
-          reason:
-            `Degraded run (${degradedDelivery.reason}) left ${degradedDelivery.shortfalls.length} ` +
-            `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
-            `could not be filed or brought up to date: ${followUp.error.message}`,
+          reason: verdict.degraded
+            ? `Degraded run (${verdict.reason}) left ${verdict.shortfalls.length} ` +
+              `shortfall(s) (scope items short of met, or gaps the run reported), and the follow-up recording them ` +
+              `could not be filed or brought up to date: ${followUp.error.message}`
+            : `Run reported ${verdict.shortfalls.length} acceptance criteria as partial or missing, and the follow-up recording them could not be filed or brought up to date: ${followUp.error.message}`,
         },
       };
     }
     logger.warn(
-      "Degraded run delivered partial scope — residue recorded in a follow-up",
+      "Run delivered partial scope — residue recorded in a follow-up",
       {
-        reason: degradedDelivery.reason,
-        shortfalls: degradedDelivery.shortfalls.length,
+        degraded: verdict.degraded,
+        reason: verdict.reason,
+        shortfalls: verdict.shortfalls.length,
         followUp: followUp.value.number,
         reused: followUp.value.reused,
       },
     );
     return {
       ok: true,
-      prBody: buildDegradedPrSection(degradedDelivery, followUp.value.number) +
-        prBody,
+      prBody: (verdict.degraded
+        ? buildDegradedPrSection(verdict, followUp.value.number)
+        : buildReportedGapPrSection(verdict, followUp.value.number)) + prBody,
+      followUp: followUp.value,
     };
   } else if (degradedDelivery.shortfalls.length > 0) {
     logger.warn(
@@ -1518,6 +1599,7 @@ async function abortStaleClaim(
   ctx: IssueContext,
   state: PhaseState,
   deps: WorkerDeps,
+  newFollowUp?: number,
 ): Promise<PhaseResult> {
   const { repo, issueNumber } = ctx;
   const logger = deps.logger;
@@ -1551,6 +1633,35 @@ async function abortStaleClaim(
           err instanceof Error ? err.message : String(err)
         }`,
     );
+  }
+
+  // PR #3676 review: a follow-up this run newly filed names a PR that will
+  // now never be raised, so close it rather than leave the fleet to work an
+  // `idle-task` for a stale claim. Best-effort, like the comment above.
+  if (newFollowUp !== undefined) {
+    try {
+      await deps.github.runGhCommand([
+        "issue",
+        "close",
+        String(newFollowUp),
+        "--repo",
+        repo,
+        "--reason",
+        "not planned",
+        "--comment",
+        `Closed by the worker: the claim on #${issueNumber} went stale ` +
+        `(${stale.reason}) before the run raised its PR, so this ` +
+        `follow-up has no PR to continue from. Reopen it if the scope ` +
+        `listed here still stands.`,
+      ]);
+    } catch (err) {
+      logger.warn(
+        `Could not close the stale-claim follow-up ${repo}#${newFollowUp} ` +
+          `— it stays open: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+      );
+    }
   }
 
   return {
@@ -1862,6 +1973,15 @@ async function completionBody(
   const prePushSpec = resolvePreFlightSpec(config.repoConfig, repo) ??
     { commands: [] };
   const gateBeforePush = async (): Promise<PhaseResult | undefined> => {
+    // The repo's own formatters first (part of #2932): a formatting-only miss
+    // is fixed and committed here rather than failing the gate, or shipping
+    // to review and CI. Same files as the gate, never Markdown; a formatter
+    // that fails or throws is logged and the gate below still reports it.
+    await formatBeforeGate(
+      deps,
+      state.repoPath,
+      comparableBase.ok ? comparableBase.value : undefined,
+    );
     const gate = await deps.git.gateUnpushedCommits(
       state.branchName,
       { cwd: state.repoPath },
@@ -3599,9 +3719,19 @@ async function completionBody(
   // (the work is kept, and a PR that does not close its issue loops — #520),
   // but every accepted scope item not shown `met`, and any unmatched
   // `partial` or `missing` closure entry, is filed as an `idle-task`
-  // follow-up the fleet picks up, and the PR body names the gap. A healthy
-  // run is untouched. A degraded run that met every scope item is left alone
-  // only when it reported no unmatched `partial` or `missing` entry.
+  // follow-up the fleet picks up, and the PR body names the gap. A degraded
+  // run that met every scope item is left alone only when it reported no
+  // unmatched `partial` or `missing` entry.
+  //
+  // Issue #3506: a healthy run whose summary has a `partial` or `missing`
+  // closure entry files the same follow-up (same finding-id key) and its PR
+  // body gains the partial-delivery section. `unassessed` items file nothing;
+  // otherwise a healthy run is untouched. PR #3676 review: on an issue that is
+  // itself a partial-delivery follow-up a healthy run files no nested one; it
+  // takes the chain-stop path instead. A degraded run still files one.
+  //
+  // PR #3676 review: the follow-up joins the parent's milestone, and the
+  // claim-freshness check below retracts one this run newly filed.
   //
   // Issue #2695: see `degradedNeedsFollowUp` for which shortfalls file one.
   // Issue #3092: extracted to `applyDegradedDeliveryGuard` so this same
@@ -3713,7 +3843,17 @@ async function completionBody(
     },
   });
   if (freshness.kind === "stale") {
-    return await abortStaleClaim(freshness, ctx, state, deps);
+    // Retract only a follow-up this run newly filed — a reused one predates
+    // the run and is not ours to close.
+    return await abortStaleClaim(
+      freshness,
+      ctx,
+      state,
+      deps,
+      guarded.followUp && !guarded.followUp.reused
+        ? guarded.followUp.number
+        : undefined,
+    );
   }
 
   // Opening a PR for this branch even though something else references the

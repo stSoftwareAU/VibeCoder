@@ -25,6 +25,8 @@ import { type MergeLanding, verifyMergeLanded } from "./merge_landing.ts";
 import { prTitleMatchesIssue } from "./pr_issue_linking.ts";
 import {
   findMissingCriteria,
+  hasFollowUpChainStop,
+  holdFollowUpOpenForHuman,
   holdIssueOpenForMissingCriteria,
 } from "./missing_criterion_close_guard.ts";
 import {
@@ -417,6 +419,33 @@ export async function ensureIssueClosedIfPrMerged(
           reason: `PR #${prNumber} merged, but its own summary marks ` +
             `${missing.length} acceptance criteria missing — issue left ` +
             `open for a human (Issue #3177)`,
+        },
+      };
+    }
+
+    // PR #3676 review: the merged PR worked a partial-delivery follow-up and
+    // left gaps no further follow-up holds, so it leaves the issue open.
+    if (hasFollowUpChainStop(prState.body ?? "")) {
+      const held = await holdFollowUpOpenForHuman({
+        repo,
+        issueNumber,
+        issueLabels: (issueData.labels ?? []).map((l) => l.name),
+        ghCommandFn,
+      });
+      logger.warn(
+        "Not closing the issue: the merged PR worked a partial-delivery " +
+          "follow-up and left gaps (PR #3676 review)",
+        { repo, issueNumber, prNumber, held },
+      );
+      if (held === "held") {
+        await invalidatePostMutation(deps.cache, repo, issueNumber);
+      }
+      return {
+        ok: true,
+        value: {
+          closed: false,
+          reason: `PR #${prNumber} merged, but it worked a partial-delivery ` +
+            `follow-up and left gaps — issue left open for a human`,
         },
       };
     }
