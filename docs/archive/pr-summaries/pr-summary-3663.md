@@ -64,22 +64,22 @@ Backend/CLI only (the review-fleet-prs skill scripts). No UI file is touched.
 
 ```mermaid
 flowchart TD
-    P[Open Dependabot PR into default branch] --> D{draft?}
-    D -- yes --> N[no upkeep]
-    D -- no --> C{CONFLICTING?}
-    C -- yes --> W["upkeep: conflicting, waiting on Dependabot<br/>(no comment, no push)"]
-    C -- no --> A{approved by reviewer at head<br/>and not armed?}
-    A -- yes --> M[arm auto-merge]
-    A -- no --> B
-    M --> B{BEHIND and approved at head,<br/>not asked at this head?}
-    S["post.ts approves a BEHIND Dependabot PR"] --> SA{"armed, or repo<br/>forbids auto-merge?"}
-    SA -- no --> SM[arm auto-merge]
-    SM -- armed --> SU[update-branch]
-    SM -- refused --> SE["autoMergeError, no update<br/>(next gate pass tries to arm again, then updates)"]
-    SA -- yes --> SU
-    B -- yes --> U["update-branch (expected_head_sha)<br/>upkeep: branch update requested / failed"]
-    B -- no --> R[normal review gate]
-    U --> R
+    P[Open Dependabot PR into default branch] --․> D{draft?}
+    D -- yes --․> N[no upkeep]
+    D -- no --․> C{CONFLICTING?}
+    C -- yes --․> W["upkeep: conflicting, waiting on Dependabot<br/>(no comment, no push)"]
+    C -- no --․> A{approved by reviewer at head<br/>and not armed?}
+    A -- yes --․> M[arm auto-merge]
+    A -- no --․> B
+    M --․> B{BEHIND and approved at head,<br/>not asked at this head?}
+    S["post.ts approves a BEHIND Dependabot PR"] --․> SA{"armed, or repo<br/>forbids auto-merge?"}
+    SA -- no --․> SM[arm auto-merge]
+    SM -- armed --․> SU[update-branch]
+    SM -- refused --․> SE["autoMergeError, no update<br/>(next gate pass tries to arm again, then updates)"]
+    SA -- yes --․> SU
+    B -- yes --․> U["update-branch (expected_head_sha)<br/>upkeep: branch update requested / failed"]
+    B -- no --․> R[normal review gate]
+    U --․> R
 ```
 
 - Gate pass: `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts`
@@ -134,10 +134,10 @@ it is a redaction fixture string, not a gate behaviour.
 
 ## Acceptance Criteria
 
-<!-- vibe-spec-review inputs="diff+issue-body" -->
+<․!-- vibe-spec-review inputs="diff+issue-body" --․>
 
 - **met** — The reviewer App posts no `@dependabot rebase` (or any `@dependabot`) comment: a gate pass over a BEHIND or CONFLICTING Dependabot PR posts zero comments on it — evidence: `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts::pass: a fleet or Dependabot PR approved at its head but behind is brought up to date once per head (Issue #3225, #3663)` — reviewer: met
-- **met** — A Dependabot PR that is BEHIND, not CONFLICTING, not a draft, and approved by the reviewer at its head gets the `update-branch` endpoint with `expected_head_sha` — evidence: `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` (pass test, #34 and #37) and `worker/deno/tests/review_fleet_prs_dependabot_test.ts::post.ts end to end: an approved, behind Dependabot PR is updated and never commented on (Issue #3663)` — reviewer: met
+- **met** — A Dependabot PR that is BEHIND, not CONFLICTING, not a draft, and approved by the reviewer at its head gets the `update-branch` endpoint with `expected_head_sha` — evidence: `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` (pass test, #34 and #37) and `worker/deno/tests/review_fleet_prs_dependabot_test.ts::post.ts end to end: an approved, behind Dependabot PR gets auto-merge armed, then is updated, and is never commented on (Issue #3663)` — reviewer: met
 - **met** — A BEHIND Dependabot PR not yet approved at its head gets no action; the review runs first — evidence: `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` (#35 has no update and no upkeep line, and is in `ready`) — reviewer: met
 - **met** — A CONFLICTING Dependabot PR gets no comment and no push; upkeep reports `conflicting, waiting on Dependabot` — evidence: `worker/deno/tests/review_fleet_prs_backlog_3225_test.ts` (#36), `worker/deno/tests/review_fleet_prs_dependabot_test.ts::a conflicting Dependabot PR is left to Dependabot, approved or not (Issue #3663)` — reviewer: met
 - **met** — `dependabot-rebase.json` and the `rebase` action are removed; `references/edge-cases.md` and the header comments in `scripts/dependabot.ts`, `scripts/branch_update.ts` and `scripts/post.ts` describe the new behaviour — evidence: `.claude/skills/review-fleet-prs/scripts/gate.ts`, `.claude/skills/review-fleet-prs/references/edge-cases.md` — reviewer: met
@@ -148,9 +148,9 @@ it is a redaction fixture string, not a gate behaviour.
 
 ## Standards Review
 
-<!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
+<․!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" --․>
 
-- **violation** — A stub must mirror the real callee's contract: the new end-to-end test's `gh` stub answered every call with exit 0 — evidence: `worker/deno/tests/review_fleet_prs_dependabot_test.ts:137` — reason: fixed in this diff (the stub now answers only `pr view`, `pr review` and the update-branch call, exits 1 otherwise, and names the REST contract)
+- **violation** — A stub must mirror the real callee's contract: the new end-to-end test's `gh` stub answered every call with exit 0 — evidence: `worker/deno/tests/review_fleet_prs_dependabot_test.ts:210` — reason: fixed in this diff (the stub now answers only `pr view`, `pr review`, `api graphql`, `pr merge 7 -R acme/app --auto --squash` and the update-branch call, exits 1 otherwise, and names the REST contract)
 - **clean** — Checked: docs owed by the change (old-wording grep), Australian English (review-enforced), fail-loud handling (refusals still reported), log levels (review-enforced), no test-only members, every caller of the narrowed helpers updated (`gate.ts`, `post.ts`), each changed call site has a red test, persisted data (`dependabot-rebase.json` is only dropped; the remaining keys are unchanged), labels and shared state untouched (review-enforced), negative tests have fixtures that would trip them, test host-state isolation (temp `HOME` and `--state-dir`)
 
 ## Test Plan
@@ -204,4 +204,4 @@ lines changed):
 - Removed from `worker/deno/tests/review_fleet_prs_dependabot_test.ts`: `assertEquals( dependabotAction( pr({ reviews: approved, repository: { ...pr().repository, autoMergeAllowed: false }, }), "nleck", undefined, ).kind, "none", );` — #3663 removes the `rebase` action and its `dependabot-rebase.json` memory, so `dependabotAction` no longer takes the `rebaseAskedFor` argument and this three-argument call no longer type-checks; kept without the argument
 - Removed from `worker/deno/tests/review_fleet_prs_dependabot_test.ts`: `assertEquals( dependabotAction( pr({ isDraft: true, mergeStateStatus: "BEHIND" }), "nleck", undefined, ).kind, "none", );` — #3663 removes the `rebase` action and its `dependabot-rebase.json` memory, so `dependabotAction` no longer takes the `rebaseAskedFor` argument and this three-argument call no longer type-checks; kept without the argument
 
-<!-- vibe-branch-outcomes -->
+<․!-- vibe-branch-outcomes --․>
