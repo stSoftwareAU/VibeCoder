@@ -273,6 +273,11 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).
   "tests/markdown_logical_units_3356_test.ts",
+  // The transcript scanner's guard-marker regex, command-word split and quote
+  // strip run on agent-written transcript lines; only a growth measurement
+  // separates those linear scans from a backtracking one on hostile runs
+  // (Issue #3700).
+  "tests/agent_transcript_scan_test.ts",
 ];
 
 /**

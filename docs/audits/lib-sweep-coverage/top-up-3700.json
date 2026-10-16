@@ -1,0 +1,13 @@
+{
+  "issue": 3700,
+  "chunk": "top-up-3700",
+  "title": "top-up: agent transcript scan",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3700",
+  "definition": "modules added to worker/deno/ after 12a-12af recorded their coverage: lib/agent_transcript_scan.ts and commands/agent_transcript_scan.ts (#3700)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/agent_transcript_scan.ts",
+    "worker/deno/commands/agent_transcript_scan.ts"
+  ],
+  "sweptAt": "568f23669da6ff69832ca9f8c3e467d18bf95063"
+}
