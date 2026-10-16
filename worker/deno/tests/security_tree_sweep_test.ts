@@ -804,6 +804,13 @@ Deno.test("baselining one unlocated finding leaves the others reported (Issue #1
     "goes under `accepted`",
     "an unlocated finding must be told to use accepted, not falsePositives",
   );
+  // The whole note, set off from the JSON block by a blank line.
+  assertStringIncludes(
+    fixedBody,
+    "   ```\n\n" +
+      "   An unlocated finding has no `line` or `snippet` to anchor a\n" +
+      "   `falsePositives` entry, so it goes under `accepted`.\n",
+  );
   // Issue #1473 is about the baseline entry, so it moves to `accepted`:
   // an unlocated finding can no longer be a false positive (Issue #3658).
   const { baseline, errors } = parseSweepBaseline(
@@ -1710,6 +1717,35 @@ Deno.test("falsePositives - evidence that does not resolve in the tree is refuse
 
   const control = parseOneFalsePositive(validFalsePositive());
   assertEquals(control.errors, []);
+});
+
+Deno.test("falsePositives - a citation error quotes the citation, truncating a long one (Issue #3658)", () => {
+  const short = "worker/lib/gone.ts:3";
+  const shortErrors = parseOneFalsePositive(
+    validFalsePositive({ evidence: [short] }),
+  ).errors;
+  assert(
+    shortErrors.some((e) =>
+      e.includes(`evidence "${short}" does not resolve to a file in the tree`)
+    ),
+    shortErrors.join("\n"),
+  );
+
+  // A well-formed citation longer than the 120-character quote limit.
+  const long = `${"a".repeat(200)}.ts:1`;
+  const longErrors = parseOneFalsePositive(
+    validFalsePositive({ evidence: [long] }),
+  ).errors;
+  assert(
+    longErrors.some((e) =>
+      e.includes(`evidence "${long.slice(0, 120)}..." does not resolve`)
+    ),
+    longErrors.join("\n"),
+  );
+  assert(
+    longErrors.every((e) => !e.includes(long)),
+    "a long citation must not be quoted in full",
+  );
 });
 
 Deno.test("falsePositives - a cited line past the end of the file is refused (Issue #3658)", () => {

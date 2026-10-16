@@ -116,13 +116,18 @@ flowchart LR
 - **violation** — Every outcome of a branch needs a test: the backslash and NUL operands of `isRepoRelativePath` had no test — evidence: `worker/deno/lib/security_tree_sweep.ts:1191` — reason: fixed in this diff (backslash and NUL cases added; deleting either operand turns the malformed-citation test red)
 - **violation** — Call the existing owner: the confinement check was hand-rolled instead of calling `isAtOrAbove` — evidence: `worker/deno/lib/security_tree_sweep.ts:1289` — reason: fixed in this diff (`countTreeLines` now calls `isAtOrAbove` with `pathStyleFor`, as `codebase_map.ts` does)
 - **violation** — A code change owes a docs change: the methodology report's section 3 still described the old behaviour in the present tense — evidence: `docs/security/vulnhunter-methodology-evaluation.md:159` — reason: fixed in this diff (now "had at evaluation time (before #3658)", past tense)
-- **clean** — Australian English; Path Confinement (shape check before access, realpath, confine, act on the resolved path; negative `..`, `missing/..` and symlink tests); fail loud (baseline errors are fatal); nothing exists only for a test (`countTreeLines` and `TreeLineCounter` are read by `runSecurityTreeSweep`); no removed assertions (the #1473 test's `"rule": "SEC-8d02435d8683"` assertion moved into its `fixedBody` check, and its `unknown` entry moved from `falsePositives` to `accepted` because AC2 makes an unanchored false positive invalid); dead code removed rather than exempted (the unreachable snippet operand of `snippetOnlyUnanchored`); temp dirs via `Deno.makeTempDir`; no hidden paths beyond `.github/`; regex on untrusted text is the digit-only `CITATION_LINE`, with a 100,000-character hostile case. Review-enforced rules checked: insertion placement, import merging, no unrequested refactor.
+- **clean** — Australian English; Path Confinement (shape check before access, realpath, confine, act on the resolved path; negative `..`, `missing/..` and symlink tests); fail loud (baseline errors are fatal); nothing exists only for a test (`countTreeLines` and `TreeLineCounter` are read by `runSecurityTreeSweep`); no removed assertions in `security_tree_sweep_test.ts` (the #1473 test's `"rule": "SEC-8d02435d8683"` assertion moved into its `fixedBody` check, and its `unknown` entry moved from `falsePositives` to `accepted` because AC2 makes an unanchored false positive invalid); dead code removed rather than exempted (the unreachable snippet operand of `snippetOnlyUnanchored`); temp dirs via `Deno.makeTempDir`; no hidden paths beyond `.github/`; regex on untrusted text is the digit-only `CITATION_LINE`, with a 100,000-character hostile case. Review-enforced rules checked: insertion placement, import merging, no unrequested refactor.
 
 ## Test Plan
 
-- `worker/deno/tests/security_tree_sweep_test.ts` — 14 new tests named
-  `(Issue #3658)`. They cover missing evidence, unresolved evidence, a line
-  past the end (with the last line accepted), malformed citations, the
+- `worker/deno/tests/security_tree_sweep_test.ts` — 16 new tests named
+  `(Issue #3658)` (14 `Deno.test("…")` calls plus the two symlink tests,
+  "countTreeLines - a symlink pointing outside the tree is null (Issue #3658)"
+  and "countTreeLines - a symlink pointing inside the tree is counted (Issue
+  #3658)"). The file has 77 `Deno.test` calls against 61 on the base branch.
+  They cover missing evidence, unresolved evidence, a line past the end (with
+  the last line accepted), malformed citations, how a citation is quoted in
+  the error (a long one truncated to 120 characters), the
   line/snippet anchor, `accepted` left unchanged, `countTreeLines`, two
   end-to-end sweep runs and the issue-body template. They also include these
   traversal cases:
@@ -139,14 +144,15 @@ flowchart LR
   and
   `worker/deno/tests/security_tree_sweep_test.ts::sweep: a falsePositives entry whose evidence is absent from the tree fails the run (Issue #3658)`.
   They reproduce the flaw: an uncited `falsePositives` entry turns the sweep
-  green. Both fail against the unfixed code and pass after the fix. I ran
-  the 15 `(Issue #3658)` tests against the base branch's
+  green. Both fail against the unfixed code and pass after the fix. Before the
+  quoting test was added, I ran the 15 `(Issue #3658)` tests then on the
+  branch against the base branch's
   `worker/deno/lib/security_tree_sweep.ts`, with only a stub
   `countTreeLines` export added so the module loads. 12 failed, including
   both tests named above and
   `::falsePositives - an entry with neither a line nor a snippet is refused (Issue #3658)`.
   The 3 that passed are controls that expect only `null` or an unchanged
-  `accepted` list. On this branch's code all 15 pass.
+  `accepted` list. On this branch's code all 16 pass.
 - **Original trigger closed, no trivial bypass.** The original trigger was a
   short `falsePositives` entry, with only a `reason`, that suppresses a
   finding. `parseSweepBaseline` now rejects that entry. A baseline error
@@ -170,12 +176,48 @@ flowchart LR
   issue's line/snippet rule makes an unlocated false positive invalid. All of
   that test's assertions are kept, and one was added for the
   "goes under `accepted`" note. Its `"rule": "SEC-8d02435d8683"` assertion
-  moved into the `fixedBody` check rather than being removed. This diff
-  removes no assertion from any existing test.
+  moved into the `fixedBody` check rather than being removed. In
+  `security_tree_sweep_test.ts` no assertion is removed from an existing
+  test; the `content_tooling_env_test.ts` rewrites are listed below.
 - Moved `assertStringIncludes( buildSweepIssueBody(fixed, ".github/security-tree-sweep-baseline.json"), '"rule": "SEC-8d02435d8683"', "an unlocated finding must be triaged by its own id, not by its family", );` to `worker/deno/tests/security_tree_sweep_test.ts::baselining one unlocated finding leaves the others reported (Issue #1473)`
   (it now asserts on the same `buildSweepIssueBody` result, held in `fixedBody`).
 - New guard test: "falsePositives - a snippet-only entry never suppresses a
   finding with no snippet (Issue #3658)".
+- Mutation check on changed lines. Each of these mutants now turns a test
+  red. I applied each one by hand and restored the file afterwards:
+  - `worker/deno/lib/security_tree_sweep.ts:1199` (negate the
+    `typeof value === "string"` ternary in `quoteCitation`) and `:1203`
+    (return `undefined`): killed by
+    `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - a citation error quotes the citation, truncating a long one (Issue #3658)`.
+    It asserts that a short citation is quoted in full in the error, and
+    that a 205-character one is cut to its first 120 characters plus `...`.
+    Each mutant turned 1 test red, that one. Negating the `:1200`
+    truncation ternary as well turned 2 red.
+  - `worker/deno/lib/security_tree_sweep.ts:1957` (delete the `""` before
+    the unlocated note) and `:1958` (delete its first line): killed by
+    `worker/deno/tests/security_tree_sweep_test.ts::baselining one unlocated finding leaves the others reported (Issue #1473)`.
+    That test now also asserts the whole note text, set off from the JSON
+    block by a blank line. Each deletion turned 1 test red.
+- `content_tooling_env_test.ts` assertions rewritten, not kept verbatim. The
+  mutation gate runs tests under `env -i`, so the worker's own environment
+  is empty. Then the old `Object.keys(Deno.env.toObject())` positive control
+  is untrue, because there is nothing to inherit. Issue #880 forbids
+  `Deno.env.set` in tests. Each check therefore now runs the real runner in a
+  child `deno eval` process (`runInChild`) that is handed CANARY. It compares
+  the child's output against the names that process was handed
+  (`report.handed`). The same properties are asserted, in the same two tests:
+  "markdownlint - the linter runs with a built environment, not the worker's"
+  and "security tree sweep - scanners run with a built environment, not the
+  worker's".
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assert( inheritable.length > 0, `${site}: the worker's own environment carries nothing outside the ` + "allowlist, so this test cannot tell a built environment from an " + "inherited one", );` — under `env -i` the worker's own environment carries nothing, so the old message is untrue. It is replaced in `assertBuiltEnvironment` by the same `inheritable.length > 0` check over `handed`, with the message "the runner was handed nothing outside the allowlist".
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assertEquals( inheritable.filter((name) => childNames.has(name)), [], `${site}: these names were inherited rather than built from the allowlist`, );` — it is still in `assertBuiltEnvironment`, word for word. `inheritable` is now computed from `handed` rather than this process's environment, and every call site changed, so the gate counts it as removed.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assertEquals( isCredentialVariableName(name), false, `${site}: ${name} reached a content-processing child`, );` — it is still in `assertBuiltEnvironment`, word for word. It is listed only because the helper's signature and call sites changed.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assert( childNames.has("PATH"), `${site}: PATH must survive — the tool cannot run without it`, );` — it is still in `assertBuiltEnvironment`, word for word. It is listed only because the helper's signature and call sites changed.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assert(runner !== null, "the stub binary must be detected");` — the runner now runs in the child, so the parent cannot see `runner`. It is replaced by `assert(report.stdout !== null, "the stub binary must be detected")`, because the child returns `stdout: null` when detection fails.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assertBuiltEnvironment(result.stdout, "markdownlint runner");` — replaced by `assertBuiltEnvironment(report.stdout, report.handed, "markdownlint runner")`. The helper now takes the names the child was handed, because the parent's environment is empty under `env -i`.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assertBuiltEnvironment( await Deno.readTextFile(capture), "markdownlint probe", );` — replaced by the same call with `report.handed` as its second argument, for the same reason.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assertEquals(result.code, 0);` — replaced by `assertEquals(report.code, 0)`. The scanner's exit code now comes back from the child as `report.code`.
+  - Removed from `worker/deno/tests/content_tooling_env_test.ts`: `assertBuiltEnvironment(result.stdout, "security tree sweep runner", [ "DOCKER_HOST", "XDG_RUNTIME_DIR", ]);` — replaced by `assertBuiltEnvironment(report.stdout, report.handed, "security tree sweep runner", ["DOCKER_HOST", "XDG_RUNTIME_DIR"])`. The extra names are the same, and `handed` is added.
 - Red checks: each new guard was broken on its own and the named test went
   red; see the branch-outcomes list below. For #1473, I set the
   unlocated-note condition to false and the test went red. Recorded per change:
@@ -189,12 +231,16 @@ flowchart LR
   - `content_tooling_env_test.ts`: `runInChild` given `env: {}` → 0 passed,
     2 failed; `clearEnv: false` → 77 passed, 1 failed.
 - `deno task test:unit tests/security_tree_sweep_test.ts < /dev/null` on the
-  final head: `ok | 76 passed | 0 failed`. The other importers of
+  final head: `ok | 77 passed | 0 failed`. The mutation-check counts above are out of
+  these 77. The `snippetOnlyUnanchored` red-check counts were taken before
+  the quoting test was added, so they are out of 76. The other importers of
   `security_tree_sweep.ts`: 24 passed. `deno fmt --check`, `deno lint` and
   `deno check` on the changed files are clean.
 - `./quality.sh < /dev/null`: **Result: PASSED (with skipped checks)**, with
-  only `config integration` skipped. It was re-run on the final head after
-  the review fixes.
+  only `config integration` skipped. That run came after the review fixes, but
+  before this retry added the quoting test and the note assertion. Only
+  `tests/security_tree_sweep_test.ts` changed since then, and the run above
+  covers it. The worker re-runs the quality gate.
 
 <!-- vibe-branch-outcomes -->
 
