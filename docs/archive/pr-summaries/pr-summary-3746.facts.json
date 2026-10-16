@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 748,
+        "line": 781,
         "outcome": "a missing scan directory throws instead of passing",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - fails closed on a missing scan directory",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 755,
+        "line": 788,
         "outcome": "a scan path that is a file throws instead of passing",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - fails closed when a scan path is a file",
@@ -29,7 +29,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 796,
+        "line": 829,
         "outcome": "a scan that examines zero .ts files throws instead of passing",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - fails closed when no .ts file is scanned",
@@ -37,7 +37,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 346,
+        "line": 363,
         "outcome": "a create argv inside a line comment is ignored",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - ignores create argv inside comments",
@@ -45,7 +45,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 351,
+        "line": 368,
         "outcome": "a create argv inside a block comment is ignored",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - ignores create argv inside comments",
@@ -53,7 +53,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 694,
+        "line": 727,
         "outcome": "read verbs and other subcommands are not flagged",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - ignores read verbs and other subcommands",
@@ -61,7 +61,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 830,
+        "line": 863,
         "outcome": "a missing stale-entry file is reported as stale",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - stale entries are missing or clean files",
@@ -69,7 +69,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 836,
+        "line": 869,
         "outcome": "a clean allowlisted file is reported as stale",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - stale entries are missing or clean files",
@@ -77,7 +77,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 753,
+        "line": 786,
         "outcome": "a non-NotFound stat error on a scan directory is rethrown",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - rethrows a non-missing stat error on a scan directory",
@@ -85,7 +85,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 834,
+        "line": 867,
         "outcome": "a non-NotFound read error in the stale audit is rethrown",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - stale audit rethrows a non-missing read error",
@@ -93,7 +93,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 356,
+        "line": 373,
         "outcome": "a create argv after a url string literal is detected",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects every direct create form",
@@ -101,7 +101,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 356,
+        "line": 373,
         "outcome": "a string containing a block-comment opener does not hide a create",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - string containing a block-comment opener does not hide a create",
@@ -109,7 +109,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 314,
+        "line": 331,
         "outcome": "a block-comment opener inside a multi-line template does not hide a create",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - multi-line template containing a block-comment opener does not hide a create",
@@ -117,7 +117,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 335,
+        "line": 352,
         "outcome": "a comment inside a template interpolation is blanked as code",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - template interpolations are scanned as code",
@@ -125,7 +125,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 371,
+        "line": 388,
         "outcome": "a backtick inside a regex literal opens no template",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - template interpolations are scanned as code",
@@ -141,7 +141,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 553,
+        "line": 570,
         "outcome": "a `-R <repo>` / `--repo <repo>` before the verb is skipped, so the create is still flagged",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects the new alias and a repo flag before the verb",
@@ -149,7 +149,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 555,
+        "line": 572,
         "outcome": "an inline `-Rrepo` / `--repo=repo` before the verb is skipped, so the create is still flagged",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects the new alias and a repo flag before the verb",
@@ -157,7 +157,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 551,
+        "line": 568,
         "outcome": "a template-literal `--repo=${\u2026}` / `-R${\u2026}` before the verb is skipped, so the create is still flagged",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects a template-literal repo flag before the verb",
@@ -165,7 +165,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 551,
+        "line": 568,
         "outcome": "an interpolated verb or a non-flag template prefix is not a candidate",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - a template-literal repo flag before a read verb is not a create",
@@ -173,7 +173,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 426,
+        "line": 443,
         "outcome": "a nested template inside an interpolation does not end the outer template early",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects a template-literal repo flag before the verb",
@@ -181,7 +181,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 639,
+        "line": 659,
         "outcome": "a gh api graphql argv in a file naming createIssue is flagged",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects issue creation through gh api",
@@ -189,7 +189,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 642,
+        "line": 662,
         "outcome": "a key=value field argument ending in /issues is not read as an endpoint",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - gh api reads and other writes are not an issue create",
@@ -205,7 +205,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 659,
+        "line": 692,
         "outcome": "an inline --method=GET / --method=post is parsed as the method",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - gh api reads and other writes are not an issue create",
@@ -213,7 +213,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 636,
+        "line": 656,
         "outcome": "a shorthand method spelling (-XPOST, -X=POST) is expanded by normaliseGhArgs to -X POST before the method is read",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects issue creation through gh api",
@@ -221,7 +221,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 660,
+        "line": 693,
         "outcome": "a body flag with no explicit method implies POST",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects issue creation through gh api",
@@ -229,7 +229,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 663,
+        "line": 696,
         "outcome": "an explicit non-POST method wins over a body flag",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - gh api reads and other writes are not an issue create",
@@ -237,7 +237,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 664,
+        "line": 697,
         "outcome": "a non-literal method counts as POST",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects issue creation through gh api",
@@ -245,7 +245,31 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 697,
+        "line": 696,
+        "outcome": "with no method, an unreadable non-literal element counts as a possible body flag",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - detects issue creation through gh api",
+        "flipWentRed": "dropping the unreadable operand turned it red (REST spread fields, no method)"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 680,
+        "outcome": "a non-literal endpoint element is not an unreadable body flag (operand !isEndpoint(raw))",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - gh api reads and other writes are not an issue create",
+        "flipWentRed": "dropping the !isEndpoint operand turned it red (non-literal endpoint look-alike)"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 680,
+        "outcome": "the value of a known value flag is not an unreadable body flag (operand !skip)",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - gh api reads and other writes are not an issue create",
+        "flipWentRed": "dropping the !skip operand turned it red (non-literal header value look-alike)"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 730,
         "outcome": "a gh api argv is checked as an issue-create candidate",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects issue creation through gh api",
@@ -253,7 +277,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 576,
+        "line": 593,
         "outcome": "the last argv element is cut at the array's closing bracket",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects issue creation through gh api",

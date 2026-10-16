@@ -352,6 +352,35 @@ Deno.test("issue_create_routing_check - detects issue creation through gh api", 
       [1],
     ],
     [
+      "REST spread fields, no method",
+      'gh(["api", `repos/${repo}/issues`, ...fields]);',
+      [1],
+    ],
+    [
+      "REST inline flatMap spread, no method (one line)",
+      'gh(["api", `repos/${repo}/issues`, ...Object.entries(b).flatMap(([k, v]) => ["-f", `${k}=${v}`])]);',
+      [1],
+    ],
+    [
+      "REST inline flatMap spread, no method (multi-line)",
+      [
+        "gh([",
+        '  "api",',
+        "  `repos/${repo}/issues`,",
+        "  ...Object.entries(b).flatMap(([k, v]) => [",
+        '    "-f",',
+        "    `${k}=${v}`,",
+        "  ]),",
+        "]);",
+      ].join("\n"),
+      [2],
+    ],
+    [
+      "REST variable flag element, no method",
+      'gh(["api", `repos/${repo}/issues`, flag, "title=x"]);',
+      [1],
+    ],
+    [
       "REST multi-line argv",
       [
         "gh([",
@@ -398,6 +427,18 @@ Deno.test("issue_create_routing_check - gh api reads and other writes are not an
     [
       "GET list with explicit method and fields",
       'gh(["api", "-X", "GET", `repos/${repo}/issues`, "-f", "state=open"]);',
+    ],
+    [
+      "GET list with -X GET and a spread",
+      'gh(["api", "-X", "GET", `repos/${repo}/issues`, ...fields]);',
+    ],
+    [
+      "GET list with a non-literal endpoint and no fields",
+      'gh(["api", base + "/issues"]);',
+    ],
+    [
+      "GET list with a non-literal header value",
+      'gh(["api", "-H", header, `repos/${repo}/issues`]);',
     ],
     [
       "GET list with -X=GET and fields",
