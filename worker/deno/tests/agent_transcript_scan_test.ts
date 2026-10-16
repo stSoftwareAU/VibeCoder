@@ -287,6 +287,14 @@ Deno.test("scanTranscriptLine - flags reads of credential paths (Issue #3700)", 
   );
 });
 
+Deno.test("scanTranscriptLine - checks the tail of an over-long token for a credential path (Issue #3700)", () => {
+  const longPath = "/" + "a".repeat(5000) + "/.ssh/id_rsa";
+  assertEquals(
+    signalsOf(assistantTool("Read", { file_path: longPath })),
+    ["credential-read"],
+  );
+});
+
 Deno.test("scanTranscriptLine - does not flag an Edit that mentions a credential path (Issue #3700)", () => {
   assertEquals(
     signalsOf(
@@ -431,8 +439,10 @@ async function modeBlocks(
   access: "read" | "write",
 ): Promise<boolean> {
   if (Deno.build.os === "windows") return false;
-  const probe = await Deno.makeTempFile();
+  const probeDir = await Deno.makeTempDir();
+  const probe = `${probeDir}/probe`;
   try {
+    await Deno.writeTextFile(probe, "");
     await Deno.chmod(probe, mode);
     try {
       const file = access === "read"
@@ -444,7 +454,7 @@ async function modeBlocks(
       return true;
     }
   } finally {
-    await Deno.remove(probe);
+    await Deno.remove(probeDir, { recursive: true });
   }
 }
 

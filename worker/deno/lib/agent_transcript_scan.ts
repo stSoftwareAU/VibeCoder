@@ -36,6 +36,9 @@
 import { redactSecrets } from "./secret_redaction.ts";
 import { FORBIDDEN_STAGED_PATTERNS } from "./pre_commit_safety.ts";
 import { AGENT_TRANSCRIPT_PATTERN } from "./worker_log_cleanup.ts";
+import { sha256Hex } from "./audit_entry.ts";
+import { messageOf } from "./clone_contention.ts";
+import { isRecord } from "./workflow_job_needs.ts";
 
 /** The three signals a finding can carry. */
 export type TranscriptSignal = "egress" | "credential-read" | "disallowed-tool";
@@ -116,7 +119,11 @@ export interface TranscriptScanResult {
 /** Longest detail kept on a finding, after redaction. */
 const DETAIL_MAX_CHARS = 200;
 
-/** Longest token checked against the credential patterns; longer ones are skipped. */
+/**
+ * Longest token checked in full against the credential patterns. A longer one
+ * is checked on its trailing TOKEN_MAX_CHARS characters only, because the
+ * credential patterns end-anchor on the final path segment.
+ */
 const TOKEN_MAX_CHARS = 4096;
 
 /** Network clients whose invocation in command position is an egress attempt. */
@@ -177,14 +184,6 @@ const GUARD_REFUSAL = /\[SECURITY\] \[([A-Z_]{1,64})\]/g;
 /** Whether a finding code names a refusal the operator should see. */
 function isRefusalCode(code: string): boolean {
   return code.endsWith("_BLOCKED") || code.endsWith("_REFUSED");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /**
@@ -248,8 +247,11 @@ function egressFinding(command: string): TranscriptLineFinding | undefined {
 
 /** Whether one token names a credential path. */
 function isCredentialPath(token: string): boolean {
-  if (token.length > TOKEN_MAX_CHARS) return false;
-  return CREDENTIAL_PATH_PATTERNS.some((pattern) => pattern.test(token));
+  // SIMPLE-ON-PURPOSE: checks only the last 4096 chars of an over-long token — upgrade when a credential path is seen hidden more than 4096 chars before the end of one token
+  const checked = token.length > TOKEN_MAX_CHARS
+    ? token.slice(-TOKEN_MAX_CHARS)
+    : token;
+  return CREDENTIAL_PATH_PATTERNS.some((pattern) => pattern.test(checked));
 }
 
 /** Credential-read finding for the first matching value, or undefined. */
@@ -559,11 +561,9 @@ async function fingerprintOf(
   finding: TranscriptLineFinding,
   rawLine: string,
 ): Promise<string> {
-  const bytes = new TextEncoder().encode(
+  return await sha256Hex(
     `${finding.signal}\n${finding.tool}\n${finding.detail}\n${rawLine}`,
   );
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-  return Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
 /** What one streamed transcript contributed. */

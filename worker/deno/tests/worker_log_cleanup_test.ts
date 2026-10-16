@@ -324,12 +324,17 @@ Deno.test("cleanupWorkerLogs - ages out agent transcripts after the transcript w
     // Unrelated jsonl (self-heal events): never touched.
     const unrelated = `${tmpDir}/self-heal.jsonl`;
     await writeLog(unrelated, 64, now - (DEFAULT_MAX_AGE_DAYS + 5) * DAY_MS);
+    // Transcript past the worker-log window but inside the transcript window.
+    const mid = `${tmpDir}/agent-vibe-mid555-666666-8.jsonl`;
+    await writeLog(mid, 4096, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
 
     const result = await cleanupWorkerLogs(tmpDir, { now: new Date(now) });
 
     assertEquals(result.deleted.sort(), [gzipped, old, rotated].sort());
     await Deno.stat(fresh);
     await Deno.stat(unrelated);
+    // Survives because transcripts no longer follow the worker-log window.
+    await Deno.stat(mid);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

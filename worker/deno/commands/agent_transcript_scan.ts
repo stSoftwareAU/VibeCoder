@@ -20,6 +20,7 @@ import {
   scanAgentTranscripts,
   type TranscriptScanResult,
 } from "../lib/agent_transcript_scan.ts";
+import { messageOf } from "../lib/clone_contention.ts";
 
 /** Most findings named in the failure message; the rest are counted. */
 const MAX_NAMED_FINDINGS = 10;
@@ -47,9 +48,7 @@ export const agentTranscriptScanCommand: Command = {
     } catch (err) {
       return {
         success: false,
-        message: `[SECURITY] [AGENT_TRANSCRIPT_SCAN_FAILED] ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        message: `[SECURITY] [AGENT_TRANSCRIPT_SCAN_FAILED] ${messageOf(err)}`,
       };
     }
 
