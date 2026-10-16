@@ -201,5 +201,7 @@ it); updated: `docs/workflows/milestones.md`, `README.md`,
   pre-push hook (`PRE_PUSH_BLOCKED … refs/remotes/origin/HEAD is not a
   symbolic ref`), and it fails the same way on the unchanged head. `deno
   check` and `deno lint` are clean on the changed files.
+- `./quality.sh < /dev/null` on the final code: Result: PASSED (with skipped
+  checks — `config integration` skipped).
 
 <!-- vibe-branch-outcomes -->
