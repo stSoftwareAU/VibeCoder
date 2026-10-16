@@ -302,6 +302,16 @@ Deno.test("issue_create_routing_check - detects issue creation through gh api", 
     ],
     ["REST -XPOST inline", 'gh(["api", "repos/o/r/issues", "-XPOST"]);', [1]],
     [
+      "REST -X=POST with -f",
+      'gh(["api", "-X=POST", `repos/${repo}/issues`, "-f", "title=x"]);',
+      [1],
+    ],
+    [
+      "REST -X=POST with --input",
+      'gh(["api", "-X=POST", `repos/${repo}/issues`, "--input", "-"]);',
+      [1],
+    ],
+    [
       "REST --method=post inline, lower case",
       'gh(["api", "repos/o/r/issues", "--method=post"]);',
       [1],
@@ -388,6 +398,10 @@ Deno.test("issue_create_routing_check - gh api reads and other writes are not an
     [
       "GET list with explicit method and fields",
       'gh(["api", "-X", "GET", `repos/${repo}/issues`, "-f", "state=open"]);',
+    ],
+    [
+      "GET list with -X=GET and fields",
+      'gh(["api", "-X=GET", `repos/${repo}/issues`, "-f", "state=open"]);',
     ],
     [
       "GET list with --method=GET inline and fields",
