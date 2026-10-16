@@ -59,6 +59,7 @@ import type { CommandResult, Logger, WorkerConfig } from "./types.ts";
 import { versionCommand } from "./commands/version.ts";
 import { assessClarityCommand } from "./commands/assess_clarity.ts";
 import { suggestImprovementsCommand } from "./commands/suggest_improvements.ts";
+import { routeIssueCommand } from "./commands/route_issue.ts";
 import { checkParentDepsCommand } from "./commands/check_parent_dependencies.ts";
 import { checkRepoAvailabilityCommand } from "./commands/check_repo_availability.ts";
 import { mergeIfChecksPassedCommand } from "./commands/merge_if_checks_passed.ts";
@@ -260,6 +261,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(versionCommand);
   registry.register(assessClarityCommand);
   registry.register(suggestImprovementsCommand);
+  registry.register(routeIssueCommand);
   registry.register(checkParentDepsCommand);
   registry.register(checkRepoAvailabilityCommand);
   registry.register(mergeIfChecksPassedCommand);
