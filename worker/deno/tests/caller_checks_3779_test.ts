@@ -266,6 +266,37 @@ Deno.test("collectCallerChecks lists exactly the existing caller line, not impor
   }
 });
 
+Deno.test("collectCallerChecks skips a bare name in a multi-line import or export list, but not a real call", async () => {
+  const fx = await setupGitRepoFixture("issue-3779-bare-");
+  try {
+    const base = await commitFiles(fx.clone, {
+      "lib/helper.ts": HELPER_BASE,
+      "lib/lists.ts": [
+        "import {",
+        "  sharedHelper,",
+        '} from "./helper.ts";',
+        "export {",
+        "  type sharedHelper,",
+        "};",
+        "export const viaLists = sharedHelper(1);",
+        "",
+      ].join("\n"),
+    }, "base");
+    const head = await commitFiles(fx.clone, {
+      "lib/helper.ts": HELPER_HEAD,
+    }, "head");
+    const r = await collectCallerChecks(git, fx.clone, base, head);
+    assert(r.ok, JSON.stringify(r));
+    assertEquals(r.state.expected, [{
+      symbol: "sharedHelper",
+      definedAt: "lib/helper.ts:1",
+      caller: "lib/lists.ts:7",
+    }]);
+  } finally {
+    await fx.cleanup();
+  }
+});
+
 Deno.test("collectCallerChecks lists at most ten callers and notes the rest", async () => {
   const fx = await setupGitRepoFixture("issue-3779-cap-");
   try {

@@ -284,6 +284,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).
   "tests/markdown_logical_units_3356_test.ts",
+  // The caller checks' definition and diff-header regexes run over untrusted
+  // source lines and diffs; only a growth measurement separates their linear
+  // patterns from a backtracking one (Issue #3779).
+  "tests/caller_checks_3779_test.ts",
 ];
 
 /**

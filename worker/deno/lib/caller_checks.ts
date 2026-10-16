@@ -246,8 +246,17 @@ export function parseDiffChangedLines(diff: string): {
 
 const isDocPath = (p: string) => p.startsWith("docs/") || p.endsWith(".md");
 
-function escapeRegExp(text: string): string {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * Whether a trimmed line is only the name in an import or export list: `name`,
+ * `name,`, `type name` or `type name,`. String operations, so no regex is
+ * built from the name.
+ */
+function isBareNameLine(trimmed: string, name: string): boolean {
+  const body = trimmed.endsWith(",") ? trimmed.slice(0, -1).trimEnd() : trimmed;
+  const bare = body.startsWith("type") && /\s/.test(body.charAt(4))
+    ? body.slice(4).trimStart()
+    : body;
+  return bare === name;
 }
 
 /** Lines that name a symbol but do not call it. */
@@ -275,9 +284,7 @@ function isCallerHit(
     return false;
   }
   if (NON_CALLER_LINES.some((re) => re.test(trimmed))) return false;
-  if (new RegExp(`^(?:type\\s+)?${escapeRegExp(name)}\\s*,?$`).test(trimmed)) {
-    return false;
-  }
+  if (isBareNameLine(trimmed, name)) return false;
   return true;
 }
 
