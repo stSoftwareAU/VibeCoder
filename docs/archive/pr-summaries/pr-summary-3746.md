@@ -46,7 +46,7 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
   verb built by interpolation is not a candidate. Nested templates inside an
   interpolation are skipped whole (`indexAfterTemplate`).
 - The check fails closed. A missing scan directory throws
-  (`worker/deno/lib/issue_create_routing_check.ts:748`), a scan path that is not
+  (`worker/deno/lib/issue_create_routing_check.ts:781`), a scan path that is not
   a directory throws (`:755`), and a scan that examines zero `.ts` files throws
   (`:796`). A stat error other than NotFound is rethrown (`:753`).
 - `stripComments` (`:301`) is one left-to-right scan. It blanks `//` and block
@@ -121,7 +121,7 @@ flowchart LR
 section: none — `docs/ISSUE-ROUTING.md` does not exist, and no non-archive `.md`
 file mentions `fileRoutedIssue`; siblings: `"issue_create_label_check"`,
 `"CREATE_LABEL_ALLOWLIST"` — the sibling's allowlist is `CREATE_LABEL_ALLOWLIST`
-in `worker/deno/lib/issue_create_label_check.ts:67`, and the label-check
+in `worker/deno/lib/issue_create_label_check.ts:64`, and the label-check
 documentation covers labels only; re-run after the PR #3864 review fix on
 `issue_create_routing_check`, `gh api`, `createIssue` and `--repo=` — the only
 non-archive hits are `worker/deno/lib/issue_create_routing_check.ts` and its
@@ -129,7 +129,10 @@ test, whose module docs were updated; updated:
 `worker/deno/lib/issue_routing_filing.ts` (module doc, lines 29-33);
 `docs/AGENT-ACCOUNTABILITY.md:825-836` and
 `worker/deno/lib/guarded_issue_labels.ts:10-17` — still true because they
-describe the label guard only.
+describe the label guard only; re-run after the third PR #3864 review fix on
+`CREATE_LABEL_ALLOWLIST`, `github.ts` and `suggest-improvements` — the allowlist
+doc comment in `worker/deno/lib/issue_create_label_check.ts:50-62` was the only
+stale hit and was reworded, and `github.ts` was removed from the list.
 
 ## Acceptance Criteria
 
@@ -140,7 +143,7 @@ describe the label guard only.
   `worker/deno/tests/issue_create_routing_check_test.ts::issue_create_routing_check - directory scan reports unlisted offenders only`
   (asserts `file` and `line`); the message is rendered by
   `formatIssueCreateRoutingViolations`
-  (`worker/deno/lib/issue_create_routing_check.ts:851`) — reviewer: met
+  (`worker/deno/lib/issue_create_routing_check.ts:884`) — reviewer: met
 - **met** — The scan over the real `worker/deno/lib` and `worker/deno/commands`
   trees passes with the seeded allowlist. — evidence:
   `worker/deno/tests/issue_create_routing_check_test.ts::issue_create_routing_check - real tree has no unlisted direct create call site`,
@@ -163,7 +166,7 @@ describe the label guard only.
   `::issue_create_routing_check - fails closed when no .ts file is scanned` —
   reviewer: met
 - **unrequested** — `findStaleAllowlistEntries`
-  (`worker/deno/lib/issue_create_routing_check.ts:818`) and its tests. —
+  (`worker/deno/lib/issue_create_routing_check.ts:851`) and its tests. —
   reviewer: unrequested — reason: keeps the allowlist honest after a call site
   is migrated; without it an entry outlives the call site it describes.
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3746.json`. —
@@ -183,20 +186,20 @@ describe the label guard only.
   diff; the doc now names
   `worker/deno/tests/issue_create_routing_check_test.ts`.
 - **violation** — the non-NotFound rethrows had no test — evidence:
-  `worker/deno/lib/issue_create_routing_check.ts:753` and `:834` — reason: fixed
+  `worker/deno/lib/issue_create_routing_check.ts:786` and `:867` — reason: fixed
   in this diff; added "rethrows a non-missing stat error on a scan directory"
   and "stale audit rethrows a non-missing read error".
 - **violation** — a `//` inside a string was treated as a line comment —
-  evidence: `worker/deno/lib/issue_create_routing_check.ts:356` — reason: fixed
+  evidence: `worker/deno/lib/issue_create_routing_check.ts:373` — reason: fixed
   by the single left-to-right scan; "detects every direct create form" covers
   the url-string-before-argv case.
 - **violation** — a `/*` inside a string opened a block comment — evidence:
-  `worker/deno/lib/issue_create_routing_check.ts:356` — reason: fixed by the
+  `worker/deno/lib/issue_create_routing_check.ts:373` — reason: fixed by the
   same scan; "string containing a block-comment opener does not hide a create"
   covers it.
 - **violation** — a `/*` inside a multi-line template opened a block comment,
   hiding real code in `worker/deno/lib/workflow_definitions.ts` from the scan —
-  evidence: `worker/deno/lib/issue_create_routing_check.ts:301` — reason: fixed
+  evidence: `worker/deno/lib/issue_create_routing_check.ts:318` — reason: fixed
   in this diff; templates span lines, `${…}` is scanned as code and regex
   literals are recognised. "multi-line template containing a block-comment
   opener does not hide a create" and "template interpolations are scanned as
@@ -211,42 +214,52 @@ describe the label guard only.
   `deno fmt --check`, `deno lint` and `deno check` on the changed lib and test
   files PASSED. The full `./quality.sh` gate was not run in that fix round (it
   needs about 15 minutes, past the foreground command cap); CI runs it.
+- Targeted checks on the head after the third PR #3864 review fix (non-literal
+  body flags with no method; `github.ts` removed from `CREATE_LABEL_ALLOWLIST`):
+  `deno task test:unit tests/issue_create_routing_check_test.ts
+  tests/issue_create_label_check_test.ts`
+  from `worker/deno`: 35 passed, 0 failed; `deno fmt` and `deno lint` on the
+  changed files passed. The full `./quality.sh` gate was not run in this fix
+  round (it needs about 15 minutes); CI runs it.
 - Red checks, one flip at a time against
   `worker/deno/tests/issue_create_routing_check_test.ts`. Every flip turned at
   least one named test red:
 
-| Flip                                                                  | Location                                                       | Test that went red                                                                                                              |
-| --------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| drop an allowlist entry                                               | `worker/deno/lib/issue_create_routing_check.ts:66`             | real tree has no unlisted direct create call site                                                                               |
-| missing-dir guard removed                                             | `worker/deno/lib/issue_create_routing_check.ts:748`            | fails closed on a missing scan directory (asserts "does not exist")                                                             |
-| not-a-directory guard removed                                         | `worker/deno/lib/issue_create_routing_check.ts:755`            | fails closed when a scan path is a file                                                                                         |
-| zero-files guard removed                                              | `worker/deno/lib/issue_create_routing_check.ts:796`            | fails closed when no .ts file is scanned                                                                                        |
-| line-comment branch removed                                           | `worker/deno/lib/issue_create_routing_check.ts:346`            | ignores create argv inside comments                                                                                             |
-| block-comment branch removed                                          | `worker/deno/lib/issue_create_routing_check.ts:351`            | ignores create argv inside comments                                                                                             |
-| verb check changed (`.has(verb)` dropped)                             | `worker/deno/lib/issue_create_routing_check.ts:694`            | ignores read verbs and other subcommands; a repo flag before a read verb is not a create (5 tests red)                          |
-| `new` removed from `ISSUE_CREATE_VERBS`                               | `worker/deno/lib/issue_create_routing_check.ts:199`            | detects the new alias and a repo flag before the verb                                                                           |
-| repo-flag skip removed (`-R`/`--repo` value, inline form; each alone) | `worker/deno/lib/issue_create_routing_check.ts:553` and `:555` | detects the new alias and a repo flag before the verb                                                                           |
-| stale-missing branch changed                                          | `worker/deno/lib/issue_create_routing_check.ts:830`            | stale entries are missing or clean files                                                                                        |
-| stale-clean branch changed                                            | `worker/deno/lib/issue_create_routing_check.ts:836`            | stale entries are missing or clean files                                                                                        |
-| stat catch maps non-NotFound to "does not exist"                      | `worker/deno/lib/issue_create_routing_check.ts:747-753`        | rethrows a non-missing stat error on a scan directory                                                                           |
-| stale read catch records a stale entry                                | `worker/deno/lib/issue_create_routing_check.ts:829-834`        | stale audit rethrows a non-missing read error                                                                                   |
-| string-literal branch removed                                         | `worker/deno/lib/issue_create_routing_check.ts:356`            | detects every direct create form (url-string-before-argv case); string containing a block-comment opener does not hide a create |
-| template ends at end of line                                          | `worker/deno/lib/issue_create_routing_check.ts:314`            | multi-line template containing a block-comment opener does not hide a create                                                    |
-| `${…}` interpolation not tracked                                      | `worker/deno/lib/issue_create_routing_check.ts:335`            | template interpolations are scanned as code (comment-in-an-interpolation case)                                                  |
-| regex literal not recognised                                          | `worker/deno/lib/issue_create_routing_check.ts:371`            | template interpolations are scanned as code (backtick-in-a-regex-literal case)                                                  |
-| template-literal repo flag not skipped (always `return null`)         | `worker/deno/lib/issue_create_routing_check.ts:551`            | detects a template-literal repo flag before the verb                                                                            |
-| template prefix always skipped (the `${verb}` case)                   | `worker/deno/lib/issue_create_routing_check.ts:551`            | a template-literal repo flag before a read verb is not a create                                                                 |
-| nested `${…}` not skipped whole                                       | `worker/deno/lib/issue_create_routing_check.ts:426`            | detects a template-literal repo flag before the verb (nested template case)                                                     |
-| GraphQL `createIssue` branch removed                                  | `worker/deno/lib/issue_create_routing_check.ts:639`            | detects issue creation through gh api (both GraphQL cases)                                                                      |
-| `key=value` field excluded from endpoint candidates removed           | `worker/deno/lib/issue_create_routing_check.ts:642`            | gh api reads and other writes are not an issue create (field ending in /issues)                                                 |
-| `search` look-behind removed                                          | `worker/deno/lib/issue_create_routing_check.ts:234`            | gh api reads and other writes are not an issue create (search issues with a field)                                              |
-| inline `--method=` parse removed                                      | `worker/deno/lib/issue_create_routing_check.ts:659`            | detects issue creation through gh api; gh api reads and other writes are not an issue create                                    |
-| `normaliseGhArgs` expansion of `-XPOST`/`-X=POST` removed             | `worker/deno/lib/issue_create_routing_check.ts:636`            | detects issue creation through gh api (`-X=POST` with `-f` and with `--input`); look-alike `-X=GET` with `-f` is not flagged    |
-| field-flag detection removed                                          | `worker/deno/lib/issue_create_routing_check.ts:660`            | detects issue creation through gh api (REST fields imply POST)                                                                  |
-| explicit method no longer wins over fields                            | `worker/deno/lib/issue_create_routing_check.ts:663`            | gh api reads and other writes are not an issue create (explicit GET with fields)                                                |
-| non-literal method no longer counts as POST                           | `worker/deno/lib/issue_create_routing_check.ts:664`            | detects issue creation through gh api (non-literal method)                                                                      |
-| `gh api` detection disabled                                           | `worker/deno/lib/issue_create_routing_check.ts:697`            | detects issue creation through gh api                                                                                           |
-| argv close not cut at the array end                                   | `worker/deno/lib/issue_create_routing_check.ts:576`            | detects issue creation through gh api                                                                                           |
+| Flip                                                                    | Location                                                       | Test that went red                                                                                                              |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| drop an allowlist entry                                                 | `worker/deno/lib/issue_create_routing_check.ts:66`             | real tree has no unlisted direct create call site                                                                               |
+| missing-dir guard removed                                               | `worker/deno/lib/issue_create_routing_check.ts:781`            | fails closed on a missing scan directory (asserts "does not exist")                                                             |
+| not-a-directory guard removed                                           | `worker/deno/lib/issue_create_routing_check.ts:788`            | fails closed when a scan path is a file                                                                                         |
+| zero-files guard removed                                                | `worker/deno/lib/issue_create_routing_check.ts:829`            | fails closed when no .ts file is scanned                                                                                        |
+| line-comment branch removed                                             | `worker/deno/lib/issue_create_routing_check.ts:363`            | ignores create argv inside comments                                                                                             |
+| block-comment branch removed                                            | `worker/deno/lib/issue_create_routing_check.ts:368`            | ignores create argv inside comments                                                                                             |
+| verb check changed (`.has(verb)` dropped)                               | `worker/deno/lib/issue_create_routing_check.ts:727`            | ignores read verbs and other subcommands; a repo flag before a read verb is not a create (5 tests red)                          |
+| `new` removed from `ISSUE_CREATE_VERBS`                                 | `worker/deno/lib/issue_create_routing_check.ts:199`            | detects the new alias and a repo flag before the verb                                                                           |
+| repo-flag skip removed (`-R`/`--repo` value, inline form; each alone)   | `worker/deno/lib/issue_create_routing_check.ts:570` and `:572` | detects the new alias and a repo flag before the verb                                                                           |
+| stale-missing branch changed                                            | `worker/deno/lib/issue_create_routing_check.ts:863`            | stale entries are missing or clean files                                                                                        |
+| stale-clean branch changed                                              | `worker/deno/lib/issue_create_routing_check.ts:869`            | stale entries are missing or clean files                                                                                        |
+| stat catch maps non-NotFound to "does not exist"                        | `worker/deno/lib/issue_create_routing_check.ts:780-786`        | rethrows a non-missing stat error on a scan directory                                                                           |
+| stale read catch records a stale entry                                  | `worker/deno/lib/issue_create_routing_check.ts:862-867`        | stale audit rethrows a non-missing read error                                                                                   |
+| string-literal branch removed                                           | `worker/deno/lib/issue_create_routing_check.ts:373`            | detects every direct create form (url-string-before-argv case); string containing a block-comment opener does not hide a create |
+| template ends at end of line                                            | `worker/deno/lib/issue_create_routing_check.ts:331`            | multi-line template containing a block-comment opener does not hide a create                                                    |
+| `${…}` interpolation not tracked                                        | `worker/deno/lib/issue_create_routing_check.ts:352`            | template interpolations are scanned as code (comment-in-an-interpolation case)                                                  |
+| regex literal not recognised                                            | `worker/deno/lib/issue_create_routing_check.ts:388`            | template interpolations are scanned as code (backtick-in-a-regex-literal case)                                                  |
+| template-literal repo flag not skipped (always `return null`)           | `worker/deno/lib/issue_create_routing_check.ts:568`            | detects a template-literal repo flag before the verb                                                                            |
+| template prefix always skipped (the `${verb}` case)                     | `worker/deno/lib/issue_create_routing_check.ts:568`            | a template-literal repo flag before a read verb is not a create                                                                 |
+| nested `${…}` not skipped whole                                         | `worker/deno/lib/issue_create_routing_check.ts:443`            | detects a template-literal repo flag before the verb (nested template case)                                                     |
+| GraphQL `createIssue` branch removed                                    | `worker/deno/lib/issue_create_routing_check.ts:659`            | detects issue creation through gh api (both GraphQL cases)                                                                      |
+| `key=value` field excluded from endpoint candidates removed             | `worker/deno/lib/issue_create_routing_check.ts:662`            | gh api reads and other writes are not an issue create (field ending in /issues)                                                 |
+| `search` look-behind removed                                            | `worker/deno/lib/issue_create_routing_check.ts:234`            | gh api reads and other writes are not an issue create (search issues with a field)                                              |
+| inline `--method=` parse removed                                        | `worker/deno/lib/issue_create_routing_check.ts:692`            | detects issue creation through gh api; gh api reads and other writes are not an issue create                                    |
+| `normaliseGhArgs` expansion of `-XPOST`/`-X=POST` removed               | `worker/deno/lib/issue_create_routing_check.ts:656`            | detects issue creation through gh api (`-X=POST` with `-f` and with `--input`); look-alike `-X=GET` with `-f` is not flagged    |
+| field-flag detection removed                                            | `worker/deno/lib/issue_create_routing_check.ts:693`            | detects issue creation through gh api (REST fields imply POST)                                                                  |
+| explicit method no longer wins over fields                              | `worker/deno/lib/issue_create_routing_check.ts:696`            | gh api reads and other writes are not an issue create (explicit GET with fields)                                                |
+| non-literal method no longer counts as POST                             | `worker/deno/lib/issue_create_routing_check.ts:697`            | detects issue creation through gh api (non-literal method)                                                                      |
+| no method, unreadable element counts as a body flag (`\|\| unreadable`) | `worker/deno/lib/issue_create_routing_check.ts:696`            | detects issue creation through gh api (spread, flatMap spread one-line and multi-line, variable flag element)                   |
+| unreadable endpoint element excluded (`!isEndpoint(raw)` dropped)       | `worker/deno/lib/issue_create_routing_check.ts:680`            | gh api reads and other writes are not an issue create (non-literal endpoint and no fields)                                      |
+| value of a known value flag skipped (`!skip` dropped)                   | `worker/deno/lib/issue_create_routing_check.ts:680`            | gh api reads and other writes are not an issue create (non-literal header value)                                                |
+| `gh api` detection disabled                                             | `worker/deno/lib/issue_create_routing_check.ts:730`            | detects issue creation through gh api                                                                                           |
+| argv close not cut at the array end                                     | `worker/deno/lib/issue_create_routing_check.ts:593`            | detects issue creation through gh api                                                                                           |
 
 <!-- vibe-branch-outcomes -->
 

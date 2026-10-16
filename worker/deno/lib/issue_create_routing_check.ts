@@ -250,6 +250,23 @@ const API_METHOD_INLINE_PATTERN = /^--method=(.*)$/;
 /** Stands in for a non-literal argv element while `normaliseGhArgs` runs. */
 const NON_LITERAL_ELEMENT = "\0non-literal";
 
+/**
+ * `gh api` flags whose next argv element is a value that can never be a body
+ * flag, so a non-literal there (`"-H", header`) is not a possible `-f`.
+ */
+const API_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "-H",
+  "--header",
+  "-q",
+  "--jq",
+  "-t",
+  "--template",
+  "-p",
+  "--preview",
+  "--hostname",
+  "--cache",
+]);
+
 /** A GraphQL mutation name that creates an issue. */
 const CREATE_ISSUE_MUTATION_PATTERN = /\bcreateIssue\b/;
 
@@ -623,7 +640,10 @@ function literalValue(element: string): string | null {
  *
  * gh defaults to POST when a field flag is given, and an explicit method wins
  * over that default (`-X GET` with `-f` sends query parameters). A method that
- * is not a literal cannot be ruled out, so it counts as a POST.
+ * is not a literal cannot be ruled out, so it counts as a POST. With no
+ * method, a non-literal element (a `...fields` spread, a flag variable) that
+ * is not the endpoint or the value of a known value flag may be a body flag,
+ * so it counts as one: input the gate cannot read fails closed.
  *
  * @param elements - Raw argv element texts after the `"api"` element.
  * @param fileMentionsCreateIssue - Whether the file's code names `createIssue`.
@@ -638,16 +658,29 @@ function apiArgvCreatesIssue(
   ).map((value) => value === NON_LITERAL_ELEMENT ? null : value);
   if (fileMentionsCreateIssue && values.includes("graphql")) return true;
 
-  const endpoint = elements.some((element) =>
+  const isEndpoint = (element: string) =>
     !FIELD_ASSIGNMENT_PATTERN.test(element) &&
-    ISSUES_ENDPOINT_PATTERN.test(element.replace(/["'`]\s*$/, ""))
-  );
-  if (!endpoint) return false;
+    ISSUES_ENDPOINT_PATTERN.test(element.replace(/["'`]\s*$/, ""));
+  if (!elements.some(isEndpoint)) return false;
 
   let method: string | null | undefined;
   let hasField = false;
+  let unreadable = false;
+  let afterValueFlag = false;
+  // The non-literal elements, in order, so each null maps back to its text.
+  const nonLiteral = elements.filter((element) =>
+    literalValue(element) === null
+  );
+  let nonLiteralSeen = 0;
   values.forEach((value, i) => {
-    if (value === null) return;
+    const skip = afterValueFlag;
+    afterValueFlag = false;
+    if (value === null) {
+      const raw = nonLiteral[nonLiteralSeen++] ?? "";
+      if (!skip && !isEndpoint(raw)) unreadable = true;
+      return;
+    }
+    if (API_VALUE_FLAGS.has(value)) afterValueFlag = true;
     if (value === "-X" || value === "--method") {
       const methodValue = values[i + 1];
       method = methodValue === undefined || methodValue === null
@@ -660,7 +693,7 @@ function apiArgvCreatesIssue(
     else if (API_FIELD_FLAG_PATTERN.test(value)) hasField = true;
   });
 
-  if (method === undefined) return hasField;
+  if (method === undefined) return hasField || unreadable;
   return method === null || method === "POST";
 }
 
