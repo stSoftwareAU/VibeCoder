@@ -119,6 +119,90 @@ Deno.test("issue_create_routing_check - detects every direct create form", () =>
   }
 });
 
+Deno.test("issue_create_routing_check - detects the new alias and a repo flag before the verb", () => {
+  // gh runs `issue new` as `issue create` and accepts -R/--repo before the verb.
+  const cases: Array<[string, string, number[]]> = [
+    [
+      "new alias inline",
+      'gh(["issue", "new", "--repo", repo, "--title", t]);',
+      [1],
+    ],
+    [
+      "new alias multi-line",
+      ["gh([", '  "issue",', '  "new",', '  "--title",', "  t,", "]);"].join(
+        "\n",
+      ),
+      [2],
+    ],
+    [
+      "--repo before verb inline",
+      'gh(["issue", "--repo", repo, "create"]);',
+      [1],
+    ],
+    ["-R before verb inline", 'gh(["issue", "-R", repo, "create"]);', [1]],
+    [
+      "--repo before verb multi-line",
+      ["gh([", '  "issue",', '  "--repo",', "  repo,", '  "create",', "]);"]
+        .join("\n"),
+      [2],
+    ],
+    [
+      "--repo=value before verb",
+      'gh(["issue", "--repo=owner/repo", "create"]);',
+      [1],
+    ],
+    ["-Rvalue before verb", 'gh(["issue", "-Rowner/repo", "create"]);', [1]],
+    [
+      "repo flag with call expression value",
+      'gh(["issue", "-R", slug(a, b), "new"]);',
+      [1],
+    ],
+    [
+      "repo flag with template value",
+      'gh(["issue", "--repo", `${owner}/${name}`, "new"]);',
+      [1],
+    ],
+    [
+      "repo flag then new, multi-line",
+      ["gh([", '  "issue",', '  "-R",', "  repo,", '  "new",', "]);"].join(
+        "\n",
+      ),
+      [2],
+    ],
+  ];
+  for (const [name, content, expected] of cases) {
+    const lines = scanContentForDirectIssueCreate(
+      content,
+      "worker/deno/lib/case.ts",
+    ).map((v) => v.line);
+    assertEquals(lines, expected, `form: ${name}`);
+  }
+});
+
+Deno.test("issue_create_routing_check - a repo flag before a read verb is not a create", () => {
+  const lookalikes: Array<[string, string]> = [
+    ["--repo then list", 'gh(["issue", "--repo", repo, "list"]);'],
+    ["-R then view", 'gh(["issue", "-R", repo, "view", "1"]);'],
+    ["--repo=value then edit", 'gh(["issue", "--repo=o/r", "edit", "1"]);'],
+    [
+      "repo flag with value then list, multi-line",
+      ["gh([", '  "issue",', '  "--repo",', "  repo,", '  "list",', "]);"]
+        .join("\n"),
+    ],
+    // The value after -R is consumed, so a literal value is not read as a verb.
+    ["literal repo value is not a verb", 'gh(["issue", "-R", "new", "list"]);'],
+    ["repo flag ends the argv", 'gh(["issue", "--repo"]);'],
+    ["non-literal after issue", 'gh(["issue", ...rest]); gh(["new"]);'],
+  ];
+  for (const [name, content] of lookalikes) {
+    assertEquals(
+      scanContentForDirectIssueCreate(content, "worker/deno/lib/list.ts"),
+      [],
+      `look-alike: ${name}`,
+    );
+  }
+});
+
 Deno.test("issue_create_routing_check - ignores read verbs and other subcommands", () => {
   const lookalikes: Array<[string, string]> = [
     ["issue list (multi-line)", LISTING_ONLY],
