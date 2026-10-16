@@ -283,6 +283,19 @@ earns its place by meeting all four conditions:
    A retyped constant stays green while the page and the test agree with each
    other and the code has moved on — the very drift the suite was written to
    catch.
+
+   The same holds for a flag, a command line, a function or export name, a
+   version or a tag, and for a value a checked-in config file holds: call the
+   function that builds it, read the file (the `tag` of an entry in
+   `container/tools.json`, say), and use `fn.name` for a function name.
+   Deleting the new doc sentence does not catch a typed-in value, because the
+   test still goes red, so the red check for each code-held value is a source
+   mutation: change the value in the module or file that produces it, run the
+   drift test, see it fail, then restore it, and record one Test Plan line per
+   value. VibeCoder#3478 typed in the Floci tag that `container/tools.json`
+   holds, and VibeCoder#3654 typed in the clone flags that
+   `buildShallowCloneArgs` returns; a reviewer changed each source value and
+   the test stayed green.
 4. **Every pinned phrase occurs only in the rule being added.** A phrase the
    section already held before the change stays green when the new rule is
    deleted — VibeCoder#3091 pinned "blocking self-review finding", which the
@@ -559,8 +572,19 @@ section the test reads (`git show <base>:<doc>`, narrowed to the same section
 title; in the Vibe Coder repository, `deno task drift-pins-on-base <base-ref>
 <doc> <section> <phrase>...` from `worker/deno` does this), and record in the
 Test Plan that each pinned phrase is absent from the base section; a phrase
-the base section already held is a blocking self-review finding. A pin a
-change only moves, while converting an existing whole-file drift test to
+the base section already held is a blocking self-review finding. A pin that
+names a value a module or a checked-in config file already holds — a flag, a
+command line, a function or export name, a status, marker, key, default,
+version or tag — is built from that module or file, never typed in: import it,
+call it, or read the JSON, and use `fn.name` for a function name (condition 3
+of **Documentation-drift tests** in `CODING-STANDARDS.md` is the canonical
+rule). Removing the doc change does not catch a typed-in value, because the
+test still goes red without the new sentence; so for each such value, change
+it in the module or file that produces it, run the drift test, see it fail,
+then restore it. Record one Test Plan line per value, for example
+`buildShallowCloneArgs --depth=1 → --filter=blob:none: test red`. A pin that
+stays green when its source value changes is a blocking self-review finding. A
+pin a change only moves, while converting an existing whole-file drift test to
 `section()`, is meant to be on base, so this check does not apply to it:
 **Re-scoping an existing drift test** in `CODING-STANDARDS.md` red-checks
 each moved check in its own section instead. A test that only pins current
