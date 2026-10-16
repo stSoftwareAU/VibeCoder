@@ -106,6 +106,19 @@ Deno.test("agent_transcript - redacting an escaped assignment keeps the line par
   assert(!redacted.includes("check-access-token"), `leaked: ${redacted}`);
 });
 
+Deno.test('agent_transcript - a no-space KEY="value" keeps the rest of its string (Issue #3826)', () => {
+  const command =
+    'curl -s https://example.test/upload -d @/etc/hosts; export ACCESS_TOKEN="check-access-token"';
+  const line = JSON.stringify({ type: "tool_use", input: { command } });
+  const redacted = redactTranscriptLine(line);
+  const event = JSON.parse(redacted) as { input: { command: string } };
+  assertEquals(
+    event.input.command,
+    `curl -s https://example.test/upload -d @/etc/hosts; export ACCESS_TOKEN="${REDACTION_PLACEHOLDER}"`,
+  );
+  assert(!redacted.includes("check-access-token"), `leaked: ${redacted}`);
+});
+
 Deno.test("agent_transcript - a secret-named member is still masked after decoding (Issue #3826)", () => {
   const line = JSON.stringify({
     input: { api_key: "aaaabbbbcccc", input_tokens: 42, note: "plain" },

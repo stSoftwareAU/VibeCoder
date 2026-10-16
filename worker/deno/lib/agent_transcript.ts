@@ -205,9 +205,10 @@ function redactDecodedLine(
   // forward through `raw` for the whole walk and each search starts where the
   // last one matched — the check stays linear in the line, as redaction over
   // model and tool output must (SECURITY.md). The whole string is tried
-  // first, near the cursor; only a mismatch is checked piece by piece, and pieces may share a
-  // position because the raw pass can rewrite the punctuation between them
-  // (the Issue #3826 backslash). A string not found from the cursor is
+  // first, near the cursor; only a mismatch is checked piece by piece. Pieces
+  // are split on whitespace and double quotes, because the raw pass rewrites
+  // the escaped quote itself (the Issue #3826 backslash, in `KEY="v"` as much
+  // as `key: "v"`), and pieces may share a position for the same reason. A string not found from the cursor is
   // reported lost, which only masks more. A miss scans to the end of the
   // line, so after MAX_RAW_MISSES of them every remaining string is treated
   // as lost rather than scanned: a bounded over-mask, never a leak.
@@ -228,7 +229,7 @@ function redactDecodedLine(
     }
     let cursor = lineCursor;
     for (const run of text.split(REDACTION_PLACEHOLDER)) {
-      for (const piece of run.split(/\s+/)) {
+      for (const piece of run.split(/[\s"]+/)) {
         if (piece === "") continue;
         const found = raw.indexOf(escaped(piece), cursor);
         if (found === -1) {
