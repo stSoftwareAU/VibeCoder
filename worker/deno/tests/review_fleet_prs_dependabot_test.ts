@@ -134,14 +134,20 @@ Deno.test("post.ts end to end: an approved, behind Dependabot PR is updated and 
   try {
     const bin = `${tmp}/bin`;
     await Deno.mkdir(bin);
+    // Mirrors gh on this path: GitHub REST "Update a pull request branch" answers 202 with message/url; gh exits non-zero on an HTTP error.
     await Deno.writeTextFile(
       `${bin}/gh`,
       `#!/bin/sh
 echo "$@" >> "${tmp}/calls"
 if [ "$1 $2" = "pr view" ]; then
   echo '{"headRefOid":"head-7","state":"OPEN","mergeStateStatus":"BEHIND"}'
-elif [ "$1" = "api" ]; then
-  echo '{}'
+elif [ "$1 $2" = "pr review" ]; then
+  exit 0
+elif [ "$*" = "api --method PUT repos/acme/app/pulls/7/update-branch -f expected_head_sha=head-7" ]; then
+  echo '{"message":"Updating pull request branch.","url":"https://github.com/acme/app/pull/7"}'
+else
+  echo "gh stub: unexpected call: $*" >&2
+  exit 1
 fi
 `,
       { mode: 0o755 },
