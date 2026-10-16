@@ -50,7 +50,7 @@ import {
   wasChangeRequestAt,
   writeSummary,
 } from "./review_log.ts";
-import { dependabotAction } from "./dependabot.ts";
+import { armAutoMerge, dependabotAction } from "./dependabot.ts";
 import {
   approvedAtHead,
   needsBranchUpdate,
@@ -775,15 +775,11 @@ export async function pass(
       } else if (action.kind === "auto-merge" && !alreadyFailed) {
         try {
           if (!DRY_RUN) {
-            await callGh([
-              "pr",
-              "merge",
-              String(pr.number),
-              "-R",
-              repo,
-              "--auto",
-              `--${action.method}`,
-            ]);
+            await armAutoMerge(
+              { repo, number: pr.number },
+              action.method,
+              callGh,
+            );
           }
           upkeep.push(
             `${key} auto-merge armed (${action.method})${

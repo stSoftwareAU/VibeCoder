@@ -7,9 +7,9 @@
 // the PR's scope (skipping one an open issue already covers), labels a held
 // PR `needs-human` and removes that label on a later approve/send-back only
 // when its log shows it added it, brings an approved fleet or Dependabot PR
-// that is behind its base up to date (review first, then update: Issue #3225),
-// and raises a desktop notification when a PR is sent back or held for the
-// owner.
+// that is behind its base up to date (review first, then update: Issue #3225;
+// a Dependabot PR has auto-merge armed first, Issue #3663), and raises a
+// desktop notification when a PR is sent back or held for the owner.
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
@@ -25,10 +25,13 @@
 // An opted-in repo (`pr_reviewer_auto_release` in .config.json) has an
 // issue-required test-change hold auto-released as an approval (Issue #3397).
 // Output: one line of JSON, { posted, outcome?, filedIssues?, labelError?,
-// branchUpdated?, branchUpdateError?, autoReleased?, autoReleaseHeld?, reason? }.
+// branchUpdated?, branchUpdateError?, autoMergeArmed?, autoMergeError?,
+// autoReleased?, autoReleaseHeld?, reason? }.
 // A failed label call leaves the review posted, is not retried, and is
 // reported in `labelError`; a refused branch update likewise in
-// `branchUpdateError` (the next gate pass retries it).
+// `branchUpdateError` (the next gate pass retries it), and a refused
+// auto-merge in `autoMergeError` (the update is then skipped, and the next
+// gate pass tries to arm it again, then updates it).
 // Exit 2 when the review is malformed or the entry lacks `checklistState`;
 // nothing is posted and the PR comes back on the next gate pass.
 
@@ -60,6 +63,11 @@ import {
 } from "./needs_human.ts";
 import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
 import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
+import {
+  armAutoMerge,
+  autoMergeMethod,
+  type MergeMethod,
+} from "./dependabot.ts";
 import { postRunInfo, recordPosted } from "./review_cost.ts";
 
 interface Input {
@@ -265,6 +273,7 @@ export function postedResult(
   branchUpdate?: BranchUpdateResult,
   autoReleased?: boolean,
   autoReleaseHeld?: readonly string[],
+  autoMerge?: AutoMergeResult,
 ) {
   return {
     posted: true,
@@ -275,6 +284,8 @@ export function postedResult(
     ...(branchUpdate?.updated === false
       ? { branchUpdateError: branchUpdate.error }
       : {}),
+    ...(autoMerge?.armed === true ? { autoMergeArmed: autoMerge.method } : {}),
+    ...(autoMerge?.armed === false ? { autoMergeError: autoMerge.error } : {}),
     ...(autoReleased ? { autoReleased: true } : {}),
     ...(autoReleaseHeld ? { autoReleaseHeld } : {}),
   };
@@ -328,6 +339,49 @@ export function shouldUpdateBranch(
   return outcome === "approved" && mergeStateStatus === "BEHIND";
 }
 
+export type AutoMergeResult =
+  | { armed: true; method: MergeMethod }
+  | { armed: false; error: string };
+
+// Arms auto-merge on a Dependabot PR before post.ts updates it (Issue #3663).
+// The update makes a merge commit the approval does not cover, and the gate
+// only arms a Dependabot PR the reviewer approved at its head, so arming after
+// the update would wait for another review. Undefined when the repo does not
+// allow auto-merge (the gate cannot arm it either). A refusal is reported,
+// never thrown.
+export async function armDependabotAutoMerge(
+  pr: { repo: string; number: number },
+  runGh: RunGh,
+): Promise<AutoMergeResult | undefined> {
+  const [owner, name] = pr.repo.split("/");
+  try {
+    const repo: {
+      autoMergeAllowed: boolean;
+      squashMergeAllowed: boolean;
+      mergeCommitAllowed: boolean;
+    } = JSON.parse(
+      await runGh([
+        "api",
+        "graphql",
+        "-f",
+        "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){autoMergeAllowed squashMergeAllowed mergeCommitAllowed}}",
+        "-F",
+        `owner=${owner}`,
+        "-F",
+        `name=${name}`,
+        "--jq",
+        ".data.repository",
+      ]),
+    );
+    if (repo.autoMergeAllowed === false) return undefined;
+    const method = autoMergeMethod(repo);
+    await armAutoMerge(pr, method, runGh);
+    return { armed: true, method };
+  } catch (e) {
+    return { armed: false, error: (e as Error).message.split("\n")[0]! };
+  }
+}
+
 // Exported, not just `import.meta.main`-gated, so the root-level forwarding
 // shim (Issue #3299 continuity gap — PR #3417 review) can call this same
 // body for a runner still started from the pre-move layout.
@@ -355,6 +409,7 @@ export async function main() {
     headRefOid: string;
     state: string;
     mergeStateStatus?: string;
+    autoMergeRequest?: unknown;
   } = JSON.parse(
     await run("gh", [
       "pr",
@@ -363,7 +418,7 @@ export async function main() {
       "-R",
       pr.repo,
       "--json",
-      "headRefOid,state,mergeStateStatus",
+      "headRefOid,state,mergeStateStatus,autoMergeRequest",
     ]),
   );
   if (live.headRefOid !== pr.headSha || live.state !== "OPEN") {
@@ -447,13 +502,23 @@ export async function main() {
     );
   }
 
+  let autoMerge: AutoMergeResult | undefined;
   let branchUpdate: BranchUpdateResult | undefined;
   if (shouldUpdateBranch(outcome, live.mergeStateStatus)) {
-    branchUpdate = await updateBranch(pr, (args) => run("gh", args));
-    if (!branchUpdate.updated) {
+    if (pr.kind === "dependabot" && !live.autoMergeRequest) {
+      autoMerge = await armDependabotAutoMerge(pr, (args) => run("gh", args));
+    }
+    if (autoMerge?.armed === false) {
       console.error(
-        `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,
+        `could not arm auto-merge on ${pr.repo}#${pr.number}, so it is not brought up to date: ${autoMerge.error}`,
       );
+    } else {
+      branchUpdate = await updateBranch(pr, (args) => run("gh", args));
+      if (!branchUpdate.updated) {
+        console.error(
+          `could not bring ${pr.repo}#${pr.number} up to date: ${branchUpdate.error}`,
+        );
+      }
     }
   }
 
@@ -504,6 +569,7 @@ export async function main() {
         branchUpdate,
         autoReleased,
         autoReleaseHeld,
+        autoMerge,
       ),
     ),
   );

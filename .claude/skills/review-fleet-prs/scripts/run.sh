@@ -269,7 +269,7 @@ pass() {
     2>"$errfile")
   gate_rc=$?
   # Same reasoning as the App token call above: gate.ts logs non-fatal
-  # upkeep failures (rebase/auto-merge) to stderr on its success path too.
+  # upkeep failures (auto-merge/branch update) to stderr on its success path too.
   [[ -s "$errfile" ]] && errors <"$errfile"
   if [[ $gate_rc -ne 0 ]]; then
     LAST_ERROR="gate failed: $(last_error_line "$errfile")"

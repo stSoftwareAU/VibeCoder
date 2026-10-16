@@ -94,16 +94,23 @@ reviewing as a GitHub App, and persistent failure escalation.
    posted it, and a PR anyone has approved at its head commit is skipped as
    `approved`: there is nothing left to review, and it merges once it is up
    to date.
-9. **Approve first, then bring the branch up to date.** Every fleet and
-   Dependabot PR is armed with auto-merge on three conditions: CI green,
-   approved, and branch up to date. The review is of the diff as it stands;
-   when the outcome is an approval and the PR is behind its base, `post.ts`
-   then asks GitHub to merge the base in (`update-branch`, at the reviewed
-   head), so CI re-runs on the merge commit and the PR merges with no further
-   round. The gate does the same once per head for a fleet or Dependabot PR
-   already approved at its head but still behind. A PR is never brought up to
-   date before its review: the approval would then be of a head nobody read.
-   See [Dependabot PRs](references/edge-cases.md#dependabot-prs) for what the
+9. **Approve first, then bring the branch up to date.** A fleet PR is armed
+   with auto-merge, and so is a Dependabot PR in a repo that allows
+   auto-merge once the reviewer approves it at its head; an armed PR merges
+   on three conditions: CI green, approved, and branch up to date. The review
+   is of the diff as it stands; when the outcome is an approval and the PR is
+   behind its base, `post.ts` then asks GitHub to merge the base in
+   (`update-branch`, at the reviewed head), so CI re-runs on the merge commit
+   and the PR merges with no further round. For a Dependabot PR not yet
+   armed, in a repo that allows auto-merge, `post.ts` arms auto-merge first,
+   because the merge commit is a head the approval does not cover; when
+   GitHub refuses to arm it, the update is skipped and the next gate pass
+   tries to arm it again, then updates it. The gate does the same once per
+   head for a fleet or Dependabot PR already approved at its head but still
+   behind; it first arms a Dependabot one the reviewer approved at its head,
+   when the repo allows auto-merge. A PR is never brought up to date before
+   its review: the approval would then be of a head nobody read. See
+   [Dependabot PRs](references/edge-cases.md#dependabot-prs) for what the
    gate does with a conflicting one.
 10. **Repeated findings improve the VibeCoder.** Review findings are also
     feedback about the worker itself. After each round, compare blocking
@@ -293,7 +300,11 @@ The script does the rest, so do not post anything yourself:
   the branch up to date at the reviewed head (rule 9), so the armed auto-merge
   can complete once CI re-runs. The result
   is `branchUpdated: true` or `branchUpdateError: <first line>`; a refusal
-  leaves the approval posted and the next gate pass retries the update.
+  leaves the approval posted and the next gate pass retries the update. For a
+  Dependabot PR not yet armed, in a repo that allows auto-merge, it arms
+  auto-merge before the update (`autoMergeArmed: <method>`); a refusal is
+  `autoMergeError: <first line>`, and the update is then skipped so the next
+  gate pass tries to arm it again, then updates it.
 - After a held review posts, it labels the PR `needs-human`. When it later
   posts an approved or sent-back review for a PR whose latest `log.jsonl`
   record shows this skill added that label, it removes it; it never
@@ -321,7 +332,8 @@ The script does the rest, so do not post anything yourself:
   PR is sent back or held.
 
 It prints `{ posted, outcome?, autoReleased?, autoReleaseHeld?,
-filedIssues?, labelError?, branchUpdated?, branchUpdateError?, reason? }`.
+filedIssues?, labelError?, branchUpdated?, branchUpdateError?,
+autoMergeArmed?, autoMergeError?, reason? }`.
 `autoReleased: true` is also in the `log.jsonl` record, and `summary.md`
 prefixes that PR's "Approved, last 7 days" line with
 `(auto-released: issue-required test change)` as an audit trail.
@@ -407,8 +419,9 @@ search or file an improvement issue must not change the PR review outcome.
 One short line per round: approved, sent back, and held for the owner, each
 with PR links, plus any issues filed and any `recurring` guidance entries
 from `guidance.ts due`. When `due` fails, name the failure in the report; a
-`due` failure never changes a PR review outcome. When post.ts printed a `labelError` or
-a `branchUpdateError` for a PR, name that PR and the failure. Then go back to
+`due` failure never changes a PR review outcome. When post.ts printed a `labelError`,
+a `branchUpdateError` or an `autoMergeError` for a PR, name that PR and the
+failure. Then go back to
 the loop.
 
 When the round held a PR for the owner or sent one back to the fleet, also

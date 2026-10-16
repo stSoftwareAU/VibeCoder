@@ -21,9 +21,10 @@ users with push access, and it refused the reviewer App's command (PR #3639).
   is not auto-rebased by Dependabot (it stops once someone else commits), so
   upkeep still says waiting on Dependabot; a human closes it or comments
   `@dependabot recreate`.
-- **Approved at its head and not yet armed (behind or not):** arms auto-merge
-  (squash where the repo allows it), so it merges as soon as every required
-  check passes. This runs before any branch update in the same pass.
+- **Approved by the reviewer at its head and not yet armed (behind or not),
+  in a repo that allows auto-merge:** arms auto-merge (squash where the repo
+  allows it), so it merges as soon as every required check passes. This runs
+  before any branch update in the same pass.
 
 Dependabot PRs are still reviewed like any other; this upkeep only gets an
 approved one merged or brought up to date. The pass reports what it did in
@@ -43,4 +44,8 @@ upkeep line is `<repo>#<n> branch update requested`; a refusal is
 `branch update failed: ...`, logged, and not retried at that head. An
 unapproved PR is left as it is: it is reviewed first, and `scripts/post.ts`
 brings it up to date right after the approval, for fleet and Dependabot PRs
-alike ([SKILL.md](../SKILL.md) rule 9).
+alike ([SKILL.md](../SKILL.md) rule 9). For a Dependabot PR not yet armed, in
+a repo that allows auto-merge, `post.ts` arms auto-merge before the update,
+because the update's merge commit is a head the approval does not cover; when
+GitHub refuses to arm it, `post.ts` prints `autoMergeError` and skips the
+update, and the next gate pass tries to arm it again, then updates it.

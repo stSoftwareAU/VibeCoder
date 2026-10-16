@@ -331,7 +331,7 @@ Deno.test("run.sh escalates a failing gate pass without leaking the App token to
 });
 
 Deno.test("run.sh logs gate.ts's non-fatal stderr even when the gate pass succeeds", async () => {
-  // gate.ts reports refused Dependabot upkeep (rebase/auto-merge failures)
+  // gate.ts reports refused upkeep (auto-merge/branch update failures)
   // on stderr while still exiting 0 (#2950); that must still reach the log.
   const home = await fixture(
     JSON.stringify({ ready: [], skipped: {} }),

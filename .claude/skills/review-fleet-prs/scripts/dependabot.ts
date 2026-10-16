@@ -16,17 +16,48 @@
 //     PR itself, and the gate reports it as waiting on Dependabot;
 //   - approved by the reviewer and not yet armed: arm auto-merge, so it merges
 //     as soon as every required check passes. This comes first, because the
-//     update makes a new merge commit that the approval does not cover.
+//     update makes a new merge commit that the approval does not cover, and
+//     post.ts does the same when it updates a Dependabot PR it just approved.
 //
 // The Fable review still decides whether a Dependabot PR is approved.
 
 import type { SearchPr } from "./gate.ts";
 import { sameLogin } from "./review_log.ts";
 
+export type MergeMethod = "squash" | "merge" | "rebase";
+
 export type DependabotAction =
   | { kind: "conflicting" }
-  | { kind: "auto-merge"; method: "squash" | "merge" | "rebase" }
+  | { kind: "auto-merge"; method: MergeMethod }
   | { kind: "none"; reason: string };
+
+// The method auto-merge is armed with: squash where the repo allows it.
+export function autoMergeMethod(
+  repo: { squashMergeAllowed?: boolean; mergeCommitAllowed?: boolean },
+): MergeMethod {
+  return repo.squashMergeAllowed !== false
+    ? "squash"
+    : repo.mergeCommitAllowed !== false
+    ? "merge"
+    : "rebase";
+}
+
+// Arms auto-merge on a PR; throws the gh error when GitHub refuses.
+export async function armAutoMerge(
+  pr: { repo: string; number: number },
+  method: MergeMethod,
+  runGh: (args: string[]) => Promise<string>,
+): Promise<void> {
+  await runGh([
+    "pr",
+    "merge",
+    String(pr.number),
+    "-R",
+    pr.repo,
+    "--auto",
+    `--${method}`,
+  ]);
+}
 
 // Decides the one action a Dependabot PR needs this pass.
 export function dependabotAction(
@@ -45,10 +76,5 @@ export function dependabotAction(
   if (repo.autoMergeAllowed === false) {
     return { kind: "none", reason: "repo does not allow auto-merge" };
   }
-  const method = repo.squashMergeAllowed !== false
-    ? "squash"
-    : repo.mergeCommitAllowed !== false
-    ? "merge"
-    : "rebase";
-  return { kind: "auto-merge", method };
+  return { kind: "auto-merge", method: autoMergeMethod(repo) };
 }
