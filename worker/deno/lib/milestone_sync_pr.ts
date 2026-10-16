@@ -467,7 +467,7 @@ export async function raiseMilestoneSyncPr(
     return null;
   };
   const pushError = skipPush ? null : await pushWithStaleRetry();
-  if (pushError) return { ok: false, error: pushError };
+  if (pushError !== null) return { ok: false, error: pushError };
 
   // One open PR per milestone branch: a sync that is still open is updated by
   // the push above, and re-filing would leave two PRs merging the same thing.

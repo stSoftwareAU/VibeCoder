@@ -149,6 +149,13 @@ it); updated: `docs/workflows/milestones.md`, `README.md`,
   `milestone_sync_pr_test.ts`. The `stderr: ""` placeholder push result
   (`lib/milestone_sync_pr.ts:438`) was dead, since it was never read when the
   push was skipped. It is gone (see `pushWithStaleRetry` above).
+  Second round, two more survivors: `let staleRetried = true`
+  (`lib/milestone_sync_pr.ts:443`) now turns "raiseMilestoneSyncPr - pushes a
+  sync branch and opens a PR into the milestone" red, because that test now
+  captures the log and asserts a push accepted first time reports no "stale
+  info" retry; `return undefined` in place of `return null`
+  (`lib/milestone_sync_pr.ts:467`) now turns 16 tests red, because the caller
+  checks `pushError !== null` instead of truthiness.
   Required-status-check protection is covered by the existing tests that
   reach `raiseMilestoneSyncPr` only after a rule-refused push; conflict
   takeover is untouched by this change.
@@ -177,6 +184,9 @@ it); updated: `docs/workflows/milestones.md`, `README.md`,
   through the sync PR": its inline pre-receive hook moved, unchanged, into the
   `gateMilestoneRefs` helper that the new roll-back test shares. No assertion
   changed.
+- Edited existing test "raiseMilestoneSyncPr - pushes a sync branch and
+  opens a PR into the milestone": its deps gain a `log` capture and one new
+  assertion (no "stale info" log on a first-time push). No assertion removed.
 - Fixture edits (`pushed: true`) in
   `worker/deno/tests/fixtures/conflict_replay_driver.ts` and
   `worker/deno/tests/conflict_abandon_restart_test.ts`: no assertion changed.

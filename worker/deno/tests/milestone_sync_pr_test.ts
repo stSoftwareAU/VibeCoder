@@ -97,7 +97,9 @@ Deno.test("syncBranchFor - deterministic, so a second run updates rather than re
 });
 
 Deno.test("raiseMilestoneSyncPr - pushes a sync branch and opens a PR into the milestone", async () => {
-  const { deps, git, gh } = fakeDeps();
+  const { deps: base, git, gh } = fakeDeps();
+  const logs: string[] = [];
+  const deps = { ...base, log: (m: string) => logs.push(m) };
   const result = await raiseMilestoneSyncPr(REPO, MILESTONE, DEFAULT, deps);
 
   assert(result.ok);
@@ -112,6 +114,13 @@ Deno.test("raiseMilestoneSyncPr - pushes a sync branch and opens a PR into the m
     `refs/heads/${syncBranchFor(MILESTONE)}`,
   );
   assertEquals(push.includes("--force-with-lease"), true);
+
+  // A push accepted first time was never stale, so no retry is reported.
+  assertEquals(
+    logs.some((m) => m.includes("stale info")),
+    false,
+    logs.join("\n"),
+  );
 
   const create = gh.find((a) => a[1] === "create");
   assert(create);
