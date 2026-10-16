@@ -3,11 +3,12 @@
   "chunk": "top-up-3293",
   "title": "top-up: review-fleet-prs round inside the worker container",
   "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3293",
-  "definition": "modules added to worker/deno/ after 12a-12af recorded their coverage: commands/review_round.ts and lib/review_round.ts (#3293)",
+  "definition": "modules added to worker/deno/ after 12a-12af recorded their coverage: commands/review_round.ts and lib/review_round.ts (#3293), and lib/review_run_record.ts, the round's attempt log split out of lib/review_round.ts so the skill's scripts can read it",
   "status": "claimed",
   "paths": [
     "worker/deno/commands/review_round.ts",
-    "worker/deno/lib/review_round.ts"
+    "worker/deno/lib/review_round.ts",
+    "worker/deno/lib/review_run_record.ts"
   ],
   "sweptAt": "d951d7df4f3824019aae8bccc67119ab7a5091f9"
 }

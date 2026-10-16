@@ -23,16 +23,21 @@ import { extractAcceptedScope } from "../lib/acceptance_criteria_gate.ts";
 import { emptyEnv } from "./support/env_lookup.ts";
 import {
   assessDegradedDelivery,
+  assessReportedGaps,
   assessScopeShortfalls,
   buildDegradedFollowUpIssue,
   buildDegradedNoFollowUpSection,
   buildDegradedPrSection,
   buildDegradedUnfiledGapSection,
+  buildReportedGapPrSection,
+  buildReportedGapStaleFollowUpSection,
   degradedFollowUpFindingId,
   degradedNeedsFollowUp,
   fileDegradedFollowUp,
   parseDegradedSection,
   rederiveDegradedSection,
+  rederiveReportedGapSection,
+  REPORTED_GAP_SECTION_HEADING,
   UNSTATED_SCOPE_ITEM,
 } from "../lib/degraded_delivery.ts";
 
@@ -433,6 +438,33 @@ Deno.test("fileDegradedFollowUp - files one idle-task issue when none is open", 
   assertEquals(create[create.indexOf("--label") + 1], "idle-task");
 });
 
+Deno.test("fileDegradedFollowUp - a parent's milestone is passed to gh issue create (PR #3676 review)", async () => {
+  const create = async (milestoneTitle?: string) => {
+    const calls: string[][] = [];
+    await fileDegradedFollowUp({
+      repo: "o/r",
+      parentNumber: 42,
+      parentTitle: "Finish the switch",
+      verdict: degradedVerdict(),
+      runId: "vibe-test-ms",
+      dedupAuthors: FLEET,
+      ...(milestoneTitle ? { milestoneTitle } : {}),
+      gh: (args) => {
+        calls.push(args);
+        if (args[1] === "list") return Promise.resolve("[]");
+        return Promise.resolve("https://github.com/o/r/issues/77\n");
+      },
+    });
+    return calls.find((c) => c[0] === "issue" && c[1] === "create")!;
+  };
+  const withMilestone = await create("Q4 Launch");
+  assertEquals(
+    withMilestone[withMilestone.indexOf("--milestone") + 1],
+    "Q4 Launch",
+  );
+  assert(!(await create()).includes("--milestone"));
+});
+
 Deno.test("fileDegradedFollowUp - reuses the open follow-up for the same parent", async () => {
   const calls: string[][] = [];
   const existing = JSON.stringify([{
@@ -558,14 +590,15 @@ Deno.test("fileDegradedFollowUp - a failed create is an error, not a silent pass
 // ---------------------------------------------------------------------------
 
 Deno.test("assessDegradedDelivery - a run served a previous generation of the expected tier files no follow-up", () => {
-  // A container whose CLI still resolves `opus` to Opus 5 is flagged stale by
-  // the run-stats comment, but the run was not served a fallback model: it
-  // ran on the tier it asked for, so its delivery is not in question.
+  // A container whose CLI still resolves `sonnet` (the issue manager's tier
+  // since #3473) to Sonnet 5 is flagged stale by the run-stats comment, but
+  // the run was not served a fallback model: it ran on the tier it asked for,
+  // so its delivery is not in question.
   const verdict = assessDegradedDelivery({
     claudeResults: [{
       runStats: {
-        servedModels: ["claude-opus-5"],
-        requestedModel: "opus",
+        servedModels: ["claude-sonnet-5"],
+        requestedModel: "sonnet",
         wallClockMs: 1000,
       },
     }],
@@ -976,4 +1009,355 @@ Deno.test("parseDegradedSection - hostile follow-up digits are not read as a num
     "as met. The outstanding items continue in #" + "1".repeat(100_000) +
     "x";
   assertEquals(parseDegradedSection(section), { reason: "x" });
+});
+
+// ---------------------------------------------------------------------------
+// A healthy run's reported gaps (Issue #3506)
+// ---------------------------------------------------------------------------
+
+const TWO_CRITERIA_ISSUE =
+  "## Acceptance Criteria\n\n- the export works\n- the import works\n";
+const EXPORT_MET_IMPORT_PARTIAL = `## Acceptance Criteria
+
+- **met** — the export works — evidence: \`x_test.ts\` — reviewer: met
+- **partial** — the import works — evidence: \`y_test.ts\` — reviewer: partial — reason: no retry
+`;
+
+Deno.test("assessReportedGaps - a partial entry is a shortfall and a met one is delivered (Issue #3506)", () => {
+  assertEquals(
+    assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    {
+      degraded: false,
+      delivered: ["the export works"],
+      shortfalls: [{ criterion: "the import works", status: "partial" }],
+    },
+  );
+});
+
+Deno.test("assessReportedGaps - every entry met leaves no shortfall (Issue #3506)", () => {
+  assertEquals(assessReportedGaps(EXPORT_ISSUE, MET_SUMMARY), {
+    degraded: false,
+    delivered: ["the export works"],
+    shortfalls: [],
+  });
+});
+
+Deno.test("assessReportedGaps - unassessed items are dropped but an unassigned partial gap is kept (Issue #3506)", () => {
+  const unassessed = assessReportedGaps(
+    TWO_CRITERIA_ISSUE,
+    "## Acceptance Criteria\n\n- **met** — the export works — evidence: \`x_test.ts\` — reviewer: met\n",
+  );
+  assertEquals(unassessed.shortfalls, []);
+
+  const gap = assessReportedGaps(
+    EXPORT_ISSUE,
+    MET_SUMMARY +
+      "- **partial** — quarterly invoice emailer — reviewer: partial — reason: not started\n",
+  );
+  assertEquals(gap.shortfalls, [
+    { criterion: "quarterly invoice emailer —", status: "partial" },
+  ]);
+});
+
+Deno.test("assessReportedGaps - an issue stating no criteria keeps each partial or missing entry, named by its subject (PR #3676 review)", () => {
+  assertEquals(
+    assessReportedGaps(ISSUE_WITHOUT_SCOPE, PARTIAL_SUMMARY),
+    {
+      degraded: false,
+      delivered: [],
+      shortfalls: [{ criterion: "the export works —", status: "partial" }],
+    },
+  );
+  const missing = assessReportedGaps(
+    ISSUE_WITHOUT_SCOPE,
+    MET_SUMMARY +
+      "- **missing** — the quarterly emailer — reviewer: missing — reason: not started\n",
+  );
+  assertEquals(missing.shortfalls, [
+    { criterion: "the quarterly emailer —", status: "missing" },
+  ]);
+  // A `met` entry alone is no gap, so a healthy run with no residue files nothing.
+  assertEquals(
+    assessReportedGaps(ISSUE_WITHOUT_SCOPE, MET_SUMMARY).shortfalls,
+    [],
+  );
+});
+
+Deno.test("assessScopeShortfalls - an issue stating no criteria lists its met entries as delivered and keeps its partial gap (PR #3676 review)", () => {
+  const verdict = assessScopeShortfalls(
+    ISSUE_WITHOUT_SCOPE,
+    MET_SUMMARY +
+      "- **partial** — the quarterly emailer — reviewer: partial — reason: not wired up\n",
+  );
+  assertEquals(verdict.delivered.length, 1);
+  assertStringIncludes(verdict.delivered[0]!, "the export works");
+  assertEquals(verdict.shortfalls.length, 2);
+  assertEquals(verdict.shortfalls[0], {
+    criterion: UNSTATED_SCOPE_ITEM,
+    status: "unassessed",
+  });
+  assertStringIncludes(verdict.shortfalls[1]!.criterion, "quarterly emailer");
+  assertEquals(verdict.shortfalls[1]!.status, "partial");
+});
+
+Deno.test("buildDegradedFollowUpIssue - a healthy verdict gets the reported-gap body under the same finding id (Issue #3506)", () => {
+  const verdict = assessReportedGaps(
+    TWO_CRITERIA_ISSUE,
+    EXPORT_MET_IMPORT_PARTIAL,
+  );
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 77,
+    parentTitle: "Add the importer",
+    verdict,
+    runId: "run-1",
+  });
+  assertEquals(issue.title, "Finish #77: Add the importer");
+  assertStringIncludes(
+    issue.body,
+    `<!-- finding-id: ${degradedFollowUpFindingId(77)} -->`,
+  );
+  assertStringIncludes(issue.body, "Issue #3506");
+  assertStringIncludes(issue.body, "- **partial** — the import works");
+  assertStringIncludes(issue.body, "- the export works");
+  assertEquals(issue.body.includes("**degraded**"), false);
+});
+
+Deno.test("buildDegradedFollowUpIssue - the healthy body is laid out exactly, blank lines and headings included (Issue #3506)", () => {
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 77,
+    parentTitle: "Add the importer",
+    verdict: assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    runId: "run-1",
+  });
+  assertEquals(
+    issue.body,
+    [
+      `<!-- finding-id: ${degradedFollowUpFindingId(77)} -->`,
+      "",
+      "Auto-filed by the Vibe Coder (Issue #3506): the implementation run for " +
+      "#77 closed out one or more acceptance criteria as `partial` or " +
+      "`missing` in its PR summary. The outstanding scope continues here so " +
+      "it survives that PR's merge.",
+      "",
+      "## Acceptance Criteria",
+      "",
+      "Outstanding from that run (status as its PR summary reported it):",
+      "",
+      "- **partial** — the import works",
+      "",
+      "## Already delivered by that run",
+      "",
+      "- the export works",
+      "",
+      "Check each outstanding item against the merged code before changing " +
+      "anything: the run may have done more than its summary claimed.",
+      "",
+      "_Run id: `run-1`_",
+    ].join("\n"),
+  );
+});
+
+Deno.test("buildDegradedFollowUpIssue - a degraded verdict keeps the degraded body (Issue #3506)", () => {
+  const issue = buildDegradedFollowUpIssue({
+    parentNumber: 77,
+    parentTitle: "Add the importer",
+    verdict: {
+      degraded: true,
+      reason: "served by a fallback model",
+      delivered: [],
+      shortfalls: [...PARTIAL_SHORTFALL],
+    },
+    runId: "run-1",
+  });
+  assertStringIncludes(issue.body, "Issue #2562");
+  assertStringIncludes(issue.body, "was **degraded**");
+  assertEquals(issue.body.includes("Issue #3506"), false);
+});
+
+Deno.test("buildReportedGapPrSection - names the follow-up and the shortfall (Issue #3506)", () => {
+  const section = buildReportedGapPrSection(
+    assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    77,
+  );
+  assert(section.startsWith(REPORTED_GAP_SECTION_HEADING));
+  assertStringIncludes(section, "continue in #77:");
+  assertStringIncludes(section, "- **partial** — the import works");
+});
+
+Deno.test("buildReportedGapPrSection - is laid out exactly, blank lines included (Issue #3506)", () => {
+  assertEquals(
+    buildReportedGapPrSection(
+      assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+      77,
+    ),
+    [
+      REPORTED_GAP_SECTION_HEADING,
+      "",
+      "This run's PR summary closed out the criteria below as `partial` or " +
+      "`missing`. The outstanding items continue in #77:",
+      "",
+      "- **partial** — the import works",
+      "",
+      "",
+    ].join("\n"),
+  );
+});
+
+Deno.test("buildReportedGapPrSection - throws on a degraded verdict or one without a gap (Issue #3506)", () => {
+  assertThrows(
+    () =>
+      buildReportedGapPrSection({
+        degraded: true,
+        delivered: [],
+        shortfalls: [...PARTIAL_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+  assertThrows(
+    () =>
+      buildReportedGapPrSection({
+        degraded: false,
+        delivered: [],
+        shortfalls: [...UNASSESSED_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+});
+
+Deno.test("rederiveReportedGapSection - empty when everything is now met (Issue #3506)", () => {
+  const liveSection = buildReportedGapPrSection(
+    assessReportedGaps(EXPORT_ISSUE, PARTIAL_SUMMARY),
+    77,
+  );
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection,
+      issueBody: EXPORT_ISSUE,
+      prBody: MET_SUMMARY,
+    }),
+    "",
+  );
+});
+
+Deno.test("rederiveReportedGapSection - gaps the section was raised with stay as they are (Issue #3506)", () => {
+  const liveSection = buildReportedGapPrSection(
+    assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+    77,
+  );
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    liveSection,
+  );
+});
+
+Deno.test("rederiveReportedGapSection - changed gaps keep the number but do not claim the follow-up holds them (PR #3676 review)", () => {
+  const liveSection = buildReportedGapPrSection(
+    assessReportedGaps(EXPORT_ISSUE, PARTIAL_SUMMARY),
+    77,
+  );
+  const out = rederiveReportedGapSection({
+    liveSection,
+    issueBody: TWO_CRITERIA_ISSUE,
+    prBody: EXPORT_MET_IMPORT_PARTIAL,
+  });
+  assert(out.startsWith(REPORTED_GAP_SECTION_HEADING));
+  assertStringIncludes(out, "The worker filed #77 for the outstanding items");
+  assertStringIncludes(out, "does not rewrite it");
+  assertEquals(out.includes("continue in #77:"), false);
+  assertStringIncludes(out, "the import works");
+  // A second re-derive from the same inputs is a no-op, not another rewrite.
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: out,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    out,
+  );
+});
+
+Deno.test("buildReportedGapStaleFollowUpSection - is laid out exactly, blank lines included (PR #3676 review)", () => {
+  assertEquals(
+    buildReportedGapStaleFollowUpSection(
+      assessReportedGaps(TWO_CRITERIA_ISSUE, EXPORT_MET_IMPORT_PARTIAL),
+      77,
+    ),
+    [
+      REPORTED_GAP_SECTION_HEADING,
+      "",
+      "This run's PR summary closed out the criteria below as `partial` or " +
+      "`missing`. The worker filed #77 for the outstanding items when the PR " +
+      "was raised and a re-sync does not rewrite it, so it may not list every " +
+      "item below — check them against the diff before merging:",
+      "",
+      "- **partial** — the import works",
+      "",
+      "",
+    ].join("\n"),
+  );
+});
+
+Deno.test("buildReportedGapStaleFollowUpSection - throws on a degraded verdict or one without a gap (PR #3676 review)", () => {
+  assertThrows(
+    () =>
+      buildReportedGapStaleFollowUpSection({
+        degraded: true,
+        delivered: [],
+        shortfalls: [...PARTIAL_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+  assertThrows(
+    () =>
+      buildReportedGapStaleFollowUpSection({
+        degraded: false,
+        delivered: [],
+        shortfalls: [...UNASSESSED_SHORTFALL],
+      }, 77),
+    Error,
+    "needs a healthy verdict",
+  );
+});
+
+Deno.test("rederiveReportedGapSection - never reads the number from a hostile shortfall bullet (Issue #3506)", () => {
+  const hostile =
+    `${REPORTED_GAP_SECTION_HEADING}\n\n- **partial** — see continue in #12345: here\n\n`;
+  const out = rederiveReportedGapSection({
+    liveSection: hostile,
+    issueBody: TWO_CRITERIA_ISSUE,
+    prBody: EXPORT_MET_IMPORT_PARTIAL,
+  });
+  assertEquals(out, hostile);
+  const hostileFiled =
+    `${REPORTED_GAP_SECTION_HEADING}\n\n- **partial** — The worker filed #12345 here\n\n`;
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: hostileFiled,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    hostileFiled,
+  );
+});
+
+Deno.test("rederiveReportedGapSection - a long run of digits is not read as a number (PR #3676 review)", () => {
+  const live =
+    `${REPORTED_GAP_SECTION_HEADING}\n\nThis run's PR summary closed out the criteria. The worker filed #${
+      "9".repeat(50_000)
+    }x\n\n`;
+  assertEquals(
+    rederiveReportedGapSection({
+      liveSection: live,
+      issueBody: TWO_CRITERIA_ISSUE,
+      prBody: EXPORT_MET_IMPORT_PARTIAL,
+    }),
+    live,
+  );
 });
