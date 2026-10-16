@@ -145,6 +145,8 @@ flowchart LR
   "goes under `accepted`" note. Its `"rule": "SEC-8d02435d8683"` assertion
   moved into the `fixedBody` check rather than being removed. This diff
   removes no assertion from any existing test.
+- Moved `assertStringIncludes( buildSweepIssueBody(fixed, ".github/security-tree-sweep-baseline.json"), '"rule": "SEC-8d02435d8683"', "an unlocated finding must be triaged by its own id, not by its family", );` to `worker/deno/tests/security_tree_sweep_test.ts::baselining one unlocated finding leaves the others reported (Issue #1473)`
+  (it now asserts on the same `buildSweepIssueBody` result, held in `fixedBody`).
 - New guard test: "falsePositives - a snippet-only entry never suppresses a
   finding with no snippet (Issue #3658)".
 - Red checks: each new guard was broken on its own and the named test went
