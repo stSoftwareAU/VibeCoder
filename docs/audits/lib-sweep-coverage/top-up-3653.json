@@ -9,5 +9,5 @@
     "worker/deno/lib/checkov_check.ts",
     "worker/deno/lib/checkov_workflow_check.ts"
   ],
-  "sweptAt": "73127da34c84956d5ded9050cd085a2ae041dd40"
+  "sweptAt": "568f23669da6ff69832ca9f8c3e467d18bf95063"
 }
