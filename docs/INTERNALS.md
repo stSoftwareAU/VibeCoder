@@ -334,6 +334,12 @@ bash `worker/run_core.sh` conductor. It sequences:
    ([run_housekeeping.ts](../worker/deno/lib/run_housekeeping.ts),); each step
    is best-effort — a failure is logged loud but never blocks start.
 
+   The agent-transcript scan (Issue #3700) runs second, straight after
+   `audit-chain-verify` and before any rotation or retention step, so each
+   retained agent transcript is scanned before anything rotates or deletes it.
+   Transcripts are kept for 30 days, on their own window
+   ([CONFIGURATION.md](CONFIGURATION.md#-agent-transcripts)).
+
    The last step,
    `merged-pr-issue-sweep`
    ([merged_pr_issue_sweep.ts](../worker/deno/lib/merged_pr_issue_sweep.ts),

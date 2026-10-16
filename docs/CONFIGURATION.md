@@ -2090,19 +2090,101 @@ redaction and the read access that follow. See
 #### Local retention
 
 Transcripts are bounded by the housekeeping every run already performs, with
-no operator action:
+no operator action. They have their own window, separate from the worker logs':
 
 - `log-rotation` size-rotates `agent-*.jsonl` transcripts into `.jsonl.N`
   backups. It rotates only the worker's own log names (Issue #1267) — a
   third-party `.log` or `.jsonl` sharing the log directory is left alone.
-- `worker-log-cleanup` then applies the worker-log retention policy to
-  `agent-*.jsonl` and its rotated and gzipped forms: deleted after **3 days**,
-  with a hard cap of **200** retained files, oldest deleted first.
+- `worker-log-cleanup` then applies the transcript retention policy to
+  `agent-*.jsonl` and its rotated and gzipped forms (Issue #3700): deleted
+  after **30 days**, with a hard cap of **1000** retained files, oldest deleted
+  first. The cap is counted over transcripts alone, so it does not share the
+  worker-log cap of **200** files (worker logs keep **3 days**).
+- The header-only stub rule still applies to transcripts: a file under 200
+  bytes and over an hour old is deleted as a stub.
+
+The age limit and the file cap can be overridden with the environment variables
+`AGENT_TRANSCRIPT_MAX_AGE_DAYS` and `AGENT_TRANSCRIPT_HARD_CAP_COUNT`.
+Housekeeping passes them to the `worker-log-cleanup` step as
+`--transcript-max-age-days` and `--transcript-hard-cap-count`.
 
 Nothing else sweeps them — the session sweeper covers `.claude-sessions/`, not
 transcripts — and nothing prunes a transcript a hook has copied elsewhere. On
-a busy host the practical retention is the 3-day age limit; on a host running
-more than 200 agent invocations inside that window it is the file cap.
+a busy host the practical retention is the 30-day age limit; on a host running
+more than 1000 agent invocations inside that window it is the file cap.
+
+#### Scheduled scan
+
+Retained transcripts are host-local files holding raw repository content, so
+the worker also checks them. Every worker start runs the
+`agent-transcript-scan` housekeeping step
+([agent_transcript_scan.ts](../worker/deno/lib/agent_transcript_scan.ts),
+Issue #3700). It runs second in the housekeeping order, straight after
+`audit-chain-verify` and before `disk-space`, `log-rotation` and
+`worker-log-cleanup`, so a transcript is scanned before anything rotates or
+deletes it.
+
+```mermaid
+flowchart LR
+    A["Housekeeping start"] --> B["audit-chain-verify"]
+    B --> C["agent-transcript-scan"]
+    C --> D["transcript-scan-findings.jsonl<br/>+ loud worker-log line"]
+    C --> E["disk-space"]
+    E --> F["log-rotation"]
+    F --> G["worker-log-cleanup"]
+```
+
+The scan reads the Claude stream-json events in each retained plain transcript
+in the log directory and flags three signals:
+
+- **egress** — a Bash command whose command word is a network client (`curl`,
+  `wget`, `nc`, `ncat`, `netcat`, `socat`, `telnet`, `ssh`, `scp`, `sftp`,
+  `ftp`), or that opens `/dev/tcp/` or `/dev/udp/`.
+- **credential-read** — a Bash command token, or a non-Bash tool's
+  `file_path`, `path` or `notebook_path`, that names a credential path: the
+  pre-commit forbidden patterns (such as `.ssh/`, `.aws/`, `.netrc`, `.env`,
+  `id_*` keys and `*.pem`), plus `.git-credentials`, `gh/hosts.yml`,
+  `.credentials.json`, `.docker/config.json`, `.kube/config` and
+  `/proc/<pid>/environ`.
+- **disallowed-tool** — an entry in the CLI's `permission_denials`, a failed
+  tool result carrying a gh/git guard refusal marker
+  (`[SECURITY] [..._BLOCKED]` or `[SECURITY] [..._REFUSED]`), or a
+  `No such tool available` error other than the CLI's tool-name case hint.
+
+**Findings ledger.** Each new finding is appended to
+`transcript-scan-findings.jsonl` in the log directory, one JSON object per
+line, with the fields `fingerprint`, `detectedAt`, `file`, `line`, `signal`,
+`tool` and `detail`. The `detail` is redacted and capped at 200 characters.
+
+**Loud, once.** A new finding makes the step fail loud. The worker log gets
+`[housekeeping] agent-transcript-scan failed (continuing): [SECURITY]
+[AGENT_TRANSCRIPT_FLAGGED] <n> new finding(s) …`, naming up to ten. A finding
+is reported once: `transcript-scan-state.json` memoises scanned files by size
+and mtime, so a rotation rename is not rescanned, and the ledger's fingerprints
+stop a rescan from re-reporting it.
+
+**Not checked, or incomplete.** A gzipped transcript is reported as not checked.
+An unreadable transcript, or a failure to write the state file, also fails the
+step, with `[SECURITY] [AGENT_TRANSCRIPT_SCAN_INCOMPLETE]`. The scan never
+blocks start: housekeeping is best-effort.
+
+**Limits.** It is a heuristic over the agent's own stream. It does not see
+network traffic, and only failed (`is_error`) tool results are checked for guard
+markers.
+
+**Run it on demand.** From `worker/deno`:
+
+```text
+deno task agent-transcript-scan [--log-dir <dir>]
+```
+
+**Why a housekeeping step, not an idle task.** Transcripts are host-local files
+holding raw content from every repository the host worked on. An idle-task
+template runs inside one monitored repository's clone and files its findings as
+issues in that repository, which would copy one repository's transcript content
+into another's issues. The startup housekeeping sequence is the worker's
+existing schedule for host-local checks, the same place `audit-chain-verify`
+(Issue #3712) runs.
 
 ### 🧭 Adaptive claim floor
 

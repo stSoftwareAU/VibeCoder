@@ -31,11 +31,14 @@
  *
  * Retention: the housekeeping pass every run makes (`run_housekeeping.ts`)
  * runs `log-rotation` — which size-rotates the worker's own logs, transcripts
- * among them (Issue #1267) — and then
- * `worker-log-cleanup`, whose `AGENT_TRANSCRIPT_PATTERN` ages transcripts out
- * with the worker logs: three days, and a 200-file hard cap. Local retention
- * is therefore bounded without an operator doing anything; exporting a
- * transcript anywhere else is the callback hook's decision.
+ * among them (Issue #1267) — and then `worker-log-cleanup`, whose
+ * `AGENT_TRANSCRIPT_PATTERN` ages transcripts out on their own window: 30 days,
+ * and a 1000-file cap counted separately from the worker logs (Issue #3700).
+ * The `agent-transcript-scan` housekeeping step (`agent_transcript_scan.ts`)
+ * scans retained transcripts for egress, credential-path reads and
+ * disallowed-tool attempts before rotation or retention touches them. Local
+ * retention is therefore bounded without an operator doing anything; exporting
+ * a transcript anywhere else is the callback hook's decision.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
