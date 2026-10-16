@@ -59,6 +59,7 @@ import {
   pushUnpushedCommits,
   recoverExistingPr,
 } from "./git_push.ts";
+import { formatBranchChanges } from "./repo_formatters.ts";
 import { resolveRebaseConflicts } from "./git_conflict_resolution.ts";
 import { recoverGitState } from "./git_state_recovery.ts";
 import {
@@ -274,6 +275,11 @@ export interface GitDeps {
   pushUnpushedCommits: typeof pushUnpushedCommits;
   /** Pre-push changed-file gate over unpushed commits (Issue #3689). */
   gateUnpushedCommits: typeof gateUnpushedCommits;
+  /**
+   * Run the repo's formatters over the branch's changed files and commit the
+   * result, before the quality and pre-push gates (part of #2932).
+   */
+  formatBranchChanges: typeof formatBranchChanges;
   commitAndPushPending: typeof commitAndPushPending;
   ensureDefaultBranchCurrent: typeof ensureDefaultBranchCurrent;
   getRepoDefaultBranch: typeof getRepoDefaultBranch;
@@ -663,6 +669,7 @@ export function createDefaultDeps(
       reconcileHeadToBranch,
       pushUnpushedCommits,
       gateUnpushedCommits,
+      formatBranchChanges,
       commitAndPushPending,
       ensureDefaultBranchCurrent,
       getRepoDefaultBranch,
@@ -1023,6 +1030,9 @@ export function createMockDeps(overrides?: MockDepsOverrides): WorkerDeps {
     ),
     gateUnpushedCommits: mockFn<GitDeps["gateUnpushedCommits"]>(() =>
       Promise.resolve({ ok: true, value: undefined })
+    ),
+    formatBranchChanges: mockFn<GitDeps["formatBranchChanges"]>(() =>
+      Promise.resolve({ runs: [], failures: [], committed: false })
     ),
     commitAndPushPending: mockFn<GitDeps["commitAndPushPending"]>(() =>
       Promise.resolve({

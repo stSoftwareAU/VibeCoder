@@ -144,6 +144,44 @@ Deno.test("classifyBuildFailure - a storage signature outranks a mute step", () 
   assertEquals(result.class, "builder-storage");
 });
 
+// GRQ-23, 2026-10-15: every hourly launch died here once the stripped
+// Containerfile reached 15,000 bytes and the host passed an AGENT_PROVIDERS
+// build argument. Apple container drops an over-size build request with this
+// line instead of naming the size, and the heal said only "leaving it to fail".
+const DROPPED_REQUEST =
+  '[run.sh] building vibe-coder:15b82aa5ce98\nError: unavailable: "Stream unexpectedly closed."\n';
+
+Deno.test("healBuilderStorage - names a dropped build request as an over-size Containerfile, without touching the builder", async () => {
+  const { deps, calls, logs } = stubDeps();
+  const outcome = await healBuilderStorage(
+    deps,
+    healOptions({ buildLog: DROPPED_REQUEST }),
+  );
+  assertEquals(outcome.healable, false);
+  assertEquals(calls, [], "a builder restart cannot shrink the request");
+  assert(
+    (outcome.detail ?? "").includes("CONTAINERFILE_SIZE_CAP_BYTES"),
+    `the detail must point at the size cap: ${outcome.detail}`,
+  );
+  assert(
+    logs.some((line) => line.includes("Stream unexpectedly closed")),
+    logs.join("\n"),
+  );
+});
+
+Deno.test("healBuilderStorage - an ordinary step failure keeps its plain message", async () => {
+  const { deps, calls } = stubDeps();
+  const outcome = await healBuilderStorage(
+    deps,
+    healOptions({ buildLog: REPORTED_STEP }),
+  );
+  assertEquals(calls, []);
+  assert(
+    !(outcome.detail ?? "").includes("CONTAINERFILE_SIZE_CAP_BYTES"),
+    outcome.detail,
+  );
+});
+
 Deno.test("healBuilderStorage - restarts, then recreates, the builder for a mute step (Issue #2089)", async () => {
   const first = stubDeps();
   const restart = await healBuilderStorage(
