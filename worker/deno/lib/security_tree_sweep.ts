@@ -1426,13 +1426,12 @@ function trackingIssue(cluster: SweepCluster): number | null {
   return null;
 }
 
-/** True when a snippet-only entry meets a finding with no snippet: it must not match (Issue #3658). */
+/** True when a line-less entry (snippet-only — parseSweepBaseline refuses one with neither) meets a finding with no snippet: it must not match (Issue #3658). */
 function snippetOnlyUnanchored(
   entry: SweepBaselineEntry,
   cluster: SweepCluster,
 ): boolean {
-  return entry.snippet !== undefined && entry.line === undefined &&
-    cluster.snippet === undefined;
+  return entry.line === undefined && cluster.snippet === undefined;
 }
 
 /**
