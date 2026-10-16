@@ -3,9 +3,12 @@
  *
  * The PR body is assembled once, at PR creation, from
  * `docs/archive/pr-summaries/pr-summary-<N>.md` (and a handful of other
- * sections — evidence, milestone, the leading degraded-run section, bump
- * note, footer). The degraded-run section is re-derived at sync time from the
- * current issue and summary, never copied forward (Issue #3350). A
+ * sections — evidence, milestone, the leading degraded-run or
+ * partial-delivery section, bump note, footer). That leading section is
+ * re-derived at sync time from the current issue and summary rather than
+ * copied forward (Issue #3350, #3506), except that a partial-delivery section
+ * whose follow-up number cannot be read is kept as it is. The sync only reads
+ * the issue: it never writes to the follow-up (PR #3676 review). A
  * review-fix run that rewrites that summary file and pushes new commits never
  * touched the PR body again, so a reviewer reading the description kept
  * seeing the original summary while the diff underneath it changed.
@@ -68,7 +71,13 @@ import {
 } from "./pr_evidence.ts";
 import { resolveImagePaths } from "./image_path_resolver.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "./bump_deps.ts";
-import { rederiveDegradedSection } from "./degraded_delivery.ts";
+import {
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+  rederiveDegradedSection,
+  rederiveFollowUpChainStopSection,
+  rederiveReportedGapSection,
+  REPORTED_GAP_SECTION_HEADING,
+} from "./degraded_delivery.ts";
 import {
   buildMissingCriteriaPrNote,
   findMissingCriteria,
@@ -319,15 +328,17 @@ function extractBumpSkipNote(body: string): string {
 }
 
 /**
- * The leading degraded-run section PR creation prepends (Issue #2562).
+ * The leading section PR creation prepends under `heading`: the degraded-run
+ * section (Issue #2562) or a healthy run's partial-delivery section
+ * (Issue #3506).
  *
  * It exists only on the live body — the summary file does not carry it — so
  * this only locates it; the caller re-derives its content from current state
- * rather than copying it forward (Issue #3350). Only a block that opens the
+ * rather than copying it forward (Issue #3350), keeping a partial-delivery
+ * section as it is when its follow-up number cannot be read. Only a block that opens the
  * body counts; a later mention is the summary quoting the phrase.
  */
-function extractDegradedRunSection(body: string): string {
-  const heading = "## ⚠️ Degraded run —";
+function extractLeadingSection(body: string, heading: string): string {
   const start = body.indexOf(heading);
   if (start === -1) return "";
   if (body.slice(0, start).trim().length > 0) return "";
@@ -613,9 +624,32 @@ export async function syncPrBodyFromSummary(
 
   // Issue #3350: re-derive the degraded-run section from the current issue and
   // summary. Copying the live one forward left a banner that had become false
-  // (for example "states no acceptance criteria") uncorrectable.
-  const liveDegraded = extractDegradedRunSection(view.body ?? "");
-  if (liveDegraded) {
+  // (for example "states no acceptance criteria") uncorrectable. A healthy
+  // run's partial-delivery section is re-derived the same way (Issue #3506).
+  const liveDegraded = extractLeadingSection(
+    view.body ?? "",
+    "## ⚠️ Degraded run —",
+  );
+  const liveReportedGap = liveDegraded ? "" : extractLeadingSection(
+    view.body ?? "",
+    REPORTED_GAP_SECTION_HEADING,
+  );
+  // PR #3676 review: a healthy run on a partial-delivery follow-up carries
+  // the chain-stop section instead, re-derived from the current gaps. A
+  // degraded run on one still files its own follow-up.
+  const liveChainStop = liveDegraded || liveReportedGap
+    ? ""
+    : extractLeadingSection(
+      view.body ?? "",
+      FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+    );
+  const liveSection = liveDegraded || liveReportedGap || liveChainStop;
+  if (liveSection) {
+    const sectionName = liveDegraded
+      ? "degraded-run section"
+      : liveChainStop
+      ? "chain-stop section"
+      : "partial-delivery section";
     let issueBody: string;
     try {
       const raw = await deps.runGhCommand([
@@ -636,26 +670,44 @@ export async function syncPrBodyFromSummary(
       return {
         ok: false,
         error: new Error(
-          `Failed to read issue #${issueNumber} to re-derive the degraded-run section of PR #${input.prNumber}: ${
+          `Failed to read issue #${issueNumber} to re-derive the ${sectionName} of PR #${input.prNumber}: ${
             (err as Error).message
           }`,
         ),
       };
     }
-    const rederived = rederiveDegradedSection({
-      liveSection: liveDegraded,
-      issueBody,
-      prBody: body,
-    });
-    if (rederived !== liveDegraded) {
-      logger.info("Re-derived the degraded-run section (Issue #3350)", {
-        repo: input.repo,
-        prNumber: input.prNumber,
+    const rederived = liveChainStop
+      ? rederiveFollowUpChainStopSection({
         issueNumber,
-        dropped: rederived === "",
+        issueBody,
+        prBody: body,
+      })
+      : (liveDegraded ? rederiveDegradedSection : rederiveReportedGapSection)({
+        liveSection,
+        issueBody,
+        prBody: body,
       });
+    if (rederived !== liveSection) {
+      logger.info(
+        liveDegraded
+          ? "Re-derived the degraded-run section (Issue #3350)"
+          : liveChainStop
+          ? "Re-derived the chain-stop section (PR #3676 review)"
+          : "Re-derived the partial-delivery section (Issue #3506)",
+        {
+          repo: input.repo,
+          prNumber: input.prNumber,
+          issueNumber,
+          dropped: rederived === "",
+        },
+      );
     }
-    body = rederived + body;
+    // PR #3676 review: a kept chain-stop section keeps the PR from closing
+    // the follow-up it hands to a human.
+    body = rederived +
+      (liveChainStop && rederived !== ""
+        ? withholdIssueClose(body, issueNumber)
+        : body);
   }
 
   if (body.trim() === (view.body ?? "").trim()) {
