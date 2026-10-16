@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 51,
+        "outcome": "an allowlisted file with a direct create is not reported as unlisted",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - real tree has no unlisted direct create call site",
+        "flipWentRed": "dropping an allowlist entry turned it red (inferred mapping; flip row named no test)"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 311,
+        "outcome": "a missing scan directory throws instead of passing",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - fails closed on a missing scan directory",
+        "flipWentRed": "removing the missing-dir guard turned it red: expected 'does not exist'"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 318,
+        "outcome": "a scan path that is a file throws instead of passing",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - fails closed when a scan path is a file",
+        "flipWentRed": "removing the not-a-directory guard turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 358,
+        "outcome": "a scan that examines zero .ts files throws instead of passing",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - fails closed when no .ts file is scanned",
+        "flipWentRed": "removing the zero-files guard turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 204,
+        "outcome": "a create argv inside a line comment is ignored",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - ignores create argv inside comments",
+        "flipWentRed": "removing the line-comment strip turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 204,
+        "outcome": "a create argv inside a block comment is ignored",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - ignores create argv inside comments",
+        "flipWentRed": "removing the block-comment strip turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 270,
+        "outcome": "read verbs and other subcommands are not flagged",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - ignores read verbs and other subcommands",
+        "flipWentRed": "changing the verb check turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 393,
+        "outcome": "a missing stale-entry file is reported as stale",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - stale entries are missing or clean files",
+        "flipWentRed": "changing the stale-missing branch turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 399,
+        "outcome": "a clean allowlisted file is reported as stale",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - stale entries are missing or clean files",
+        "flipWentRed": "changing the stale-clean branch turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 315,
+        "outcome": "a non-NotFound stat error on a scan directory is rethrown",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - rethrows a non-missing stat error on a scan directory",
+        "flipWentRed": "mapping non-NotFound stat errors to 'does not exist' turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 396,
+        "outcome": "a non-NotFound read error in the stale audit is rethrown",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - stale audit rethrows a non-missing read error",
+        "flipWentRed": "recording a stale entry on a non-NotFound read error turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 204,
+        "outcome": "a create argv after a url string literal is detected",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - detects every direct create form",
+        "flipWentRed": "reverting quote-awareness turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 211,
+        "outcome": "a string containing a block-comment opener does not hide a create",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - string containing a block-comment opener does not hide a create",
+        "flipWentRed": "restoring the separate block-comment pass turned it red: got [], expected [2]"
+      }
+    ]
+  }
+}
