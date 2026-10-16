@@ -129,7 +129,7 @@ it is a redaction fixture string, not a gate behaviour.
 ## Test Plan
 
 - `deno task test:unit tests/review_fleet_prs_dependabot_test.ts tests/review_fleet_prs_backlog_3225_test.ts tests/review_fleet_prs_app_reviewer_test.ts tests/review_fleet_prs_upkeep_failure_2891_test.ts tests/review_fleet_prs_checklists_3594_test.ts tests/review_fleet_prs_gate_audit_3116_test.ts < /dev/null`: passed (58 passed, 0 failed) on the head.
-- `./quality.sh < /dev/null`: QUALITY_RESULT_LINE
+- `./quality.sh < /dev/null`: passed on the final head (`Result: PASSED (with skipped checks)`; only `config integration` skipped, as on every run without a host config). deno tests, lint, type check, fmt, semgrep and markdownlint all passed.
 
 Red checks (each restored afterwards):
 
