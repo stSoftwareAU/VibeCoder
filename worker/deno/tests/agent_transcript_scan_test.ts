@@ -258,6 +258,41 @@ Deno.test("scanTranscriptLine - flags egress via curl, a wrapped wget and a /dev
   );
 });
 
+Deno.test("scanTranscriptLine - flags each network client named in command position (Issue #3700)", () => {
+  const clients = [
+    "nc",
+    "ncat",
+    "netcat",
+    "socat",
+    "telnet",
+    "ssh",
+    "scp",
+    "sftp",
+    "ftp",
+  ];
+  for (const client of clients) {
+    const scan = scanTranscriptLine(
+      assistantBash(`${client} example.invalid 443`),
+    );
+    assertEquals(scan.findings.map((f) => f.signal), ["egress"], client);
+    assertStringIncludes(
+      scan.findings[0]!.detail,
+      `network client "${client}"`,
+    );
+  }
+});
+
+Deno.test("scanTranscriptLine - looks through each wrapper word to the network client it runs (Issue #3700)", () => {
+  const wrappers = ["sudo", "env", "nohup", "exec", "command", "time", "xargs"];
+  for (const wrapper of wrappers) {
+    const scan = scanTranscriptLine(
+      assistantBash(`${wrapper} curl example.invalid`),
+    );
+    assertEquals(scan.findings.map((f) => f.signal), ["egress"], wrapper);
+    assertStringIncludes(scan.findings[0]!.detail, 'network client "curl"');
+  }
+});
+
 Deno.test("scanTranscriptLine - does not flag a git commit that mentions ssh (Issue #3700)", () => {
   assertEquals(
     signalsOf(assistantBash('git commit -m "fix ssh handling"')),

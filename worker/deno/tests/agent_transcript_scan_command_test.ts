@@ -9,6 +9,7 @@
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { agentTranscriptScanCommand } from "../commands/agent_transcript_scan.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
+import type { TranscriptScanResult } from "../lib/agent_transcript_scan.ts";
 
 const FLAGGED = new URL(
   "./fixtures/agent_transcripts/flagged.jsonl",
@@ -151,6 +152,42 @@ Deno.test("agentTranscriptScanCommand - names more than ten findings by count", 
     assertEquals(result.success, false);
     assertStringIncludes(result.message, "12 new finding(s)");
     assertStringIncludes(result.message, "(and 2 more)");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("agentTranscriptScanCommand - returns the scan result as data on a flagged transcript", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.copyFile(FLAGGED, `${dir}/${TRANSCRIPT}`);
+    const result = await agentTranscriptScanCommand.execute(
+      { "log-dir": dir },
+      buildDefaultWorkerConfig(),
+    );
+    assertEquals(result.success, false);
+    const data = result.data as TranscriptScanResult | undefined;
+    assert(data !== undefined);
+    assertEquals(data.scannedFiles, [TRANSCRIPT]);
+    assertEquals(data.newFindings.length, 4);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("agentTranscriptScanCommand - returns the scan result as data when the scan is incomplete", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.copyFile(CLEAN, `${dir}/${TRANSCRIPT}`);
+    await Deno.mkdir(`${dir}/transcript-scan-state.json.tmp`);
+    const result = await agentTranscriptScanCommand.execute(
+      { "log-dir": dir },
+      buildDefaultWorkerConfig(),
+    );
+    assertEquals(result.success, false);
+    const data = result.data as TranscriptScanResult | undefined;
+    assert(data !== undefined);
+    assertEquals(typeof data.stateError, "string");
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
