@@ -192,3 +192,59 @@ Deno.test("agentTranscriptScanCommand - returns the scan result as data when the
     await Deno.remove(dir, { recursive: true });
   }
 });
+
+/** Whether a file of `mode` blocks `access` on this host (false on root and Windows). */
+async function modeBlocks(
+  mode: number,
+  access: "read" | "write",
+): Promise<boolean> {
+  if (Deno.build.os === "windows") return false;
+  const probeDir = await Deno.makeTempDir();
+  const probe = `${probeDir}/probe`;
+  try {
+    await Deno.writeTextFile(probe, "");
+    await Deno.chmod(probe, mode);
+    try {
+      const file = access === "read"
+        ? await Deno.open(probe, { read: true })
+        : await Deno.open(probe, { write: true });
+      file.close();
+      return false;
+    } catch {
+      return true;
+    }
+  } finally {
+    await Deno.remove(probeDir, { recursive: true });
+  }
+}
+
+/** Whether a 0o000 file refuses reads here; skips the test otherwise. */
+const UNREADABLE_ENFORCED = await modeBlocks(0o000, "read");
+
+Deno.test({
+  name:
+    "agentTranscriptScanCommand - fails loud naming an unreadable transcript",
+  ignore: !UNREADABLE_ENFORCED,
+  fn: async () => {
+    const dir = await Deno.makeTempDir();
+    const name = "agent-vibe-unread1-abc123-1.jsonl";
+    const path = `${dir}/${name}`;
+    try {
+      await Deno.copyFile(CLEAN, path);
+      await Deno.chmod(path, 0o000);
+      const result = await agentTranscriptScanCommand.execute(
+        { "log-dir": dir },
+        buildDefaultWorkerConfig(),
+      );
+      assertEquals(result.success, false);
+      assertStringIncludes(
+        result.message,
+        "[SECURITY] [AGENT_TRANSCRIPT_SCAN_INCOMPLETE]",
+      );
+      assertStringIncludes(result.message, name);
+    } finally {
+      await Deno.chmod(path, 0o644);
+      await Deno.remove(dir, { recursive: true });
+    }
+  },
+});
