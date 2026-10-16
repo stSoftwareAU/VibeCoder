@@ -205,7 +205,7 @@ function redactDecodedLine(
   // forward through `raw` for the whole walk and each search starts where the
   // last one matched — the check stays linear in the line, as redaction over
   // model and tool output must (SECURITY.md). The whole string is tried
-  // first; only a mismatch is checked piece by piece, and pieces may share a
+  // first, near the cursor; only a mismatch is checked piece by piece, and pieces may share a
   // position because the raw pass can rewrite the punctuation between them
   // (the Issue #3826 backslash). A string not found from the cursor is
   // reported lost, which only masks more. A miss scans to the end of the
@@ -216,10 +216,14 @@ function redactDecodedLine(
   const lostToRaw = (text: string): boolean => {
     if (!rawChanged) return false;
     if (misses >= MAX_RAW_MISSES) return true;
+    // The whole string is looked for only in a short window after the
+    // cursor, where the next string sits; a miss there falls to the piece
+    // check rather than scanning the rest of the line.
     const whole = escaped(text);
-    const at = raw.indexOf(whole, lineCursor);
+    const window = raw.slice(lineCursor, lineCursor + whole.length + 64);
+    const at = window.indexOf(whole);
     if (at !== -1) {
-      lineCursor = at + whole.length;
+      lineCursor += at + whole.length;
       return false;
     }
     let cursor = lineCursor;

@@ -26,3 +26,22 @@ Deno.test("agent_transcript - redacting a many-string line with a masked value s
   assertEquals(event.text, `export TOKEN=${REDACTION_PLACEHOLDER}`);
   assertEquals(event.names[1], "f1");
 });
+
+Deno.test("agent_transcript - many escaped assignments on one line stay linear (Issue #3826)", () => {
+  const out = assertLinearGrowth(
+    "redactTranscriptLine over many escaped assignments",
+    (chars) => {
+      const count = Math.ceil(chars / 40);
+      const items = Array.from(
+        { length: count },
+        (_, i) => `accessToken: "v${i}xxxxxxxx"`,
+      );
+      return JSON.stringify({ items });
+    },
+    (line) => redactTranscriptLine(line),
+    { baseChars: 100_000 },
+  );
+  const event = JSON.parse(out) as { items: string[] };
+  assertEquals(event.items[0], `accessToken: "${REDACTION_PLACEHOLDER}"`);
+  assertEquals(event.items.at(-1), `accessToken: "${REDACTION_PLACEHOLDER}"`);
+});
