@@ -671,6 +671,37 @@ Deno.test(
 );
 
 Deno.test(
+  'validateDocsSweep - one unbacked updated: path reads "it", two read "them" (Issue #3617)',
+  () => {
+    const summaryOne =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: \`docs/a1.md\``;
+    const resultOne = validateDocsSweep({
+      changedFiles: ["worker/deno/lib/a.ts"],
+      prSummaryContent: summaryOne,
+    });
+
+    assertEquals(resultOne.valid, false);
+    assertEquals(resultOne.problems.length, 1, resultOne.problems.join("; "));
+    assertStringIncludes(resultOne.problems[0]!, "does not change it —");
+    assertEquals(
+      resultOne.problems[0]!.includes("does not change them"),
+      false,
+    );
+
+    const summaryTwo =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: \`docs/a1.md\`, \`docs/a2.md\``;
+    const resultTwo = validateDocsSweep({
+      changedFiles: ["worker/deno/lib/a.ts"],
+      prSummaryContent: summaryTwo,
+    });
+
+    assertEquals(resultTwo.valid, false);
+    assertEquals(resultTwo.problems.length, 1, resultTwo.problems.join("; "));
+    assertStringIncludes(resultTwo.problems[0]!, "does not change them —");
+  },
+);
+
+Deno.test(
   "validateDocsSweep - a null changed-files list raises no updated: problem",
   () => {
     const summary =

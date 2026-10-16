@@ -133,6 +133,10 @@ interface GitScript {
   mergeBaseAfterDeepen: boolean;
   /** stderr of a failing merge (default: a content conflict). */
   mergeStderr?: string;
+  /** Exit code for `git reset --merge` (default: 0, a clean reset). */
+  resetMergeCode?: number;
+  /** stderr of `git reset --merge` (default: empty). */
+  resetMergeStderr?: string;
   /** Error message `commitAndPushPending` fails with (default: it succeeds). */
   commitPushError?: string;
   /** Commits left unpushed after the push (default: 0 — a clean push). */
@@ -272,10 +276,15 @@ function makeGit(
         const revision = args[args.length - 1] ?? "";
         captured.resets.push(revision);
         captured.events.push("git:reset-merge");
-        headOverride = revision;
+        const code = script.resetMergeCode ?? 0;
+        if (code === 0) headOverride = revision;
         return Promise.resolve({
           ok: true,
-          value: { code: 0, stdout: "", stderr: "" },
+          value: {
+            code,
+            stdout: "",
+            stderr: script.resetMergeStderr ?? "",
+          },
         });
       }
 
@@ -3469,6 +3478,54 @@ Deno.test("processMergeConflict - a recovery turn that leaves the false claim re
     captured.comments.find((c) => c.includes(CONFLICT_FAILED_MARKER)) ?? "";
   assertStringIncludes(failed, "docs/x.md");
   assertStringIncludes(failed, "after one recovery turn");
+});
+
+Deno.test("processMergeConflict - a recovery turn the provider refuses withdraws the attempt with the provider cause (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergedDiff: DIFF_WITHOUT_DOCS }),
+    undefined,
+    {
+      workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY },
+      claudeResultsByRun: [undefined, {
+        exitCode: 2,
+        agentFailure: {
+          category: "quota-exhausted",
+          message: "API Error: 402 Insufficient Balance",
+          evidence: "prose",
+          terminal: true,
+          errors: [],
+          httpStatus: 402,
+        },
+      }],
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertStringIncludes(result.value.summary, "provider being unavailable");
+  assertStringIncludes(result.value.summary, "402");
+});
+
+Deno.test("processMergeConflict - a reset that fails after a refused push names the cause in the failure (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergedDiff: DIFF_WITHOUT_DOCS,
+      resetMergeCode: 128,
+      resetMergeStderr: "fatal: Could not reset index file to revision '1111'.",
+    }),
+    undefined,
+    { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.commitAndPushCalls, 0);
+  const failed =
+    captured.comments.find((c) => c.includes(CONFLICT_FAILED_MARKER)) ?? "";
+  assertStringIncludes(failed, "could NOT be reset");
+  assertStringIncludes(failed, "Could not reset index file");
 });
 
 Deno.test("processMergeConflict - a summary whose claims are all present proceeds with no recovery turn (Issue #3617)", async () => {

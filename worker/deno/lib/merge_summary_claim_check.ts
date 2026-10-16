@@ -34,6 +34,7 @@
 import type { Logger, Result } from "../types.ts";
 import type { MergeConflictAgentOutcome } from "./merge_conflict_agent.ts";
 import { parseDocsSweepLine } from "./docs_sweep_gate.ts";
+import { messageOf } from "./repo_loop_quota_stop.ts";
 import { isSummaryClaimPath } from "./summary_claim_check.ts";
 import {
   extractChangeSectionPaths,
@@ -116,17 +117,14 @@ export function extractClaimedPaths(summary: string): ClaimedPath[] {
 }
 
 /** The first non-empty stderr line, the cause git prints first. */
-function firstStderrLine(outcome: { code: number; stderr: string }): string {
+export function firstStderrLine(
+  outcome: { code: number; stderr: string },
+): string {
   const line = outcome.stderr.split("\n").map((l) => l.trim()).find((l) =>
     l !== ""
   );
   if (line === undefined) return `git exited with code ${outcome.code}`;
   return line.slice(0, MAX_REASON_LINE_CHARS);
-}
-
-/** A thrown error's message, or the value itself when it is not an Error. */
-function messageOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 /** Non-empty trimmed lines of a git listing. */
@@ -217,7 +215,6 @@ export async function checkMergedSummaryClaims(opts: {
   const summaries = changed.filter((path) =>
     path !== PR_SUMMARY_SCRATCH_PATH && isSummaryClaimPath(path)
   );
-  if (summaries.length === 0) return { kind: "no-summary" };
   if (summaries.length > MAX_SUMMARIES_CHECKED) {
     return {
       kind: "not-checked",

@@ -367,7 +367,7 @@ function evaluateApplicable(
   }
 
   // Issue #3617: every path after `updated:` must be in this PR's own diff.
-  if (line.present && changedFiles !== null) {
+  if (changedFiles !== null) {
     const unbacked = unbackedPaths(
       extractUpdatedPaths(line.rawBody),
       changedFiles,

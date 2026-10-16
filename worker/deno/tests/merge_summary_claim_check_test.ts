@@ -23,6 +23,7 @@ import {
   extractClaimedPaths,
   gateMergedSummaryClaims,
   MAX_SUMMARIES_CHECKED,
+  MAX_SUMMARY_CHARS,
   type MergeClaimGitRunner,
   type MergedSummaryClaimCheck,
   type SummaryClaimGateOutcome,
@@ -477,6 +478,61 @@ Deno.test("checkMergedSummaryClaims - a runner that throws is not-checked, never
   if (check.kind === "not-checked") {
     assertStringIncludes(check.reason, "spawn git ENOENT");
   }
+});
+
+Deno.test("checkMergedSummaryClaims - a failing git ls-files is not-checked, with git's cause (Issue #3617)", async () => {
+  const check = await checkMergedSummaryClaims({
+    workDir: "/nonexistent-claim-check",
+    baseRef: "origin/main",
+    runGit: (args) =>
+      Promise.resolve(
+        args[0] === "ls-files"
+          ? {
+            code: 128,
+            stdout: "",
+            stderr: "fatal: not a git repository\n",
+          }
+          : { code: 0, stdout: `${SUMMARY_PATH}\n`, stderr: "" },
+      ),
+  });
+
+  assertEquals(check.kind, "not-checked");
+  if (check.kind === "not-checked") {
+    assertStringIncludes(check.reason, "not a git repository");
+    assertStringIncludes(check.reason, "git ls-files failed");
+  }
+});
+
+Deno.test("checkMergedSummaryClaims - a summary over the character cap is not-checked (Issue #3617)", async () => {
+  const runGit = (args: string[]) =>
+    Promise.resolve(
+      args[0] === "ls-files"
+        ? { code: 0, stdout: "", stderr: "" }
+        : { code: 0, stdout: `${SUMMARY_PATH}\n`, stderr: "" },
+    );
+  const sized = (chars: number) =>
+    "# PR #12 — long summary\n".padEnd(chars, "x");
+
+  const over = await checkMergedSummaryClaims({
+    workDir: "/nonexistent-claim-check",
+    baseRef: "origin/main",
+    runGit,
+    readFile: () => Promise.resolve(sized(MAX_SUMMARY_CHARS + 1)),
+  });
+  assertEquals(over.kind, "not-checked");
+  if (over.kind === "not-checked") {
+    assertStringIncludes(over.reason, SUMMARY_PATH);
+    assertStringIncludes(over.reason, String(MAX_SUMMARY_CHARS));
+  }
+
+  // Positive control: exactly the cap is read and checked.
+  const atCap = await checkMergedSummaryClaims({
+    workDir: "/nonexistent-claim-check",
+    baseRef: "origin/main",
+    runGit,
+    readFile: () => Promise.resolve(sized(MAX_SUMMARY_CHARS)),
+  });
+  assertEquals(atCap.kind, "clean");
 });
 
 // ---------------------------------------------------------------------------

@@ -49,6 +49,7 @@ import {
 } from "./merge_conflict_agent.ts";
 import {
   checkMergedSummaryClaims,
+  firstStderrLine,
   gateMergedSummaryClaims,
 } from "./merge_summary_claim_check.ts";
 import { isMilestoneHead } from "./gated_head_guard.ts";
@@ -520,9 +521,7 @@ async function restoreBeforeMerge(
     cwd,
   );
   if (reset.code === 0) return "";
-  const cause = reset.stderr.split("\n").map((line) => line.trim()).find((
-    line,
-  ) => line !== "") ?? "git reported no output";
+  const cause = firstStderrLine(reset);
   return ` — and the local merge could NOT be reset to ${headSha}: ${cause}`;
 }
 
