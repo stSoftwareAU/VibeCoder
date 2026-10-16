@@ -19,6 +19,7 @@ import type { Command, CommandResult, WorkerConfig } from "../types.ts";
 import {
   createGitHubIssuesWithPartialFailures,
   type CreateIssuesResult,
+  type RoutedImprovement,
 } from "../lib/github.ts";
 import { validateSuggestImprovementsArgs } from "../lib/command_args.ts";
 import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
@@ -189,6 +190,11 @@ export function formatImprovementAsIssueBody(improvement: Improvement): string {
 /** The worker's own repository; worker improvements route here (Issue #3745). */
 const VIBE_CODER_REPO = "stSoftwareAU/VibeCoder";
 
+/** `n` and a noun, pluralised for any count other than one. */
+function countOf(n: number, noun: string): string {
+  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 /** Typed data returned by the suggest-improvements command (Issue #223). */
 export interface SuggestImprovementsData {
   improvements: Improvement[];
@@ -262,20 +268,18 @@ export function createSuggestImprovementsCommand(
         },
       );
 
-      const count = (action: string) =>
+      const count = (action: RoutedImprovement["action"]) =>
         result.routed.filter((r) => r.action === action).length;
       const created = result.createdIssues.length;
       const reused = count("reused");
       const summary = dryRun
-        ? `Dry run: ${count("would-create")} improvement issue${
-          count("would-create") === 1 ? "" : "s"
-        } would be created and ${count("would-reuse")} existing issue${
-          count("would-reuse") === 1 ? "" : "s"
+        ? `Dry run: ${
+          countOf(count("would-create"), "improvement issue")
+        } would be created and ${
+          countOf(count("would-reuse"), "existing issue")
         } reused, routed from ${repo}`
-        : `Created ${created} improvement issue${
-          created === 1 ? "" : "s"
-        } and reused ${reused} existing issue${
-          reused === 1 ? "" : "s"
+        : `Created ${countOf(created, "improvement issue")} and reused ${
+          countOf(reused, "existing issue")
         }, routed from ${repo}`;
       const failureMsg = result.failures.length > 0
         ? ` (${result.failures.length} failed)`

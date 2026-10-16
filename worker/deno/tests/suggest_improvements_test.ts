@@ -562,6 +562,85 @@ Deno.test("suggest-improvements - a real run with failures says so and reports s
   }).execute({ repo: VIBE }, createMockConfig());
 
   assertEquals(result.success, false);
-  assertEquals(result.message.endsWith("failed)"), true);
+  assertEquals(
+    result.message,
+    "Created 0 improvement issues and reused 0 existing issues, routed from stSoftwareAU/VibeCoder (7 failed)",
+  );
   assertEquals(gh.calls.filter(isWriteCall), []);
+});
+
+Deno.test("suggest-improvements - the summary counts created, reused and would-be issues with the right plurals (Issue #3745)", async () => {
+  const cases: Array<
+    { name: string; dryRun: boolean; seeded: number; message: string }
+  > = [
+    {
+      name: "real run, none seeded",
+      dryRun: false,
+      seeded: 0,
+      message:
+        "Created 7 improvement issues and reused 0 existing issues, routed from stSoftwareAU/VibeCoder",
+    },
+    {
+      name: "real run, one seeded",
+      dryRun: false,
+      seeded: 1,
+      message:
+        "Created 6 improvement issues and reused 1 existing issue, routed from stSoftwareAU/VibeCoder",
+    },
+    {
+      name: "real run, six seeded",
+      dryRun: false,
+      seeded: 6,
+      message:
+        "Created 1 improvement issue and reused 6 existing issues, routed from stSoftwareAU/VibeCoder",
+    },
+    {
+      name: "dry run, one seeded",
+      dryRun: true,
+      seeded: 1,
+      message:
+        "Dry run: 6 improvement issues would be created and 1 existing issue reused, routed from stSoftwareAU/VibeCoder",
+    },
+    {
+      name: "dry run, six seeded",
+      dryRun: true,
+      seeded: 6,
+      message:
+        "Dry run: 1 improvement issue would be created and 6 existing issues reused, routed from stSoftwareAU/VibeCoder",
+    },
+  ];
+
+  for (const c of cases) {
+    const store = fakeStore([], { [VIBE]: "WRITE" });
+    for (const improvement of generateImprovements().slice(0, c.seeded)) {
+      addIssue(store, VIBE, improvement.title);
+    }
+    const gh = routingFakeGh(store);
+    const result = await createSuggestImprovementsCommand({
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    }).execute({ repo: VIBE, "dry-run": c.dryRun }, createMockConfig());
+
+    assertEquals(result.success, true, c.name);
+    assertEquals(result.message, c.message, c.name);
+  }
+});
+
+// Issue #3745 — config.repos reaches the router as the product repositories.
+// A malformed configured repo is how the test proves it: the classifier rejects it.
+Deno.test("suggest-improvements - the command routes against the configured repos as product repositories (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: NOW,
+  }).execute({ repo: VIBE }, createMockConfig({ repos: ["not a repo"] }));
+
+  assertEquals(result.success, false);
+  const data = result.data as SuggestImprovementsData;
+  const failures = data.failures ?? [];
+  assertEquals(failures.length, generateImprovements().length);
+  for (const failure of failures) {
+    assertStringIncludes(failure.error, 'step "classify"');
+    assertStringIncludes(failure.error, "ctx.productRepos[0]");
+  }
 });

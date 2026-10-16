@@ -675,8 +675,9 @@ export async function createGitHubIssuesWithPartialFailures(
   for (const improvement of improvements) {
     try {
       const body = formatImprovementAsIssueBody(improvement);
-      // Keeps the existing warning context; the router filters again as
-      // defence in depth. Issue #2825: warn per reserved label dropped.
+      // The pre-filter strips built-in and configured custom reserved labels,
+      // warning with the suggest-improvements context (Issue #2825). The
+      // router re-filters built-in reserved labels as defence in depth.
       const safeLabels = filterReservedLabelsWithWarning(
         improvement.labels,
         `${repo} suggest-improvements`,
@@ -690,10 +691,9 @@ export async function createGitHubIssuesWithPartialFailures(
           targetRepo: repo,
           context: options.routingContext,
           dryRun: options.dryRun,
-          ghCommandFn: options.ghCommandFn ?? runGhCommand,
+          ghCommandFn: options.ghCommandFn,
           now: options.now,
           logger,
-          extraReservedLabels: options.extraReservedLabels,
         },
       );
       if (filed.action === "ambiguous") {
