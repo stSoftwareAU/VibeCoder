@@ -194,6 +194,83 @@ export interface MilestoneSyncPrOutcome {
   branch: string;
   /** True when this call opened the PR rather than updating an open one. */
   opened: boolean;
+  /**
+   * True when this call pushed the sync branch; false when the remote sync
+   * branch already carried this exact merge, so the push was skipped and the
+   * open sync PR's required checks were not restarted (Issue #3690).
+   */
+  pushed: boolean;
+}
+
+/** Whether the remote sync branch already holds the merge at HEAD. */
+export type SyncBranchComparison = "carries" | "differs" | "unknown";
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Whether `refs/remotes/origin/<branch>` already carries the merge at HEAD
+ * (Issue #3690).
+ *
+ * "carries" means the same tree and the same tips: HEAD is an ancestor of the
+ * remote head, or every parent of HEAD is (a sibling host merged the same
+ * milestone tip and default tip into a new commit with identical content).
+ * "differs" means there is nothing to compare against or the content or tips
+ * moved, so the push is as it always was. "unknown" means a read failed; the
+ * caller fails towards syncing and pushes.
+ */
+export async function syncBranchAlreadyCarries(
+  branch: string,
+  git: MilestoneSyncPrDeps["git"],
+): Promise<SyncBranchComparison> {
+  const remote = await git([
+    "rev-parse",
+    "--verify",
+    "--quiet",
+    `refs/remotes/origin/${branch}`,
+  ]);
+  // Absent on the remote: the ordinary first-run case, nothing to compare.
+  if (remote.code !== 0) return "differs";
+  const remoteHead = (remote.stdout ?? "").trim();
+  if (!FULL_SHA.test(remoteHead)) return "unknown";
+
+  const readSingle = async (args: string[]): Promise<string | null> => {
+    const result = await git(args);
+    const out = (result.stdout ?? "").trim();
+    return result.code === 0 && out ? out : null;
+  };
+  const headTree = await readSingle(["rev-parse", "HEAD^{tree}"]);
+  const remoteTree = await readSingle(["rev-parse", `${remoteHead}^{tree}`]);
+  if (!headTree || !remoteTree) return "unknown";
+  if (headTree !== remoteTree) return "differs";
+
+  const isAncestor = async (
+    commit: string,
+  ): Promise<boolean | null> => {
+    const result = await git([
+      "merge-base",
+      "--is-ancestor",
+      commit,
+      remoteHead,
+    ]);
+    if (result.code === 0) return true;
+    if (result.code === 1) return false;
+    return null;
+  };
+
+  const headAncestor = await isAncestor("HEAD");
+  if (headAncestor === null) return "unknown";
+  if (headAncestor) return "carries";
+
+  const line = await readSingle(["rev-list", "--parents", "-n", "1", "HEAD"]);
+  if (!line) return "unknown";
+  const parents = line.split(/\s+/).slice(1);
+  if (parents.length === 0) return "unknown";
+  for (const parent of parents) {
+    const ancestor = await isAncestor(parent);
+    if (ancestor === null) return "unknown";
+    if (!ancestor) return "differs";
+  }
+  return "carries";
 }
 
 /**
@@ -278,6 +355,15 @@ async function armSyncPrAutoMerge(
  * clone and had the push refused; HEAD therefore already carries the merge
  * this PR is for.
  *
+ * The push is skipped when the remote sync branch already holds this merge
+ * (same tree, same milestone and default tips): a re-push would be a fresh
+ * commit with identical content that restarts the open sync PR's required
+ * checks for no change (Issue #3690). The comparison is only trusted after
+ * the baseline fetch of the sync branch succeeded, because a failed fetch can
+ * leave a stale remote-tracking ref for a branch deleted on the remote.
+ * Otherwise the sync branch is force-pushed
+ * with a lease.
+ *
  * @param repo - `owner/repo`.
  * @param milestoneBranch - The branch the PR targets.
  * @param defaultBranch - Named in the PR body, so a reader knows what merged.
@@ -321,43 +407,67 @@ export async function raiseMilestoneSyncPr(
       "origin",
       `HEAD:refs/heads/${branch}`,
     ]);
-  await fetchBaseline();
+  const baseline = await fetchBaseline();
+
+  // Issue #3690: the remote sync branch is the fleet-wide record of what was
+  // synced. If it already holds this merge, re-pushing only restarts checks.
+  // Only trusted after a successful fetch: a failed fetch (branch deleted on
+  // the remote, or first run) can leave a stale remote-tracking ref behind.
+  const carried: SyncBranchComparison = baseline.code === 0
+    ? await syncBranchAlreadyCarries(branch, deps.git)
+    : "differs";
+  if (carried === "carries") {
+    deps.log?.(
+      `Milestone sync branch '${branch}' already holds this merge (same tree, ` +
+        `same tips); nothing was pushed, so the open sync PR's checks keep ` +
+        `running (Issue #3690)`,
+    );
+  } else if (carried === "unknown") {
+    deps.log?.(
+      `Milestone sync branch '${branch}': the comparison with the remote ` +
+        `branch could not be read; pushing as before (Issue #3690)`,
+    );
+  }
+  const skipPush = carried === "carries";
 
   // Force-with-lease: the sync branch is this function's alone, and a stale
   // one from an earlier cycle carries a merge that is no longer current.
   // `--force-with-lease` still refuses if somebody else moved it.
-  let push = await pushBranch();
-  const pushWasStale = () =>
-    push.code !== 0 && isStaleInfoPush(`${push.stderr}\n${push.stdout ?? ""}`);
-  // `stale info` means another actor moved the branch after the fetch above.
-  // Refetch the new baseline and retry once (Issue #2613).
-  let staleRetried = false;
-  if (pushWasStale()) {
-    staleRetried = true;
-    await fetchBaseline();
-    push = await pushBranch();
-  }
-  if (push.code !== 0) {
-    const detail = push.stderr.trim() || push.stdout?.trim() ||
-      `git exited ${push.code} and printed nothing`;
-    const stale = staleRetried && pushWasStale();
-    return {
-      ok: false,
-      error: new Error(
+  const pushWithStaleRetry = async (): Promise<Error | null> => {
+    let push = await pushBranch();
+    const pushWasStale = () =>
+      push.code !== 0 &&
+      isStaleInfoPush(`${push.stderr}\n${push.stdout ?? ""}`);
+    // `stale info` means another actor moved the branch after the fetch
+    // above. Refetch the new baseline and retry once (Issue #2613).
+    let staleRetried = false;
+    if (pushWasStale()) {
+      staleRetried = true;
+      await fetchBaseline();
+      push = await pushBranch();
+    }
+    if (push.code !== 0) {
+      const detail = push.stderr.trim() || push.stdout?.trim() ||
+        `git exited ${push.code} and printed nothing`;
+      const stale = staleRetried && pushWasStale();
+      return new Error(
         stale
           ? `Could not push the milestone sync branch '${branch}': the push ` +
             `was rejected with stale info — another actor updated the branch ` +
             `— and was still rejected after it was refetched and retried: ${detail}`
           : `Could not push the milestone sync branch '${branch}': ${detail}`,
-      ),
-    };
-  }
-  if (staleRetried) {
-    deps.log?.(
-      `Milestone sync branch '${branch}': the push was rejected with stale ` +
-        `info (another actor moved the branch); refetched and retried — accepted.`,
-    );
-  }
+      );
+    }
+    if (staleRetried) {
+      deps.log?.(
+        `Milestone sync branch '${branch}': the push was rejected with stale ` +
+          `info (another actor moved the branch); refetched and retried — accepted.`,
+      );
+    }
+    return null;
+  };
+  const pushError = skipPush ? null : await pushWithStaleRetry();
+  if (pushError !== null) return { ok: false, error: pushError };
 
   // One open PR per milestone branch: a sync that is still open is updated by
   // the push above, and re-filing would leave two PRs merging the same thing.
@@ -379,10 +489,12 @@ export async function raiseMilestoneSyncPr(
     const open = JSON.parse(listed || "[]") as { number: number }[];
     if (Array.isArray(open) && open.length > 0) {
       deps.log?.(
-        `milestone sync: updated the open sync PR #${open[0]!.number} for ` +
+        `milestone sync: ${skipPush ? "left" : "updated"} the open sync PR #${
+          open[0]!.number
+        } for ` +
           `'${milestoneBranch}' (Issue #589)`,
       );
-      return { ok: true, value: { branch, opened: false } };
+      return { ok: true, value: { branch, opened: false, pushed: !skipPush } };
     }
   } catch {
     // An unreadable listing falls through to creating one: a duplicate PR is
@@ -444,11 +556,33 @@ export async function raiseMilestoneSyncPr(
         `'${defaultBranch}' into '${milestoneBranch}' — the branch is gated, ` +
         `so the push had to become a PR (Issue #589)`,
     );
-    return { ok: true, value: { branch, opened: true } };
+    return { ok: true, value: { branch, opened: true, pushed: !skipPush } };
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error : new Error(String(error)),
     };
   }
+}
+
+/**
+ * The sentence fragment describing how a sync landed, chosen from the four
+ * `pushed` x `opened` outcomes of {@link raiseMilestoneSyncPr} (Issues #589,
+ * #3690). Ends with " — " so the caller can append its own detail.
+ */
+export function syncPrLandingNote(outcome: MilestoneSyncPrOutcome): string {
+  if (!outcome.pushed && !outcome.opened) {
+    return `ALREADY IN the open sync PR from '${outcome.branch}' — its ` +
+      `head holds this merge, so nothing was pushed and its checks were ` +
+      `not restarted (Issue #3690) — `;
+  }
+  if (!outcome.pushed) {
+    return `RAISED a sync PR from the existing '${outcome.branch}' head, ` +
+      `which already held this merge — nothing was pushed (Issue #3690) — `;
+  }
+  if (outcome.opened) {
+    return `RAISED a sync PR from '${outcome.branch}' — the branch is ` +
+      `gated, so the push became a pull request (Issue #589) — `;
+  }
+  return `UPDATED the open sync PR from '${outcome.branch}' (Issue #589) — `;
 }
