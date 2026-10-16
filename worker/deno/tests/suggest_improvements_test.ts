@@ -197,6 +197,33 @@ Deno.test("suggest-improvements - command includes repo in args when provided", 
   assertEquals(data.repo, VIBE);
 });
 
+Deno.test("suggest-improvements - a dry run without a repo reports the plural count and a null repo (Issue #3745)", async () => {
+  const count = generateImprovements().length;
+  const result = await suggestImprovementsCommand.execute(
+    { "dry-run": true },
+    createMockConfig(),
+  );
+
+  assertEquals(count > 1, true);
+  assertEquals(
+    result.message,
+    `Generated ${count} improvement suggestions (dry-run)`,
+  );
+  const data = result.data as SuggestImprovementsData;
+  assertEquals(data.repo, null);
+});
+
+Deno.test("suggest-improvements - invalid arguments fail with the validation message (Issue #3745)", async () => {
+  const result = await suggestImprovementsCommand.execute(
+    { "dry-run": "yes" },
+    createMockConfig(),
+  );
+
+  assertEquals(result.success, false);
+  assertEquals(result.message, "Argument 'dry-run' must be a boolean");
+  assertEquals(result.data, undefined);
+});
+
 Deno.test("suggest-improvements - command name is correct", () => {
   assertEquals(suggestImprovementsCommand.name, "suggest-improvements");
 });
@@ -384,6 +411,13 @@ Deno.test("suggest-improvements - a worker improvement drafted against GRQ is fi
 
 Deno.test("suggest-improvements - an ambiguous improvement files nothing and is reported as a failure (Issue #3745)", async () => {
   const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const warnings: string[] = [];
+  const logger: Logger = {
+    ...createLogger({ write: () => {} }),
+    warn: (message: string) => {
+      warnings.push(message);
+    },
+  };
   const result = await createGitHubIssuesWithPartialFailures(
     [{
       title: "Tidy things up",
@@ -397,6 +431,7 @@ Deno.test("suggest-improvements - an ambiguous improvement files nothing and is 
       dryRun: false,
       ghCommandFn: gh.ghCommandFn,
       now: NOW,
+      logger,
     },
   );
 
@@ -404,6 +439,11 @@ Deno.test("suggest-improvements - an ambiguous improvement files nothing and is 
   assertEquals(result.createdIssues, []);
   assertEquals(result.routed, []);
   assertEquals(result.failures.length, 1);
+  assertEquals(result.failures[0]!.title, "Tidy things up");
+  // The injected logger reaches the router, which warns about the ambiguous owner.
+  assertEquals(warnings, [
+    "Issue routing filed nothing: the owner is ambiguous",
+  ]);
   assertStringIncludes(result.failures[0]!.error, "Routing filed nothing");
   assertStringIncludes(result.failures[0]!.error, "ambiguous owner");
 });
