@@ -200,6 +200,8 @@ const REPO_CONFIG_KEY_MAP: Record<string, keyof RepoConfig> = {
   // Diff-scoped mutation gate (Issue #3393).
   skip_mutation_check: "skipMutationCheck",
   mutation_check_budget_seconds: "mutationCheckBudgetSeconds",
+  // Coverage carry-over gate (Issue #3795).
+  skip_coverage_carryover_check: "skipCoverageCarryOverCheck",
   // Credentials this repository's checks need (Issues #573, #574).
   quality_credentials: "qualityCredentials",
   docker_image: "dockerImage",

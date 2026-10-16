@@ -990,6 +990,8 @@ export interface RepoConfig {
   skipMutationCheck?: boolean;
   /** Wall-clock budget in seconds for the mutation gate; positive integer, default 300, max 3600 (Issue #3393). */
   mutationCheckBudgetSeconds?: number;
+  /** When true, skips the coverage carry-over gate on PR completion (Issue #3795). */
+  skipCoverageCarryOverCheck?: boolean;
   /**
    * Credentials this repository's own checks need (Issues #573, #574).
    *

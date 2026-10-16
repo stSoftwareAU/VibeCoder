@@ -200,6 +200,11 @@ import {
   type MutationRunInput,
   runMutationCheck,
 } from "./mutation_runner.ts";
+import type { CoverageCarryOverResult } from "./coverage_carryover_gate.ts";
+import {
+  type CoverageCarryOverInput,
+  runCoverageCarryOverCheck,
+} from "./coverage_carryover_runner.ts";
 import {
   fileBaselineCarryoverTracker,
   fileRedCheckTracker,
@@ -509,6 +514,15 @@ export interface QualityDeps {
   runMutationCheck?: (
     input: MutationRunInput,
   ) => Promise<MutationCheckResult>;
+  /**
+   * Run the coverage carry-over check over the PR diff (Issue #3795): every
+   * line a test edited or removed by the PR reached must still be covered.
+   * Optional: when absent the coverage carry-over gate is not applicable and
+   * never blocks, so fixtures that build their own deps never run the check.
+   */
+  runCoverageCarryOverCheck?: (
+    input: CoverageCarryOverInput,
+  ) => Promise<CoverageCarryOverResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -780,6 +794,8 @@ export function createDefaultDeps(
       writeBaselineQualityCache,
       runMutationCheck: (input) =>
         runMutationCheck(input, defaultMutationRunnerSeams()),
+      runCoverageCarryOverCheck: (input) =>
+        runCoverageCarryOverCheck(input, defaultMutationRunnerSeams()),
     },
   };
 }

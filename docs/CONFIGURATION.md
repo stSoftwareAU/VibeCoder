@@ -114,7 +114,9 @@ and further from the cause. Values are never logged; only names are.
 The same credentials reach the diff-scoped mutation check, which reruns the
 repository's tests; there a failed `mint` makes the check not applicable, with
 a warning, instead of failing the phase (see
-[Diff-scoped mutation check](mutation-check.md)).
+[Diff-scoped mutation check](mutation-check.md)). The
+[coverage carry-over check](coverage-carryover-check.md) passes the repository's
+resolved `quality_credentials` to its test runs in the same way.
 
 
 ## Two axes of trust
@@ -4572,6 +4574,7 @@ on the human-readable message (the `AVAILABLE:` / `BUSY:` prefix is unchanged).
 | `skip_security_fix_check` | boolean | When `true`, skips the security-fix patch-verification gate on PRs that close a `security`-labelled finding. The gate asserts against the branch diff that a test file is changed and that a test identifier named in the PR summary appears in that test diff, and additionally that the summary shows a regression test (fails unfixed, passes fixed) and that the original trigger is closed with no trivial bypass. A diff that cannot be computed blocks the PR rather than passing it. The same switch governs the gate's feedback loop: the evidence contract injected into a `security`-labelled issue's prompt, and the replay of a blocked verdict into the next attempt. See [Security-fix gate feedback](security-fix-gate-feedback.md). |
 | `skip_mutation_check` | boolean | When `true`, skips the diff-scoped mutation check that runs before the PR is raised. The check mutates only the lines the PR adds or changes and blocks the PR when a mutation survives the covering tests. Defaults to `false`. See [Diff-scoped mutation check](mutation-check.md). |
 | `mutation_check_budget_seconds` | integer | Time budget in seconds for one mutation-check run: a positive integer, default `300`, maximum `3600`. On exhaustion the gate warns that the remaining mutants are untested (never a pass); survivors found earlier still block. See [Diff-scoped mutation check](mutation-check.md). |
+| `skip_coverage_carryover_check` | boolean | When `true`, skips the coverage carry-over check that runs before the PR is raised. The check runs only when the PR deletes or removes lines from a Deno test file, and blocks the PR when a production line those tests used to execute is no longer executed at head. Defaults to `false`. See [Coverage carry-over check](coverage-carryover-check.md). |
 | `skip_auto_merge`       | boolean | When `true`, disables auto squash merge for this repository                                                                                                                                                                                                                                                                                                               |
 | `skip_reviewer_request` | boolean | When `true`, skips requesting PR reviewers for this repository                                                                                                                                                                                                                                                                                                            |
 | `verbosity`             | string  | Verbosity level for this repository (`minimal`, `concise`, `standard`, `verbose`), applied to the `issue` phase. See [Verbosity Configuration](#-verbosity-configuration).                                                                                                                                                                                     |

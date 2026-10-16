@@ -1480,6 +1480,24 @@ Deno.test("config - loadConfig maps the mutation gate repo_config keys (Issue #3
   });
 });
 
+Deno.test("config - loadConfig maps the coverage carry-over gate repo_config key (Issue #3795)", async () => {
+  const testConfig: ConfigFile = {
+    allowed_authors: ["testuser"],
+    repos: ["org/repo"],
+    repo_config: {
+      "org/test-repo": {
+        skip_coverage_carryover_check: true,
+      } as unknown as import("../types.ts").RepoConfig,
+    },
+  };
+
+  await withTempConfig(testConfig, async (configPath) => {
+    const config = await loadConfig(configPath);
+    const repoConf = config.repoConfig?.["org/test-repo"];
+    assertEquals(repoConf?.skipCoverageCarryOverCheck, true);
+  });
+});
+
 Deno.test("config - loadConfig preserves repo_config camelCase keys (Issue #1296)", async () => {
   const testConfig: ConfigFile = {
     allowed_authors: ["testuser"],
