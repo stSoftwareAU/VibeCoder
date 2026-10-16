@@ -238,7 +238,10 @@ function redactDecodedLine(
     const slack = RAW_SPAN_SLACK + skipped;
     skipped = 0;
     const whole = escaped(own);
-    const near = contextRaw.slice(lineCursor, lineCursor + whole.length + slack);
+    const near = contextRaw.slice(
+      lineCursor,
+      lineCursor + whole.length + slack,
+    );
     const at = near.indexOf(whole);
     if (at !== -1) {
       lineCursor += at + whole.length;
