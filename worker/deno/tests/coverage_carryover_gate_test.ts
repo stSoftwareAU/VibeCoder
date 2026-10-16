@@ -267,6 +267,20 @@ Deno.test("mapBaseLineToHead - a binary section maps its lines to null", () => {
   assertEquals(mapBaseLineToHead(diff, "lib/b.bin", 1), null);
 });
 
+Deno.test("mapBaseLineToHead - a 'no newline at end of file' marker inside a hunk is skipped", () => {
+  const diff = section(
+    "lib/m.ts",
+    "@@ -2 +2 @@",
+    "-a",
+    "\\ No newline at end of file",
+    "+b",
+  );
+  assertEquals(mapBaseLineToHead(diff, "lib/m.ts", 3), {
+    file: "lib/m.ts",
+    line: 3,
+  });
+});
+
 Deno.test("mapBaseLineToHead - a hostile long hunk-like line neither hangs nor matches", () => {
   const hostile = "@@ -" + "1".repeat(HOSTILE_LENGTH) + " +1 @@";
   const diff = section("lib/m.ts", hostile, "-a", "+b");
@@ -309,7 +323,8 @@ Deno.test("parseLcov - DA records keyed by SF path, checksums ignored", () => {
 });
 
 Deno.test("parseLcov - a file in two records has its hit counts summed", () => {
-  const lcov = "SF:/a.ts\nDA:1,2\nend_of_record\nSF:/a.ts\nDA:1,3\nend_of_record\n";
+  const lcov =
+    "SF:/a.ts\nDA:1,2\nend_of_record\nSF:/a.ts\nDA:1,3\nend_of_record\n";
   assertEquals([...(parseLcov(lcov).get("/a.ts") ?? new Map()).entries()], [
     [1, 5],
   ]);
@@ -320,7 +335,8 @@ Deno.test("parseLcov - DA lines outside a record are ignored", () => {
 });
 
 Deno.test("parseLcov - a hostile long DA line is ignored and does not hang", () => {
-  const lcov = "SF:/x.ts\nDA:" + "1".repeat(HOSTILE_LENGTH) + ",1\nend_of_record";
+  const lcov = "SF:/x.ts\nDA:" + "1".repeat(HOSTILE_LENGTH) +
+    ",1\nend_of_record";
   const out = parseLcov(lcov);
   assertEquals(out.get("/x.ts")?.size, 0);
 });
@@ -503,7 +519,8 @@ Deno.test("buildCoverageCarryOverGateComment - caps the list at 40 and says how 
   }));
   const comment = buildCoverageCarryOverGateComment({
     blocked: true,
-    reason: "45 line(s) the edited or removed tests reached are no longer reached by any test",
+    reason:
+      "45 line(s) the edited or removed tests reached are no longer reached by any test",
     uncovered,
     exempted: [],
     note: "",
@@ -517,7 +534,8 @@ Deno.test("buildCoverageCarryOverGateComment - caps the list at 40 and says how 
 Deno.test("buildCoverageCarryOverGateComment - file names are sanitised", () => {
   const comment = buildCoverageCarryOverGateComment({
     blocked: true,
-    reason: "1 line(s) the edited or removed tests reached are no longer reached by any test",
+    reason:
+      "1 line(s) the edited or removed tests reached are no longer reached by any test",
     uncovered: [{ file: "lib/`weird`\nname.ts", line: 3 }],
     exempted: [],
     note: "",

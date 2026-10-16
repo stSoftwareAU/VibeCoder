@@ -92,7 +92,9 @@ async function runCheck(
   if (tests.length === 0) {
     return {
       kind: "not_applicable",
-      reason: removesRustTestLines(input.diff) ? RUST_NEEDS_LLVM_COV : NO_DENO_TESTS,
+      reason: removesRustTestLines(input.diff)
+        ? RUST_NEEDS_LLVM_COV
+        : NO_DENO_TESTS,
     };
   }
   const start = seams.now();
@@ -212,7 +214,12 @@ async function carryOver(
   }
   const carriedLines = [...carried.values()];
   if (carriedLines.length === 0) {
-    return { kind: "completed", changedTests: tests, carried: 0, uncovered: [] };
+    return {
+      kind: "completed",
+      changedTests: tests,
+      carried: 0,
+      uncovered: [],
+    };
   }
 
   // Head: the tests that import each carried file (within its project), plus
@@ -324,7 +331,11 @@ async function denoStep(
 ): Promise<ProcessResult | null> {
   const timeoutMs = remaining();
   if (timeoutMs <= 0) return null;
-  const run = await seams.runProcess("deno", args, { cwd, timeoutMs, ...extra });
+  const run = await seams.runProcess("deno", args, {
+    cwd,
+    timeoutMs,
+    ...extra,
+  });
   return run.timedOut ? null : run;
 }
 

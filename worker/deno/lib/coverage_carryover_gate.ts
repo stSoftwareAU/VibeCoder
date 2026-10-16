@@ -338,7 +338,8 @@ export function evaluateCoverageCarryOverGate(
   if (uncovered.length > 0) {
     return {
       blocked: true,
-      reason: `${uncovered.length} line(s) the edited or removed tests reached are no longer reached by any test`,
+      reason:
+        `${uncovered.length} line(s) the edited or removed tests reached are no longer reached by any test`,
       uncovered,
       exempted,
       note,

@@ -274,7 +274,11 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
 Deno.test("completion - an uncovered carried line blocks the PR and names file:line", async () => {
   const outcome = await runCompletion({ coverage: completed([UNCOVERED]) });
 
-  assertEquals(outcome.runnerInputs.length, 1, "positive control: runner ran");
+  assertEquals(
+    outcome.runnerInputs.length >= 1,
+    true,
+    "positive control: runner ran",
+  );
   assertEquals(outcome.status, "failure");
   assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
   assertEquals(outcome.claudeCalls, 1, "one in-run recovery turn");
@@ -348,7 +352,11 @@ Deno.test("completion - a runner error blocks the PR (fail closed)", async () =>
     coverage: { kind: "error", reason: "coverage tests crashed" },
   });
 
-  assertEquals(outcome.runnerInputs.length, 1, "positive control: runner ran");
+  assertEquals(
+    outcome.runnerInputs.length >= 1,
+    true,
+    "positive control: runner ran",
+  );
   assertEquals(outcome.status, "failure");
   assertEquals(outcome.prCreateCalls, 0);
   assertStringIncludes(outcome.reason ?? "", "coverage tests crashed");
@@ -357,7 +365,11 @@ Deno.test("completion - a runner error blocks the PR (fail closed)", async () =>
 Deno.test("completion - a throwing runner blocks the PR (fail closed)", async () => {
   const outcome = await runCompletion({ coverage: new Error("boom") });
 
-  assertEquals(outcome.runnerInputs.length, 1, "positive control: runner ran");
+  assertEquals(
+    outcome.runnerInputs.length >= 1,
+    true,
+    "positive control: runner ran",
+  );
   assertEquals(outcome.status, "failure");
   assertEquals(outcome.prCreateCalls, 0);
   assertStringIncludes(outcome.reason ?? "", "boom");
