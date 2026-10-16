@@ -20,6 +20,12 @@ import {
   buildSubAgentTierMarker,
   WORKER_PR_MARKER_PREFIX,
 } from "../lib/pr_body.ts";
+import {
+  assessReportedGaps,
+  buildReportedGapStaleFollowUpSection,
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+} from "../lib/degraded_delivery.ts";
 import { MILESTONE_CHILD_BUMP_NOTE } from "../lib/bump_deps.ts";
 import type {
   GitCommandOptions,
@@ -1487,6 +1493,7 @@ async function syncWithDegradedLive(opts: {
   summary: string;
   live: string;
   issueView: () => string;
+  logger?: Logger;
 }) {
   const repoPath = await makeRepo();
   try {
@@ -1505,7 +1512,7 @@ async function syncWithDegradedLive(opts: {
         return record(args);
       },
       runGitCommand: stubGit([], { diffChanged: true }),
-      logger,
+      logger: opts.logger ?? logger,
     };
     const result = await syncPrBodyFromSummary({
       repo: REPO,
@@ -1593,6 +1600,256 @@ Deno.test("sync - fails when the issue view carries no string body (Issue #3350)
   });
   assertEquals(result.ok, false);
   assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+});
+
+// --- healthy run's partial-delivery section re-derivation (Issue #3506) ----
+
+const LIVE_REPORTED_GAP = [
+  "## ⚠️ Partial delivery — follow-up filed",
+  "",
+  "This run's PR summary closed out the criteria below as `partial` or " +
+  "`missing`. The outstanding items continue in #77:",
+  "",
+  "- **partial** — the export works",
+  "",
+  "",
+].join("\n");
+
+Deno.test("sync - re-derives a live partial-delivery section and keeps the follow-up number while a gap remains (Issue #3506)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assert(synced.startsWith("## ⚠️ Partial delivery — follow-up filed"));
+  assertStringIncludes(synced, "continue in #77:");
+  assertStringIncludes(synced, "- **partial** — the export works");
+});
+
+Deno.test("sync - drops the partial-delivery section when the rebuilt summary marks every criterion met (Issue #3506)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assert(synced.length > 0, "expected a pr edit");
+  assertEquals(synced.includes("Partial delivery"), false);
+});
+
+/** A logger that records each `info` call, for the re-derivation log. */
+function recordingLogger() {
+  const infos: { message: string; context: unknown }[] = [];
+  const recording: Logger = {
+    ...logger,
+    info: (message, context) => infos.push({ message, context }),
+  };
+  return { infos, recording };
+}
+
+Deno.test("sync - logs the dropped partial-delivery section with the PR it belongs to (Issue #3506)", async () => {
+  const { infos, recording } = recordingLogger();
+  const { result } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+    logger: recording,
+  });
+  assert(result.ok);
+  assertEquals(
+    infos.filter((i) => i.message.includes("partial-delivery section")),
+    [{
+      message: "Re-derived the partial-delivery section (Issue #3506)",
+      context: {
+        repo: REPO,
+        prNumber: PR_NUMBER,
+        issueNumber: ISSUE_NUMBER,
+        dropped: true,
+      },
+    }],
+  );
+});
+
+Deno.test("sync - logs no re-derivation when the partial-delivery section is unchanged (Issue #3506)", async () => {
+  const { infos, recording } = recordingLogger();
+  const { result } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+    logger: recording,
+  });
+  assert(result.ok);
+  assertEquals(
+    infos.filter((i) => i.message.startsWith("Re-derived")),
+    [],
+  );
+});
+
+Deno.test("sync - fails loudly when the issue cannot be read to re-derive the partial-delivery section (Issue #3506)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => {
+      throw new Error("gh issue view boom");
+    },
+  });
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "partial-delivery section");
+  }
+  assertEquals(ghCalls.some((c) => c.args[1] === "edit"), false);
+});
+
+// --- a sync never writes to the follow-up (PR #3676 review) -----------------
+
+/** Issue with two criteria; the summary delivers `export`, leaves `import` partial. */
+const TWO_CRITERIA_ISSUE = JSON.stringify({
+  title: "Move the data",
+  body: "## Acceptance Criteria\n\n- the export works\n- the import works\n",
+});
+const IMPORT_PARTIAL_SUMMARY =
+  `## Summary\n\nDid it. Closes #${ISSUE_NUMBER}.\n\n` +
+  `## Acceptance Criteria\n\n` +
+  `- **met** — the export works — evidence: \`worker/deno/tests/x_test.ts\` — reviewer: met\n` +
+  `- **partial** — the import works — reviewer: partial\n`;
+
+Deno.test("sync - changed gaps never write to the follow-up, and the section says it may not list them (PR #3676 review)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: IMPORT_PARTIAL_SUMMARY,
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () => TWO_CRITERIA_ISSUE,
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assertStringIncludes(
+    synced,
+    "The worker filed #77 for the outstanding items",
+  );
+  assertStringIncludes(synced, "- **partial** — the import works");
+  assertEquals(synced.includes("continue in #77:"), false);
+  // The issue text reached only the PR body: no issue was listed, edited or created.
+  assertEquals(
+    ghCalls.filter((c) => c.args[0] === "issue" && c.args[1] !== "view").length,
+    0,
+  );
+});
+
+Deno.test("sync - an issue edited after approval is never copied into a follow-up (PR #3676 review)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: IMPORT_PARTIAL_SUMMARY,
+    live: `${LIVE_REPORTED_GAP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        title: "Move the data (edited by an outside author)",
+        body:
+          "## Acceptance Criteria\n\n- the export works\n- the import works\n",
+      }),
+  });
+  assert(result.ok);
+  assertEquals(
+    ghCalls.filter((c) =>
+      c.args[0] === "issue" &&
+      (c.args[1] === "edit" || c.args[1] === "create")
+    ).length,
+    0,
+  );
+});
+
+Deno.test("sync - a section already marked as possibly stale is re-derived under the same follow-up number (PR #3676 review)", async () => {
+  const stale = buildReportedGapStaleFollowUpSection(
+    assessReportedGaps(
+      JSON.parse(TWO_CRITERIA_ISSUE).body as string,
+      IMPORT_PARTIAL_SUMMARY,
+    ),
+    77,
+  );
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${stale}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[0] === "pr" && c.args[1] === "edit")
+    ?.bodyFileContent ?? "";
+  assertStringIncludes(
+    synced,
+    "The worker filed #77 for the outstanding items",
+  );
+  assertStringIncludes(synced, "- **partial** — the export works");
+  assertEquals(synced.includes("the import works\n"), false);
+});
+
+// --- chain-stop section on a partial-delivery follow-up (PR #3676 review) ---
+
+const LIVE_CHAIN_STOP = [
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  "",
+  "This run's PR summary closed out the criteria below as `partial` or " +
+  "`missing`.",
+  "",
+  "- **partial** — the export works",
+  "",
+  "",
+].join("\n");
+
+Deno.test("sync - keeps the chain-stop section and its marker while a gap remains (PR #3676 review)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("partial", "partial"),
+    live: `${LIVE_CHAIN_STOP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assert(synced.startsWith(FOLLOW_UP_CHAIN_STOP_SECTION_HEADING));
+  assertStringIncludes(synced, FOLLOW_UP_CHAIN_STOP_MARKER);
+  assertStringIncludes(synced, "**partial** — the export works");
+  assert(!synced.includes(`Closes #${ISSUE_NUMBER}`), "never closes it");
+  assertEquals(
+    ghCalls.some((c) => c.args[0] === "issue" && c.args[1] !== "view"),
+    false,
+    "a re-sync never writes to the issue",
+  );
+});
+
+Deno.test("sync - drops the chain-stop section once no gap remains (PR #3676 review)", async () => {
+  const { result, ghCalls } = await syncWithDegradedLive({
+    summary: criterionSummary("met", "met"),
+    live: `${LIVE_CHAIN_STOP}\n${OLD_SUMMARY_WITH_FOOTER}`,
+    issueView: () =>
+      JSON.stringify({
+        body: "## Acceptance Criteria\n\n- the export works\n",
+      }),
+  });
+  assert(result.ok);
+  const synced = ghCalls.find((c) => c.args[1] === "edit")?.bodyFileContent ??
+    "";
+  assertEquals(synced.includes(FOLLOW_UP_CHAIN_STOP_MARKER), false);
 });
 
 // --- Branch outcomes facts file (Issue #3535) -------------------------------
