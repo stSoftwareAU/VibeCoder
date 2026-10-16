@@ -15,12 +15,14 @@ reviewers rarely comment on a PR that cannot merge, so there is nothing for the
 PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 `CONFLICTING` PR `merge-conflict` so the stuck queue is visible, then merges the
 base branch into the PR branch **for real** — both sides' changes survive
-wherever both can stand, never a side-pick — checks the PR summary's claimed paths against the merged diff before it pushes (Issue #3617), and pushes without force. Where the
-two sides genuinely contradict, the agent **decides** and names the call file by
-file on the PR; it does not run the repository's quality gate, because CI on the
-pushed merge is the gate on a PR and the worker's own type-check gate is the
-gate on a milestone branch (Issue #2306). A dependency-version conflict is settled by deterministic rules
-first, and the AI is only asked about what those rules could not decide.
+wherever both can stand, never a side-pick — checks the PR summary's claimed
+paths against the merged diff before it pushes (Issue #3617), and pushes without
+force. Where the two sides genuinely contradict, the agent **decides** and names
+the call file by file on the PR; it does not run the repository's quality gate,
+because CI on the pushed merge is the gate on a PR and the worker's own
+type-check gate is the gate on a milestone branch (Issue #2306). A
+dependency-version conflict is settled by deterministic rules first, and the AI
+is only asked about what those rules could not decide.
 
 **The ladder is three judged runs, shared with every other pass that touches
 the PR, and then a fallback that asks nobody.** An **intent-aware** attempt,
@@ -242,8 +244,9 @@ progress and stopped on conflicts. Its contract is absolute:
 
 The worker enforces what it can mechanically: it refuses to push a tree with
 unmerged paths or leftover conflict markers, and it verifies the base branch is
-genuinely an ancestor of the new branch tip before calling the merge resolved. It also checks the paths the PR summary
-claims against the merged diff before the push, and refuses the push when a
+genuinely an ancestor of the new branch tip before calling the merge resolved.
+It also checks the paths the PR summary claims against the merged diff before
+the push, and refuses the push when a
 claimed path is still missing after one recovery turn (Issue #3617, see
 [below](#-the-summarys-claims-are-checked-against-the-merged-diff-issue-3617)).
 Any failure aborts the merge, leaving the branch untouched.
@@ -267,8 +270,9 @@ origin/<base>`, plus the untracked files from `git ls-files --others
 `docs/pr-summary-<N>.md`) and compares the paths it claims with the merged
 diff. Two kinds of claim are read:
 
-- the path after `updated:` in the **Docs sweep** line, up to the first `;` or
-  the end of that sentence, ignoring spans inside parentheses; and
+- each backticked or double-quoted path after `updated:` in the **Docs sweep**
+  line (a bare, unquoted word is not checked), up to the first `;` or the end of
+  that sentence, ignoring spans inside parentheses; and
 - the backticked path that opens each list item under a `Changes`, `Changes
   made`, `What changed`, `Files changed`, `Changed files`, `File changes` or
   `Files` heading (levels 2 to 4).

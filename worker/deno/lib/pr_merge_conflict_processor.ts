@@ -496,8 +496,11 @@ async function abortMerge(run: GitRunner, cwd: string): Promise<void> {
  * this is `--merge` and not `--hard` — unstaged edits in files the merge did
  * not touch.
  *
- * `git merge --abort` runs first and its exit is ignored: no merge may be in
- * progress after a clean merge commit, so there is nothing to abort then.
+ * `git merge --abort` runs first and its exit is ignored. It ends a conflicted
+ * merge still in progress, and it fails harmlessly after a clean merge commit,
+ * when no merge is in progress. Its exit is not checked because the
+ * `git reset --merge` that follows is checked and is what restores the head in
+ * both cases; its failure is returned to the caller and logged at error.
  *
  * @param run - The git runner
  * @param cwd - The clone the merge ran in

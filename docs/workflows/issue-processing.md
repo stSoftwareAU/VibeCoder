@@ -1789,8 +1789,9 @@ a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`), or a
 `siblings: none — <reason>` negative. `section: none — <reason>` and `no hits`
 are both accepted, and a bad `section:` and a bad `siblings:` are reported
 together. When the gate applies and the changed-file list is known, it also
-blocks a path listed after `updated:` that the branch's diff does not change,
-with the instruction to drop it from `updated:` or redo the edit (Issue #3617).
+blocks a quoted path listed after `updated:` that the branch's diff does not
+change, with the instruction to drop it from `updated:` or redo the edit
+(Issue #3617).
 A path cited elsewhere in the line, as `file:line — still true because …` or
 in `section:`, is not affected by that rule. The entry
 is read as one logical unit from the shared
