@@ -160,11 +160,11 @@ original trigger is closed with no trivial bypass. Fits our TDD standard and the
 the completion phase now runs a lightweight patch-verification gate
 (`security_fix_gate.ts`). The gate activates when the PR closes a security
 finding (the issue carries the `security` label, or the PR summary references a
-`SEC-<hex>` finding id) and blocks PR creation unless the summary shows both a
-**regression test** (fails against the unfixed code, passes after the fix) and
-that the **original trigger is closed** with no trivial bypass — static
-reasoning over the changed code path, no execution. Per-repo; opt
-out with the `skip_security_fix_check` repo config.
+`SEC-<hex>` finding id) and blocks PR creation unless the summary states that the
+**original trigger is closed** with no trivial bypass — static reasoning over
+the changed code path. The regression test is no longer a prose claim: since
+Issue #3659 the worker executes the named test (see **Hardened** below).
+Per-repo; opt out with the `skip_security_fix_check` repo config.
 
 **Hardened**: the gate's *decisive* evidence is now machine-checkable
 against the branch diff rather than the agent's own prose. Deciding a security
@@ -174,13 +174,16 @@ worse, the required phrases are published in the gate's own source, and the
 finding body that steers the summary is untrusted input. The gate therefore also
 requires that the diff **adds or modifies a test file** and that a **test
 identifier named in the summary actually names a test declared** in the added
-lines of that test diff (`security_fix_diff.ts` runs `git diff` only — still no
-execution). That identifier match is on whole tokens of a test-*declaration*
+lines of that test diff (`security_fix_diff.ts` runs `git diff` only). That identifier match is on whole tokens of a test-*declaration*
 line, and generic tokens (`test`, `spec`, `case`, …) are rejected outright, so
 citing `foo_test.ts::test` against any added test line no longer satisfies it
-(Issue #1279). The prose requirements are retained as a human-review aid, not as
-the gate. If the diff cannot be computed at all, the PR is blocked rather than
-assumed good.
+(Issue #1279). Since Issue #3659 the worker then executes the cited test twice in a
+disposable checkout (`security_fix_discrimination.ts`): at the head it must
+pass, and with the merge-base versions of the branch's changed non-test files
+restored it must fail. The prose fail-before/pass-after evidence was removed;
+only the self-reported trigger-closed statement remains prose. If the diff
+cannot be computed, or the discrimination run cannot execute, the PR is blocked
+rather than assumed good.
 
 ```mermaid
 flowchart TD
@@ -190,8 +193,11 @@ flowchart TD
     C -- no --> X2["❌ blocked: test-file-changed"]
     C -- yes --> D{"Cited identifier declares<br/>an added test?"}
     D -- no --> X3["❌ blocked: test-identifier-in-diff"]
-    D -- yes --> E{"Prose: regression linkage<br/>+ trigger closed?"}
-    E -- no --> X4["❌ blocked: prose evidence"]
+    D -- yes --> D2{"Named test passes at head,<br/>fails at merge-base?"}
+    D2 -- "cannot execute" --> X5["❌ blocked: discrimination-not-checked"]
+    D2 -- no --> X6["❌ blocked: test-discriminates"]
+    D2 -- yes --> E{"Prose: trigger closed?"}
+    E -- no --> X4["❌ blocked: trigger-closed"]
     E -- yes --> P["✅ PR created"]
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```

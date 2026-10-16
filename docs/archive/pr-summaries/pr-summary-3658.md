@@ -81,7 +81,7 @@ flowchart LR
   unrelated failing check to turn the gate green. #3657: Security-fix gate:
   replace the agent-written trigger-closed prose with an independent
   read-only verifier verdict (open). #3659: Security-fix gate: execute the
-  named test against base production files and require red→green (open).
+  named test against base production files and require red→green (landed on the base branch).
 - **Docs sweep** — grep: `falsePositives`, `parseSweepBaseline`,
   "with a reason", "Optional line anchor", `MIN_REASON_LENGTH`; section:
   `docs/SECURITY-TREE-SWEEP.md#the-baseline` (plus "Triage and filing");

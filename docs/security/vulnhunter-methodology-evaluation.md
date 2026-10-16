@@ -55,15 +55,15 @@ The three follow-ups are open issues in this repository:
 cite the same numbers from an earlier tracker; those are unrelated. The
 diagram shows the planned flow once all three land. #3658's baseline check now
 ships (parse-time `evidence` and line/snippet validation in
-`worker/deno/lib/security_tree_sweep.ts`), while #3657 and #3659 (both still
-open) are planned.
+`worker/deno/lib/security_tree_sweep.ts`) and #3659 has landed (see section 5);
+only #3657 is still planned.
 
 ```mermaid
 flowchart LR
     S[Sweep / code-scanning<br/>finding] --> I[security issue]
     I --> W[worker fix run]
     W --> G{security_fix_gate}
-    G -->|"planned #3659: test red<br/>on base, green at head"| G2{verifier verdict}
+    G -->|"#3659: test red<br/>on base, green at head"| G2{verifier verdict}
     G2 -->|"planned #3657: FIXED only"| PR[PR raised]
     S -.->|"#3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
 ```
@@ -124,11 +124,10 @@ that an independent verifier for the *hunt* phase is still on its roadmap
 ("Falsification Engine" bullet). The fix verifier is the one that ships.
 
 **What VibeCoder has today.** `evaluateSecurityFixGate`
-(`security_fix_gate.ts:399`) has a machine-checked half: a test file changed
-(`:416`), and a named test declared in the added lines
-(`citedTestIdentifierInDiff`, `security_fix_gate.ts:363`, called at `:419`).
-The "original trigger is closed" evidence is the `TRIGGER_CLOSED` regex
-(`security_fix_gate.ts:114`) matched against the PR summary. The agent whose
+(`security_fix_gate.ts`) has a machine-checked half: a test file changed, a
+named test declared in the added lines (`citedTestIdentifierInDiff`) and, since #3659,
+that test discriminating when executed (section 5). The "original trigger is
+closed" evidence is the `TRIGGER_CLOSED` regex matched against the PR summary. The agent whose
 fix is being judged writes that summary.
 
 **Gap.** The fixer judges its own fix. Writing "no bypass exists" satisfies
@@ -229,24 +228,43 @@ run it again (expect PASS). "If `pre_fix_result != "fail"` OR
 Record Discrimination Evidence"; `vulnhunter-fix/references/remediation-rigor.md`,
 "Step E.5 — discrimination evidence").
 
-**What VibeCoder has today.** The gate checks statically that a test file
-changed (`security_fix_gate.ts:416`) and that the summary names a test
-declared in the added lines (`:419`). The fail-before/pass-after linkage is
-summary prose matched by `REGRESSION_TEST_REFERENCE` and
-`BEFORE_AFTER_LINKAGE` (`security_fix_gate.ts:99`, `:107`). The block message
-built by `buildSecurityFixGateMessage` (`security_fix_gate.ts:482`) says "No
-execution is required" (`:500`).
+**What VibeCoder has today (#3659 implemented).** The gate still checks
+statically that a test file changed and that the summary names a test declared
+in the added lines. It then executes that test: when the gate is active, the
+diff was collected, a test file changed and the cited test is declared in the
+diff's added lines, the completion phase (the worker, not the agent) runs the
+named test twice in a disposable checkout (`runSecurityFixDiscrimination` in
+`security_fix_discrimination.ts`; a `git clone --shared` of the issue checkout,
+detached at the head commit, no remote, deleted afterwards). It runs once at
+the head (expect pass) and once with the merge-base versions of the branch's
+changed non-test files restored (expect fail); files the branch added stay at
+head. It uses the mutation gate's runner seams and runs
+`deno test --no-check -A --filter <name> <file>` from the test's nearest
+`deno.json`, `deno.jsonc` or `deno.lock` directory, counting an outcome only
+when deno reports the named test's own `<name> ... ok` or `<name> ... FAILED`
+line. Red then green passes; green then green, red then red and green then red
+block with the evidence kind `test-discriminates`. The prose
+`regression-test` evidence (`REGRESSION_TEST_REFERENCE` and
+`BEFORE_AFTER_LINKAGE`) was removed, and `buildSecurityFixGateMessage` no
+longer says "No execution is required". Both outcomes are recorded on the block
+verdict (`SecurityGateRunVerdict.discrimination`) and rendered as "Recorded
+discrimination runs".
 
-**Gap.** A test that already passes on the vulnerable code satisfies the gate,
-because nothing runs it against the unfixed code. Only the agent's own
-sentence says it fails before the fix.
+**Gap (closed by #3659).** Before #3659 a test that already passed on the
+vulnerable code satisfied the gate, because nothing ran it against the unfixed
+code and only the agent's own sentence said it failed before the fix.
 
-**Verdict: Adopt — #3659.** The worker, not the agent, runs the named test
-against the base branch's production files (expect red) and at the head
-(expect green), and records both results. **Closes #3512:** no. It removes a
-self-reported claim on the security-fix surface only. **Closes #3615:** no. The
-follow-up #3659 requires a run that could not execute to block as "not
-checked", never to count as the red run, so the check does not fail open.
+**Verdict: Adopt — #3659 (implemented).** The worker, not the agent, runs the
+named test against the base branch's production files (expect red) and at the
+head (expect green), and records both results. **Closes #3512:** no. It removes
+a self-reported claim on the security-fix surface only. **Closes #3615:** no,
+and it does not add an instance. A run that cannot execute (runner error,
+unresolvable base ref or merge base, timeout, the 600 s budget exhausted, cited
+test not reported, no string-named Deno test cited, runner not wired) blocks
+with the evidence kind `discrimination-not-checked`, never counting as the red
+run, so the check does not fail open. Only Deno tests can be executed today, so
+a security fix in a non-Deno repo blocks as not checked unless the repo sets
+`skip_security_fix_check`.
 
 ## Deliberately excluded
 

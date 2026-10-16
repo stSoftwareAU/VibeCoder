@@ -152,6 +152,7 @@ import {
 } from "./model_fallback.ts";
 import { selectModelForLargeInput } from "./phase_model_escalation.ts";
 import type { SessionResumeState } from "./session_resume.ts";
+import { scopeModelUsageToInvocation } from "./model_usage_scope.ts";
 import {
   activeAgentProvider,
   type AgentDefinition,
@@ -2364,14 +2365,28 @@ export async function runClaudeWithTimeout(
     for (const tool of executorSplit?.deniedAdvisorEdits ?? []) {
       logger?.info(formatIssueEditDenialLog(tool));
     }
-    const runStats = {
-      ...buildRunStats(rawOutput, {
+    const { modelUsage: sessionModelUsage, ...streamStats } = buildRunStats(
+      rawOutput,
+      {
         requestedModel: resolvedModel,
         ...(resolvedEffort ? { effort: resolvedEffort } : {}),
         wallClockMs: clock.now() - startMs,
         // Attribute the run to the provider that produced it (Issue #4109).
         provider: provider.id,
-      }),
+      },
+    );
+    // The result's `modelUsage` is the whole session's running total, so a
+    // resumed session's would bill every earlier invocation again (Issue
+    // #3603 follow-up). Scoped against the session's saved baseline on the
+    // durable volume — never the clone, so cwd is not a fallback here.
+    const modelUsage = await scopeModelUsageToInvocation({
+      modelUsage: sessionModelUsage,
+      session: options.sessionResumeState,
+      workDir: resolveSignalDir(undefined, options.workDir),
+    });
+    const runStats = {
+      ...streamStats,
+      ...(modelUsage ? { modelUsage } : {}),
       ...(agentOutput?.usage ? { tokenUsage: agentOutput.usage } : {}),
       // Per-tool call counts (Issue #2157) from the tracker that already
       // parsed this stream's tool events — Claude `tool_use` blocks and

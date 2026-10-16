@@ -110,7 +110,18 @@ file or its facts file. So the description never drifts from a summary rewritten
 creation, for as long as that run's conditions are met. A re-sync
 re-derives a leading `Degraded run` section from the issue's current body and
 the rebuilt summary rather than copying it, keeping only the original run's
-reason and follow-up number (Issue #3350); see the degraded-run section of
+reason and follow-up number (Issue #3350). A leading `Partial delivery —
+follow-up filed` section is re-derived from the same inputs (Issue #3506): it is
+dropped, with no call to the follow-up, when no gap remains; kept as it is when
+the follow-up number cannot be read from its opening line; and, when a gap
+remains and the rebuilt section differs from the live one, rewritten to name the
+same follow-up while saying it was filed when the PR was raised and may not list
+every item. A leading `Partial delivery — handed to a human` section, which a
+healthy run on a partial-delivery follow-up carries instead of filing a nested
+one (PR #3676 review; a degraded run still files one), is rebuilt from the current gaps and dropped when none
+remains.
+A re-sync only reads the issue; it never edits or files the follow-up. See the
+degraded-run section of
 [issue-processing.md](workflows/issue-processing.md).
 
 The summary must describe the **final** state of the branch: it is rewritten,
