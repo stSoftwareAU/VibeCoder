@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "branchOutcomes": {
+    "noneAdded": false,
+    "entries": [
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1598,
+        "outcome": "A non-reviewer comment type does not call the review-fix verifier gate.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a non-reviewer comment type does not call the gate",
+        "flipWentRed": "Forced isReviewerChangeRequest(commentType) to true, so a non-reviewer comment called the gate; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:269."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1598,
+        "outcome": "A reviewer change request with nothing pushed does not call the gate.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a reviewer change request with nothing pushed does not call the gate",
+        "flipWentRed": "Forced hasChanges to true, so an unpushed round called the gate; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:283."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1599,
+        "outcome": "A reviewer change request whose commits stay unpushed does not call the gate.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a reviewer change request whose commits stay unpushed does not call the gate",
+        "flipWentRed": "Forced finalUnpushedCount === 0 to true, so an unpushed round called the gate; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:314."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1597,
+        "outcome": "A pushed change to a reviewer's change request calls the gate once with the review body.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a pushed change to a reviewer's change request calls the gate once with the review body",
+        "flipWentRed": "Forced the gate condition to false (if (false && (...))), so the gate was never called; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:228."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1653,
+        "outcome": "A recovery turn's outcome commits and pushes once more.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a recovery turn's outcome commits and pushes once more",
+        "flipWentRed": "Replaced the recoveryRan branch with if (false), so the second commit-and-push was skipped; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:246."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1681,
+        "outcome": "A recovery commit-and-push that fails does not claim the push.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a recovery commit-and-push that fails does not claim the push",
+        "flipWentRed": "Deleted finalUnpushedCount = undefined; so the earlier measurement was kept; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:334."
+      },
+      {
+        "path": "worker/deno/lib/pr_feedback_processor.ts",
+        "line": 1684,
+        "outcome": "A throwing gate does not abort the run.",
+        "test": "worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts",
+        "testName": "review-fix verifier wiring (#3784): a throwing gate does not abort the run",
+        "flipWentRed": "Inserted throw error; at the top of the gate catch block, so the error escaped; the test FAILED at worker/deno/tests/pr_feedback_processor_review_fix_verifier_3784_test.ts:297."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 411,
+        "outcome": "A body with no fleet findings is skipped.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a body with no fleet findings is skipped",
+        "flipWentRed": "Replaced the previous.length === 0 early return with if (false), so the gate ran with no findings; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:233."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 434,
+        "outcome": "A failed gh read is not checked, and the reason is written into the reply.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a failed gh read is not checked, with the reason in the reply",
+        "flipWentRed": "Inserted return clean at the gh pr view catch, so a failed read reported clean; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:370."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 136,
+        "outcome": "A malformed base ref is not checked.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a malformed base ref is not checked",
+        "flipWentRed": "Removed the isWellFormedBaseRef operand so any base ref was accepted; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:415."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 446,
+        "outcome": "A PR with no summary file is not checked.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a PR with no summary file is not checked",
+        "flipWentRed": "Forced summaryPath === undefined to false, so the missing-summary check was removed; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:387."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 368,
+        "outcome": "A branch naming no issue uses the PR's title and body.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a branch naming no issue uses the PR's title and body",
+        "flipWentRed": "Returned an empty issue instead of the PR fallback for a branch naming no issue; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:440."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 396,
+        "outcome": "A linked-issue read that throws falls back to the PR's title and body.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a linked-issue read that throws falls back to the PR's title and body",
+        "flipWentRed": "Returned an empty issue instead of the PR fallback in the linked-issue catch; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:493."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 485,
+        "outcome": "A round the verifier did not check says so in the reply.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a round the verifier did not check says so in the reply",
+        "flipWentRed": "Inserted return clean after the first-pass not_checked branch, so an unchecked round reported clean; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:353."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 494,
+        "outcome": "A clean round calls the verifier on the review-fix round and writes no reply.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a clean round calls the verifier on the review-fix round and writes no reply",
+        "flipWentRed": "Forced the unblocked first-pass check to false, so a clean round entered recovery and wrote a reply; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:243."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 506,
+        "outcome": "A recovery turn that cannot launch still re-runs the verifier and is never reported as recovered.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): a recovery turn that cannot launch still re-runs the verifier, and is never reported as recovered",
+        "flipWentRed": "Set state.recoveryRan = true instead of recovery.ok, so a turn that never launched was reported as recovered; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:462."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 515,
+        "outcome": "Blocked, then a re-check that cannot run is reported, never recovered.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): blocked then the re-check cannot run is reported, never recovered",
+        "flipWentRed": "Inserted return recovered after the second-pass not_checked branch, so an unchecked re-check was reported recovered; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:330."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 533,
+        "outcome": "Blocked, then recovered, runs one recovery turn, re-checks and writes no reply.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): blocked then recovered runs one recovery turn, re-checks, and writes no reply",
+        "flipWentRed": "Forced the unblocked second-pass check to false, so a recovered round was reported; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:286."
+      },
+      {
+        "path": "worker/deno/lib/review_fix_verifier_gate.ts",
+        "line": 540,
+        "outcome": "Blocked twice is reported in the reply, keeping the existing text first.",
+        "test": "worker/deno/tests/review_fix_verifier_gate_3784_test.ts",
+        "testName": "review-fix verifier gate (#3784): blocked twice is reported in the reply, keeping existing text first",
+        "flipWentRed": "Replaced the reported(...) return with status recovered, so a twice-blocked round was reported as recovered and no reply was written; the test FAILED at worker/deno/tests/review_fix_verifier_gate_3784_test.ts:301."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 193,
+        "outcome": "earlierFindings keeps well-formed verdicts and drops malformed ones.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "parseReviewReply: earlierFindings keeps well-formed verdicts and drops malformed ones",
+        "flipWentRed": "Replaced the verdict check with false, so malformed verdict strings were kept; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:84."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 768,
+        "outcome": "An earlier finding with no verdict is a finding.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "earlierFindingGapFindings: an earlier finding with no verdict is a finding",
+        "flipWentRed": "Inserted an early return for the no-verdict case, so no gap finding was owed; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:176."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 783,
+        "outcome": "A fixed finding owes nothing.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "earlierFindingGapFindings: a fixed finding owes nothing",
+        "flipWentRed": "Replaced the fixed early return with if (false), so a fixed finding produced a gap finding; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:125."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 783,
+        "outcome": "A partly fixed finding is a finding that names the note.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "earlierFindingGapFindings: a partly fixed finding is a finding that names the note",
+        "flipWentRed": "Extended the early return to partly, so a partly fixed finding owed nothing; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:136."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 783,
+        "outcome": "A not fixed finding is a finding that carries its fix.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "earlierFindingGapFindings: a not fixed finding is a finding that carries its fix",
+        "flipWentRed": "Extended the early return to not fixed, so a not fixed finding owed nothing; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:160."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 366,
+        "outcome": "The review-fix prompt builder rejects a non-positive pull request number.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "buildPrePrVerifierPrompt review-fix rejects a non-positive pull request number",
+        "flipWentRed": "Replaced the prNumber check with false, so a non-positive number was accepted; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:276."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 428,
+        "outcome": "The numbered earlier findings sit inside the boundary fence.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "buildPrePrVerifierPrompt review-fix: the numbered findings sit inside the boundary fence",
+        "flipWentRed": "Forced the review-fix findings block to be skipped, so the fence was not appended; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:231."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 883,
+        "outcome": "The review-fix verifier runs under phase pr_feedback.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "runPrePrVerifier review-fix: the verifier runs under phase pr_feedback",
+        "flipWentRed": "Forced the phase to issue on every round; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:491."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 915,
+        "outcome": "A finding marked partly fixed blocks the round with the gap finding.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "runPrePrVerifier review-fix: a finding marked partly fixed blocks with the gap finding",
+        "flipWentRed": "Forced the review-fix gap-finding branch off, so no gap finding was appended in verifyInCheckout; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:431."
+      },
+      {
+        "path": "worker/deno/lib/pre_pr_verifier.ts",
+        "line": 463,
+        "outcome": "The review-fix prompt names the PR, says it is a review-fix round, and asks for the verdicts.",
+        "test": "worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts",
+        "testName": "buildPrePrVerifierPrompt review-fix: names the PR, says it is a review-fix round, and asks for the verdicts",
+        "flipWentRed": "Forced PREVIOUS_FINDINGS to the No earlier review sentence on every round; the test FAILED at worker/deno/tests/pre_pr_verifier_review_fix_3784_test.ts:239."
+      },
+      {
+        "path": "worker/deno/lib/change_request_quotes.ts",
+        "line": 153,
+        "outcome": "parseChangeRequestFindingEntries gives each finding's file, line, problem and fix.",
+        "test": "worker/deno/tests/change_request_findings_3784_test.ts",
+        "testName": "parseChangeRequestFindingEntries - a producer body gives each finding's file, line, problem and fix",
+        "flipWentRed": "Removed the fix assignment (if (false) entry.fix = fix;), so no finding carried its fix; the test FAILED at worker/deno/tests/change_request_findings_3784_test.ts:60."
+      },
+      {
+        "path": "worker/deno/lib/change_request_quotes.ts",
+        "line": 83,
+        "outcome": "The :line is read only when it is all digits.",
+        "test": "worker/deno/tests/change_request_findings_3784_test.ts",
+        "testName": "parseChangeRequestFindingEntries - the :line is read only when it is all digits",
+        "flipWentRed": "Forced the :line read to 0 for every header, so a digit line was lost; the test FAILED at worker/deno/tests/change_request_findings_3784_test.ts:134."
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "issue": 3784,
+  "chunk": "top-up-3784",
+  "title": "top-up: review-fix verifier gate",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3784",
+  "definition": "module added after 12a-12af recorded their coverage: worker/deno/lib/review_fix_verifier_gate.ts, the review-fix round's run of the pre-PR verifier with the earlier review's findings (#3784)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/review_fix_verifier_gate.ts"
+  ],
+  "sweptAt": "addaa06f645c2a2ada3c45d6cb334840094fc4f9"
+}
