@@ -5,11 +5,14 @@ Measures the milestone sync and conflict PR overhead for 2026-10-07 to
 no longer force-pushes the sync branch when the freshly fetched remote
 `sync/milestone-<name>` head already holds the same merge (same tree, same
 tips), so an open sync PR's required checks are not restarted for no change.
-Closes #3690.
+Part of #3690.
 
+The issue stays open: the baseline is partial and the experiment was not run.
 The per-issue estimated API-equivalent cost is reported as unknown, not zero:
-#3644's lifecycle ledger is not on the default branch yet. No lifetime or
-overlap experiment was run; the data for one is recorded.
+#3644's lifecycle ledger is not on the default branch yet. CI runs are measured
+for VibeCoder only, and the two other repos with 2 sync PRs each have no
+baseline row. No lifetime or overlap experiment was run; the data for one is
+recorded.
 
 ## Spec
 
