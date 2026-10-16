@@ -219,6 +219,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // separates the linear `Error:(?!:)` test from a backtracking one
   // (Issue #3431).
   "tests/failure_diagnosis_bounds_3431_test.ts",
+  // The transcript tee checks every string of a model-written stream-json
+  // line against the raw redaction; only a growth measurement separates the
+  // single forward cursor from a rescan per string (Issue #3826).
+  "tests/agent_transcript_growth_3826_test.ts",
   "tests/growth_bound_test.ts",
   "tests/plan_coverage_gate_bounds_1245_test.ts",
   // The pre-commit safety gate's dotenv/config/secrets patterns scan a staged
