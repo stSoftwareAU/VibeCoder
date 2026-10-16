@@ -58,5 +58,5 @@ Issue numbers cited: #3086, #3114, #3348 (the prose rules named by the issue), #
 - Targeted run on the final head: parallel pass 119 passed | 0 failed; serial pass 31 passed | 0 failed.
 - Every branch outcome was flipped on purpose and its test went red (see the facts file).
 - Callers checked for the new required `round` field: `worker/deno/lib/phases/completion_phase.ts` (passes `pre-pr`) and `worker/deno/lib/review_fix_verifier_gate.ts` (passes `review-fix`); the type checker names any other.
-QUALITY_GATE_LINE_HERE
+- `./quality.sh` on the final head: `Result: PASSED (with skipped checks)` — Deno tests parallel and serial passes PASSED; only `config integration` was skipped (no `.config.json` in the checkout).
 <!-- vibe-branch-outcomes -->
