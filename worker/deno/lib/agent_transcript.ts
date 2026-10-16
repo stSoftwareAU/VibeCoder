@@ -191,6 +191,15 @@ function redactDecodedLine(
 ): string {
   const event: unknown = JSON.parse(line);
   const rawChanged = raw !== line;
+  // Compare cross-string detections against a canonical serialisation whose
+  // structural separators carry whitespace. That preserves JSON.stringify's
+  // property order (including integer-like keys, matching Object.entries)
+  // while stopping a raw secret-assignment rule from reading through the end
+  // of one JSON string into the next member. Rules deliberately spanning
+  // siblings (for example the AWS key-id/secret pair) still see both strings.
+  const contextLine = spaceJsonSeparators(JSON.stringify(event));
+  const contextRaw = redact(contextLine);
+  const contextChanged = contextRaw !== contextLine;
   let changed = false;
   // Whether the key alone makes a member a secret, judged on a neutral value.
   const secretNamed = (key: string): boolean => {
@@ -208,10 +217,11 @@ function redactDecodedLine(
   // Whether the raw pass masked something in `text`, through context outside
   // it, that the decoded pass (`own`) kept.
   //
-  // Strings and keys are visited in source order, so one cursor moves
-  // forward through `raw` for the whole walk, and each string is looked for
-  // only in its own span after the cursor (its length, plus RAW_SPAN_SLACK,
-  // plus the numbers, booleans and nulls walked since the last string):
+  // Strings and keys are visited in JSON.stringify/Object.entries order, so
+  // one cursor moves forward through `contextRaw` for the whole walk, and
+  // each string is looked for only in its own span after the cursor (its
+  // length, plus RAW_SPAN_SLACK, plus the numbers, booleans and nulls walked
+  // since the last string):
   // the check stays linear in the line, as redaction over model and tool
   // output must (SECURITY.md). A string the raw pass left alone matches its
   // decoded mask; one it masked only through its own text — such as a bare
@@ -224,18 +234,18 @@ function redactDecodedLine(
   let lineCursor = 0;
   let skipped = 0;
   const lostToRaw = (text: string, own: string): boolean => {
-    if (!rawChanged) return false;
+    if (!contextChanged) return false;
     const slack = RAW_SPAN_SLACK + skipped;
     skipped = 0;
     const whole = escaped(own);
-    const near = raw.slice(lineCursor, lineCursor + whole.length + slack);
+    const near = contextRaw.slice(lineCursor, lineCursor + whole.length + slack);
     const at = near.indexOf(whole);
     if (at !== -1) {
       lineCursor += at + whole.length;
       return false;
     }
     const local = redact(escaped(text));
-    const span = raw.slice(
+    const span = contextRaw.slice(
       lineCursor,
       lineCursor + Math.max(whole.length, local.length) + slack,
     );
@@ -298,6 +308,39 @@ function redactDecodedLine(
   };
   const redacted = walk(event);
   return changed || rawChanged ? JSON.stringify(redacted) : line;
+}
+
+/**
+ * Add one space after structural commas and colons in compact JSON.
+ *
+ * This is deliberately token-aware: punctuation inside JSON strings is left
+ * untouched. The resulting text need not be written anywhere; it exists only
+ * to give the raw redactor the same sibling context without letting a
+ * non-whitespace lookahead cross a JSON member boundary.
+ */
+function spaceJsonSeparators(json: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of json) {
+    out += char;
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+    } else if (char === "," || char === ":") {
+      out += " ";
+    }
+  }
+  return out;
 }
 
 /**

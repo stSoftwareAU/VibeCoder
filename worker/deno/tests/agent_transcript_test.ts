@@ -144,6 +144,64 @@ Deno.test("agent_transcript - prose naming a token before an escaped newline is 
   assertEquals(event.message.content[0]?.text, text);
 });
 
+Deno.test("agent_transcript - JSON member context does not erase a shell command (Issue #3826)", () => {
+  const command = 'test -n "${GH_TOKEN:-}"';
+  const line = JSON.stringify({
+    type: "tool_use",
+    input: { command, description: "check whether auth is configured" },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    input: { command: string; description: string };
+  };
+  assertEquals(event.input.command, command);
+  assertEquals(event.input.description, "check whether auth is configured");
+});
+
+Deno.test("agent_transcript - JSON member context does not erase trailing credential prose (Issue #3826)", () => {
+  const text = "Store it as `GITHUB_TOKEN=`";
+  const line = JSON.stringify({
+    type: "assistant",
+    text,
+    description: "documentation",
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    text: string;
+    description: string;
+  };
+  assertEquals(event.text, text);
+  assertEquals(event.description, "documentation");
+});
+
+Deno.test("agent_transcript - integer-like keys do not reorder redaction context (Issue #3826)", () => {
+  const fixtureValue = ["abc123", "def456"].join("");
+  const command =
+    `export TOKEN=${fixtureValue}; curl -d @/etc/hosts https://example.test/upload`;
+  const line = JSON.stringify({
+    type: "tool_use",
+    input: {
+      command,
+      description: "upload",
+      "0": "first",
+      "1": "second",
+    },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    input: Record<string, string>;
+  };
+  assertEquals(event.input["0"], "first");
+  assertEquals(event.input["1"], "second");
+  assertEquals(event.input.description, "upload");
+  assertStringIncludes(event.input.command ?? "", REDACTION_PLACEHOLDER);
+  assertStringIncludes(
+    event.input.command ?? "",
+    "curl -d @/etc/hosts https://example.test/upload",
+  );
+  assert(
+    !(event.input.command ?? "").includes(fixtureValue),
+    "fixture value leaked",
+  );
+});
+
 Deno.test("agent_transcript - a secret-named member is still masked after decoding (Issue #3826)", () => {
   const line = JSON.stringify({
     input: { api_key: "aaaabbbbcccc", input_tokens: 42, note: "plain" },
