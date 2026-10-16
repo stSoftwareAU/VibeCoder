@@ -113,7 +113,7 @@ left alone unless its head is the run's own `issue-<N>[-slug]` branch; then it
 is adopted (Issue #3804): rebuilt with the worker marker, digest and, when a
 criterion is `missing`, the withheld close (`Part of #N`). The issue run's
 completion phase adopts it at every exit, once the checkout's HEAD is the
-pushed head and the PR is open. A PR on any other branch is never touched.
+pushed head and the PR is open. A marker-less PR on any other branch is still left alone.
 A re-sync re-derives a leading `Degraded run` section from the issue's current body and
 the rebuilt summary rather than copying it, keeping only the original run's
 reason and follow-up number (Issue #3350). A leading `Partial delivery —
