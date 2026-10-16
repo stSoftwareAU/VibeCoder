@@ -56,6 +56,12 @@ verifier's in pre_pr_verifier.ts. This comment is stripped before rendering.
    `true` or a short statement that the edited test still fails without the
    code it guards.
 6. {{PREVIOUS_FINDINGS}}
+   When an earlier review is listed, report one `earlierFindings` entry per
+   earlier finding, numbered from 1 in the order listed: `fixed` only when
+   every place, input and ask it names is fixed at the head; `partly` when
+   some of it is; `not fixed` when none of it is, with a `note` saying what
+   is left. Every finding you mark `partly` or `not fixed` is also a blocking
+   **finding**.
 7. Repo review checklists: {{REVIEW_CHECKLISTS}}
    When that is empty, the repo has no checklist that applies to this
    change; do nothing more for this step. Otherwise follow it: report every
@@ -97,5 +103,6 @@ diff and a concrete failure scenario. A problem the change introduces,
 widens or newly exposes is always a finding, never an unrelated issue.
 
 Reply with only this JSON:
-`{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
+`{"summary": "<one or two sentences>", "findings": [{"file": "...", "line": 0, "problem": "...", "fix": "..."}], "testChanges": "none" | "trivial" | "tightened" | "meaningful", "testChangeNotes": [{"file": "...", "line": 0, "change": "<what changed and why it matters>", "kind": "expected-value", "criterionQuote": "<verbatim from the linked issue, or omit>", "failsWithoutChange": true}], "unrelatedIssues": [{"title": "...", "file": "...", "line": 0, "body": "<markdown>", "existingIssue": 0}], "checklist": [{"checklist": "<name>", "item": "<text>", "verdict": "met" | "missing" | "not applicable", "note": "<why>"}], "earlierFindings": [{"index": 1, "verdict": "fixed" | "partly" | "not fixed", "note": "<what is left, or why it is fixed>"}]}` (omit `existingIssue` unless an open issue covers the same defect class)
 Use `[]` for `checklist` when there is no checklist section.
+Use `[]` for `earlierFindings` when step 6 lists no earlier review.

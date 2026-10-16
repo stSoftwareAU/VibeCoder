@@ -23,10 +23,12 @@
  *
  * ```
  * (the blank line and `**Fix:**` block are both optional) followed by a
- * closing summary paragraph. `parseChangeRequestFindings` must read only the
- * `<problem>` text of each finding — never the `**Fix:**` text or the
+ * closing summary paragraph. `parseChangeRequestFindings` returns only the
+ * `<file>` and `<problem>` of each finding — never the `**Fix:**` text or the
  * trailing summary paragraph, both of which routinely include quoted prose
- * that is not the finding itself.
+ * that is not the finding itself. `parseChangeRequestFindingEntries` also
+ * returns each finding's `:line` and its `**Fix:**` text, for the review-fix
+ * verifier gate (Issue #3784, `lib/review_fix_verifier_gate.ts`).
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
@@ -37,6 +39,14 @@ export interface ChangeRequestFinding {
   file: string;
   /** The finding's problem text — never the `**Fix:**` text or summary. */
   problem: string;
+}
+
+/** One finding of a change request with its line and fix (Issue #3784). */
+export interface ChangeRequestFindingEntry {
+  file: string; // trailing :line stripped, trimmed
+  line: number; // the :line as a positive integer, else 0
+  problem: string;
+  fix?: string; // the **Fix:** text for this finding, when present
 }
 
 /** A PR summary file's repo-relative path (Issue #3143, #3244). */
@@ -51,8 +61,32 @@ export function isPrSummaryPath(path: string): boolean {
 /** A finding header, `**\`<file>[:<line>]\`**:` at the start of a line. */
 const FINDING_HEADER_PATTERN = /^\*\*`([^`\n]+)`\*\*:/;
 
+/** The prefix that opens a finding's fix block (Issue #3784). */
+const FIX_PREFIX = "**Fix:**";
+
+/** All digits: the `:line` part of a finding header (Issue #3784). */
+const LINE_NUMBER_PATTERN = /^\d+$/;
+
 /**
- * Parse a change request body into its findings (Issue #3244).
+ * Split a finding header's backticked span into its file and line (Issue
+ * #3784). The file is everything before the first colon, trimmed, as it
+ * always was. The line is the text after that colon when it is all digits,
+ * else 0 (so `a.ts:12` gives 12, `a.ts` gives 0).
+ */
+function splitFindingLocation(
+  captured: string,
+): { file: string; line: number } {
+  const colonIdx = captured.indexOf(":");
+  if (colonIdx < 0) return { file: captured.trim(), line: 0 };
+  const file = captured.slice(0, colonIdx).trim();
+  const digits = captured.slice(colonIdx + 1).trim();
+  const line = LINE_NUMBER_PATTERN.test(digits) ? Number(digits) : 0;
+  return { file, line };
+}
+
+/**
+ * Parse a change request body into its findings, each with its line and fix
+ * (Issue #3784).
  *
  * See the module doc comment for the producer contract this matches
  * (`reviewBody` in `.claude/skills/review-fleet-prs/scripts/review_log.ts`). Each
@@ -60,12 +94,18 @@ const FINDING_HEADER_PATTERN = /^\*\*`([^`\n]+)`\*\*:/;
  * following lines until the first blank line, a line starting
  * `**Fix:**`, or the next finding header — so the `**Fix:**` text and the
  * review's closing summary paragraph are never read as part of a problem.
+ *
+ * The `fix` runs from the `**Fix:**` line's remainder through following lines
+ * until the first blank line or the next finding header, joined with spaces.
+ * Blank lines between the problem and the `**Fix:**` line are skipped. The
+ * summary paragraph follows a blank line, so it never joins a fix. An empty
+ * fix is omitted.
  */
-export function parseChangeRequestFindings(
+export function parseChangeRequestFindingEntries(
   body: string,
-): ChangeRequestFinding[] {
+): ChangeRequestFindingEntry[] {
   const lines = body.split(/\r?\n/);
-  const findings: ChangeRequestFinding[] = [];
+  const entries: ChangeRequestFindingEntry[] = [];
   let i = 0;
   while (i < lines.length) {
     const line = lines[i]!;
@@ -74,10 +114,7 @@ export function parseChangeRequestFindings(
       i++;
       continue;
     }
-    const captured = match[1]!;
-    const colonIdx = captured.indexOf(":");
-    const file = (colonIdx >= 0 ? captured.slice(0, colonIdx) : captured)
-      .trim();
+    const location = splitFindingLocation(match[1]!);
     const restOfLine = line.slice(match[0].length).trim();
     const problemLines: string[] = [restOfLine];
     i++;
@@ -87,14 +124,51 @@ export function parseChangeRequestFindings(
         i++;
         break;
       }
-      if (/^\*\*Fix:\*\*/.test(next.trim())) break;
+      if (next.trim().startsWith(FIX_PREFIX)) break;
       if (FINDING_HEADER_PATTERN.test(next)) break;
       problemLines.push(next.trim());
       i++;
     }
-    findings.push({ file, problem: problemLines.join(" ").trim() });
+    const entry: ChangeRequestFindingEntry = {
+      file: location.file,
+      line: location.line,
+      problem: problemLines.join(" ").trim(),
+    };
+    let j = i;
+    while (j < lines.length && lines[j]!.trim() === "") j++;
+    if (j < lines.length && lines[j]!.trim().startsWith(FIX_PREFIX)) {
+      const fixLines: string[] = [lines[j]!.trim().slice(FIX_PREFIX.length)];
+      i = j + 1;
+      while (i < lines.length) {
+        const next = lines[i]!;
+        if (next.trim() === "") {
+          i++;
+          break;
+        }
+        if (FINDING_HEADER_PATTERN.test(next)) break;
+        fixLines.push(next.trim());
+        i++;
+      }
+      const fix = fixLines.join(" ").trim();
+      if (fix !== "") entry.fix = fix;
+    }
+    entries.push(entry);
   }
-  return findings;
+  return entries;
+}
+
+/**
+ * Parse a change request body into its findings' files and problems
+ * (Issue #3244). Delegates to {@link parseChangeRequestFindingEntries} and
+ * returns only `file` and `problem`, never the line or fix.
+ */
+export function parseChangeRequestFindings(
+  body: string,
+): ChangeRequestFinding[] {
+  return parseChangeRequestFindingEntries(body).map(({ file, problem }) => ({
+    file,
+    problem,
+  }));
 }
 
 // ---------------------------------------------------------------------------

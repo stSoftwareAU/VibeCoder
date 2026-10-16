@@ -28,6 +28,12 @@
  *
  * A pass that cannot run is "not checked", never clean.
  *
+ * The verifier also runs on a review-fix round on an open PR (Issue #3784):
+ * `review_fix_verifier_gate.ts`, called from `pr_feedback_processor.ts`, runs
+ * it with the earlier review's findings filled in. Each earlier finding must
+ * get a per-finding verdict, and the code (not the model) owes a finding for
+ * any that has none or is not fully fixed.
+ *
  * @module
  */
 
@@ -115,6 +121,14 @@ export type ReviewTestChanges =
   | "trivial"
   | "tightened"
   | "meaningful";
+/** A verifier's verdict on one finding of the earlier review (Issue #3784). */
+export type EarlierFindingVerdictKind = "fixed" | "partly" | "not fixed";
+export interface EarlierFindingVerdict {
+  index: number;
+  verdict: EarlierFindingVerdictKind;
+  note?: string;
+}
+
 export interface ReviewReply {
   summary: string;
   findings: ReviewFinding[];
@@ -123,6 +137,11 @@ export interface ReviewReply {
   unrelatedIssues: ReviewUnrelatedIssue[];
   /** Per-item verdicts for the repo's review checklists; [] when none apply. */
   checklist: ChecklistVerdict[];
+  /**
+   * Per-finding verdicts on the earlier review's findings, numbered from 1;
+   * [] when no earlier review is listed.
+   */
+  earlierFindings: EarlierFindingVerdict[];
 }
 
 /** At most this many unrelated issues are kept from one review. */
@@ -150,7 +169,36 @@ export function parseReviewReply(text: string): ReviewReply {
     testChangeNotes: r.testChangeNotes ?? [],
     unrelatedIssues: parseUnrelatedIssues(r.unrelatedIssues),
     checklist: parseChecklistVerdicts(r.checklist),
+    earlierFindings: parseEarlierFindingVerdicts(r.earlierFindings),
   };
+}
+
+const EARLIER_VERDICTS: readonly string[] = ["fixed", "partly", "not fixed"];
+
+// A malformed verdict is dropped, never an error: the code then owes a gap
+// finding for the earlier finding it leaves without a verdict (Issue #3784).
+function parseEarlierFindingVerdicts(raw: unknown): EarlierFindingVerdict[] {
+  if (!Array.isArray(raw)) return [];
+  const out: EarlierFindingVerdict[] = [];
+  for (const item of raw) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      continue;
+    }
+    const e = item as Record<string, unknown>;
+    const n = typeof e.index === "string" && e.index.trim() !== ""
+      ? Number(e.index)
+      : e.index;
+    if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) continue;
+    if (typeof e.verdict !== "string" || !EARLIER_VERDICTS.includes(e.verdict)) {
+      continue;
+    }
+    out.push({
+      index: n,
+      verdict: e.verdict as EarlierFindingVerdictKind,
+      ...(typeof e.note === "string" ? { note: e.note } : {}),
+    });
+  }
+  return out;
 }
 
 // A finding without a file or a problem is a malformed reply, never a blank line.
@@ -207,6 +255,19 @@ export const PRE_PR_VERIFIER_DISALLOWED_TOOLS: readonly string[] = [
   "Bash(wget:*)",
 ];
 
+/**
+ * Which round the verifier checks (Issue #3784): the issue run before its PR
+ * is raised, or a review-fix round on an open PR, which carries the earlier
+ * review's findings so each one is owed a verdict.
+ */
+export type VerifierRound =
+  | { kind: "pre-pr" }
+  | {
+    kind: "review-fix";
+    prNumber: number;
+    previousFindings: readonly ReviewFinding[];
+  };
+
 export interface PrePrVerifierInput {
   repo: string;
   issueNumber: number;
@@ -222,6 +283,8 @@ export interface PrePrVerifierInput {
   summaryContent: string;
   /** Files the change touches; null when unknown. */
   changedFiles: readonly string[] | null;
+  /** The round being checked (Issue #3784). */
+  round: VerifierRound;
   timeoutSeconds: number;
   killAfterSeconds?: number;
   model?: string;
@@ -265,6 +328,15 @@ function quoteList(paths: readonly string[]): string {
   return paths.map((p) => `\`${p}\``).join(", ");
 }
 
+// One numbered line per earlier finding, with its fix on the next line.
+function numberedEarlierFindings(previous: readonly ReviewFinding[]): string {
+  return previous.map((f, i) => {
+    const where = `${f.file}${f.line > 0 ? `:${f.line}` : ""}`;
+    const head = `${i + 1}. \`${where}\` — ${f.problem}`;
+    return f.fix ? `${head}\n   Fix: ${f.fix}` : head;
+  }).join("\n");
+}
+
 /** Build the verifier prompt: the shared brief plus the untrusted fences. */
 export function buildPrePrVerifierPrompt(opts: {
   template: string;
@@ -279,20 +351,59 @@ export function buildPrePrVerifierPrompt(opts: {
   changedFiles: readonly string[] | null;
   /** Rendered checklist section; "" when none applies. */
   reviewChecklists: string;
+  /** The round checked (Issue #3784). */
+  round: VerifierRound;
   boundaryId?: string;
 }): string {
   if (!Number.isInteger(opts.issueNumber) || opts.issueNumber <= 0) {
     throw new Error(`Invalid issue number: ${opts.issueNumber}`);
+  }
+  const round = opts.round;
+  if (
+    round.kind === "review-fix" &&
+    (!Number.isInteger(round.prNumber) || round.prNumber <= 0)
+  ) {
+    throw new Error(`Invalid pull request number: ${round.prNumber}`);
   }
   const boundaryId = isBoundaryId(opts.boundaryId)
     ? opts.boundaryId
     : generateBoundaryId();
   const files = opts.changedFiles;
 
+  // The sentences both rounds share; the opening, checkout and summary
+  // sentences differ by round.
+  const checkoutRules =
+    `Nothing you change there survives the review, so you may edit files to flip a line and rerun a test, run the test suite or a single test file, time a regex against a hostile input, or build. You must not push, run \`gh\`, or make any network write or GitHub change: those tools are denied, and the checkout has no remote. Read the change with \`git diff ${opts.baseSha}...HEAD\`, a file at the base ref with \`git show ${opts.baseSha}:<path>\`.`;
+  const noOpenIssueSearch =
+    "There is no open-issue search here; the worker records any unrelated issue you report rather than filing it. The linked issue is quoted below.";
+  const framing = round.kind === "review-fix"
+    ? {
+      opening:
+        `You are verifying a review-fix round on pull request #${round.prNumber} in ${opts.repo}: the worker has pushed a fix for the change-requesting review whose findings are quoted below, and has not yet replied to that review.`,
+      checkout:
+        `You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}, the PR's head after this round; the base is ${opts.baseSha}.`,
+      summary:
+        `\`${opts.summaryPath}\` in this checkout is the PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding.`,
+    }
+    : {
+      // The title is attacker-influenceable: it appears only inside the
+      // fenced "Linked issue" block below, never in this worker-written text.
+      opening:
+        `You are verifying the change for issue #${opts.issueNumber} in ${opts.repo} before its pull request is raised.`,
+      checkout:
+        `You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}; the base is ${opts.baseSha}.`,
+      summary:
+        `There is no PR yet: \`${opts.summaryPath}\` in this checkout becomes the PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding.`,
+    };
+
   const context = [
-    // The title is attacker-influenceable: it appears only inside the fenced
-    // "Linked issue" block below, never in this worker-written paragraph.
-    `You are verifying the change for issue #${opts.issueNumber} in ${opts.repo} before its pull request is raised. You work in a disposable checkout at \`${opts.checkoutPath}\` — your working directory — detached at head commit ${opts.headSha}; the base is ${opts.baseSha}. Nothing you change there survives the review, so you may edit files to flip a line and rerun a test, run the test suite or a single test file, time a regex against a hostile input, or build. You must not push, run \`gh\`, or make any network write or GitHub change: those tools are denied, and the checkout has no remote. Read the change with \`git diff ${opts.baseSha}...HEAD\`, a file at the base ref with \`git show ${opts.baseSha}:<path>\`. There is no PR yet: \`${opts.summaryPath}\` in this checkout becomes the PR description, so read it as the PR body — each claim it makes about the code, its tests or the docs must hold at the head, and one the head contradicts is a finding. There is no open-issue search here; the worker records any unrelated issue you report rather than filing it. The linked issue is quoted below.`,
+    [
+      framing.opening,
+      framing.checkout,
+      checkoutRules,
+      framing.summary,
+      noOpenIssueSearch,
+    ].join(" "),
     "",
     ...fenceUntrustedIssueText(
       `${opts.issueTitle}\n\n${opts.issueBody}`,
@@ -311,6 +422,17 @@ export function buildPrePrVerifierPrompt(opts: {
       ),
     );
     blocks.push("changed-file list");
+  }
+  if (round.kind === "review-fix") {
+    context.push(
+      "",
+      ...fenceUntrustedIssueText(
+        numberedEarlierFindings(round.previousFindings),
+        "Earlier review findings (numbered from 1):",
+        boundaryId,
+      ),
+    );
+    blocks.push("earlier review findings");
   }
 
   const testFiles = files?.filter(isTestFilePath) ?? [];
@@ -336,7 +458,10 @@ export function buildPrePrVerifierPrompt(opts: {
     REVIEW_CONTEXT: context.join("\n"),
     NO_TEST_ADDED_NOTE: noTestNote,
     TEST_CHANGES: testChanges,
-    PREVIOUS_FINDINGS: "No earlier review of this change asked for fixes.",
+    PREVIOUS_FINDINGS: round.kind === "review-fix" &&
+        round.previousFindings.length > 0
+      ? `An earlier review of this change asked for the ${round.previousFindings.length} fix(es) in the "Earlier review findings" block above. Check each one is fixed at the head; one that is not fully fixed is still a finding.`
+      : "No earlier review of this change asked for fixes.",
     REVIEW_CHECKLISTS: opts.reviewChecklists,
   });
 
@@ -535,6 +660,7 @@ export async function runPrePrVerifier(
           testChangeNotes: [],
           unrelatedIssues: [],
           checklist: [],
+          earlierFindings: [],
         },
         ...(outcome.run ? { run: outcome.run } : {}),
       };
@@ -616,6 +742,58 @@ export async function readChecklistsAt(
   };
 }
 
+// Least fixed first: when the verifier gives one earlier finding several
+// verdicts, the least-fixed one counts.
+const EARLIER_VERDICT_RANK: Record<EarlierFindingVerdictKind, number> = {
+  "not fixed": 0,
+  "partly": 1,
+  "fixed": 2,
+};
+
+/**
+ * The findings the code owes for a review-fix round (Issue #3784): one for
+ * each earlier finding that has no verdict, or whose verdict is not `fixed`.
+ * Verdicts for an index outside the earlier review are ignored.
+ */
+export function earlierFindingGapFindings(
+  previous: readonly ReviewFinding[],
+  verdicts: readonly EarlierFindingVerdict[],
+): ReviewFinding[] {
+  const out: ReviewFinding[] = [];
+  previous.forEach((prev, i) => {
+    const n = i + 1;
+    const mine = verdicts.filter((v) => v.index === n);
+    if (mine.length === 0) {
+      out.push({
+        file: prev.file,
+        line: prev.line,
+        problem:
+          `Earlier review finding ${n} was given no verdict, so it cannot be confirmed fixed: ${
+            clip(prev.problem, 300)
+          }`,
+        fix: "Check the earlier finding at the head and fix every part of it",
+      });
+      return;
+    }
+    const least = mine.reduce((a, b) =>
+      EARLIER_VERDICT_RANK[b.verdict] < EARLIER_VERDICT_RANK[a.verdict] ? b : a
+    );
+    if (least.verdict === "fixed") return;
+    const left = least.note ? ` — still left: ${least.note}` : "";
+    out.push({
+      file: prev.file,
+      line: prev.line,
+      problem: least.verdict === "partly"
+        ? `Earlier review finding ${n} is only partly fixed: ${
+          clip(prev.problem, 300)
+        }${left}`
+        : `Earlier review finding ${n} is not fixed: ${clip(prev.problem, 300)}${left}`,
+      fix: prev.fix ?? "Fix every part of the earlier finding",
+    });
+  });
+  return out;
+}
+
 async function verifyInCheckout(
   input: PrePrVerifierInput,
   deps: PrePrVerifierDeps,
@@ -693,11 +871,12 @@ async function verifyInCheckout(
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
     reviewChecklists,
+    round: input.round,
   });
 
   const asked = await deps.ask({
     prompt,
-    phase: "issue",
+    phase: input.round.kind === "review-fix" ? "pr_feedback" : "issue",
     repo: input.repo,
     issueNumber: input.issueNumber,
     timeoutSeconds: Math.min(
@@ -721,7 +900,21 @@ async function verifyInCheckout(
     const parsed = parseReviewReply(run.output ?? "");
     // The code, not the model, owes a finding for a checklist that was not
     // applied or an item left without a verdict (Issue #3594).
-    const gaps = checklistGapFindings(checklistExpected, parsed.checklist);
+    const checklistGaps = checklistGapFindings(
+      checklistExpected,
+      parsed.checklist,
+    );
+    // On a review-fix round the code likewise owes a finding for each earlier
+    // finding that has no verdict or is not fully fixed (Issue #3784).
+    const gaps: ReviewFinding[] = [
+      ...checklistGaps,
+      ...(input.round.kind === "review-fix"
+        ? earlierFindingGapFindings(
+          input.round.previousFindings,
+          parsed.earlierFindings,
+        )
+        : []),
+    ];
     return {
       status: "checked",
       review: gaps.length === 0
@@ -776,8 +969,11 @@ export function prePrVerifierBlockReason(review: ReviewReply): string {
 export const PRE_PR_VERIFIER_COMMENT_HEADING =
   "⚠️ **The pre-PR verifier found blocking problems.**";
 
-/** The comment that tells the agent what the verifier found and what to do. */
-export function buildPrePrVerifierGateComment(review: ReviewReply): string {
+/**
+ * The bullets that name what the verifier found: one per finding, then one
+ * per checklist item reported `missing` (Issue #3594).
+ */
+export function renderVerifierFindingBullets(review: ReviewReply): string[] {
   const bullets = review.findings.map((f) => {
     const fix = f.fix ? ` — fix: ${clip(f.fix, 500)}` : "";
     return `- \`${clip(f.file, 500)}:${f.line}\` — ${
@@ -790,6 +986,11 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
       clip(c.item, 500)
     }${note}`;
   });
+  return [...bullets, ...missing];
+}
+
+/** The comment that tells the agent what the verifier found and what to do. */
+export function buildPrePrVerifierGateComment(review: ReviewReply): string {
   return [
     PRE_PR_VERIFIER_COMMENT_HEADING,
     "",
@@ -797,8 +998,7 @@ export function buildPrePrVerifierGateComment(review: ReviewReply): string {
     "",
     clip(review.summary, 500),
     "",
-    ...bullets,
-    ...missing,
+    ...renderVerifierFindingBullets(review),
     "",
     "Procedure:",
     "1. Reproduce each finding at the head.",

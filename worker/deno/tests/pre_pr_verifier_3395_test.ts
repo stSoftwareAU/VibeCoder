@@ -193,6 +193,7 @@ function inputFor(
     summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
     summaryContent: "# Summary\nClaims.\n",
     changedFiles: ["a.ts"],
+    round: { kind: "pre-pr" },
     timeoutSeconds: 60,
     logger: makeRecordingLogger().logger,
     ...over,
@@ -464,6 +465,7 @@ const PROMPT_BASE = {
   summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
   boundaryId: "0123456789ab",
   reviewChecklists: "",
+  round: { kind: "pre-pr" } as const,
 };
 const NO_TEST_NOTE = "The change touches code but adds no test";
 
@@ -823,7 +825,9 @@ Deno.test("runPrePrVerifier passes maxRetries to ask and caps the timeout at 180
 
 Deno.test("the fleet reviewer's parser and audit send-back survive the shared parser", () => {
   const audit = auditSendBack("dependency audit");
-  assertEquals(parseFableReview(JSON.stringify(audit)), audit);
+  // The shared parser now also returns earlierFindings (Issue #3784), [] here.
+  const expectedAudit = { ...audit, earlierFindings: [] };
+  assertEquals(parseFableReview(JSON.stringify(audit)), expectedAudit);
 
   const reply = {
     summary: "The summary claims a retry that the head does not do.",
@@ -846,6 +850,7 @@ Deno.test("the fleet reviewer's parser and audit send-back survive the shared pa
       line: 3,
     }],
     checklist: [],
+    earlierFindings: [],
   };
   assertEquals(parseFableReview(JSON.stringify(reply)), reply);
   assertEquals(parseFableReview(`Review:\n${JSON.stringify(reply)}\n`), reply);
@@ -865,6 +870,7 @@ Deno.test("createDefaultDeps wires the real pre-PR verifier (an absolute summary
     summaryPath: "/etc/passwd",
     summaryContent: "x",
     changedFiles: null,
+    round: { kind: "pre-pr" },
     timeoutSeconds: 60,
     logger: makeRecordingLogger().logger,
   });

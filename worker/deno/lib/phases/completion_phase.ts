@@ -3034,6 +3034,7 @@ async function completionBody(
       summaryPath: summarySource,
       summaryContent,
       changedFiles: changedFilesKnown ? changedFiles : null,
+      round: { kind: "pre-pr" },
       timeoutSeconds: config.claudeTimeout,
       killAfterSeconds: config.claudeKillAfter,
       model: config.claudeModel || undefined,
