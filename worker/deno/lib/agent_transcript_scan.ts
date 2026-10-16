@@ -190,7 +190,7 @@ function messageOf(err: unknown): string {
 /**
  * Strip surrounding single or double quotes with two anchored loops. A
  * trailing regex such as `/['"]+$/` backtracks quadratically on a long run of
- * quotes that does not end the token (Issue #3942 linearity rule).
+ * quotes that does not end the token (CODING-STANDARDS.md: vet every regex on untrusted text).
  */
 function stripQuotes(token: string): string {
   let start = 0;

@@ -84,7 +84,8 @@ export const agentTranscriptScanCommand: Command = {
       };
     }
 
-    let message = `agent transcript scan: scanned ${result.scannedFiles.length}, ` +
+    let message =
+      `agent transcript scan: scanned ${result.scannedFiles.length}, ` +
       `unchanged ${result.unchangedFiles}, new findings 0 ` +
       `(${result.knownFindings} already recorded)`;
     if (result.notChecked.length > 0) {
