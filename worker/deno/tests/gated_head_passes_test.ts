@@ -274,7 +274,6 @@ Deno.test("merge-conflict pass - a milestone head goes to the conflict takeover,
             url: "https://github.com/org/repo/pull/9100",
             opened: true,
           },
-          fixBranch: `${milestoneFixPrefixFor(GATED_HEAD, 4702)}takeover-x`,
         });
       },
     });

@@ -167,7 +167,10 @@ VibeCoder uses **effort-first cost routing**: the worker varies
 **effort** (`max`/`xhigh`/`high`/`medium`/`low`) as the *primary* cost lever rather than
 switching model families per phase. Model tier is the *secondary* lever, and
 since Issue #2560 it is applied at the cheap extreme only: the three trivial
-phases stay on **Haiku**, and every other phase runs on **Opus**. The **eight
+phases stay on **Haiku**, the three reactive fixes (`ci_fix`, `pr_feedback`,
+`quality_fix`, Issue #2812) and the `issue` manager (Issue #3473) run on
+**Sonnet**, with the `issue` run's executors on Haiku, and the planning-shaped
+phases run on **Opus**. The **eight
 planning-shaped phases** (`planning`, `grill_me`, `refinement`, `revision`,
 `question`, `clarification`, `quorum`, `quorum_judge`) are marked out by `high`
 effort — wherever the Vibe Coder interprets the user's words into an
@@ -208,7 +211,7 @@ availability.
 | clarification | Opus | high | Opus @ max, recorded degraded |
 | quorum | Opus | high | Opus @ max, recorded degraded |
 | quorum_judge | Opus | high | Opus @ max, recorded degraded |
-| issue (implementation) | Opus | high | unchanged |
+| issue (implementation) | Sonnet | high | unchanged — Sonnet manager over Haiku executors since Issue #3473 |
 | ci_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | pr_feedback | Sonnet | high | unchanged — Sonnet since Issue #2812 |
 | quality_fix | Sonnet | high | unchanged — Sonnet since Issue #2812 |
@@ -258,8 +261,10 @@ extremes.**
   **Since Issue #2812 the three reactive fixes run on Sonnet at `high`**: with
   the gap back at 2×, Sonnet 5.5 at `high` costs about half of Opus while
   keeping reasoning depth on the hard CI and review cases. Implementation
-  (`issue`) stays on Opus at `high`, now as an advisor over Sonnet executors
-  (see [Advisor and executor split](#advisor-and-executor-split-issue-phase)).
+  (`issue`) stayed on Opus at `high`, as an advisor over Sonnet executors
+  (see [Advisor and executor split](#advisor-and-executor-split-issue-phase)),
+  until the owner's decision on Issue #3473 moved it to a Sonnet manager over
+  Haiku executors (see the decision log below).
   The change is measured with the
   [before/after check](#default-on-decision-criteria) and reverted per phase
   if it regresses.
@@ -338,6 +343,17 @@ the Standards reviewer on `haiku` at `medium`, plus a read-only explorer, with
 the Spec reviewer kept on `sonnet` — and it becomes the default only if it
 passes the [trial decision rule](#haiku-sub-agent-tier-trial). The advisor and
 every other phase are unchanged.
+
+**`issue` manager on Sonnet, sub-agents on Haiku (Issue #3473, owner decision,
+2026-10-16).** The owner made both the defaults without waiting for the trial
+rule: `DEFAULT_CLAUDE_MODEL_ISSUE` is `sonnet` (at `high`) and
+`issue_sub_agent_tier` defaults to `"haiku"`. The PR reviewer stays on Opus. An
+Opus manager cost about as much as a whole pre-split solo Opus run, so the
+subscription ran out and the fleet fell back to DeepSeek, which the owner
+judges worse than Haiku; the Opus review is what keeps merged quality high.
+Restore either half with `phase_model_overrides.issue: "opus"` or
+`issue_sub_agent_tier: "sonnet"`. The trial's figures are still collected and
+compared against the merged-quality signals.
 
 #### Fable 5 for top-tier phases
 
@@ -493,16 +509,16 @@ The [before/after check](#default-on-decision-criteria) below decides whether
 that default stays.
 
 - **Advisor** — the main session. It keeps the phase's own model and effort,
-  which for `issue` is Opus at `high`
+  which for `issue` is Sonnet at `high` (Opus before Issue #3473)
   ([Phase-Specific Defaults](#phase-specific-defaults)). It reads, plans,
   dispatches and reviews, and a `PreToolUse` hook denies it `Edit` and `Write`
   so the plan cannot quietly become the implementation.
-- **Executors** — Claude CLI sub-agents pinned to a cheaper tier: `sonnet` at
-  `medium` effort by default, fixed as `ISSUE_EXECUTOR_MODEL` and
-  `ISSUE_EXECUTOR_EFFORT` in
-  [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts),
-  or — when the host's `issue_sub_agent_tier` resolves `"haiku"` (Issue
-  #3402) — `haiku` at `high` effort (`HAIKU_ISSUE_EXECUTOR_MODEL` /
+- **Executors** — Claude CLI sub-agents pinned to a cheaper tier: `haiku` at
+  `high` effort by default (the `"haiku"` `issue_sub_agent_tier`, Issues #3402,
+  #3473), or `sonnet` at `medium` effort when the tier resolves `"sonnet"`,
+  fixed as `ISSUE_EXECUTOR_MODEL` and `ISSUE_EXECUTOR_EFFORT` in
+  [`worker/deno/lib/issue_executor_agents.ts`](../worker/deno/lib/issue_executor_agents.ts);
+  the Haiku pins are `haiku` at `high` effort (`HAIKU_ISSUE_EXECUTOR_MODEL` /
   `HAIKU_ISSUE_EXECUTOR_EFFORT` in the same module; see
   [Haiku sub-agent tier](#haiku-sub-agent-tier-issue-phase) below).
   Each gets exactly the tools it needs to edit files and run the tests —
@@ -817,7 +833,7 @@ each `file:line` — rather than file dumps. Haiku 5.5 needs that explicit
 steer where Sonnet-tier sub-agents do not, so Sonnet-tier prompts never carry
 it.
 
-`issue_sub_agent_tier: "sonnet"` (the default) leaves the `--agents` JSON
+`issue_sub_agent_tier: "sonnet"` (the default before Issue #3473) leaves the `--agents` JSON
 byte-identical to the invocation built before the key existed: no definition
 changes shape, and a run with both the split and reviewer switches off still
 emits no `--agents` argument at all. Non-`issue` phases never read the key
@@ -870,14 +886,12 @@ timeout or a kill) keeps its own failure path. A run with no refusal is
 unchanged. The standalone `execute-claude-phase` command does not apply this
 policy.
 
-**Opt-in trial, not a default change.** Unlike the executor split and
-reviewer sub-agents above, `issue_sub_agent_tier` is not judged by the
-before/after check. Haiku as the default is **not adopted**: `"sonnet"` stays
-the default unless the [trial below](#haiku-sub-agent-tier-trial) graduates.
-Per the owner's direction on Issue #3385, `"haiku"` is a trial a deployer opts
-part of their fleet into — host-wide or per repository via the `repo_config`
-override — to compare code-review rejections and CI failures against the cost
-saved. No fleet figure is claimed yet.
+**The default since Issue #3473.** `"haiku"` began as an opt-in trial
+(Issue #3385) a deployer opted part of their fleet into. On 2026-10-16 the owner made
+it the default, with the `issue` manager on Sonnet, before the
+[trial below](#haiku-sub-agent-tier-trial) reached its minimums (see the
+[decision log](#per-phase-decision-log)). `"sonnet"` remains an opt-out, host-wide
+or per repository via the `repo_config` override.
 
 | Change | Phase measured | Revert with |
 | --- | --- | --- |
@@ -932,11 +946,12 @@ signal fails, haiku does not graduate and the fleet stays on Sonnet — set
 repositories. Graduating is itself a separate change to the shipped default
 (`OPERATIONAL_DEFAULTS.issueSubAgentTier` in
 [`worker/deno/lib/config_defaults.ts`](../worker/deno/lib/config_defaults.ts));
-Haiku-as-default is **not yet adopted**.
+Haiku became the default by the owner's decision on Issue #3473 (2026-10-16),
+ahead of this rule; the rule's figures are still read as the evidence.
 
 ```mermaid
 flowchart TD
-    W{"At least 7 days AND<br/>at least 30 issue runs per tier?"} -->|no| C["⏳ Keep collecting<br/>(Sonnet stays the default)"]
+    W{"At least 7 days AND<br/>at least 30 issue runs per tier?"} -->|no| C["⏳ Keep collecting<br/>(trial figures; default already haiku since #3473)"]
     W -->|yes| X{"Haiku at least 25% cheaper per merged PR<br/>AND rejection rate at most 5 pp worse<br/>AND CI-failure rate at most 5 pp worse?"}
     X -->|all yes| G["✅ Graduate: change the default to haiku"]
     X -->|any no| S["↩️ Stay on Sonnet"]
@@ -1621,15 +1636,36 @@ suppressed, and from the second stats comment onward each block carries the
 cumulative issue total so the issue's cost is readable without adding comments
 up by hand.
 
+**PR-cycle rounds post on the PR.** A `pr_feedback` round (a review reply) and
+a `ci_fix` round (a red check) used to feed only the per-host tier counters, so
+what a send-back cost was invisible on GitHub — the one place cost per merged
+PR can be compared week over week. Each such round in which the agent ran now
+posts the same block on **the PR** it worked on, headed
+`## Pr-feedback run model stats` or `## Ci-fix run model stats`, costed through
+the same attribution as an issue run (a resumed session included). A round that
+pushed nothing still posts: it spent the tokens all the same. A round that
+never reached the agent — the PR closed, the comment claimed elsewhere, the
+branch not checked out — spent nothing and posts nothing. The marker's run id
+carries the round (`<run id>.<phase>-<comment or check-run id>`), so a repeat
+post of the same round inside one run is suppressed while a CI fix after a
+review reply in the same run still reports its own cost; from the second round
+on, the block carries the **PR total** across the PR's run-stats comments. The
+issue run's own comment stays on the issue, so a PR's cost is its issue
+comment's figure plus that PR total. Attributing the same cycles to the
+assignment in the run ledger is a separate, open route,
+[#3720](https://github.com/stSoftwareAU/VibeCoder/issues/3720).
+
 ```mermaid
 flowchart TD
-    A["Worker wraps an issue up"] --> B{"Which path?"}
+    A["Worker wraps an issue up<br/>or finishes a PR round"] --> B{"Which path?"}
     B -->|work-on| C["PR raised<br/>completion_phase.ts"]
     B -->|already complete| D["Worker closes the issue<br/>handle_no_changes_phase.ts"]
     B -->|grill-me / question /<br/>refinement / revision /<br/>clarification| E["Round finished<br/>phase_run_stats.ts"]
+    B -->|pr_feedback / ci_fix| P["Round finished, on the PR<br/>postPrRoundRunStats()"]
     C --> F["postIssueRunStatsComment()"]
     D --> F
     E --> F
+    P --> F
     F --> G{"Did <b>this run</b> already<br/>post its stats?"}
     G -->|yes| H["Skip — one per run"]
     G -->|no| I["Post the shared stats block<br/>+ run marker + issue total<br/>+ estimate disclaimer"]
@@ -1652,7 +1688,8 @@ flowchart TD
 - **Estimate disclaimer.** KISS on multi-worker coverage — no cross-worker
   aggregation infrastructure. Each comment states that the figures are an
   estimate covering the run that posted them, and that the total only sums the
-  comments visible on the issue.
+  comments visible on the issue — or, on a PR-cycle round's comment, the round
+  that posted it and the comments visible on the PR.
 - **The run's Graft figures.** When the run collected a Graft bundle
   ([Graft repo-context injection](CONFIGURATION.md#-graft-repo-context-injection)),
   one extra bullet — `- **Graft:** ok — build 47 s, bundle 7,874 chars, 19,714
@@ -1706,6 +1743,17 @@ flowchart TD
   heading marked `(partial — see below)` — rather than presenting the
   advisor-only figure as the run's cost; cost data recorded before Issue #3603
   counts the advisor only.
+- **A resumed session is costed for its own invocation only.** The CLI's
+  `modelUsage` is the whole session's running total — a resumed session's first
+  result already carries every earlier invocation, retired models included — so
+  the runner saves each session's totals under
+  `$WORK_DIR/.claude-sessions/model-usage/` and a resumed invocation records
+  only the difference. With no saved baseline (a session opened before the
+  baseline existed, a forked session) or totals that went backwards (a
+  `/clear`), the breakdown is withheld: the run is costed from `usage` and a
+  multi-model run is flagged `sub-agents: not costed`. Issue-run cost data
+  recorded between Issue #3603 (merged 2026-10-11) and this fix re-billed the
+  stream's history on every resumed invocation and over-states the spend.
 - **Degraded rounds are exempt from the guard.** The `degraded-model` label must
   never appear without the figures that justify it, so a degraded round posts
   unconditionally.
@@ -1717,9 +1765,11 @@ flowchart TD
 - Implementation:
   [`worker/deno/lib/issue_run_stats_comment.ts`](../worker/deno/lib/issue_run_stats_comment.ts)
   (`buildIssueRunStatsComment`, `postIssueRunStatsComment`,
-  `ghIssueCommentLister`), wired into
+  `ghIssueCommentLister`, `ghPrCommentLister`), wired into
   [`phase_run_stats.ts`](../worker/deno/lib/phase_run_stats.ts) (all six
-  planning-shaped phases),
+  planning-shaped phases, and `postPrRoundRunStats` for the PR-cycle rounds of
+  [`pr_feedback_processor.ts`](../worker/deno/lib/pr_feedback_processor.ts) and
+  [`pr_ci_processor.ts`](../worker/deno/lib/pr_ci_processor.ts)),
   [`phases/completion_phase.ts`](../worker/deno/lib/phases/completion_phase.ts)
   (PR-raise time),
   [`phases/handle_no_changes_phase.ts`](../worker/deno/lib/phases/handle_no_changes_phase.ts)

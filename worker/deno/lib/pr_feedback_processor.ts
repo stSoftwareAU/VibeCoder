@@ -17,6 +17,7 @@ import type { Logger, RepoConfig, Result } from "../types.ts";
 import { browserGranted } from "./browser_grant.ts";
 import type { WorkerDeps } from "./issue_worker_wiring.ts";
 import { resolvePreFlightSpec } from "./git_push.ts";
+import { formatBeforeGate } from "./repo_formatters.ts";
 import {
   type CommentType,
   removeProcessedMark,
@@ -83,6 +84,7 @@ import {
 } from "./config_defaults.ts";
 import { recordPrFeedbackRun } from "./fleet_telemetry.ts";
 import { estimatePhaseRunUsd } from "./phase_run_usd.ts";
+import { postPrRoundRunStats } from "./phase_run_stats.ts";
 import { fetchPrSubAgentTier } from "./pr_sub_agent_tier.ts";
 import type { RunStats } from "./run_stats.ts";
 import {
@@ -193,7 +195,8 @@ export interface PrFeedbackProcessorDeps {
   workRoot: string;
   /**
    * Fleet identity inputs for the PR-comment claim's author check
-   * (Issue #1124). Omitted reads the configured fleet, which is what
+   * (Issue #1124), and for the PR total on the round's run-stats comment
+   * (Issue #1249, finding 12). Omitted reads the configured fleet, which is what
    * production does; a test states the fleet instead of writing a config
    * file.
    */
@@ -693,7 +696,43 @@ export async function processPrFeedback(
   } finally {
     await stopHeartbeat(heartbeatHandle);
     await recordFeedbackTierRun(input, processorDeps, carrier);
+    await postFeedbackRunStats(input, processorDeps, carrier, graftSlot);
   }
+}
+
+/**
+ * Post this round's run-stats comment on the PR, so what a send-back cost is
+ * readable on GitHub beside the issue run's own figures. A round in which the
+ * agent never ran spent nothing and posts nothing; one that pushed nothing
+ * still posts. Never throws ({@link postPrRoundRunStats}).
+ */
+async function postFeedbackRunStats(
+  input: PrFeedbackInput,
+  processorDeps: PrFeedbackProcessorDeps,
+  carrier: FeedbackRunCarrier,
+  graftSlot: GraftContextSlot,
+): Promise<void> {
+  if (!carrier.agentRan) return;
+  const { deps, logger } = processorDeps;
+  await postPrRoundRunStats({
+    repo: input.repo,
+    prNumber: input.prNumber,
+    phase: "pr_feedback",
+    roundId: input.commentId,
+    runStats: carrier.runStats ?? [],
+    runGhCommand: (args: string[]) => deps.github.runGhCommand(args),
+    logger,
+    // The same fleet the claim trusts sums the PR total (Issue #1249,
+    // finding 12): only fleet-authored stats comments are counted.
+    ...(processorDeps.claimAuthorOptions
+      ? { authorOptions: processorDeps.claimAuthorOptions }
+      : {}),
+    ...(graftSlot.result ? { graft: graftSlot.result } : {}),
+    ...(carrier.codegraphContext
+      ? { codegraph: carrier.codegraphContext }
+      : {}),
+    ...(carrier.rtkOutput ? { rtk: carrier.rtkOutput } : {}),
+  });
 }
 
 /**
@@ -1440,12 +1479,20 @@ async function _processFeedbackWithHeartbeat(
   // Issue #3577: enforce the repo's pre-flight gate — a non-zero exit blocks
   // both the commit and the push so a broken feedback fix is not pushed.
   const preFlight = resolvePreFlightSpec(processorDeps.repoConfigs, repo);
+  // The repo's own formatters run between the commit and the gate (follow-up
+  // to #3806): a formatting-only miss in this round is fixed and committed
+  // rather than failing the push or reaching CI. Same files the gate checks
+  // (the unpushed commits), never Markdown; never fatal.
+  const formatRound = () =>
+    formatBeforeGate(deps, processorDeps.workDir, undefined);
   const finaliseResult = await deps.git.commitAndPushPending(
     pushBranch,
     `Address PR #${prNumber} feedback\n\nAutomated final-mile commit (Issue #1643).`,
     { cwd: processorDeps.workDir },
     false,
     preFlight,
+    undefined,
+    formatRound,
   );
 
   let pushSucceeded = false;
@@ -1487,6 +1534,8 @@ async function _processFeedbackWithHeartbeat(
           { cwd: processorDeps.workDir },
           false,
           preFlight,
+          undefined,
+          formatRound,
         );
         if (retryFinalise.ok) {
           finalUnpushedCount = retryFinalise.value.finalUnpushedCount;

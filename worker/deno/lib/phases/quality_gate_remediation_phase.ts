@@ -46,6 +46,8 @@ import { expectedNoPrOutcome } from "../run_outcome.ts";
 import { formatBaselineCarryoverNote } from "../quality_helpers.ts";
 import { fenceQualityOutput } from "../untrusted_quality_output.ts";
 import { buildBoundaryIntegrityInstruction } from "../prompt_delimiter.ts";
+import { resolveComparableBaseRef } from "../git_base_ref.ts";
+import { formatBeforeGate } from "../repo_formatters.ts";
 
 /**
  * Result of a single quality-gate body pass — see `runQualityGateBody`.
@@ -407,6 +409,28 @@ async function resolveBumpCommitSha(
 }
 
 /**
+ * The PR base the formatters scope the branch's changes against — the one the
+ * completion phase's pre-push gate uses. Undefined when it cannot be
+ * resolved, which narrows the formatters to commits on no remote, as the
+ * gate's own fallback does. Never throws.
+ */
+async function resolveFormatBase(
+  state: PhaseState,
+  deps: WorkerDeps,
+): Promise<string | undefined> {
+  try {
+    const base = await resolveComparableBaseRef(
+      deps.git.runGitCommand,
+      state.milestoneBranch ?? state.defaultBranch,
+      { cwd: state.repoPath },
+    );
+    return base.ok ? base.value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Single-pass quality gate logic — runs the gate and one Claude fix attempt
  * if the first run fails. Returns the phase outcome plus, when the gate
  * itself failed, the raw quality-output failure message for
@@ -444,7 +468,15 @@ async function runQualityGateBody(
   // errors before reporting its own.
   delete state.qualityGateStages;
 
+  // The repo's own formatters first, before every attempt (part of #2932):
+  // a formatting-only miss is fixed and committed rather than spending the
+  // agent's remediation round on it. Same files the pre-push gate checks,
+  // never Markdown; a formatter that fails or throws is logged and the gate
+  // still reports the problem.
+  const formatBase = await resolveFormatBase(state, deps);
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    await formatBeforeGate(deps, state.repoPath, formatBase);
     const qualityResult = await deps.quality.runQualityGate({
       scriptDir: state.repoPath,
       options: { strict: false, sequential: false, validatePrompts: false },

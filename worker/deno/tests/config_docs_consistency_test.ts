@@ -196,7 +196,7 @@ Deno.test("config docs - the trial decision rule states every threshold (Issue #
     "at least 30 `issue` runs",
     "at least 25% cheaper",
     "no more than 5 percentage points",
-    "not yet adopted",
+    "default by the owner's decision on Issue #3473",
   ]);
 });
 

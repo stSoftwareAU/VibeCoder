@@ -15,12 +15,14 @@ import {
   buildQualityGateStatsLine,
   buildRtkStatsLine,
   ghIssueCommentLister,
+  ghPrCommentLister,
   hasIssueRunStatsComment,
   hasRunStatsCommentForRun,
   ISSUE_RUN_STATS_DISCLAIMER,
   ISSUE_RUN_STATS_MARKER,
   measureIssuePhaseRun,
   postIssueRunStatsComment,
+  PR_RUN_STATS_DISCLAIMER,
   RTK_STATS_PREFIX,
   sanitiseStatsRunId,
   tallyIssueCost,
@@ -703,6 +705,78 @@ Deno.test("postIssueRunStatsComment - posts nothing when there are no stats", as
   assertEquals(result.posted, false);
   assertEquals(result.reason, "no_stats");
   assertEquals(gh.posted.length, 0);
+});
+
+// ============================================================================
+// PR scope — a PR-cycle round's comment on its PR
+// ============================================================================
+
+Deno.test("buildIssueRunStatsComment - a PR-scoped comment labels its total a PR total", () => {
+  const claudeResults: PhaseClaudeResult[] = [{
+    runStats: {
+      servedModels: ["claude-sonnet-5"],
+      requestedModel: "claude-sonnet-5",
+      tokenUsage: {
+        inputTokens: 1000,
+        outputTokens: 500,
+        cacheCreationTokens: 0,
+        cacheReadTokens: 0,
+      },
+      wallClockMs: 1000,
+    },
+  }];
+  const prior =
+    "## Pr-feedback run model stats\n- **Estimated cost (USD, estimate only):** ~$1.00";
+  const body = buildIssueRunStatsComment({
+    phase: "ci_fix",
+    claudeResults,
+    runId: "vc-run.ci_fix-1",
+    priorComments: [prior],
+    scope: "pr",
+  });
+
+  assertStringIncludes(body, "## Ci-fix run model stats");
+  assertStringIncludes(body, "- **PR total across 2 run-stats comments:**");
+  assert(!body.includes("Issue total"));
+  assert(body.endsWith(PR_RUN_STATS_DISCLAIMER));
+  // Omitted, the scope is the issue, exactly as before.
+  const issueBody = buildIssueRunStatsComment({
+    phase: "ci_fix",
+    claudeResults,
+    runId: "vc-run",
+    priorComments: [prior],
+  });
+  assertStringIncludes(issueBody, "- **Issue total across 2");
+  assert(issueBody.endsWith(ISSUE_RUN_STATS_DISCLAIMER));
+});
+
+Deno.test("ghPrCommentLister - lists a PR's comments through gh pr view", async () => {
+  let seen: string[] = [];
+  const list = ghPrCommentLister((args) => {
+    seen = args;
+    return Promise.resolve(
+      JSON.stringify({ comments: [{ body: "one", author: { login: "bot" } }] }),
+    );
+  });
+
+  assertEquals(await list("org/repo", 42), [{ body: "one", author: "bot" }]);
+  assertEquals(seen, [
+    "pr",
+    "view",
+    "42",
+    "--repo",
+    "org/repo",
+    "--json",
+    "comments",
+  ]);
+  const onMissingKey = ghPrCommentLister(() => Promise.resolve("{}"));
+  let threw = false;
+  try {
+    await onMissingKey("org/repo", 42);
+  } catch {
+    threw = true;
+  }
+  assert(threw, "a PR listing with no comments array must throw");
 });
 
 // ============================================================================

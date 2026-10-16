@@ -120,6 +120,15 @@ markdownlint, and semgrep.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
+Before each gate attempt in an issue run, the quality-gate phase runs the
+repository's own formatters over the branch's changed code files and commits
+the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
+formatting-only failure does not spend the agent's one remediation round. It
+never touches Markdown, and a formatter that fails is only logged: the gate
+still runs and reports. The completion phase does the same before its pre-push
+gate; see "Agent pre-push hook and the changed-files check" in
+[CONFIGURATION.md](CONFIGURATION.md).
+
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same
 `detect-non-literal-regexp` rule: `semgrep.yml` is a blocking PR check, so
@@ -1014,6 +1023,9 @@ flowchart LR
   of the reviewed PR. `ci_fix_tier_runs` /
   `ci_fix_tier_usd` are `ci_fix` runs and their estimated USD per tier of the
   PR; `pr_feedback_tier_usd` is `pr_feedback` runs' estimated USD per tier.
+  Each of those runs also posts its figures on the PR as a
+  `## Ci-fix run model stats` or `## Pr-feedback run model stats` comment,
+  priced the same way, so a send-back's cost is readable on GitHub too.
   `merged_tier_prs` counts merged PRs per tier from the merged-PR listing
   branch cleanup already fetches. `cost_per_merged_pr` is (issue + `pr_feedback` +
   `ci_fix` USD) ÷ merged PRs for that tier, to 4 decimal places, or `n/a` when
@@ -4242,8 +4254,14 @@ Three defences, each independent of the others:
   `--merge` for a `sync/milestone-*` head **whose head branch lives in this
   repository**, and `--squash` for every other PR; `pr_auto_merge.ts`,
   `direct_merge.ts` and `pr_manager.ts` all route their `gh pr merge` through
-  it, so no arming path can quietly squash a sync. The same-repository
-  condition is Issue #1249, finding 10: a fork chooses its own branch names, so
+  it, so no arming path can quietly squash a sync. A `milestone-fix/**` head on
+  a `milestone/**` base is the exception: it takes its method from
+  [`milestoneFixMergeMethod`](../worker/deno/lib/milestone_fix_pr.ts) instead,
+  a merge commit when its head merges the default branch (Issue #3596). The
+  sweep and the direct merge read it for same-repository heads only. Where
+  merge commits are forbidden it is refused (a warning or a failed result, never
+  a squash). The same-repository condition is Issue #1249, finding 10: a fork
+  chooses its own branch names, so
   the name alone cannot select a deviation on a path that bypasses branch
   protection. A sync-shaped head that fails it is squashed with
   `forkSyncDowngradeWarning` — loudly, by the same rule as the setting-based
@@ -4320,10 +4338,10 @@ flowchart TD
   maintenance scan classifies as `sync_pr_retired`: nothing to wait for,
   nothing to escalate. Two conditions keep the destructive verb honest — the
   head must live in **this repository** (a fork names its own branches, Issue
-  #1249), and a default branch that cannot be read defers as
-  `sync-base-unreadable` rather than arming, because the one PR that must never
-  merge into the default branch is the one whose base could not be compared
-  with it.
+  #1249), and a default branch that cannot be read, or a sync PR whose own base
+  cannot be read (Issue #3614), defers as `sync-base-unreadable` rather than
+  arming, because the one PR that must never merge into the default branch is
+  the one whose base could not be compared with it.
 
   Two details make that reachable and make it stick. `ensureAutoMergeOnOpenPrs`
   skips a PR that already has auto-merge armed — except a `sync/milestone-*`

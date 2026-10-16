@@ -3109,8 +3109,9 @@ itself closes is now recorded in a per-run
   (`fetchIssueState`) deliberately reads through the **uncached**
   `runGhCommand`.
 - **The caches are dropped.** A successful `gh issue close` (or `reopen`) at the
-  `gh` chokepoint invalidates that repo's `issues_all`, `issues_closed_all` and
-  the issue's own cache entries — see
+  `gh` chokepoint invalidates that repo's `issues_all`, `issues_closed_all`,
+  every per-milestone closed list (`issues_closed_milestone_<n>`) and the
+  issue's own cache entries — see
   [GH-API-OPTIMISATION](../GH-API-OPTIMISATION.md) → *Issue closes are never
   left to the TTL*.
 

@@ -145,6 +145,23 @@ export const ISSUE_RUN_STATS_DISCLAIMER =
   "figures are not included._";
 
 /**
+ * Where a run-stats comment is posted: the issue a run worked on, or the PR a
+ * `pr_feedback` / `ci_fix` round worked on. Only the cumulative-total label
+ * and the disclaimer differ; the stats block, the marker and the guard are
+ * the same on both, so the two never drift into separate formats.
+ */
+export type RunStatsScope = "issue" | "pr";
+
+/**
+ * The PR counterpart of {@link ISSUE_RUN_STATS_DISCLAIMER}, for the stats a
+ * PR-cycle round posts on the PR it worked on.
+ */
+export const PR_RUN_STATS_DISCLAIMER =
+  "_Estimate only — this block covers the round that posted it. The PR total " +
+  "sums the run-stats comments visible on this PR; rounds that reported no " +
+  "figures are not included._";
+
+/**
  * The CodeGraph line's fixed prefix — one line per run, whatever the status.
  *
  * Deliberately outside the cost lines' shape ({@link ESTIMATED_COST_PATTERN}),
@@ -292,13 +309,17 @@ export function tallyIssueCost(bodies: readonly string[]): IssueCostTally {
 }
 
 /**
- * Render the cumulative-cost line, or `""` when this is the issue's first
- * run-stats comment (the block's own total already says everything).
+ * Render the cumulative-cost line, or `""` when this is the first run-stats
+ * comment on the issue or PR (the block's own total already says everything).
  */
-export function buildIssueCostTotalLine(tally: IssueCostTally): string {
+export function buildIssueCostTotalLine(
+  tally: IssueCostTally,
+  scope: RunStatsScope = "issue",
+): string {
   if (tally.runs < 2) return "";
   const suffix = tally.partial ? " (partial — some runs report no total)" : "";
-  return `- **Issue total across ${tally.runs} run-stats comments:** ~${
+  const label = scope === "pr" ? "PR total" : "Issue total";
+  return `- **${label} across ${tally.runs} run-stats comments:** ~${
     formatUsd(tally.total)
   }${suffix}`;
 }
@@ -617,6 +638,8 @@ export function measureIssuePhaseRun(args: {
  *   previous-generation Haiku (Issue #3405); omitted renders no line
  * @param args.agentRefusal - A safety refusal and what its retry did (Issue
  *   #3406); omitted renders no line
+ * @param args.scope - `pr` for a PR-cycle round's comment on its PR, which
+ *   labels the cumulative line a PR total; omitted is `issue`
  *
  * An implementation run also carries the split figures (Issue #2346): one
  * `split: on`/`split: off` line always, and the executor counts on a split run
@@ -638,7 +661,9 @@ export function buildIssueRunStatsComment(args: {
   rtk?: RtkOutputResult;
   subAgentDegradation?: IssueSubAgentDegradation;
   agentRefusal?: AgentRefusalOutcome;
+  scope?: RunStatsScope;
 }): string {
+  const scope = args.scope ?? "issue";
   const invocations = args.claudeResults.flatMap((result) =>
     buildPhaseInvocations(args.phase, result)
   );
@@ -689,9 +714,13 @@ export function buildIssueRunStatsComment(args: {
   }${splitBlock}${rtkLine}`;
   const totalLine = buildIssueCostTotalLine(
     tallyIssueCost([...(args.priorComments ?? []), body]),
+    scope,
   );
   const withTotal = totalLine ? `${body}\n${totalLine}` : body;
-  return `${withTotal}\n\n${ISSUE_RUN_STATS_DISCLAIMER}`;
+  const disclaimer = scope === "pr"
+    ? PR_RUN_STATS_DISCLAIMER
+    : ISSUE_RUN_STATS_DISCLAIMER;
+  return `${withTotal}\n\n${disclaimer}`;
 }
 
 /**
@@ -749,11 +778,36 @@ export function ghIssueCommentLister(
   repo: string,
   issueNumber: number,
 ) => Promise<{ body: string; author: string | null }[]> {
-  return async (repo, issueNumber) => {
+  return ghCommentLister("issue", runGhCommand);
+}
+
+/**
+ * The PR counterpart of {@link ghIssueCommentLister}, backed by
+ * `gh pr view --json comments` — `gh issue view` does not resolve a PR
+ * number, so a PR-cycle round lists its PR's comments this way.
+ */
+export function ghPrCommentLister(
+  runGhCommand: (args: string[]) => Promise<string>,
+): (
+  repo: string,
+  prNumber: number,
+) => Promise<{ body: string; author: string | null }[]> {
+  return ghCommentLister("pr", runGhCommand);
+}
+
+/** The shared `gh <kind> view --json comments` lister both wrappers build. */
+function ghCommentLister(
+  kind: "issue" | "pr",
+  runGhCommand: (args: string[]) => Promise<string>,
+): (
+  repo: string,
+  number: number,
+) => Promise<{ body: string; author: string | null }[]> {
+  return async (repo, number) => {
     const raw = await runGhCommand([
-      "issue",
+      kind,
       "view",
-      String(issueNumber),
+      String(number),
       "--repo",
       repo,
       "--json",
@@ -764,7 +818,7 @@ export function ghIssueCommentLister(
     };
     if (!Array.isArray(parsed?.comments)) {
       throw new Error(
-        "gh issue view returned no `comments` array — cannot check for an existing run-stats comment",
+        `gh ${kind} view returned no \`comments\` array — cannot check for an existing run-stats comment`,
       );
     }
     // The author rides along because the cumulative tally is only counted
@@ -801,7 +855,10 @@ export interface IssueRunStatsPostResult {
  *
  * Called from every worker-handled wrap-up path: the `work-on` PR-raise (the
  * issue is auto-closed later by the merge, with no worker attached), the
- * grill-me / question / refinement final closes, and the not-planned closes.
+ * grill-me / question / refinement final closes, and the not-planned closes —
+ * and, with `scope: "pr"`, from every completed `pr_feedback` and `ci_fix`
+ * round, on the PR it worked on ({@link ./phase_run_stats.ts}
+ * `postPrRoundRunStats`).
  *
  * One comment **per run** (Issue #797): an earlier run's stats no longer
  * suppress this one, so the run that actually completed the issue reports what
@@ -834,6 +891,8 @@ export async function postIssueRunStatsComment(args: {
   subAgentDegradation?: IssueSubAgentDegradation;
   /** A safety refusal and what its retry did (Issue #3406); omitted renders no line. */
   agentRefusal?: AgentRefusalOutcome;
+  /** `pr` when `issueNumber` is a PR a PR-cycle round posts on; omitted is `issue`. */
+  scope?: RunStatsScope;
   getIssueComments: (
     repo: string,
     issueNumber: number,
@@ -930,6 +989,7 @@ export async function postIssueRunStatsComment(args: {
           ? { subAgentDegradation: args.subAgentDegradation }
           : {}),
         ...(args.agentRefusal ? { agentRefusal: args.agentRefusal } : {}),
+        ...(args.scope ? { scope: args.scope } : {}),
       }),
     );
     return { posted: true };
