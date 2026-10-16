@@ -691,7 +691,7 @@ export async function createGitHubIssuesWithPartialFailures(
         improvement.labels,
         `${repo} suggest-improvements`,
         logger,
-        options.extraReservedLabels ?? [],
+        options.extraReservedLabels,
       );
 
       const filed = await fileRoutedIssue(
