@@ -149,9 +149,10 @@ every time. See [CONTAINER-IMAGE.md](CONTAINER-IMAGE.md).
 
 The **checkov** stage (`worker/deno/lib/checkov_check.ts`, Issue #3653) is the
 local twin of the required `checkov.yml` job. It is registered only in a
-checkout that carries `.github/workflows/checkov.yml`, and runs the same
-`CHECKOV_IMAGE` with `checkovScanArgs()` over every CloudFormation template,
-judged by `judgeCheckovRun` as `worker/deno/checkov_report.ts` judges CI. It
+checkout that carries `.github/workflows/checkov.yml`, and runs
+`checkovScanArgs()` over every CloudFormation template, either through a
+`checkov` binary on PATH or inside the pinned `CHECKOV_IMAGE`, judged by
+`judgeCheckovRun` as `worker/deno/checkov_report.ts` judges CI. It
 uses a `checkov` binary on PATH (naming any version drift from
 `CHECKOV_IMAGE_TAG`) or a container runtime that **already holds** the pinned
 image, and never pulls it. Neither available, or a scan past the 300s deadline,

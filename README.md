@@ -415,12 +415,14 @@ the remedy. Install it (`pipx install semgrep`) to meet SAST findings before
 the push instead of after it.
 
 Optional: [Checkov](https://www.checkov.io/) **is** run by `./quality.sh` over
-the CloudFormation templates, at the same version as the blocking
-`checkov.yml` PR check. Install it (`pipx install checkov==3.3.29`) or run a
-container runtime that already holds the pinned image; without either, the
-stage reports `SKIPPED` and names the remedy. A skip must be inline and carry a
-reason, and in this repository is allowed only where the fix stops
-`infra/cloudformation/test-floci.sh` reaching CREATE_COMPLETE.
+the CloudFormation templates, with the same arguments and judgement as the
+blocking `checkov.yml` PR check, and at the same version when installed as
+below (a different version is named in the output). Install it
+(`pipx install checkov==3.3.29`) or run a container runtime that already holds
+the pinned image; without either, the stage reports `SKIPPED` and names the
+remedy. A skip must be inline and carry a reason, and in this repository is
+allowed only where the fix stops `infra/cloudformation/test-floci.sh` reaching
+CREATE_COMPLETE.
 
 ## 📚 One set of instructions
 

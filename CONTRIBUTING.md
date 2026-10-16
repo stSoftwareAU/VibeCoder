@@ -164,8 +164,10 @@ flowchart LR
 ### Checkov (CloudFormation) before the push
 
 `checkov.yml` is a blocking PR check over every CloudFormation template in the
-repository. The gate runs the same pinned Checkov, arguments and judgement
-locally, so a misconfigured template is met before the push.
+repository. The gate runs the same arguments and judgement locally, at the
+CI-pinned Checkov version when installed as the bullets below describe (a
+different version is named in the output), so a misconfigured template is met
+before the push.
 
 - **Install it or it skips, loudly.** `pipx install checkov==3.3.29` puts the
   binary on PATH. Alternatively, a container runtime already holding the
