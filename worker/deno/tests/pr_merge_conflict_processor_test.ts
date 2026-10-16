@@ -169,6 +169,15 @@ interface GitScript {
    * runs once the base is already an ancestor of the head.
    */
   headAfterRungMerge?: string;
+  /**
+   * Changed files `git diff --name-only --no-renames origin/<base> --` lists
+   * (Issue #3617). Default: none, so no PR summary is checked.
+   */
+  mergedDiff?: string[];
+  /** Exit code for that diff (Issue #3617). Non-zero means not checked. */
+  mergedDiffCode?: number;
+  /** stderr for a failing diff (Issue #3617). */
+  mergedDiffStderr?: string;
 }
 
 function makeGitScript(overrides?: Partial<GitScript>): GitScript {
@@ -250,6 +259,19 @@ function makeGit(
         const revision = args[2] ?? "";
         captured.resets.push(revision);
         captured.events.push("git:reset-hard");
+        headOverride = revision;
+        return Promise.resolve({
+          ok: true,
+          value: { code: 0, stdout: "", stderr: "" },
+        });
+      }
+
+      if (args[0] === "reset" && args[1] === "--merge") {
+        // The summary-claim gate's restore (Issue #3617):
+        // `reset --merge --end-of-options <sha>`, the revision last.
+        const revision = args[args.length - 1] ?? "";
+        captured.resets.push(revision);
+        captured.events.push("git:reset-merge");
         headOverride = revision;
         return Promise.resolve({
           ok: true,
@@ -365,6 +387,20 @@ function makeGit(
         return Promise.resolve({
           ok: true,
           value: { code: stderr === "" ? 0 : 1, stdout: "", stderr },
+        });
+      }
+
+      if (args[0] === "diff" && args.includes("--no-renames")) {
+        // The summary-claim check's diff of the working tree against the base
+        // (Issue #3617). Not the `--cached` or `--diff-filter=U` diffs above.
+        const code = script.mergedDiffCode ?? 0;
+        return Promise.resolve({
+          ok: true,
+          value: {
+            code,
+            stdout: code === 0 ? (script.mergedDiff ?? []).join("\n") : "",
+            stderr: code === 0 ? "" : (script.mergedDiffStderr ?? ""),
+          },
         });
       }
 
@@ -580,12 +616,29 @@ function makeClaude(
    * the watchdog SIGTERM the run-end delivers (Issue #1693).
    */
   resultOverrides?: Partial<ClaudeRunResult>,
+  agentOpts?: {
+    /**
+     * Fields merged over one run's result, by its 1-based order: entry 0 is the
+     * resolution run, entry 1 the summary-claim recovery turn (Issue #3617).
+     */
+    perRun?: readonly (Partial<ClaudeRunResult> | undefined)[];
+    /**
+     * Runs before each agent run returns, with its prompt and checkout — the
+     * hook a test uses to rewrite the summary during the recovery turn
+     * (Issue #3617).
+     */
+    onAgentRun?: (prompt: string, workDir: string) => Promise<void>;
+  },
 ): Partial<ClaudeDeps> {
   return {
-    runClaudeWithRetry: (async (options: { prompt?: string }) => {
+    runClaudeWithRetry: (async (options: { prompt?: string; cwd?: string }) => {
       captured.agentRuns++;
+      const runNumber = captured.agentRuns;
       captured.agentPrompts.push(options?.prompt ?? "");
       captured.events.push("agent:run");
+      if (agentOpts?.onAgentRun) {
+        await agentOpts.onAgentRun(options?.prompt ?? "", options?.cwd ?? "");
+      }
       // A real resolution runs for minutes; a few milliseconds is enough for
       // a test to observe what happens *while* it runs (Issue #395).
       if (delayMs > 0) {
@@ -598,6 +651,7 @@ function makeClaude(
           exitCode: 0,
           timedOut: false,
           ...resultOverrides,
+          ...(agentOpts?.perRun?.[runNumber - 1] ?? {}),
         },
       };
     }) as unknown as ClaudeDeps["runClaudeWithRetry"],
@@ -641,6 +695,10 @@ async function runProcessor(
     threadComments?: { body: string; author: string }[];
     /** Error `gh pr comment` rejects with (Issue #2278). */
     commentPostError?: string;
+    /** Per-run result overrides, by run order (Issue #3617). */
+    claudeResultsByRun?: readonly (Partial<ClaudeRunResult> | undefined)[];
+    /** Runs before each agent run returns (Issue #3617). */
+    onAgentRun?: (prompt: string, workDir: string) => Promise<void>;
   },
 ): Promise<{
   captured: Captured;
@@ -682,6 +740,10 @@ async function runProcessor(
       captured,
       opts?.claudeDelayMs ?? 0,
       opts?.claudeResult,
+      {
+        perRun: opts?.claudeResultsByRun,
+        onAgentRun: opts?.onAgentRun,
+      },
     ),
     crashHandling: opts?.crashHandling,
   });
@@ -691,7 +753,10 @@ async function runProcessor(
   const workRoot = await Deno.makeTempDir({ prefix: "vibe-work-root-" });
   const workDir = await Deno.makeTempDir({ prefix: "vibe-merge-conflict-" });
   for (const [path, content] of Object.entries(opts?.workDirFiles ?? {})) {
-    await Deno.writeTextFile(`${workDir}/${path}`, content);
+    // Issue #3617: a summary lives under docs/archive/pr-summaries/.
+    const target = `${workDir}/${path}`;
+    await Deno.mkdir(target.replace(/\/[^/]+$/, ""), { recursive: true });
+    await Deno.writeTextFile(target, content);
   }
 
   const result = await processMergeConflict(input, {
@@ -3318,4 +3383,169 @@ Deno.test("processMergeConflict - a failing PR body sync does not fail the run",
   assert(result.ok);
   assertEquals(result.value.merged, true);
   assertEquals(result.value.escalated, false);
+});
+
+// ---------------------------------------------------------------------------
+// Summary claims (Issue #3617)
+// ---------------------------------------------------------------------------
+
+/** A PR summary that claims a file the base branch has already landed. */
+const CLAIMING_SUMMARY_PATH = "docs/archive/pr-summaries/pr-summary-16.md";
+const CLAIMING_SUMMARY = [
+  "# PR #48 — document the x helper",
+  "",
+  "- **Docs sweep:** grep: `x`; section: `docs/x.md#y`; updated: `docs/x.md`",
+  "",
+  "## Changes",
+  "",
+  "- `lib/a.ts` — exports the helper",
+  "",
+].join("\n");
+
+/** The same summary once the recovery turn has dropped the absorbed claim. */
+const REWRITTEN_SUMMARY = [
+  "# PR #48 — document the x helper",
+  "",
+  "- **Docs sweep:** grep: `x`; section: `docs/x.md#y`; updated: none — the base carries this",
+  "",
+  "## Changes",
+  "",
+  "- `lib/a.ts` — exports the helper",
+  "",
+].join("\n");
+
+/** The merged diff: the summary and lib/a.ts, but not docs/x.md, which the base landed. */
+const DIFF_WITHOUT_DOCS = [CLAIMING_SUMMARY_PATH, "lib/a.ts"];
+
+Deno.test("processMergeConflict - a recovery turn that rewrites the false claim pushes with the note (Issue #3617)", async () => {
+  let runs = 0;
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergedDiff: DIFF_WITHOUT_DOCS }),
+    undefined,
+    {
+      workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY },
+      onAgentRun: async (_prompt, workDir) => {
+        runs++;
+        // The resolution is the first run; the recovery turn is the second.
+        if (runs === 2) {
+          await Deno.writeTextFile(
+            `${workDir}/${CLAIMING_SUMMARY_PATH}`,
+            REWRITTEN_SUMMARY,
+          );
+        }
+      },
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 2, "resolution plus one recovery turn");
+  assertEquals(captured.commitAndPushCalls, 1);
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, CONFLICT_RESOLVED_MARKER);
+  assertStringIncludes(resolved, "the recovery turn rewrote it");
+  assertStringIncludes(captured.agentPrompts[1] ?? "", "docs/x.md");
+});
+
+Deno.test("processMergeConflict - a recovery turn that leaves the false claim refuses the push and restores the head (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergedDiff: DIFF_WITHOUT_DOCS }),
+    undefined,
+    { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  assertEquals(captured.agentRuns, 2, "resolution plus one recovery turn");
+  assertEquals(captured.commitAndPushCalls, 0, "a false summary was pushed");
+  assertEquals(captured.pushes, []);
+  assert(
+    captured.resets.includes(TEST_HEAD_SHA),
+    "the local merge was not reset to the pre-merge head",
+  );
+  assert(captured.events.includes("git:reset-merge"));
+  const failed =
+    captured.comments.find((c) => c.includes(CONFLICT_FAILED_MARKER)) ?? "";
+  assertStringIncludes(failed, "docs/x.md");
+  assertStringIncludes(failed, "after one recovery turn");
+});
+
+Deno.test("processMergeConflict - a summary whose claims are all present proceeds with no recovery turn (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergedDiff: [CLAIMING_SUMMARY_PATH, "docs/x.md", "lib/a.ts"],
+    }),
+    undefined,
+    { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.agentRuns, 1, "the resolution only, no recovery turn");
+  assertEquals(captured.commitAndPushCalls, 1);
+  assertStringIncludes(captured.comments.at(-1) ?? "", "all present");
+});
+
+Deno.test("processMergeConflict - a diff that cannot run is noted as not checked and still pushes (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({
+      mergedDiffCode: 128,
+      mergedDiffStderr: "fatal: bad revision 'origin/main'",
+    }),
+    undefined,
+    { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
+  );
+
+  assert(result.ok);
+  assertEquals(captured.commitAndPushCalls, 1);
+  const resolved = captured.comments.at(-1) ?? "";
+  assertStringIncludes(resolved, "not checked");
+  assertStringIncludes(resolved, "bad revision");
+});
+
+Deno.test("processMergeConflict - a recovery turn the worker ends withdraws the attempt, not spent (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergedDiff: DIFF_WITHOUT_DOCS }),
+    undefined,
+    {
+      workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY },
+      postedCommentId: 9002,
+      claudeResultsByRun: [undefined, { terminated: true }],
+    },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.attemptCharged, false);
+  assertEquals(result.value.runEnded, true);
+  assertEquals(captured.agentRuns, 2);
+  assertEquals(captured.commentsDeleted, [9002]);
+  assertEquals(captured.commitAndPushCalls, 0);
+  const conclusions = captured.comments.filter((c) =>
+    c.includes(CONFLICT_FAILED_MARKER) || c.includes(CONFLICT_RESOLVED_MARKER)
+  );
+  assertEquals(conclusions, []);
+  assert(captured.resets.includes(TEST_HEAD_SHA));
+});
+
+Deno.test("processMergeConflict - a clean merge with a false claim and no fix refuses the push (Issue #3617)", async () => {
+  const { captured, result } = await runProcessor(
+    makeInput(),
+    makeGitScript({ mergeCode: 0, mergedDiff: DIFF_WITHOUT_DOCS }),
+    undefined,
+    { workDirFiles: { [CLAIMING_SUMMARY_PATH]: CLAIMING_SUMMARY } },
+  );
+
+  assert(result.ok);
+  assertEquals(result.value.merged, false);
+  // A clean merge has no resolution run, so the only agent run is the recovery.
+  assertEquals(captured.agentRuns, 1);
+  assertEquals(captured.commitAndPushCalls, 0);
+  assertEquals(captured.pushes, []);
+  assert(captured.resets.includes(TEST_HEAD_SHA));
+  const failed =
+    captured.comments.find((c) => c.includes(CONFLICT_FAILED_MARKER)) ?? "";
+  assertStringIncludes(failed, "docs/x.md");
 });
