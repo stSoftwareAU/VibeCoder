@@ -1787,7 +1787,9 @@ a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`), or a
 `siblings:` part (Issue #3371) that is missing, a bare placeholder (`none`,
 `n/a`, `tbd`, …), or quotes no backticked or double-quoted term and is not the
 `siblings: none — <reason>` negative. `section: none — <reason>` and `no hits`
-are both accepted, and a bad `section:` and a bad `siblings:` are reported
+are both accepted. The grep field must quote a usable term, or state
+`grep: none — <why no terms apply>`; missing, unquoted or bare-negative grep
+fields are refused too (Issue #3861). A bad `section:` and a bad `siblings:` are reported
 together. The entry is read as one logical unit from the shared
 `markdownLogicalUnits` splitter (Issue #3356), so a hard-wrapped entry is
 joined up to the next blank line, list item, heading, table row, fence or HTML
@@ -1829,7 +1831,12 @@ changed, or when the line names it as `file:line` or `file:start-end`. Any
 other hit is advisory (Issue #3237, because the re-run was failing fleet
 runs): it is posted once, as a PR comment for the reviewer, listing each
 `file:line` and its sentence (at most 20, then "and N more"), and logged at
-WARN. When GitHub's secondary rate limit defers the PR to the next cycle
+WARN. Quoted terms after colonless `grep` or `grep terms` are read too
+(Issue #3861). A semicolon or the next `section:`, `siblings:`, `updated:`,
+`files updated:` or `grep:` field label ends the current field outside
+quotes. A label inside a quoted term stays part of the term. An explained
+`grep: none — <why>` contributes no search terms, even when the explanation
+quotes a name. When GitHub's secondary rate limit defers the PR to the next cycle
 (Issue #1951), the comment is parked with the deferred PR record and the
 drain posts it on the PR it raises. It never blocks the summary and triggers
 no recovery turn — fix it, or
