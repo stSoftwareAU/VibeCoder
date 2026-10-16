@@ -106,7 +106,7 @@ Deno.test(
         assertEquals(
           check.output,
           undefined,
-          `passing check '${check.name}' should record no output`,
+          `non-failing check '${check.name}' should record no output`,
         );
       }
     }

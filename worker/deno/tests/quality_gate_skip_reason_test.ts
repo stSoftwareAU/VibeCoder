@@ -35,13 +35,17 @@ Deno.test("quality gate - SKIPPED Deno checks record why (Issue #3726)", async (
       options: { strict: false, sequential: true, validatePrompts: false },
     });
     assert(result.ok, "quality gate should return a result");
-    const denoTests = result.value.checks.find((c) => c.name === "deno tests");
-    assert(denoTests, "the gate must record a deno tests check");
-    assertEquals(denoTests.status, "SKIPPED");
-    assertEquals(
-      denoTests.output,
-      "no Deno worker directory configured or found",
-    );
+    for (
+      const name of ["deno tests", "deno lint", "deno type check", "deno fmt"]
+    ) {
+      const check = result.value.checks.find((c) => c.name === name);
+      assert(check, `the gate must record a '${name}' check`);
+      assertEquals(check.status, "SKIPPED");
+      assertEquals(
+        check.output,
+        "no Deno worker directory configured or found",
+      );
+    }
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

@@ -333,6 +333,9 @@ Deno.test("runSemgrepCheck - no semgrep inside the fleet container image is FAIL
   assertEquals(result.status, "FAILED");
   assertStringIncludes(result.output, "not installed or not in PATH");
   assertEquals(detectFailureCategory(result.output), "missing_tools");
+  // Nothing was scanned, so no finding or file count is claimed.
+  assertEquals(result.findings, []);
+  assertEquals(result.filesScanned, 0);
 });
 
 Deno.test("runSemgrepCheck - a blank container stamp is a host run — no semgrep stays SKIPPED", async () => {

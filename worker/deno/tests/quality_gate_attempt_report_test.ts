@@ -19,6 +19,7 @@ import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { buildDefaultWorkerConfig } from "../lib/config_defaults.ts";
 import { mermaidFinding } from "../lib/baseline_gate.ts";
 import type { CheckResult } from "../lib/quality_helpers.ts";
+import type { LogContext, Logger } from "../types.ts";
 
 function makeContext(): IssueContext {
   return {
@@ -78,9 +79,13 @@ function failedGate() {
  * Deps whose gate returns `outcomes[n]` on the n-th run, and whose Claude fix
  * attempt does nothing but succeed.
  */
-function makeDeps(outcomes: (() => ReturnType<typeof passedGate>)[]) {
+function makeDeps(
+  outcomes: (() => ReturnType<typeof passedGate>)[],
+  logger?: Partial<Logger>,
+) {
   let call = 0;
   return createMockDeps({
+    ...(logger ? { logger } : {}),
     quality: {
       runQualityGate: () => (outcomes[call++] ?? failedGate)(),
       // A failing non-diffable check, so the baseline-aware bypass never fires.
@@ -225,13 +230,33 @@ Deno.test("quality gate - records the stage outcomes of the last gate run (Issue
       },
     });
 
+  const infos: { message: string; context?: LogContext }[] = [];
   const result = await workOnIssueQualityGate(
     makeContext(),
     state,
-    makeDeps([failedGate, secondRun]),
+    makeDeps([failedGate, secondRun], {
+      info: (message: string, context?: LogContext) => {
+        infos.push({ message, context });
+      },
+    }),
   );
 
   assertEquals(result.status, "continue");
+  // The worker log carries each attempt's stages, so an audit without the
+  // run-stats comment can still see them.
+  assertEquals(
+    infos
+      .filter((i) => i.message === "Quality gate stage outcomes")
+      .map((i) => i.context),
+    [
+      { attempt: 1, stages: "failed: `deno test`" },
+      {
+        attempt: 2,
+        stages:
+          "passed: `deno lint`; skipped: `semgrep` (`semgrep: SKIPPED (offline)`)",
+      },
+    ],
+  );
   assertEquals(state.qualityGateStages, [
     {
       name: "semgrep",
