@@ -20,6 +20,7 @@ import {
   scanAgentTranscripts,
   scanTranscriptLine,
   TRANSCRIPT_SCAN_FINDINGS_FILE,
+  TRANSCRIPT_SCAN_RULES_VERSION,
   TRANSCRIPT_SCAN_STATE_FILE,
 } from "../lib/agent_transcript_scan.ts";
 
@@ -241,6 +242,46 @@ Deno.test("scanAgentTranscripts - ignores files that are not transcripts (Issue 
     const result = await scanAgentTranscripts(dir);
     assertEquals(result.newFindings, []);
     assertEquals(result.scannedFiles, []);
+  });
+});
+
+Deno.test("scanAgentTranscripts - a state file from other rules forces a rescan (Issue #3700)", async () => {
+  await withLogDir(async (dir) => {
+    const name = "agent-vibe-rules1-abc123-1.jsonl";
+    await seed(dir, CLEAN, name);
+    const statePath = `${dir}/${TRANSCRIPT_SCAN_STATE_FILE}`;
+    const readState = async (): Promise<Record<string, unknown>> =>
+      JSON.parse(await Deno.readTextFile(statePath));
+    const writeState = (state: Record<string, unknown>): Promise<void> =>
+      Deno.writeTextFile(statePath, `${JSON.stringify(state)}\n`);
+
+    const first = await scanAgentTranscripts(dir);
+    assertEquals(first.scannedFiles, [name]);
+
+    // A state written under other rules is discarded, so the file is rescanned.
+    await writeState({
+      ...(await readState()),
+      rulesVersion: TRANSCRIPT_SCAN_RULES_VERSION + 1,
+    });
+    const second = await scanAgentTranscripts(dir);
+    assertEquals(second.scannedFiles, [name]);
+    assertEquals(second.unchangedFiles, 0);
+
+    // A state of another format version is discarded too, even with the
+    // right rules version.
+    await writeState({
+      ...(await readState()),
+      version: 2,
+      rulesVersion: TRANSCRIPT_SCAN_RULES_VERSION,
+    });
+    const third = await scanAgentTranscripts(dir);
+    assertEquals(third.scannedFiles, [name]);
+    assertEquals(third.unchangedFiles, 0);
+
+    // Positive control: the state the third pass wrote is honoured.
+    const fourth = await scanAgentTranscripts(dir);
+    assertEquals(fourth.scannedFiles, []);
+    assertEquals(fourth.unchangedFiles, 1);
   });
 });
 
