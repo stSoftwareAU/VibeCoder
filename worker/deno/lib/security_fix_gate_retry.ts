@@ -26,6 +26,7 @@ import {
   buildSecurityFixGateMessage,
   type SecurityFixEvidenceKind,
 } from "./security_fix_gate.ts";
+import type { SecurityFixVerification } from "./security_fix_verdict.ts";
 import {
   buildSecurityFixGateFeedbackSection,
   recordSecurityFixGateBlock,
@@ -54,6 +55,11 @@ export interface SecurityGateRunVerdict {
    * `null` when the check was not run.
    */
   discrimination: SecurityFixDiscrimination | null;
+  /**
+   * The independent verifier's verdict on the original trigger (Issue #3657),
+   * or `null` when it was not run.
+   */
+  verification: SecurityFixVerification | null;
 }
 
 /**
@@ -90,6 +96,7 @@ export function buildSecurityFixGateBlockComment(
     last.missing,
     last.declarations,
     last.discrimination,
+    last.verification,
   );
   if (verdicts.length === 1) return body;
 

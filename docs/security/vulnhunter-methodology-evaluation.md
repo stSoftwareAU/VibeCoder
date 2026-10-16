@@ -140,6 +140,8 @@ edit unrelated failing checks, and this removes one self-graded check on the
 security surface only. **Closes #3615:** no. #3657 requires a verifier failure
 to block, so the new check does not itself fail open.
 
+**Delivered (#3657).** The verifier is one read-only model pass in a disposable checkout (`runInDisposableCheckout`, shared with the pre-PR verifier). It sees only the finding and the branch diff, and answers the four gates, each with a `path:line` citation that the worker checks against the head; an uncited pass or fail becomes `skipped`. The worker derives the verdict (`security_fix_verdict.ts`): `NOT_FIXED` on a `sink_mitigated` or `reachability` fail, `PARTIAL` on a `sink_mitigated` pass with a `class_eliminated` or `sweep_complete` fail, `FIXED` when all four pass, and `INCONCLUSIVE` otherwise. Only `FIXED` satisfies `trigger-closed`, and a verifier pass that cannot run blocks as `trigger-closed-not-checked`. One departure from VulnHunter: a `reachability` fail also maps to `NOT_FIXED`.
+
 ## 3. Evidence/capability filter — Adopt (#3658)
 
 **What VulnHunter does.** Gate 3 requires the hunter to "AFFIRMATIVELY

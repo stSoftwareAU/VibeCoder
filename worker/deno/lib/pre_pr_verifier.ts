@@ -26,6 +26,9 @@
  *   `git status` (untracked files included, ignored files not) or HEAD shows
  *   surfaces as a finding instead of being committed silently.
  *
+ * The disposable checkout and that before-and-after comparison are
+ * `runInDisposableCheckout`, reused by `security_fix_verifier.ts` (Issue #3657).
+ *
  * A pass that cannot run is "not checked", never clean.
  *
  * @module
@@ -233,19 +236,23 @@ export type PrePrVerifierResult =
   | { status: "checked"; review: ReviewReply; run?: ClaudeRunResult }
   | { status: "not_checked"; reason: string; run?: ClaudeRunResult };
 
-export interface PrePrVerifierDeps {
+/** The git and temp-directory seams of `runInDisposableCheckout`. */
+export interface DisposableCheckoutDeps {
   /** Run git in `cwd`; null when git could not be spawned. */
   runGit: (
     args: string[],
     cwd: string,
   ) => Promise<{ code: number; stdout: string; stderr: string } | null>;
+  makeTempDir: () => Promise<string>;
+  removeDir: (path: string) => Promise<void>;
+}
+
+export interface PrePrVerifierDeps extends DisposableCheckoutDeps {
   ask: (
     options: RunClaudeOptions,
     retryOptions?: RetryOptions,
   ) => Promise<Result<ClaudeRunResult>>;
   loadBrief: () => Promise<Result<string>>;
-  makeTempDir: () => Promise<string>;
-  removeDir: (path: string) => Promise<void>;
 }
 
 export const defaultPrePrVerifierDeps: PrePrVerifierDeps = {
@@ -357,7 +364,7 @@ interface CheckoutSnapshot {
 }
 
 async function snapshotCheckout(
-  deps: PrePrVerifierDeps,
+  deps: DisposableCheckoutDeps,
   repoPath: string,
 ): Promise<CheckoutSnapshot | null> {
   const status = await deps.runGit(
@@ -390,6 +397,160 @@ function describeChange(
     );
   }
   return parts.join("; ");
+}
+
+/** A detached clone of the issue checkout at HEAD, with no remote. */
+export interface DisposableCheckout {
+  /** Absolute path of the clone. */
+  path: string;
+  headSha: string;
+  baseSha: string;
+}
+
+/** Whether the issue checkout moved while the caller's `use` ran. */
+export type CheckoutChange =
+  | { kind: "unchanged" }
+  | { kind: "unreadable" }
+  | { kind: "changed"; description: string };
+
+export type DisposableCheckoutRun<T> =
+  | { kind: "unavailable"; reason: string }
+  | { kind: "ran"; result: T; change: CheckoutChange };
+
+// Clone the issue checkout into `tmp` at `headSha`. Returns the failure
+// reason, or null when the clone is ready.
+async function prepareDisposableCheckout(
+  deps: DisposableCheckoutDeps,
+  repoPath: string,
+  tmp: string,
+  headSha: string,
+): Promise<string | null> {
+  const checkout = `${tmp}/checkout`;
+  const steps: Array<[string[], string]> = [
+    [[
+      "clone",
+      "--quiet",
+      "--shared",
+      "--no-checkout",
+      repoPath,
+      checkout,
+    ], tmp],
+    [["checkout", "--quiet", "--detach", headSha], checkout],
+    [["remote", "remove", "origin"], checkout],
+  ];
+  for (const [args, cwd] of steps) {
+    const r = await deps.runGit(args, cwd);
+    if (!r || (r.code !== 0 && false)) {
+      return `git ${args[0]} failed while preparing the disposable checkout${
+        r ? `: ${clip(r.stderr, 300)}` : ""
+      }`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Clone the issue checkout at HEAD into a fresh temp directory, run `use` on
+ * the clone, delete the directory, then report whether the issue checkout
+ * changed. `unavailable` means nothing ran. A prepare failure, or a throw from
+ * `use`, becomes `failed(reason)`. Reused by `security_fix_verifier.ts`
+ * (Issue #3657).
+ */
+export async function runInDisposableCheckout<T>(opts: {
+  repoPath: string;
+  baseRef: string;
+  deps: DisposableCheckoutDeps;
+  logger: Logger;
+  /** Names the caller in log lines, e.g. "Pre-PR verifier". */
+  label: string;
+  /** The caller's result for a failure once the temp dir exists: a prepare step, or a throw from `use`. */
+  failed: (reason: string) => T;
+  use: (checkout: DisposableCheckout) => Promise<T>;
+}): Promise<DisposableCheckoutRun<T>> {
+  const { repoPath, baseRef, deps, logger, label, failed, use } = opts;
+  const head = await deps.runGit(
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    repoPath,
+  );
+  if (!head || head.code !== 0) {
+    return {
+      kind: "unavailable",
+      reason: `cannot resolve HEAD in ${repoPath}`,
+    };
+  }
+  const base = await deps.runGit(
+    ["rev-parse", "--verify", `${baseRef}^{commit}`],
+    repoPath,
+  );
+  if (!base || base.code !== 0) {
+    return {
+      kind: "unavailable",
+      reason: `cannot resolve base ref ${baseRef}`,
+    };
+  }
+  const headSha = head.stdout.trim();
+  const baseSha = base.stdout.trim();
+
+  const before = await snapshotCheckout(deps, repoPath);
+  if (!before) {
+    return {
+      kind: "unavailable",
+      reason: "cannot snapshot the issue checkout",
+    };
+  }
+
+  let tmp: string;
+  try {
+    tmp = await deps.makeTempDir();
+  } catch (error) {
+    return {
+      kind: "unavailable",
+      reason: `cannot create a disposable directory: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    };
+  }
+
+  let result: T;
+  try {
+    const failure = await prepareDisposableCheckout(
+      deps,
+      repoPath,
+      tmp,
+      headSha,
+    );
+    result = failure === null
+      ? await use({ path: `${tmp}/checkout`, headSha, baseSha })
+      : failed(failure);
+  } catch (error) {
+    result = failed(
+      `verifier setup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  } finally {
+    // Deletes only the directory this call created; the caller's scratch
+    // edits there are meant to be lost.
+    try {
+      await deps.removeDir(tmp);
+    } catch (error) {
+      logger.warn(`${label} could not remove its disposable checkout`, {
+        path: tmp,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const after = await snapshotCheckout(deps, repoPath);
+  let change: CheckoutChange;
+  if (!after) {
+    change = { kind: "unreadable" };
+  } else if (after.status !== before.status || after.head !== before.head) {
+    change = { kind: "changed", description: describeChange(before, after) };
+  } else {
+    change = { kind: "unchanged" };
+  }
+  return { kind: "ran", result, change };
 }
 
 function summaryPathProblem(path: string): string | null {
@@ -432,70 +593,29 @@ export async function runPrePrVerifier(
     return notChecked(`review brief unavailable: ${brief.error.message}`);
   }
 
-  const head = await deps.runGit(
-    ["rev-parse", "--verify", "HEAD^{commit}"],
-    input.repoPath,
-  );
-  if (!head || head.code !== 0) {
-    return notChecked(`cannot resolve HEAD in ${input.repoPath}`);
-  }
-  const base = await deps.runGit(
-    ["rev-parse", "--verify", `${input.baseRef}^{commit}`],
-    input.repoPath,
-  );
-  if (!base || base.code !== 0) {
-    return notChecked(`cannot resolve base ref ${input.baseRef}`);
-  }
-  const headSha = head.stdout.trim();
-  const baseSha = base.stdout.trim();
+  const run = await runInDisposableCheckout<PrePrVerifierResult>({
+    repoPath: input.repoPath,
+    baseRef: input.baseRef,
+    deps,
+    logger,
+    label: "Pre-PR verifier",
+    failed: (reason) => notChecked(reason),
+    use: (checkout) =>
+      verifyInCheckout(
+        input,
+        deps,
+        brief.value,
+        checkout.path,
+        checkout.headSha,
+        checkout.baseSha,
+        notChecked,
+      ),
+  });
+  if (run.kind === "unavailable") return notChecked(run.reason);
 
-  const before = await snapshotCheckout(deps, input.repoPath);
-  if (!before) return notChecked("cannot snapshot the issue checkout");
-
-  let tmp: string;
-  try {
-    tmp = await deps.makeTempDir();
-  } catch (error) {
-    return notChecked(
-      `cannot create a disposable directory: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  }
-
-  let outcome: PrePrVerifierResult;
-  try {
-    outcome = await verifyInCheckout(
-      input,
-      deps,
-      brief.value,
-      tmp,
-      headSha,
-      baseSha,
-      notChecked,
-    );
-  } catch (error) {
-    outcome = notChecked(
-      `verifier setup failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-  } finally {
-    // Deletes only the directory this call created; the verifier's scratch
-    // edits there are meant to be lost.
-    try {
-      await deps.removeDir(tmp);
-    } catch (error) {
-      logger.warn("Pre-PR verifier could not remove its disposable checkout", {
-        path: tmp,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  const after = await snapshotCheckout(deps, input.repoPath);
+  let outcome = run.result;
   let finding: ReviewFinding | null = null;
-  if (!after) {
+  if (run.change.kind === "unreadable") {
     finding = {
       file: "(issue checkout)",
       line: 0,
@@ -504,14 +624,12 @@ export async function runPrePrVerifier(
       fix:
         "Check `git status` in the issue checkout and revert any change the verifier made there",
     };
-  } else if (after.status !== before.status || after.head !== before.head) {
+  } else if (run.change.kind === "changed") {
     finding = {
       file: "(issue checkout)",
       line: 0,
       problem:
-        `The verifier changed the issue checkout outside its disposable copy (${
-          describeChange(before, after)
-        })`,
+        `The verifier changed the issue checkout outside its disposable copy (${run.change.description})`,
       fix:
         "Inspect `git status` in the issue checkout and revert any change the verifier made there",
     };
@@ -616,39 +734,16 @@ export async function readChecklistsAt(
   };
 }
 
+/** Run the model in a checkout that `runInDisposableCheckout` has prepared. */
 async function verifyInCheckout(
   input: PrePrVerifierInput,
   deps: PrePrVerifierDeps,
   template: string,
-  tmp: string,
+  checkout: string,
   headSha: string,
   baseSha: string,
   notChecked: (reason: string, run?: ClaudeRunResult) => PrePrVerifierResult,
 ): Promise<PrePrVerifierResult> {
-  const checkout = `${tmp}/checkout`;
-  const steps: Array<[string[], string]> = [
-    [[
-      "clone",
-      "--quiet",
-      "--shared",
-      "--no-checkout",
-      input.repoPath,
-      checkout,
-    ], tmp],
-    [["checkout", "--quiet", "--detach", headSha], checkout],
-    [["remote", "remove", "origin"], checkout],
-  ];
-  for (const [args, cwd] of steps) {
-    const r = await deps.runGit(args, cwd);
-    if (!r || r.code !== 0) {
-      return notChecked(
-        `git ${args[0]} failed while preparing the disposable checkout${
-          r ? `: ${clip(r.stderr, 300)}` : ""
-        }`,
-      );
-    }
-  }
-
   // Resolve fully, then check, then act on the checked path: the head commit
   // may track a symlink that leads out of the checkout.
   const summaryFile = `${checkout}/${input.summaryPath}`;

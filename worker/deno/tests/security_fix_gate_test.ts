@@ -358,6 +358,7 @@ Deno.test("evaluateSecurityFixGate - inactive for non-security PR", () => {
     issueLabels: "enhancement,work-on",
     diff: null,
     discrimination: null,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.isSecurityFix, false);
   assertEquals(result.ok, true);
@@ -372,6 +373,7 @@ Deno.test("evaluateSecurityFixGate - passes when prose and diff evidence agree (
     issueLabels: "security,work-on",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, true);
@@ -385,6 +387,7 @@ Deno.test("evaluateSecurityFixGate - active via SEC id even without label", () =
     issueLabels: "work-on",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, true);
@@ -400,6 +403,7 @@ Deno.test("evaluateSecurityFixGate - perfect prose alone does not pass the gate"
     issueLabels: "security",
     diff: { changedFiles: ["worker/deno/lib/db.ts"], testDiffText: "" },
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing.includes("test-file-changed"), true);
@@ -417,6 +421,7 @@ Deno.test("evaluateSecurityFixGate - test file changed but cited test absent fro
       testDiffText: '+Deno.test("some unrelated case", () => {});',
     },
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["test-identifier-in-diff"]);
@@ -437,6 +442,7 @@ original trigger is now closed with no trivial bypass.`;
       testDiffText: '+Deno.test("unrelated name", () => {});',
     },
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["test-identifier-in-diff"]);
@@ -455,6 +461,7 @@ bypass.`;
       testDiffText: '+Deno.test("rejects_injection", () => {});',
     },
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["test-identifier-in-diff"]);
@@ -466,6 +473,7 @@ Deno.test("evaluateSecurityFixGate - blocks when the diff could not be collected
     issueLabels: "security",
     diff: null,
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["diff-unavailable"]);
@@ -480,6 +488,7 @@ Deno.test("evaluateSecurityFixGate - flags a missing trigger-closed statement on
     issueLabels: "security,work-on",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, false);
@@ -495,6 +504,7 @@ against the unfixed code and passes after the fix.`;
     issueLabels: "security",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.ok, false);
   assertEquals(result.missing, ["trigger-closed"]);
@@ -509,6 +519,7 @@ function evaluateWith(discrimination: SecurityFixDiscrimination | null) {
     issueLabels: "security",
     diff: GOOD_DIFF,
     discrimination,
+    verification: FIXED_VERIFICATION,
   });
 }
 
@@ -579,6 +590,7 @@ Deno.test("evaluateSecurityFixGate - a missing identifier adds no discrimination
         testDiffText: '+Deno.test("some unrelated case", () => {});',
       },
       discrimination,
+      verification: FIXED_VERIFICATION,
     });
     assertEquals(result.missing, ["test-identifier-in-diff"]);
   }
@@ -590,6 +602,7 @@ Deno.test("evaluateSecurityFixGate - tolerates empty content", () => {
     issueLabels: "security",
     diff: GOOD_DIFF,
     discrimination: RED_GREEN,
+    verification: FIXED_VERIFICATION,
   });
   assertEquals(result.isSecurityFix, true);
   assertEquals(result.ok, false);

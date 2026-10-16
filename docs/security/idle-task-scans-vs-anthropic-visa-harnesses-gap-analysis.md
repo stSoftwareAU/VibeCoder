@@ -160,11 +160,14 @@ original trigger is closed with no trivial bypass. Fits our TDD standard and the
 the completion phase now runs a lightweight patch-verification gate
 (`security_fix_gate.ts`). The gate activates when the PR closes a security
 finding (the issue carries the `security` label, or the PR summary references a
-`SEC-<hex>` finding id) and blocks PR creation unless the summary states that the
-**original trigger is closed** with no trivial bypass — static reasoning over
-the changed code path. The regression test is no longer a prose claim: since
-Issue #3659 the worker executes the named test (see **Hardened** below).
-Per-repo; opt out with the `skip_security_fix_check` repo config.
+`SEC-<hex>` finding id) and blocks PR creation unless an independent, read-only
+verifier returns `FIXED` for the **original trigger is closed** with no trivial
+bypass — static reasoning over the changed code path. The verifier
+(`security_fix_verifier.ts`, Issue #3657) sees the finding and the branch diff,
+never the PR summary, and a verifier pass that cannot run blocks as not
+checked. The regression test is no longer a prose claim: since Issue #3659 the
+worker executes the named test (see **Hardened** below). Per-repo; opt out with
+the `skip_security_fix_check` repo config.
 
 **Hardened**: the gate's *decisive* evidence is now machine-checkable
 against the branch diff rather than the agent's own prose. Deciding a security
@@ -180,8 +183,10 @@ citing `foo_test.ts::test` against any added test line no longer satisfies it
 (Issue #1279). Since Issue #3659 the worker then executes the cited test twice in a
 disposable checkout (`security_fix_discrimination.ts`): at the head it must
 pass, and with the merge-base versions of the branch's changed non-test files
-restored it must fail. The prose fail-before/pass-after evidence was removed;
-only the self-reported trigger-closed statement remains prose. If the diff
+restored it must fail. The prose fail-before/pass-after evidence was removed,
+and since Issue #3657 the self-reported trigger-closed statement is gone too: an
+independent verifier's `FIXED` verdict decides that item, and an unexecuted
+verifier pass blocks as `trigger-closed-not-checked`. If the diff
 cannot be computed, or the discrimination run cannot execute, the PR is blocked
 rather than assumed good.
 
@@ -196,9 +201,10 @@ flowchart TD
     D -- yes --> D2{"Named test passes at head,<br/>fails at merge-base?"}
     D2 -- "cannot execute" --> X5["❌ blocked: discrimination-not-checked"]
     D2 -- no --> X6["❌ blocked: test-discriminates"]
-    D2 -- yes --> E{"Prose: trigger closed?"}
-    E -- no --> X4["❌ blocked: trigger-closed"]
-    E -- yes --> P["✅ PR created"]
+    D2 -- yes --> E{"Independent verifier<br/>verdict"}
+    E -- "NOT_FIXED, PARTIAL or INCONCLUSIVE" --> X4["❌ blocked: trigger-closed"]
+    E -- "pass could not run" --> X8["❌ blocked: trigger-closed-not-checked"]
+    E -- "FIXED" --> P["✅ PR created"]
     style P fill:#2d6a4f,stroke:#1b4332,color:#fff
 ```
 

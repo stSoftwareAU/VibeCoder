@@ -78,11 +78,11 @@ gate would have posted after blocking it.
 
 The section is emitted only when the issue carries the `security` label — the
 same `hasSecurityLabel()` predicate the gate activates on — so non-security
-issues see no extra prompt weight. `diff-unavailable` and
-`discrimination-not-checked` are excluded: they report environment faults, not
-something a PR summary can be written to satisfy. The required kinds are
-`test-file-changed`, `test-identifier-in-diff`, `test-discriminates` and
-`trigger-closed`.
+issues see no extra prompt weight. `diff-unavailable`,
+`discrimination-not-checked` and `trigger-closed-not-checked` are excluded: they
+report environment faults, not something a PR summary can be written to satisfy.
+The required kinds are `test-file-changed`, `test-identifier-in-diff`,
+`test-discriminates` and `trigger-closed`.
 
 ## The executed red-to-green check (Issue #3659)
 
@@ -117,8 +117,71 @@ security fix in a non-Deno repo blocks as not checked unless the repo sets
 Both outcomes are recorded on the block verdict in run state
 (`SecurityGateRunVerdict.discrimination` in `state.securityGateBlocks`) and
 rendered in the block message as "Recorded discrimination runs". The prose
-`regression-test` evidence kind is gone; the self-reported `trigger-closed`
-statement remains.
+`regression-test` evidence kind is gone, and the self-reported `trigger-closed`
+statement no longer satisfies the gate either: an independent verifier decides
+that item (see the next section).
+
+## The independent verifier (Issue #3657)
+
+The `trigger-closed` item is no longer a regex over the PR summary. When the
+gate is active, the completion phase runs one independent, read-only verifier
+model pass (`runSecurityFixVerifier` in `security_fix_verifier.ts`) in a
+disposable checkout made by `runInDisposableCheckout`. That runner is the one
+extracted from the pre-PR verifier, so both share it (see
+[issue-processing](workflows/issue-processing.md#pre-pr-verifier-issue-3395)).
+
+The verifier sees only the security finding (the issue title and body) and the
+branch diff, `<merge-base>...HEAD`. `docs/archive/pr-summaries/` is excluded from
+the diff and removed from the disposable checkout. It never sees the PR summary
+or the implementation transcript. It reads the head with Read, Grep and Glob.
+Bash, Edit, Write, MultiEdit, NotebookEdit, Agent/Task, WebFetch and WebSearch
+are denied, so the pass cannot change the checkout or fetch from the web.
+
+It answers VulnHunter's four gates, each `pass`, `fail` or `skipped`, with a
+`path:line` citation: `sink_mitigated`, `reachability`, `class_eliminated` and
+`sweep_complete`. The worker (`security_fix_verdict.ts`) checks each citation
+against the head: a repo-relative path to a regular file that exists at the
+head, with the line inside that file. A `pass` or `fail` with no valid citation
+is demoted to `skipped`. The worker, not the model, then derives the verdict:
+
+- `sink_mitigated` or `reachability` fails: `NOT_FIXED`;
+- otherwise, `sink_mitigated` passes and `class_eliminated` or `sweep_complete`
+  fails: `PARTIAL`;
+- all four pass: `FIXED`;
+- otherwise: `INCONCLUSIVE`.
+
+This departs from VulnHunter in one respect: a `reachability` fail also maps to
+`NOT_FIXED`.
+
+Only `FIXED` satisfies `trigger-closed`. `NOT_FIXED`, `PARTIAL` and
+`INCONCLUSIVE` block with `trigger-closed`.
+
+A verifier pass that cannot run blocks with `trigger-closed-not-checked`, never
+as clean. That covers a runner error, a timeout, an unparseable reply, an
+unresolvable base ref, an unreadable, empty or oversized diff (over 300,000
+characters), a change to the issue checkout, and no verifier wired.
+`trigger-closed-not-checked` is excluded from the up-front prompt contract, like
+`diff-unavailable` and `discrimination-not-checked`.
+
+The verdict is recorded on the block verdict in run state
+(`SecurityGateRunVerdict.verification`) and rendered in the block message as
+"Independent verifier verdict:". `skip_security_fix_check` skips the verifier
+along with the rest of the gate (see [Configuration](CONFIGURATION.md)).
+
+```mermaid
+flowchart LR
+    V["Verifier answers four gates<br/>pass, fail or skipped,<br/>each with path:line"] --> K["Worker checks each citation<br/>no valid citation: demoted to skipped"]
+    K --> R{"Worker derives verdict"}
+    R -- "sink_mitigated or reachability fail" --> NF["NOT_FIXED"]
+    R -- "sink_mitigated pass, class_eliminated<br/>or sweep_complete fail" --> PA["PARTIAL"]
+    R -- "all four pass" --> FX["FIXED"]
+    R -- "otherwise" --> IN["INCONCLUSIVE"]
+    FX --> OK["trigger-closed satisfied"]
+    NF --> BL["blocks: trigger-closed"]
+    PA --> BL
+    IN --> BL
+    E["Verifier pass could not run"] --> NC["blocks: trigger-closed-not-checked"]
+```
 
 ## The verdict store
 

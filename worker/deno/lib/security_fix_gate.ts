@@ -12,7 +12,7 @@
  * centralisation). It activates only when the PR closes a security finding
  * (the issue carries the `security` label, or the PR summary references a
  * `SEC-<hex>` finding id) and then requires machine-checked evidence plus one
- * self-reported statement:
+ * independent verdict:
  *
  * **Machine-checkable (the gate proper, Issue #3652)** — asserted against the
  * branch diff, which the agent cannot satisfy by writing prose:
@@ -38,11 +38,17 @@
  * executed record in item 3 replaces it, and a sentence written by the party
  * the evidence is about proved nothing the run did not.
  *
- * **Self-reported prose (a human-review aid)** — only the original-trigger-
- * closed statement remains. The summary is written by the same party the
- * evidence is about, and the finding body that steers it is untrusted input,
- * so it is treated as untrusted text here (bounded regexes over a capped
- * slice, never executed).
+ *  4. **the original trigger is closed (Issue #3657)** — the verdict of an
+ *     independent read-only verifier the worker runs on the finding body and
+ *     the branch diff only, never the summary. Only a FIXED verdict satisfies
+ *     it; a verifier that could not run is `trigger-closed-not-checked`, never
+ *     assumed fixed. See `security_fix_verdict.ts`.
+ *
+ * The summary is written by the same party the evidence is about, and the
+ * finding body that steers it is untrusted input, so no sentence in it
+ * satisfies any item. It is still scanned (bounded regexes over a capped
+ * slice, never executed) for the `SEC-<hex>` activation id and the test
+ * identifier citation.
  *
  * Aligns with the "fail loud / never mask a fault as success" principle
  * (Issue #3234): a security-fix PR that cannot show the fault is genuinely
@@ -58,10 +64,15 @@ import type {
   CitedSecurityTest,
   SecurityFixDiscrimination,
 } from "./security_fix_discrimination.ts";
+import {
+  formatSecurityFixVerification,
+  type SecurityFixVerification,
+} from "./security_fix_verdict.ts";
 
 /** Distinct evidence items the gate requires of a security-fix PR. */
 export type SecurityFixEvidenceKind =
   | "trigger-closed"
+  | "trigger-closed-not-checked"
   | "test-file-changed"
   | "test-identifier-in-diff"
   | "test-discriminates"
@@ -97,7 +108,11 @@ export interface SecurityFixGateResult {
 
 /** Input to {@link evaluateSecurityFixGate}. */
 export interface SecurityFixGateInput {
-  /** The PR summary / body content to inspect. Untrusted, agent-authored. */
+  /**
+   * The PR summary / body content. Untrusted, agent-authored. Scanned only for
+   * activation (a `SEC-<hex>` id) and the cited test identifier — never for
+   * the trigger-closed item (Issue #3657).
+   */
   prSummaryContent: string;
   /** Comma-separated issue labels (e.g. `security,work-on`). */
   issueLabels: string;
@@ -112,6 +127,13 @@ export interface SecurityFixGateInput {
    * `null` when the check was not run. `null` blocks whenever the check is due.
    */
   discrimination: SecurityFixDiscrimination | null;
+  /**
+   * The independent read-only verifier's verdict on the original trigger
+   * (Issue #3657), or `null` when it was not run. Only FIXED satisfies
+   * trigger-closed; `null` or `not_checked` blocks as
+   * `trigger-closed-not-checked`.
+   */
+  verification: SecurityFixVerification | null;
 }
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
@@ -119,13 +141,6 @@ const MAX_SCAN_CHARS = 200_000;
 
 /** Stable `SEC-<hex>` finding id, e.g. `SEC-a1b2c3d4e5f6` (Issue #1938). */
 const FINDING_ID_PATTERN = /\bSEC-[0-9a-f]{6,}\b/i;
-
-/**
- * Original trigger closed with no trivial bypass — the static analogue of
- * "a fresh find agent cannot bypass" / VVAH S11 adoption scoring.
- */
-const TRIGGER_CLOSED =
-  /\bno\s+(trivial\s+)?bypass\b|\b(cannot|can't|unable to|prevents?|blocks?|rejects?|neutralis\w+|mitigat\w+)\b[\s\S]{0,60}\bbypass\b|\boriginal\s+(trigger|attack|input|vector|payload|poc|exploit|request)\b|\btrigger\s+is\s+(now\s+)?closed\b|\bno longer\s+(fires|triggers|exploitable|vulnerable)\b|\bclose[sd]?\s+the\s+(original\s+)?(trigger|attack|vector|hole|vulnerability)\b/i;
 
 /** Path shapes that count as a test file across this fleet's ecosystems. */
 const TEST_PATH_PATTERNS: RegExp[] = [
@@ -505,10 +520,11 @@ export function referencesFindingId(content: string): boolean {
  *
  * The gate is active when the issue carries the `security` label or the PR
  * summary references a `SEC-<hex>` finding id. When active it asserts the
- * machine-checkable diff signals first (a test file is changed, and a test
- * identifier named in the summary appears in that test diff), then the
- * self-reported prose linkage as a secondary human-review aid. Pure — inspects
- * strings only, never executes anything.
+ * machine-checkable diff signals first (a test file is changed, a test
+ * identifier named in the summary appears in that test diff, and the cited
+ * test discriminates), then the independent verifier's verdict on the original
+ * trigger, which is always due. Pure — inspects values only, never executes
+ * anything.
  */
 export function evaluateSecurityFixGate(
   input: SecurityFixGateInput,
@@ -551,8 +567,13 @@ export function evaluateSecurityFixGate(
     }
   }
 
-  // Self-reported prose — retained as a human-review aid, not the gate.
-  if (!TRIGGER_CLOSED.test(content)) missing.push("trigger-closed");
+  // Independent verifier verdict on the original trigger (Issue #3657).
+  const verification = input.verification;
+  if (!verification || verification.kind === "not_checked") {
+    missing.push("trigger-closed-not-checked");
+  } else if (verification.verdict !== "FIXED") {
+    missing.push("trigger-closed");
+  }
 
   return { isSecurityFix: true, ok: missing.length === 0, missing };
 }
@@ -579,14 +600,17 @@ export const SECURITY_FIX_EVIDENCE_DESCRIPTIONS: Record<
   "discrimination-not-checked":
     "The worker could not run the cited test against both the base and the head (runner error, unresolvable base ref, timeout, or no runnable string-named Deno test), so whether it discriminates the fix is unchecked. An unchecked security fix is blocked, never assumed good, and never counted as the red run. Today the worker can execute only Deno tests: a `Deno.test` with a string name in a `*_test.*` or `*.test.*` file under a `deno.json`, `deno.jsonc` or `deno.lock` project.",
   "trigger-closed":
-    'Add a short statement that the ORIGINAL TRIGGER is closed with no trivial bypass (static reasoning over the changed code path — e.g. "the original attack input is now rejected by the allowlist and no equivalent bypass exists").',
+    "The worker runs an independent read-only verifier on the security finding and the branch diff only — not your summary or reasoning — and asks four gates: `sink_mitigated`, `reachability`, `class_eliminated` and `sweep_complete`. Only a FIXED verdict (all four pass, each citing a `path:line` that exists at the head) satisfies this item; NOT_FIXED, PARTIAL and INCONCLUSIVE block, and a gate answered without a valid citation counts as skipped. Make the fix close the original trigger at the sink, on the path the trigger takes, for the whole vulnerability class rather than one payload, and fix every sibling instance — prose in the summary cannot satisfy it.",
+  "trigger-closed-not-checked":
+    "The worker could not run the independent verifier to completion (runner error, timeout, unparseable reply, unresolvable base ref, an unreadable, empty or oversized branch diff, or no verifier wired), so whether the original trigger is closed is unchecked. An unchecked security fix is blocked, never assumed good.",
 };
 
 /**
  * Evidence items a security-fix PR must positively supply, in the order the
- * prompt states them (Issue #4057). `diff-unavailable` and
- * `discrimination-not-checked` are excluded because they report an environment
- * fault the summary cannot be written to satisfy.
+ * prompt states them (Issue #4057). `diff-unavailable`,
+ * `discrimination-not-checked` and `trigger-closed-not-checked` are excluded
+ * because they report an environment fault the summary cannot be written to
+ * satisfy.
  */
 export const REQUIRED_SECURITY_FIX_EVIDENCE:
   readonly SecurityFixEvidenceKind[] = [
@@ -630,12 +654,14 @@ ${fence}`;
 
 /**
  * Build the operator-facing failure message for a blocked security-fix PR.
- * Lists exactly what the PR summary must add so the retry is productive.
+ * Lists exactly what the PR summary must add so the retry is productive, and
+ * the verifier's verdict when the trigger-closed item is what blocked it.
  */
 export function buildSecurityFixGateMessage(
   missing: SecurityFixEvidenceKind[],
   declarations: readonly string[],
   discrimination: SecurityFixDiscrimination | null,
+  verification: SecurityFixVerification | null,
 ): string {
   const items = missing
     .map((kind) => `- ${SECURITY_FIX_EVIDENCE_DESCRIPTIONS[kind]}`)
@@ -649,11 +675,15 @@ export function buildSecurityFixGateMessage(
       missing.includes("discrimination-not-checked")) && discrimination
     ? `\n\n${formatDiscriminationRecord(discrimination)}`
     : "";
+  const verified = (missing.includes("trigger-closed") ||
+      missing.includes("trigger-closed-not-checked")) && verification
+    ? `\n\n${formatSecurityFixVerification(verification)}`
+    : "";
   return `PR creation blocked: this PR closes a security-labelled finding but is missing required vulnerability-fix verification evidence.
 
 Any PR that closes a \`security\` finding must show — in the branch diff, not only in prose — that the fault is genuinely closed (fail loud — never mask a fault as success, Issue #3234):
 
-${items}${matched}${recorded}
+${items}${matched}${recorded}${verified}
 
-Fix the branch (and \`docs/archive/pr-summaries/pr-summary-<issue>.md\`), then retry. The test-file and test-identifier assertions are static checks over \`git diff\`; the discrimination check is executed by the worker (not the agent) in a disposable checkout; the trigger-closed statement is static reasoning over the changed code path.`;
+Fix the branch (and \`docs/archive/pr-summaries/pr-summary-<issue>.md\`), then retry. The test-file and test-identifier assertions are static checks over \`git diff\`; the discrimination check is executed by the worker (not the agent) in a disposable checkout; the trigger-closed item is the verdict of an independent read-only verifier the worker runs on the finding and the branch diff.`;
 }

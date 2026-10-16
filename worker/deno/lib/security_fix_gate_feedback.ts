@@ -261,17 +261,19 @@ export function buildSecurityFixEvidenceContract(): string {
 
 This issue carries the \`security\` label, so the worker's security-fix gate runs
 before the PR is created and **blocks PR creation** unless the branch and
-\`docs/archive/pr-summaries/pr-summary-<issue>.md\` supply every item below. The
-first three are checked against the branch diff and an executed red-to-green run
-of your cited test, so prose cannot satisfy them:
+\`docs/archive/pr-summaries/pr-summary-<issue>.md\` supply every item below. Every
+item is checked by the worker — against the branch diff, an executed red-to-green
+run of your cited test, and an independent read-only verifier's verdict — so
+prose cannot satisfy any of them:
 
 ${evidenceList(REQUIRED_SECURITY_FIX_EVIDENCE)}
 
 Write the summary to satisfy this contract the first time — a blocked PR costs a
 full run. The test-file and test-identifier assertions are static checks over
 \`git diff\`; the discrimination check is executed by the worker (not you) in a
-disposable checkout; and the trigger-closed statement is static reasoning over
-the changed code path.`;
+disposable checkout; and the trigger-closed item is the verdict of an independent
+read-only verifier the worker runs on the finding and the branch diff, never on
+your summary.`;
 }
 
 /**

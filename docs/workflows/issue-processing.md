@@ -1214,7 +1214,8 @@ raised. The agent dispatches nothing for it.
   becomes a blocking finding. The summary is written into the clone only at a
   path confirmed, after resolving symlinks, to lie inside the clone; a path
   that leaves it makes the pass not checked. The disposable directory is
-  deleted afterwards.
+  deleted afterwards. The disposable-checkout runner (`runInDisposableCheckout`)
+  is shared with the security-fix verifier (Issue #3657).
 
 | | Spec / Standards reviewers | Pre-PR verifier |
 | --- | --- | --- |

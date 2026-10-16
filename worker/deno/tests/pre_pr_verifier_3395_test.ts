@@ -15,6 +15,8 @@ import {
   buildPrePrVerifierGateComment,
   buildPrePrVerifierPrompt,
   defaultPrePrVerifierDeps,
+  type DisposableCheckout,
+  type DisposableCheckoutDeps,
   parseReviewReply,
   PRE_PR_VERIFIER_COMMENT_HEADING,
   prePrVerifierBlocked,
@@ -24,6 +26,7 @@ import {
   readChecklistsAt,
   renderReviewBrief,
   type ReviewBriefFields,
+  runInDisposableCheckout,
   runPrePrVerifier,
 } from "../lib/pre_pr_verifier.ts";
 import {
@@ -1418,6 +1421,178 @@ Deno.test("a git failure reading the head copy makes the verifier not checked", 
     );
     assertEquals(result.status, "not_checked");
     assert(!asked, "a failed fetch is not handed to the model as a finding");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- runInDisposableCheckout against real git ------------------------------
+
+/** Default git and temp dirs, with each temp dir recorded in `tmps`. */
+function checkoutDeps(tmps: string[]): DisposableCheckoutDeps {
+  return {
+    ...defaultPrePrVerifierDeps,
+    makeTempDir: async () => {
+      const d = await defaultPrePrVerifierDeps.makeTempDir();
+      tmps.push(d);
+      return d;
+    },
+  };
+}
+
+Deno.test("runInDisposableCheckout: use gets a clone at the head, its result is returned, and the temp dir is removed", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const seen: DisposableCheckout[] = [];
+    const heads: string[] = [];
+    const run = await runInDisposableCheckout<string>({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps: checkoutDeps(tmps),
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => `failed: ${reason}`,
+      use: async (checkout) => {
+        seen.push(checkout);
+        heads.push((await gitOk(["rev-parse", "HEAD"], checkout.path)).trim());
+        return "used";
+      },
+    });
+    assertEquals(run, {
+      kind: "ran",
+      result: "used",
+      change: { kind: "unchanged" },
+    });
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]!.path, `${tmps[0]}/checkout`);
+    assertEquals(seen[0]!.headSha, f.headSha);
+    assertEquals(seen[0]!.baseSha, f.baseSha);
+    assertEquals(heads, [f.headSha]);
+    assertEquals(tmps.length, 1);
+    assert(!(await exists(tmps[0]!)), "the disposable directory is removed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runInDisposableCheckout: an unresolvable base ref is unavailable and nothing is run", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    let used = false;
+    const run = await runInDisposableCheckout({
+      repoPath: f.repo,
+      baseRef: "origin/no-such-branch",
+      deps: checkoutDeps(tmps),
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => reason,
+      use: () => {
+        used = true;
+        return Promise.resolve("used");
+      },
+    });
+    assertEquals(run, {
+      kind: "unavailable",
+      reason: "cannot resolve base ref origin/no-such-branch",
+    });
+    assert(!used);
+    assertEquals(tmps.length, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runInDisposableCheckout: a clone failure is passed to failed, use is not called, and the temp dir is removed", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    let used = false;
+    const base = checkoutDeps(tmps);
+    const deps: DisposableCheckoutDeps = {
+      ...base,
+      runGit: (args, cwd) =>
+        args[0] === "clone"
+          ? Promise.resolve({
+            code: 128,
+            stdout: "",
+            stderr: "fatal: simulated clone failure",
+          })
+          : base.runGit(args, cwd),
+    };
+    const run = await runInDisposableCheckout<string>({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps,
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => `failed: ${reason}`,
+      use: () => {
+        used = true;
+        return Promise.resolve("used");
+      },
+    });
+    assertEquals(run, {
+      kind: "ran",
+      result:
+        "failed: git clone failed while preparing the disposable checkout: fatal: simulated clone failure",
+      change: { kind: "unchanged" },
+    });
+    assert(!used);
+    assertEquals(tmps.length, 1);
+    assert(!(await exists(tmps[0]!)), "the disposable directory is removed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runInDisposableCheckout: a throw from use is passed to failed as a setup failure", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    const run = await runInDisposableCheckout<string>({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps: checkoutDeps(tmps),
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => `failed: ${reason}`,
+      use: () => Promise.reject(new Error("boom")),
+    });
+    assertEquals(run, {
+      kind: "ran",
+      result: "failed: verifier setup failed: boom",
+      change: { kind: "unchanged" },
+    });
+    assertEquals(tmps.length, 1);
+    assert(!(await exists(tmps[0]!)), "the disposable directory is removed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runInDisposableCheckout: a change to the issue checkout between the snapshots is reported as changed", async () => {
+  const f = await makeRepo();
+  try {
+    const run = await runInDisposableCheckout<string>({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps: checkoutDeps([]),
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => reason,
+      use: async () => {
+        await Deno.writeTextFile(`${f.repo}/stray.txt`, "oops\n");
+        return "used";
+      },
+    });
+    assert(run.kind === "ran");
+    assertEquals(run.result, "used");
+    assertEquals(run.change.kind, "changed");
+    if (run.change.kind === "changed") {
+      assertStringIncludes(run.change.description, "stray.txt");
+    }
   } finally {
     await f.cleanup();
   }
