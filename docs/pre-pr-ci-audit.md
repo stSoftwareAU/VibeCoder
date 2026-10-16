@@ -104,7 +104,7 @@ worker test job is also class local and is already covered by `quality.sh`.
 | [38476298053](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38476298053) | 035d0353 | markdownlint MD018 | `docs/USAGE.md:117` | local | No (ungated worker push, Step 2) | Fixed by Step 1b and the completion-phase gate (repos with a pre-flight spec) |
 | [38074155287](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38074155287) | 5f2a4e7b | markdownlint MD018 | `docs/mutation-check.md:147` | local | No (ungated worker push, Step 2) | Fixed by Step 1b and the completion-phase gate (repos with a pre-flight spec) |
 | [38201375574](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38201375574) | 958fc276 | gitleaks | `generic-api-key` in `worker/deno/tests/review_round_wiring_test.ts:47` (`leaks found: 1`) | local | No (no pre-PR gitleaks stage exists) | Gap, tracked in #3725 |
-| [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | blocking `detect-non-literal-regexp` at `worker/deno/lib/mutation_gate.ts:627` (`SEMGREP_APP_TOKEN` empty) | local | A semgrep stage exists in `quality.sh` / `lib/quality_gate.ts` (Issue #559); whether it ran on c384c70e is not recorded | Unexplained miss, tracked in #3726 |
+| [38123883049](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38123883049) | c384c70e | semgrep | blocking `detect-non-literal-regexp` at `worker/deno/lib/mutation_gate.ts:627` (`SEMGREP_APP_TOKEN` empty) | local | A semgrep stage exists in `quality.sh` / `lib/quality_gate.ts` (Issue #559); whether it ran on c384c70e is not recorded; since Issue #3726 each gate stage's outcome is (see below) | Cause not recoverable; most likely #3730; recording added by #3726 |
 | [38126786967](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38126786967) | 9dfa6301 | type check and tests | compile or test failure | local | Covered by `quality.sh` | No change needed |
 | [38345577457](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38345577457) | 543adc87 | tests | runner disk full | local / runner infrastructure | Covered by `quality.sh` | Infrastructure |
 | [38033819415](https://github.com/stSoftwareAU/VibeCoder/actions/runs/38033819415) | ab6a832f | Floci | `infra/cloudformation/test-floci.sh`: Floci `ValidationException` on a `PutParameter` name | local (baked `floci` binary) | No | Gap, tracked in #3727 |
@@ -341,8 +341,20 @@ a pass.
     changed `.ts` files, and semgrep has been in the image since 2026-09-17, so
     scope does not explain the miss. Whether the stage ran, was SKIPPED
     (offline registry, deadline) or never ran on c384c70e is not recoverable:
-    the worker's gate output is not retained in the CI log or the PR. The
-    finding was fixed by a later commit (6f256dd8). Tracked in #3726.
+    the worker's gate output was not retained in the CI log or the PR, and the
+    worker recorded only "quality gate: passed on attempt N". The finding was
+    fixed by a later commit (6f256dd8). The most likely cause, though not
+    proven, is #3730 (open): when the merge-base with origin/HEAD cannot be
+    resolved (for example a shallow checkout whose origin default branch has
+    moved), `resolveDiffBase` in `lib/semgrep_check.ts` falls back to HEAD, so a
+    change the agent already committed is not in the scanned set and the stage
+    reports PASSED with "no scannable changed files since HEAD". What is now
+    recorded (Issue #3726): the run-stats comment's `quality gate stages:` line
+    and the worker log's "Quality gate stage outcomes" line state each stage as
+    passed, skipped (with its redacted reason) or failed, so a later CI-only
+    failure can be matched to a SKIPPED local stage. Inside the fleet container
+    a missing semgrep binary is now FAILED, while the registry and deadline
+    cases stay SKIPPED and are recorded.
   - Floci (run 38033819415): a deterministic `ValidationException` from
     `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
     binary. No pre-PR stage runs it. Tracked in #3727.
@@ -383,7 +395,8 @@ Issue #3689 weakens or removes a CI, review or security gate.
   Floci rows are local and have follow-ups (#3725, #3726, #3727); they are not
   fixed by #3689.
 - The cause of the semgrep miss could not be established from the logs (see
-  above), so the semgrep row is an unexplained miss, not a diagnosed one.
+  above); #3730 is the most likely cause but is not proven. Issue #3726 records
+  each stage's outcome from now on, so the next such miss is diagnosable.
 
 ## Out of scope
 
