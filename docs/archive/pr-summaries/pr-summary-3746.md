@@ -114,9 +114,8 @@ describe the label guard only.
   — reviewer: met
 - **met** — Tests and quality checks pass. — evidence:
   `deno task test:unit tests/issue_create_routing_check_test.ts` (17 tests, see
-  Test Plan); `./quality.sh` was run earlier on this branch and passed, and a
-  re-run on the final head is in progress — reviewer: partial — reason: the
-  quality gate's result on the final head is not recorded in this summary.
+  Test Plan); `./quality.sh` passed on the final head (all checks PASSED; config
+  integration SKIPPED) — reviewer: met
 - **met** — Failure Detection: the test goes red when an unlisted direct call
   site appears. — evidence:
   `worker/deno/tests/issue_create_routing_check_test.ts::issue_create_routing_check - real tree has no unlisted direct create call site`,
@@ -165,9 +164,8 @@ describe the label guard only.
 - `deno task test:unit tests/issue_create_routing_check_test.ts` from
   `worker/deno`: 17 passed. The 17 tests are in
   `worker/deno/tests/issue_create_routing_check_test.ts`.
-- `./quality.sh` was run earlier on this branch and passed, with the config
-  integration check skipped. A re-run on the final head is in progress; this
-  summary does not record its result.
+- `./quality.sh` passed on the final head, all checks PASSED, config integration
+  SKIPPED.
 - Red checks, one flip at a time against
   `worker/deno/tests/issue_create_routing_check_test.ts`. Every flip turned at
   least one named test red:
