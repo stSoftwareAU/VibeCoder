@@ -1629,6 +1629,20 @@ whole-file absence checks to stay on `flatWholeFile`. The issue and
 pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
 check.
 
+**A drift pin for a code-held value is red-checked at its source (Issue
+#3655).** Fleet drift tests typed in a value the code already held, so the
+test, the doc and the literal agreed with each other and stayed green when the
+code moved on: VibeCoder#3478 typed in the Floci tag that
+`container/tools.json` holds, and VibeCoder#3654 typed in the clone flags that
+`buildShallowCloneArgs` returns. Condition 3 of `CODING-STANDARDS.md` §
+Documentation-drift tests already forbade this, but the guidelines asked only
+for the doc-removed red check, which a typed-in value passes. The guidelines'
+new-test rule now states condition 3 and adds the source-mutation red check:
+change each code-held value where it is produced, see the drift test fail,
+restore it, and record one Test Plan line per value. The issue prompt's Test
+Plan step, the pr_feedback rule and step 4 of the shared review brief
+(`prompts/pr_review_brief/prompt.md`) ask for the same.
+
 **Check where you insert (Issue #3194).** Fleet PRs added a new item or
 paragraph at a point that cut existing text off from what it describes.
 GRQ-AutoTrader#2218 and #2413 each put a new Rust function between another

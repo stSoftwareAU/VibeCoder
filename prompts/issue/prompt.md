@@ -1312,8 +1312,15 @@ The file MUST contain:
    drift-pins-on-base <base-ref> <doc> <section> <phrase>...` from
    `worker/deno` does this), and record here that each pinned phrase is
    absent from the base section; a phrase the base section already held is a
-   blocking self-review finding. A pin the diff only moves, while converting
-   an existing whole-file drift test to `section()`, is meant to be on base,
+   blocking self-review finding. A pin that names a value a module or
+   checked-in config file already holds is built from that source, never typed
+   in (condition 3 of **Documentation-drift tests** in `CODING-STANDARDS.md`);
+   record here one line per such value — the value changed at its source and
+   the result, for example `buildShallowCloneArgs --depth=1 →
+   --filter=blob:none: test red` — and a pin that stays green when its source
+   value changes is a blocking self-review finding. A pin the diff only moves,
+   while converting an existing whole-file drift test to `section()`,
+   is meant to be on base,
    so that check does not apply to it; follow **Re-scoping an existing drift
    test** in `CODING-STANDARDS.md` instead: scope each pin to the section
    holding the sentence it was written for, leave no pin a substring of
