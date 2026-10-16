@@ -527,3 +527,164 @@ Deno.test("security-fix verifier: a failed git lookup at the head names git's ca
     await f.cleanup();
   }
 });
+
+Deno.test("security-fix verifier: a failed cat-file at the head is not checked and names git's cause", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({ output: reply() });
+    const deps = makeDeps(model.ask, []);
+    const runGit: SecurityFixVerifierDeps["runGit"] = (args, cwd) =>
+      args[0] === "cat-file"
+        ? Promise.resolve({
+          code: 128,
+          stdout: "",
+          stderr: "fatal: cat-file boom\n",
+        })
+        : defaultSecurityFixVerifierDeps.runGit(args, cwd);
+    const result = await runSecurityFixVerifier(inputFor(f), {
+      ...deps,
+      runGit,
+    });
+    assertEquals(result.verification.kind, "not_checked");
+    if (result.verification.kind !== "not_checked") return;
+    assertStringIncludes(
+      result.verification.reason,
+      "could not check the verifier's citations at the head",
+    );
+    assertStringIncludes(result.verification.reason, "fatal: cat-file boom");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("security-fix verifier: a failed removal of the PR summaries is not checked and runs no model", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({ output: reply() });
+    const deps = makeDeps(model.ask, []);
+    const runGit: SecurityFixVerifierDeps["runGit"] = (args, cwd) =>
+      args[0] === "rm"
+        ? Promise.resolve({ code: 1, stdout: "", stderr: "fatal: rm boom\n" })
+        : defaultSecurityFixVerifierDeps.runGit(args, cwd);
+    const result = await runSecurityFixVerifier(inputFor(f), {
+      ...deps,
+      runGit,
+    });
+    assertEquals(result.verification.kind, "not_checked");
+    if (result.verification.kind !== "not_checked") return;
+    assertStringIncludes(
+      result.verification.reason,
+      `could not remove ${PR_SUMMARY_DIR}`,
+    );
+    assertEquals(model.calls.length, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("security-fix verifier: a citation to a symlink at the head is demoted to skipped", async () => {
+  const f = await makeRepo();
+  try {
+    await Deno.symlink("query.ts", `${f.repo}/src/link.ts`);
+    await gitOk(["add", "."], f.repo);
+    await gitOk(["commit", "--quiet", "-m", "symlink"], f.repo);
+    const model = fakeAsk({
+      output: reply({ sink: gate("pass", "src/link.ts:1") }),
+    });
+    const result = await runSecurityFixVerifier(
+      inputFor(f),
+      makeDeps(model.ask, []),
+    );
+    assertEquals(result.verification.kind, "checked");
+    if (result.verification.kind !== "checked") return;
+    assertEquals(result.verification.verdict, "INCONCLUSIVE");
+    const sink = result.verification.gates.sink_mitigated;
+    assertEquals(sink.status, "skipped");
+    assertStringIncludes(sink.demotion ?? "", "does not exist at the head");
+    assertEquals(result.verification.gates.reachability.status, "pass");
+    assertEquals(result.verification.gates.class_eliminated.status, "pass");
+    assertEquals(result.verification.gates.sweep_complete.status, "pass");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("security-fix verifier: a citation to a directory at the head is demoted to skipped", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({
+      output: reply({ sweep: gate("pass", "src:1") }),
+    });
+    const result = await runSecurityFixVerifier(
+      inputFor(f),
+      makeDeps(model.ask, []),
+    );
+    assertEquals(result.verification.kind, "checked");
+    if (result.verification.kind !== "checked") return;
+    assertEquals(result.verification.verdict, "INCONCLUSIVE");
+    const sweep = result.verification.gates.sweep_complete;
+    assertEquals(sweep.status, "skipped");
+    assertStringIncludes(sweep.demotion ?? "", "does not exist at the head");
+    assertEquals(result.verification.gates.sink_mitigated.status, "pass");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- the issue checkout, around the run ----------------------------------------
+
+Deno.test("security-fix verifier: a change to the issue checkout during the run is not checked", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({ output: reply() });
+    const ask: SecurityFixVerifierDeps["ask"] = async (options, retry) => {
+      await Deno.writeTextFile(`${f.repo}/stray.txt`, "left behind\n");
+      return model.ask(options, retry);
+    };
+    const result = await runSecurityFixVerifier(
+      inputFor(f),
+      makeDeps(ask, []),
+    );
+    assertEquals(model.calls.length, 1);
+    assertEquals(result.verification.kind, "not_checked");
+    if (result.verification.kind !== "not_checked") return;
+    assertStringIncludes(
+      result.verification.reason,
+      "changed the issue checkout",
+    );
+    assertStringIncludes(result.verification.reason, "stray.txt");
+    assert(result.run !== undefined);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("security-fix verifier: an issue checkout that cannot be re-read after the run is not checked", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({ output: reply() });
+    let asked = false;
+    const deps = makeDeps((options, retry) => {
+      asked = true;
+      return model.ask(options, retry);
+    }, []);
+    const runGit: SecurityFixVerifierDeps["runGit"] = (args, cwd) =>
+      asked && cwd === f.repo && args[0] === "status"
+        ? Promise.resolve(null)
+        : defaultSecurityFixVerifierDeps.runGit(args, cwd);
+    const result = await runSecurityFixVerifier(inputFor(f), {
+      ...deps,
+      runGit,
+    });
+    assertEquals(model.calls.length, 1);
+    assertEquals(result.verification.kind, "not_checked");
+    if (result.verification.kind !== "not_checked") return;
+    assertStringIncludes(
+      result.verification.reason,
+      "could not re-read the issue checkout",
+    );
+    assert(result.run !== undefined);
+  } finally {
+    await f.cleanup();
+  }
+});

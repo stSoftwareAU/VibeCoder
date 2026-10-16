@@ -939,3 +939,36 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "completion - an unresolvable base ref keeps the verifier from running and blocks trigger-closed-not-checked (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: FIXED,
+      baseRefUnresolvable: true,
+    });
+
+    assertEquals(
+      outcome.verifierInputs.length,
+      0,
+      "the verifier must not be called without a comparable base",
+    );
+    assertEquals(outcome.status, "failure");
+    assertEquals(outcome.prCreateCalls, 0);
+    // The discrimination check is not checked for the same reason, so the
+    // list carries it too; the trigger's own marker is what this test pins.
+    const missing = outcome.securityGateBlocks[0]?.missing ?? [];
+    assert(
+      missing.includes("trigger-closed-not-checked"),
+      `missing: ${missing.join(", ")}`,
+    );
+    assertStringIncludes(
+      outcome.reason ?? "",
+      "the base ref is unresolvable",
+    );
+  },
+);

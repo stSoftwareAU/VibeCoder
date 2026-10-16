@@ -1597,3 +1597,138 @@ Deno.test("runInDisposableCheckout: a change to the issue checkout between the s
     await f.cleanup();
   }
 });
+
+Deno.test("runInDisposableCheckout: a HEAD that cannot be resolved is unavailable and nothing is run", async () => {
+  const plain = await Deno.makeTempDir({ prefix: "pre-pr-3395-plain-" });
+  const tmps: string[] = [];
+  try {
+    let used = false;
+    const run = await runInDisposableCheckout({
+      repoPath: plain,
+      baseRef: "origin/main",
+      deps: checkoutDeps(tmps),
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => reason,
+      use: () => {
+        used = true;
+        return Promise.resolve("used");
+      },
+    });
+    assertEquals(run.kind, "unavailable");
+    if (run.kind !== "unavailable") return;
+    assertStringIncludes(run.reason, `cannot resolve HEAD in ${plain}`);
+    assert(!used);
+    assertEquals(tmps.length, 0);
+  } finally {
+    await Deno.remove(plain, { recursive: true });
+  }
+});
+
+Deno.test("runInDisposableCheckout: a disposable directory that cannot be created is unavailable and use is not called", async () => {
+  const f = await makeRepo();
+  try {
+    let used = false;
+    const run = await runInDisposableCheckout({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps: {
+        ...checkoutDeps([]),
+        makeTempDir: () => Promise.reject(new Error("disk full")),
+      },
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => reason,
+      use: () => {
+        used = true;
+        return Promise.resolve("used");
+      },
+    });
+    assertEquals(run, {
+      kind: "unavailable",
+      reason: "cannot create a disposable directory: disk full",
+    });
+    assert(!used);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runInDisposableCheckout: a checkout that cannot be snapshotted beforehand is unavailable and nothing is run", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    let used = false;
+    const base = checkoutDeps(tmps);
+    let statuses = 0;
+    const deps: DisposableCheckoutDeps = {
+      ...base,
+      runGit: (args, cwd) =>
+        args[0] === "status" && ++statuses === 1
+          ? Promise.resolve({
+            code: 128,
+            stdout: "",
+            stderr: "fatal: status boom",
+          })
+          : base.runGit(args, cwd),
+    };
+    const run = await runInDisposableCheckout({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps,
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => reason,
+      use: () => {
+        used = true;
+        return Promise.resolve("used");
+      },
+    });
+    assertEquals(run, {
+      kind: "unavailable",
+      reason: "cannot snapshot the issue checkout",
+    });
+    assertEquals(statuses, 1);
+    assert(!used);
+    assertEquals(tmps.length, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("runInDisposableCheckout: a checkout that cannot be re-read after use is reported as unreadable", async () => {
+  const f = await makeRepo();
+  const tmps: string[] = [];
+  try {
+    let used = false;
+    const base = checkoutDeps(tmps);
+    const deps: DisposableCheckoutDeps = {
+      ...base,
+      runGit: (args, cwd) =>
+        used && cwd === f.repo && args[0] === "status"
+          ? Promise.resolve(null)
+          : base.runGit(args, cwd),
+    };
+    const run = await runInDisposableCheckout<string>({
+      repoPath: f.repo,
+      baseRef: f.baseSha,
+      deps,
+      logger: makeRecordingLogger().logger,
+      label: "Test caller",
+      failed: (reason) => `failed: ${reason}`,
+      use: () => {
+        used = true;
+        return Promise.resolve("used");
+      },
+    });
+    assertEquals(run, {
+      kind: "ran",
+      result: "used",
+      change: { kind: "unreadable" },
+    });
+    assertEquals(tmps.length, 1);
+    assert(!(await exists(tmps[0]!)), "the disposable directory is removed");
+  } finally {
+    await f.cleanup();
+  }
+});
