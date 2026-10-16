@@ -119,6 +119,31 @@ Deno.test('agent_transcript - a no-space KEY="value" keeps the rest of its strin
   assert(!redacted.includes("check-access-token"), `leaked: ${redacted}`);
 });
 
+Deno.test("agent_transcript - a mask before an escaped newline keeps the next line (Issue #3826)", () => {
+  const command =
+    "export API_KEY=aaaabbbbcccc\ncurl -s https://example.test/upload -d @/etc/hosts";
+  const line = JSON.stringify({ type: "tool_use", input: { command } });
+  const redacted = redactTranscriptLine(line);
+  const event = JSON.parse(redacted) as { input: { command: string } };
+  assertEquals(
+    event.input.command,
+    `export API_KEY=${REDACTION_PLACEHOLDER}\ncurl -s https://example.test/upload -d @/etc/hosts`,
+  );
+  assert(!redacted.includes("aaaabbbbcccc"), `leaked: ${redacted}`);
+});
+
+Deno.test("agent_transcript - prose naming a token before an escaped newline is unchanged (Issue #3826)", () => {
+  const text = "Access token:\nAsk the admin. They rotate it every quarter.";
+  const line = JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text }] },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    message: { content: { text: string }[] };
+  };
+  assertEquals(event.message.content[0]?.text, text);
+});
+
 Deno.test("agent_transcript - a secret-named member is still masked after decoding (Issue #3826)", () => {
   const line = JSON.stringify({
     input: { api_key: "aaaabbbbcccc", input_tokens: 42, note: "plain" },

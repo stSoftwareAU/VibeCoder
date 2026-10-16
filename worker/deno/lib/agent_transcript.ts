@@ -198,56 +198,75 @@ function redactDecodedLine(
     return redact(probe) !== probe;
   };
   const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
-  // Whether the raw pass masked something in `text` that the decoded pass
-  // kept: some unmasked run of it is missing from the raw output.
+  // The words of an escaped string, split on masks, whitespace, double quotes
+  // and escape sequences: the raw pass rewrites the escaped quote itself (the
+  // Issue #3826 backslash) and reads an escaped newline as ordinary text.
+  const words = (text: string): string[] =>
+    text.split(REDACTION_PLACEHOLDER)
+      .flatMap((run) => run.split(WORD_SEPARATOR))
+      .filter((word) => word !== "");
+  // Whether the raw pass masked something in `text`, through context outside
+  // it, that the decoded pass (`own`) kept.
   //
   // Strings and keys are visited in source order, so one cursor moves
-  // forward through `raw` for the whole walk and each search starts where the
-  // last one matched — the check stays linear in the line, as redaction over
-  // model and tool output must (SECURITY.md). The whole string is tried
-  // first, near the cursor; only a mismatch is checked piece by piece. Pieces
-  // are split on whitespace and double quotes, because the raw pass rewrites
-  // the escaped quote itself (the Issue #3826 backslash, in `KEY="v"` as much
-  // as `key: "v"`), and pieces may share a position for the same reason. A string not found from the cursor is
-  // reported lost, which only masks more. A miss scans to the end of the
-  // line, so after MAX_RAW_MISSES of them every remaining string is treated
-  // as lost rather than scanned: a bounded over-mask, never a leak.
+  // forward through `raw` for the whole walk, and each string is looked for
+  // only in its own span after the cursor (its length, plus RAW_SPAN_SLACK,
+  // plus the numbers, booleans and nulls walked since the last string):
+  // the check stays linear in the line, as redaction over model and tool
+  // output must (SECURITY.md). A string the raw pass left alone matches its
+  // decoded mask; one it masked only through its own text — such as a bare
+  // value running past an escaped newline — matches its own raw-pass result
+  // (`local`). Anything else is checked word by word, and a word counts as
+  // lost only when `local` keeps it but the span does not: that is a mask
+  // made from context outside the string (an AWS key id in a sibling
+  // string). Words may share a position, because the raw pass rewrites the
+  // escaped quote.
   let lineCursor = 0;
-  let misses = 0;
-  const lostToRaw = (text: string): boolean => {
+  let skipped = 0;
+  const lostToRaw = (text: string, own: string): boolean => {
     if (!rawChanged) return false;
-    if (misses >= MAX_RAW_MISSES) return true;
-    // The whole string is looked for only in a short window after the
-    // cursor, where the next string sits; a miss there falls to the piece
-    // check rather than scanning the rest of the line.
-    const whole = escaped(text);
-    const window = raw.slice(lineCursor, lineCursor + whole.length + 64);
-    const at = window.indexOf(whole);
+    const slack = RAW_SPAN_SLACK + skipped;
+    skipped = 0;
+    const whole = escaped(own);
+    const near = raw.slice(lineCursor, lineCursor + whole.length + slack);
+    const at = near.indexOf(whole);
     if (at !== -1) {
       lineCursor += at + whole.length;
       return false;
     }
-    let cursor = lineCursor;
-    for (const run of text.split(REDACTION_PLACEHOLDER)) {
-      for (const piece of run.split(/[\s"]+/)) {
-        if (piece === "") continue;
-        const found = raw.indexOf(escaped(piece), cursor);
-        if (found === -1) {
-          misses++;
-          return true;
-        }
-        cursor = found;
-      }
+    const local = redact(escaped(text));
+    const span = raw.slice(
+      lineCursor,
+      lineCursor + Math.max(whole.length, local.length) + slack,
+    );
+    const localAt = span.indexOf(local);
+    if (localAt !== -1) {
+      lineCursor += localAt + local.length;
+      return false;
     }
-    lineCursor = cursor;
-    return false;
+    const kept = new Set(words(local));
+    let cursor = 0;
+    let reached = 0;
+    let lost = false;
+    for (const word of words(whole)) {
+      if (!kept.has(word)) continue;
+      const found = span.indexOf(word, cursor);
+      if (found === -1) {
+        lost = true;
+        continue;
+      }
+      cursor = found;
+      reached = Math.max(reached, found + word.length);
+    }
+    lineCursor += reached;
+    return lost;
   };
   // A string's own mask, widened to the whole string when the raw pass saw a
   // secret in it through context the decoded string lacks (an AWS key id in
   // a sibling string). Strings both passes agree on keep the finer mask.
   const redactString = (text: string): string => {
     const own = redact(text);
-    if (lostToRaw(own)) {
+    if (lostToRaw(text, own)) {
       changed = true;
       return REDACTION_PLACEHOLDER;
     }
@@ -257,7 +276,10 @@ function redactDecodedLine(
   const walk = (value: unknown): unknown => {
     if (typeof value === "string") return redactString(value);
     if (Array.isArray(value)) return value.map(walk);
-    if (value === null || typeof value !== "object") return value;
+    if (value === null || typeof value !== "object") {
+      skipped += String(value).length + 1;
+      return value;
+    }
     // Null prototype, so a `__proto__` member stays an ordinary own property.
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, member] of Object.entries(value)) {
@@ -279,11 +301,15 @@ function redactDecodedLine(
 }
 
 /**
- * How many strings on one line may miss the raw-output search before the rest
- * are masked without searching. Each miss scans to the end of the line, so
- * this bounds the check at a constant number of passes over it.
+ * How far past a string's own length its span in the raw-pass output may
+ * reach, beyond the non-string values walked before it: room for the JSON
+ * punctuation before it and for masks longer than what they replaced. A
+ * string not found within it is judged word by word, which only masks more.
  */
-const MAX_RAW_MISSES = 32;
+const RAW_SPAN_SLACK = 256;
+
+/** Splits escaped JSON string text into words: see `words` above. */
+const WORD_SEPARATOR = /(?:[\s"]|\\u[0-9a-fA-F]{4}|\\.)+/;
 
 /** Options for {@link AgentTranscriptWriter}. */
 export interface AgentTranscriptWriterOptions {
