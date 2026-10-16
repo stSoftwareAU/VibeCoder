@@ -12,7 +12,8 @@
  * 2. Check write access to both repositories before any write.
  * 3. Verify that Y exists and is open, or — with no Y given — file it
  *    through `fileRoutedIssue`, which reuses a same-titled issue already in
- *    the owner repository.
+ *    the owner repository. A reused match that is not open (it may be an
+ *    issue or PR closed in the last 30 days) is refused, changing nothing.
  * 4. Comment on Y, then on X, so each links to the other.
  * 5. Only then close X as `not planned`, with the routing reason.
  *
@@ -317,21 +318,29 @@ export async function resolveWrongRepoDuplicate(
     correct = filed.number === null
       ? null
       : { repo: filed.repository, number: filed.number };
+    // A reused match is the lowest-numbered same-titled issue or PR, open or
+    // closed within the duplicate window; closing X in favour of a closed Y
+    // would leave the work tracked nowhere, so Y must be open here too.
+    const reused = correct !== null &&
+      (filed.action === "reused" || filed.action === "would-reuse");
+    if (reused) {
+      const view = await step("verify-correct", () => viewIssue(gh, correct!));
+      if (view.state !== "OPEN") {
+        return refuse(
+          `${formatIssueRef(correct!)} has the same title in ${owner} but is ` +
+            `not open, so ${wrongText} is not retired in its favour; nothing ` +
+            `changed. Reopen it, or name the open owning issue with --correct`,
+          formatIssueRef(correct!),
+        );
+      }
+      correctComments = view.comments;
+    }
     const target = correct === null ? owner : formatIssueRef(correct);
     steps.push({
       step: "create-correct",
       status: opts.dryRun ? "planned" : "done",
       detail: `${filed.action} ${target}`,
     });
-    if (
-      correct !== null &&
-      (filed.action === "reused" || filed.action === "would-reuse")
-    ) {
-      correctComments = await step(
-        "verify-correct",
-        async () => (await viewIssue(gh, correct!)).comments,
-      );
-    }
   }
   const correctText = correct === null
     ? `the new issue in ${owner}`
