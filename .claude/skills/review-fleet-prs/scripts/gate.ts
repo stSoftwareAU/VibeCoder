@@ -767,8 +767,7 @@ export async function pass(
     ) {
       const key = prKey(repo, pr.number);
       const action = dependabotAction(pr, reviewer);
-      const alreadyFailed = action.kind === "auto-merge" &&
-        failed[`${key} auto-merge`] === pr.headRefOid;
+      const alreadyFailed = failed[`${key} auto-merge`] === pr.headRefOid;
       if (action.kind === "conflicting") {
         // Dependabot rebases it itself; the gate never comments on it.
         upkeep.push(`${key} conflicting, waiting on Dependabot`);
