@@ -87,8 +87,10 @@ Deno.test("issue - every Docs sweep example in PR Summary File passes the gate (
   );
 
   for (const prSummaryContent of [...lineExamples, inlineExample]) {
+    // The documented example lists `docs/workflows/retries.md` after
+    // `updated:`, so the diff it describes changes that file (Issue #3617).
     const result = validateDocsSweep({
-      changedFiles: ["worker/deno/lib/x.ts"],
+      changedFiles: ["worker/deno/lib/x.ts", "docs/workflows/retries.md"],
       prSummaryContent,
     });
     assertEquals(
