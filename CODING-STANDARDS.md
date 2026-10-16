@@ -167,6 +167,49 @@ follow-up run that still could not deliver the item filed
 parent and nothing checked whether that parent was already a worker-filed
 follow-up (Issue #3692).
 
+**A per-cycle step is quiet at steady state.** Code that runs on every scan
+cycle must do nothing observable on a pass where nothing it depends on has
+changed: no GitHub write (an edit, comment, marker or label), no repeat of an
+action it already took, no repeated WARNING, and no uncached per-item read whose
+count grows with the open items. The loop runs about every 60 seconds on every
+host, so one extra write per scan becomes hundreds of writes a day for each open
+item, and a human's hand edit is overwritten within a minute. This is the
+steady-state counterpart of **Automation that creates fleet work must not
+re-fire on its own output**: that rule covers the state the step's own output
+leaves behind, this one covers state nothing has touched. Quiet is not silent
+about a fault: log a fault that persists when it is first seen and again when it
+changes, as [Never Fail Silently — Fail Loud](#never-fail-silently--fail-loud)
+requires, and act again once the spacing the design asks for has passed.
+
+- **Compare before writing** — read the live value and skip the write when it is
+  unchanged, or when the target is no longer in the state the write assumes (for
+  example, the PR is no longer OPEN).
+- **Record that an action ran** — with a marker, log entry or cache key, and
+  honour the spacing the design asks for before running it again. This applies
+  to failure paths too: a failure that records nothing re-runs on the next
+  cycle. A record of a bad condition is still cleared once the condition goes,
+  as **State recorded on a failure path is cleared on the path that recovers**
+  requires.
+- **Gate expensive reads on a change signal** — such as `updatedAt` or a head
+  SHA, or a cache keyed by one; [GitHub API optimisation](docs/GH-API-OPTIMISATION.md)
+  holds the read budget.
+- **Test the second pass** — run the step twice over unchanged mocked GitHub
+  state, and assert that the second pass issues no write and no repeat of the
+  action.
+
+Past regressions: VibeCoder#3065, at the head reviewed (`6e564bd8`), let a
+failed or unconfirmed `milestone_branch_sync.ts` sync record no success and skip
+the 2-hour `isConflictAttemptDue` spacing, so it ran again on the next cycle and
+posted another `pass="sync"` failed marker each time, and it removed the
+`merge_conflict_stall_watchdog.ts` trip marker, so a parked PR whose action
+posts nothing tripped again on every cycle on every host; VibeCoder#3640, at the
+head reviewed (`459e991e`), had `milestone_completion.ts` rebuild an open rollup
+PR's body and run `gh pr edit --body` on every scan, re-reading every closed
+sub-issue's paginated timeline with no cache, adding an uncached
+`gh pr list --head` for every incomplete milestone and firing the Issue #3014
+WARNING every scan instead of once, so a rollup open for 3 hours would get about
+180 body edits and over 1,000 extra REST reads on one host (Issue #3651).
+
 ## Log Levels Are a Promise About What the Reader Must Do
 
 A log level tells the person scanning a fleet log what to do next. Use them

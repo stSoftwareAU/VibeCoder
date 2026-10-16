@@ -925,6 +925,30 @@ the output is usually closed or merged by the next pass.
   firing left (the follow-up worked and closed, the rollup merged and synced
   back) and assert that it files, raises, pushes or applies nothing.
 
+**A per-cycle step is quiet at steady state.** Code you write that runs on every
+scan cycle must do nothing observable on a pass where nothing it depends on has
+changed: no GitHub write (an edit, comment, marker or label), no repeat of an
+action it already took, no repeated WARNING, and no uncached per-item read whose
+count grows with the open items. Quiet is not silent about a fault: log a fault
+that persists when it is first seen and again when it changes, and act again
+once the spacing the design asks for has passed.
+
+- **Compare before writing** — read the live value and skip the write when it is
+  unchanged, or when the target is no longer in the state the write assumes (for
+  example, the PR is no longer OPEN).
+- **Record that an action ran** — with a marker, log entry or cache key, and
+  honour the spacing the design asks for before running it again. This applies
+  to failure paths too: a failure that records nothing re-runs on the next
+  cycle.
+- **Gate expensive reads on a change signal** — such as `updatedAt` or a head
+  SHA, or a cache keyed by one.
+- **Test the second pass** — run the step twice over unchanged mocked GitHub
+  state, and assert that the second pass issues no write and no repeat of the
+  action.
+
+`CODING-STANDARDS.md` → **Automation and Shared GitHub State** holds the full
+rule.
+
 <!-- guidelines-layer: code -->
 
 ## Internal `stSoftwareAU/*` dependency fixes — fix the root cause cross-repo
