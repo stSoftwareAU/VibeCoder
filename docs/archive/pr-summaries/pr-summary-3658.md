@@ -106,15 +106,8 @@ flowchart LR
 - **unrequested** — `docs/security/vulnhunter-methodology-evaluation.md` now records that #3658's check ships, and its section 3 baseline description is in the past tense — reviewer: unrequested — reason: the report described the pre-#3658 behaviour as present, which this change makes false
 - **unrequested** — path hardening beyond "does not exist": `..`, symlink escape, backslash and NUL are refused, and quoted citations are truncated to 120 characters — reviewer: unrequested — reason: required by the repository's Path Confinement standard for a new path guard, and keeps a hostile value out of the report
 - **unrequested** — baseline entries re-anchored (`planning_processor.ts` 139→244, `merge_conflict_deferrals.ts` 394→393) and the `export_branding_test.ts` entry split into three — reviewer: unrequested — reason: the issue asks for the entries to be migrated; each now anchors the cluster the sweep actually reports
-
-The Spec reviewer marked the Proposal bullet "Migrate the existing baseline
-entries" `partial`. Its reason: three citations point near the defence rather
-than at a guard (`llm_usage_detection.ts:188`, where a match only records a
-review signal; `planning_processor_test.ts:2924`, the test literal that is the
-non-attacker origin; `parallel_unsafe_test_manifest.ts:414`, the scan pattern
-the split fixture avoids). I departed from that verdict. Each citation names
-the code the entry's `reason` relies on, which is the "non-attacker origin"
-form VulnHunter's rule allows. Every citation resolves.
+- **unrequested** — `classifyClusters` no longer lets a snippet-only entry (no `line`) suppress a finding that has no snippet (`snippetOnlyUnanchored`) — reviewer: unrequested — reason: without it, the AC2 snippet anchor would still let a snippet-only entry suppress a snippetless finding anywhere in the file, which is the whole-file suppression AC2 forbids
+- **unrequested** — `worker/deno/tests/content_tooling_env_test.ts` runs its environment canary in a child process (`runInChild`) — reviewer: unrequested — reason: the diff-scoped mutation gate runs tests under `env -i`, so the canary must set its own environment in a child rather than rely on the parent's (and Issue #880 forbids `Deno.env.set` in tests)
 
 ## Standards Review
 
@@ -123,7 +116,7 @@ form VulnHunter's rule allows. Every citation resolves.
 - **violation** — Every outcome of a branch needs a test: the backslash and NUL operands of `isRepoRelativePath` had no test — evidence: `worker/deno/lib/security_tree_sweep.ts:1191` — reason: fixed in this diff (backslash and NUL cases added; deleting either operand turns the malformed-citation test red)
 - **violation** — Call the existing owner: the confinement check was hand-rolled instead of calling `isAtOrAbove` — evidence: `worker/deno/lib/security_tree_sweep.ts:1289` — reason: fixed in this diff (`countTreeLines` now calls `isAtOrAbove` with `pathStyleFor`, as `codebase_map.ts` does)
 - **violation** — A code change owes a docs change: the methodology report's section 3 still described the old behaviour in the present tense — evidence: `docs/security/vulnhunter-methodology-evaluation.md:159` — reason: fixed in this diff (now "had at evaluation time (before #3658)", past tense)
-- **clean** — Australian English; Path Confinement (shape check before access, realpath, confine, act on the resolved path; negative `..`, `missing/..` and symlink tests); fail loud (baseline errors are fatal); nothing exists only for a test (`countTreeLines` and `TreeLineCounter` are read by `runSecurityTreeSweep`); no removed assertions; temp dirs via `Deno.makeTempDir`; no hidden paths beyond `.github/`; regex on untrusted text is the digit-only `CITATION_LINE`, with a 100,000-character hostile case. Review-enforced rules checked: insertion placement, import merging, no unrequested refactor.
+- **clean** — Australian English; Path Confinement (shape check before access, realpath, confine, act on the resolved path; negative `..`, `missing/..` and symlink tests); fail loud (baseline errors are fatal); nothing exists only for a test (`countTreeLines` and `TreeLineCounter` are read by `runSecurityTreeSweep`); no removed assertions (the #1473 test's `"rule": "SEC-8d02435d8683"` assertion moved into its `fixedBody` check, and its `unknown` entry moved from `falsePositives` to `accepted` because AC2 makes an unanchored false positive invalid); dead code removed rather than exempted (the unreachable snippet operand of `snippetOnlyUnanchored`); temp dirs via `Deno.makeTempDir`; no hidden paths beyond `.github/`; regex on untrusted text is the digit-only `CITATION_LINE`, with a 100,000-character hostile case. Review-enforced rules checked: insertion placement, import merging, no unrequested refactor.
 
 ## Test Plan
 
@@ -149,14 +142,27 @@ form VulnHunter's rule allows. Every citation resolves.
   `unknown` entry moved from `falsePositives` to `accepted`, because the
   issue's line/snippet rule makes an unlocated false positive invalid. All of
   that test's assertions are kept, and one was added for the
-  "goes under `accepted`" note. This diff removes no assertion from any
-  existing test.
+  "goes under `accepted`" note. Its `"rule": "SEC-8d02435d8683"` assertion
+  moved into the `fixedBody` check rather than being removed. This diff
+  removes no assertion from any existing test.
+- New guard test: "falsePositives - a snippet-only entry never suppresses a
+  finding with no snippet (Issue #3658)".
 - Red checks: each new guard was broken on its own and the named test went
   red; see the branch-outcomes list below. For #1473, I set the
-  unlocated-note condition to false and the test went red.
+  unlocated-note condition to false and the test went red. Recorded per change:
+  - `snippetOnlyUnanchored` guard removed from `classifyClusters` → 75 passed,
+    1 failed (the guard test).
+  - its `entry.line === undefined` operand forced true → 3 failed.
+  - its `cluster.snippet === undefined` operand forced true → 1 failed (the
+    guard test's positive control). The former snippet operand was
+    unreachable once the parser refused an entry with neither anchor, so it
+    was removed rather than exempted.
+  - `content_tooling_env_test.ts`: `runInChild` given `env: {}` → 0 passed,
+    2 failed; `clearEnv: false` → 77 passed, 1 failed.
 - `deno task test:unit tests/security_tree_sweep_test.ts < /dev/null` on the
-  final head: `ok | 75 passed | 0 failed`. `deno fmt --check`, `deno lint` and
-  `deno check` on both files are clean.
+  final head: `ok | 76 passed | 0 failed`. The other importers of
+  `security_tree_sweep.ts`: 24 passed. `deno fmt --check`, `deno lint` and
+  `deno check` on the changed files are clean.
 - `./quality.sh < /dev/null`: **Result: PASSED (with skipped checks)**, with
   only `config integration` skipped. It was re-run on the final head after
   the review fixes.
