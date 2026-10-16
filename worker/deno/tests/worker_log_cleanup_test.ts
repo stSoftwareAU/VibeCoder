@@ -7,13 +7,15 @@
  * large logs and aggressively prunes header-only stubs.
  */
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import {
   cleanupWorkerLogs,
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_HEADER_ONLY_MAX_BYTES,
   DEFAULT_HEADER_ONLY_MIN_AGE_MINUTES,
   DEFAULT_MAX_AGE_DAYS,
+  DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
+  DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
 } from "../lib/worker_log_cleanup.ts";
 
 const HOUR_MS = 60 * 60 * 1000;
@@ -293,7 +295,7 @@ Deno.test("cleanupWorkerLogs - ignores gzip temporary files", async () => {
   }
 });
 
-Deno.test("cleanupWorkerLogs - ages out agent transcripts with the worker logs (Issue #4169)", async () => {
+Deno.test("cleanupWorkerLogs - ages out agent transcripts after the transcript window (Issue #4169, #3700)", async () => {
   const tmpDir = await Deno.makeTempDir();
   const now = Date.now();
   try {
@@ -302,11 +304,23 @@ Deno.test("cleanupWorkerLogs - ages out agent transcripts with the worker logs (
     await writeLog(fresh, 4096, now - 2 * HOUR_MS);
     // Old transcript, rotated backup, and gzipped rotation: all age out.
     const old = `${tmpDir}/agent-vibe-old111-222222-7.jsonl`;
-    await writeLog(old, 4096, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
+    await writeLog(
+      old,
+      4096,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 1) * DAY_MS,
+    );
     const rotated = `${tmpDir}/agent-vibe-old111-222222-7.jsonl.2`;
-    await writeLog(rotated, 4096, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
+    await writeLog(
+      rotated,
+      4096,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 1) * DAY_MS,
+    );
     const gzipped = `${tmpDir}/agent-vibe-old111-222222-7.jsonl.gz`;
-    await writeLog(gzipped, 512, now - (DEFAULT_MAX_AGE_DAYS + 1) * DAY_MS);
+    await writeLog(
+      gzipped,
+      512,
+      now - (DEFAULT_TRANSCRIPT_MAX_AGE_DAYS + 1) * DAY_MS,
+    );
     // Unrelated jsonl (self-heal events): never touched.
     const unrelated = `${tmpDir}/self-heal.jsonl`;
     await writeLog(unrelated, 64, now - (DEFAULT_MAX_AGE_DAYS + 5) * DAY_MS);
@@ -316,6 +330,97 @@ Deno.test("cleanupWorkerLogs - ages out agent transcripts with the worker logs (
     assertEquals(result.deleted.sort(), [gzipped, old, rotated].sort());
     await Deno.stat(fresh);
     await Deno.stat(unrelated);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("cleanupWorkerLogs - default transcript retention is at least 30 days (Issue #3700)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const now = Date.now();
+  try {
+    assert(DEFAULT_TRANSCRIPT_MAX_AGE_DAYS >= 30);
+
+    // Transcript 29 days old: inside the transcript window, survives.
+    const survivor = `${tmpDir}/agent-vibe-aaa111-bbb222-1.jsonl`;
+    await writeLog(survivor, 4096, now - 29 * DAY_MS);
+    // Worker log 29 days old: far past the 3-day worker window, deleted.
+    const workerLog = `${tmpDir}/worker-29.log`;
+    await writeLog(workerLog, 4096, now - 29 * DAY_MS);
+    // Transcript 31 days old: past the transcript window, deleted.
+    const expired = `${tmpDir}/agent-vibe-ccc333-ddd444-2.jsonl`;
+    await writeLog(expired, 4096, now - 31 * DAY_MS);
+
+    const result = await cleanupWorkerLogs(tmpDir, { now: new Date(now) });
+
+    assertEquals(result.deleted.includes(survivor), false);
+    await Deno.stat(survivor);
+    assertEquals(result.deleted.sort(), [workerLog, expired].sort());
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("cleanupWorkerLogs - transcript and worker-log hard caps are counted separately (Issue #3700)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const now = Date.now();
+  try {
+    assertEquals(DEFAULT_TRANSCRIPT_HARD_CAP_COUNT, 1000);
+
+    // Four fresh worker logs and four fresh transcripts, all 4096 bytes,
+    // with distinct mtimes: index 0 is the oldest (4 hours) of each group.
+    const workerLogs: string[] = [];
+    const transcripts: string[] = [];
+    for (let i = 0; i < 4; i++) {
+      const workerLog = `${tmpDir}/worker-50${i + 1}.log`;
+      await writeLog(workerLog, 4096, now - (4 - i) * HOUR_MS);
+      workerLogs.push(workerLog);
+
+      const transcript = `${tmpDir}/agent-vibe-cap${i}-0000${i}.jsonl`;
+      await writeLog(transcript, 4096, now - (4 - i) * HOUR_MS);
+      transcripts.push(transcript);
+    }
+
+    // Worker-log cap 2 removes the two oldest worker logs; transcript cap 3
+    // removes only the single oldest transcript. Neither group uses the other's cap.
+    const result = await cleanupWorkerLogs(tmpDir, {
+      now: new Date(now),
+      hardCapCount: 2,
+      transcriptHardCapCount: 3,
+    });
+
+    assertEquals(
+      result.deleted.sort(),
+      [
+        workerLogs[0]!,
+        workerLogs[1]!,
+        transcripts[0]!,
+      ].sort(),
+    );
+    assertEquals(result.kept, 5);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("cleanupWorkerLogs - transcriptMaxAgeDays overrides the transcript window (Issue #3700)", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const now = Date.now();
+  try {
+    // Six days old: past the overridden 5-day window, deleted.
+    const expired = `${tmpDir}/agent-vibe-tma111-222222-1.jsonl`;
+    await writeLog(expired, 4096, now - 6 * DAY_MS);
+    // Four days old: inside the overridden 5-day window, kept.
+    const kept = `${tmpDir}/agent-vibe-tma333-444444-2.jsonl`;
+    await writeLog(kept, 4096, now - 4 * DAY_MS);
+
+    const result = await cleanupWorkerLogs(tmpDir, {
+      now: new Date(now),
+      transcriptMaxAgeDays: 5,
+    });
+
+    assertEquals(result.deleted, [expired]);
+    await Deno.stat(kept);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

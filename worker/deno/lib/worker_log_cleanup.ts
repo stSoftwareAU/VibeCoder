@@ -13,8 +13,8 @@
  *     storms.
  *  2. Any log older than {@link DEFAULT_MAX_AGE_DAYS} days is deleted, matching
  *     the existing `~/logs` cleanup window.
- *  3. A hard cap of {@link DEFAULT_HARD_CAP_COUNT} files prevents pathological
- *     growth — the oldest files above the cap are removed.
+ *  3. A hard cap of {@link DEFAULT_HARD_CAP_COUNT} worker logs prevents
+ *     pathological growth — the oldest worker logs above the cap are removed.
  *
  * Logs that are large (≥ 200 bytes) and young (< 3 days) are always preserved.
  *
@@ -22,6 +22,13 @@
  * apply to `worker-<PID>.log.gz` files. The stub rule (1) is the one exception —
  * it applies to plain logs only, because a well-compressed multi-KiB log can
  * shrink below the stub threshold and must not be mistaken for a stub.
+ *
+ * Issue #3700: agent transcripts (`agent-*.jsonl`, see
+ * {@link AGENT_TRANSCRIPT_PATTERN}) are not worker logs. They keep the stub
+ * rule (1), but age out on their own {@link DEFAULT_TRANSCRIPT_MAX_AGE_DAYS}
+ * window (at least 30 days, so an incident can be reconstructed) and are
+ * counted against their own {@link DEFAULT_TRANSCRIPT_HARD_CAP_COUNT} cap,
+ * separately from the worker-log cap in rule (3).
  */
 
 /** Header-only files smaller than this many bytes are eligible for early deletion. */
@@ -30,11 +37,24 @@ export const DEFAULT_HEADER_ONLY_MAX_BYTES = 200;
 /** Header-only files must be at least this old (minutes) before they are deleted. */
 export const DEFAULT_HEADER_ONLY_MIN_AGE_MINUTES = 60;
 
-/** Maximum age in days for any worker log, regardless of size. */
+/** Maximum age in days for any worker log, regardless of size (worker logs only, not transcripts). */
 export const DEFAULT_MAX_AGE_DAYS = 3;
 
-/** Hard ceiling on the number of worker-PID.log files retained. */
+/** Hard ceiling on the number of worker-PID.log files retained (worker logs only, not transcripts). */
 export const DEFAULT_HARD_CAP_COUNT = 200;
+
+/**
+ * Maximum age in days for an agent transcript (`agent-*.jsonl` and its
+ * rotated/gzipped forms) (Issue #3700). At least 30 days so an incident can be
+ * reconstructed and the scheduled transcript scan has a window to read.
+ */
+export const DEFAULT_TRANSCRIPT_MAX_AGE_DAYS = 30;
+
+/**
+ * Hard ceiling on retained agent transcript files, counted separately from
+ * worker logs; the oldest transcripts are deleted first (Issue #3700).
+ */
+export const DEFAULT_TRANSCRIPT_HARD_CAP_COUNT = 1000;
 
 /**
  * Age in days after which an unrecognised plain file in the log directory
@@ -53,10 +73,14 @@ export interface WorkerLogCleanupOptions {
   headerOnlyMaxBytes?: number;
   /** Minimum age (minutes) before a header-only stub may be deleted. */
   headerOnlyMinAgeMinutes?: number;
-  /** Maximum age in days before any log is deleted. */
+  /** Maximum age in days before any worker log is deleted. */
   maxAgeDays?: number;
-  /** Hard cap on retained file count (oldest above the cap are deleted). */
+  /** Hard cap on retained worker-log count (oldest above the cap are deleted). */
   hardCapCount?: number;
+  /** Maximum age in days before an agent transcript is deleted (Issue #3700). */
+  transcriptMaxAgeDays?: number;
+  /** Hard cap on retained agent transcript count, oldest deleted first (Issue #3700). */
+  transcriptHardCapCount?: number;
   /** Age in days before an unrecognised plain file is removed (Issue #4306). */
   foreignFileMaxAgeDays?: number;
   /** Override "now" for deterministic tests. */
@@ -81,10 +105,13 @@ const WORKER_LOG_PATTERN = /^worker-\d+(?:-\d+)*\.log(\.gz)?$/;
 /**
  * Pattern that matches agent stream-json transcripts (Issue #4169):
  * `agent-<runid>[-<issue>].jsonl`, including log_rotation.ts backups
- * (`.jsonl.N`) and gzipped forms. Transcripts are debug artefacts, so the
- * same age/stub/cap retention applies to them as to the worker logs.
+ * (`.jsonl.N`) and gzipped forms. Also the transcript selector for the
+ * scheduled transcript scan `agent_transcript_scan.ts` (Issue #3700).
+ * Transcripts have their own retention window (see
+ * {@link DEFAULT_TRANSCRIPT_MAX_AGE_DAYS}) and their own hard cap (see
+ * {@link DEFAULT_TRANSCRIPT_HARD_CAP_COUNT}), not the worker-log age or cap.
  */
-const AGENT_TRANSCRIPT_PATTERN =
+export const AGENT_TRANSCRIPT_PATTERN =
   /^agent-vibe-[A-Za-z0-9-]+\.jsonl(\.\d+)?(\.gz)?$/;
 
 /**
@@ -133,6 +160,8 @@ interface LogEntry {
   mtimeMs: number;
   /** Whether the entry is a gzipped log (`.log.gz`). */
   gzipped: boolean;
+  /** Whether the entry is an agent transcript rather than a worker log (Issue #3700). */
+  transcript: boolean;
 }
 
 /**
@@ -153,6 +182,10 @@ export async function cleanupWorkerLogs(
   const maxAgeMs = (options.maxAgeDays ?? DEFAULT_MAX_AGE_DAYS) * 24 * 60 *
     60_000;
   const hardCapCount = options.hardCapCount ?? DEFAULT_HARD_CAP_COUNT;
+  const transcriptMaxAgeMs = (options.transcriptMaxAgeDays ??
+    DEFAULT_TRANSCRIPT_MAX_AGE_DAYS) * 24 * 60 * 60_000;
+  const transcriptHardCapCount = options.transcriptHardCapCount ??
+    DEFAULT_TRANSCRIPT_HARD_CAP_COUNT;
   const foreignMaxAgeMs = (options.foreignFileMaxAgeDays ??
     DEFAULT_FOREIGN_FILE_MAX_AGE_DAYS) * 24 * 60 * 60_000;
   const nowMs = (options.now ?? new Date()).getTime();
@@ -195,6 +228,7 @@ export async function cleanupWorkerLogs(
           size: stat.size,
           mtimeMs,
           gzipped: dirEntry.name.endsWith(".gz"),
+          transcript: AGENT_TRANSCRIPT_PATTERN.test(dirEntry.name),
         });
       } catch {
         // Skip files that vanished between readDir and stat
@@ -223,29 +257,40 @@ export async function cleanupWorkerLogs(
     }
   }
 
-  // Pass 2: delete anything older than the max age cap
+  // Pass 2: delete anything older than the max age cap — the transcript
+  // window for agent transcripts (Issue #3700), the worker-log cap otherwise.
   for (const entry of entries) {
     if (deleted.includes(entry.path)) continue;
     const ageMs = nowMs - entry.mtimeMs;
-    if (ageMs > maxAgeMs) {
+    const limitMs = entry.transcript ? transcriptMaxAgeMs : maxAgeMs;
+    if (ageMs > limitMs) {
       if (await tryRemove(entry.path)) {
         deleted.push(entry.path);
       }
     }
   }
 
-  // Pass 3: hard cap — if we still have more than hardCapCount files, delete
-  // the oldest until we're back under the cap. This protects against
+  // Pass 3: hard cap — if a group still has more files than its cap, delete
+  // that group's oldest until it is back under the cap. Worker logs and
+  // transcripts are capped independently (Issue #3700). This protects against
   // pathological cases (e.g. thousands of fresh stubs) while leaving the
   // typical steady-state untouched.
-  const remaining = entries
-    .filter((e) => !deleted.includes(e.path))
-    .sort((a, b) => a.mtimeMs - b.mtimeMs); // oldest first
-  const excess = remaining.length - hardCapCount;
-  for (let i = 0; i < excess; i++) {
-    const entry = remaining[i]!;
-    if (await tryRemove(entry.path)) {
-      deleted.push(entry.path);
+  const remaining = entries.filter((e) => !deleted.includes(e.path));
+  const capGroups: { group: LogEntry[]; cap: number }[] = [
+    { group: remaining.filter((e) => !e.transcript), cap: hardCapCount },
+    {
+      group: remaining.filter((e) => e.transcript),
+      cap: transcriptHardCapCount,
+    },
+  ];
+  for (const { group, cap } of capGroups) {
+    const oldestFirst = group.sort((a, b) => a.mtimeMs - b.mtimeMs);
+    const excess = oldestFirst.length - cap;
+    for (let i = 0; i < excess; i++) {
+      const entry = oldestFirst[i]!;
+      if (await tryRemove(entry.path)) {
+        deleted.push(entry.path);
+      }
     }
   }
 

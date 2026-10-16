@@ -29,13 +29,17 @@ function asNumber(value: unknown): number | undefined {
  *                                       directory, Issue #873)
  *   --header-only-max-bytes <number>    Size threshold for stubs (default: 200)
  *   --header-only-min-age-minutes <num> Min age before stub deletion (default: 60)
- *   --max-age-days <number>             Max age before any log is deleted (default: 3)
- *   --hard-cap-count <number>           Hard ceiling on file count (default: 200)
+ *   --max-age-days <number>             Max age before any worker log is deleted (default: 3)
+ *   --hard-cap-count <number>           Hard ceiling on worker-log count (default: 200)
+ *   --transcript-max-age-days <number>  Max age before an agent transcript is
+ *                                       deleted (default: 30, Issue #3700)
+ *   --transcript-hard-cap-count <number> Hard ceiling on agent transcript count,
+ *                                       counted separately (default: 1000, Issue #3700)
  */
 export const workerLogCleanupCommand: Command = {
   name: "worker-log-cleanup",
   description:
-    "Apply hybrid age/size retention to worker-PID.log files (Issue #1902)",
+    "Apply hybrid age/size retention to worker-PID.log files and agent transcripts (Issue #1902, #3700)",
 
   async execute(
     args: Record<string, unknown>,
@@ -50,6 +54,8 @@ export const workerLogCleanupCommand: Command = {
       headerOnlyMinAgeMinutes: asNumber(args["header-only-min-age-minutes"]),
       maxAgeDays: asNumber(args["max-age-days"]),
       hardCapCount: asNumber(args["hard-cap-count"]),
+      transcriptMaxAgeDays: asNumber(args["transcript-max-age-days"]),
+      transcriptHardCapCount: asNumber(args["transcript-hard-cap-count"]),
     });
 
     return { success: true, message: result.message, data: result };
