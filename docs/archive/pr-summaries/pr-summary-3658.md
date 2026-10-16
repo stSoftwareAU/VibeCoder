@@ -134,6 +134,33 @@ flowchart LR
   - a symlink pointing inside (positive control)
 - Each refusal test asserts its specific error text, and has a control that
   makes only the probed value legal and expects no errors.
+- **Regression tests, failing before the fix and passing after it.** Added
+  `worker/deno/tests/security_tree_sweep_test.ts::falsePositives - an entry without evidence is refused (Issue #3658)`
+  and
+  `worker/deno/tests/security_tree_sweep_test.ts::sweep: a falsePositives entry whose evidence is absent from the tree fails the run (Issue #3658)`.
+  They reproduce the flaw: an uncited `falsePositives` entry turns the sweep
+  green. Both fail against the unfixed code and pass after the fix. I ran
+  the 15 `(Issue #3658)` tests against the base branch's
+  `worker/deno/lib/security_tree_sweep.ts`, with only a stub
+  `countTreeLines` export added so the module loads. 12 failed, including
+  both tests named above and
+  `::falsePositives - an entry with neither a line nor a snippet is refused (Issue #3658)`.
+  The 3 that passed are controls that expect only `null` or an unchanged
+  `accepted` list. On this branch's code all 15 pass.
+- **Original trigger closed, no trivial bypass.** The original trigger was a
+  short `falsePositives` entry, with only a `reason`, that suppresses a
+  finding. `parseSweepBaseline` now rejects that entry. A baseline error
+  fails the run and the entry suppresses nothing. The counter is a required
+  argument, so no caller can skip the check. There is no trivial bypass:
+  - Citing a made-up path fails: `countTreeLines` returns `null`, which is
+    reported as "does not resolve".
+  - Citing a path outside the tree fails: `..`, absolute paths, backslashes,
+    NUL and symlink escapes are all refused.
+  - Citing a line past the end of a real file fails.
+  - Leaving out `line` and `snippet` to cover the whole file fails, both in
+    the parser and in `classifyClusters` (`snippetOnlyUnanchored`).
+  - The remaining route is to cite a real file:line. That is the evidence the
+    issue asks for, and a reviewer can check it.
 - Existing tests: every `parseSweepBaseline` call now passes a counter, and
   the valid `falsePositives` fixtures gained `evidence`. Fixtures that had no
   anchor gained a `line`: `gone/away.ts:1`, plus `worker/lib/files.ts:40` and
