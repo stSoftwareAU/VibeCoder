@@ -1,11 +1,15 @@
 {
-  "note": "Baseline for the whole-tree security sweep (Issue #4193). Run `deno task security-tree-sweep` from worker/deno (or `deno run --allow-read --allow-write --allow-run --allow-env worker/deno/mod.ts security-tree-sweep --slug stSoftwareAU/VibeCoder` from the repository root). Every deduplicated finding the sweep reports must either be fixed or appear in exactly one list here. `falsePositives` entries need a `reason` explaining why the match is benign. `accepted` entries are real but tolerated risks: they need a `reason` and should carry the tracking `issue` number. Entries match on `path` plus `rule` (a rule family such as `command-injection`, or a tool-native rule id) and, optionally, a `line` anchor within the sweep's 10-line window. The sweep exits non-zero while any finding is unlisted; a stale entry (matching nothing) is reported so it can be removed. A finding the worker scan alone reported is NOT baseline material: it mirrors an open `security` issue, so the sweep classifies it `tracked` and it clears when that issue closes (Issue #1518).",
+  "note": "Baseline for the whole-tree security sweep (Issue #4193). Run `deno task security-tree-sweep` from worker/deno (or `deno run --allow-read --allow-write --allow-run --allow-env worker/deno/mod.ts security-tree-sweep --slug stSoftwareAU/VibeCoder` from the repository root). Every deduplicated finding the sweep reports must either be fixed or appear in exactly one list here. `falsePositives` entries need a `reason` explaining why the match is benign, `evidence` (one or more repository-relative `path:line` citations of the defence, type constraint or non-attacker origin that eliminates the finding, each resolving to a file and line in the tree) and a `line` or `snippet` anchor (an entry with neither would suppress every finding of the rule in the file) (Issue #3658). `accepted` entries are real but tolerated risks: they need a `reason` and should carry the tracking `issue` number, and need no `evidence`. Entries match on `path` plus `rule` (a rule family such as `command-injection`, or a tool-native rule id) and on a `line` anchor within the sweep's 10-line window (optional for `accepted`) or a `snippet` (the normalised source line), which is matched instead of `line` when present. The sweep exits non-zero while any finding is unlisted; a stale entry (matching nothing) is reported so it can be removed. A finding the worker scan alone reported is NOT baseline material: it mirrors an open `security` issue, so the sweep classifies it `tracked` and it clears when that issue closes (Issue #1518).",
   "falsePositives": [
     {
       "path": "worker/deno/lib/unused_config_detector.ts",
       "rule": "unsafe-regex",
       "line": 71,
       "snippet": "const pattern = new RegExp(`\\\\.${field}\\\\b|\\\\b${field}\\\\b`);",
+      "evidence": [
+        "worker/deno/lib/unused_config_detector.ts:38",
+        "worker/deno/lib/unused_config_detector.ts:57"
+      ],
       "reason": "`field` iterates the worker's own config-schema field names (identifier characters only), matched against the worker's own source tree — no untrusted input reaches the pattern (Issue #4193 triage of semgrep detect-non-literal-regexp)."
     },
     {
@@ -13,6 +17,9 @@
       "rule": "unsafe-regex",
       "line": 108,
       "snippet": "{ label: \"Anthropic API host\", re: /api\\.anthropic\\.com/ },",
+      "evidence": [
+        "worker/deno/lib/llm_usage_detection.ts:188"
+      ],
       "reason": "Detection heuristics for LLM API hosts in scanned code (the `api.` host patterns): an unanchored host pattern over-matches (`api.anthropic.com.evil`), and over-matching is the safe direction for a detector that only flags for review (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
     },
     {
@@ -20,28 +27,70 @@
       "rule": "unsafe-regex",
       "line": 112,
       "snippet": "re: /generativelanguage\\.googleapis\\.com/,",
+      "evidence": [
+        "worker/deno/lib/llm_usage_detection.ts:188"
+      ],
       "reason": "Detection heuristic for the Google Generative Language API host, split into its own cluster when the pattern list grew past the sweep's 10-line window: an unanchored host pattern over-matches (`generativelanguage.googleapis.com.evil`), and over-matching is the safe direction for a detector that only flags for review (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
     },
     {
       "path": "worker/deno/lib/planning_processor.ts",
       "rule": "unsafe-regex",
-      "line": 139,
+      "line": 244,
       "snippet": "const urlPattern = /https:\\/\\/github\\.com\\/[^/]+\\/[^/]+\\/issues\\/\\d+/g;",
+      "evidence": [
+        "worker/deno/lib/planning_processor.ts:244",
+        "worker/deno/lib/planning_processor.ts:302"
+      ],
       "reason": "The pattern requires `/` immediately after `github.com`, so a look-alike host (`github.com.evil/`) does not match; the extracted URLs are then validated against the repository slug downstream (Issue #4409 CodeQL js/regex/missing-regexp-anchor)."
     },
     {
       "path": "worker/deno/tests/planning_processor_test.ts",
       "rule": "incomplete-url-substring-sanitization",
+      "line": 2923,
+      "snippet": "result.value.subIssueUrls.includes(",
+      "evidence": [
+        "worker/deno/tests/planning_processor_test.ts:2924"
+      ],
       "reason": "Test assertions that generated text contains issue URLs are not sanitisation (Issue #4409 CodeQL triage)."
     },
     {
       "path": "worker/deno/tests/export_branding_test.ts",
       "rule": "missing-space-in-concatenation",
-      "reason": "Deliberate: fixtures are assembled from halves (`\"Vibe\" + \"Coding\"`) so the exported test file never carries the private name it tests for (Issue #4197); the missing space is the point (Issue #4409 CodeQL triage)."
+      "line": 57,
+      "snippet": "\"# Vibe\" + \"Coding worker\",",
+      "evidence": [
+        "worker/deno/tests/export_branding_test.ts:15"
+      ],
+      "reason": "Deliberate: fixtures are assembled from halves (`\"Vibe\" + \"Coding\"`) so the exported test file never carries the private name it tests for (Issue #4197); the missing space is the point (Issue #4409 CodeQL triage). This entry covers the heading fixture."
+    },
+    {
+      "path": "worker/deno/tests/export_branding_test.ts",
+      "rule": "missing-space-in-concatenation",
+      "line": 61,
+      "snippet": "\"twice: Vibe\" + \"Coding Vibe\" + \"Coding\",",
+      "evidence": [
+        "worker/deno/tests/export_branding_test.ts:15"
+      ],
+      "reason": "Deliberate: fixtures are assembled from halves (`\"Vibe\" + \"Coding\"`) so the exported test file never carries the private name it tests for (Issue #4197); the missing space is the point (Issue #4409 CodeQL triage). This entry covers the `twice:` fixture."
+    },
+    {
+      "path": "worker/deno/tests/export_branding_test.ts",
+      "rule": "missing-space-in-concatenation",
+      "line": 125,
+      "snippet": "\"Prose: Vibe\" + \"Coding is the private tree.\",",
+      "evidence": [
+        "worker/deno/tests/export_branding_test.ts:15"
+      ],
+      "reason": "Deliberate: fixtures are assembled from halves (`\"Vibe\" + \"Coding\"`) so the exported test file never carries the private name it tests for (Issue #4197); the missing space is the point (Issue #4409 CodeQL triage). This entry covers the `Prose:` fixture."
     },
     {
       "path": "worker/deno/tests/export_scrub_gate_test.ts",
       "rule": "missing-space-in-concatenation",
+      "line": 159,
+      "snippet": "assertEquals(classes(\"still says Vibe\" + \"coding here\"), [",
+      "evidence": [
+        "worker/deno/tests/export_scrub_gate_test.ts:15"
+      ],
       "reason": "Deliberate: fixtures are assembled from halves so the exported test file never carries the identifiers it tests for (Issue #4196) (Issue #4409 CodeQL triage)."
     },
     {
@@ -49,13 +98,19 @@
       "rule": "comparison-between-incompatible-types",
       "line": 87,
       "snippet": "return typeof value === \"object\" && value !== null && !Array.isArray(value);",
+      "evidence": [
+        "worker/deno/lib/container_extension_config.ts:87"
+      ],
       "reason": "The flagged comparison IS the null guard the `typeof x === \"object\"` idiom requires: `typeof null` is `\"object\"`, so dropping `value !== null` is the bug the rule reads it as. CodeQL narrows `value` to `object` from the first conjunct and then objects to comparing that narrowed type with null — an artefact of its own inference, not a defect (Issue #1518 triage, js/comparison-between-incompatible-types)."
     },
     {
       "path": "worker/deno/lib/merge_conflict_deferrals.ts",
       "rule": "comparison-between-incompatible-types",
-      "line": 394,
+      "line": 393,
       "snippet": "if (typeof raw !== \"object\" || raw === null) return undefined;",
+      "evidence": [
+        "worker/deno/lib/merge_conflict_deferrals.ts:393"
+      ],
       "reason": "Same idiom and same analyser artefact as `container_extension_config.ts`: `typeof null` is `\"object\"`, so the `raw === null` arm is the guard that makes the narrowing sound. Removing it to satisfy the rule would reintroduce the null dereference it is there to stop (Issue #1518 triage, js/comparison-between-incompatible-types)."
     },
     {
@@ -63,6 +118,9 @@
       "rule": "missing-space-in-concatenation",
       "line": 215,
       "snippet": "\"import { assertLinear\" + 'Growth } from \"./support/gro' + 'wth.ts\";',",
+      "evidence": [
+        "worker/deno/lib/parallel_unsafe_test_manifest.ts:414"
+      ],
       "reason": "Deliberate, and the missing space is the point: the fixture is assembled from halves so this test file does not itself contain the literal `assertLinearGrowth`, which the manifest scan under test searches for. Written whole, the fixture would classify its own test file as measuring wall-clock time. Same triage as the `export_branding_test.ts` split fixtures (Issue #1518 triage, js/missing-space-in-concatenation)."
     }
   ],

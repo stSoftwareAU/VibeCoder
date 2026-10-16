@@ -53,8 +53,10 @@ The three follow-ups are open issues in this repository:
 [stSoftwareAU/VibeCoder#3659](https://github.com/stSoftwareAU/VibeCoder/issues/3659)
 (security-fix gate: execute the named test red→green). Older code comments
 cite the same numbers from an earlier tracker; those are unrelated. The
-diagram shows the planned flow once all three land; #3659 has landed (see
-section 5), #3657 and #3658 have not.
+diagram shows the planned flow once all three land. #3658's baseline check now
+ships (parse-time `evidence` and line/snippet validation in
+`worker/deno/lib/security_tree_sweep.ts`) and #3659 has landed (see section 5);
+only #3657 is still planned.
 
 ```mermaid
 flowchart LR
@@ -63,7 +65,7 @@ flowchart LR
     W --> G{security_fix_gate}
     G -->|"#3659: test red<br/>on base, green at head"| G2{verifier verdict}
     G2 -->|"planned #3657: FIXED only"| PR[PR raised]
-    S -.->|"planned #3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
+    S -.->|"#3658: false positive<br/>must cite a resolvable path:line"| B[baseline entry]
 ```
 
 ## 1. Falsification engine — Skip
@@ -153,23 +155,24 @@ specific code location, the finding is not eliminated"
 downgrade a finding until every call site of the sink has been checked
 ("Downgrade discipline"). README.md, "The Closed Loop" → "Capability Filter".
 
-**What VibeCoder has today.** A sweep `falsePositives` entry needs a `path`, a
-`rule` and a `reason` of at least `MIN_REASON_LENGTH` (10) characters
-(`validateEntry`, `security_tree_sweep.ts:1105`; constant at `:366`). Nothing
-asks where the defence is. An entry with neither `line` nor `snippet` matches
-every finding of that rule anywhere in the file (`entryMatches`,
+**What VibeCoder had at evaluation time (before #3658).** A sweep
+`falsePositives` entry needed a `path`, a `rule` and a `reason` of at least
+`MIN_REASON_LENGTH` (10) characters (at the evaluated revision:
+`validateEntry`, `security_tree_sweep.ts:1105`; constant at `:366`). Nothing
+asked where the defence was. An entry with neither `line` nor `snippet`
+matched every finding of that rule anywhere in the file (`entryMatches`,
 `security_tree_sweep.ts:1229`, at `:1244`). The template the filed issue
-offers asks only for `reason: "<why this is benign>"` (`buildSweepIssueBody`,
+offered asked only for `reason: "<why this is benign>"` (`buildSweepIssueBody`,
 `security_tree_sweep.ts:1741`). On a pull request,
-`.github/workflows/security-tree-sweep.yml` runs the sweep against the PR's
-own checkout and blocks on findings in its changed files
+`.github/workflows/security-tree-sweep.yml` ran the sweep against the PR's
+own checkout and blocked on findings in its changed files
 (`splitByChangedFiles`, `security_tree_sweep.ts:2089`). The code-scanning
-feed filters on the tool's severity alone (`code_scanning_alerts.ts:176`).
+feed filtered on the tool's severity alone (`code_scanning_alerts.ts:176`).
 
-**Gap.** A run blocked by a sweep finding in its own changed file can add a
+**Gap.** A run blocked by a sweep finding in its own changed file could add a
 10-character `falsePositives` entry in the same PR and turn the gate green.
-No evidence is needed, and a line-less entry suppresses the whole file. That
-is #3512's "loosen the check" route.
+No evidence was needed, and a line-less entry suppressed the whole file. That
+was #3512's "loosen the check" route.
 
 **Verdict: Adopt — #3658.** Require each `falsePositives` entry to cite the
 eliminating defence as a `path:line` that resolves in the tree, and reject
@@ -177,7 +180,8 @@ line-less, snippet-less entries. **Closes #3512:** no, but it closes that
 issue's sweep-baseline route. **Closes #3615:** no. #3658 makes a citation
 that resolves to nothing a baseline error. That applies the #3613 lesson (a
 cited path that matches no file must fail closed) so the new rule is not
-itself a #3615 instance.
+itself a #3615 instance. That check landed via #3658 (parse-time `evidence` and
+line/snippet validation in `worker/deno/lib/security_tree_sweep.ts`).
 
 ## 4. Evidence-backed remediation mapping — Skip
 
