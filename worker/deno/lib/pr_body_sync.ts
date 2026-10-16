@@ -27,9 +27,10 @@
  * marker; for that legacy shape the before-push-SHA diff this module always
  * used is still how staleness is decided. It never touches a PR body the
  * worker did not originally author (no {@link WORKER_PR_MARKER_PREFIX}
- * marker), and it never overwrites the body when the summary file was
- * deleted — a missing file is treated as "nothing to refresh", not as
- * "blank the body".
+ * marker), except a marker-less body on the run's own worker issue branch,
+ * which is adopted (Issue #3804; see {@link syncPrBodyFromSummary}). It never
+ * overwrites the body when the summary file was deleted — a missing file is
+ * treated as "nothing to refresh", not as "blank the body".
  *
  * Issue #3535: the structured Branch outcomes facts file beside the summary is
  * rendered into the rebuilt body and its content is part of the digest input,
@@ -54,6 +55,7 @@ import {
   WORKER_PR_MARKER_PREFIX,
 } from "./pr_body.ts";
 import { buildWorkerFooter } from "./worker_identity.ts";
+import { issueNumberFromBranch } from "./issue_branch_candidates.ts";
 import { loadPrSummary } from "./pr_summary_loader.ts";
 import {
   applyBranchOutcomesFacts,
@@ -264,6 +266,18 @@ export interface SyncPrBodyInput {
   githubUser: string;
   /** Canonical run id for this worker invocation. */
   runId?: string;
+  /**
+   * The branch this run works on. A PR whose head is this branch, whose name
+   * is a worker issue branch, and whose body lacks the worker marker is
+   * adopted (Issue #3804).
+   */
+  branchName: string;
+  /**
+   * When true, only adopt a marker-less PR; a body that already carries the
+   * worker marker is left to the fix runs' sync (skipped with reason "worker
+   * marker present"). Used by the completion phase.
+   */
+  adoptOnly?: boolean;
 }
 
 /** Collaborators {@link syncPrBodyFromSummary} needs — all injectable for testing. */
@@ -280,12 +294,14 @@ export type SyncPrBodyOutcome =
   | { status: "updated"; issueNumber: number }
   | { status: "skipped"; reason: string };
 
-/** The `gh pr view --json body,files,headRefOid` shape this module reads. */
+/** The `gh pr view --json body,files,headRefOid,headRefName` shape this module reads. */
 interface PrViewJson {
   body: string;
   files: Array<{ path: string }>;
   /** The PR's current head SHA on the remote, used to detect a stale checkout. */
   headRefOid: string;
+  /** The PR's head branch name (Issue #3804: marker-less adoption). */
+  headRefName: string;
 }
 
 /**
@@ -366,7 +382,13 @@ function extractLeadingSection(body: string, heading: string): string {
  * result with `gh pr edit`, but only when all of the following hold:
  *
  * - the PR carries the worker's own marker (never overwrite a body the
- *   worker did not author);
+ *   worker did not author), or — Issue #3804 — its body is marker-less but
+ *   its head is the run's own worker issue branch (`issue-<N>[-slug]`, equal
+ *   to `input.branchName`). That body is adopted: rebuilt with the marker,
+ *   digest and withheld close, skipping the digest and legacy staleness tests
+ *   below. `adoptOnly` limits the call to that adoption, so a body already
+ *   carrying the marker is skipped with "worker marker present" rather than
+ *   refreshed;
  * - the summary file was not deleted (a deleted summary means "nothing to
  *   refresh", not "blank the body");
  * - the summary actually changed (Issue #3535: the facts file beside it counts
@@ -419,7 +441,7 @@ export async function syncPrBodyFromSummary(
       "--repo",
       input.repo,
       "--json",
-      "body,files,headRefOid",
+      "body,files,headRefOid,headRefName",
     ]);
     view = JSON.parse(raw) as PrViewJson;
   } catch (err) {
@@ -431,17 +453,47 @@ export async function syncPrBodyFromSummary(
     };
   }
 
-  const issueNumber = issueNumberFromMarker(view.body ?? "");
-  if (issueNumber === undefined) {
+  let issueNumber = issueNumberFromMarker(view.body ?? "");
+  if (issueNumber !== undefined && input.adoptOnly) {
     return {
       ok: true,
-      value: { status: "skipped", reason: "no worker marker" },
+      value: { status: "skipped", reason: "worker marker present" },
     };
   }
 
-  const recordedDigest = summaryDigestFromBody(view.body ?? "");
+  // Issue #3804: an agent that raised its own PR with `gh pr create` wrote a
+  // marker-less body. Adopt it when its head is this run's own worker branch.
+  let adopting = false;
+  if (issueNumber === undefined) {
+    const branchIssue = view.headRefName === input.branchName
+      ? issueNumberFromBranch(input.branchName)
+      : null;
+    if (branchIssue === null) {
+      return {
+        ok: true,
+        value: { status: "skipped", reason: "no worker marker" },
+      };
+    }
+    issueNumber = branchIssue;
+    adopting = true;
+    logger.info(
+      "Adopting an agent-raised PR body on the run's own branch (Issue #3804)",
+      {
+        repo: input.repo,
+        prNumber: input.prNumber,
+        branch: input.branchName,
+        issueNumber,
+      },
+    );
+  }
 
-  if (recordedDigest === undefined) {
+  // The draft was never built from the summary, so an adopted body has no
+  // digest to compare and no before-push SHA to diff against: always rebuild.
+  const recordedDigest = adopting
+    ? undefined
+    : summaryDigestFromBody(view.body ?? "");
+
+  if (recordedDigest === undefined && !adopting) {
     // Legacy body, built before the summary-digest marker existed (Issue
     // #3315): fall back to the original before-push-SHA diff.
     if (!input.beforeSha) {
@@ -759,6 +811,7 @@ export async function syncPrBodyFromSummary(
     repo: input.repo,
     prNumber: input.prNumber,
     issueNumber,
+    adopted: adopting,
   });
   return { ok: true, value: { status: "updated", issueNumber } };
 }

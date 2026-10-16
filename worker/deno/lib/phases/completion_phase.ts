@@ -34,6 +34,7 @@ import {
   finalisePrBodyImages,
   prSummaryDigest,
 } from "../pr_body_sync.ts";
+import { adoptAgentRaisedPrBody } from "../agent_pr_adoption.ts";
 import { resolveComparableBaseRef } from "../git_base_ref.ts";
 import { isWipOnlyCommitLog } from "../wip_commit_marker.ts";
 import { loadPrSummary } from "../pr_summary_loader.ts";
@@ -1200,6 +1201,9 @@ export async function recoverAndFinaliseExistingPr(
  * infrastructure-category failures (notably `push_failure`). A transient
  * git-push blip no longer applies `failed-once` on the first occurrence —
  * the phase sleeps briefly and re-runs once before surfacing the failure.
+ *
+ * Issue #3804: at every exit it adopts an agent-raised PR on the run's own
+ * branch (see `adoptAgentRaisedPrBody`), so a later fix-run sync can refresh it.
  */
 export async function workOnIssueCompletion(
   ctx: IssueContext,
@@ -1263,6 +1267,25 @@ export async function workOnIssueCompletion(
   if (result.status !== "failure") {
     await postWorkOnRunStats(ctx, state, deps, { recordFigures: true });
   }
+
+  // Issue #3804: an agent that raised its own PR wrote a marker-less body.
+  // Adopt it on every exit so later fix-run syncs have a marker and digest.
+  await adoptAgentRaisedPrBody(
+    {
+      repo: ctx.repo,
+      branchName: state.branchName,
+      repoPath: state.repoPath,
+      workerName: ctx.config.workerName,
+      githubUser: ctx.githubUser,
+      runId: getRunId(),
+    },
+    {
+      findExistingPrForBranch: (r, b) => deps.pr.findExistingPrForBranch(r, b),
+      runGhCommand: (a) => deps.github.runGhCommand(a),
+      runGitCommand: deps.git.runGitCommand,
+      logger: deps.logger,
+    },
+  );
 
   return result;
 }

@@ -1844,6 +1844,7 @@ async function resolveConflict(
       githubUser: processorDeps.githubUser ??
         Deno.env.get("GITHUB_USER") ?? "",
       runId: getRunId(),
+      branchName,
     },
     {
       runGhCommand: deps.github.runGhCommand,
