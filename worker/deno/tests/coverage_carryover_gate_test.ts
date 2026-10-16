@@ -557,3 +557,115 @@ Deno.test("buildCoverageCarryOverGateComment - no uncovered lines means no list"
 Deno.test("DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS - is ten minutes", () => {
   assertEquals(DEFAULT_COVERAGE_CARRYOVER_BUDGET_SECONDS, 600);
 });
+
+// ---------------------------------------------------------------------------
+// Parser edge cases: path prefixes, header fallbacks, line endings
+// ---------------------------------------------------------------------------
+
+Deno.test("removedOrEditedTestFiles - the tab git appends to a path with spaces is stripped", () => {
+  const diff = [
+    "diff --git a/my dir/x_test.ts b/my dir/x_test.ts",
+    "--- a/my dir/x_test.ts\t",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-a",
+    "",
+  ].join("\n");
+  assertEquals(removedOrEditedTestFiles(diff), ["my dir/x_test.ts"]);
+});
+
+Deno.test("removedOrEditedTestFiles - ---/+++ lines before any diff header open an entry that is still read", () => {
+  const diff = [
+    "--- a/tests/x_test.ts",
+    "+++ b/tests/x_test.ts",
+    "@@ -1 +1 @@",
+    "-a",
+    "+b",
+    "",
+  ].join("\n");
+  assertEquals(removedOrEditedTestFiles(diff), ["tests/x_test.ts"]);
+});
+
+Deno.test("removedOrEditedTestFiles - a path with no a/ prefix (diff.noprefix) is read as is", () => {
+  const diff = [
+    "diff --git tests/x_test.ts tests/x_test.ts",
+    "--- tests/x_test.ts",
+    "+++ /dev/null",
+    "@@ -1 +0,0 @@",
+    "-a",
+    "",
+  ].join("\n");
+  assertEquals(removedOrEditedTestFiles(diff), ["tests/x_test.ts"]);
+});
+
+Deno.test("mapBaseLineToHead - a diff --git header that is not a/ b/ shaped names no base file", () => {
+  // Sliced as a/ b/ paths, this header would name lib/b.bin.
+  const diff = [
+    "diff --git x/lib/b.bin b/lib/b.bin",
+    "Binary files x/lib/b.bin and b/lib/b.bin differ",
+    "",
+  ].join("\n");
+  assertEquals(mapBaseLineToHead(diff, "lib/b.bin", 1), {
+    file: "lib/b.bin",
+    line: 1,
+  });
+});
+
+Deno.test("mapBaseLineToHead - an unexpected line ends a hunk early, so the next --- line is a header", () => {
+  // The first hunk claims three old lines but only one is removed before a
+  // non-diff line; the `--- a/lib/n.ts` after it must start a new file entry.
+  const diff = [
+    "diff --git a/lib/m.ts b/lib/m.ts",
+    "--- a/lib/m.ts",
+    "+++ b/lib/m.ts",
+    "@@ -1,3 +1 @@",
+    "-a",
+    "not a diff line",
+    "--- a/lib/n.ts",
+    "+++ b/lib/n.ts",
+    "@@ -4 +4 @@",
+    "-b",
+    "+c",
+    "",
+  ].join("\n");
+  assertEquals(mapBaseLineToHead(diff, "lib/n.ts", 4), null);
+});
+
+Deno.test("removedOrEditedTestFiles - a new test file is not edited and maps nothing from base", () => {
+  const diff = [
+    "diff --git a/tests/new_test.ts b/tests/new_test.ts",
+    "new file mode 100644",
+    "--- /dev/null",
+    "+++ b/tests/new_test.ts",
+    "@@ -0,0 +1,2 @@",
+    "+a",
+    "+b",
+    "",
+  ].join("\n");
+  assertEquals(removedOrEditedTestFiles(diff), []);
+  assertEquals(mapBaseLineToHead(diff, "tests/new_test.ts", 1), {
+    file: "tests/new_test.ts",
+    line: 1,
+  });
+});
+
+Deno.test("removedOrEditedTestFiles and mapBaseLineToHead - CRLF diff parses the same as LF", () => {
+  const lf = section("lib/m.ts", "@@ -2 +2 @@", "-a", "+b") +
+    section("tests/c_test.ts", "@@ -1 +1 @@", "-a", "+b");
+  const crlf = lf.replaceAll("\n", "\r\n");
+  assertEquals(removedOrEditedTestFiles(crlf), removedOrEditedTestFiles(lf));
+  assertEquals(removedOrEditedTestFiles(crlf), ["tests/c_test.ts"]);
+  assertEquals(mapBaseLineToHead(crlf, "lib/m.ts", 2), null);
+  assertEquals(mapBaseLineToHead(crlf, "lib/m.ts", 3), {
+    file: "lib/m.ts",
+    line: 3,
+  });
+});
+
+Deno.test("parseLcov - CRLF line endings parse the same as LF", () => {
+  const lcov = "SF:/a.ts\r\nDA:1,2\r\nDA:2,0\r\nend_of_record\r\n";
+  assertEquals(
+    [...(parseLcov(lcov).get("/a.ts") ?? new Map()).entries()],
+    [[1, 2], [2, 0]],
+  );
+});
