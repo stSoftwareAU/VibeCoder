@@ -104,6 +104,11 @@ Deno.test("issue_create_routing_check - detects every direct create form", () =>
       'gh(["issue", "create"], ["issue", "create"]);',
       [1],
     ],
+    [
+      "url string before argv",
+      'gh(["--url", "https://x", "issue", "create"]);',
+      [1],
+    ],
   ];
   for (const [name, content, expected] of cases) {
     const lines = scanContentForDirectIssueCreate(
@@ -144,6 +149,22 @@ Deno.test("issue_create_routing_check - ignores create argv inside comments", ()
   assertEquals(
     scanContentForDirectIssueCreate(commented, "worker/deno/lib/doc.ts"),
     [],
+  );
+});
+
+Deno.test("issue_create_routing_check - string containing a block-comment opener does not hide a create", () => {
+  // The "/*" inside the string is not a comment opener, so the create on line
+  // 2 is still scanned; the real block comment on line 3 is blanked.
+  const probe = [
+    'const marker = "/*";',
+    'gh(["issue", "create"]);',
+    "/* a real block comment */",
+  ].join("\n");
+  assertEquals(
+    scanContentForDirectIssueCreate(probe, "worker/deno/lib/probe.ts").map(
+      (v) => v.line,
+    ),
+    [2],
   );
 });
 
@@ -258,6 +279,27 @@ Deno.test("issue_create_routing_check - fails closed when no .ts file is scanned
   }
 });
 
+Deno.test("issue_create_routing_check - rethrows a non-missing stat error on a scan directory", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    // A regular file where a path component should be a directory: stat fails
+    // with NotADirectory, which is not "missing", so it must not be mapped to
+    // the does-not-exist message.
+    await Deno.mkdir(`${root}/worker`, { recursive: true });
+    await Deno.writeTextFile(`${root}/worker/deno`, "not a directory");
+    const err = await assertRejects(
+      () => scanDirectoriesForDirectIssueCreate(root, ["worker/deno/lib"]),
+      Deno.errors.NotADirectory,
+    );
+    assert(
+      !err.message.includes("does not exist"),
+      `non-missing stat error must not be mapped, got: ${err.message}`,
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
 Deno.test("issue_create_routing_check - real tree has no unlisted direct create call site", async () => {
   const result = await scanDirectoriesForDirectIssueCreate(
     REPO_ROOT,
@@ -322,6 +364,26 @@ Deno.test("issue_create_routing_check - stale entries are missing or clean files
     assertEquals(
       await findStaleAllowlistEntries(root, allowlist),
       ["worker/deno/lib/gone.ts", "worker/deno/lib/no_call.ts"],
+    );
+  } finally {
+    await Deno.remove(root, { recursive: true });
+  }
+});
+
+Deno.test("issue_create_routing_check - stale audit rethrows a non-missing read error", async () => {
+  const root = await Deno.makeTempDir();
+  try {
+    // A regular file where a path component should be a directory: the read
+    // fails with NotADirectory, which is not "missing", so it must propagate
+    // rather than being recorded as a stale entry.
+    await Deno.mkdir(`${root}/worker`, { recursive: true });
+    await Deno.writeTextFile(`${root}/worker/deno`, "not a directory");
+    const allowlist = new Map<string, string>([
+      ["worker/deno/lib/x.ts", "reason"],
+    ]);
+    await assertRejects(
+      () => findStaleAllowlistEntries(root, allowlist),
+      Deno.errors.NotADirectory,
     );
   } finally {
     await Deno.remove(root, { recursive: true });

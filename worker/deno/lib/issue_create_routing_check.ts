@@ -8,8 +8,8 @@
  * against it, and only then files. A call site that builds the
  * `"issue", "create"` argv itself skips that routing, so a new direct call
  * site must either use `fileRoutedIssue` or be added to
- * {@link ISSUE_CREATE_ROUTING_ALLOWLIST} with a one-line reason. The unit
- * test's real-tree scan (`tests/issue_create_routing_check_test.ts`) enforces
+ * {@link ISSUE_CREATE_ROUTING_ALLOWLIST} with a one-line reason. The real-tree
+ * scan in `worker/deno/tests/issue_create_routing_check_test.ts` enforces
  * this, and fails closed: an empty or missing scan is an error, never a pass.
  *
  * Like the issue-create label guard (Issue #1276), this is an architectural,
@@ -187,22 +187,33 @@ const ISSUE_ELEMENT_PATTERN = /(["'])issue\1\s*,/g;
 const LEADING_LITERAL_PATTERN = /^\s*["']([^"'\n]*)["']/;
 
 /**
- * Strip C-style block comments, preserving newlines so line numbers stay
- * aligned.
+ * One quote-aware pass over the source, matching (left to right) either a
+ * string literal to keep, or a comment to blank:
+ *
+ * - `"…"`, `'…'` and `` `…` `` literals, with backslash escapes, are kept. A
+ *   literal ends at end of line, so an unterminated quote does not swallow the
+ *   lines below it.
+ * - `//` runs to the end of the line.
+ * - Block comments (slash-star to star-slash) may span lines.
+ *
+ * Literals are matched where their opening quote appears, so a comment marker
+ * inside one (such as `"/*"` or `"https://x"`) is consumed with the literal and
+ * never opens a comment.
  */
-function stripBlockComments(source: string): string {
-  return source.replace(
-    /\/\*[\s\S]*?\*\//g,
-    (match) => match.replace(/[^\n]/g, " "),
-  );
-}
+const COMMENT_OR_STRING_PATTERN =
+  /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\\n])*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
 
-/** Strip trailing `//` line comments, preserving the line count. */
-function stripLineComments(source: string): string {
-  return source
-    .split("\n")
-    .map((line) => line.replace(/\/\/.*$/, ""))
-    .join("\n");
+/**
+ * Blank every comment, keeping string literals as-is. Each comment character
+ * becomes a space except newlines, so line numbers stay aligned with the raw
+ * source.
+ */
+function stripComments(source: string): string {
+  return source.replace(
+    COMMENT_OR_STRING_PATTERN,
+    (match: string, literal: string | undefined) =>
+      literal ?? match.replace(/[^\n]/g, " "),
+  );
 }
 
 /**
@@ -249,7 +260,7 @@ export function scanContentForDirectIssueCreate(
   repoRelPath: string,
 ): IssueCreateRoutingViolation[] {
   const rawLines = content.split("\n");
-  const lines = stripLineComments(stripBlockComments(content)).split("\n");
+  const lines = stripComments(content).split("\n");
   const violations: IssueCreateRoutingViolation[] = [];
 
   for (let i = 0; i < lines.length; i++) {
