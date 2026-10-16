@@ -387,11 +387,11 @@ function sumTokenUsage(entries: ModelUsageEntry[]): TokenUsage {
  * lost.
  */
 function entryUsageByModel(entry: InvocationEntry): ModelUsageEntry[] {
+  // Persisted JSON may hold an array, whose index keys would read as model ids.
   const raw = entry.usageByModel;
-  const breakdown = typeof raw === "object" && raw !== null &&
-      !Array.isArray(raw)
-    ? readModelUsageBreakdown(raw)
-    : undefined;
+  const breakdown = Array.isArray(raw)
+    ? undefined
+    : readModelUsageBreakdown(raw);
   if (breakdown) return breakdown;
   return [{
     model: entry.model,

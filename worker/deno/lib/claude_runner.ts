@@ -2459,7 +2459,7 @@ export async function runClaudeWithTimeout(
         ...(usageUnknown ? { usageUnknown: true } : {}),
         tokenUsage,
         // Issue #3616: a split run's sub-agent tokens are only in `modelUsage`.
-        ...(runStats.modelUsage ? { modelUsage: runStats.modelUsage } : {}),
+        modelUsage: runStats.modelUsage,
       }).catch((err: unknown) => {
         // Credit logging must never fail the main flow — but it must never be
         // silent either (Issue #1239). A refused append means the log was

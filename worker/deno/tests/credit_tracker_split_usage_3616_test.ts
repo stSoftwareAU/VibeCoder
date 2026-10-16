@@ -295,6 +295,42 @@ Deno.test("credit_tracker - an unreadable modelUsage passed to logInvocation fal
   });
 });
 
+Deno.test("credit_tracker - a usageByModel array is not read as model ids (Issue #3616)", async () => {
+  await withLogDir("split_3616_array_", async (logDir) => {
+    // Persisted JSON may hold an array; its index keys must not become models.
+    await seedLog(logDir, [{
+      model: OPUS,
+      inputTokens: MAIN_OPUS.inputTokens,
+      outputTokens: MAIN_OPUS.outputTokens,
+      cacheCreationTokens: MAIN_OPUS.cacheCreationTokens,
+      cacheReadTokens: MAIN_OPUS.cacheReadTokens,
+      usageByModel: [asModelUsage(MAIN_OPUS)],
+    }]);
+
+    const summaryResult = await getDailySummary({ logDir });
+    assert(summaryResult.ok);
+    assertEquals(summaryResult.value.tokensByModel, { [OPUS]: MAIN_OPUS });
+  });
+});
+
+Deno.test("credit_tracker - a modelUsage with no tokenUsage writes no token counters (Issue #3616)", async () => {
+  await withLogDir("split_3616_no_tokens_", async (logDir) => {
+    await logInvocation({
+      logDir,
+      workerName: "worker-1",
+      phase: "implementation",
+      repo: "org/repo",
+      model: OPUS,
+      modelUsage: { [OPUS]: asModelUsage(MAIN_OPUS) },
+    });
+
+    const raw = await Deno.readTextFile(logPathFor(logDir));
+    const parsed: Record<string, unknown> = JSON.parse(raw.trim());
+    assertEquals(parsed.usageByModel, undefined);
+    assertEquals("inputTokens" in parsed, false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // claude_runner - the credit log records the sub-agent tokens of a split run
 // ---------------------------------------------------------------------------
