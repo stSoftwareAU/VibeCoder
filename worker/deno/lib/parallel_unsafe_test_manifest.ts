@@ -284,6 +284,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).
   "tests/markdown_logical_units_3356_test.ts",
+  // The flowchart mixed-label scan walks agent-written Markdown a character
+  // at a time; only a growth measurement separates that linear scan from a
+  // backtracking one on hostile opener runs (Issue #3769).
+  "tests/mermaid_validator_growth_3769_test.ts",
 ];
 
 /**

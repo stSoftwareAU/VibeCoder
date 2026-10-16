@@ -40,6 +40,8 @@
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
 
+import { normaliseGhArgs } from "./gh_flag_parser.ts";
+
 /** A single direct `gh issue create` call site found during scanning. */
 export interface IssueCreateRoutingViolation {
   /** Repo-relative path of the offending file. */
@@ -238,8 +240,15 @@ const FIELD_ASSIGNMENT_PATTERN = /^["'`][\w.-]+=/;
 const API_FIELD_FLAG_PATTERN =
   /^(?:-[fF].*|--field(?:=.*)?|--raw-field(?:=.*)?|--input(?:=.*)?)$/;
 
-/** A `gh api` method flag with its value inline: `-XPOST`, `--method=POST`. */
-const API_METHOD_INLINE_PATTERN = /^(?:-X|--method=)(.*)$/;
+/**
+ * A `gh api` long method flag with its value inline: `--method=POST`. The
+ * shorthand spellings (`-XPOST`, `-X=POST`) are expanded to `-X POST` by
+ * `normaliseGhArgs` before this is read.
+ */
+const API_METHOD_INLINE_PATTERN = /^--method=(.*)$/;
+
+/** Stands in for a non-literal argv element while `normaliseGhArgs` runs. */
+const NON_LITERAL_ELEMENT = "\0non-literal";
 
 /** A GraphQL mutation name that creates an issue. */
 const CREATE_ISSUE_MUTATION_PATTERN = /\bcreateIssue\b/;
@@ -623,7 +632,10 @@ function apiArgvCreatesIssue(
   elements: readonly string[],
   fileMentionsCreateIssue: boolean,
 ): boolean {
-  const values = elements.map(literalValue);
+  // pflag spellings (`-X=POST`, `-XPOST`, `-iXPOST`) become `-X POST`.
+  const values = normaliseGhArgs(
+    elements.map((element) => literalValue(element) ?? NON_LITERAL_ELEMENT),
+  ).map((value) => value === NON_LITERAL_ELEMENT ? null : value);
   if (fileMentionsCreateIssue && values.includes("graphql")) return true;
 
   const endpoint = elements.some((element) =>
