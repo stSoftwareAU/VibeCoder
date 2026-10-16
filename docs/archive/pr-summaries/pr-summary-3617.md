@@ -111,5 +111,6 @@ flowchart TD
   - the failed reset, and its error log.
 - Two conditions were removed as redundant because flipping each left the suite green: `line.present &&` in `validateDocsSweep`, and a duplicate `summaries.length === 0` return in `checkMergedSummaryClaims`.
 - Targeted run on the final head: `deno task test:unit tests/merge_summary_claim_check_test.ts tests/summary_claimed_paths_test.ts tests/docs_sweep_gate_test.ts tests/pr_merge_conflict_processor_test.ts tests/prompt_docs_sweep_siblings_3371_test.ts tests/merge_conflict_agent_test.ts tests/repo_loop_quota_stop_test.ts` passed.
+- `./quality.sh < /dev/null` on the head before this summary edit: `Result: PASSED (with skipped checks)`, exit 0 (config integration skipped, as on every local run).
 
 <!-- vibe-branch-outcomes -->
