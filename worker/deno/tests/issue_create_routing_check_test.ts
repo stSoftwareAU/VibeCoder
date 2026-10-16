@@ -203,6 +203,231 @@ Deno.test("issue_create_routing_check - a repo flag before a read verb is not a 
   }
 });
 
+Deno.test("issue_create_routing_check - detects a template-literal repo flag before the verb", () => {
+  const cases: Array<[string, string, number[]]> = [
+    [
+      "--repo=${repo} then create",
+      'gh(["issue", `--repo=${repo}`, "create"]);',
+      [1],
+    ],
+    [
+      "-R${repo} then create",
+      'gh(["issue", `-R${repo}`, "create"]);',
+      [1],
+    ],
+    [
+      "--repo=${repo} then new",
+      'gh(["issue", `--repo=${repo}`, "new"]);',
+      [1],
+    ],
+    ["-R${repo} then new", 'gh(["issue", `-R${repo}`, "new"]);', [1]],
+    [
+      "--repo=${repo} multi-line",
+      ["gh([", '  "issue",', "  `--repo=${repo}`,", '  "create",', "]);"].join(
+        "\n",
+      ),
+      [2],
+    ],
+    [
+      "-R${repo} multi-line",
+      ["gh([", '  "issue",', "  `-R${repo}`,", '  "new",', "]);"].join("\n"),
+      [2],
+    ],
+    [
+      "nested template inside the flag",
+      'gh(["issue", `--repo=${pick(`a,${b}`, 1)}`, "create"]);',
+      [1],
+    ],
+    [
+      "interpolation-free template verb",
+      'gh(["issue", `create`, "--repo", repo]);',
+      [1],
+    ],
+    [
+      "interpolation-free template repo flag",
+      'gh(["issue", `--repo`, repo, `new`]);',
+      [1],
+    ],
+  ];
+  for (const [name, content, expected] of cases) {
+    const lines = scanContentForDirectIssueCreate(
+      content,
+      "worker/deno/lib/case.ts",
+    ).map((v) => v.line);
+    assertEquals(lines, expected, `form: ${name}`);
+  }
+});
+
+Deno.test("issue_create_routing_check - a template-literal repo flag before a read verb is not a create", () => {
+  const lookalikes: Array<[string, string]> = [
+    [
+      "--repo=${repo} then list",
+      'gh(["issue", `--repo=${repo}`, "list"]);',
+    ],
+    ["-R${repo} then view", 'gh(["issue", `-R${repo}`, "view", "1"]);'],
+    [
+      "-R${repo} then list, multi-line",
+      ["gh([", '  "issue",', "  `-R${repo}`,", '  "list",', "]);"].join("\n"),
+    ],
+    // An interpolated verb cannot be read, and is not a repo flag: not flagged.
+    ["interpolated verb", 'gh(["issue", `${verb}`, "create"]);'],
+    ["non-flag template prefix", 'gh(["issue", `x-${repo}`, "create"]);'],
+    ["interpolation-free read verb", 'gh(["issue", `list`]);'],
+  ];
+  for (const [name, content] of lookalikes) {
+    assertEquals(
+      scanContentForDirectIssueCreate(content, "worker/deno/lib/list.ts"),
+      [],
+      `look-alike: ${name}`,
+    );
+  }
+});
+
+Deno.test("issue_create_routing_check - detects issue creation through gh api", () => {
+  const cases: Array<[string, string, number[]]> = [
+    [
+      "REST fields imply POST",
+      'gh(["api", `repos/${repo}/issues`, "-f", "title=x"]);',
+      [1],
+    ],
+    [
+      "REST explicit -X POST",
+      'gh(["api", "-X", "POST", `repos/${repo}/issues`, "-f", "title=x"]);',
+      [1],
+    ],
+    [
+      "REST --method POST, endpoint first",
+      'gh(["api", "repos/o/r/issues", "--method", "POST"]);',
+      [1],
+    ],
+    ["REST -XPOST inline", 'gh(["api", "repos/o/r/issues", "-XPOST"]);', [1]],
+    [
+      "REST --method=post inline, lower case",
+      'gh(["api", "repos/o/r/issues", "--method=post"]);',
+      [1],
+    ],
+    [
+      "REST -F typed field",
+      'gh(["api", "repos/o/r/issues", "-F", "labels[]=bug"]);',
+      [1],
+    ],
+    [
+      "REST --raw-field",
+      'gh(["api", "repos/o/r/issues", "--raw-field", "title=x"]);',
+      [1],
+    ],
+    [
+      "REST --input body file",
+      'gh(["api", "repos/o/r/issues", "--input", "body.json"]);',
+      [1],
+    ],
+    [
+      "REST -ftitle=x combined",
+      'gh(["api", "repos/o/r/issues", "-ftitle=x"]);',
+      [1],
+    ],
+    [
+      "REST leading slash and full URL",
+      'gh(["api", "https://api.github.com/repos/o/r/issues", "-f", "t=x"]);',
+      [1],
+    ],
+    [
+      "REST concatenated endpoint",
+      'gh(["api", "repos/" + repo + "/issues", "-f", "title=x"]);',
+      [1],
+    ],
+    [
+      "REST non-literal method cannot be ruled out",
+      'gh(["api", "-X", method, `repos/${repo}/issues`]);',
+      [1],
+    ],
+    [
+      "REST multi-line argv",
+      [
+        "gh([",
+        '  "api",',
+        '  "-H",',
+        '  "Accept: application/vnd.github+json",',
+        "  `repos/${repo}/issues`,",
+        '  "-f",',
+        '  "title=x",',
+        "]);",
+      ].join("\n"),
+      [2],
+    ],
+    [
+      "GraphQL createIssue in a template query",
+      [
+        "const query = `mutation { createIssue(input: {}) { issue { number } } }`;",
+        'gh(["api", "graphql", "-f", `query=${query}`]);',
+      ].join("\n"),
+      [2],
+    ],
+    [
+      "GraphQL createIssue inline in the argv",
+      'gh(["api", "graphql", "-f", "query=mutation { createIssue(input: {}) { clientMutationId } }"]);',
+      [1],
+    ],
+  ];
+  for (const [name, content, expected] of cases) {
+    const lines = scanContentForDirectIssueCreate(
+      content,
+      "worker/deno/lib/case.ts",
+    ).map((v) => v.line);
+    assertEquals(lines, expected, `form: ${name}`);
+  }
+});
+
+Deno.test("issue_create_routing_check - gh api reads and other writes are not an issue create", () => {
+  const lookalikes: Array<[string, string]> = [
+    ["plain GET list", 'gh(["api", `repos/${repo}/issues`]);'],
+    [
+      "GET list with a query string",
+      'gh(["api", `repos/${repo}/issues?state=open&per_page=100`]);',
+    ],
+    [
+      "GET list with explicit method and fields",
+      'gh(["api", "-X", "GET", `repos/${repo}/issues`, "-f", "state=open"]);',
+    ],
+    [
+      "GET list with --method=GET inline and fields",
+      'gh(["api", "--method=GET", "repos/o/r/issues", "-f", "state=open"]);',
+    ],
+    [
+      "comment on an existing issue",
+      'gh(["api", `repos/${repo}/issues/${n}/comments`, "-f", "body=x"]);',
+    ],
+    [
+      "edit an existing issue",
+      'gh(["api", "-X", "PATCH", `repos/${repo}/issues/${n}`, "-f", "state=closed"]);',
+    ],
+    [
+      "search issues with a field and no explicit method",
+      'gh(["api", "search/issues", "-f", "q=is:open"]);',
+    ],
+    [
+      "search issues",
+      'gh(["api", "-X", "GET", "search/issues", "-f", "q=is:open"]);',
+    ],
+    [
+      "field value that merely ends in /issues",
+      'gh(["api", `repos/${repo}/pulls`, "-f", "body=see /issues"]);',
+    ],
+    [
+      "GraphQL read, file never names createIssue",
+      'gh(["api", "graphql", "-f", `query=${query}`]);',
+    ],
+    ["createIssue name without a graphql call", "const createIssue = () => 1;"],
+  ];
+  for (const [name, content] of lookalikes) {
+    assertEquals(
+      scanContentForDirectIssueCreate(content, "worker/deno/lib/list.ts"),
+      [],
+      `look-alike: ${name}`,
+    );
+  }
+});
+
 Deno.test("issue_create_routing_check - ignores read verbs and other subcommands", () => {
   const lookalikes: Array<[string, string]> = [
     ["issue list (multi-line)", LISTING_ONLY],

@@ -1,6 +1,7 @@
 /**
- * Quality gate check: every direct `gh issue create` argv call site must be
- * on a reasoned allowlist (Issue #3746).
+ * Quality gate check: every direct `gh issue create` argv call site (and every
+ * `gh api` REST or GraphQL issue creation) must be on a reasoned allowlist
+ * (Issue #3746).
  *
  * Every new issue should be filed through the routed filing chokepoint
  * `fileRoutedIssue` in `worker/deno/lib/issue_routing_filing.ts` (Issue
@@ -23,9 +24,18 @@
  * (inline after it, or on a later line within a few lines) is `create` or its
  * gh alias `new`. gh also accepts the persistent `-R`/`--repo` flag between
  * `issue` and the verb, so a `-R <repo>`, `--repo <repo>`, `-R<repo>` or
- * `--repo=<repo>` argument is skipped when looking for the verb. The `"issue"`
- * literal followed by `||` (a comparison, not an argv element) is therefore
- * not a candidate.
+ * `--repo=<repo>` argument is skipped when looking for the verb, whether it is
+ * written as a string literal or as a template literal (`` `--repo=${repo}` ``,
+ * `` `-R${repo}` ``). The `"issue"` literal followed by `||` (a comparison,
+ * not an argv element) is therefore not a candidate.
+ *
+ * The same issue is created by `gh api`, so an `"api",` argv is also a
+ * candidate when it (a) has an endpoint ending in `/issues` and POSTs to it,
+ * either with `-X POST`/`--method POST` or, absent an explicit method, with a
+ * body flag (`-f`, `-F`, `--field`, `--raw-field`, `--input`), as gh then
+ * defaults to POST; or (b) is a `gh api graphql` call in a file that names the
+ * `createIssue` mutation. A plain GET list, `/issues/<n>/comments` and
+ * `search/issues` are not creates.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -34,7 +44,7 @@
 export interface IssueCreateRoutingViolation {
   /** Repo-relative path of the offending file. */
   file: string;
-  /** 1-based line number of the `"issue"` argv element. */
+  /** 1-based line number of the `"issue"` (or `"api"`) argv element. */
   line: number;
   /** Trimmed text of the offending line. */
   text: string;
@@ -193,10 +203,46 @@ const REPO_FLAG_WITH_VALUE_PATTERN = /^(?:-R|--repo)$/;
 const REPO_FLAG_INLINE_PATTERN = /^(?:-R.|--repo=)/;
 
 /** Matches an `"issue",` / `'issue',` argv element. Group 1 is the quote. */
-const ISSUE_ELEMENT_PATTERN = /(["'])issue\1\s*,/g;
+const ISSUE_ELEMENT_PATTERN = /(["'`])issue\1\s*,/g;
 
-/** Matches a string literal that opens an argv entry, capturing its text. */
-const LEADING_LITERAL_PATTERN = /^\s*["']([^"'\n]*)["']/;
+/** Matches an `"api",` / `'api',` argv element. Group 1 is the quote. */
+const API_ELEMENT_PATTERN = /(["'`])api\1\s*,/g;
+
+/** Matches a quoted string literal that opens an argv entry, capturing its text. */
+const LEADING_LITERAL_PATTERN = /^["']([^"'\n]*)["']/;
+
+/**
+ * The static text before the first `${` of a template-literal element that is
+ * an inline repo flag: `` `-R${repo}` `` or `` `--repo=${repo}` ``.
+ */
+const INTERPOLATED_REPO_FLAG_PATTERN = /^(?:-R|--repo=)/;
+
+/** How many lines below an `"api",` element the scanner reads its argv. */
+const API_ARGV_LOOKAHEAD_LINES = 40;
+
+/** The most argv elements read after `"api",` — a ceiling, not a target. */
+const API_ARGV_MAX_ELEMENTS = 60;
+
+/**
+ * A REST endpoint that creates an issue when posted to: it ends in `/issues`,
+ * with an optional trailing slash or query string. The quote closing the
+ * literal is stripped first, so a concatenation ending in `"/issues"` matches.
+ * `search/issues` is a search, never a create.
+ */
+const ISSUES_ENDPOINT_PATTERN = /(?<!search)\/issues\/?(?:\?[^"'`]*)?$/;
+
+/** A `key=value` field argument: never an endpoint, whatever it ends with. */
+const FIELD_ASSIGNMENT_PATTERN = /^["'`][\w.-]+=/;
+
+/** A `gh api` flag that sends a request body, so gh defaults to POST. */
+const API_FIELD_FLAG_PATTERN =
+  /^(?:-[fF].*|--field(?:=.*)?|--raw-field(?:=.*)?|--input(?:=.*)?)$/;
+
+/** A `gh api` method flag with its value inline: `-XPOST`, `--method=POST`. */
+const API_METHOD_INLINE_PATTERN = /^(?:-X|--method=)(.*)$/;
+
+/** A GraphQL mutation name that creates an issue. */
+const CREATE_ISSUE_MUTATION_PATTERN = /\bcreateIssue\b/;
 
 /**
  * Keywords after which a `/` opens a regular-expression literal rather than
@@ -354,6 +400,52 @@ function stripComments(source: string): string {
 }
 
 /**
+ * Index just past the template literal whose body starts at `from` (the index
+ * after the opening backtick). Code inside a `${…}` interpolation is skipped
+ * with its own strings and templates, so a nested backtick does not end the
+ * outer template early. Returns `text.length` when the template is unterminated.
+ */
+function indexAfterTemplate(text: string, from: number): number {
+  let i = from;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === "\\") {
+      i += 2;
+    } else if (c === "`") {
+      return i + 1;
+    } else if (c === "$" && text[i + 1] === "{") {
+      i = indexAfterInterpolation(text, i + 2);
+    } else {
+      i++;
+    }
+  }
+  return text.length;
+}
+
+/** Index just past the `}` closing an interpolation whose code starts at `from`. */
+function indexAfterInterpolation(text: string, from: number): number {
+  let depth = 1;
+  let i = from;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === "`") {
+      i = indexAfterTemplate(text, i + 1);
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      i++;
+      while (i < text.length && text[i] !== c) i += text[i] === "\\" ? 2 : 1;
+    } else if (c === "{") {
+      depth++;
+    } else if (c === "}" && --depth === 0) {
+      return i + 1;
+    }
+    i++;
+  }
+  return text.length;
+}
+
+/**
  * Index just past the first top-level comma at or after `from`, skipping
  * string, template and bracketed content. Returns `text.length` when the
  * argv array ends first, so there is no further element.
@@ -363,7 +455,9 @@ function indexAfterElement(text: string, from: number): number {
   let i = from;
   while (i < text.length) {
     const c = text[i];
-    if (c === '"' || c === "'" || c === "`") {
+    if (c === "`") {
+      i = indexAfterTemplate(text, i + 1) - 1;
+    } else if (c === '"' || c === "'") {
       i++;
       while (i < text.length && text[i] !== c) i += text[i] === "\\" ? 2 : 1;
     } else if (c === "(" || c === "[" || c === "{") {
@@ -379,6 +473,41 @@ function indexAfterElement(text: string, from: number): number {
   return text.length;
 }
 
+/** The leading argv element of some text: its static text and where it ends. */
+interface LeadingElement {
+  /** The literal's text; for an interpolated template, the text before `${`. */
+  value: string;
+  /** True for a template literal holding a `${…}` interpolation. */
+  interpolated: boolean;
+  /** Index just past the element's closing quote. */
+  end: number;
+}
+
+/**
+ * Read the string or template literal that opens `text` at or after `from`.
+ * Returns `null` when the next element is not a literal (an identifier, a
+ * spread, a call).
+ */
+function leadingElement(text: string, from: number): LeadingElement | null {
+  let start = from;
+  while (start < text.length && /\s/.test(text[start] ?? "")) start++;
+  if (text[start] === "`") {
+    const end = indexAfterTemplate(text, start + 1);
+    const body = text.slice(start + 1, end - 1);
+    const interpolation = body.indexOf("${");
+    return interpolation === -1
+      ? { value: body, interpolated: false, end }
+      : { value: body.slice(0, interpolation), interpolated: true, end };
+  }
+  const literal = LEADING_LITERAL_PATTERN.exec(text.slice(start));
+  if (literal === null) return null;
+  return {
+    value: literal[1] ?? "",
+    interpolated: false,
+    end: start + literal[0].length,
+  };
+}
+
 /**
  * Resolve the verb that follows an `"issue",` element.
  *
@@ -386,7 +515,9 @@ function indexAfterElement(text: string, from: number): number {
  * inline form, `["issue", "create", …]`), otherwise the literal that opens a
  * later line within {@link VERB_LOOKAHEAD_LINES}. A `-R`/`--repo` flag (and
  * its value element) between `issue` and the verb is skipped, as gh accepts
- * it there. Returns `null` when the next element is not a string literal.
+ * it there, including a template-literal flag such as `` `--repo=${repo}` ``
+ * or `` `-R${repo}` ``. An interpolation-free template literal reads as the
+ * string it holds. Returns `null` when the next element is not a literal.
  *
  * @param lines - Comment-stripped source lines.
  * @param index - Zero-based index of the line holding the `"issue",` element.
@@ -402,19 +533,123 @@ function verbAfterIssueElement(
   let pos = 0;
   // A repo flag is at most one flag, so two skips is a generous ceiling.
   for (let skipped = 0; skipped < 3; skipped++) {
-    const literal = LEADING_LITERAL_PATTERN.exec(text.slice(pos));
-    if (literal === null) return null;
-    const value = literal[1] ?? "";
-    const afterLiteral = pos + literal[0].length;
-    if (REPO_FLAG_WITH_VALUE_PATTERN.test(value)) {
-      pos = indexAfterElement(text, indexAfterElement(text, afterLiteral));
+    const element = leadingElement(text, pos);
+    if (element === null) return null;
+    const { value, interpolated, end } = element;
+    if (interpolated) {
+      // Only an inline repo flag has a static prefix we can read; a verb
+      // built by interpolation is unknowable, so it is not a candidate.
+      if (!INTERPOLATED_REPO_FLAG_PATTERN.test(value)) return null;
+      pos = indexAfterElement(text, end);
+    } else if (REPO_FLAG_WITH_VALUE_PATTERN.test(value)) {
+      pos = indexAfterElement(text, indexAfterElement(text, end));
     } else if (REPO_FLAG_INLINE_PATTERN.test(value)) {
-      pos = indexAfterElement(text, afterLiteral);
+      pos = indexAfterElement(text, end);
     } else {
       return value;
     }
   }
   return null;
+}
+
+/**
+ * Split the argv array that starts at `text` (just after its `"api",`
+ * element) into raw element texts, stopping at the array's closing bracket.
+ */
+function splitArgvElements(text: string): string[] {
+  const elements: string[] = [];
+  let pos = 0;
+  while (pos < text.length && elements.length < API_ARGV_MAX_ELEMENTS) {
+    const next = indexAfterElement(text, pos);
+    const closed = text[next - 1] !== ",";
+    const element = text.slice(pos, closed ? next : next - 1).trim();
+    // A closing bracket may sit inside the last segment: cut it off there.
+    const cut = closed ? elementBeforeClose(element) : element;
+    if (cut !== "") elements.push(cut);
+    if (closed) break;
+    pos = next;
+  }
+  return elements;
+}
+
+/**
+ * The last element's text up to the first top-level `]` or `)` — the end of
+ * the argv array — skipping strings, templates and nested brackets.
+ */
+function elementBeforeClose(segment: string): string {
+  let depth = 0;
+  let i = 0;
+  while (i < segment.length) {
+    const c = segment[i];
+    if (c === "`") {
+      i = indexAfterTemplate(segment, i + 1);
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      i++;
+      while (i < segment.length && segment[i] !== c) {
+        i += segment[i] === "\\" ? 2 : 1;
+      }
+    } else if (c === "(" || c === "[" || c === "{") {
+      depth++;
+    } else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) return segment.slice(0, i).trim();
+      depth--;
+    }
+    i++;
+  }
+  return segment;
+}
+
+/** The text inside a fully quoted element, or `null` for a non-literal one. */
+function literalValue(element: string): string | null {
+  const match = /^(["'`])([\s\S]*)\1$/.exec(element);
+  return match === null ? null : match[2] ?? "";
+}
+
+/**
+ * Whether a `gh api` argv creates an issue: a POST (explicit, or implied by a
+ * body flag) to an endpoint ending in `/issues`, or any `gh api graphql` argv
+ * in a file that names the `createIssue` mutation.
+ *
+ * gh defaults to POST when a field flag is given, and an explicit method wins
+ * over that default (`-X GET` with `-f` sends query parameters). A method that
+ * is not a literal cannot be ruled out, so it counts as a POST.
+ *
+ * @param elements - Raw argv element texts after the `"api"` element.
+ * @param fileMentionsCreateIssue - Whether the file's code names `createIssue`.
+ */
+function apiArgvCreatesIssue(
+  elements: readonly string[],
+  fileMentionsCreateIssue: boolean,
+): boolean {
+  const values = elements.map(literalValue);
+  if (fileMentionsCreateIssue && values.includes("graphql")) return true;
+
+  const endpoint = elements.some((element) =>
+    !FIELD_ASSIGNMENT_PATTERN.test(element) &&
+    ISSUES_ENDPOINT_PATTERN.test(element.replace(/["'`]\s*$/, ""))
+  );
+  if (!endpoint) return false;
+
+  let method: string | null | undefined;
+  let hasField = false;
+  values.forEach((value, i) => {
+    if (value === null) return;
+    if (value === "-X" || value === "--method") {
+      const methodValue = values[i + 1];
+      method = methodValue === undefined || methodValue === null
+        ? null
+        : methodValue.toUpperCase();
+      return;
+    }
+    const inline = API_METHOD_INLINE_PATTERN.exec(value);
+    if (inline !== null) method = (inline[1] ?? "").toUpperCase();
+    else if (API_FIELD_FLAG_PATTERN.test(value)) hasField = true;
+  });
+
+  if (method === undefined) return hasField;
+  return method === null || method === "POST";
 }
 
 /**
@@ -434,15 +669,33 @@ export function scanContentForDirectIssueCreate(
   const rawLines = content.split("\n");
   const lines = stripComments(content).split("\n");
   const violations: IssueCreateRoutingViolation[] = [];
+  const fileMentionsCreateIssue = CREATE_ISSUE_MUTATION_PATTERN.test(
+    lines.join("\n"),
+  );
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
-    const isCreate = [...line.matchAll(ISSUE_ELEMENT_PATTERN)].some((match) => {
-      const rest = line.slice((match.index ?? 0) + match[0].length);
-      const verb = verbAfterIssueElement(lines, i, rest);
-      return verb !== null && ISSUE_CREATE_VERBS.has(verb);
-    });
-    if (!isCreate) continue;
+    const isCliCreate = [...line.matchAll(ISSUE_ELEMENT_PATTERN)].some(
+      (match) => {
+        const rest = line.slice((match.index ?? 0) + match[0].length);
+        const verb = verbAfterIssueElement(lines, i, rest);
+        return verb !== null && ISSUE_CREATE_VERBS.has(verb);
+      },
+    );
+    const isApiCreate = !isCliCreate &&
+      [...line.matchAll(API_ELEMENT_PATTERN)].some((match) => {
+        const rest = line.slice((match.index ?? 0) + match[0].length);
+        const text = [
+          rest,
+          ...lines.slice(i + 1, i + 1 + API_ARGV_LOOKAHEAD_LINES),
+        ]
+          .join("\n");
+        return apiArgvCreatesIssue(
+          splitArgvElements(text),
+          fileMentionsCreateIssue,
+        );
+      });
+    if (!isCliCreate && !isApiCreate) continue;
     violations.push({
       file: repoRelPath,
       line: i + 1,
@@ -588,7 +841,7 @@ export function formatIssueCreateRoutingViolations(
 ): string {
   return violations
     .map((v) =>
-      `${v.file}:${v.line}: direct \`gh issue create\` call site is not on the routing allowlist — route it through fileRoutedIssue (issue_routing_filing.ts) or add an ISSUE_CREATE_ROUTING_ALLOWLIST entry with a one-line reason: ${v.text}`
+      `${v.file}:${v.line}: direct issue-create call site (\`gh issue create\` or \`gh api\`) is not on the routing allowlist — route it through fileRoutedIssue (issue_routing_filing.ts) or add an ISSUE_CREATE_ROUTING_ALLOWLIST entry with a one-line reason: ${v.text}`
     )
     .join("\n");
 }
