@@ -672,10 +672,11 @@ export async function createGitHubIssuesWithPartialFailures(
   const failures: Array<{ title: string; error: string }> = [];
   const routed: RoutedImprovement[] = [];
   // Loaded lazily: a static import closes the cycle github.ts ->
-  // label_operations.ts -> needs_human_escalation.ts ->
-  // repo_fast_failure_issue.ts -> issue_routing_classifier.ts ->
-  // issue_routing_filing.ts -> github.ts. That leaves the classifier's marker
-  // constants uninitialised when a repo_fast_failure module loads first.
+  // issue_routing_filing.ts -> issue_routing_classifier.ts ->
+  // repo_fast_failure_issue.ts -> needs_human_escalation.ts ->
+  // label_operations.ts -> github.ts. A static import would leave the
+  // classifier's marker constants uninitialised when a repo_fast_failure
+  // module loads first.
   const { fileRoutedIssue, RoutedIssueFilingError } = await import(
     "./issue_routing_filing.ts"
   );

@@ -23,6 +23,7 @@ import {
 } from "../lib/github.ts";
 import { validateSuggestImprovementsArgs } from "../lib/command_args.ts";
 import { customLabelPromptLabels } from "../lib/custom_label_prompts_config.ts";
+import { plural } from "../lib/codebase_map.ts";
 
 /**
  * Represents a single improvement suggestion.
@@ -190,11 +191,6 @@ export function formatImprovementAsIssueBody(improvement: Improvement): string {
 /** The worker's own repository; worker improvements route here (Issue #3745). */
 const WORKER_REPO = "stSoftwareAU/VibeCoder";
 
-/** `n` and a noun, pluralised for any count other than one. */
-function countOf(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
-
 /** Typed data returned by the suggest-improvements command (Issue #223). */
 export interface SuggestImprovementsData {
   improvements: Improvement[];
@@ -274,12 +270,12 @@ export function createSuggestImprovementsCommand(
       const reused = count("reused");
       const summary = dryRun
         ? `Dry run: ${
-          countOf(count("would-create"), "improvement issue")
+          plural(count("would-create"), "improvement issue")
         } would be created and ${
-          countOf(count("would-reuse"), "existing issue")
+          plural(count("would-reuse"), "existing issue")
         } reused, routed from ${repo}`
-        : `Created ${countOf(created, "improvement issue")} and reused ${
-          countOf(reused, "existing issue")
+        : `Created ${plural(created, "improvement issue")} and reused ${
+          plural(reused, "existing issue")
         }, routed from ${repo}`;
       const failureMsg = result.failures.length > 0
         ? ` (${result.failures.length} failed)`

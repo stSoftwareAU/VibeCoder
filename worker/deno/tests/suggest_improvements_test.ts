@@ -7,7 +7,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import type { WorkerConfig } from "../types.ts";
+import type { Logger, WorkerConfig } from "../types.ts";
 import type {
   Improvement,
   SuggestImprovementsData,
@@ -19,6 +19,7 @@ import {
   suggestImprovementsCommand,
 } from "../commands/suggest_improvements.ts";
 import { createGitHubIssuesWithPartialFailures } from "../lib/github.ts";
+import { createLogger } from "../lib/logger.ts";
 import {
   buildDefaultWorkerConfig,
   RESERVED_LABELS,
@@ -458,6 +459,73 @@ Deno.test("suggest-improvements - a classify failure is reported with its step a
   assertStringIncludes(result.failures[0]!.error, 'step "classify"');
   assertEquals(result.failures[0]!.error.includes("(routing:"), false);
   assertEquals(gh.calls, []);
+});
+
+Deno.test("suggest-improvements - an error thrown outside the router is reported with its own message (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const result = await createGitHubIssuesWithPartialFailures(
+    [
+      {
+        title: "Broken labels",
+        description: WORKER_NOTE,
+        category: "testing",
+        labels: undefined as unknown as string[],
+      },
+      {
+        title: "Worker two",
+        description: WORKER_NOTE,
+        category: "testing",
+        labels: ["enhancement"],
+      },
+    ],
+    VIBE,
+    {
+      routingContext: CTX,
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    },
+  );
+
+  assertEquals(result.failures.length, 1);
+  assertEquals(result.failures[0]!.title, "Broken labels");
+  const error = result.failures[0]!.error;
+  // The TypeError from iterating `undefined` in the reserved-label pre-filter.
+  assertStringIncludes(error, "iterable");
+  assertEquals(error.includes("Routed issue filing failed"), false);
+  assertEquals(error.includes("(routing: "), false);
+  assertEquals(result.createdIssues.length, 1);
+});
+
+Deno.test("suggest-improvements - a non-Error thrown outside the router is reported as text (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const logger: Logger = {
+    ...createLogger({ write: () => {} }),
+    warn: () => {
+      // deno-lint-ignore no-throw-literal
+      throw "logger down";
+    },
+  };
+  const result = await createGitHubIssuesWithPartialFailures(
+    [{
+      title: "Worker one",
+      description: WORKER_NOTE,
+      category: "testing",
+      labels: ["enhancement", "work-on"],
+    }],
+    VIBE,
+    {
+      routingContext: CTX,
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+      logger,
+    },
+  );
+
+  assertEquals(result.failures.length, 1);
+  assertEquals(result.failures[0]!.error, "logger down");
+  assertEquals(gh.calls.filter(isWriteCall), []);
 });
 
 Deno.test("suggest-improvements - an existing open issue with the same title is reused, not refiled (Issue #3745)", async () => {
