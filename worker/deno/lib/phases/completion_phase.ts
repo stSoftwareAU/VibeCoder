@@ -1412,6 +1412,10 @@ export async function postWorkOnRunStats(
     ...(state.qualityGateOutcome
       ? { qualityGate: state.qualityGateOutcome }
       : {}),
+    // Each gate stage's outcome, so a skipped stage is visible (Issue #3726).
+    ...(state.qualityGateStages
+      ? { qualityGateStages: state.qualityGateStages }
+      : {}),
     // …and so does its RTK status, `off` included (Issue #2385).
     ...(state.rtkOutput ? { rtk: state.rtkOutput } : {}),
     ...(subAgentDegradation ? { subAgentDegradation } : {}),

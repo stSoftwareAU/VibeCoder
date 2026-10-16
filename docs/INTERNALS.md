@@ -3581,8 +3581,14 @@ label, the globally oldest issue is selected.
 ### 📐 Mermaid diagram validation
 
 [mermaid_validator.ts](../worker/deno/lib/mermaid_validator.ts) (migrated to
-Deno TypeScript) validates Mermaid gitGraph syntax in documentation files,
-ensuring diagrams are well-formed before they are committed.
+Deno TypeScript) validates Mermaid blocks in documentation files, ensuring
+diagrams are well-formed before they are committed. gitGraph and
+sequenceDiagram blocks get dedicated checks. Other known diagram types get
+generic checks: a known declaration line, a non-empty body, and balanced
+`{}`, `[]` and `()` outside double-quoted labels and `%%` comments. In
+flowchart and graph blocks, a node label that mixes unquoted text with a
+quoted string (for example `D[a, "b"]`) is refused (Issue #3769). The fix is
+to quote the whole label, or to write the inner quotes as `#quot;`.
 
 ### 🔬 Benchmark audit
 

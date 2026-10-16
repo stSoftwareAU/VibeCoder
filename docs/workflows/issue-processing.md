@@ -2324,7 +2324,12 @@ plus the two `quality.sh` hygiene rules — and every one of them decides from t
 file text alone: no network, no run history, no repository settings. On the
 branch diff they cost milliseconds. Any finding blocks the PR, and the failure
 names the check id, the file, the line and the detail, so the next attempt fixes
-the file rather than guessing.
+the file rather than guessing. The gate honours no in-file
+`best-practice-ignore` marker — it reads the branch's files without blame, and
+no production path configures a verified commit identity, so every marker is
+rejected — and prose in the PR summary does not clear it either: a finding that
+genuinely does not apply needs a human to review it, or a fix to the scanner
+(Issue #3683).
 
 **Only what the run touched is in scope.** A repository whose *pre-existing*
 workflow files already carry findings is the idle-task audit's business, not this
