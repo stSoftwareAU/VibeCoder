@@ -895,15 +895,22 @@ one is broken:
 
 - **Every stated criterion gets an entry.** A criterion you did not touch is
   `missing`, not omitted. Write `<criterion>` in the issue's own words — the
-  degraded-run guard matches each entry to its criterion by those words, not
-  by position. A paraphrased entry leaves its criterion unassessed, and a
+  worker's follow-up guard matches each entry to its criterion by those words,
+  not by position. A paraphrased entry leaves its criterion unassessed, and a
   paraphrased `partial` or `missing` entry is still filed as a shortfall
   under its own wording.
 - **`met` and `partial` must name the evidence** — the file, the test, or the
   test identifier that demonstrates it. "Implemented" with nothing to point at
   is not evidence.
 - **Every `partial` and `missing` carries a one-line reason.** An unexplained gap
-  is a failure to surface, not a pass.
+  is a failure to surface, not a pass. The worker files (or reuses) one
+  `idle-task` follow-up naming each `partial` or `missing` entry and opens the
+  PR body with a section linking it, so the reason should say what is left to
+  do (Issue #3506). The exception, for a healthy run only (a degraded run still
+  files one): on an issue that is itself a partial-delivery follow-up, the worker
+  files no nested follow-up. It labels the issue `needs-human`, opens the PR body
+  with a "handed to a human" section that links no follow-up, and the PR says
+  `Part of` rather than closing the issue.
 - **Name your scope creep.** Add an `unrequested` entry for any change in the
   diff that is not traceable to the issue, carrying **both**
   `reviewer: unrequested` and a one-line `reason:` — copy the `unrequested` line

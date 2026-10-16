@@ -2527,6 +2527,14 @@ claim at two points, with one decision function:
   the milestone branch — and the run takes the stale-claim exit, naming the
   agent's branch; an open issue keeps the #4286 failure.
 
+A `pre-pr` stale verdict also retracts a partial-delivery follow-up that the
+partial-delivery guard newly filed earlier in the same run, for a degraded or a
+healthy run alike (PR #3676 review): that follow-up names a PR which will not be
+raised, so `abortStaleClaim` tries to close it as "not planned". The close is
+best-effort: if it fails, a warning is logged and the follow-up stays open. A
+reused follow-up is never closed. See
+[issue-processing.md](workflows/issue-processing.md).
+
 Two rules, most decisive first: **the issue closed** during the cycle; and **a
 merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
 so there is no second notion of "already done" — a merged PR on a _different_

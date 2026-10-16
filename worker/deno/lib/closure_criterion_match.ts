@@ -60,7 +60,7 @@ export function subjectOf(entry: ClosureEntry): string {
  * jumps straight to `reviewer:` or `reason:` has none, so the reason text
  * is the name a follow-up can still cite.
  */
-function gapSubject(entry: ClosureEntry): string {
+export function gapSubject(entry: ClosureEntry): string {
   const subject = subjectOf(entry);
   if (subject.length > 0) return subject;
   const reason = entry.text.match(/\breason\s*[:\-—]\s*([\s\S]+)$/i);
