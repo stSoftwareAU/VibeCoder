@@ -617,9 +617,14 @@ checkout. The agent is told to reproduce each blocking finding, fix it in the
 code, its tests or the summary and doc text, run the tests that cover the
 change, commit and push, and correct `.pr_response_message` so it does not
 claim a finding the verifier marks partly or not fixed. The verifier then runs
-once more on the new head. A recovery turn that changed the head is followed by
-a **second commit-and-push** before the push is verified; if that push fails,
-the round does not treat the push as confirmed.
+once more on the new head, after reading the PR's changed files and the PR
+summary again, so the re-check sees the summary the recovery turn left; if that
+read fails, the re-check is reported as not run. After the gate returns, a
+recovery turn that completed — it did not time out, end with an error, or fail
+to launch — is followed by a **second commit-and-push** before the push is
+verified; if that push fails, the round does not treat the push as confirmed. A
+recovery turn that timed out or ended with an error gets no second
+commit-and-push.
 
 Results and what reaches the reply: a clean first check writes nothing, and a
 recovered round (blocked, then clear on the re-check) writes nothing either. A
@@ -651,10 +656,12 @@ flowchart TD
     D -- yes --> E{"Blocked?"}
     E -- no --> K["Clean: nothing written"]
     E -- yes --> R["One full-tools recovery turn"]
-    R --> P["Second commit-and-push"]
-    P --> F["Verifier re-check"]
+    R --> F["Re-read PR files and summary,<br/>verifier re-check"]
     F -- "passes" --> Q["Recovered: nothing written"]
     F -- "still blocked or not run" --> S["Reply: unresolved findings"]
+    Q --> P["Second commit-and-push,<br/>if the recovery turn completed"]
+    S --> P
+    P --> V["Push verification and reply"]
 ```
 
 #### Verify a claim about another component before rewriting it (Issue #3090)

@@ -123,6 +123,8 @@ interface ScenarioOptions {
   headMoved?: boolean;
   /** Index (0-based) of the commit-and-push call that fails, if any. */
   failCommitCall?: number;
+  /** Extra processor settings, e.g. the timeout and retry budget. */
+  processorOverrides?: Partial<PrFeedbackProcessorDeps>;
 }
 
 interface ScenarioResult {
@@ -192,6 +194,7 @@ async function runScenario(options: ScenarioOptions): Promise<ScenarioResult> {
       },
       qualityInstructions: "",
       reviewFixVerifierFn: options.gate,
+      ...options.processorOverrides,
     };
 
     const result = await processPrFeedback(
@@ -239,6 +242,20 @@ Deno.test("review-fix verifier wiring (#3784): a pushed change to a reviewer's c
   assertEquals(calls[0]!.prNumber, 77);
   assertEquals(calls[0]!.repo, "org/repo");
   assertEquals(calls[0]!.branchName, "issue-77-feedback");
+});
+
+Deno.test("review-fix verifier wiring (#3784): the gate gets the processor's timeout and retry budget", async () => {
+  const calls: ReviewFixVerifierGateInput[] = [];
+  const { result } = await runScenario({
+    gate: makeGateStub(calls, CLEAN_OUTCOME),
+    commitResult: PUSHED,
+    processorOverrides: { claudeTimeout: 4321, maxRateLimitRetries: 7 },
+  });
+
+  assertEquals(result.ok, true);
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]!.timeoutSeconds, 4321);
+  assertEquals(calls[0]!.maxRetries, 7);
 });
 
 // (2) ---------------------------------------------------------------------

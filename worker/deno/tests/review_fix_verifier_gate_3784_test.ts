@@ -139,6 +139,8 @@ interface RunOptions {
   existingReply?: string;
   /** Skip writing the PR summary into the checkout. */
   omitSummaryFile?: boolean;
+  /** Summary text the recovery turn writes into the checkout. */
+  recoveryWritesSummary?: string;
 }
 
 interface RunResult {
@@ -187,9 +189,15 @@ async function runGate(options: RunOptions): Promise<RunResult> {
         }
         return Promise.resolve(next);
       },
-      runRecovery: (prompt: string) => {
+      runRecovery: async (prompt: string) => {
         recoveryPrompts.push(prompt);
-        return Promise.resolve(options.recovery ?? { ok: true });
+        if (options.recoveryWritesSummary !== undefined) {
+          await Deno.writeTextFile(
+            `${dir}/${PR_SUMMARY}`,
+            options.recoveryWritesSummary,
+          );
+        }
+        return options.recovery ?? { ok: true };
       },
       logger,
     };
@@ -346,6 +354,62 @@ Deno.test("review-fix verifier gate (#3784): blocked then the re-check cannot ru
     "The re-check after that recovery attempt could not run",
   );
   assertStringIncludes(reply, "(verifier timed out)");
+});
+
+Deno.test("review-fix verifier gate (#3784): the re-check reads the PR summary and files the recovery turn left", async () => {
+  const fixedSummary =
+    "## Summary\n\nThe retry counter resets on success and on retry.\n";
+  let prViews = 0;
+  const run = await runGate({
+    results: [BLOCKED, CLEAN],
+    recoveryWritesSummary: fixedSummary,
+    gh: (args: string[]) => {
+      if (args[0] === "pr" && args[1] === "view" && ++prViews === 2) {
+        return Promise.resolve(JSON.stringify({
+          baseRefName: "main",
+          title: "PR title",
+          body: "PR body",
+          files: [...PR_FILES, { path: "lib/a_test.ts" }],
+        }));
+      }
+      return defaultGh(args);
+    },
+  });
+
+  assertEquals(run.outcome, { status: "recovered", recoveryRan: true });
+  assertEquals(run.verifierInputs.length, 2);
+  assertEquals(run.verifierInputs[0]!.summaryContent, SUMMARY_TEXT);
+  assertEquals(run.verifierInputs[1]!.summaryContent, fixedSummary);
+  assertEquals(run.verifierInputs[1]!.changedFiles, [
+    "lib/a.ts",
+    PR_SUMMARY,
+    "lib/a_test.ts",
+  ]);
+  assertEquals(run.verifierInputs[1]!.round, run.verifierInputs[0]!.round);
+});
+
+Deno.test("review-fix verifier gate (#3784): a PR read that fails before the re-check is reported as a re-check that could not run", async () => {
+  let prViews = 0;
+  const run = await runGate({
+    results: [BLOCKED],
+    gh: (args: string[]) => {
+      if (args[0] === "pr" && args[1] === "view" && ++prViews === 2) {
+        return Promise.reject(new Error("gh: HTTP 502"));
+      }
+      return defaultGh(args);
+    },
+  });
+
+  assertEquals(run.outcome.status, "reported");
+  if (run.outcome.status !== "reported") throw new Error("unreachable");
+  assertEquals(run.outcome.recoveryRan, true);
+  assertEquals(run.verifierInputs.length, 1);
+  const reply = run.reply!;
+  assertStringIncludes(
+    reply,
+    "The re-check after that recovery attempt could not run",
+  );
+  assertStringIncludes(reply, "gh: HTTP 502");
 });
 
 // (f) ---------------------------------------------------------------------

@@ -25,6 +25,7 @@ import {
   runPrePrVerifier,
   type VerifierRound,
 } from "../lib/pre_pr_verifier.ts";
+import { createMockDeps } from "../lib/issue_worker_wiring.ts";
 import { gitOk } from "./support/git_repo_fixture.ts";
 import { makeRecordingLogger } from "./support/fake_claim_hub.ts";
 
@@ -501,4 +502,14 @@ Deno.test("runPrePrVerifier review-fix: the verifier runs under phase pr_feedbac
   } finally {
     await f.cleanup();
   }
+});
+
+Deno.test("createMockDeps: the unscripted verifier reply owes no earlier verdict", async () => {
+  const result = await createMockDeps().claude.runPrePrVerifier(
+    {} as PrePrVerifierInput,
+  );
+
+  assertEquals(result.status, "checked");
+  if (result.status !== "checked") throw new Error("unreachable");
+  assertEquals(result.review.earlierFindings, []);
 });

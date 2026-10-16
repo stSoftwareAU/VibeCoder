@@ -28,7 +28,7 @@
  *     D -- yes --> E{"Blocked?<br/>(earlier finding unresolved)"}
  *     E -- no --> K["clean"]
  *     E -- yes --> R["One recovery turn<br/>(full tools)"]
- *     R --> F["Verifier re-run<br/>on the new head"]
+ *     R --> F["Re-read PR files and summary,<br/>verifier re-run on the new head"]
  *     F --> G{"Result?"}
  *     G -- not blocked --> H["recovered"]
  *     G -- blocked --> I["reported —<br/>reply lists findings"]
@@ -397,6 +397,77 @@ async function linkedIssue(
   }
 }
 
+/** The head-dependent verifier fields: the PR's files and its summary text. */
+type RoundHeadFields = Pick<
+  PrePrVerifierInput,
+  "baseRef" | "summaryPath" | "summaryContent" | "changedFiles"
+>;
+
+/**
+ * Read the PR's base, files and summary text (Issue #3784). Run before the
+ * first check and again before the re-check, so a recovery turn's summary
+ * edit is what the re-check reads.
+ */
+async function readRoundHead(
+  input: ReviewFixVerifierGateInput,
+  deps: ReviewFixVerifierGateDeps,
+): Promise<
+  | { ok: true; pr: PrDetails; fields: RoundHeadFields }
+  | { ok: false; reason: string }
+> {
+  let pr: PrDetails;
+  try {
+    pr = parsePrDetails(
+      await deps.runGh([
+        "pr",
+        "view",
+        String(input.prNumber),
+        "--repo",
+        input.repo,
+        "--json",
+        "baseRefName,title,body,files",
+      ]),
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not read PR #${input.prNumber}: ${errorMessage(err)}`,
+    };
+  }
+
+  const summaryPath = pr.files.find((path) => isPrSummaryPath(path));
+  if (summaryPath === undefined) {
+    return {
+      ok: false,
+      reason:
+        "the PR carries no PR summary file, so the verifier has no PR body to read",
+    };
+  }
+  let summaryContent: string;
+  try {
+    summaryContent = await Deno.readTextFile(
+      `${input.repoPath}/${summaryPath}`,
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `could not read the PR summary ${summaryPath}: ${
+        errorMessage(err)
+      }`,
+    };
+  }
+  return {
+    ok: true,
+    pr,
+    fields: {
+      baseRef: `origin/${pr.baseRef}`,
+      summaryPath,
+      summaryContent,
+      changedFiles: pr.files,
+    },
+  };
+}
+
 /** The gate's body, run inside {@link runReviewFixVerifierGate}'s guard. */
 async function runGate(
   input: ReviewFixVerifierGateInput,
@@ -418,50 +489,11 @@ async function runGate(
     return { status: "skipped", reason };
   }
 
-  let pr: PrDetails;
-  try {
-    pr = parsePrDetails(
-      await deps.runGh([
-        "pr",
-        "view",
-        String(prNumber),
-        "--repo",
-        repo,
-        "--json",
-        "baseRefName,title,body,files",
-      ]),
-    );
-  } catch (err) {
-    return notChecked(
-      input,
-      deps,
-      `could not read PR #${prNumber}: ${errorMessage(err)}`,
-      state.recoveryRan,
-    );
+  const head = await readRoundHead(input, deps);
+  if (!head.ok) {
+    return notChecked(input, deps, head.reason, state.recoveryRan);
   }
-
-  const issue = await linkedIssue(input, deps, pr);
-
-  const summaryPath = pr.files.find((path) => isPrSummaryPath(path));
-  if (summaryPath === undefined) {
-    return notChecked(
-      input,
-      deps,
-      "the PR carries no PR summary file, so the verifier has no PR body to read",
-      state.recoveryRan,
-    );
-  }
-  let summaryContent: string;
-  try {
-    summaryContent = await Deno.readTextFile(`${repoPath}/${summaryPath}`);
-  } catch (err) {
-    return notChecked(
-      input,
-      deps,
-      `could not read the PR summary ${summaryPath}: ${errorMessage(err)}`,
-      state.recoveryRan,
-    );
-  }
+  const issue = await linkedIssue(input, deps, head.pr);
 
   const verifierInput: PrePrVerifierInput = {
     repo,
@@ -469,10 +501,7 @@ async function runGate(
     issueTitle: issue.issueTitle,
     issueBody: issue.issueBody,
     repoPath,
-    baseRef: `origin/${pr.baseRef}`,
-    summaryPath,
-    summaryContent,
-    changedFiles: pr.files,
+    ...head.fields,
     timeoutSeconds: input.timeoutSeconds,
     killAfterSeconds: input.killAfterSeconds,
     model: input.model,
@@ -511,7 +540,12 @@ async function runGate(
     );
   }
 
-  const second = await deps.runVerifier(verifierInput);
+  // The recovery turn may have edited the PR summary or pushed new files, so
+  // the re-check reads them afresh rather than reusing the first read.
+  const recheckHead = await readRoundHead(input, deps);
+  const second: PrePrVerifierResult = recheckHead.ok
+    ? await deps.runVerifier({ ...verifierInput, ...recheckHead.fields })
+    : { status: "not_checked", reason: recheckHead.reason };
   if (second.status === "not_checked") {
     deps.logger.warn(
       "Review-fix verifier re-check could not run (Issue #3784)",

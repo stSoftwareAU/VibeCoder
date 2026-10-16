@@ -432,6 +432,7 @@ Deno.test(
     assertEquals(input.killAfterSeconds, outcome.config.claudeKillAfter);
     assertEquals(input.maxRetries, outcome.config.maxRateLimitRetries);
     assertEquals(input.model, "some-model");
+    assertEquals(input.round, { kind: "pre-pr" });
   },
 );
 
