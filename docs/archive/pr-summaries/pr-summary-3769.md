@@ -81,15 +81,16 @@ All tests are in `worker/deno/tests/mermaid_validator_test.ts` under the `valida
 
 <!-- vibe-standards-review inputs="diff+CODING-STANDARDS.md" -->
 
-- **violation** — `worker/deno/lib/mermaid_validator.ts:648` — deliberate line-local scan lacked a `SIMPLE-ON-PURPOSE` marker naming its ceiling — reason: fixed in this diff
-- **violation** — `worker/deno/lib/mermaid_validator.ts:718` — the unclosed-label fallback in `nodeSnippet` had no test reaching it — reason: fixed in this diff
-- **violation** — `worker/deno/lib/mermaid_validator.ts:661` — a quoted `click … call fn(a, "x")` argument was a false positive (raised by the spec reviewer) — reason: fixed in this diff
+- **violation** — `worker/deno/lib/mermaid_validator.ts:647` — deliberate line-local scan lacked a `SIMPLE-ON-PURPOSE` marker naming its ceiling — reason: fixed in this diff
+- **violation** — `worker/deno/lib/mermaid_validator.ts:717` — the unclosed-label fallback in `nodeSnippet` had no test reaching it — reason: fixed in this diff
+- **violation** — `worker/deno/lib/mermaid_validator.ts:660` — a quoted `click … call fn(a, "x")` argument was a false positive (raised by the spec reviewer) — reason: fixed in this diff
+- **violation** — `worker/deno/lib/mermaid_validator.ts` `isWordChar` — a `ch.length !== 1` guard no input could reach (every caller passes `charAt`) — reason: fixed in this diff (dead guard removed)
 - **clean** — no other departure from `CODING-STANDARDS.md`; the archived `pr-summary-3124.md` edit is stated above, the Mermaid lexer behaviour is cited under Undiscoverable Facts, and each branch's red check is recorded in the facts file.
 
 ## Test Plan
 
 - `deno test` on `worker/deno/tests/mermaid_validator_test.ts` and `worker/deno/tests/mermaid_validator_growth_3769_test.ts`: 68 passed in the parallel pass, 1 passed in the serial (wall-clock) pass.
-- Red checks, each flip run against the suite and restored (recorded per branch in `pr-summary-3769.facts.json`): helper forced to return null (6 negative tests red); blank-prefix check dropped (12 accept tests red); flowchart/graph gate dropped; `%%` skip removed; `inString` operand removed; word-character operand removed; `nodeSnippet` fallback returning `""`; `click` skip removed; whitespace operand of the `click` skip removed — each turned its named test red.
+- Red checks, each flip run against the suite and restored (one entry per outcome or operand in `pr-summary-3769.facts.json`): drop the `flowchart` operand (6 red); drop the `graph` operand (1); gate forced true (1); refusal forced off (8); `%%` skip removed (1); `click` operand dropped (1); whitespace operand dropped (1); `inString` operand dropped (1); opener operand dropped (3); word-character operand dropped (1); quote operand dropped (3); blank-prefix operand dropped (12); `nodeSnippet` fallback returning `""` (1).
 - `check-mermaid --script-dir ../..` over the repository: PASSED after the `pr-summary-3124.md:49` fix (failed on it before).
 - `./quality.sh < /dev/null`: cycle 1 FAILED (growth test not registered as wall-clock; moved to its own file and registered); cycle 2 `Result: PASSED (with skipped checks)` — only `config integration` SKIPPED, as on the base branch.
 
