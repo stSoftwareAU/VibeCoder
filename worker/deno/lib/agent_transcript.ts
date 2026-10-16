@@ -149,7 +149,7 @@ export function resetTranscriptAbsenceForTests(): void {
  * object member is also judged as the assignment `key: "value"`, because the
  * raw line put a member such as `"api_key":"…"` in front of the rules and
  * that coverage must not be lost by decoding the value on its own. A line
- * nothing changed in is written byte for byte as it arrived; a line that is
+ * clean both decoded and as raw text is written byte for byte as it arrived; a line that is
  * not JSON (a stray stderr line, a truncated tail) falls back to raw-text
  * redaction, which is the most that can be done for it.
  *
@@ -168,6 +168,11 @@ export function redactTranscriptLine(
     return redact(line);
   }
   let changed = false;
+  // Whether the key alone makes a member a secret, judged on a neutral value.
+  const secretNamed = (key: string): boolean => {
+    const probe = `${key}: "x1"`;
+    return redact(probe) !== probe;
+  };
   const redactString = (text: string): string => {
     const out = redact(text);
     if (out !== text) changed = true;
@@ -182,11 +187,12 @@ export function redactTranscriptLine(
     for (const [key, member] of Object.entries(value)) {
       const name = redactString(key);
       if (typeof member === "string") {
-        // The value's own redaction is the finer mask; the member is masked
-        // whole only when its key is what makes it a secret.
+        // A secret-named key masks its whole value, as the raw pass did, even
+        // when another rule already matched part of it; any other member
+        // keeps the finer mask its own redaction gives.
         const own = redactString(member);
         const assignment = `${key}: ${JSON.stringify(member)}`;
-        if (own === member && redact(assignment) !== assignment) {
+        if (secretNamed(key) && redact(assignment) !== assignment) {
           changed = true;
           out[name] = REDACTION_PLACEHOLDER;
         } else {
@@ -199,7 +205,10 @@ export function redactTranscriptLine(
     return out;
   };
   const redacted = walk(event);
-  return changed ? JSON.stringify(redacted) : line;
+  // The raw line is kept only when it is clean as raw text too: `JSON.parse`
+  // keeps the last of duplicate keys, so a secret in an earlier duplicate is
+  // invisible to the walk above. Re-serialising drops that member.
+  return changed || redact(line) !== line ? JSON.stringify(redacted) : line;
 }
 
 /** Options for {@link AgentTranscriptWriter}. */

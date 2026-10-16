@@ -115,6 +115,21 @@ Deno.test("agent_transcript - a secret-named member is still masked after decodi
   assertEquals(event.input.note, "plain");
 });
 
+Deno.test("agent_transcript - a secret-named member is masked whole when another rule matched part of it (Issue #3826)", () => {
+  const line = JSON.stringify({ password: "Bearer aaaabbbbcc zz-rest" });
+  const event = JSON.parse(redactTranscriptLine(line)) as { password: string };
+  assertEquals(event.password, REDACTION_PLACEHOLDER);
+});
+
+Deno.test("agent_transcript - a secret in an earlier duplicate key is not written (Issue #3826)", () => {
+  const token = `ghp_${"A".repeat(36)}`;
+  const line =
+    `{"type":"assistant","text":"export GITHUB_TOKEN=${token}","text":"ok"}`;
+  const redacted = redactTranscriptLine(line);
+  assert(!redacted.includes(token), `leaked: ${redacted}`);
+  JSON.parse(redacted);
+});
+
 Deno.test("agent_transcript - an unchanged line is written byte for byte (Issue #3826)", () => {
   const line = '{"type":"result", "usage":{"output_tokens":7},"text":"done"}';
   assertEquals(redactTranscriptLine(line), line);
