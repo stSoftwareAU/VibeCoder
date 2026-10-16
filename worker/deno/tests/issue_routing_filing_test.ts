@@ -188,6 +188,26 @@ Deno.test("fileRoutedIssue - a permission failure creates nothing and names the 
   assertEquals(gh.calls.filter(isWriteCall), []);
 });
 
+Deno.test("fileRoutedIssue - a failed step carries the routing decision, or null when classify failed", async () => {
+  const store = emptyStore();
+  store.viewerPermission[VIBE] = "READ";
+  const gh = routingFakeGh(store);
+
+  const refused = await assertRejects(
+    () => fileRoutedIssue(WORKER_DRAFT, opts(gh.ghCommandFn)),
+    RoutedIssueFilingError,
+  );
+  assertEquals(refused.step, "permission");
+  assertEquals(refused.decision?.owner_repository, VIBE);
+
+  const classify = await assertRejects(
+    () => fileRoutedIssue({ title: " " }, opts(gh.ghCommandFn)),
+    RoutedIssueFilingError,
+  );
+  assertEquals(classify.step, "classify");
+  assertEquals(classify.decision, null);
+});
+
 Deno.test("fileRoutedIssue - a failure after create is not success, and a retry files no second issue", async () => {
   const store = emptyStore();
   let searches = 0;

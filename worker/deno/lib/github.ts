@@ -39,6 +39,12 @@ import { fetchIssueCommentPages } from "./issue_comment_pages.ts";
 import type { Improvement } from "../commands/suggest_improvements.ts";
 import { formatImprovementAsIssueBody } from "../commands/suggest_improvements.ts";
 import { defaultLogger } from "./logger.ts";
+import type { IssueRoutingContext } from "./issue_routing_classifier.ts";
+import {
+  fileRoutedIssue,
+  type RoutedIssueAction,
+  RoutedIssueFilingError,
+} from "./issue_routing_filing.ts";
 
 /**
  * Parse gh CLI issue JSON into a GitHubIssue object.
@@ -598,75 +604,121 @@ export function filterReservedLabelsWithWarning(
   return kept;
 }
 
+/** One improvement the router filed, reused, or would file (Issue #3745). */
+export interface RoutedImprovement {
+  title: string;
+  action: Exclude<RoutedIssueAction, "ambiguous">;
+  /** Repository the issue is (or would be) in — may differ from the target. */
+  repository: string;
+  number: number | null;
+}
+
 /**
  * Result of creating GitHub issues with partial failure handling.
  */
 export interface CreateIssuesResult {
-  /** Issue numbers that were successfully created */
+  /** Numbers of issues created, in the repository the router chose (see `routed`) */
   createdIssues: number[];
-  /** Improvements that failed to create, with error details */
+  /** Improvements that failed to create; `error` carries the routing reason */
   failures: Array<{ title: string; error: string }>;
+  /** Every improvement not in `failures`, with where the router put it. */
+  routed: RoutedImprovement[];
+}
+
+/** Options for {@link createGitHubIssuesWithPartialFailures} (Issue #3745). */
+export interface CreateIssuesOptions {
+  /** Repositories the issue router can file in. */
+  routingContext: IssueRoutingContext;
+  /** When true, the router makes no `gh` write call. */
+  dryRun: boolean;
+  /** Configured `custom_label_prompts` labels, never self-applied (Issue #847). */
+  extraReservedLabels?: readonly string[];
+  /** Runs gh commands; defaults to `runGhCommand`. */
+  ghCommandFn?: (args: string[]) => Promise<string>;
+  /** Clock for the duplicate-search window; defaults to the wall clock. */
+  now?: () => Date;
+  /** Warns on stripped reserved labels (Issue #2825). */
+  logger?: Logger;
+}
+
+/** The failure message for one improvement, with its routing reason when known. */
+function describeRoutingFailure(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (error instanceof RoutedIssueFilingError && error.decision !== null) {
+    return `${message} (routing: ${error.decision.reason})`;
+  }
+  return message;
 }
 
 /**
  * Create GitHub issues for improvements, continuing past individual failures.
  *
- * Unlike the original createGitHubIssues which stops on first failure,
- * this function attempts all improvements and reports partial failures.
+ * Each improvement goes through {@link fileRoutedIssue}, so it lands in the
+ * repository that owns it. An ambiguous owner is a failure and nothing is
+ * filed. Every improvement is attempted and partial failures are reported.
  *
  * @param improvements - Improvements to create issues for
  * @param repo - Target repository in "owner/repo" format
- * @param ghCommandFn - Function to run gh commands (injectable for testing)
- * @param logger - Logger used to warn on stripped reserved labels (Issue #2825)
- * @param extraReservedLabels - Configured `custom_label_prompts` labels, which
- *   the worker must never self-apply (Issue #847)
- * @returns Created issue numbers and any failures
+ * @param options - Routing context, dry-run flag and injectable dependencies
+ * @returns Created issue numbers, routed improvements and any failures
  */
 export async function createGitHubIssuesWithPartialFailures(
   improvements: Improvement[],
   repo: string,
-  ghCommandFn: (args: string[]) => Promise<string> = runGhCommand,
-  logger: Logger = defaultLogger,
-  extraReservedLabels: readonly string[] = [],
+  options: CreateIssuesOptions,
 ): Promise<CreateIssuesResult> {
+  const logger = options.logger ?? defaultLogger;
   const createdIssues: number[] = [];
   const failures: Array<{ title: string; error: string }> = [];
+  const routed: RoutedImprovement[] = [];
 
   for (const improvement of improvements) {
     try {
       const body = formatImprovementAsIssueBody(improvement);
-      // Issue #2825: warn (no longer strip silently) per reserved label dropped.
+      // Keeps the existing warning context; the router filters again as
+      // defence in depth. Issue #2825: warn per reserved label dropped.
       const safeLabels = filterReservedLabelsWithWarning(
         improvement.labels,
         `${repo} suggest-improvements`,
         logger,
-        extraReservedLabels,
+        options.extraReservedLabels ?? [],
       );
-      const labelArgs = safeLabels.flatMap((l) => ["--label", l]);
 
-      const output = await ghCommandFn([
-        "issue",
-        "create",
-        "--repo",
-        repo,
-        "--title",
-        improvement.title,
-        "--body",
-        body,
-        ...labelArgs,
-      ]);
-
-      const match = output.match(/\/issues\/(\d+)/);
-      if (match && match[1]) {
-        createdIssues.push(parseInt(match[1], 10));
+      const filed = await fileRoutedIssue(
+        { title: improvement.title, body, labels: safeLabels },
+        {
+          targetRepo: repo,
+          context: options.routingContext,
+          dryRun: options.dryRun,
+          ghCommandFn: options.ghCommandFn ?? runGhCommand,
+          now: options.now,
+          logger,
+          extraReservedLabels: options.extraReservedLabels,
+        },
+      );
+      if (filed.action === "ambiguous") {
+        failures.push({
+          title: improvement.title,
+          error: `Routing filed nothing: ${filed.decision.reason}`,
+        });
+        continue;
       }
+      routed.push({
+        title: improvement.title,
+        action: filed.action,
+        repository: filed.repository,
+        number: filed.number,
+      });
+      if (filed.action === "created") createdIssues.push(filed.number!);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      failures.push({ title: improvement.title, error: message });
+      failures.push({
+        title: improvement.title,
+        error: describeRoutingFailure(error),
+      });
     }
   }
 
-  return { createdIssues, failures };
+  return { createdIssues, failures, routed };
 }
 
 /**

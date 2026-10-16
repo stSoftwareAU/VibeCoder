@@ -8,19 +8,37 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import type { WorkerConfig } from "../types.ts";
-import type { Improvement } from "../commands/suggest_improvements.ts";
+import type {
+  Improvement,
+  SuggestImprovementsData,
+} from "../commands/suggest_improvements.ts";
 import {
+  createSuggestImprovementsCommand,
   formatImprovementAsIssueBody,
   generateImprovements,
   suggestImprovementsCommand,
 } from "../commands/suggest_improvements.ts";
+import { createGitHubIssuesWithPartialFailures } from "../lib/github.ts";
 import {
   buildDefaultWorkerConfig,
   RESERVED_LABELS,
 } from "../lib/config_defaults.ts";
+import {
+  addIssue,
+  fakeStore,
+  isWriteCall,
+  routingFakeGh,
+} from "./support/routing_fake_gh.ts";
+
+const VIBE = "stSoftwareAU/VibeCoder";
+const GRQ = "stSoftwareAU/GRQ";
+const NOW = () => new Date("2026-10-15T00:00:00Z");
+const CTX = { vibeCoderRepo: VIBE, productRepos: [GRQ] };
+/** A worker change: the router files it in VibeCoder (Issue #3745). */
+const WORKER_NOTE = "`worker/deno/lib/foo.ts` needs work.";
 
 // Mock config for tests
-function createMockConfig(): WorkerConfig {
+function createMockConfig(overrides: Partial<WorkerConfig> = {}): WorkerConfig {
   return buildDefaultWorkerConfig({
     allowedAuthors: ["testuser"],
     allowedAuthor: "testuser",
@@ -29,6 +47,7 @@ function createMockConfig(): WorkerConfig {
     issueLabels: ["claude"],
     authorisedCommenters: ["testuser"],
     workDir: "/tmp/work",
+    ...overrides,
   }) as WorkerConfig;
 }
 
@@ -162,14 +181,19 @@ Deno.test("suggest-improvements - command data contains improvements array", asy
 });
 
 Deno.test("suggest-improvements - command includes repo in args when provided", async () => {
-  const result = await suggestImprovementsCommand.execute(
-    { "dry-run": true, repo: "stSoftwareAU/VibeCoder" },
+  // With a repo, the dry run reaches the router, so it runs against a fake gh.
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: NOW,
+  }).execute(
+    { "dry-run": true, repo: VIBE },
     createMockConfig(),
   );
 
   assertEquals(result.success, true);
   const data = result.data as { repo: string };
-  assertEquals(data.repo, "stSoftwareAU/VibeCoder");
+  assertEquals(data.repo, VIBE);
 });
 
 Deno.test("suggest-improvements - command name is correct", () => {
@@ -327,4 +351,217 @@ Deno.test("suggest-improvements - formatted body includes issue reference", () =
 
   assertStringIncludes(body, "suggest-improvements");
   assertStringIncludes(body, "Issue #209");
+});
+
+// =============================================================================
+// Issue #3745 — suggest-improvements files through the issue router
+// =============================================================================
+
+Deno.test("suggest-improvements - a worker improvement drafted against GRQ is filed in VibeCoder (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE", [GRQ]: "WRITE" }));
+  const result = await createGitHubIssuesWithPartialFailures(
+    [{
+      title: "Worker fix",
+      description: WORKER_NOTE,
+      category: "testing",
+      labels: ["enhancement"],
+    }],
+    GRQ,
+    {
+      routingContext: CTX,
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    },
+  );
+
+  assertEquals(result.createdIssues, [1]);
+  assertEquals(result.routed[0]?.repository, VIBE);
+  assertEquals(result.routed[0]?.action, "created");
+  assertEquals(gh.store.issues.map((i) => i.repo), [VIBE]);
+});
+
+Deno.test("suggest-improvements - an ambiguous improvement files nothing and is reported as a failure (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const result = await createGitHubIssuesWithPartialFailures(
+    [{
+      title: "Tidy things up",
+      description: "Make it nicer.",
+      category: "maintainability",
+      labels: ["enhancement"],
+    }],
+    VIBE,
+    {
+      routingContext: CTX,
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    },
+  );
+
+  assertEquals(gh.calls.filter(isWriteCall), []);
+  assertEquals(result.createdIssues, []);
+  assertEquals(result.routed, []);
+  assertEquals(result.failures.length, 1);
+  assertStringIncludes(result.failures[0]!.error, "Routing filed nothing");
+  assertStringIncludes(result.failures[0]!.error, "ambiguous owner");
+});
+
+Deno.test("suggest-improvements - a routing error is reported in failures[] with its step and routing reason, not dropped (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "READ" }));
+  const improvement = (title: string) => ({
+    title,
+    description: WORKER_NOTE,
+    category: "testing" as const,
+    labels: ["enhancement"],
+  });
+  const result = await createGitHubIssuesWithPartialFailures(
+    [improvement("Worker one"), improvement("Worker two")],
+    VIBE,
+    {
+      routingContext: CTX,
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    },
+  );
+
+  assertEquals(result.failures.length, 2);
+  for (const failure of result.failures) {
+    assertStringIncludes(failure.error, 'step "permission"');
+    assertStringIncludes(failure.error, "(routing: ");
+    assertStringIncludes(failure.error, "belongs in stSoftwareAU/VibeCoder");
+  }
+  assertEquals(result.createdIssues, []);
+  assertEquals(gh.calls.filter(isWriteCall), []);
+});
+
+Deno.test("suggest-improvements - a classify failure is reported with its step and no routing reason (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const result = await createGitHubIssuesWithPartialFailures(
+    [{
+      title: "Worker one",
+      description: WORKER_NOTE,
+      category: "testing",
+      labels: [],
+    }],
+    VIBE,
+    {
+      routingContext: { vibeCoderRepo: VIBE, productRepos: ["not a repo"] },
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    },
+  );
+
+  assertEquals(result.failures.length, 1);
+  assertStringIncludes(result.failures[0]!.error, 'step "classify"');
+  assertEquals(result.failures[0]!.error.includes("(routing:"), false);
+  assertEquals(gh.calls, []);
+});
+
+Deno.test("suggest-improvements - an existing open issue with the same title is reused, not refiled (Issue #3745)", async () => {
+  const store = fakeStore([], { [VIBE]: "WRITE" });
+  const existing = addIssue(store, VIBE, "Worker one");
+  const gh = routingFakeGh(store);
+  const result = await createGitHubIssuesWithPartialFailures(
+    [{
+      title: "Worker one",
+      description: WORKER_NOTE,
+      category: "testing",
+      labels: ["enhancement"],
+    }],
+    VIBE,
+    {
+      routingContext: CTX,
+      dryRun: false,
+      ghCommandFn: gh.ghCommandFn,
+      now: NOW,
+    },
+  );
+
+  assertEquals(result.createdIssues, []);
+  assertEquals(result.failures, []);
+  assertEquals(result.routed, [{
+    title: "Worker one",
+    action: "reused",
+    repository: VIBE,
+    number: existing.number,
+  }]);
+  assertEquals(gh.calls.filter(isWriteCall), []);
+});
+
+Deno.test("suggest-improvements - dry-run with a repo makes no write call and reports what it would file (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: NOW,
+  }).execute({ "dry-run": true, repo: VIBE }, createMockConfig());
+
+  assertEquals(gh.calls.filter(isWriteCall), []);
+  assertEquals(result.success, true);
+  const data = result.data as SuggestImprovementsData;
+  const routed = data.routed ?? [];
+  assertEquals(routed.length, generateImprovements().length);
+  assertEquals(routed.every((r) => r.action === "would-create"), true);
+  assertStringIncludes(result.message, "would be created");
+});
+
+Deno.test("suggest-improvements - a real run files every suggestion in VibeCoder, whatever repo it was drafted for (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE", [GRQ]: "WRITE" }));
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: NOW,
+  }).execute({ repo: GRQ }, createMockConfig({ repos: [GRQ] }));
+
+  assertEquals(result.success, true);
+  assertEquals(result.message.startsWith("Created "), true);
+  assertEquals(gh.store.issues.length, generateImprovements().length);
+  assertEquals(gh.store.issues.every((i) => i.repo === VIBE), true);
+});
+
+Deno.test("suggest-improvements - a configured custom label is never self-applied to a filed issue (Issue #847)", async () => {
+  // Positive control: with no custom label, the generated `enhancement` stays.
+  const plain = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  await createSuggestImprovementsCommand({
+    ghCommandFn: plain.ghCommandFn,
+    now: NOW,
+  }).execute({ repo: VIBE }, createMockConfig());
+  assertEquals(plain.store.issues.length, generateImprovements().length);
+  assertEquals(
+    plain.store.issues.every((i) => i.labels.includes("enhancement")),
+    true,
+  );
+
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "WRITE" }));
+  const config = createMockConfig({
+    customLabelPrompts: [{
+      label: "enhancement",
+      promptPath: "/tmp/prompt.md",
+      targetPhase: "issue",
+    }],
+  });
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: NOW,
+  }).execute({ repo: VIBE }, config);
+
+  assertEquals(result.success, true);
+  assertEquals(gh.store.issues.length, generateImprovements().length);
+  assertEquals(
+    gh.store.issues.some((i) => i.labels.includes("enhancement")),
+    false,
+  );
+});
+
+Deno.test("suggest-improvements - a real run with failures says so and reports success false (Issue #3745)", async () => {
+  const gh = routingFakeGh(fakeStore([], { [VIBE]: "READ" }));
+  const result = await createSuggestImprovementsCommand({
+    ghCommandFn: gh.ghCommandFn,
+    now: NOW,
+  }).execute({ repo: VIBE }, createMockConfig());
+
+  assertEquals(result.success, false);
+  assertEquals(result.message.endsWith("failed)"), true);
+  assertEquals(gh.calls.filter(isWriteCall), []);
 });
