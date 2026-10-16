@@ -11,7 +11,10 @@
  * This module runs one verifier model pass after the PR summary is written,
  * with the fleet reviewer's own brief (`prompts/pr_review_brief/prompt.md`,
  * shared with `.claude/skills/review-fleet-prs`), in a disposable checkout,
- * and returns the same JSON shape the fleet reviewer replies with.
+ * and returns the same JSON shape the fleet reviewer replies with. It also
+ * lists the existing callers of each function the change edits, and every one
+ * must get a verdict, with a missing or `regressed` one a blocking finding
+ * (Issue #3779, see `caller_checks.ts`).
  *
  * The boundary, stated honestly:
  * - The checkout is a `git clone --shared` of the issue checkout with its
@@ -47,6 +50,13 @@ import {
   TOOL_OUTPUT_IS_DATA_RULE,
 } from "./prompt_delimiter.ts";
 import { loadPrompt } from "./prompt_manager.ts";
+import {
+  type CallerCheckState,
+  callerGapFindings,
+  collectCallerChecks,
+  parseCallerVerdicts,
+  renderCallerCheckSection,
+} from "./caller_checks.ts";
 import {
   checklistGapFindings,
   type ChecklistLoad,
