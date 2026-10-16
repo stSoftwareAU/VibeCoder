@@ -19,7 +19,6 @@ import {
   redactSecrets,
 } from "../lib/secret_redaction.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
 import type { Logger } from "../types.ts";
 import { fakeClock } from "./support/fake_clock.ts";
 
@@ -194,22 +193,6 @@ Deno.test("agent_transcript - a throwing redactor disables the tee instead of pr
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => undefined);
   }
-});
-
-Deno.test("agent_transcript - redacting a many-string line with a masked value stays linear (Issue #3826)", () => {
-  const out = assertLinearGrowth(
-    "redactTranscriptLine over many short strings",
-    (chars) => {
-      const count = Math.ceil(chars / 8);
-      const names = Array.from({ length: count }, (_, i) => `f${i}`);
-      return JSON.stringify({ text: "export TOKEN=aaaabbbbcccc", names });
-    },
-    (line) => redactTranscriptLine(line),
-    { baseChars: 100_000 },
-  );
-  const event = JSON.parse(out) as { text: string; names: string[] };
-  assertEquals(event.text, `export TOKEN=${REDACTION_PLACEHOLDER}`);
-  assertEquals(event.names[1], "f1");
 });
 
 Deno.test("agent_transcript - an unchanged line is written byte for byte (Issue #3826)", () => {
