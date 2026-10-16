@@ -208,6 +208,63 @@ Deno.test("fileRoutedIssue - a failed step carries the routing decision, or null
   assertEquals(classify.decision, null);
 });
 
+Deno.test("fileRoutedIssue - a failure at the search, create, recheck and close-duplicate steps carries the routing decision", async () => {
+  let searches = 0;
+  const cases: Array<{
+    step: string;
+    race: boolean;
+    failWhen: (args: string[]) => Error | undefined;
+  }> = [
+    {
+      step: "search",
+      race: false,
+      failWhen: (args) =>
+        args[0] === "search" ? new Error("HTTP 503: unavailable") : undefined,
+    },
+    {
+      step: "create",
+      race: false,
+      failWhen: (args) =>
+        args[1] === "create" ? new Error("HTTP 500: create failed") : undefined,
+    },
+    {
+      step: "recheck",
+      race: false,
+      // The third search is the post-create recheck (see the retry test).
+      failWhen: (args) => {
+        if (args[0] !== "search") return undefined;
+        searches++;
+        return searches === 3 ? new Error("HTTP 502: Bad Gateway") : undefined;
+      },
+    },
+    {
+      step: "close-duplicate",
+      race: true,
+      failWhen: (args) =>
+        args[1] === "close" ? new Error("HTTP 504: timeout") : undefined,
+    },
+  ];
+  for (const { step, race, failWhen } of cases) {
+    searches = 0;
+    let raced = !race;
+    const gh = routingFakeGh(emptyStore(), {
+      failWhen,
+      beforeCreate: (s) => {
+        if (raced) return;
+        raced = true;
+        addIssue(s, VIBE, WORKER_DRAFT.title, "filed by the other host");
+      },
+    });
+    const error = await assertRejects(
+      () => fileRoutedIssue(WORKER_DRAFT, opts(gh.ghCommandFn)),
+      RoutedIssueFilingError,
+    );
+    assertEquals(error.step, step);
+    assertEquals(error.decision?.owner_repository, VIBE, `step: ${step}`);
+    assertEquals(error.decision?.issue_kind, "implementation", `step: ${step}`);
+  }
+});
+
 Deno.test("fileRoutedIssue - a failure after create is not success, and a retry files no second issue", async () => {
   const store = emptyStore();
   let searches = 0;

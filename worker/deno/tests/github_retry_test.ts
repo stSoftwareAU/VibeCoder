@@ -126,6 +126,7 @@ Deno.test("github - createGitHubIssuesWithPartialFailures continues after failur
     "HTTP 500 Internal Server Error",
   );
   assertStringIncludes(result.failures[0]!.error, 'step "create"');
+  assertStringIncludes(result.failures[0]!.error, "(routing: ");
 });
 
 Deno.test("github - createGitHubIssuesWithPartialFailures handles all failures", async () => {

@@ -20,9 +20,12 @@
  *
  * Detection is textual and deliberately simple. A line is a candidate when it
  * holds an `"issue",` or `'issue',` argv element, and the verb that follows
- * (inline after it, or on the next non-blank line within a few lines) is
- * `create`. The `"issue"` literal followed by `||` (a comparison, not an
- * argv element) is therefore not a candidate.
+ * (inline after it, or on a later line within a few lines) is `create` or its
+ * gh alias `new`. gh also accepts the persistent `-R`/`--repo` flag between
+ * `issue` and the verb, so a `-R <repo>`, `--repo <repo>`, `-R<repo>` or
+ * `--repo=<repo>` argument is skipped when looking for the verb. The `"issue"`
+ * literal followed by `||` (a comparison, not an argv element) is therefore
+ * not a candidate.
  *
  * Australian English spelling used throughout (behaviour, colour, etc.).
  */
@@ -175,10 +178,19 @@ export const ISSUE_CREATE_ROUTING_ALLOWLIST: ReadonlyMap<string, string> =
 /**
  * How many lines below the `"issue",` element the scanner looks for the verb
  * when it is not inline. Argv arrays put the verb on the very next element, so
- * three lines leaves room for a blank line or two without reaching into an
- * unrelated statement.
+ * the window only has to cover a blank line or two plus a `--repo <repo>`
+ * pair split across lines, without reaching into an unrelated statement.
  */
-const VERB_LOOKAHEAD_LINES = 3;
+const VERB_LOOKAHEAD_LINES = 8;
+
+/** The verbs gh runs as `issue create`: the command and its alias `new`. */
+const ISSUE_CREATE_VERBS: ReadonlySet<string> = new Set(["create", "new"]);
+
+/** A repo flag whose value is the next argv element: `-R repo`, `--repo repo`. */
+const REPO_FLAG_WITH_VALUE_PATTERN = /^(?:-R|--repo)$/;
+
+/** A repo flag carrying its value: `-Rowner/repo`, `--repo=owner/repo`. */
+const REPO_FLAG_INLINE_PATTERN = /^(?:-R.|--repo=)/;
 
 /** Matches an `"issue",` / `'issue',` argv element. Group 1 is the quote. */
 const ISSUE_ELEMENT_PATTERN = /(["'])issue\1\s*,/g;
@@ -342,12 +354,39 @@ function stripComments(source: string): string {
 }
 
 /**
+ * Index just past the first top-level comma at or after `from`, skipping
+ * string, template and bracketed content. Returns `text.length` when the
+ * argv array ends first, so there is no further element.
+ */
+function indexAfterElement(text: string, from: number): number {
+  let depth = 0;
+  let i = from;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i++;
+      while (i < text.length && text[i] !== c) i += text[i] === "\\" ? 2 : 1;
+    } else if (c === "(" || c === "[" || c === "{") {
+      depth++;
+    } else if (c === ")" || c === "]" || c === "}") {
+      if (depth === 0) return text.length;
+      depth--;
+    } else if (c === "," && depth === 0) {
+      return i + 1;
+    }
+    i++;
+  }
+  return text.length;
+}
+
+/**
  * Resolve the verb that follows an `"issue",` element.
  *
  * The verb is the string literal that opens the rest of the same line (the
- * inline form, `["issue", "create", …]`), otherwise the literal that opens the
- * next non-blank line within {@link VERB_LOOKAHEAD_LINES}. Returns `null` when
- * neither is a string literal.
+ * inline form, `["issue", "create", …]`), otherwise the literal that opens a
+ * later line within {@link VERB_LOOKAHEAD_LINES}. A `-R`/`--repo` flag (and
+ * its value element) between `issue` and the verb is skipped, as gh accepts
+ * it there. Returns `null` when the next element is not a string literal.
  *
  * @param lines - Comment-stripped source lines.
  * @param index - Zero-based index of the line holding the `"issue",` element.
@@ -358,14 +397,22 @@ function verbAfterIssueElement(
   index: number,
   rest: string,
 ): string | null {
-  const inline = LEADING_LITERAL_PATTERN.exec(rest);
-  if (inline !== null) return inline[1] ?? null;
-
-  const floor = Math.min(lines.length, index + VERB_LOOKAHEAD_LINES + 1);
-  for (let j = index + 1; j < floor; j++) {
-    const next = lines[j] ?? "";
-    if (next.trim() === "") continue;
-    return LEADING_LITERAL_PATTERN.exec(next)?.[1] ?? null;
+  const window = lines.slice(index + 1, index + 1 + VERB_LOOKAHEAD_LINES);
+  const text = [rest, ...window].join("\n");
+  let pos = 0;
+  // A repo flag is at most one flag, so two skips is a generous ceiling.
+  for (let skipped = 0; skipped < 3; skipped++) {
+    const literal = LEADING_LITERAL_PATTERN.exec(text.slice(pos));
+    if (literal === null) return null;
+    const value = literal[1] ?? "";
+    const afterLiteral = pos + literal[0].length;
+    if (REPO_FLAG_WITH_VALUE_PATTERN.test(value)) {
+      pos = indexAfterElement(text, indexAfterElement(text, afterLiteral));
+    } else if (REPO_FLAG_INLINE_PATTERN.test(value)) {
+      pos = indexAfterElement(text, afterLiteral);
+    } else {
+      return value;
+    }
   }
   return null;
 }
@@ -392,7 +439,8 @@ export function scanContentForDirectIssueCreate(
     const line = lines[i] ?? "";
     const isCreate = [...line.matchAll(ISSUE_ELEMENT_PATTERN)].some((match) => {
       const rest = line.slice((match.index ?? 0) + match[0].length);
-      return verbAfterIssueElement(lines, i, rest) === "create";
+      const verb = verbAfterIssueElement(lines, i, rest);
+      return verb !== null && ISSUE_CREATE_VERBS.has(verb);
     });
     if (!isCreate) continue;
     violations.push({
