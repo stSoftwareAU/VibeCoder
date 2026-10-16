@@ -5,8 +5,9 @@
  * in the repository that owns it. Steps, in order; each failure names its
  * step and stops the run:
  *
- * 1. `classify` — {@link classifyIssueRouting} picks the owner repository.
- *    An `ambiguous` decision files nothing and returns the basis.
+ * 1. `classify` — {@link classifyIssueRouting} picks the owner repository,
+ *    unless the caller passes an explicit `decision`. An `ambiguous`
+ *    decision files nothing and returns the basis.
  * 2. `search` — {@link findRoutingDuplicates} looks for an open, or recently
  *    closed, issue or PR with the same title in the owner repository. The
  *    lowest-numbered match is returned instead of filing.
@@ -95,6 +96,13 @@ export interface FileRoutedIssueOptions extends IssueRoutingGithubDeps {
   context: IssueRoutingContext;
   /** When true, no `gh` write call is made. */
   dryRun?: boolean;
+  /**
+   * A decision the caller has already made, used instead of classifying the
+   * draft. Only for an explicit operator choice, such as one `route-issue
+   * --part` per codebase (Issue #3748); its owner must still pass the
+   * permission check.
+   */
+  decision?: RoutingDecision;
   /** Configured custom labels, reserved like the built-in ones (Issue #847). */
   extraReservedLabels?: readonly string[];
   logger?: Logger;
@@ -203,7 +211,9 @@ export async function fileRoutedIssue(
     "classify",
     opts.targetRepo,
     null,
-    () => classifyIssueRouting(draft, opts.targetRepo, opts.context),
+    () =>
+      opts.decision ??
+        classifyIssueRouting(draft, opts.targetRepo, opts.context),
   );
   const repository = decision.owner_repository;
   const requested = [...(draft.labels ?? [])];
