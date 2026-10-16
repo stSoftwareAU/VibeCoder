@@ -1629,10 +1629,10 @@ whole-file absence checks to stay on `flatWholeFile`. The issue and
 pr_feedback prompts and `CONTRIBUTING.md` point to it from their per-phrase
 check.
 
-**A drift pin for a code-held value is red-checked at its source (Issue
-#3655).** Fleet drift tests typed in a value the code already held, so the
-test, the doc and the literal agreed with each other and stayed green when the
-code moved on: VibeCoder#3478 typed in the Floci tag that
+**A drift pin for a code-held value is red-checked at its source
+(Issue #3655).** Fleet drift tests typed in a value the code already held, so
+the test, the doc and the literal agreed with each other and stayed green when
+the code moved on: VibeCoder#3478 typed in the Floci tag that
 `container/tools.json` holds, and VibeCoder#3654 typed in the clone flags that
 `buildShallowCloneArgs` returns. Condition 3 of `CODING-STANDARDS.md` §
 Documentation-drift tests already forbade this, but the guidelines asked only
