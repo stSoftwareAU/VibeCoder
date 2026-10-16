@@ -30,14 +30,14 @@ disposable-checkout runner, now extracted as `runInDisposableCheckout` in
 ### Undiscoverable Facts
 
 - VulnHunter's `phase2_verify.md` verdict mapping (read from the upstream repository this run): FIXED = all applicable gates pass; NOT_FIXED = `sink_mitigated` fails; PARTIAL = sink passes but `sweep_complete` or `class_eliminated` fails; otherwise INCONCLUSIVE. VulnHunter also allows `n/a` for `sweep_complete`. This gate drops `n/a` because every gate must cite a `path:line`.
-- The persisted verdict store (`security_fix_gate_feedback.ts`) still records only the missing kinds. The verifier's rationale reaches the in-run retry through the block message, but it is not replayed into a later run.
+- The persisted verdict store (`security_fix_gate_feedback.ts`) still records only the missing kinds and declarations. The verifier's verdict and rationale reach only the operator: the block message and the issue comment (`buildSecurityFixGateBlockComment`) carry the "Independent verifier verdict:" block. The in-run retry prompt (`buildSecurityFixGateRetryPrompt`) is built from the persisted block, so it names the missing `trigger-closed` or `trigger-closed-not-checked` item but not the verdict, and nothing replays the verdict into a later run.
 
 ## Evidence
 
 Backend-only change (no UI files). Tests that verify it:
 
 - `worker/deno/tests/security_fix_verdict_test.ts`: parsing, citation checks, the verdict mapping, the no-citation-means-skipped rule, and hostile long inputs for both citation patterns.
-- `worker/deno/tests/security_fix_verifier_test.ts`: the runner against a real temp git repo with a scripted model. It covers FIXED, NOT_FIXED, PARTIAL, INCONCLUSIVE and every not-checked path, and checks that the prompt carries no PR summary.
+- `worker/deno/tests/security_fix_verifier_test.ts`: the runner against a real temp git repo with a scripted model. It covers FIXED, NOT_FIXED, PARTIAL and INCONCLUSIVE, and these not-checked paths: a failed, timed-out or unparseable model run; an unresolvable base ref; a failed `git diff` ("security-fix verifier: a git diff that fails after the checkout is prepared is not checked and runs no model"); an empty or over-cap diff; an invalid issue number; a failed `ls-tree` or `cat-file` at the head; a failed removal of the PR summaries; and a changed or unreadable issue checkout. It also checks that the prompt carries no PR summary. The not-wired and throwing-verifier paths are covered in `completion_phase_security_gate_test.ts`.
 - `worker/deno/tests/security_fix_gate_test.ts`: the gate's response to each verdict, and that prose cannot satisfy `trigger-closed`.
 - `worker/deno/tests/completion_phase_security_gate_test.ts` and `worker/deno/tests/completion_phase_security_gate_retry_test.ts`: the live call site.
 - `worker/deno/tests/pre_pr_verifier_3395_test.ts`: `runInDisposableCheckout` called directly, plus the unchanged pre-PR verifier tests.
@@ -72,7 +72,7 @@ flowchart LR
 - **unrequested** — `docs/archive/pr-summaries/` is excluded from the diff and removed from the disposable clone — reviewer: unrequested — reason: enforces the issue's "finding body and the branch diff only", since the summary is committed on the branch
 - **unrequested** — the verifier timeout is capped at `PRE_PR_VERIFIER_TIMEOUT_SECONDS` and the diff at 300,000 characters (over the cap is not checked) — reviewer: unrequested — reason: bounds on untrusted input and run time, and both fail closed
 - **unrequested** — the prompt contract wording in `security_fix_gate_feedback.ts`, and `trigger-closed-not-checked` excluded from `REQUIRED_SECURITY_FIX_EVIDENCE` — reviewer: unrequested — reason: the up-front contract is built from the gate's descriptions and would otherwise still promise the old prose check
-- **unrequested** — `SecurityGateRunVerdict.verification`, the "Independent verifier verdict:" block in the block message, and the `runSecurityFixVerifier` seam on `ClaudeDeps` — reviewer: unrequested — reason: the plumbing that carries the verdict to the gate, the retry and the operator comment
+- **unrequested** — `SecurityGateRunVerdict.verification`, the "Independent verifier verdict:" block in the block message, and the `runSecurityFixVerifier` seam on `ClaudeDeps` — reviewer: unrequested — reason: the plumbing that carries the verdict to the gate, the run-state block record and the operator comment
 - **unrequested** — docs updates (`CONFIGURATION.md`, `INTERNALS.md`, `security-fix-gate-feedback.md`, `issue-processing.md`, the gap analysis, the VulnHunter evaluation) and the sweep-ledger slice `docs/audits/lib-sweep-coverage/top-up-3657.json` — reviewer: unrequested — reason: the repository requires a docs change with a behaviour change, and requires every new lib module to be claimed by a sweep slice (`lib_sweep_coverage_test.ts`)
 
 ## Standards Review
@@ -88,13 +88,13 @@ flowchart LR
 - New: `worker/deno/tests/security_fix_verdict_test.ts`, `worker/deno/tests/security_fix_verifier_test.ts`, and the `runInDisposableCheckout:` tests in `worker/deno/tests/pre_pr_verifier_3395_test.ts`.
 - New tests in existing files:
   - `worker/deno/tests/security_fix_gate_test.ts`: FIXED; NOT_FIXED/PARTIAL/INCONCLUSIVE; `not_checked`; `null`; prose past NOT_FIXED; both message blocks.
-  - `worker/deno/tests/completion_phase_security_gate_test.ts`: verdict (a)–(f) plus the verifier's own unresolvable-base branch.
+  - `worker/deno/tests/completion_phase_security_gate_test.ts`: verdict (a)–(f) plus the verifier's own unresolvable-base branch, and the verifier's log lines: "completion - a checked verdict is logged as run with its verdict (Issue #3657)", "completion - a not checked verification is logged as not run with its reason (Issue #3657)" and "completion - a verifier kept from running by an unresolvable base ref is logged with the reason (Issue #3657)".
   - `worker/deno/tests/issue_worker_wiring_test.ts`: production wiring.
   - `worker/deno/tests/security_fix_gate_feedback_test.ts`: contract wording.
 - Removed or changed assertions in existing tests, each with the requirement that makes it untrue:
   - `assertStringIncludes(message, "ORIGINAL TRIGGER");` (`worker/deno/tests/security_fix_gate_test.ts`). The `trigger-closed` description no longer asks for an "original trigger" statement, because #3657 replaces summary prose with the verifier verdict. It is replaced by `assertStringIncludes(message, "independent read-only verifier")`.
   - `assertStringIncludes(comment, "ORIGINAL TRIGGER");`, both occurrences (`worker/deno/tests/security_fix_gate_retry_test.ts`). Same requirement, same replacement.
-  - `"trigger-closed",` in the `block?.missing` expectation of "completion - a gate block records its missing items in run state (Issue #4057)" (`worker/deno/tests/completion_phase_security_gate_test.ts`). That scenario scripts no verifier, and #3657 requires a pass that could not run to block as not checked. It now expects `"trigger-closed-not-checked",`. Red-check: dropping the identifier item still turns it red, because the list then has one entry.
+  - Removed from `worker/deno/tests/completion_phase_security_gate_test.ts`: `assertEquals(block?.missing, [ "test-identifier-in-diff", "trigger-closed", ]);` in "completion - a gate block records its missing items in run state (Issue #4057)" — #3657 requires a verifier pass that could not run to block as not checked, and that scenario scripts no verifier, so `trigger-closed` is no longer the missing item. It now reads `assertEquals(block?.missing, [ "test-identifier-in-diff", "trigger-closed-not-checked", ]);`. Red-check: dropping the identifier item still turns it red, because the list then has one entry.
   - The renamed test "evaluateSecurityFixGate - flags a missing trigger-closed statement on a bare summary" is now "… flags trigger-closed on a bare summary when the verifier is not FIXED". Its `ok`/`missing` assertions are kept and it now scripts a NOT_FIXED verdict.
   - The other changed lines add the new required `verification` argument to existing calls; no assertion changed.
 - Red-checks: each guard was broken on purpose, the named test went red, and the guard was restored.
@@ -104,9 +104,11 @@ flowchart LR
   - Skipping `confirmCitations` turned the demotion test red.
   - Passing `verification: null` at the completion call site, or skipping the call, turned completion tests (a) and (e) red.
   - Each new `runInDisposableCheckout` and verifier failure test was red-checked the same way in a scratch copy.
+  - Changing the `git diff` guard in `security_fix_verifier.ts:211` to `diff.code === 99999` turned "security-fix verifier: a git diff that fails after the checkout is prepared is not checked and runs no model" red.
+  - The four mutants of `runSecurityVerification` in `completion_phase.ts` each turned a log test red: deleting the `logger.warn` call at line 413 (the unresolvable-base log test); negating the `checked` condition at line 440, run with `--no-check` (the checked and not-checked log tests); deleting `verdict` at line 442 (the checked log test); and deleting `reason` at line 446 (the not-checked log test).
 - Results on the final head:
-  - Targeted run: `deno test -A tests/security_fix_verdict_test.ts tests/security_fix_verifier_test.ts tests/security_fix_gate_test.ts tests/security_fix_gate_retry_test.ts tests/security_fix_gate_feedback_test.ts tests/completion_phase_security_gate_test.ts tests/completion_phase_security_gate_retry_test.ts tests/issue_worker_wiring_test.ts tests/pre_pr_verifier_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts` passed.
-  - The full `./quality.sh` passed on the final code head: "Result: PASSED (with skipped checks)"; only "config integration" was skipped. Deno tests passed in both the parallel run (7m22s) and the serial run (2m47s).
+  - Targeted run (301 tests, after the log and `git diff` tests were added): `deno test -A tests/security_fix_verdict_test.ts tests/security_fix_verifier_test.ts tests/security_fix_gate_test.ts tests/security_fix_gate_retry_test.ts tests/security_fix_gate_feedback_test.ts tests/completion_phase_security_gate_test.ts tests/completion_phase_security_gate_retry_test.ts tests/issue_worker_wiring_test.ts tests/pre_pr_verifier_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts` passed.
+  - The full `./quality.sh` passed on the code head before the log and `git diff` tests were added (no production code has changed since); the worker re-runs it on this head: "Result: PASSED (with skipped checks)"; only "config integration" was skipped. Deno tests passed in both the parallel run (7m22s) and the serial run (2m47s).
   - The pre-push gate (`runPrePushGate` with the milestone as `baseRef`) passed. It had blocked an earlier attempt because the sweep slice's `sweptAt` was a milestone merge commit; it now records `git merge-base origin/main HEAD` (`568f2366`), and `worker/deno/tests/lib_sweep_coverage_test.ts` passed.
   - `deno task pr-summary-check`: 0 gates blocked. The summary claim check is not checked here; the worker runs it when it raises the PR.
 

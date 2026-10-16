@@ -213,6 +213,15 @@ interface Outcome {
   securityGateBlocks: SecurityGateRunVerdict[];
   /** Every input the independent verifier was called with (Issue #3657). */
   verifierInputs: SecurityFixVerifierInput[];
+  /** Every info and warn line the run logged, with its context. */
+  logs: LoggedLine[];
+}
+
+/** One info or warn line the run logged. */
+interface LoggedLine {
+  level: "info" | "warn";
+  message: string;
+  context?: Record<string, unknown>;
 }
 
 /** Run the live completion phase against a scenario and report what happened. */
@@ -222,6 +231,7 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   let prCreateCalls = 0;
   const discriminationInputs: DiscriminationRunInput[] = [];
   const verifierInputs: SecurityFixVerifierInput[] = [];
+  const logs: LoggedLine[] = [];
 
   const config = buildDefaultWorkerConfig();
   scenario.configure?.(config);
@@ -251,6 +261,12 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
   const stub = scenario.discrimination;
   const throws = scenario.discriminationThrows;
   const deps = createMockDeps({
+    logger: {
+      info: (message, context) =>
+        logs.push({ level: "info", message, context }),
+      warn: (message, context) =>
+        logs.push({ level: "warn", message, context }),
+    },
     quality: stub || throws
       ? {
         runSecurityFixDiscrimination: (input: DiscriminationRunInput) => {
@@ -336,7 +352,15 @@ async function runCompletion(scenario: Scenario): Promise<Outcome> {
     repoPath,
     securityGateBlocks: state.securityGateBlocks ?? [],
     verifierInputs,
+    logs,
   };
+}
+
+/** The lines the completion phase logged about the security-fix verifier. */
+function verifierLogs(outcome: Outcome): LoggedLine[] {
+  return outcome.logs.filter((line) =>
+    line.message.startsWith("Security-fix verifier")
+  );
 }
 
 Deno.test(
@@ -970,5 +994,77 @@ Deno.test(
       outcome.reason ?? "",
       "the base ref is unresolvable",
     );
+  },
+);
+
+Deno.test(
+  "completion - a checked verdict is logged as run with its verdict (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: FIXED,
+    });
+
+    assertEquals(verifierLogs(outcome), [
+      {
+        level: "info",
+        message: "Security-fix verifier ran",
+        context: { verdict: "FIXED" },
+      },
+    ]);
+  },
+);
+
+Deno.test(
+  "completion - a not checked verification is logged as not run with its reason (Issue #3657)",
+  async () => {
+    const reason = "git diff failed: bad revision";
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: { kind: "not_checked", reason },
+    });
+
+    const lines = verifierLogs(outcome);
+    // The in-run recovery re-runs the gate, so one line per verifier call.
+    assertEquals(lines.length, outcome.verifierInputs.length);
+    assert(lines.length > 0);
+    for (const line of lines) {
+      assertEquals(line, {
+        level: "warn",
+        message: "Security-fix verifier did not run",
+        context: { reason },
+      });
+    }
+  },
+);
+
+Deno.test(
+  "completion - a verifier kept from running by an unresolvable base ref is logged with the reason (Issue #3657)",
+  async () => {
+    const outcome = await runCompletion({
+      labels: VERIFIER_LABELS,
+      summary: COMPLIANT_SUMMARY,
+      changedFiles: SECURITY_FILES,
+      discrimination: RED_GREEN,
+      verification: FIXED,
+      baseRefUnresolvable: true,
+    });
+
+    const lines = verifierLogs(outcome);
+    assert(lines.length > 0);
+    for (const line of lines) {
+      assertEquals(line.level, "warn");
+      assertEquals(line.message, "Security-fix verifier did not run");
+      assertStringIncludes(
+        String(line.context?.reason),
+        "the base ref is unresolvable",
+      );
+    }
   },
 );

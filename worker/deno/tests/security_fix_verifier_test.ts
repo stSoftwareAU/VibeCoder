@@ -385,6 +385,33 @@ Deno.test("security-fix verifier: an unresolvable base ref is not checked and ru
   }
 });
 
+Deno.test("security-fix verifier: a git diff that fails after the checkout is prepared is not checked and runs no model", async () => {
+  const f = await makeRepo();
+  try {
+    const model = fakeAsk({ output: reply() });
+    const deps = makeDeps(model.ask, []);
+    const runGit: SecurityFixVerifierDeps["runGit"] = (args, cwd) =>
+      args[0] === "diff"
+        ? Promise.resolve({
+          code: 128,
+          stdout: "",
+          stderr: "fatal: diff boom\nsecond line\n",
+        })
+        : defaultSecurityFixVerifierDeps.runGit(args, cwd);
+    const result = await runSecurityFixVerifier(inputFor(f), {
+      ...deps,
+      runGit,
+    });
+    assertEquals(result.verification, {
+      kind: "not_checked",
+      reason: "git diff failed: fatal: diff boom",
+    });
+    assertEquals(model.calls.length, 0);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 Deno.test("security-fix verifier: an empty diff (head equals base) is not checked and runs no model", async () => {
   const f = await makeRepo();
   try {
