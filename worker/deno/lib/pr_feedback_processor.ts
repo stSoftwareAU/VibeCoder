@@ -62,6 +62,7 @@ import {
   DRIFT_CHECK_DISALLOWED_TOOLS,
   runPrFeedbackDriftCheck,
 } from "./pr_feedback_drift_check.ts";
+import { runReviewFixVerifierGate } from "./review_fix_verifier_gate.ts";
 import { assessGatedHead } from "./gated_head_guard.ts";
 import {
   milestoneFixBranchFor,
@@ -322,6 +323,11 @@ export interface PrFeedbackProcessorDeps {
    * production leaves it undefined and gets {@link runPrFeedbackDriftCheck}.
    */
   driftCheckFn?: typeof runPrFeedbackDriftCheck;
+  /**
+   * Override the review-fix verifier gate (Issue #3784). Injected by tests;
+   * production leaves it undefined and gets {@link runReviewFixVerifierGate}.
+   */
+  reviewFixVerifierFn?: typeof runReviewFixVerifierGate;
   /**
    * Lease renewal interval for a claimed `pr_review` (Issue #3383). Defaults
    * to {@link PR_REVIEW_CLAIM_RENEW_MS}. A test seam — production never
@@ -1579,6 +1585,111 @@ async function _processFeedbackWithHeartbeat(
         beforeSha,
       });
       hasChanges = true;
+    }
+  }
+
+  // Review-fix verifier gate (Issue #3784): a review-fix round's head is only
+  // complete after the agent's own commit-and-push, since the agent pushes
+  // its fix commits during its turn (prompts/pr_feedback/prompt.md "Confirm
+  // the fix is on the remote"). So the gate runs here, on the finished head
+  // and before the reply is written; a recovery turn's commits ride a second
+  // commit-and-push. Wrapped so an unexpected throw never aborts the run.
+  if (
+    isReviewerChangeRequest(commentType) && hasChanges &&
+    finalUnpushedCount === 0
+  ) {
+    try {
+      const reviewFixGate = processorDeps.reviewFixVerifierFn ??
+        runReviewFixVerifierGate;
+      const gateOutcome = await reviewFixGate(
+        {
+          repo,
+          prNumber,
+          branchName: input.branchName,
+          repoPath: processorDeps.workDir,
+          changeRequest: processedBody,
+          timeoutSeconds: claudeTimeout,
+          ...(processorDeps.claudeModel !== undefined
+            ? { model: processorDeps.claudeModel }
+            : {}),
+          maxRetries: maxRateLimitRetries,
+        },
+        {
+          runGh: (args: string[]) => deps.github.runGhCommand(args),
+          runVerifier: async (verifierInput) => {
+            const r = await deps.claude.runPrePrVerifier(verifierInput);
+            if (r.run?.runStats) {
+              (carrier.runStats ??= []).push(r.run.runStats);
+            }
+            return r;
+          },
+          runRecovery: async (prompt: string) => {
+            const r = await runAgentTracked(
+              {
+                prompt,
+                systemPrompt,
+                timeoutSeconds: claudeTimeout,
+                noOutputTimeout: claudeNoOutputTimeout,
+                phase: "pr_feedback",
+                cwd: processorDeps.workDir,
+                logger,
+              },
+              { maxRetries: maxRateLimitRetries },
+            );
+            if (!r.ok) return { ok: false, error: r.error };
+            if (r.value.timedOut) {
+              return { ok: false, error: new Error("timed out") };
+            }
+            return { ok: true };
+          },
+          logger,
+        },
+      );
+      logger.info("Review-fix verifier (Issue #3784)", {
+        repo,
+        prNumber,
+        status: gateOutcome.status,
+      });
+      if ("recoveryRan" in gateOutcome && gateOutcome.recoveryRan) {
+        // The recovery turn may have changed the head: commit and push that
+        // work before the push is verified below.
+        const recommit = await deps.git.commitAndPushPending(
+          pushBranch,
+          `Address PR #${prNumber} feedback\n\nCommit after the review-fix verifier's recovery turn (Issue #3784).`,
+          { cwd: processorDeps.workDir },
+          false,
+          preFlight,
+          undefined,
+          formatRound,
+        );
+        if (recommit.ok) {
+          finalUnpushedCount = recommit.value.finalUnpushedCount;
+          if (
+            recommit.value.committedNewChanges ||
+            recommit.value.commitsPushed > 0
+          ) {
+            hasChanges = true;
+          }
+        } else {
+          // The recovery turn's work is not known to be pushed, and "not
+          // measured" is not zero: leave the count unmeasured so the push is
+          // not claimed on the strength of the earlier measurement.
+          logger.error(
+            "Review-fix verifier recovery commit-and-push failed — the push is not confirmed (Issue #3784)",
+            { repo, prNumber, error: recommit.error.message },
+          );
+          finalUnpushedCount = undefined;
+        }
+      }
+    } catch (error) {
+      logger.error(
+        "Review-fix verifier gate failed — continuing without it (Issue #3784)",
+        {
+          repo,
+          prNumber,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
   }
 

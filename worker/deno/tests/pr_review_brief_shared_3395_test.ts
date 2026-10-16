@@ -87,6 +87,7 @@ Deno.test("the verifier prompt carries every rule of the brief, fully rendered",
     summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
     changedFiles: ["a.ts"],
     reviewChecklists: "",
+    round: { kind: "pre-pr" },
   });
   const flatPrompt = flatWholeFile(prompt);
   const missing = RULE_LINES.filter((l) =>

@@ -1188,8 +1188,10 @@ raised. The agent dispatches nothing for it.
   which `.claude/skills/review-fleet-prs/SKILL.md` also uses. It is one shared
   template, and `pr_review_brief_shared_3395_test.ts` fails if the two diverge.
   The reply has the fleet reviewer's JSON shape: `summary`, `findings`,
-  `testChanges`, `testChangeNotes` and `unrelatedIssues`, plus a `checklist`
-  array when the repository's
+  `testChanges`, `testChangeNotes`, `unrelatedIssues` and `earlierFindings`
+  (one `{index, verdict, note}` per earlier finding, `[]` when no earlier review
+  is listed; on the issue run there is none), plus a `checklist` array when the
+  repository's
   [review checklists](../review-checklists.md) apply to the changed files. A
   reply without the array is read as `[]`, but the worker owes a verdict for
   every item the brief rendered: an item with none, a malformed or unreadable
@@ -1215,6 +1217,13 @@ raised. The agent dispatches nothing for it.
   path confirmed, after resolving symlinks, to lie inside the clone; a path
   that leaves it makes the pass not checked. The disposable directory is
   deleted afterwards.
+
+The same verifier also runs on a review-fix round, after a push answers a
+reviewer's change request (Issue #3784). There it uses the `pr_feedback`
+phase's model, the earlier review's findings are numbered into the prompt, and
+the worker checks the verdict it gives on each one. A finding it still blocks
+is written to the PR reply rather than the issue thread; see
+[pr-feedback.md](pr-feedback.md#the-workers-review-fix-verifier-issue-3784).
 
 | | Spec / Standards reviewers | Pre-PR verifier |
 | --- | --- | --- |

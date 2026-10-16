@@ -238,6 +238,13 @@ fields as follows:
   "An earlier review of this PR asked for these fixes: {previousFindings}.
   Check each one is fixed; one that is not is still a finding."; otherwise
   "No earlier review of this PR asked for fixes."
+  The brief now asks the reviewer to answer each listed earlier finding in an
+  `earlierFindings` array (numbered from 1 in the order listed) and to report
+  each one marked `partly` or `not fixed` as a blocking finding under
+  `findings` too. `post.ts` reads the reply through `parseFableReview`
+  (`scripts/review_log.ts`), which calls `parseReviewReply` and so keeps the
+  array; `post.ts` does not turn a verdict into a finding, so the reviewer
+  must list the finding under `findings`, and the send-back comes from there.
 - `{{REVIEW_CHECKLISTS}}` — the entry's `reviewChecklists` value, verbatim
   (the repo's `review-checklists.json` at the base ref, matched against the
   PR's changed files, Issue #3594; the PR's own copy governs only when the PR

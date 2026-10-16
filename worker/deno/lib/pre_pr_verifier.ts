@@ -189,7 +189,9 @@ function parseEarlierFindingVerdicts(raw: unknown): EarlierFindingVerdict[] {
       ? Number(e.index)
       : e.index;
     if (typeof n !== "number" || !Number.isInteger(n) || n <= 0) continue;
-    if (typeof e.verdict !== "string" || !EARLIER_VERDICTS.includes(e.verdict)) {
+    if (
+      typeof e.verdict !== "string" || !EARLIER_VERDICTS.includes(e.verdict)
+    ) {
       continue;
     }
     out.push({
@@ -423,7 +425,7 @@ export function buildPrePrVerifierPrompt(opts: {
     );
     blocks.push("changed-file list");
   }
-  if (round.kind === "review-fix") {
+  if (round.kind === "review-fix" && round.previousFindings.length > 0) {
     context.push(
       "",
       ...fenceUntrustedIssueText(
@@ -787,7 +789,9 @@ export function earlierFindingGapFindings(
         ? `Earlier review finding ${n} is only partly fixed: ${
           clip(prev.problem, 300)
         }${left}`
-        : `Earlier review finding ${n} is not fixed: ${clip(prev.problem, 300)}${left}`,
+        : `Earlier review finding ${n} is not fixed: ${
+          clip(prev.problem, 300)
+        }${left}`,
       fix: prev.fix ?? "Fix every part of the earlier finding",
     });
   });

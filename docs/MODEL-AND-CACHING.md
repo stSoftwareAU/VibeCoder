@@ -786,6 +786,14 @@ the worker makes itself.
   finding. The summary is written into the disposable clone only at a path
   confirmed, after resolving symlinks, to lie inside the clone; a path that
   leaves it makes the pass not checked.
+- **Review-fix rounds (Issue #3784).** The same verifier also runs on a
+  review-fix round, from the PR-feedback processor rather than the issue
+  completion phase, after a push answers a reviewer's change request. It runs
+  with the `pr_feedback` phase. The model is the processor's `claudeModel` when
+  that is set, and otherwise the model the Claude runner resolves for the
+  `pr_feedback` phase. At most two passes run per round: the initial check and
+  one re-check, which follows a single full-tools recovery turn. Its tokens are
+  recorded in the round's run stats, like the issue pass's.
 
 How it works, what it may run and how its findings block is in
 [issue-processing.md](workflows/issue-processing.md#pre-pr-verifier-issue-3395).

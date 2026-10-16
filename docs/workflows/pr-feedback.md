@@ -578,6 +578,85 @@ flowchart TD
     N --> P
 ```
 
+#### The worker's review-fix verifier (Issue #3784)
+
+The prose rules above (Issues #3086, #3114, #3348) ask the agent not to claim
+a finding fixed until it is fixed, but the same agent judges its own fix.
+Re-reviews kept finding fixes that were only partly applied: one of two places
+fixed, or a finding answered with a note rather than the change it asked for.
+So on a review-fix round that answers a reviewer's change request, the worker
+checks the round's head itself before it writes the reply. The **review-fix
+verifier** runs the fleet reviewer's own brief
+([`prompts/pr_review_brief/prompt.md`](../../prompts/pr_review_brief/prompt.md),
+the same one the [pre-PR verifier](issue-processing.md#pre-pr-verifier-issue-3395)
+uses) on the head, with the findings of the review being answered numbered
+into the prompt.
+
+It runs only when all of these hold: the round answers a reviewer change
+request (a `pr_review` comment), the round made changes, and no commit is
+left unpushed. It runs after the agent's turn, the drift check and the
+final-mile commit-and-push, and before the push is verified and the reply is
+written. A change request with no findings in the fleet format is skipped.
+
+What it reads, with `gh` and the checkout: the PR's base ref, changed files,
+title and body from `gh pr view`; the linked issue, named by the branch, from
+`gh issue view` (the PR's own title and body stand in when the branch names no
+issue or the read fails); and the PR summary file among the PR's changed files,
+read at the head. A PR with no summary file, or a summary that cannot be read,
+is not checked.
+
+What blocks: the brief asks for an `earlierFindings` array with one verdict
+per earlier finding, numbered from 1 in the order listed: `fixed`, `partly` or
+`not fixed`, with a note. The code, not the model, owes the result. A finding
+marked `partly` or `not fixed`, or left without a verdict, is a blocking
+finding, as is any other finding the verifier raises or a checklist item it
+reports missing.
+
+A blocked round gets **one** recovery turn, with full tools on the PR
+checkout. The agent is told to reproduce each blocking finding, fix it in the
+code, its tests or the summary and doc text, run the tests that cover the
+change, commit and push, and correct `.pr_response_message` so it does not
+claim a finding the verifier marks partly or not fixed. The verifier then runs
+once more on the new head. A recovery turn that changed the head is followed by
+a **second commit-and-push** before the push is verified; if that push fails,
+the round does not treat the push as confirmed.
+
+Results and what reaches the reply: a clean first check writes nothing, and a
+recovered round (blocked, then clear on the re-check) writes nothing either. A
+round still blocked after the re-check is written to `.pr_response_message`
+under `### Review-fix verifier (Issue #3784)`, listing the findings still
+unresolved, so the reply does not report them as resolved. If the re-check
+cannot run, the section names the first check's findings and says the re-check
+did not run. A round the verifier could not check gets the same heading with a
+note that no earlier finding is confirmed fixed by it. The section is appended
+after any text already in `.pr_response_message`; the lead sentence is written
+only when there is no such text.
+
+Logs: each check logs the per-finding verdicts as **Review-fix verifier
+verdicts (Issue #3784)**. The processor logs the gate's outcome (`clean`,
+`recovered`, `reported`, `not_checked` or `skipped`) under **Review-fix
+verifier (Issue #3784)**.
+
+The gate is not called at all when the round is not a reviewer change request,
+made no changes, or left commits unpushed. It never throws: an unexpected error
+is recorded as not checked and the round carries on.
+
+```mermaid
+flowchart TD
+    A["Drift check and final-mile push done"] --> B{"Reviewer change request, pushed,<br/>nothing unpushed, fleet findings?"}
+    B -- no --> Z["Not run, or skipped"]
+    B -- yes --> C["Verifier on the head,<br/>earlier findings numbered"]
+    C --> D{"Checked?"}
+    D -- no --> N["Reply: not checked"]
+    D -- yes --> E{"Blocked?"}
+    E -- no --> K["Clean: nothing written"]
+    E -- yes --> R["One full-tools recovery turn"]
+    R --> P["Second commit-and-push"]
+    P --> F["Verifier re-check"]
+    F -- "passes" --> Q["Recovered: nothing written"]
+    F -- "still blocked or not run" --> S["Reply: unresolved findings"]
+```
+
 #### Verify a claim about another component before rewriting it (Issue #3090)
 
 When a finding says prompt, doc or PR-summary text misdescribes how another
