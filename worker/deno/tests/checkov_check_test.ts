@@ -29,6 +29,7 @@ import {
   runCheckovCheck,
 } from "../lib/checkov_check.ts";
 import { CHECKOV_IMAGE, CHECKOV_IMAGE_TAG } from "../lib/pinned_actions.ts";
+import { runQualityGate } from "../lib/quality_gate.ts";
 import { main } from "../checkov_report.ts";
 
 /** One `[lineNumber, lineText]` pair of a Checkov code block. */
@@ -937,5 +938,61 @@ Deno.test("checkov_report - a failing report exits 1 and prints the finding", as
     assertStringIncludes(run.err, "checkov: FAILED (1 failed check(s)");
     assertStringIncludes(run.err, "CKV_AWS_24");
     assertEquals(run.out, "");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gate wiring (Issue #3653)
+// ---------------------------------------------------------------------------
+
+/** The gate's options for a quick, sequential, prompt-free run. */
+const GATE_OPTIONS = {
+  strict: false,
+  sequential: true,
+  validatePrompts: false,
+} as const;
+
+Deno.test("quality gate - no checkov stage where checkov.yml is absent", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runQualityGate({
+      scriptDir: dir,
+      options: GATE_OPTIONS,
+    });
+    assert(result.ok, "quality gate should return a result");
+    const names = result.value.checks.map((check) => check.name);
+    assert(
+      !names.includes("checkov"),
+      `Gate must not run checkov without ${CHECKOV_WORKFLOW_PATH}; recorded: ${
+        names.join(", ")
+      }`,
+    );
+  });
+});
+
+Deno.test("quality gate - registers the checkov stage where checkov.yml exists", async () => {
+  await withTempDir(async (dir) => {
+    // An empty workflow file is enough: the stage keys on the file's presence.
+    await Deno.mkdir(`${dir}/.github/workflows`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/${CHECKOV_WORKFLOW_PATH}`, "");
+    const result = await runQualityGate({
+      scriptDir: dir,
+      options: GATE_OPTIONS,
+    });
+    assert(result.ok, "quality gate should return a result");
+    const names = result.value.checks.map((check) => check.name);
+    const checkov = result.value.checks.find((check) =>
+      check.name === "checkov"
+    );
+    assert(
+      checkov !== undefined,
+      `Gate must run checkov where ${CHECKOV_WORKFLOW_PATH} exists; recorded: ${
+        names.join(", ")
+      }`,
+    );
+    // SKIPPED where Checkov is unavailable; PASSED when it scanned the empty dir.
+    assert(
+      checkov.status === "SKIPPED" || checkov.status === "PASSED",
+      `checkov stage must be SKIPPED or PASSED on an empty tree, got ${checkov.status}: ${checkov.output}`,
+    );
   });
 });

@@ -241,6 +241,41 @@ Deno.test("invariant e: no job calling checkov.yml is a problem", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// f. checkov.yml sets no concurrency key, top level or job level
+// ---------------------------------------------------------------------------
+
+/** Why checkov.yml must not set `concurrency`, as the problem states it. */
+const CONCURRENCY_WHY =
+  "as a called workflow it inherits the caller's github.workflow, " +
+  "so its own group would cancel its siblings (quality.yml holds the one group)";
+
+Deno.test("invariant f: a top-level concurrency block in checkov.yml is a problem", async () => {
+  const { checkov, quality } = await realFiles();
+  const mutated = replaceOnce(
+    checkov,
+    "\njobs:\n",
+    "\nconcurrency:\n  group: checkov\n\njobs:\n",
+  );
+  assertEquals(validateCheckovWorkflows(mutated, quality), [
+    `${CHECKOV_WORKFLOW_PATH}: top-level \`concurrency\` is not allowed; ` +
+    CONCURRENCY_WHY,
+  ]);
+});
+
+Deno.test("invariant f: a job-level concurrency block in checkov.yml is a problem", async () => {
+  const { checkov, quality } = await realFiles();
+  const mutated = replaceOnce(
+    checkov,
+    "    timeout-minutes: 15\n",
+    "    timeout-minutes: 15\n    concurrency:\n      group: checkov\n",
+  );
+  assertEquals(validateCheckovWorkflows(mutated, quality), [
+    `${CHECKOV_WORKFLOW_PATH}: job \`checkov\` sets \`concurrency\`, ` +
+    `which is not allowed; ${CONCURRENCY_WHY}`,
+  ]);
+});
+
+// ---------------------------------------------------------------------------
 // Unparseable YAML is a problem, never a throw
 // ---------------------------------------------------------------------------
 
@@ -270,24 +305,26 @@ Deno.test("unparseable quality.yml is reported as a problem, not thrown", async 
 // Hostile input: long runs of backslashes and whitespace
 // ---------------------------------------------------------------------------
 
-Deno.test("hostile input: an even flood of backslashes is not a continuation and raises no false problem", async () => {
+Deno.test("hostile input: a flood of backslashes ending a line is a continuation and raises no false problem", async () => {
   const { checkov, quality } = await realFiles();
   const mutated = replaceOnce(
     checkov,
     "          status=0\n",
     `          status=0 ${"\\".repeat(100_000)}\n`,
   );
+  // Any trailing backslash continues the line, whatever the count. The next
+  // line joins after a space, so the scan is still found and nothing is flagged.
   assertEquals(validateCheckovWorkflows(mutated, quality), []);
 });
 
-Deno.test("hostile input: an odd flood of backslashes continues the line and glues the next word, so the scan is missing", async () => {
+Deno.test("hostile input: a long run of backslashes followed by a non-matching character is one inert word and raises no false problem", async () => {
   const { checkov, quality } = await realFiles();
   const mutated = replaceOnce(
     checkov,
     "          status=0\n",
-    `          status=0 ${"\\".repeat(100_001)}\n`,
+    `          status=0 ${"\\".repeat(100_001)}x\n`,
   );
-  assertEquals(validateCheckovWorkflows(mutated, quality), [NO_PINNED_SCAN]);
+  assertEquals(validateCheckovWorkflows(mutated, quality), []);
 });
 
 Deno.test("hostile input: a flood of whitespace still exposes a hidden weakening flag", async () => {

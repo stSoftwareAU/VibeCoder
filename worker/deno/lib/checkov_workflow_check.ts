@@ -18,6 +18,9 @@
  *      Checkov exit reaches the judge rather than ending the step first.
  *   e. quality.yml has a job that calls checkov.yml, and `jobs.gate.needs`
  *      names that job.
+ *   f. checkov.yml sets no `concurrency`, at top level or on any job. As a
+ *      called workflow it inherits the caller's `github.workflow`, so a group
+ *      of its own would cancel its siblings; quality.yml holds the one group.
  *
  * Commands are read as a shell would split them, approximately: `\`+newline
  * continuations are joined, quote characters are dropped, and the rest is
@@ -31,6 +34,7 @@
 import { parse as parseYaml } from "@std/yaml/parse";
 import { CHECKOV_WORKFLOW_PATH, checkovScanArgs } from "./checkov_check.ts";
 import { CHECKOV_IMAGE } from "./pinned_actions.ts";
+import { joinContinuations } from "./ci_install_pin_scanner.ts";
 
 /** The quality workflow whose `gate` job must need the Checkov job. */
 export const QUALITY_WORKFLOW_PATH = ".github/workflows/quality.yml";
@@ -82,24 +86,11 @@ function parseWorkflow(
   return { doc: parsed };
 }
 
-/** Whether a line ends in an unescaped `\`, i.e. a shell line continuation. */
-function endsInContinuation(line: string): boolean {
-  let backslashes = 0;
-  for (let at = line.length - 1; at >= 0 && line[at] === "\\"; at--) {
-    backslashes++;
-  }
-  return backslashes % 2 === 1;
-}
-
 /** The words of a shell command: continuations joined, quotes dropped. */
 function shellWords(command: string): string[] {
-  let joined = "";
-  for (const raw of command.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    joined += endsInContinuation(line) ? line.slice(0, -1) : `${line}\n`;
-  }
-  return joined
-    .split(/\s+/)
+  return joinContinuations(command)
+    .map((line) => line.command)
+    .flatMap((logical) => logical.split(/\s+/))
     .map((word) => word.replaceAll('"', "").replaceAll("'", ""))
     .filter((word) => word !== "");
 }
@@ -146,7 +137,7 @@ function triggerNames(on: unknown): string[] {
   return [];
 }
 
-/** Invariants a through d, over the parsed checkov.yml. */
+/** Invariants a through d and f, over the parsed checkov.yml. */
 function checkovProblems(doc: Mapping): string[] {
   const path = CHECKOV_WORKFLOW_PATH;
   const problems: string[] = [];
@@ -209,6 +200,23 @@ function checkovProblems(doc: Mapping): string[] {
         "`|| status=$?`, so a failed scan ends the step before " +
         "checkov_report.ts judges it",
     );
+  }
+
+  const why =
+    "as a called workflow it inherits the caller's github.workflow, " +
+    "so its own group would cancel its siblings (quality.yml holds the one group)";
+  if (Object.hasOwn(doc, "concurrency")) {
+    problems.push(
+      `${path}: top-level \`concurrency\` is not allowed; ${why}`,
+    );
+  }
+  const jobs: Mapping = isMapping(doc.jobs) ? doc.jobs : {};
+  for (const [key, body] of Object.entries(jobs)) {
+    if (isMapping(body) && Object.hasOwn(body, "concurrency")) {
+      problems.push(
+        `${path}: job \`${key}\` sets \`concurrency\`, which is not allowed; ${why}`,
+      );
+    }
   }
 
   return problems;

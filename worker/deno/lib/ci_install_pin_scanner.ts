@@ -281,7 +281,7 @@ function hit(
 }
 
 /** One shell command, with the first physical line it started on. */
-interface LogicalLine {
+export interface LogicalLine {
   /** The command with any backslash continuations joined onto one line. */
   command: string;
   /** The first physical line as written, used to anchor the file line. */
@@ -292,8 +292,11 @@ interface LogicalLine {
  * Join backslash line continuations so a wrapped install reads as one
  * command (Issue #3953). Without this, `npm install -g \` flagged the
  * trailing `\` as the package and produced the garbage id `…-npm-`.
+ *
+ * Exported for `checkov_workflow_check.ts`, which reads the Checkov scan
+ * command the same way (Issue #3653). Any trailing `\` is a continuation.
  */
-function joinContinuations(run: string): LogicalLine[] {
+export function joinContinuations(run: string): LogicalLine[] {
   const out: LogicalLine[] = [];
   let buffer = "";
   let anchor: string | null = null;
