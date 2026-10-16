@@ -8,12 +8,21 @@
  * runs — and assert on what reaches `gh`: whether a follow-up issue is filed,
  * and what the PR body says. Both directions are pinned: a degraded partial run
  * files the residue and says so; the same run healthy, or degraded but
- * complete, raises the PR exactly as before.
+ * complete, raises the PR exactly as before only when it reports no gap.
+ * Issue #3506: a healthy run whose summary closes out a criterion as `partial`
+ * or `missing` files one follow-up too, and its PR body says so.
  *
  * Uses Australian English throughout (behaviour, colour, organisation, etc.).
  */
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  buildDegradedFollowUpIssue,
+  degradedFollowUpFindingId,
+  FOLLOW_UP_CHAIN_STOP_MARKER,
+  FOLLOW_UP_CHAIN_STOP_SECTION_HEADING,
+  REPORTED_GAP_SECTION_HEADING,
+} from "../lib/degraded_delivery.ts";
 import { workOnIssueCompletion } from "../lib/phases/completion_phase.ts";
 import type { IssueContext, PhaseState } from "../lib/issue_worker_types.ts";
 import type { PhaseClaudeResult } from "../lib/phase_run_stats.ts";
@@ -226,6 +235,11 @@ interface Outcome {
   status: string;
   reason?: string;
   issueCreates: string[][];
+  /** Every `gh issue close` the run issued (PR #3676 review). */
+  issueCloses: string[][];
+  /** Every `gh issue edit` and `gh issue comment` the run issued. */
+  issueEdits: string[][];
+  issueComments: string[][];
   prBodies: string[];
   recoverCalls: number;
   prCreateCalls: number;
@@ -233,6 +247,8 @@ interface Outcome {
   prUrl?: string;
   prNumber?: number;
   outcome: RunOutcome;
+  /** Every `logger.warn` call the run made, with its context. */
+  warnings: { message: string; context: unknown }[];
 }
 
 const EXISTING_PR_URL = "https://github.com/stSoftwareAU/VibeCoder/pull/777";
@@ -246,6 +262,16 @@ async function runCompletion(opts: {
   prExistsForBranch?: boolean;
   /** Issue #3121: override the URL `findExistingPrForBranch` reports. */
   prUrl?: string;
+  /** PR #3676 review: what `gh issue view` reports for the parent issue. */
+  parentState?: "OPEN" | "CLOSED";
+  /** PR #3676 review: the parent's milestone, which routes its base branch. */
+  milestoneTitle?: string;
+  /** PR #3676 review: an open follow-up for the parent that a run would reuse. */
+  existingFollowUp?: number;
+  /** PR #3676 review: make `gh issue close` reject. */
+  failIssueClose?: boolean;
+  /** PR #3676 review: make `gh issue edit` reject. */
+  failIssueEdit?: boolean;
 }): Promise<Outcome> {
   const repoPath = await Deno.makeTempDir();
   if (opts.summary !== null) {
@@ -259,9 +285,13 @@ async function runCompletion(opts: {
   }
 
   const issueCreates: string[][] = [];
+  const issueCloses: string[][] = [];
+  const issueEdits: string[][] = [];
+  const issueComments: string[][] = [];
   const prBodies: string[] = [];
   let recoverCalls = 0;
   let prCreateCalls = 0;
+  const warnings: { message: string; context: unknown }[] = [];
 
   const ctx: IssueContext = {
     repo: "stSoftwareAU/VibeCoder",
@@ -272,6 +302,7 @@ async function runCompletion(opts: {
     issueComments: "",
     githubUser: "testbot",
     config: buildDefaultWorkerConfig(),
+    ...(opts.milestoneTitle ? { milestoneTitle: opts.milestoneTitle } : {}),
   };
   const state: PhaseState = {
     branchName: `issue-${ISSUE}-switch`,
@@ -287,13 +318,46 @@ async function runCompletion(opts: {
   };
 
   const deps = createMockDeps({
+    logger: {
+      warn: (message: string, context?: unknown) =>
+        warnings.push({ message, context }),
+    },
     github: {
       createClient: () => stubClient(),
       ensureLabelExists: () =>
         Promise.resolve({ ok: true as const, value: undefined }),
       runGhCommand: (args: string[]) => {
         if (args[0] === "issue" && args[1] === "list") {
-          return Promise.resolve("[]");
+          return Promise.resolve(
+            opts.existingFollowUp
+              ? JSON.stringify([{
+                number: opts.existingFollowUp,
+                body: `<!-- finding-id: ${
+                  degradedFollowUpFindingId(ISSUE)
+                } -->`,
+                author: { login: "testbot" },
+              }])
+              : "[]",
+          );
+        }
+        if (args[0] === "issue" && args[1] === "view" && opts.parentState) {
+          return Promise.resolve(JSON.stringify({ state: opts.parentState }));
+        }
+        if (args[0] === "issue" && args[1] === "close") {
+          issueCloses.push(args);
+          return opts.failIssueClose
+            ? Promise.reject(new Error("HTTP 403 close"))
+            : Promise.resolve("");
+        }
+        if (args[0] === "issue" && args[1] === "edit") {
+          issueEdits.push(args);
+          return opts.failIssueEdit
+            ? Promise.reject(new Error("HTTP 403 edit"))
+            : Promise.resolve("");
+        }
+        if (args[0] === "issue" && args[1] === "comment") {
+          issueComments.push(args);
+          return Promise.resolve("");
         }
         if (args[0] === "issue" && args[1] === "create") {
           issueCreates.push(args);
@@ -367,11 +431,15 @@ async function runCompletion(opts: {
     status: result.status,
     reason,
     issueCreates,
+    issueCloses,
+    issueEdits,
+    issueComments,
     prBodies,
     recoverCalls,
     prCreateCalls,
     prUrl: state.prUrl,
     prNumber: state.prNumber,
+    warnings,
     // Issue #3121: the composition `workOnIssue` performs — the failed
     // result, plus whatever PR fields the phase recorded on its state.
     outcome: deriveRunOutcome({
@@ -419,7 +487,7 @@ Deno.test("completion - the same run, healthy and complete, raises the PR with n
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
 });
 
-Deno.test("completion - a healthy run is unaffected even when its summary reports a gap", async () => {
+Deno.test("completion - a healthy run whose summary reports a missing criterion files one follow-up and says so in the PR (Issue #3506)", async () => {
   const outcome = await runCompletion({
     issueBody: ISSUE_WITH_CRITERIA,
     summary: SUMMARY_PARTIAL,
@@ -427,8 +495,340 @@ Deno.test("completion - a healthy run is unaffected even when its summary report
   });
 
   assertEquals(outcome.status, "continue");
-  assertEquals(outcome.issueCreates.length, 0);
+  assertEquals(outcome.issueCreates.length, 1);
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
+  const create = outcome.issueCreates[0]!;
+  const labelAt = create.indexOf("--label");
+  assertEquals(create[labelAt + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(body, "The docs table lists opus for planning.");
+  assertStringIncludes(body, `#${ISSUE}`);
+  assert(!body.includes("**degraded**"));
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, REPORTED_GAP_SECTION_HEADING);
+  assertStringIncludes(pr, "#900");
+  assertStringIncludes(pr, "The docs table lists opus for planning.");
+});
+
+Deno.test("completion - a healthy run on an issue stating no criteria files one idle-task follow-up for its partial entry (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue", outcome.reason);
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(
+    body,
+    "**partial** — the router sends planning to opus",
+  );
+  assertStringIncludes(body, "the docs table lists opus");
+  assert(!body.includes("**degraded**"));
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, REPORTED_GAP_SECTION_HEADING);
+  assertStringIncludes(pr, "the router sends planning to opus");
+  assertStringIncludes(pr, "#900");
+  assert(!pr.includes("Degraded run"));
+});
+
+Deno.test("completion - a degraded run on an issue stating no criteria still files one idle-task follow-up for its partial entry (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITHOUT_SCOPE,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: DEGRADED,
+  });
+
+  assertEquals(outcome.status, "continue", outcome.reason);
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(body, "**partial** — the router sends planning to opus");
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, "Degraded run — partial delivery");
+  assertStringIncludes(pr, "the router sends planning to opus");
+  assertStringIncludes(pr, "#900");
+  assert(
+    !pr.includes("No follow-up was filed"),
+    "the PR must not say no follow-up was filed",
+  );
+});
+
+Deno.test("completion - a healthy run whose summary closes out one criterion as partial files exactly one idle-task follow-up (Issue #3506)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+  const body = create[create.indexOf("--body") + 1]!;
+  assertStringIncludes(
+    body,
+    "**partial** — The router sends planning to opus.",
+  );
+  const pr = outcome.prBodies[0]!;
+  assertStringIncludes(pr, REPORTED_GAP_SECTION_HEADING);
+  assertStringIncludes(pr, "#900");
+  const section = pr.slice(0, pr.indexOf("## Summary"));
+  assertStringIncludes(section, "The router sends planning to opus.");
+  assert(
+    !section.includes("The docs table lists opus for planning."),
+    "met items are not listed in the section",
+  );
+});
+
+/** Issue body of a partial-delivery follow-up the worker filed for #517. */
+const FOLLOW_UP_ISSUE_BODY = buildDegradedFollowUpIssue({
+  parentNumber: 517,
+  parentTitle: "Finish the switch",
+  verdict: {
+    degraded: false,
+    delivered: ["The docs table lists opus for planning."],
+    shortfalls: [{
+      criterion: "The router sends planning to opus.",
+      status: "partial",
+    }],
+  },
+  runId: "run-1",
+}).body;
+
+Deno.test("completion - a healthy run on a partial-delivery follow-up files no nested follow-up and hands it to a human (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: FOLLOW_UP_ISSUE_BODY,
+    summary: SUMMARY_PARTIAL_AND_MET.replace(
+      "Did a little.",
+      `Did a little. Closes #${ISSUE}.`,
+    ),
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates, [], "no nested idle-task follow-up");
+  assertEquals(outcome.issueEdits.filter((e) => e.includes("--add-label")), [[
+    "issue",
+    "edit",
+    String(ISSUE),
+    "--repo",
+    "stSoftwareAU/VibeCoder",
+    "--add-label",
+    "needs-human",
+  ]]);
+  assertEquals(outcome.issueComments.length, 1);
+  const comment = outcome.issueComments[0]!;
+  assertStringIncludes(
+    comment[comment.indexOf("--body") + 1]!,
+    "**partial** — The router sends planning to opus.",
+  );
+  const pr = outcome.prBodies[0]!;
+  assert(pr.startsWith(FOLLOW_UP_CHAIN_STOP_SECTION_HEADING));
+  assertStringIncludes(pr, FOLLOW_UP_CHAIN_STOP_MARKER);
+  assert(!pr.includes(REPORTED_GAP_SECTION_HEADING));
+  assert(!pr.includes(`Closes #${ISSUE}`), "the PR does not close it");
+  assertStringIncludes(pr, `Part of #${ISSUE}`);
+});
+
+Deno.test("completion - a follow-up that cannot be handed to a human raises no PR (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: FOLLOW_UP_ISSUE_BODY,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    failIssueEdit: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+  assertEquals(outcome.issueCreates, []);
+  assertEquals(outcome.issueComments, [], "no comment without the label");
+  assertStringIncludes(outcome.reason ?? "", "HTTP 403 edit");
+});
+
+Deno.test("completion - a degraded run on a partial-delivery follow-up still files its follow-up (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: FOLLOW_UP_ISSUE_BODY,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 1);
+  assertEquals(outcome.issueEdits.filter((e) => e.includes("--add-label")), []);
+});
+
+Deno.test("completion - the follow-up log names whether the run was degraded, its reason and its shortfall count (Issue #3506)", async () => {
+  const healthy = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+  assertEquals(
+    healthy.warnings.filter((w) =>
+      w.message ===
+        "Run delivered partial scope — residue recorded in a follow-up"
+    ),
+    [{
+      message: "Run delivered partial scope — residue recorded in a follow-up",
+      context: {
+        degraded: false,
+        reason: undefined,
+        shortfalls: 1,
+        followUp: 900,
+        reused: false,
+      },
+    }],
+  );
+
+  const degraded = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+  });
+  const logged = degraded.warnings.find((w) =>
+    w.message ===
+      "Run delivered partial scope — residue recorded in a follow-up"
+  )?.context as Record<string, unknown> | undefined;
+  assertEquals(logged?.degraded, true);
+  assertStringIncludes(String(logged?.reason), "haiku");
+});
+
+Deno.test("completion - a healthy run whose gap follow-up cannot be filed raises no PR (Issue #3506)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    failIssueCreate: true,
+  });
+
+  assertEquals(outcome.status, "failure");
+  assertEquals(outcome.prCreateCalls, 0, "gh pr create must not run");
+  assertStringIncludes(outcome.reason ?? "", "partial or missing");
+  assert(!(outcome.reason ?? "").includes("Degraded run"));
+  assertStringIncludes(outcome.reason ?? "", "HTTP 502");
+});
+
+Deno.test("completion - a healthy run's follow-up is closed when the parent closes mid-run and no PR is raised (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.prCreateCalls, 0, "no PR is raised for a stale claim");
+  assertEquals(outcome.issueCreates.length, 1, "the follow-up was filed");
+  assertEquals(outcome.issueCloses.length, 1, "and is retracted");
+  const close = outcome.issueCloses[0]!;
+  assertEquals(close[2], "900", "the follow-up is closed, not the parent");
+  assertEquals(close[close.indexOf("--reason") + 1], "not planned");
+  assertStringIncludes(
+    close[close.indexOf("--comment") + 1]!,
+    "issue_closed",
+  );
+});
+
+Deno.test("completion - a degraded run's follow-up is closed when the parent closes mid-run (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: DEGRADED,
+    parentState: "CLOSED",
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCreates.length, 1);
+  assertEquals(outcome.issueCloses.length, 1);
+});
+
+Deno.test("completion - a follow-up that cannot be closed warns and the stale-claim abort stands (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+    failIssueClose: true,
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCloses.length, 1);
+  const warned = outcome.warnings.find((w) =>
+    w.message.includes("Could not close the stale-claim follow-up")
+  );
+  assert(warned, "a failed close is warned about");
+  assertStringIncludes(warned.message, "HTTP 403 close");
+});
+
+Deno.test("completion - a reused follow-up is never closed when the claim goes stale (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+    existingFollowUp: 70,
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCreates.length, 0, "the open one is reused");
+  assertEquals(outcome.issueCloses.length, 0, "a reused one predates the run");
+});
+
+Deno.test("completion - a stale claim with no gap files and closes no follow-up (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_COMPLETE,
+    claudeRunStats: HEALTHY,
+    parentState: "CLOSED",
+  });
+
+  assertEquals(outcome.status, "early_exit");
+  assertEquals(outcome.issueCreates.length, 0);
+  assertEquals(outcome.issueCloses.length, 0);
+});
+
+Deno.test("completion - an open parent keeps its new follow-up and closes nothing (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL,
+    claudeRunStats: HEALTHY,
+    parentState: "OPEN",
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.prCreateCalls, 1);
+  assertEquals(outcome.issueCloses.length, 0);
+});
+
+Deno.test("completion - a milestone child's follow-up is filed into the parent's milestone (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+    milestoneTitle: "Q4 Launch",
+  });
+
+  assertEquals(outcome.status, "continue");
+  assertEquals(outcome.issueCreates.length, 1);
+  const create = outcome.issueCreates[0]!;
+  assertEquals(create[create.indexOf("--milestone") + 1], "Q4 Launch");
+  assertEquals(create[create.indexOf("--label") + 1], "idle-task");
+});
+
+Deno.test("completion - a follow-up for a parent with no milestone carries no --milestone (PR #3676 review)", async () => {
+  const outcome = await runCompletion({
+    issueBody: ISSUE_WITH_CRITERIA,
+    summary: SUMMARY_PARTIAL_AND_MET,
+    claudeRunStats: HEALTHY,
+  });
+
+  assertEquals(outcome.issueCreates.length, 1);
+  assert(!outcome.issueCreates[0]!.includes("--milestone"));
 });
 
 Deno.test("completion - a degraded run that met every criterion raises the PR with no follow-up", async () => {
@@ -521,6 +921,7 @@ Deno.test("completion - a degraded run whose follow-up cannot be filed raises no
 
   assertEquals(outcome.status, "failure");
   assertStringIncludes(outcome.reason ?? "", "follow-up");
+  assertStringIncludes(outcome.reason ?? "", "Degraded run (");
   assertEquals(outcome.prBodies.length, 0, "gh pr create must not run");
 });
 
@@ -709,11 +1110,12 @@ Deno.test("completion - a healthy run blocked by the independent-review gate on 
   assertEquals(outcome.status, "early_exit", outcome.reason);
   assertEquals(
     outcome.issueCreates.length,
-    0,
-    "a healthy run files no follow-up",
+    1,
+    "a healthy run's own missing entry files the follow-up before the gate's recovery",
   );
   assertEquals(outcome.prBodies.length, 1);
   assert(!outcome.prBodies[0]!.includes("Degraded run"));
+  assertStringIncludes(outcome.prBodies[0]!, REPORTED_GAP_SECTION_HEADING);
 });
 
 Deno.test("completion - a degraded run blocked by the independent-review gate whose follow-up cannot be filed fails the run without finalising the PR", async () => {
