@@ -20,9 +20,17 @@ The gate runs in the issue-run completion phase, beside the mutation check:
 after the PR summary is final and before the PR is raised. It joins the late
 summary gates and feeds the same single recovery turn, which may change tests.
 
-It runs only when the PR diff deletes an existing Deno test file (`*_test.ts`,
-`*.test.ts` and similar) or removes at least one line from one. Pure additions
-to tests do not trigger it.
+Unless `skip_coverage_carryover_check` is set (or the runner is not wired), the
+worker first collects the PR diff with `git diff --unified=0 --no-renames
+<base>...HEAD`. A base ref that cannot be resolved, or a diff that cannot be
+collected, is an `error` and blocks the PR, whatever the PR touches. Then the
+repository's `quality_credentials` are resolved; if they cannot be, the check is
+not applicable.
+
+With the diff in hand, tests run only when it deletes an existing Deno test file
+(`*_test.ts`, `*.test.ts` and similar) or removes at least one line from one.
+Any other diff, including pure additions to tests, is not applicable and runs no
+tests.
 
 ## Flow
 
@@ -30,16 +38,21 @@ to tests do not trigger it.
 flowchart TD
     A["PR summary final"] --> B{"skip_coverage_carryover_check?"}
     B -- yes --> Z["Raise PR"]
-    B -- no --> C{"PR deletes or removes a line from a Deno test file?"}
+    B -- no --> P{"PR diff collected?"}
+    P -- no --> X
+    P -- yes --> C{"PR deletes or removes a line from a Deno test file?"}
     C -- no --> N["Not applicable: log the reason"]
     N --> Z
     C -- yes --> D["Base: merge-base worktree, run removed or edited tests with coverage"]
     D -- "runner error" --> X["Block (fail closed)"]
     D -- "budget exhausted" --> W["Warn: carried lines not verified"]
-    D --> E["Head: run importing tests and edited head tests with coverage"]
+    D --> E["Head: run the edited head tests with coverage"]
     E -- "runner error" --> X
     E -- "budget exhausted" --> W
-    E --> F{"Unexempted carried line not executed at head?"}
+    E --> I["Head: for files with a carried line still unreached, run their direct importers with coverage"]
+    I -- "runner error" --> X
+    I -- "budget exhausted" --> W
+    I --> F{"Unexempted carried line not executed at head?"}
     F -- yes --> X
     F -- no --> Z
     W --> Z
@@ -57,30 +70,38 @@ flowchart TD
    executed.
 3. Map each line through `git diff --unified=0 --no-renames <base>...HEAD`. A
    line deleted or rewritten at head is out of scope.
-4. At head, run per Deno project the tests that import a carried file directly,
-   plus the head versions of the edited tests, with coverage.
-5. Block when a carried line is not executed at head. The block lists each
-   `file:line` and asks for a test that reaches it, removal if it is dead code,
-   or an exemption in the PR summary.
+4. At head, run per Deno project the head versions of the edited tests that
+   still exist, with coverage. Carried lines they execute are done.
+5. Only for the files that still have an unexecuted carried line, run per Deno
+   project the head tests that import that file directly (the edited tests are
+   not run again), with coverage. When every carried line is already executed,
+   this step runs nothing.
+6. Block when a carried line is not executed at head and not exempted. The
+   block lists the first 40 such `file:line` locations, then `… and N more`, and
+   asks for a test that reaches each one, removal if it is dead code, or an
+   exemption in the PR summary.
 
 The temporary worktree is removed afterwards with `git worktree remove --force`.
 If that fails, the directory is deleted and `git worktree prune` runs.
 
 ## Languages
 
-Only Deno is checked. For a Rust repository the gate is not applicable and logs
-`Rust coverage carry-over needs cargo-llvm-cov, which the worker container does
-not install`. Rust repositories are not checked yet.
+Only Deno is checked; Rust repositories are not checked yet. When the diff
+removes lines from no Deno test file but does remove lines from a `.rs` file
+under a `tests/` directory, the check is not applicable and logs `Rust coverage
+carry-over needs cargo-llvm-cov, which the worker container does not install`.
+Any other Rust change, including removing a `#[cfg(test)]` unit test in `src/`,
+logs `the diff removes no lines from an existing Deno test file`.
 
 ## Outcomes
 
 | Outcome                  | Meaning                                                                                 | Blocks the PR? |
 | ------------------------ | --------------------------------------------------------------------------------------- | -------------- |
-| Not applicable           | No removed or edited Deno test file, or a Rust repository; logged                       | No             |
+| Not applicable           | Skipped by `skip_coverage_carryover_check`; runner not wired; `quality_credentials` could not be resolved; the diff removes no line from a Deno test file (the Rust reason when it removes lines from a `.rs` file under a `tests/` directory); or no Deno project sits above the edited tests. Logged | No |
 | Completed, no uncovered  | Every carried line is executed at head, or is exempted                                  | No             |
 | Completed, uncovered     | At least one carried line is not executed at head and is not exempted                   | Yes            |
 | Budget exhausted         | The fixed 600 s budget ran out; a warning, never a pass                                 | No             |
-| Error                    | Runner failed: merge-base, worktree, base or head tests failing, or coverage export     | Yes (fail closed) |
+| Error                    | PR diff not collected (including an unresolvable base ref), or the runner failed: merge-base, worktree, base or head tests failing, or coverage export | Yes (fail closed) |
 
 ## Exemption
 
@@ -104,6 +125,6 @@ credentials the mutation check passes (see [Configuration](CONFIGURATION.md)).
 
 ## Known limits
 
-- The head side counts only tests that import a carried module directly, plus
-  the head versions of the edited tests. A line reached only indirectly, through
+- Beyond the head versions of the edited tests, the head side counts only tests
+  that import a carried module directly. A line reached only indirectly, through
   another module, is reported uncovered. Exempt it with a reason.

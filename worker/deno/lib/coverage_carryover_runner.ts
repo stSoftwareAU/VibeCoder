@@ -11,9 +11,14 @@
  * reaches is reported. The worktree and all temporary files live outside the
  * repository and are removed on the way out.
  *
- * Known limit: the head side counts only tests that import a module directly,
- * plus the head versions of the touched tests. A line reached only indirectly
- * (through another module) is reported uncovered, and can be exempted.
+ * The head side runs in two steps, so its cost follows what is left to check:
+ * first the head versions of the edited tests that still exist, then, only for
+ * the files that still have an unreached carried line, the tests that import
+ * that file directly.
+ *
+ * Known limit: beyond the edited tests, the head side counts only tests that
+ * import a module directly. A line reached only indirectly (through another
+ * module) is reported uncovered, and can be exempted.
  *
  * Confinement: test and module paths are repo-relative and resolved through
  * {@link findDenoConfigDir}, which confines them to the repository (symlinks
@@ -162,44 +167,20 @@ async function carryOver(
   if (groups.size === 0) {
     return { kind: "not_applicable", reason: NO_DENO_PROJECT };
   }
-  const baseRoot = await seams.realPath(worktree);
   const baseCov: Coverage = new Map();
-  let index = 0;
-  for (const [dir, group] of groups) {
-    const covDir = `${tmp}/cov-base-${index}`;
-    index++;
-    const run = await denoStep(
-      seams,
-      testArgs(covDir, group.map((t) => relativeTo(dir, t))),
-      projectDir(worktree, dir),
-      remaining,
-      childEnv,
-    );
-    if (run === null) return exhausted();
-    if (run.code !== 0) {
-      return {
-        kind: "error",
-        reason: `base tests fail at the merge base (${group.join(", ")}): ${
-          cause(run, true)
-        }`,
-      };
-    }
-    const report = await denoStep(
-      seams,
-      ["coverage", "--lcov", covDir],
-      projectDir(worktree, dir),
-      remaining,
-      {},
-    );
-    if (report === null) return exhausted();
-    if (report.code !== 0) {
-      return {
-        kind: "error",
-        reason: `deno coverage failed: ${cause(report, false)}`,
-      };
-    }
-    addCoverage(baseCov, parseLcov(report.stdout), baseRoot);
-  }
+  let baseIndex = 0;
+  const baseStop = await runUnderCoverage(seams, {
+    root: worktree,
+    canonicalRoot: await seams.realPath(worktree),
+    groups,
+    covDir: () => `${tmp}/cov-base-${baseIndex++}`,
+    failure: "base tests fail at the merge base",
+    remaining,
+    childEnv,
+    exhausted,
+    target: baseCov,
+  });
+  if (baseStop !== null) return baseStop;
 
   // Executed base lines that survive the diff, mapped to head and de-duplicated.
   const parsed = parseFileHunks(input.diff);
@@ -222,79 +203,72 @@ async function carryOver(
     };
   }
 
-  // Head: the tests that import each carried file (within its project), plus
-  // the head versions of the edited tests that still exist.
-  const headTests = await seams.listTestFiles(input.repoPath);
-  const testsByDir = new Map<string, Set<string>>();
-  const sources = new Map<string, string>();
-  const readHead = async (rel: string): Promise<string> => {
-    const cached = sources.get(rel);
-    if (cached !== undefined) return cached;
-    const text = await seams.readTextFile(`${input.repoPath}/${rel}`);
-    sources.set(rel, text);
-    return text;
-  };
-  const candidates = [...new Set(carriedLines.map((c) => c.file))].sort();
-  for (const file of candidates) {
-    const dir = await findDenoConfigDir(input.repoPath, file, seams);
-    if (dir === null) continue;
-    const set = testsByDir.get(dir) ?? new Set<string>();
-    testsByDir.set(dir, set);
-    const prefix = dirPrefix(dir);
-    for (const t of headTests) {
-      if (!t.startsWith(prefix) || set.has(t)) continue;
-      // SIMPLE-ON-PURPOSE: only direct imports count, with no transitive import graph — upgrade when a line reached only through a helper module is reported uncovered in practice.
-      if (importsModule(await readHead(t), dirOf(t), file)) set.add(t);
-    }
-    for (const t of tests) {
-      if (!t.startsWith(prefix) || set.has(t)) continue;
-      if (await seams.exists(`${input.repoPath}/${t}`)) set.add(t);
-    }
-  }
-
-  const headRoot = await seams.realPath(input.repoPath);
   const headCov: Coverage = new Map();
-  index = 0;
-  for (const dir of [...testsByDir.keys()].sort()) {
-    const set = testsByDir.get(dir) ?? new Set<string>();
-    if (set.size === 0) continue;
-    const list = [...set].sort();
-    const covDir = `${tmp}/cov-head-${index}`;
-    index++;
-    const run = await denoStep(
-      seams,
-      testArgs(covDir, list.map((t) => relativeTo(dir, t))),
-      projectDir(input.repoPath, dir),
-      remaining,
-      childEnv,
-    );
-    if (run === null) return exhausted();
-    if (run.code !== 0) {
-      return {
-        kind: "error",
-        reason: `head tests fail (${list.join(", ")}): ${cause(run, true)}`,
-      };
-    }
-    const report = await denoStep(
-      seams,
-      ["coverage", "--lcov", covDir],
-      projectDir(input.repoPath, dir),
-      remaining,
-      {},
-    );
-    if (report === null) return exhausted();
-    if (report.code !== 0) {
-      return {
-        kind: "error",
-        reason: `deno coverage failed: ${cause(report, false)}`,
-      };
-    }
-    addCoverage(headCov, parseLcov(report.stdout), headRoot);
-  }
+  let headIndex = 0;
+  const headRun = {
+    root: input.repoPath,
+    canonicalRoot: await seams.realPath(input.repoPath),
+    covDir: () => `${tmp}/cov-head-${headIndex++}`,
+    failure: "head tests fail",
+    remaining,
+    childEnv,
+    exhausted,
+    target: headCov,
+  };
+  const unreached = (lines: CarriedLine[]) =>
+    lines.filter((c) => (headCov.get(c.file)?.get(c.line) ?? 0) <= 0);
 
-  const uncovered = carriedLines.filter((c) =>
-    (headCov.get(c.file)?.get(c.line) ?? 0) <= 0
-  );
+  // Head, first: the head versions of the edited tests that still exist. They
+  // usually still reach most of what their base versions reached.
+  const editedAtHead: string[] = [];
+  for (const t of tests) {
+    if (await seams.exists(`${input.repoPath}/${t}`)) editedAtHead.push(t);
+  }
+  const editedStop = await runUnderCoverage(seams, {
+    ...headRun,
+    groups: await groupByProject(input.repoPath, editedAtHead, seams),
+  });
+  if (editedStop !== null) return editedStop;
+
+  // Head, then: only for files that still have an unreached carried line, the
+  // tests that import that file directly (within its project).
+  const afterEdited = unreached(carriedLines);
+  const importers = new Map<string, string[]>();
+  if (afterEdited.length > 0) {
+    const alreadyRun = new Set(editedAtHead);
+    const headTests = await seams.listTestFiles(input.repoPath);
+    const sources = new Map<string, string>();
+    const readHead = async (rel: string): Promise<string> => {
+      const cached = sources.get(rel);
+      if (cached !== undefined) return cached;
+      const text = await seams.readTextFile(`${input.repoPath}/${rel}`);
+      sources.set(rel, text);
+      return text;
+    };
+    const files = [...new Set(afterEdited.map((c) => c.file))].sort();
+    for (const file of files) {
+      const dir = await findDenoConfigDir(input.repoPath, file, seams);
+      if (dir === null) continue;
+      const list = importers.get(dir) ?? [];
+      const prefix = dirPrefix(dir);
+      for (const t of headTests) {
+        if (!t.startsWith(prefix) || alreadyRun.has(t)) continue;
+        // SIMPLE-ON-PURPOSE: only direct imports count, with no transitive import graph — upgrade when a line reached only through a helper module is reported uncovered in practice.
+        if (importsModule(await readHead(t), dirOf(t), file)) {
+          list.push(t);
+          alreadyRun.add(t);
+        }
+      }
+      if (list.length > 0) importers.set(dir, list);
+    }
+  }
+  const importersStop = await runUnderCoverage(seams, {
+    ...headRun,
+    groups: importers,
+  });
+  if (importersStop !== null) return importersStop;
+
+  const uncovered = unreached(afterEdited);
   uncovered.sort((a, b) =>
     a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line
   );
@@ -304,6 +278,71 @@ async function carryOver(
     carried: carriedLines.length,
     uncovered,
   };
+}
+
+interface CoverageRun {
+  /** Where the tests are run from: the base worktree or the repository. */
+  root: string;
+  /** `root` with symlinks resolved; lcov records outside it are dropped. */
+  canonicalRoot: string;
+  /** Repo-relative test files by Deno project directory. */
+  groups: Map<string, string[]>;
+  /** The next fresh coverage directory. */
+  covDir: () => string;
+  /** How a failing test run is named in the error reason. */
+  failure: string;
+  remaining: () => number;
+  childEnv: { env?: Record<string, string> };
+  exhausted: () => CoverageCarryOverResult;
+  /** Coverage is merged into this map. */
+  target: Coverage;
+}
+
+/**
+ * Run each project's tests under coverage, in project order, and merge the
+ * reports into `run.target`. Null when every run succeeded; otherwise the
+ * result the check stops with (budget exhaustion or an error).
+ */
+async function runUnderCoverage(
+  seams: MutationRunnerSeams,
+  run: CoverageRun,
+): Promise<CoverageCarryOverResult | null> {
+  for (const dir of [...run.groups.keys()].sort()) {
+    const list = [...new Set(run.groups.get(dir) ?? [])].sort();
+    if (list.length === 0) continue;
+    const covDir = run.covDir();
+    const cwd = projectDir(run.root, dir);
+    const tested = await denoStep(
+      seams,
+      testArgs(covDir, list.map((t) => relativeTo(dir, t))),
+      cwd,
+      run.remaining,
+      run.childEnv,
+    );
+    if (tested === null) return run.exhausted();
+    if (tested.code !== 0) {
+      return {
+        kind: "error",
+        reason: `${run.failure} (${list.join(", ")}): ${cause(tested, true)}`,
+      };
+    }
+    const report = await denoStep(
+      seams,
+      ["coverage", "--lcov", covDir],
+      cwd,
+      run.remaining,
+      {},
+    );
+    if (report === null) return run.exhausted();
+    if (report.code !== 0) {
+      return {
+        kind: "error",
+        reason: `deno coverage failed: ${cause(report, false)}`,
+      };
+    }
+    addCoverage(run.target, parseLcov(report.stdout), run.canonicalRoot);
+  }
+  return null;
 }
 
 /** Run one git command in the repository; git time is bounded but not budgeted. */

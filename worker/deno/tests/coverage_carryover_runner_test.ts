@@ -1004,6 +1004,143 @@ Deno.test("runCoverageCarryOverCheck - a line two projects reach has its hits su
 });
 
 // ---------------------------------------------------------------------------
+// Head-side narrowing: edited tests first, importers only for what is left
+// ---------------------------------------------------------------------------
+
+/** The base test reaches lib/m.ts and lib/n.ts; one of its two cases is removed. */
+const TWO_MODULE_TEST_BASE = [
+  'import { pick } from "../lib/m.ts";',
+  'import { pick as n } from "../lib/n.ts";',
+  'Deno.test("m", () => pick(true));',
+  'Deno.test("n", () => n(true));',
+];
+const TWO_MODULE_TEST_HEAD = [
+  TWO_MODULE_TEST_BASE[0],
+  TWO_MODULE_TEST_BASE[1],
+  TWO_MODULE_TEST_BASE[2],
+];
+const REMOVE_N_CASE = section(
+  "tests/m_test.ts",
+  "@@ -4 +3,0 @@",
+  `-${TWO_MODULE_TEST_BASE[3]}`,
+) + section("lib/m.ts", "@@ -0,0 +1 @@", "+// header");
+const TWO_MODULE_BASE = {
+  "deno.json": DENO_JSON,
+  "lib/m.ts": LIB_BASE,
+  "lib/n.ts": LIB_BASE,
+  "tests/m_test.ts": TWO_MODULE_TEST_BASE.join("\n") + "\n",
+};
+const TWO_MODULE_HEAD = {
+  "deno.json": DENO_JSON,
+  "lib/m.ts": "// header\n" + LIB_BASE,
+  "lib/n.ts": LIB_BASE,
+  "tests/m_test.ts": TWO_MODULE_TEST_HEAD.join("\n") + "\n",
+  "tests/other_test.ts": OTHER_TEST,
+  "tests/n_other_test.ts":
+    'import { pick } from "../lib/n.ts";\nDeno.test("n other", () => pick(true));\n',
+};
+const TWO_MODULE_BASE_LCOV = [
+  `SF:${WT}/lib/m.ts`,
+  "DA:2,1",
+  "DA:3,1",
+  "end_of_record",
+  `SF:${WT}/lib/n.ts`,
+  "DA:2,1",
+  "DA:3,1",
+  "end_of_record",
+  "",
+].join("\n");
+
+Deno.test("runCoverageCarryOverCheck - the edited head test runs first, and importers run only for files it leaves unreached", async () => {
+  // The edited head test still reaches lib/m.ts (head lines 3 and 4) but no
+  // longer lib/n.ts, so only lib/n.ts's importer runs, and lib/m.ts's does not.
+  const f = fake({
+    base: TWO_MODULE_BASE,
+    head: TWO_MODULE_HEAD,
+    baseLcov: TWO_MODULE_BASE_LCOV,
+    respond: (cmd, args) => {
+      if (cmd !== "deno" || args[0] !== "coverage") return undefined;
+      if (args[2] === `${TMP}/cov-head-0`) {
+        return ok(
+          `SF:${REPO}/lib/m.ts\nDA:3,1\nDA:4,1\nend_of_record\n` +
+            `SF:${REPO}/lib/n.ts\nDA:2,0\nDA:3,0\nend_of_record\n`,
+        );
+      }
+      if (args[2] === `${TMP}/cov-head-1`) {
+        return ok(`SF:${REPO}/lib/n.ts\nDA:2,1\nDA:3,0\nend_of_record\n`);
+      }
+      return undefined;
+    },
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(REMOVE_N_CASE),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 4,
+    uncovered: [{ file: "lib/n.ts", line: 3 }],
+  });
+  const headRuns = f.calls.filter((c) =>
+    isCall(c, "deno", "test") && c.cwd === REPO
+  );
+  assertEquals(headRuns.map((c) => c.args.slice(3)), [
+    [`--coverage=${TMP}/cov-head-0`, "tests/m_test.ts"],
+    [`--coverage=${TMP}/cov-head-1`, "tests/n_other_test.ts"],
+  ]);
+});
+
+Deno.test("runCoverageCarryOverCheck - when the edited head test reaches every carried line, no importer runs", async () => {
+  const f = fake({
+    base: TWO_MODULE_BASE,
+    head: TWO_MODULE_HEAD,
+    baseLcov: TWO_MODULE_BASE_LCOV,
+    headLcov: `SF:${REPO}/lib/m.ts\nDA:3,1\nDA:4,1\nend_of_record\n` +
+      `SF:${REPO}/lib/n.ts\nDA:2,1\nDA:3,1\nend_of_record\n`,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(REMOVE_N_CASE),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "completed",
+    changedTests: ["tests/m_test.ts"],
+    carried: 4,
+    uncovered: [],
+  });
+  const headRuns = f.calls.filter((c) =>
+    isCall(c, "deno", "test") && c.cwd === REPO
+  );
+  assertEquals(headRuns.map((c) => c.args.slice(4)), [["tests/m_test.ts"]]);
+});
+
+Deno.test("runCoverageCarryOverCheck - a failing edited head test stops the check before any importer runs", async () => {
+  const f = fake({
+    base: TWO_MODULE_BASE,
+    head: TWO_MODULE_HEAD,
+    baseLcov: TWO_MODULE_BASE_LCOV,
+    respond: (cmd, args) =>
+      cmd === "deno" && args[0] === "test" &&
+        args.includes(`--coverage=${TMP}/cov-head-0`)
+        ? fail(1, "error: edited boom\n")
+        : undefined,
+  });
+  const result = await runCoverageCarryOverCheck(
+    input(REMOVE_N_CASE),
+    f.seams,
+  );
+  assertEquals(result, {
+    kind: "error",
+    reason: "head tests fail (tests/m_test.ts): error: edited boom",
+  });
+  assertEquals(
+    f.calls.some((c) => c.args.includes(`--coverage=${TMP}/cov-head-1`)),
+    false,
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Cleanup and unexpected errors
 // ---------------------------------------------------------------------------
 
