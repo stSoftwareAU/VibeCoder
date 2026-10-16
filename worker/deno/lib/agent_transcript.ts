@@ -145,70 +145,99 @@ export function resetTranscriptAbsenceForTests(): void {
  * Redact one stream-json line without breaking its JSON (Issue #3826).
  *
  * A line that parses is redacted on its *decoded* strings and re-serialised,
- * so no rule ever sees — or consumes — the backslash of an escaped quote. An
- * object member is also judged as the assignment `key: "value"`, because the
- * raw line put a member such as `"api_key":"…"` in front of the rules and
- * that coverage must not be lost by decoding the value on its own. A line
- * clean both decoded and as raw text is written byte for byte as it arrived; a line that is
- * not JSON (a stray stderr line, a truncated tail) falls back to raw-text
- * redaction, which is the most that can be done for it.
+ * so no rule ever sees — or consumes — the backslash of an escaped quote. The
+ * raw-text pass still runs over the whole line, and nothing it masks is
+ * allowed back onto disk:
+ *
+ *  - a member whose key alone makes it a secret (`"api_key":"…"`) is masked
+ *    whole, as the raw pass masked it;
+ *  - a string the walk left alone but the raw pass changed (a rule whose
+ *    context spans sibling strings, such as an AWS key id beside its secret)
+ *    is masked whole;
+ *  - a line that is clean decoded but not as raw text (a secret in an earlier
+ *    duplicate key, which `JSON.parse` drops) is re-serialised rather than
+ *    written as it arrived.
+ *
+ * Only a line clean both ways is written byte for byte. A line that is not
+ * JSON (a stray stderr line, a truncated tail) — or one the walk cannot finish,
+ * such as one nested deeper than the call stack — gets the raw-text pass,
+ * which is the most that can be done for it and never throws.
  *
  * @param line - One NDJSON line, without its newline
  * @param redact - Text redactor (the console secret redaction)
- * @returns The redacted line; valid JSON whenever the input was
+ * @returns The redacted line; valid JSON whenever the input was and could be
+ *          walked
  */
 export function redactTranscriptLine(
   line: string,
   redact: (text: string) => string = redactSecrets,
 ): string {
-  let event: unknown;
+  const raw = redact(line);
   try {
-    event = JSON.parse(line);
+    return redactDecodedLine(line, raw, redact);
   } catch {
-    return redact(line);
+    return raw;
   }
+}
+
+/**
+ * The decoded half of {@link redactTranscriptLine}. Throws when the line is
+ * not JSON or is too deeply nested to walk; the caller falls back to `raw`.
+ */
+function redactDecodedLine(
+  line: string,
+  raw: string,
+  redact: (text: string) => string,
+): string {
+  const event: unknown = JSON.parse(line);
+  const rawChanged = raw !== line;
   let changed = false;
   // Whether the key alone makes a member a secret, judged on a neutral value.
   const secretNamed = (key: string): boolean => {
     const probe = `${key}: "x1"`;
     return redact(probe) !== probe;
   };
-  const redactString = (text: string): string => {
-    const out = redact(text);
-    if (out !== text) changed = true;
+  const redactKey = (key: string): string => {
+    const out = redact(key);
+    if (out !== key) changed = true;
     return out;
   };
+  const redactValue = (text: string): string => {
+    const own = redact(text);
+    if (own !== text) {
+      changed = true;
+      return own;
+    }
+    // Untouched on its own, but gone from the raw pass's output: a rule saw
+    // it in context. Over-masks only a string the raw pass also changed.
+    if (rawChanged && !raw.includes(JSON.stringify(text).slice(1, -1))) {
+      changed = true;
+      return REDACTION_PLACEHOLDER;
+    }
+    return text;
+  };
   const walk = (value: unknown): unknown => {
-    if (typeof value === "string") return redactString(value);
+    if (typeof value === "string") return redactValue(value);
     if (Array.isArray(value)) return value.map(walk);
     if (value === null || typeof value !== "object") return value;
     // Null prototype, so a `__proto__` member stays an ordinary own property.
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, member] of Object.entries(value)) {
-      const name = redactString(key);
-      if (typeof member === "string") {
-        // A secret-named key masks its whole value, as the raw pass did, even
-        // when another rule already matched part of it; any other member
-        // keeps the finer mask its own redaction gives.
-        const own = redactString(member);
+      const name = redactKey(key);
+      if (typeof member === "string" && secretNamed(key)) {
         const assignment = `${key}: ${JSON.stringify(member)}`;
-        if (secretNamed(key) && redact(assignment) !== assignment) {
+        if (redact(assignment) !== assignment) {
           changed = true;
           out[name] = REDACTION_PLACEHOLDER;
-        } else {
-          out[name] = own;
+          continue;
         }
-        continue;
       }
       out[name] = walk(member);
     }
     return out;
   };
   const redacted = walk(event);
-  // The raw line is kept only when it is clean as raw text too: `JSON.parse`
-  // keeps the last of duplicate keys, so a secret in an earlier duplicate is
-  // invisible to the walk above. Re-serialising drops that member.
-  return changed || redact(line) !== line ? JSON.stringify(redacted) : line;
+  return changed || rawChanged ? JSON.stringify(redacted) : line;
 }
 
 /** Options for {@link AgentTranscriptWriter}. */
@@ -286,11 +315,8 @@ export class AgentTranscriptWriter {
     const pieces = this.#carry.split("\n");
     this.#carry = pieces.pop() ?? "";
     if (pieces.length === 0) return;
-    this.#append(
-      pieces.map((line) => redactTranscriptLine(line, this.#redact)).join(
-        "\n",
-      ) + "\n",
-    );
+    const redacted = this.#redactLines(pieces);
+    if (redacted !== undefined) this.#append(redacted);
   }
 
   /** Flush any trailing partial line. Safe to call more than once. */
@@ -298,7 +324,28 @@ export class AgentTranscriptWriter {
     if (this.#disabled || this.#carry.length === 0) return;
     const tail = this.#carry;
     this.#carry = "";
-    this.#append(redactTranscriptLine(tail, this.#redact) + "\n");
+    const redacted = this.#redactLines([tail]);
+    if (redacted !== undefined) this.#append(redacted);
+  }
+
+  /**
+   * Redact whole lines for the file. The tee is telemetry, never control
+   * flow: it runs inside the agent's stdout pump, so a redactor that throws
+   * disables the writer with its single warning instead of propagating.
+   */
+  #redactLines(lines: string[]): string | undefined {
+    try {
+      return lines.map((line) => redactTranscriptLine(line, this.#redact))
+        .join("\n") + "\n";
+    } catch (err) {
+      this.#recordDisable("write_failed");
+      this.#warn?.(
+        `Agent transcript redaction for ${this.#filePath} failed (${
+          err instanceof Error ? err.message : String(err)
+        }) — tee disabled for this invocation`,
+      );
+      return undefined;
+    }
   }
 
   #append(text: string): void {

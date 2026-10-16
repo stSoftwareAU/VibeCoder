@@ -14,7 +14,10 @@ import {
   redactTranscriptLine,
   resetTranscriptAbsenceForTests,
 } from "../lib/agent_transcript.ts";
-import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
+import {
+  REDACTION_PLACEHOLDER,
+  redactSecrets,
+} from "../lib/secret_redaction.ts";
 import { createAgentStub } from "./support/agent_stub.ts";
 import type { Logger } from "../types.ts";
 import { fakeClock } from "./support/fake_clock.ts";
@@ -128,6 +131,64 @@ Deno.test("agent_transcript - a secret in an earlier duplicate key is not writte
   const redacted = redactTranscriptLine(line);
   assert(!redacted.includes(token), `leaked: ${redacted}`);
   JSON.parse(redacted);
+});
+
+Deno.test("agent_transcript - a secret found only across sibling strings is masked (Issue #3826)", () => {
+  const id = `AKIA${"Q".repeat(16)}`;
+  const secret = `${"a".repeat(20)}/${"b".repeat(19)}`;
+  for (
+    const event of [
+      { args: [id, secret] },
+      { access_key_id: id, key: secret },
+      { input: { AccessKeyId: id, Value: secret } },
+    ]
+  ) {
+    const line = JSON.stringify(event);
+    assert(!redactSecrets(line).includes(secret), "fixture must be detected");
+    const redacted = redactTranscriptLine(line);
+    assert(!redacted.includes(secret), `leaked: ${redacted}`);
+    JSON.parse(redacted);
+  }
+});
+
+Deno.test("agent_transcript - a line nested too deep to walk never throws (Issue #3826)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  try {
+    const token = `ghp_${"B".repeat(36)}`;
+    const depth = 5000;
+    const line = `${"[".repeat(depth)}"export GITHUB_TOKEN=${token}"${
+      "]".repeat(depth)
+    }`;
+    const writer = new AgentTranscriptWriter({ filePath });
+    writer.feed(`${line}\n`);
+    writer.close();
+    const written = await Deno.readTextFile(filePath);
+    assert(!written.includes(token), "secret leaked");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+Deno.test("agent_transcript - a throwing redactor disables the tee instead of propagating (Issue #3826)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  const warnings: string[] = [];
+  try {
+    const writer = new AgentTranscriptWriter({
+      filePath,
+      redact: () => {
+        throw new RangeError("boom");
+      },
+      warn: (message) => warnings.push(message),
+    });
+    writer.feed('{"type":"assistant"}\n');
+    writer.feed('{"type":"result"}\n');
+    assertEquals(warnings.length, 1);
+    assertEquals(writer.disableReason, "write_failed");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
 });
 
 Deno.test("agent_transcript - an unchanged line is written byte for byte (Issue #3826)", () => {
