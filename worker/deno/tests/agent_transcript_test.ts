@@ -141,6 +141,10 @@ Deno.test("agent_transcript - a secret found only across sibling strings is mask
       { args: [id, secret] },
       { access_key_id: id, key: secret },
       { input: { AccessKeyId: id, Value: secret } },
+      // A string another rule already changed still loses the context-only
+      // detection to nothing, and a key is held to the same standard.
+      { args: [id, `ghp_${"C".repeat(36)} ${secret}`] },
+      { id, [secret]: 1 },
     ]
   ) {
     const line = JSON.stringify(event);

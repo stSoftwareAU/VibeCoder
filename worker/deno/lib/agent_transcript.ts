@@ -151,9 +151,9 @@ export function resetTranscriptAbsenceForTests(): void {
  *
  *  - a member whose key alone makes it a secret (`"api_key":"…"`) is masked
  *    whole, as the raw pass masked it;
- *  - a string the walk left alone but the raw pass changed (a rule whose
- *    context spans sibling strings, such as an AWS key id beside its secret)
- *    is masked whole;
+ *  - a string or key holding text the raw pass masked but the decoded pass
+ *    kept (a rule whose context spans sibling strings, such as an AWS key id
+ *    beside its secret) is masked whole;
  *  - a line that is clean decoded but not as raw text (a secret in an earlier
  *    duplicate key, which `JSON.parse` drops) is re-serialised rather than
  *    written as it arrived.
@@ -197,33 +197,46 @@ function redactDecodedLine(
     const probe = `${key}: "x1"`;
     return redact(probe) !== probe;
   };
-  const redactKey = (key: string): string => {
-    const out = redact(key);
-    if (out !== key) changed = true;
-    return out;
-  };
-  const redactValue = (text: string): string => {
-    const own = redact(text);
-    if (own !== text) {
-      changed = true;
-      return own;
+  const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
+  // Whether the raw pass masked something in `text` that the decoded pass
+  // kept: some unmasked run of it is missing from the raw output. The whole
+  // string is tried first (one search); only a mismatch is checked piece by
+  // piece, in order, so the search only moves forward through the line.
+  // Pieces may share a position, because the raw pass can rewrite the
+  // punctuation between them (the Issue #3826 backslash).
+  const lostToRaw = (text: string): boolean => {
+    if (!rawChanged || raw.includes(escaped(text))) return false;
+    let cursor = 0;
+    for (const run of text.split(REDACTION_PLACEHOLDER)) {
+      for (const piece of run.split(/\s+/)) {
+        if (piece === "") continue;
+        const at = raw.indexOf(escaped(piece), cursor);
+        if (at === -1) return true;
+        cursor = at;
+      }
     }
-    // Untouched on its own, but gone from the raw pass's output: a rule saw
-    // it in context. Over-masks only a string the raw pass also changed.
-    if (rawChanged && !raw.includes(JSON.stringify(text).slice(1, -1))) {
+    return false;
+  };
+  // A string's own mask, widened to the whole string when the raw pass saw a
+  // secret in it through context the decoded string lacks (an AWS key id in
+  // a sibling string). Strings both passes agree on keep the finer mask.
+  const redactString = (text: string): string => {
+    const own = redact(text);
+    if (lostToRaw(own)) {
       changed = true;
       return REDACTION_PLACEHOLDER;
     }
-    return text;
+    if (own !== text) changed = true;
+    return own;
   };
   const walk = (value: unknown): unknown => {
-    if (typeof value === "string") return redactValue(value);
+    if (typeof value === "string") return redactString(value);
     if (Array.isArray(value)) return value.map(walk);
     if (value === null || typeof value !== "object") return value;
     // Null prototype, so a `__proto__` member stays an ordinary own property.
     const out: Record<string, unknown> = Object.create(null);
     for (const [key, member] of Object.entries(value)) {
-      const name = redactKey(key);
+      const name = redactString(key);
       if (typeof member === "string" && secretNamed(key)) {
         const assignment = `${key}: ${JSON.stringify(member)}`;
         if (redact(assignment) !== assignment) {
