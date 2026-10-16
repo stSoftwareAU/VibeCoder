@@ -183,8 +183,8 @@ ones behind it.
    `{ ready: [...], auditBlocked: [...], skipped: {...} }`. Post each
    `auditBlocked` entry with no model run: write `{"pr": <the entry>,
    "review": <its review>}` to a file in the scratchpad and run `post.ts`
-   on it (see [2. Post](#2-post)); its one finding makes `post.ts` request
-   changes, write the log record and notify. Then review every `ready` PR
+   on it with `--no-model` added (see [2. Post](#2-post)); its one finding
+   makes `post.ts` request changes, write the log record and notify. Then review every `ready` PR
    (steps below). `run.sh` posts them the same way before its round.
 4. Start step 1 again, adding `--sleep-first`. The PRs just reviewed are now
    `already-reviewed` at their head commit, so the gate does not report them
@@ -301,6 +301,20 @@ The script does the rest, so do not post anything yourself:
   review posted and is not retried.
 - It links an open issue with the same title instead of filing an
   unrelated issue twice. A failure to file one never stops the review.
+- It ends every review body, after the `_Automated review by
+  /review-fleet-prs._` line, with a run footer: a visible `_Review run: ..._`
+  line naming the provider, the model(s), the effort and the estimated USD,
+  and a hidden `<!-- vibe-review-run ... usd="..." -->` marker a report can
+  sum. A round's input file sits in its round directory beside the round's
+  attempt log (`review-run.json`), so the footer names the attempt posting;
+  a DeepSeek fallback names `provider deepseek`. Its cost is only known once
+  the round ends, so the footer first says `cost unknown` and the runner then
+  edits each review to add its share (`scripts/review_cost.ts`, see
+  [running-unattended.md](references/running-unattended.md#what-each-review-cost)).
+  A review posted from an interactive session says `interactive session ·
+  model unknown · cost unknown`; one posted with `--no-model` (an audit
+  send-back) says `no model run` at a known `$0.0000`. An unknown cost is
+  always `cost unknown`, never `$0`.
 - It writes and posts the review body (listing any issues filed), appends
   the result to `<logs>/review-fleet-prs/log.jsonl`, refreshes
   `<logs>/review-fleet-prs/summary.md`, and raises a desktop notification when a
