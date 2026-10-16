@@ -189,3 +189,99 @@ Deno.test("withSiblingBlock - replaces an earlier block instead of appending a s
   assert(!twice.includes("- a#1"));
   assert(twice.startsWith("Body\n\n"));
 });
+
+const AT_TITLE = "Shrink the PWA header gap after the worktree heal";
+const CLOSED_5_DAYS_AGO = "2026-10-10T00:00:00Z";
+const MARKER = (owner: string, kind: string) =>
+  `<!-- issue-routing owner=${owner} subject=${VIBE} kind=${kind} -->`;
+
+for (
+  const [name, extra] of [
+    ["closed within the window, no marker", { closedAt: CLOSED_5_DAYS_AGO }],
+    ["open, no marker", {}],
+    ["closed but carrying this tool's marker", {
+      closedAt: CLOSED_5_DAYS_AGO,
+      body: `Old part\n${MARKER(AUTOTRADER, "cross-repo")}`,
+    }],
+    ["open with a marker for another owner", {
+      body: `Old part\n${MARKER(VIBE, "cross-repo")}`,
+    }],
+    ["open with a marker of another kind", {
+      body: `Old part\n${MARKER(AUTOTRADER, "product")}`,
+    }],
+  ] as const
+) {
+  Deno.test(`route-issue --part - an unrelated same-titled issue (${name}) is neither reused nor edited`, async () => {
+    const store = newStore();
+    store.issues.push({
+      repo: AUTOTRADER,
+      number: 50,
+      title: AT_TITLE,
+      body: "Unrelated work.",
+      closedAt: null,
+      isPullRequest: false,
+      labels: [],
+      comments: [],
+      ...extra,
+    });
+    const before = JSON.stringify(store.issues[0]);
+    const gh = routingFakeGh(store);
+    const { result, data } = await split({ part: PARTS }, gh);
+
+    assertEquals(result.success, false);
+    assertEquals(data?.complete, false);
+    assertEquals(data?.missing, [AUTOTRADER]);
+    const part = data?.parts.find((p) => p.repo === AUTOTRADER);
+    assertEquals(part?.action, "failed");
+    assertStringIncludes(part?.error ?? "", `${AUTOTRADER}#50`);
+    assertStringIncludes(part?.error ?? "", "not reused");
+    assertEquals(JSON.stringify(store.issues[0]), before, "#50 is untouched");
+    assertEquals(gh.calls.filter((c) => c[1] === "edit"), []);
+    assertEquals(
+      store.issues.filter((i) => i.repo === AUTOTRADER).length,
+      1,
+      "no new issue was filed beside it",
+    );
+  });
+}
+
+Deno.test("route-issue --part - a dry run flags an unrelated same-titled issue instead of planning to reuse it", async () => {
+  const store = newStore();
+  store.issues.push({
+    repo: AUTOTRADER,
+    number: 50,
+    title: AT_TITLE,
+    body: "Unrelated work.",
+    closedAt: CLOSED_5_DAYS_AGO,
+    isPullRequest: false,
+    labels: [],
+    comments: [],
+  });
+  const gh = routingFakeGh(store);
+  const { result, data } = await split({ part: PARTS, "dry-run": true }, gh);
+  assertEquals(result.success, false);
+  assertEquals(
+    data?.parts.map((p) => [p.repo, p.action]),
+    [[VIBE, "would-create"], [AUTOTRADER, "failed"]],
+  );
+  assertEquals(gh.calls.filter(isWriteCall), []);
+});
+
+Deno.test("route-issue --part - an open issue with this tool's marker for the part is reused (positive control)", async () => {
+  const store = newStore();
+  store.issues.push({
+    repo: AUTOTRADER,
+    number: 50,
+    title: AT_TITLE,
+    body: `Earlier part.\n${MARKER(AUTOTRADER, "cross-repo")}`,
+    closedAt: null,
+    isPullRequest: false,
+    labels: [],
+    comments: [],
+  });
+  const gh = routingFakeGh(store);
+  const { result, data } = await split({ part: PARTS }, gh);
+  assertEquals(result.success, true);
+  assertEquals(data?.parts.map((p) => p.action), ["created", "reused"]);
+  assertStringIncludes(store.issues[0]!.body, "route-issue-siblings");
+});

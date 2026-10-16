@@ -330,3 +330,47 @@ Deno.test("route-issue --resolve-duplicate - a malformed reference or a create-m
   assertStringIncludes(mixed.result.message, "--title cannot be combined");
   assertEquals(gh.calls, []);
 });
+
+/** X (open, VibeCoder#3607) plus a same-titled issue in the owner repository. */
+function sameTitledStore(closedAt: string | null): FakeStore {
+  const store = pairStore();
+  const at = issue(store, AUTOTRADER, 3242);
+  at.number = 50;
+  at.title = issue(store, VIBE, 3607).title;
+  at.closedAt = closedAt;
+  return store;
+}
+
+for (const dryRun of [false, true]) {
+  Deno.test(`route-issue --resolve-duplicate - with no --correct, a same-titled owner issue closed within the window is refused and X stays open (dry-run ${dryRun})`, async () => {
+    const store = sameTitledStore("2026-10-10T00:00:00Z");
+    const gh = routingFakeGh(store);
+    const { result, data } = await resolve({
+      "resolve-duplicate": `${VIBE}#3607`,
+      ...(dryRun ? { "dry-run": true } : {}),
+    }, gh);
+
+    assertEquals(result.success, false);
+    assertEquals(data?.outcome, "refused");
+    assertStringIncludes(result.message, `${AUTOTRADER}#50`);
+    assertStringIncludes(result.message, "not open");
+    assertEquals(issue(store, VIBE, 3607).closedAt, null);
+    assertEquals(issue(store, AUTOTRADER, 50).comments, []);
+    assertEquals(gh.calls.filter(isWriteCall), []);
+    assertEquals(store.issues.length, 2, "no fresh Y was filed");
+  });
+}
+
+Deno.test("route-issue --resolve-duplicate - with no --correct, a same-titled owner issue that is open is reused (positive control)", async () => {
+  const store = sameTitledStore(null);
+  const gh = routingFakeGh(store);
+  const { result, data } = await resolve({
+    "resolve-duplicate": `${VIBE}#3607`,
+  }, gh);
+  assertEquals(result.success, true);
+  assertEquals(data?.outcome, "resolved");
+  assertEquals(data?.correct_issue, `${AUTOTRADER}#50`);
+  assert(issue(store, VIBE, 3607).closedAt !== null);
+  assertEquals(issue(store, AUTOTRADER, 50).closedAt, null);
+  assertEquals(issue(store, AUTOTRADER, 50).comments.length, 1);
+});

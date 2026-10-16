@@ -7,9 +7,12 @@
  * through `fileRoutedIssue` with the operator's explicit owner, then edits
  * every body to carry a sibling block naming the others.
  *
- * - A part that already exists (same title in its repository) is reused, so
- *   a re-run after a part-way failure completes the set without filing a
- *   part twice.
+ * - A part that already exists is reused, so a re-run after a part-way
+ *   failure completes the set without filing a part twice. "Exists" means an
+ *   open issue in the part's repository with the same title that carries this
+ *   tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->`
+ *   marker; any other same-titled issue or PR (closed, or filed by someone
+ *   else) fails that part and is left unedited.
  * - A part that fails is reported with its error; the remaining parts are
  *   still filed, and siblings are linked only once every part exists.
  * - Labels apply only to the part in the drafting repository; no labels or
@@ -27,6 +30,7 @@ import type {
 } from "./issue_routing_classifier.ts";
 import {
   fileRoutedIssue,
+  ISSUE_ROUTING_MARKER_PREFIX,
   type RoutedIssueAction,
 } from "./issue_routing_filing.ts";
 import type {
@@ -144,6 +148,69 @@ export function withSiblingBlock(body: string, lines: string[]): string {
   return `${body.trimEnd()}\n\n${block}`;
 }
 
+/**
+ * Whether `body` carries this tool's marker for `part`: the owner is the
+ * part's repository and the kind is `cross-repo` (what {@link partDecision}
+ * records).
+ */
+function hasPartMarker(body: string, part: SplitPart): boolean {
+  let from = 0;
+  for (;;) {
+    const start = body.indexOf(ISSUE_ROUTING_MARKER_PREFIX, from);
+    if (start === -1) return false;
+    const end = body.indexOf("-->", start);
+    if (end === -1) return false;
+    const fields = body.slice(start + ISSUE_ROUTING_MARKER_PREFIX.length, end)
+      .trim().split(" ");
+    if (
+      fields.includes("kind=cross-repo") &&
+      fields.some((f) =>
+        f.startsWith("owner=") && sameRepo(f.slice(6), part.repo)
+      )
+    ) {
+      return true;
+    }
+    from = end;
+  }
+}
+
+/**
+ * Refuse to reuse (and later edit) a same-titled issue that is not this
+ * tool's open part: the title search also returns PRs, issues closed in the
+ * last 30 days and unrelated issues.
+ *
+ * @throws Error naming the issue when it is closed or lacks the marker
+ */
+async function requireReusablePart(
+  gh: GhCommandFn,
+  part: SplitPart,
+  number: number,
+): Promise<void> {
+  const raw = await gh([
+    "issue",
+    "view",
+    String(number),
+    "--repo",
+    part.repo,
+    "--json",
+    "body,state",
+  ]);
+  const parsed = JSON.parse(raw) as { body?: unknown; state?: unknown };
+  const open = typeof parsed.state === "string" &&
+    parsed.state.toUpperCase() === "OPEN";
+  const marked = typeof parsed.body === "string" &&
+    hasPartMarker(parsed.body, part);
+  if (!open || !marked) {
+    throw new Error(
+      `${part.repo}#${number} has the same title but is not an open issue ` +
+        `filed by route-issue --part for ${part.repo} (it is ${
+          open ? "open" : "closed"
+        }, ${marked ? "with" : "without"} the issue-routing marker); left ` +
+        `unchanged, not reused. Close or retitle it, or choose another part title`,
+    );
+  }
+}
+
 /** Edit each part's body to list its siblings; skips a body already up to date. */
 async function linkSiblings(
   gh: GhCommandFn,
@@ -208,6 +275,12 @@ export async function fileSplitIssues(
           now: opts.now,
         },
       );
+      if (
+        filed.number !== null &&
+        (filed.action === "reused" || filed.action === "would-reuse")
+      ) {
+        await requireReusablePart(gh, part, filed.number);
+      }
       results.push({ ...part, action: filed.action, number: filed.number });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -115,14 +115,19 @@ reads the wrong issue X, classifies it, and then:
 
 1. checks write access to both repositories;
 2. verifies the correct issue Y is open, or, with no `--correct`, files Y in
-   the owner repository (reusing a same-titled issue already there);
+   the owner repository (reusing a same-titled issue already there, which
+   must be open too);
 3. comments on Y, then on X, so each links to the other;
 4. only then closes X as `not planned`, giving the routing reason.
 
 It refuses, and changes nothing, when X is already closed, when X carries
 a fast-failure or tally marker (#2592), when the owner is `ambiguous` (the basis
-is printed), when the classifier keeps X in its own repository, or when
-`--correct` names a repository other than the owner. A failed step exits
+is printed), when the classifier keeps X in its own repository, when
+`--correct` names a repository other than the owner, or when Y is not open.
+With no `--correct` that last case is a same-titled issue or PR in the owner
+repository that closed in the last 30 days: X stays open rather than closing
+in favour of work that is no longer tracked, so reopen Y or name the open
+owning issue with `--correct`. A failed step exits
 non-zero, names the step and leaves X open. Each linking comment carries a
 marker, so a re-run skips the links that already exist and finishes the job.
 With `--dry-run` it prints the planned steps and makes no write call.
@@ -152,7 +157,13 @@ exists, each body gets a sibling block listing the others.
   `Labels not migrated:` line.
 - If a part fails, the parts that were filed are reported, the missing ones
   are listed, siblings are not linked, and the command exits non-zero. A
-  re-run reuses the parts that exist (found by title) and completes the set.
+  re-run reuses the parts that exist and completes the set.
+- A part "exists" only when an open issue with the same title carries this
+  tool's `<!-- issue-routing owner=<part repo> … kind=cross-repo -->` marker.
+  Any other same-titled issue or PR in that repository (closed in the last
+  30 days, or filed by someone else) is not reused or edited: that part fails
+  and is listed as missing, and the operator closes or retitles that issue or
+  picks another part title.
 - With `--dry-run` it lists every planned part and makes no write call.
 
 The worker's argument parser keeps only the last value of a repeated flag, so
