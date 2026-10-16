@@ -55,6 +55,13 @@ export const reviewRoundCommand: Command = {
       prompt,
       claudeArgs,
       createReviewRoundDeps((message) => console.error(message)),
+      // The prompt sits in the round's own directory, which also holds the
+      // round's attempt log and each attempt's stream.
+      {
+        roundDir: promptFile.includes("/")
+          ? promptFile.replace(/\/[^/]*$/, "") || "/"
+          : ".",
+      },
     );
     return {
       success: code === 0,

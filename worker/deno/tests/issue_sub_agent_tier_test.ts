@@ -3,7 +3,7 @@
  * (Issue #3401).
  *
  * The key is registered host-wide with a per-repository override under
- * `repo_config`, defaults to `"sonnet"`, and an invalid value is warned
+ * `repo_config`, defaults to `"haiku"`, and an invalid value is warned
  * about rather than failing `loadConfig`. Australian English spelling used
  * throughout (behaviour, recognised).
  */
@@ -43,16 +43,25 @@ function minimalConfig(extra: ConfigFile = {}): ConfigFile {
   };
 }
 
-Deno.test("issue_sub_agent_tier - unset everywhere resolves to sonnet without warning", () => {
+Deno.test("issue_sub_agent_tier - unset everywhere resolves to haiku without warning (owner decision on #3473)", () => {
   const warnings: string[] = [];
   const result = resolveIssueSubAgentTier(
     buildDefaultWorkerConfig(),
     undefined,
     (m) => warnings.push(m),
   );
-  assertEquals(result, "sonnet");
+  assertEquals(result, "haiku");
   assertEquals(warnings.length, 0);
-  assertEquals(buildDefaultWorkerConfig().issueSubAgentTier, "sonnet");
+  assertEquals(buildDefaultWorkerConfig().issueSubAgentTier, "haiku");
+});
+
+Deno.test("issue_sub_agent_tier - a host can still opt back out to sonnet", () => {
+  const warnings: string[] = [];
+  assertEquals(
+    resolveHostIssueSubAgentTier("sonnet", (m) => warnings.push(m)),
+    "sonnet",
+  );
+  assertEquals(warnings.length, 0);
 });
 
 Deno.test("issue_sub_agent_tier - host haiku, repo unset or empty resolves to haiku", () => {
@@ -116,18 +125,18 @@ Deno.test("issue_sub_agent_tier - an invalid host value falls back to the defaul
       undefined,
       (m) => warnings.push(m),
     );
-    assertEquals(result, "sonnet");
+    assertEquals(result, "haiku");
     assertEquals(warnings.length, 1);
     assertStringIncludes(warnings[0] ?? "", "issue_sub_agent_tier");
     assertStringIncludes(warnings[0] ?? "", JSON.stringify(badHost));
   }
 });
 
-Deno.test("issue_sub_agent_tier - resolveHostIssueSubAgentTier: undefined resolves to sonnet without warning", () => {
+Deno.test("issue_sub_agent_tier - resolveHostIssueSubAgentTier: undefined resolves to haiku without warning", () => {
   const warnings: string[] = [];
   assertEquals(
     resolveHostIssueSubAgentTier(undefined, (m) => warnings.push(m)),
-    "sonnet",
+    "haiku",
   );
   assertEquals(warnings.length, 0);
 });
@@ -184,7 +193,7 @@ Deno.test("issue_sub_agent_tier - loadConfig never throws on a bad host value", 
       minimalConfig({ issue_sub_agent_tier: 7 } as unknown as ConfigFile),
       async (configPath) => {
         const config = await loadConfig(configPath);
-        assertEquals(config.issueSubAgentTier, "sonnet");
+        assertEquals(config.issueSubAgentTier, "haiku");
       },
     );
   } finally {
