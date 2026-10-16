@@ -43,7 +43,11 @@ Purely a guidance and documentation change, plus one documentation-drift
 test. No runtime code changed.
 
 - `worker/deno/tests/drift_pin_source_value_3655_docs_test.ts` pins the new
-  text on every surface, each pin scoped to its section. Following its own
+  text in six tests, each pin scoped to its section: `CODING-STANDARDS.md`,
+  `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`,
+  `prompts/pr_feedback/prompt.md`, `prompts/pr_review_brief/prompt.md` and
+  `CONTRIBUTING.md`. It does not read `docs/workflows/issue-processing.md`,
+  so the operator-doc sentence is not pinned. Following its own
   rule, it builds the example pin from `buildShallowCloneArgs.name` and the
   `--depth=` argument that `buildShallowCloneArgs` returns. Neither is typed
   in.
@@ -66,7 +70,7 @@ test. No runtime code changed.
   assume git history the worker's --depth=1 checkout does not have
   (VibeCoder2893, 3398 and a private fleet PR) (Issue #3494).
 
-**Docs sweep** — grep: "retyp\w*", "typed in", "never retyped", "imported from the live module", `drift-pins-on-base`, "per pinned phrase"; section: `CODING-STANDARDS.md#documentation-drift-tests`; siblings: "config keys", "markers" (condition 3's list of code-held value kinds gained flag, command line, function or export name, version and tag); updated: `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`, `prompts/pr_feedback/prompt.md`, `prompts/pr_review_brief/prompt.md`, `CONTRIBUTING.md`, `docs/workflows/issue-processing.md`; `prompts/test_audit/prompt.md:378` — still true because its parenthetical only illustrates "a value the code does express" and the audit asks for no red check; `docs/SETUP.md:545` and `docs/INTERNALS.md:3661` — still true because they are unrelated uses of the words
+**Docs sweep** — grep: "retyp\w*", "typed in", "never retyped", "imported from the live module", `drift-pins-on-base`, "per pinned phrase"; section: `CODING-STANDARDS.md#documentation-drift-tests`; siblings: "config keys", "markers" (condition 3's list of code-held value kinds gained flag, command line, function or export name, version and tag); updated: `CODING-STANDARDS.md`, `prompts/coding_guidelines/prompt.md`, `prompts/issue/prompt.md`, `prompts/pr_feedback/prompt.md`, `prompts/pr_review_brief/prompt.md`, `CONTRIBUTING.md`, `docs/workflows/issue-processing.md`; `prompts/test_audit/prompt.md:378` — still true because its parenthetical only illustrates "a value the code does express" and the audit asks for no red check; `docs/SETUP.md:545` — still true because it is an unrelated use of "typed in" (choosing `dynamic` at the setup prompt)
 
 ## Test Plan
 
