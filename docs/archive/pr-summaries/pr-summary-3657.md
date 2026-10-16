@@ -106,6 +106,7 @@ flowchart LR
   - Each new `runInDisposableCheckout` and verifier failure test was red-checked the same way in a scratch copy.
 - Results on the final head:
   - Targeted run: `deno test -A tests/security_fix_verdict_test.ts tests/security_fix_verifier_test.ts tests/security_fix_gate_test.ts tests/security_fix_gate_retry_test.ts tests/security_fix_gate_feedback_test.ts tests/completion_phase_security_gate_test.ts tests/completion_phase_security_gate_retry_test.ts tests/issue_worker_wiring_test.ts tests/pre_pr_verifier_3395_test.ts tests/completion_phase_pre_pr_verifier_3395_test.ts` passed.
-  - The full `./quality.sh` passed, run once after the review fixes (see below).
+  - The full `./quality.sh` passed on the final code head: "Result: PASSED (with skipped checks)"; only "config integration" was skipped. Deno tests passed in both the parallel run (7m22s) and the serial run (2m47s).
+  - `deno task pr-summary-check`: 0 gates blocked. The summary claim check is not checked here; the worker runs it when it raises the PR.
 
 <!-- vibe-branch-outcomes -->
