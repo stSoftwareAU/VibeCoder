@@ -11,6 +11,7 @@ import {
   AgentTranscriptWriter,
   maybeCreateAgentTranscriptWriter,
   peekTranscriptAbsence,
+  redactTranscriptLine,
   resetTranscriptAbsenceForTests,
 } from "../lib/agent_transcript.ts";
 import { REDACTION_PLACEHOLDER } from "../lib/secret_redaction.ts";
@@ -77,6 +78,65 @@ Deno.test("agent_transcript - redacts secrets even when split across chunks", as
     const written = await Deno.readTextFile(filePath);
     assertStringIncludes(written, REDACTION_PLACEHOLDER);
     assert(!written.includes("ghp_"), `secret leaked: ${written}`);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => undefined);
+  }
+});
+
+// Issue #3826: the raw line carried `accessToken: \"value\"` inside a JSON
+// string, the redaction rules took the escaping backslash for a bare value,
+// and the written line no longer parsed — so the scheduled transcript scan
+// skipped it, and the value itself was left on disk next to the placeholder.
+Deno.test("agent_transcript - redacting an escaped assignment keeps the line parseable (Issue #3826)", () => {
+  const line = JSON.stringify({
+    type: "assistant",
+    text: 'const config = {\n  accessToken: "check-access-token",\n};',
+  });
+  assertStringIncludes(line, 'accessToken: \\"check-access-token\\"');
+  const redacted = redactTranscriptLine(line);
+  const event = JSON.parse(redacted) as { type: string; text: string };
+  assertEquals(event.type, "assistant");
+  assertEquals(
+    event.text,
+    `const config = {\n  accessToken: "${REDACTION_PLACEHOLDER}",\n};`,
+  );
+  assert(!redacted.includes("check-access-token"), `leaked: ${redacted}`);
+});
+
+Deno.test("agent_transcript - a secret-named member is still masked after decoding (Issue #3826)", () => {
+  const line = JSON.stringify({
+    input: { api_key: "aaaabbbbcccc", input_tokens: 42, note: "plain" },
+  });
+  const event = JSON.parse(redactTranscriptLine(line)) as {
+    input: { api_key: string; input_tokens: number; note: string };
+  };
+  assertEquals(event.input.api_key, REDACTION_PLACEHOLDER);
+  assertEquals(event.input.input_tokens, 42);
+  assertEquals(event.input.note, "plain");
+});
+
+Deno.test("agent_transcript - an unchanged line is written byte for byte (Issue #3826)", () => {
+  const line = '{"type":"result", "usage":{"output_tokens":7},"text":"done"}';
+  assertEquals(redactTranscriptLine(line), line);
+});
+
+Deno.test("agent_transcript - a non-JSON line falls back to raw redaction (Issue #3826)", () => {
+  const redacted = redactTranscriptLine("stderr: export TOKEN=aaaabbbbcccc");
+  assertEquals(redacted, `stderr: export TOKEN=${REDACTION_PLACEHOLDER}`);
+});
+
+Deno.test("agent_transcript - the writer emits parseable redacted lines (Issue #3826)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "agent_transcript_" });
+  const filePath = `${dir}/agent-test.jsonl`;
+  try {
+    const writer = new AgentTranscriptWriter({ filePath });
+    const line = JSON.stringify({ text: 'accessToken: "check-access-token"' });
+    writer.feed(line.slice(0, 20));
+    writer.feed(`${line.slice(20)}\n`);
+    writer.close();
+    const written = (await Deno.readTextFile(filePath)).trimEnd();
+    const event = JSON.parse(written) as { text: string };
+    assertEquals(event.text, `accessToken: "${REDACTION_PLACEHOLDER}"`);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => undefined);
   }
