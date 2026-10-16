@@ -187,33 +187,158 @@ const ISSUE_ELEMENT_PATTERN = /(["'])issue\1\s*,/g;
 const LEADING_LITERAL_PATTERN = /^\s*["']([^"'\n]*)["']/;
 
 /**
- * One quote-aware pass over the source, matching (left to right) either a
- * string literal to keep, or a comment to blank:
- *
- * - `"…"`, `'…'` and `` `…` `` literals, with backslash escapes, are kept. A
- *   literal ends at end of line, so an unterminated quote does not swallow the
- *   lines below it.
- * - `//` runs to the end of the line.
- * - Block comments (slash-star to star-slash) may span lines.
- *
- * Literals are matched where their opening quote appears, so a comment marker
- * inside one (such as `"/*"` or `"https://x"`) is consumed with the literal and
- * never opens a comment.
+ * Keywords after which a `/` opens a regular-expression literal rather than
+ * dividing. After any other word, a number, a literal or a closing bracket it
+ * is a division.
  */
-const COMMENT_OR_STRING_PATTERN =
-  /("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\\n])*`)|\/\/[^\n]*|\/\*[\s\S]*?\*\//g;
+const REGEX_PRECEDING_KEYWORDS: ReadonlySet<string> = new Set([
+  "await",
+  "case",
+  "delete",
+  "do",
+  "else",
+  "in",
+  "instanceof",
+  "new",
+  "of",
+  "return",
+  "throw",
+  "typeof",
+  "void",
+  "yield",
+]);
+
+/** Matches one identifier or number character. */
+const WORD_CHAR_PATTERN = /[\w$]/;
 
 /**
- * Blank every comment, keeping string literals as-is. Each comment character
- * becomes a space except newlines, so line numbers stay aligned with the raw
- * source.
+ * Blank every comment, keeping string, template and regular-expression
+ * literals as-is. Each comment character becomes a space except newlines, so
+ * line numbers stay aligned with the raw source.
+ *
+ * A single left-to-right scan, so a comment marker inside a literal (such as
+ * `"/*"`, `"https://x"` or `milestone/*` in a template) never opens a
+ * comment:
+ *
+ * - `"…"` and `'…'` literals, with backslash escapes, end at their closing
+ *   quote or at end of line, so an unterminated quote does not swallow the
+ *   lines below it.
+ * - Template literals may span lines. Code inside a `${…}` interpolation is
+ *   scanned as code, nesting included, so a backtick or comment there is read
+ *   as such and the template resumes at the matching `}`.
+ * - A `/` where an operand is expected opens a regular-expression literal, so
+ *   a quote or backtick inside one does not open a string.
+ * - `//` runs to the end of the line; a block comment (slash-star to
+ *   star-slash) may span lines.
  */
 function stripComments(source: string): string {
-  return source.replace(
-    COMMENT_OR_STRING_PATTERN,
-    (match: string, literal: string | undefined) =>
-      literal ?? match.replace(/[^\n]/g, " "),
-  );
+  const out = source.split("");
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to; k++) if (out[k] !== "\n") out[k] = " ";
+  };
+  /** Brace depth at which each open `${…}` interpolation closes. */
+  const interpolations: number[] = [];
+  let braceDepth = 0;
+  /** The previous token: a keyword, or "value" / a punctuator character. */
+  let previous = "";
+  let i = 0;
+
+  /** Skip a template body from `i`; returns true when `${` opened code. */
+  const skipTemplateBody = (): boolean => {
+    while (i < source.length) {
+      const c = source[i];
+      if (c === "\\") {
+        i += 2;
+      } else if (c === "`") {
+        i++;
+        return false;
+      } else if (c === "$" && source[i + 1] === "{") {
+        i += 2;
+        return true;
+      } else {
+        i++;
+      }
+    }
+    return false;
+  };
+
+  /** Enter a template body at `i`, opening an interpolation when it hits one. */
+  const scanTemplate = (): void => {
+    if (skipTemplateBody()) {
+      interpolations.push(braceDepth);
+      braceDepth++;
+      previous = "{";
+    } else {
+      previous = "value";
+    }
+  };
+
+  while (i < source.length) {
+    const c = source[i] ?? "";
+    const next = source[i + 1];
+    if (c === "/" && next === "/") {
+      const end = source.indexOf("\n", i);
+      const stop = end === -1 ? source.length : end;
+      blank(i, stop);
+      i = stop;
+    } else if (c === "/" && next === "*") {
+      const end = source.indexOf("*/", i + 2);
+      const stop = end === -1 ? source.length : end + 2;
+      blank(i, stop);
+      i = stop;
+    } else if (c === '"' || c === "'") {
+      i++;
+      while (i < source.length && source[i] !== c && source[i] !== "\n") {
+        i += source[i] === "\\" ? 2 : 1;
+      }
+      if (source[i] === c) i++;
+      previous = "value";
+    } else if (c === "`") {
+      i++;
+      scanTemplate();
+    } else if (c === "/") {
+      const opensRegex = previous === "" ||
+        REGEX_PRECEDING_KEYWORDS.has(previous) ||
+        (previous.length === 1 && !")]}".includes(previous));
+      i++;
+      if (opensRegex) {
+        let inClass = false;
+        while (i < source.length && source[i] !== "\n") {
+          const r = source[i];
+          if (r === "\\") {
+            i += 2;
+            continue;
+          }
+          i++;
+          if (r === "[") inClass = true;
+          else if (r === "]") inClass = false;
+          else if (r === "/" && !inClass) break;
+        }
+        previous = "value";
+      } else {
+        previous = "/";
+      }
+    } else if (WORD_CHAR_PATTERN.test(c)) {
+      const start = i;
+      while (i < source.length && WORD_CHAR_PATTERN.test(source[i] ?? "")) i++;
+      const word = source.slice(start, i);
+      previous = REGEX_PRECEDING_KEYWORDS.has(word) ? word : "value";
+    } else if (/\s/.test(c)) {
+      i++;
+    } else if (c === "}" && interpolations.at(-1) === braceDepth - 1) {
+      interpolations.pop();
+      braceDepth--;
+      i++;
+      scanTemplate();
+    } else {
+      if (c === "{") braceDepth++;
+      else if (c === "}") braceDepth--;
+      previous = c;
+      i++;
+    }
+  }
+
+  return out.join("");
 }
 
 /**

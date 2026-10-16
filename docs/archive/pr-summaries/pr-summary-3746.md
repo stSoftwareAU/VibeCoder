@@ -28,16 +28,24 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
 - The allowlist is per file, not per call site. A new direct create in a file
   that is already allowlisted passes (see Undiscoverable Facts).
 - The check fails closed. A missing scan directory throws
-  (`worker/deno/lib/issue_create_routing_check.ts:311`), a scan path that is not
-  a directory throws (`:318`), and a scan that examines zero `.ts` files throws
-  (`:358`). A stat error other than NotFound is rethrown (`:315`).
-- One quote-aware pass (`COMMENT_OR_STRING_PATTERN`, `:204`) blanks `//` and
-  block comments and keeps string literals. A `//` or `/*` inside a string
-  therefore neither hides a create nor invents one.
-- `findStaleAllowlistEntries` (`:380`) reports an allowlisted file that is gone
+  (`worker/deno/lib/issue_create_routing_check.ts:436`), a scan path that is not
+  a directory throws (`:443`), and a scan that examines zero `.ts` files throws
+  (`:483`). A stat error other than NotFound is rethrown (`:440`).
+- `stripComments` (`:234`) is one left-to-right scan. It blanks `//` and block
+  comments and keeps string, template and regular-expression literals. Template
+  literals may span lines, and code inside `${…}` is scanned as code, nesting
+  included, so a backtick there neither ends nor opens the outer template. A `/`
+  where an operand is expected opens a regex literal (`:300`), so a quote or
+  backtick inside a regex does not open a string. A `//` or `/*` inside any
+  literal therefore neither hides a create nor invents one. Before this, the
+  pass was a regex that ended a template at the end of its line, and
+  `milestone/*` in the YAML template at
+  `worker/deno/lib/workflow_definitions.ts:208` opened a fake block comment that
+  blanked about 600 more lines, real code included, from the scan.
+- `findStaleAllowlistEntries` (`:505`) reports an allowlisted file that is gone
   or no longer holds a direct create. This is not in the issue. It stops the
   allowlist drifting once a call site is migrated, and its read errors other
-  than NotFound are rethrown (`:396`).
+  than NotFound are rethrown (`:521`).
 - The enforcement point is the real-tree scan in the unit test
   `worker/deno/tests/issue_create_routing_check_test.ts`. The gate is not wired
   into `quality_gate.ts`, which matches the sibling
@@ -58,9 +66,12 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
 
 - Known limit: the allowlist is per file. A second direct create added to an
   already-allowlisted file is not flagged.
-- Known limit: the comment and string stripper ends a string literal at the end
-  of its line. A multi-line template literal is not tracked as one literal, so
-  the lines inside it are scanned as code.
+- Known limit: the scanner is a heuristic, not a TypeScript parser. A `/` after
+  `)`, `]`, `}`, a number or an identifier other than a keyword such as `return`
+  is read as division, so a regex literal in that position, holding a quote or
+  backtick, could desync it. A one-off check over every scanned file found each
+  one ends at brace depth 0 with no template left open, which a desync would
+  usually break; that is evidence, not proof.
 - Several reasons say the file files into the worker's own repository by design
   (for example `idle_starvation_escalation.ts`, `milestone_gate_wedge.ts`,
   `provider_outage_alert.ts`). Those targets are fixed on purpose and are not a
@@ -103,7 +114,7 @@ describe the label guard only.
   `worker/deno/tests/issue_create_routing_check_test.ts::issue_create_routing_check - directory scan reports unlisted offenders only`
   (asserts `file` and `line`); the message is rendered by
   `formatIssueCreateRoutingViolations`
-  (`worker/deno/lib/issue_create_routing_check.ts:413`) — reviewer: met
+  (`worker/deno/lib/issue_create_routing_check.ts:538`) — reviewer: met
 - **met** — The scan over the real `worker/deno/lib` and `worker/deno/commands`
   trees passes with the seeded allowlist. — evidence:
   `worker/deno/tests/issue_create_routing_check_test.ts::issue_create_routing_check - real tree has no unlisted direct create call site`,
@@ -113,7 +124,7 @@ describe the label guard only.
   `worker/deno/tests/issue_create_routing_check_test.ts::issue_create_routing_check - allowlist entries are documented and specific`
   — reviewer: met
 - **met** — Tests and quality checks pass. — evidence:
-  `deno task test:unit tests/issue_create_routing_check_test.ts` (17 tests, see
+  `deno task test:unit tests/issue_create_routing_check_test.ts` (19 tests, see
   Test Plan); `./quality.sh` passed on the final head (all checks PASSED; config
   integration SKIPPED) — reviewer: met
 - **met** — Failure Detection: the test goes red when an unlisted direct call
@@ -127,7 +138,7 @@ describe the label guard only.
   `::issue_create_routing_check - fails closed when no .ts file is scanned` —
   reviewer: met
 - **unrequested** — `findStaleAllowlistEntries`
-  (`worker/deno/lib/issue_create_routing_check.ts:380`) and its tests. —
+  (`worker/deno/lib/issue_create_routing_check.ts:505`) and its tests. —
   reviewer: unrequested — reason: keeps the allowlist honest after a call site
   is migrated; without it an entry outlives the call site it describes.
 - **unrequested** — `docs/audits/lib-sweep-coverage/top-up-3746.json`. —
@@ -147,22 +158,29 @@ describe the label guard only.
   diff; the doc now names
   `worker/deno/tests/issue_create_routing_check_test.ts`.
 - **violation** — the non-NotFound rethrows had no test — evidence:
-  `worker/deno/lib/issue_create_routing_check.ts:315` and `:396` — reason: fixed
+  `worker/deno/lib/issue_create_routing_check.ts:440` and `:521` — reason: fixed
   in this diff; added "rethrows a non-missing stat error on a scan directory"
   and "stale audit rethrows a non-missing read error".
 - **violation** — a `//` inside a string was treated as a line comment —
-  evidence: `worker/deno/lib/issue_create_routing_check.ts:204` — reason: fixed
-  by the single quote-aware pass; "detects every direct create form" covers the
-  url-string-before-argv case.
+  evidence: `worker/deno/lib/issue_create_routing_check.ts:289` — reason: fixed
+  by the single left-to-right scan; "detects every direct create form" covers
+  the url-string-before-argv case.
 - **violation** — a `/*` inside a string opened a block comment — evidence:
-  `worker/deno/lib/issue_create_routing_check.ts:204` — reason: fixed by the
-  same pass; "string containing a block-comment opener does not hide a create"
+  `worker/deno/lib/issue_create_routing_check.ts:289` — reason: fixed by the
+  same scan; "string containing a block-comment opener does not hide a create"
   covers it.
+- **violation** — a `/*` inside a multi-line template opened a block comment,
+  hiding real code in `worker/deno/lib/workflow_definitions.ts` from the scan —
+  evidence: `worker/deno/lib/issue_create_routing_check.ts:234` — reason: fixed
+  in this diff; templates span lines, `${…}` is scanned as code and regex
+  literals are recognised. "multi-line template containing a block-comment
+  opener does not hide a create" and "template interpolations are scanned as
+  code" cover it.
 
 ## Test Plan
 
 - `deno task test:unit tests/issue_create_routing_check_test.ts` from
-  `worker/deno`: 17 passed. The 17 tests are in
+  `worker/deno`: 19 passed. The 19 tests are in
   `worker/deno/tests/issue_create_routing_check_test.ts`.
 - `./quality.sh` passed on the final head, all checks PASSED, config integration
   SKIPPED.
@@ -170,21 +188,23 @@ describe the label guard only.
   `worker/deno/tests/issue_create_routing_check_test.ts`. Every flip turned at
   least one named test red:
 
-| Flip                                             | Location                                                | Test that went red                                                                         |
-| ------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| drop an allowlist entry                          | `worker/deno/lib/issue_create_routing_check.ts:51`      | real tree has no unlisted direct create call site                                          |
-| missing-dir guard removed                        | `worker/deno/lib/issue_create_routing_check.ts:311`     | fails closed on a missing scan directory (asserts "does not exist")                        |
-| not-a-directory guard removed                    | `worker/deno/lib/issue_create_routing_check.ts:318`     | fails closed when a scan path is a file                                                    |
-| zero-files guard removed                         | `worker/deno/lib/issue_create_routing_check.ts:358`     | fails closed when no .ts file is scanned                                                   |
-| line-comment strip removed                       | `worker/deno/lib/issue_create_routing_check.ts:204`     | ignores create argv inside comments                                                        |
-| block-comment strip removed                      | `worker/deno/lib/issue_create_routing_check.ts:204`     | ignores create argv inside comments                                                        |
-| verb check changed                               | `worker/deno/lib/issue_create_routing_check.ts:270`     | ignores read verbs and other subcommands                                                   |
-| stale-missing branch changed                     | `worker/deno/lib/issue_create_routing_check.ts:393`     | stale entries are missing or clean files                                                   |
-| stale-clean branch changed                       | `worker/deno/lib/issue_create_routing_check.ts:399`     | stale entries are missing or clean files                                                   |
-| stat catch maps non-NotFound to "does not exist" | `worker/deno/lib/issue_create_routing_check.ts:310-315` | rethrows a non-missing stat error on a scan directory                                      |
-| stale read catch records a stale entry           | `worker/deno/lib/issue_create_routing_check.ts:392-395` | stale audit rethrows a non-missing read error                                              |
-| quote-awareness reverted                         | `worker/deno/lib/issue_create_routing_check.ts:204`     | detects every direct create form (url-string-before-argv case)                             |
-| old separate block-comment pass restored         | `worker/deno/lib/issue_create_routing_check.ts:211`     | string containing a block-comment opener does not hide a create (got `[]`, expected `[2]`) |
+| Flip                                             | Location                                                | Test that went red                                                                                                              |
+| ------------------------------------------------ | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| drop an allowlist entry                          | `worker/deno/lib/issue_create_routing_check.ts:51`      | real tree has no unlisted direct create call site                                                                               |
+| missing-dir guard removed                        | `worker/deno/lib/issue_create_routing_check.ts:436`     | fails closed on a missing scan directory (asserts "does not exist")                                                             |
+| not-a-directory guard removed                    | `worker/deno/lib/issue_create_routing_check.ts:443`     | fails closed when a scan path is a file                                                                                         |
+| zero-files guard removed                         | `worker/deno/lib/issue_create_routing_check.ts:483`     | fails closed when no .ts file is scanned                                                                                        |
+| line-comment branch removed                      | `worker/deno/lib/issue_create_routing_check.ts:279`     | ignores create argv inside comments                                                                                             |
+| block-comment branch removed                     | `worker/deno/lib/issue_create_routing_check.ts:284`     | ignores create argv inside comments                                                                                             |
+| verb check changed                               | `worker/deno/lib/issue_create_routing_check.ts:395`     | ignores read verbs and other subcommands                                                                                        |
+| stale-missing branch changed                     | `worker/deno/lib/issue_create_routing_check.ts:518`     | stale entries are missing or clean files                                                                                        |
+| stale-clean branch changed                       | `worker/deno/lib/issue_create_routing_check.ts:524`     | stale entries are missing or clean files                                                                                        |
+| stat catch maps non-NotFound to "does not exist" | `worker/deno/lib/issue_create_routing_check.ts:435-440` | rethrows a non-missing stat error on a scan directory                                                                           |
+| stale read catch records a stale entry           | `worker/deno/lib/issue_create_routing_check.ts:517-520` | stale audit rethrows a non-missing read error                                                                                   |
+| string-literal branch removed                    | `worker/deno/lib/issue_create_routing_check.ts:289`     | detects every direct create form (url-string-before-argv case); string containing a block-comment opener does not hide a create |
+| template ends at end of line                     | `worker/deno/lib/issue_create_routing_check.ts:247`     | multi-line template containing a block-comment opener does not hide a create                                                    |
+| `${…}` interpolation not tracked                 | `worker/deno/lib/issue_create_routing_check.ts:247`     | template interpolations are scanned as code (comment-in-an-interpolation case)                                                  |
+| regex literal not recognised                     | `worker/deno/lib/issue_create_routing_check.ts:304`     | template interpolations are scanned as code (backtick-in-a-regex-literal case)                                                  |
 
 <!-- vibe-branch-outcomes -->
 

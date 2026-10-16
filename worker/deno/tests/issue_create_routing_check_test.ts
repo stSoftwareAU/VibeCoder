@@ -168,6 +168,73 @@ Deno.test("issue_create_routing_check - string containing a block-comment opener
   );
 });
 
+Deno.test("issue_create_routing_check - multi-line template containing a block-comment opener does not hide a create", () => {
+  // The shape of workflow_definitions.ts: YAML in a multi-line template holds
+  // `milestone/*`. It is template text, not a comment opener, so the create
+  // on line 4 is still scanned.
+  const probe = [
+    "const yaml = `",
+    "branches: [Develop, main, milestone/*]",
+    "`;",
+    'gh(["issue", "create"]);',
+    "/* a real block comment */",
+  ].join("\n");
+  assertEquals(
+    scanContentForDirectIssueCreate(probe, "worker/deno/lib/probe.ts").map(
+      (v) => v.line,
+    ),
+    [4],
+  );
+});
+
+Deno.test("issue_create_routing_check - template interpolations are scanned as code", () => {
+  const cases: Array<[string, string, number[]]> = [
+    [
+      // The backtick pair inside `${…}` is a nested template; it neither ends
+      // nor reopens the outer one, so `/*` stays template text.
+      "nested template in an interpolation",
+      [
+        "const text = `head ${flag ? `inner` : ''}",
+        "glob: milestone/*",
+        "`;",
+        'gh(["issue", "create"]);',
+      ].join("\n"),
+      [4],
+    ],
+    [
+      // A comment inside `${…}` is code-side, so it is blanked.
+      "comment in an interpolation",
+      [
+        "const text = `head ${",
+        '  // ["issue", "create"]',
+        "  value",
+        "} tail`;",
+      ].join("\n"),
+      [],
+    ],
+    [
+      // A backtick inside a regular-expression literal opens no template, so
+      // the real template below keeps its `/*` as text.
+      "backtick in a regex literal",
+      [
+        "const re = /[`]/;",
+        "const yaml = `",
+        "glob: milestone/*",
+        "`;",
+        'gh(["issue", "create"]);',
+      ].join("\n"),
+      [5],
+    ],
+  ];
+  for (const [name, content, expected] of cases) {
+    const lines = scanContentForDirectIssueCreate(
+      content,
+      "worker/deno/lib/case.ts",
+    ).map((v) => v.line);
+    assertEquals(lines, expected, `case: ${name}`);
+  }
+});
+
 Deno.test("issue_create_routing_check - ignores prose and template strings", () => {
   const prose = [
     "throw new Error(`gh issue create failed: ${e}`);",

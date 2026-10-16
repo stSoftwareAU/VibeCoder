@@ -13,7 +13,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 311,
+        "line": 436,
         "outcome": "a missing scan directory throws instead of passing",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - fails closed on a missing scan directory",
@@ -21,7 +21,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 318,
+        "line": 443,
         "outcome": "a scan path that is a file throws instead of passing",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - fails closed when a scan path is a file",
@@ -29,7 +29,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 358,
+        "line": 483,
         "outcome": "a scan that examines zero .ts files throws instead of passing",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - fails closed when no .ts file is scanned",
@@ -37,23 +37,23 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 204,
+        "line": 279,
         "outcome": "a create argv inside a line comment is ignored",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - ignores create argv inside comments",
-        "flipWentRed": "removing the line-comment strip turned it red"
+        "flipWentRed": "removing the line-comment branch turned it red"
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 204,
+        "line": 284,
         "outcome": "a create argv inside a block comment is ignored",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - ignores create argv inside comments",
-        "flipWentRed": "removing the block-comment strip turned it red"
+        "flipWentRed": "removing the block-comment branch turned it red"
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 270,
+        "line": 395,
         "outcome": "read verbs and other subcommands are not flagged",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - ignores read verbs and other subcommands",
@@ -61,7 +61,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 393,
+        "line": 518,
         "outcome": "a missing stale-entry file is reported as stale",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - stale entries are missing or clean files",
@@ -69,7 +69,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 399,
+        "line": 524,
         "outcome": "a clean allowlisted file is reported as stale",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - stale entries are missing or clean files",
@@ -77,7 +77,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 315,
+        "line": 440,
         "outcome": "a non-NotFound stat error on a scan directory is rethrown",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - rethrows a non-missing stat error on a scan directory",
@@ -85,7 +85,7 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 396,
+        "line": 521,
         "outcome": "a non-NotFound read error in the stale audit is rethrown",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - stale audit rethrows a non-missing read error",
@@ -93,19 +93,43 @@
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 204,
+        "line": 289,
         "outcome": "a create argv after a url string literal is detected",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - detects every direct create form",
-        "flipWentRed": "reverting quote-awareness turned it red"
+        "flipWentRed": "removing the string-literal branch turned it red"
       },
       {
         "path": "worker/deno/lib/issue_create_routing_check.ts",
-        "line": 211,
+        "line": 289,
         "outcome": "a string containing a block-comment opener does not hide a create",
         "test": "worker/deno/tests/issue_create_routing_check_test.ts",
         "testName": "issue_create_routing_check - string containing a block-comment opener does not hide a create",
-        "flipWentRed": "restoring the separate block-comment pass turned it red: got [], expected [2]"
+        "flipWentRed": "removing the string-literal branch turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 247,
+        "outcome": "a block-comment opener inside a multi-line template does not hide a create",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - multi-line template containing a block-comment opener does not hide a create",
+        "flipWentRed": "ending a template at end of line turned it red"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 247,
+        "outcome": "a comment inside a template interpolation is blanked as code",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - template interpolations are scanned as code",
+        "flipWentRed": "not tracking ${…} interpolations turned it red (comment-in-an-interpolation case)"
+      },
+      {
+        "path": "worker/deno/lib/issue_create_routing_check.ts",
+        "line": 304,
+        "outcome": "a backtick inside a regex literal opens no template",
+        "test": "worker/deno/tests/issue_create_routing_check_test.ts",
+        "testName": "issue_create_routing_check - template interpolations are scanned as code",
+        "flipWentRed": "not recognising regex literals turned it red (backtick-in-a-regex-literal case)"
       }
     ]
   }
