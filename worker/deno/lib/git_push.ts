@@ -671,6 +671,10 @@ export async function gateUnpushedCommits(
  *
  *   1. `git status --porcelain` — if dirty, stage and commit with the
  *      provided message.
+ *   1a. Step 1a — when `formatBeforeGate` is supplied, it runs (the PR
+ *      processors pass the repository's formatters over the unpushed
+ *      commits, which commit their own result). It cannot fail the call: a
+ *      throw is logged and Step 1b still checks everything.
  *   1b. Step 1b — when `preFlight` is supplied, `gateUnpushedCommits` runs
  *      the changed-file pre-push checks (`runPrePushGate`) over the unpushed
  *      commits, including any the agent committed but never pushed (nothing
@@ -714,6 +718,9 @@ export async function gateUnpushedCommits(
  *   test in the run (Issue #880). The value is stamped verbatim; the trailer's
  *   format is `appendRunIdTrailer`'s and is unaffected by where the id came
  *   from.
+ * @param formatBeforeGate - Optional Step 1a hook, run after Step 1's commit
+ *   and before Step 1b's gate whether or not `preFlight` is supplied. Never
+ *   fatal.
  * @returns Result with details of what was committed and pushed
  */
 export async function commitAndPushPending(
@@ -723,6 +730,7 @@ export async function commitAndPushPending(
   allowDefaultBranch = false,
   preFlight?: PreFlightGateSpec,
   runId?: string,
+  formatBeforeGate?: () => Promise<void>,
 ): Promise<Result<CommitAndPushPendingResult>> {
   // Read-only default-branch guard (Issue #2584) — refuse up front, before
   // staging or committing anything, when the target is the default branch.
@@ -852,6 +860,23 @@ export async function commitAndPushPending(
       } else {
         committedNewChanges = true;
       }
+    }
+  }
+
+  // Step 1a — the repository's formatters over the unpushed commits, now
+  // including Step 1's (follow-up to #3806). A formatting-only miss is fixed
+  // and committed here rather than failing Step 1b, or — with no pre-flight
+  // configured — reaching CI. Never fatal: a hook that throws is logged and
+  // Step 1b still checks everything.
+  if (formatBeforeGate) {
+    try {
+      await formatBeforeGate();
+    } catch (error) {
+      console.warn(
+        `repo formatters: skipped before the push gate: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   }
 
