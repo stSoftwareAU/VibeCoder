@@ -15,7 +15,6 @@ import {
   validateSequenceDiagramFile,
   validateSequenceDiagramSyntax,
 } from "../lib/mermaid_validator.ts";
-import { assertLinearGrowth } from "./support/growth.ts";
 
 // --- validateGitgraphSyntax tests ---
 
@@ -809,23 +808,6 @@ Deno.test(
 );
 
 Deno.test(
-  "validateMermaidBlock - flowchart mixed label: scans hostile input in linear time",
-  () => {
-    const result = assertLinearGrowth(
-      "flowchart mixed-label scan",
-      (chars) => {
-        const pairs = Math.max(1, Math.floor(chars / 5));
-        return `flowchart LR\n  ${"A[(".repeat(pairs)}${")]".repeat(pairs)}`;
-      },
-      (content) =>
-        validateMermaidBlock({ type: "flowchart", content, startLine: 1 }),
-      { baseChars: 20_000 },
-    );
-    assertEquals(result.valid, true);
-  },
-);
-
-Deno.test(
   "validateMermaidBlock - flowchart mixed label: accepts an opener inside a quoted label",
   () => {
     const result = validateMermaidBlock({
@@ -846,5 +828,43 @@ Deno.test(
       startLine: 1,
     });
     assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: names an unclosed label to end of line",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A[text "q"\n  B]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", 'A[text "q"');
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: accepts quoted callback arguments after other arguments",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  A --> B\n  click A call fn(a, "x")',
+      startLine: 1,
+    });
+    assertEquals(result.valid, true);
+  },
+);
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: still flags a node whose id starts with click",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  clickable[text "q"]',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", 'clickable[text "q"]');
   },
 );

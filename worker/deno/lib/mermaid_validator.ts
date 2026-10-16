@@ -645,15 +645,20 @@ function isWordChar(ch: string): boolean {
     (ch >= "0" && ch <= "9") || ch === "_";
 }
 
+// SIMPLE-ON-PURPOSE: line-local TEXT-then-STR scan, not a full Mermaid parse — upgrade when a multi-line label or another lexer rule needs refusing.
 /**
  * Find a flowchart node whose label mixes unquoted text with a quoted string.
  *
- * Scans each line once without regex, so the cost stays linear. Lines that
- * start with `%%` are skipped. Returns the offending node snippet, or null.
+ * Scans each line once, so the cost stays linear. Lines that start with `%%`,
+ * or with `click` followed by whitespace, are skipped. Returns the offending
+ * node snippet, or null.
  */
 function findMixedQuotedFlowchartLabel(content: string): string | null {
   for (const line of content.split("\n")) {
-    if (line.trim().startsWith("%%")) continue;
+    const head = line.trim();
+    if (head.startsWith("%%")) continue;
+    // Mermaid lexes a `click … call fn(args)` callback's arguments as one token, so they are not a node label.
+    if (head.startsWith("click") && /\s/.test(head.charAt(5))) continue;
     let inString = false;
     let i = 0;
     while (i < line.length) {
