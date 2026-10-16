@@ -200,7 +200,7 @@ it. **local** and **network-only** are as defined above.
 | private-repo-A, PR 1 | - | the PR was based on the wrong branch, so its diff carried the whole milestone, including an unrelated permission change | judgement | PR-feedback round (milestone-fix branch); the verifier never runs on one | Closed without merging; left to review |
 | private-repo-A, PR 2 | - | a derived figure was computed at a different cut-off from the values it is measured against | judgement | Milestone roll-up, opened before the verifier was deployed | Left to review |
 | private-repo-A, PR 3 | - | a doc claimed a style rule applies at every screen width; the rule exists only inside one media query | judgement | Verifier deployed; the run was on another host, so whether it ran is not recorded | Left to review |
-| private-repo-A, PR 4 | - | a Mermaid flowchart label mixing unquoted text with a quoted string does not parse | local | None: every CI check on the head passed, and VibeCoder's `check-mermaid` passes the same block | Gap, tracked in #3769 |
+| private-repo-A, PR 4 | - | a Mermaid flowchart label mixing unquoted text with a quoted string does not parse | local | None: every CI check on the head passed, and VibeCoder's `check-mermaid` then passed the same block | Fixed by #3769 |
 | private-repo-A, PR 5 | - | a new button sits under a full-card link overlay, so tapping it follows the link instead | judgement (rendered layout) | Verifier ran on this head (this host's log, 2026-10-13 15:01Z) and did not block | Verifier miss |
 | private-repo-A, PR 6 | - | a top-of-page check ignores nested scrollers and fixed overlays | judgement | Milestone roll-up | Left to review |
 | private-repo-A, PR 7 | - | a time range includes data from outside the intended session | judgement | Verifier deployed; run on another host, not recorded | Left to review |
@@ -358,9 +358,10 @@ a pass.
   - Floci (run 38033819415): a deterministic `ValidationException` from
     `infra/cloudformation/test-floci.sh`, reproducible with the baked `floci`
     binary. No pre-PR stage runs it. Tracked in #3727.
-- The pre-PR stages have no executable Mermaid parse that catches a flowchart
+- The pre-PR stages had no executable Mermaid parse that caught a flowchart
   label mixing unquoted text with a quoted string (found by a private-repo-A
-  review); VibeCoder's own validator passes it. Tracked in #3769.
+  review); VibeCoder's own validator passed it. Fixed by #3769, which adds
+  that check to the validator.
 - The pre-push gate logs nothing on a pass, so its checks on live runs are not
   observable in the worker log. Tracked in #3770.
 
