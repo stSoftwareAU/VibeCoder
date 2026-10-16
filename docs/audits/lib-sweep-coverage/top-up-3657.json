@@ -1,0 +1,13 @@
+{
+  "issue": 3657,
+  "chunk": "top-up-3657",
+  "title": "top-up: independent security-fix verifier",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3657",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: security_fix_verdict.ts and security_fix_verifier.ts (#3657)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/security_fix_verdict.ts",
+    "worker/deno/lib/security_fix_verifier.ts"
+  ],
+  "sweptAt": "8a884dce996cf7583d505ebb0cf7592239d9a5cb"
+}
