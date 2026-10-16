@@ -9,7 +9,7 @@
         "outcome": "flowchart operand: a flowchart block is checked",
         "test": "worker/deno/tests/mermaid_validator_test.ts",
         "testName": "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in [] (issue case)",
-        "flipWentRed": "drop the flowchart operand -> 6 tests red"
+        "flipWentRed": "drop the flowchart operand -> 8 tests red"
       },
       {
         "path": "worker/deno/lib/mermaid_validator.ts",
@@ -33,7 +33,7 @@
         "outcome": "mixed label found: block refused with label and both fixes named",
         "test": "worker/deno/tests/mermaid_validator_test.ts",
         "testName": "validateMermaidBlock - flowchart mixed label: rejects unquoted text then quoted string in [] (issue case)",
-        "flipWentRed": "condition forced false -> 8 tests red"
+        "flipWentRed": "condition forced false -> 9 tests red"
       },
       {
         "path": "worker/deno/lib/mermaid_validator.ts",
@@ -106,6 +106,22 @@
         "test": "worker/deno/tests/mermaid_validator_test.ts",
         "testName": "validateMermaidBlock - flowchart mixed label: accepts whole label quoted with commas",
         "flipWentRed": "drop the blank-prefix operand -> 12 tests red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 703,
+        "outcome": "snippet scan starts outside a quoted string",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: names a label whose quoted part holds a close bracket",
+        "flipWentRed": "start inString as true -> 1 test red"
+      },
+      {
+        "path": "worker/deno/lib/mermaid_validator.ts",
+        "line": 706,
+        "outcome": "a close bracket inside quotes does not end the snippet",
+        "test": "worker/deno/tests/mermaid_validator_test.ts",
+        "testName": "validateMermaidBlock - flowchart mixed label: names a label whose quoted part holds a close bracket",
+        "flipWentRed": "negate the quote test -> 1 test red"
       },
       {
         "path": "worker/deno/lib/mermaid_validator.ts",

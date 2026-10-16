@@ -868,3 +868,16 @@ Deno.test(
     assertStringIncludes(result.error ?? "", 'clickable[text "q"]');
   },
 );
+
+Deno.test(
+  "validateMermaidBlock - flowchart mixed label: names a label whose quoted part holds a close bracket",
+  () => {
+    const result = validateMermaidBlock({
+      type: "flowchart",
+      content: 'flowchart LR\n  D[profit, "a]b"] --> E',
+      startLine: 1,
+    });
+    assertEquals(result.valid, false);
+    assertStringIncludes(result.error ?? "", '`D[profit, "a]b"]`');
+  },
+);
