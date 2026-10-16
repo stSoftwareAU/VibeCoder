@@ -56,8 +56,14 @@ to date; the changes described above are the issue-specific edits.
   anywhere in the body; restore the blanket own-comment skip; omit hold
   comments from actionable feedback.
 - Completeness checks: 687 passed, 0 failed, 1 ignored.
-- Full local quality check: in progress when this summary was first written.
-  Type checking, lint, formatting and Mermaid checks passed.
+- Full local quality check: blocked locally, not a pass. The parallel unit
+  stage stalled both normally and with `DENO_JOBS=4`; the unchanged test
+  `runClaudeWithTimeout - a clean kill still settles normally with no killIncompleteSeconds (Issue #4254)`
+  also exceeded a 15-second timeout alone. This host reports a process
+  namespace mismatch (`ps` cannot look up itself). Type checking, lint,
+  formatting, Mermaid and completeness checks passed. Optional markdownlint,
+  Semgrep, configuration integration and release-tag checks were skipped.
+  Keep this PR draft until the full gate passes in CI or a supported host.
 
 **Docs sweep** — grep: `standing-violation`, `verifier`; section: `docs/workflows/issue-processing.md#-the-in-run-recovery-from-a-summary-rule-block`, `docs/workflows/pr-feedback.md#-priority-1--pr-feedback`, `docs/MERGE.md`; siblings: `trustedReviewBots`, `authorisedCommenters`; updated: `README.md`, `docs/MERGE.md`, `docs/workflows/issue-processing.md`, `docs/workflows/pr-feedback.md`. Other existing label consumers still honour the same hold label; verifier setup and execution rights are unchanged.
 
