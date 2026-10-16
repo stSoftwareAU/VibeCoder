@@ -1209,9 +1209,11 @@ raised. The agent dispatches nothing for it.
   over the head file, then searches the head's tracked files for each name
   with `git grep -w`, leaving out the lines the diff changes, test files,
   docs, comment lines, import-list lines and the definition itself. The list
-  is capped at 10 callers per function and 15 functions; the rest are named to
-  the verifier as a note. The list is appended to the verifier's prompt as
-  required items
+  shows at most 10 callers per function, for at most 15 functions that have
+  callers, and searches at most 40 changed functions. Callers beyond 10 and
+  functions not searched are counted in a note to the verifier. A changed file
+  whose path git quotes is not scanned and is also noted. The list is appended
+  to the verifier's prompt as required items
   ([`caller_checks.ts`](../../worker/deno/lib/caller_checks.ts)). The reply
   then carries a `callers` array with one entry per listed caller,
   `{symbol, caller: "file:line", verdict, note}`, where `verdict` is

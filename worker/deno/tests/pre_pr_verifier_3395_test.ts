@@ -464,6 +464,7 @@ const PROMPT_BASE = {
   summaryPath: "docs/archive/pr-summaries/pr-summary-3395.md",
   boundaryId: "0123456789ab",
   reviewChecklists: "",
+  callerChecks: { expected: [], notes: [] },
 };
 const NO_TEST_NOTE = "The change touches code but adds no test";
 
@@ -1418,6 +1419,169 @@ Deno.test("a git failure reading the head copy makes the verifier not checked", 
     );
     assertEquals(result.status, "not_checked");
     assert(!asked, "a failed fetch is not handed to the model as a finding");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+// ---- existing callers of changed functions (Issue #3779) -------------------
+
+const CALLER_HELPER_BASE =
+  "export function sharedHelper(x: number): number {\n  return x;\n}\n";
+const CALLER_HELPER_HEAD =
+  "export function sharedHelper(x: number): number {\n  return x + 1;\n}\n";
+
+/** A base with a helper and one caller; the head changes only the helper's body. */
+async function makeCallerRepo(): Promise<Fixture> {
+  const repo = await Deno.makeTempDir({ prefix: "pre-pr-3779-repo-" });
+  const g = (args: string[]) => gitOk(args, repo);
+  await g(["init", "--quiet", "-b", "main"]);
+  await g(["config", "user.email", "t@example.com"]);
+  await g(["config", "user.name", "T"]);
+  await g(["config", "commit.gpgsign", "false"]);
+  await Deno.mkdir(`${repo}/lib`, { recursive: true });
+  await Deno.writeTextFile(`${repo}/lib/helper.ts`, CALLER_HELPER_BASE);
+  await Deno.writeTextFile(
+    `${repo}/lib/caller.ts`,
+    'import { sharedHelper } from "./helper.ts";\nexport const v = sharedHelper(1);\n',
+  );
+  await g(["add", "."]);
+  await g(["commit", "--quiet", "-m", "base"]);
+  const baseSha = (await g(["rev-parse", "HEAD"])).trim();
+  await g(["checkout", "--quiet", "-b", "feature"]);
+  await Deno.writeTextFile(`${repo}/lib/helper.ts`, CALLER_HELPER_HEAD);
+  await g(["commit", "--quiet", "-am", "head"]);
+  const headSha = (await g(["rev-parse", "HEAD"])).trim();
+  return {
+    repo,
+    baseSha,
+    headSha,
+    cleanup: () => Deno.remove(repo, { recursive: true }),
+  };
+}
+
+const CALLER_LINE =
+  "`sharedHelper` (defined at `lib/helper.ts:1`): caller `lib/caller.ts:2`";
+
+function callersReply(callers: unknown): string {
+  return JSON.stringify({
+    summary: "fine",
+    findings: [],
+    testChanges: "none",
+    callers,
+  });
+}
+
+const UNCHANGED_CALLER = {
+  symbol: "sharedHelper",
+  caller: "lib/caller.ts:2",
+  verdict: "unchanged",
+  note: "reads only the sign",
+};
+
+Deno.test("the verifier lists an existing caller inside the fence, and a reply with no callers is blocked", async () => {
+  const f = await makeCallerRepo();
+  try {
+    let prompt = "";
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["lib/helper.ts"] }),
+      makeDeps((o) => {
+        prompt = o.prompt;
+        return Promise.resolve(okRun({ output: REPLY_CLEAN }));
+      }, []),
+    );
+    const label = prompt.indexOf("Existing callers to report:");
+    const at = prompt.indexOf(CALLER_LINE);
+    const end = prompt.indexOf("---END UNTRUSTED USER CONTENT BOUNDARY_", at);
+    assert(label >= 0 && at > label && end > at, "the caller is fenced");
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status === "checked") {
+      const finding = result.review.findings.find((x) =>
+        x.problem.includes("lib/caller.ts:2")
+      );
+      assert(finding !== undefined, "a finding names the caller");
+      assertEquals(finding.file, "lib/helper.ts");
+      assertEquals(finding.line, 1);
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a reply that gives every caller an unchanged verdict is not blocked", async () => {
+  const f = await makeCallerRepo();
+  try {
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["lib/helper.ts"] }),
+      makeDeps(() =>
+        Promise.resolve(
+          okRun({ output: callersReply([UNCHANGED_CALLER]) }),
+        ), []),
+    );
+    assertEquals(result.status, "checked");
+    assert(!prePrVerifierBlocked(result));
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a caller marked regressed is a blocking finding on the caller's file and line", async () => {
+  const f = await makeCallerRepo();
+  try {
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["lib/helper.ts"] }),
+      makeDeps(() =>
+        Promise.resolve(okRun({
+          output: callersReply([{
+            ...UNCHANGED_CALLER,
+            verdict: "regressed",
+            note: "callers expect the old value",
+          }]),
+        })), []),
+    );
+    assertEquals(result.status, "checked");
+    assert(prePrVerifierBlocked(result));
+    if (result.status === "checked") {
+      const finding = result.review.findings.find((x) =>
+        x.problem.includes("regresses under the changed result")
+      );
+      assert(finding !== undefined, "a regressed caller is a finding");
+      assertEquals(finding.file, "lib/caller.ts");
+      assertEquals(finding.line, 2);
+      assertStringIncludes(finding.problem, "callers expect the old value");
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a malformed callers verdict makes the reply not usable, so the pass is not checked", async () => {
+  const f = await makeCallerRepo();
+  try {
+    const result = await runPrePrVerifier(
+      inputFor(f, { changedFiles: ["lib/helper.ts"] }),
+      makeDeps(() =>
+        Promise.resolve(okRun({
+          output: callersReply([{ ...UNCHANGED_CALLER, verdict: "probably" }]),
+        })), []),
+    );
+    assertEquals(result.status, "not_checked");
+    if (result.status === "not_checked") {
+      assertStringIncludes(result.reason, "verifier reply was not usable");
+      assertStringIncludes(result.reason, "callers[0]");
+    }
+  } finally {
+    await f.cleanup();
+  }
+});
+
+Deno.test("a change that only edits a constant gets no existing-callers section", async () => {
+  const f = await makeRepo();
+  try {
+    const p = await promptFor(f);
+    assert(!p.includes("Existing callers"));
+    assert(!p.includes("Existing callers to report"));
   } finally {
     await f.cleanup();
   }

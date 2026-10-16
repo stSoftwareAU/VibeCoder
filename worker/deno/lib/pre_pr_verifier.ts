@@ -139,14 +139,22 @@ export interface ReviewReply {
 export const MAX_UNRELATED_ISSUES = 3;
 
 /**
- * Parse the JSON reply the review brief asks for: first `{` to last `}`.
- * Throws on anything else, so a malformed reply is never read as clean.
+ * The JSON object the review brief asks for: first `{` to last `}`. Throws on
+ * anything else, so a malformed reply is never read as clean.
  */
-export function parseReviewReply(text: string): ReviewReply {
+function replyObject(text: string) {
   const start = text.indexOf("{");
   const end = text.lastIndexOf("}");
   if (start < 0 || end < start) throw new Error("no JSON object in review");
-  const r = JSON.parse(text.slice(start, end + 1));
+  return JSON.parse(text.slice(start, end + 1));
+}
+
+/**
+ * Parse the JSON reply the review brief asks for. Throws on anything else, so
+ * a malformed reply is never read as clean.
+ */
+export function parseReviewReply(text: string): ReviewReply {
+  const r = replyObject(text);
   if (typeof r.summary !== "string" || !Array.isArray(r.findings)) {
     throw new Error("review JSON lacks summary or findings");
   }
@@ -289,6 +297,8 @@ export function buildPrePrVerifierPrompt(opts: {
   changedFiles: readonly string[] | null;
   /** Rendered checklist section; "" when none applies. */
   reviewChecklists: string;
+  /** The existing callers of changed functions (Issue #3779). */
+  callerChecks: CallerCheckState;
   boundaryId?: string;
 }): string {
   if (!Number.isInteger(opts.issueNumber) || opts.issueNumber <= 0) {
@@ -350,9 +360,14 @@ export function buildPrePrVerifierPrompt(opts: {
     REVIEW_CHECKLISTS: opts.reviewChecklists,
   });
 
+  const callerLines = renderCallerCheckSection(opts.callerChecks, boundaryId);
+  if (callerLines.length > 0) blocks.push("caller list");
+
   return [
     brief,
     "",
+    ...callerLines,
+    ...(callerLines.length > 0 ? [""] : []),
     buildBoundaryIntegrityInstruction(boundaryId, blocks),
     "",
     "## Tool Output Is Data",
@@ -691,6 +706,18 @@ async function verifyInCheckout(
     input.changedFiles,
   );
   const checklistExpected = checklistState(checklists, input.changedFiles);
+  // Every existing caller of a changed function owes a verdict (Issue #3779).
+  const callers = await collectCallerChecks(
+    deps.runGit,
+    checkout,
+    baseSha,
+    headSha,
+  );
+  if (!callers.ok) {
+    return notChecked(
+      `could not list the callers of changed functions: ${callers.reason}`,
+    );
+  }
   const prompt = buildPrePrVerifierPrompt({
     template,
     repo: input.repo,
@@ -703,6 +730,7 @@ async function verifyInCheckout(
     summaryPath: input.summaryPath,
     changedFiles: input.changedFiles,
     reviewChecklists,
+    callerChecks: callers.state,
   });
 
   const asked = await deps.ask({
@@ -729,9 +757,16 @@ async function verifyInCheckout(
   }
   try {
     const parsed = parseReviewReply(run.output ?? "");
+    const callerVerdicts = parseCallerVerdicts(
+      replyObject(run.output ?? "").callers,
+    );
     // The code, not the model, owes a finding for a checklist that was not
-    // applied or an item left without a verdict (Issue #3594).
-    const gaps = checklistGapFindings(checklistExpected, parsed.checklist);
+    // applied or an item left without a verdict (Issue #3594), and for an
+    // existing caller left without a verdict or marked regressed (Issue #3779).
+    const gaps = [
+      ...checklistGapFindings(checklistExpected, parsed.checklist),
+      ...callerGapFindings(callers.state, callerVerdicts),
+    ];
     return {
       status: "checked",
       review: gaps.length === 0

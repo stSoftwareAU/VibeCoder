@@ -286,8 +286,9 @@ function gitFailure(
   r: { code: number; stderr: string } | null,
 ): string {
   if (r === null) return `${what}: git could not be spawned`;
-  const cause = r.stderr.split("\n").map((l) => l.trim()).find((l) => l !== "") ??
-    `git exited ${r.code}`;
+  const cause =
+    r.stderr.split("\n").map((l) => l.trim()).find((l) => l !== "") ??
+      `git exited ${r.code}`;
   return `${what}: ${inlineSafe(cause, 200)}`;
 }
 
@@ -418,7 +419,7 @@ export function renderCallerCheckSection(
   const lines = [
     "### Existing callers of changed functions",
     "",
-    "The worker listed each function or method whose body the change touches, and searched the head's tracked source files (tests, docs and comment lines excluded) by word for other places naming it, outside the lines the diff changes. The search is over-inclusive, so a line that only mentions the name still needs a verdict. For EVERY caller listed, decide whether its behaviour changes under the function's new result, and report it in the reply `callers` array as {\"symbol\": \"<name>\", \"caller\": \"<file>:<line>\", \"verdict\": \"unchanged\" | \"changed and tested\" | \"regressed\", \"note\": \"<why>\"}, copying symbol and caller exactly. An `unchanged` note says why the change does not reach that caller. A `changed and tested` note names the test that exercises this caller under the new result. A `regressed` verdict is also a BLOCKING finding. The worker checks that every caller got a verdict: one with none, or one marked `regressed`, sends the change back.",
+    'The worker listed each function or method whose body the change touches, and searched the head\'s tracked source files (tests, docs and comment lines excluded) by word for other places naming it, outside the lines the diff changes. The search is over-inclusive, so a line that only mentions the name still needs a verdict. Add a `callers` key to the reply JSON the brief asks for (beside `checklist`), holding one entry per caller below: {...}. For EVERY caller listed, decide whether its behaviour changes under the function\'s new result, and report it in the reply `callers` array as {"symbol": "<name>", "caller": "<file>:<line>", "verdict": "unchanged" | "changed and tested" | "regressed", "note": "<why>"}, copying symbol and caller exactly. An `unchanged` note says why the change does not reach that caller. A `changed and tested` note names the test that exercises this caller under the new result. A `regressed` verdict is also a BLOCKING finding. The worker checks that every caller got a verdict: one with none, or one marked `regressed`, sends the change back.',
   ];
   const body = [
     ...state.expected.map((e) =>
@@ -538,8 +539,9 @@ export function callerGapFindings(
     out.push({
       file: at.file,
       line: at.line,
-      problem:
-        `Existing caller \`${gapText(v.caller, 300)}\` of \`${gapText(v.symbol, 200)}\` regresses under the changed result: ${gapText(v.note, 500)}`,
+      problem: `Existing caller \`${gapText(v.caller, 300)}\` of \`${
+        gapText(v.symbol, 200)
+      }\` regresses under the changed result: ${gapText(v.note, 500)}`,
       fix:
         "Keep the function's old result for this caller (apply the new behaviour at the new call site), or change this caller and add a test that exercises it under the new result.",
     });
