@@ -1,12 +1,29 @@
 /**
  * Repository-owned formatters, run and committed as one tidy-up (Issue #2967,
- * part of #2932).
+ * part of #2932), wired into the issue run before its gates.
  *
- * Runs `cargo fmt --all` once per outermost tracked `Cargo.toml` directory and
- * `deno fmt` once per outermost tracked `deno.json`/`deno.jsonc` directory,
- * then — if any tracked file differs afterwards — commits the result as one
- * `style: apply repository formatters` commit. This module is not yet wired
- * into the quality gate; it is a standalone building block.
+ * A PR sent back by review, or failed by CI, for a formatting-only miss costs
+ * a whole round of tokens. {@link formatBranchChanges} lists the files the
+ * branch changed — the same non-merge commits ahead of the PR base that the
+ * pre-push gate checks — and {@link runRepoFormatters} runs the repository's
+ * own formatters over exactly what that gate's `deno fmt --check` and `cargo
+ * fmt --check` would flag (`planFormatterFixes` in `pre_push_gate.ts`): `deno
+ * fmt` on the changed code files under each outermost tracked `deno.json` /
+ * `deno.jsonc` that its fmt scope covers, and `cargo fmt --all` in each
+ * outermost tracked `Cargo.toml` directory whose `.rs` files changed. If any
+ * tracked file differs afterwards, the formatted paths are committed as one
+ * `style: apply repository formatters` commit.
+ *
+ * Markdown is never handed to `deno fmt`: it re-wraps whole documents and
+ * trips markdownlint MD018. A Markdown miss is left to the check to report.
+ *
+ * Callers: the quality-gate phase, before every `./quality.sh` attempt; the
+ * completion phase's `gateBeforePush()`, before every pre-push gate run; and
+ * the PR-feedback and CI-fix processors, as `commitAndPushPending`'s Step 1a
+ * hook between its commit and its Step 1b gate (scoped, like that gate, to
+ * the commits on no remote). A formatter that is missing or fails never fails
+ * the run on its own: it is logged, and the gate that follows still runs and
+ * reports the problem.
  */
 
 import {
@@ -22,9 +39,23 @@ import { defaultLogger } from "./logger.ts";
 import type { Logger, Result } from "../types.ts";
 import { redactedTail } from "./redacted_text.ts";
 import { appendRunIdTrailer, getRunId } from "./run_id.ts";
+import {
+  listPushedFiles,
+  loadDenoScopes,
+  planFormatterFixes,
+  type PrePushGit,
+} from "./pre_push_gate.ts";
+
+export { outermostConfigDirs } from "./pre_push_gate.ts";
 
 /** Commit message stamped on the formatters' combined output. */
 export const FORMATTER_COMMIT_MESSAGE = "style: apply repository formatters";
+
+/** Body of that commit, saying why the worker made it. */
+const FORMATTER_COMMIT_BODY =
+  "Formatted the files this branch changed with the repository's own " +
+  "formatters before the worker's gates, so a formatting-only miss is " +
+  "fixed rather than failed.";
 
 /** A formatter this module knows how to run. */
 export type FormatterTool = "cargo fmt" | "deno fmt";
@@ -73,39 +104,6 @@ export function createRepoFormatterDeps(): RepoFormatterDeps {
   };
 }
 
-/**
- * Pick the outermost directories tracked config files live in.
- *
- * A nested `a/b/Cargo.toml` under an already-kept `a/Cargo.toml` is dropped —
- * `cargo fmt --all` at `a` already reaches it via the workspace — but
- * `webx/deno.json` is never treated as nested under a kept `web`.
- *
- * @param paths - Repo-relative paths, `/`-separated (as `git ls-files` prints).
- * @param configNames - Basenames that mark a formatter's root (e.g. `Cargo.toml`).
- */
-export function outermostConfigDirs(
-  paths: string[],
-  configNames: readonly string[],
-): string[] {
-  const dirs = new Set<string>();
-  for (const path of paths) {
-    const slash = path.lastIndexOf("/");
-    const base = slash === -1 ? path : path.slice(slash + 1);
-    if (!configNames.includes(base)) continue;
-    const dir = slash === -1 ? "." : path.slice(0, slash);
-    dirs.add(dir === "" ? "." : dir);
-  }
-  const sorted = [...dirs].sort();
-  const kept: string[] = [];
-  for (const dir of sorted) {
-    const hasKeptAncestor = kept.some((k) =>
-      k === "." || dir.startsWith(`${k}/`)
-    );
-    if (!hasKeptAncestor) kept.push(dir);
-  }
-  return kept;
-}
-
 /** Join a repo-relative directory onto an absolute repo path. */
 function resolveDir(repoPath: string, dir: string): string {
   return dir === "." ? repoPath : `${repoPath}/${dir}`;
@@ -145,15 +143,24 @@ async function snapshot(
 }
 
 /**
- * Run every applicable repository formatter and commit the combined result.
+ * Run the repository's formatters over `changed` and commit the result.
  *
- * `git add -u` also stages any uncommitted tracked edits already in the tree
- * — acceptable per the issue, since they would otherwise have become a WIP
- * commit anyway. Never throws: any unexpected failure is logged and reported
- * via `gitError` instead.
+ * Only the files a changed-file check (`planChangedFileChecks`) would flag
+ * are formatted — see `planFormatterFixes`: never Markdown, never an
+ * untouched code file under `deno fmt`, and `cargo fmt --all` only for a
+ * cargo root whose `.rs` files changed. Only those paths are staged (`git add
+ * -u -- <paths>`), so an unrelated edit elsewhere in the tree stays out of the
+ * commit; an uncommitted edit already in a formatted file does go in with it.
+ * Never throws: any unexpected failure is logged and reported via `gitError`
+ * instead, and a formatter that fails is logged and recorded in `failures` —
+ * the caller's own check still runs and reports what was left unfixed.
+ *
+ * @param changed - Repo-relative paths the run changed (as `git log
+ *   --name-only` prints them).
  */
 export async function runRepoFormatters(
   repoPath: string,
+  changed: readonly string[],
   deps: RepoFormatterDeps = createRepoFormatterDeps(),
 ): Promise<RepoFormattersResult> {
   try {
@@ -167,9 +174,12 @@ export async function runRepoFormatters(
     }
     const paths = lsFiles.value.stdout.split("\0").filter((p) => p.length > 0);
 
-    const cargoDirs = outermostConfigDirs(paths, ["Cargo.toml"]);
-    const denoDirs = outermostConfigDirs(paths, ["deno.json", "deno.jsonc"]);
-    if (cargoDirs.length === 0 && denoDirs.length === 0) {
+    const steps = planFormatterFixes(
+      changed,
+      paths,
+      await loadDenoScopes(repoPath, paths),
+    );
+    if (steps.length === 0) {
       return { runs: [], failures: [], committed: false };
     }
 
@@ -183,19 +193,6 @@ export async function runRepoFormatters(
     const runs: FormatterRun[] = [];
     const failures: FormatterRun[] = [];
     let before = initialSnapshot.value;
-
-    const steps: Array<{ tool: FormatterTool; dir: string; cmd: string[] }> = [
-      ...cargoDirs.map((dir) => ({
-        tool: "cargo fmt" as FormatterTool,
-        dir,
-        cmd: ["cargo", "fmt", "--all"],
-      })),
-      ...denoDirs.map((dir) => ({
-        tool: "deno fmt" as FormatterTool,
-        dir,
-        cmd: ["deno", "fmt"],
-      })),
-    ];
 
     for (const step of steps) {
       const { exitCode, output } = await deps.runCommand(step.cmd, {
@@ -245,14 +242,23 @@ export async function runRepoFormatters(
       return { runs, failures, committed: false };
     }
 
-    const add = await deps.runGitCommand(["add", "-u"], { cwd: repoPath });
+    const pathspecs = [...new Set(steps.flatMap((step) => step.paths))]
+      .map((path) => `:(literal)${path}`);
+    const add = await deps.runGitCommand(["add", "-u", "--", ...pathspecs], {
+      cwd: repoPath,
+    });
     if (!add.ok || add.value.code !== 0) {
       const gitError = gitStepError("add -u", add)!;
       deps.logger.warn(`repo formatters: ${gitError}`);
       return { runs, failures, committed: false, gitError };
     }
 
-    const message = appendRunIdTrailer(FORMATTER_COMMIT_MESSAGE, deps.runId());
+    // The body keeps the trailer in a paragraph of its own: the subject reads
+    // as a `Key: value` line, so the trailer would otherwise join it.
+    const message = appendRunIdTrailer(
+      `${FORMATTER_COMMIT_MESSAGE}\n\n${FORMATTER_COMMIT_BODY}`,
+      deps.runId(),
+    );
     const commit = await deps.runGitCommand(["commit", "-m", message], {
       cwd: repoPath,
     });
@@ -268,5 +274,92 @@ export async function runRepoFormatters(
     const gitError = error instanceof Error ? error.message : String(error);
     deps.logger.warn(`repo formatters: unexpected error: ${gitError}`);
     return { runs: [], failures: [], committed: false, gitError };
+  }
+}
+
+/**
+ * Run the formatters over every file the branch changed, then commit.
+ *
+ * The file list is the pre-push gate's own (`listPushedFiles`): every
+ * non-merge commit ahead of `baseRef`, or — with no `baseRef` (the PR base
+ * could not be resolved, or a PR round whose `commitAndPushPending` Step 1b
+ * gate checks only these) — every commit on no remote-tracking ref, so the
+ * formatters and
+ * the gate that follows always agree on scope. Files merged in from the base
+ * are never reformatted. Never throws.
+ */
+export async function formatBranchChanges(
+  repoPath: string,
+  baseRef: string | undefined,
+  deps: RepoFormatterDeps = createRepoFormatterDeps(),
+): Promise<RepoFormattersResult> {
+  try {
+    const git: PrePushGit = async (args, cwd) => {
+      const result = await deps.runGitCommand(args, { cwd });
+      if (!result.ok) {
+        return { code: 1, stdout: "", stderr: result.error.message };
+      }
+      return result.value;
+    };
+    const changed = await listPushedFiles(
+      [{
+        localRef: "HEAD",
+        localSha: "HEAD",
+        remoteRef: "HEAD",
+        remoteSha: "0".repeat(40),
+      }],
+      repoPath,
+      git,
+      baseRef,
+    );
+    if (!changed.ok) {
+      deps.logger.warn(`repo formatters: ${changed.error}`);
+      return {
+        runs: [],
+        failures: [],
+        committed: false,
+        gitError: changed.error,
+      };
+    }
+    if (changed.value.length === 0) {
+      return { runs: [], failures: [], committed: false };
+    }
+    return await runRepoFormatters(repoPath, changed.value, deps);
+  } catch (error: unknown) {
+    const gitError = error instanceof Error ? error.message : String(error);
+    deps.logger.warn(`repo formatters: unexpected error: ${gitError}`);
+    return { runs: [], failures: [], committed: false, gitError };
+  }
+}
+
+/**
+ * The issue run's call site: format the branch's changes before a gate runs.
+ *
+ * Never throws and returns nothing the caller must act on — a formatter that
+ * is missing, fails or throws is logged here, and the gate that follows still
+ * runs and reports whatever is left unfixed.
+ */
+export async function formatBeforeGate(
+  deps: {
+    git: { formatBranchChanges: typeof formatBranchChanges };
+    logger: Logger;
+  },
+  repoPath: string,
+  baseRef: string | undefined,
+): Promise<void> {
+  try {
+    const result = await deps.git.formatBranchChanges(repoPath, baseRef);
+    if (result.committed) {
+      deps.logger.info(
+        `Formatted the branch's changed files before the gate ` +
+          `(${FORMATTER_COMMIT_MESSAGE})`,
+      );
+    }
+  } catch (error: unknown) {
+    deps.logger.warn(
+      `repo formatters: skipped before the gate: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 }

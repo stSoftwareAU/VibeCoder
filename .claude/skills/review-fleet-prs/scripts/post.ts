@@ -12,7 +12,11 @@
 //
 // Usage: deno run --allow-run=gh,osascript --allow-read --allow-write
 //          --allow-env=HOME,XDG_STATE_HOME post.ts --input=<file>
-//          [--state-dir=<dir>]
+//          [--state-dir=<dir>] [--no-model]
+// Every review ends with a run footer naming the model run that wrote it
+// (review_cost.ts): a round's input file sits in the round's directory beside
+// its attempt log, an input elsewhere is an interactive session's, and
+// --no-model marks a review posted with no model run (an audit send-back).
 // --state-dir names the review state directory outright. A round inside the
 // worker container passes it (Issue #3293): there the host's log directory is
 // mounted at another path, so the resolution stateDir() makes on the host
@@ -55,6 +59,7 @@ import {
 } from "./needs_human.ts";
 import { loadAutoReleaseRepos, resolveAutoRelease } from "./auto_release.ts";
 import { type BranchUpdateResult, updateBranch } from "./branch_update.ts";
+import { postRunInfo, recordPosted } from "./review_cost.ts";
 
 interface Input {
   pr: {
@@ -387,10 +392,22 @@ export async function main() {
   const previous = latestByPr(await readLog(dir)).get(
     prKey(pr.repo, pr.number),
   );
+  // The run footer: the round's attempt that is posting (its log sits beside
+  // the input file in the round's directory), an interactive session, or no
+  // model run at all. Its cost is added when the round ends (review_cost.ts).
+  const roundDir = inputPath.includes("/")
+    ? inputPath.replace(/\/[^/]*$/, "")
+    : ".";
+  const runInfo = await postRunInfo(roundDir, {
+    noModel: Deno.args.includes("--no-model"),
+  });
   const bodyFile = await Deno.makeTempFile({ suffix: ".md" });
   await Deno.writeTextFile(
     bodyFile,
-    reviewBody(outcome, review, removed, filedIssues, { autoReleased }),
+    reviewBody(outcome, review, removed, filedIssues, {
+      autoReleased,
+      run: runInfo,
+    }),
   );
   const flag = outcome === "approved"
     ? "--approve"
@@ -408,6 +425,16 @@ export async function main() {
     bodyFile,
   ]);
   await Deno.remove(bodyFile).catch(() => {});
+  if (runInfo.kind === "round") {
+    // Best effort: an unrecorded review just keeps "cost unknown".
+    await recordPosted(roundDir, {
+      repo: pr.repo,
+      number: pr.number,
+      attempt: runInfo.attempt,
+    }).catch((e) =>
+      console.error(`could not record the posted review: ${e.message}`)
+    );
+  }
 
   const label = await syncNeedsHumanLabel(
     outcome,

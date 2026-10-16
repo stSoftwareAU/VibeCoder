@@ -120,6 +120,15 @@ markdownlint, and semgrep.
 Shell-script linting is **not** run by the worker — it is delegated to each
 target repo's own CI.
 
+Before each gate attempt in an issue run, the quality-gate phase runs the
+repository's own formatters over the branch's changed code files and commits
+the result (`formatBeforeGate` in `worker/deno/lib/repo_formatters.ts`), so a
+formatting-only failure does not spend the agent's one remediation round. It
+never touches Markdown, and a formatter that fails is only logged: the gate
+still runs and reports. The completion phase does the same before its pre-push
+gate; see "Agent pre-push hook and the changed-files check" in
+[CONFIGURATION.md](CONFIGURATION.md).
+
 The **semgrep** stage (`worker/deno/lib/semgrep_check.ts`, Issue #559) closes
 the gap that let two PRs sit blocked on the same
 `detect-non-literal-regexp` rule: `semgrep.yml` is a blocking PR check, so
@@ -1014,6 +1023,9 @@ flowchart LR
   of the reviewed PR. `ci_fix_tier_runs` /
   `ci_fix_tier_usd` are `ci_fix` runs and their estimated USD per tier of the
   PR; `pr_feedback_tier_usd` is `pr_feedback` runs' estimated USD per tier.
+  Each of those runs also posts its figures on the PR as a
+  `## Ci-fix run model stats` or `## Pr-feedback run model stats` comment,
+  priced the same way, so a send-back's cost is readable on GitHub too.
   `merged_tier_prs` counts merged PRs per tier from the merged-PR listing
   branch cleanup already fetches. `cost_per_merged_pr` is (issue + `pr_feedback` +
   `ci_fix` USD) ÷ merged PRs for that tier, to 4 decimal places, or `n/a` when
@@ -2514,6 +2526,14 @@ claim at two points, with one decision function:
   elsewhere — GRQ-AutoTrader#127 was resolved through the agent's own PR into
   the milestone branch — and the run takes the stale-claim exit, naming the
   agent's branch; an open issue keeps the #4286 failure.
+
+A `pre-pr` stale verdict also retracts a partial-delivery follow-up that the
+partial-delivery guard newly filed earlier in the same run, for a degraded or a
+healthy run alike (PR #3676 review): that follow-up names a PR which will not be
+raised, so `abortStaleClaim` tries to close it as "not planned". The close is
+best-effort: if it fails, a warning is logged and the follow-up stays open. A
+reused follow-up is never closed. See
+[issue-processing.md](workflows/issue-processing.md).
 
 Two rules, most decisive first: **the issue closed** during the cycle; and **a
 merged PR already carries this run's branch**, decided by `pr_run_provenance.ts`
