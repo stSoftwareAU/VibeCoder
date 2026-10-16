@@ -34,7 +34,9 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
   `-X POST`, `--method POST`, `-XPOST`, `-X=POST` or `--method=POST` (the
   shorthand spellings are expanded by `normaliseGhArgs`, as gh's pflag does),
   or, with no explicit method, any of `-f`, `-F`, `--field`, `--raw-field`,
-  `--input` (gh defaults to POST when it has a body). An explicit non-POST
+  `--input` (gh defaults to POST when it has a body), or a non-literal element
+  (a `...fields` spread, a flag variable) that is not the endpoint or the value
+  of a known value flag, since it may be a body flag. An explicit non-POST
   method wins, so `-X GET` with `-f` is a read; a method that is not a literal
   counts as POST. It also flags a `gh api graphql` argv in a file whose code
   names `createIssue`. A plain GET list, `/issues/<n>/comments`, `search/issues`
@@ -47,23 +49,23 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
   interpolation are skipped whole (`indexAfterTemplate`).
 - The check fails closed. A missing scan directory throws
   (`worker/deno/lib/issue_create_routing_check.ts:781`), a scan path that is not
-  a directory throws (`:755`), and a scan that examines zero `.ts` files throws
-  (`:796`). A stat error other than NotFound is rethrown (`:753`).
-- `stripComments` (`:301`) is one left-to-right scan. It blanks `//` and block
+  a directory throws (`:788`), and a scan that examines zero `.ts` files throws
+  (`:829`). A stat error other than NotFound is rethrown (`:786`).
+- `stripComments` (`:318`) is one left-to-right scan. It blanks `//` and block
   comments and keeps string, template and regular-expression literals. Template
   literals may span lines, and code inside `${…}` is scanned as code, nesting
   included, so a backtick there neither ends nor opens the outer template. A `/`
-  where an operand is expected opens a regex literal (`:366`), so a quote or
+  where an operand is expected opens a regex literal (`:388`), so a quote or
   backtick inside a regex does not open a string. A `//` or `/*` inside any
   literal therefore neither hides a create nor invents one. Before this, the
   pass was a regex that ended a template at the end of its line, and
   `milestone/*` in the YAML template at
   `worker/deno/lib/workflow_definitions.ts:208` opened a fake block comment that
   blanked about 600 more lines, real code included, from the scan.
-- `findStaleAllowlistEntries` (`:818`) reports an allowlisted file that is gone
+- `findStaleAllowlistEntries` (`:851`) reports an allowlisted file that is gone
   or no longer holds a direct create. This is not in the issue. It stops the
   allowlist drifting once a call site is migrated, and its read errors other
-  than NotFound are rethrown (`:834`).
+  than NotFound are rethrown (`:867`).
 - The enforcement point is the real-tree scan in the unit test
   `worker/deno/tests/issue_create_routing_check_test.ts`. The gate is not wired
   into `quality_gate.ts`, which matches the sibling
@@ -131,7 +133,7 @@ test, whose module docs were updated; updated:
 `worker/deno/lib/guarded_issue_labels.ts:10-17` — still true because they
 describe the label guard only; re-run after the third PR #3864 review fix on
 `CREATE_LABEL_ALLOWLIST`, `github.ts` and `suggest-improvements` — the allowlist
-doc comment in `worker/deno/lib/issue_create_label_check.ts:50-62` was the only
+doc comment in `worker/deno/lib/issue_create_label_check.ts:50-63` was the only
 stale hit and was reworded, and `github.ts` was removed from the list.
 
 ## Acceptance Criteria
