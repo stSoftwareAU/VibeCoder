@@ -1,0 +1,13 @@
+{
+  "issue": 3617,
+  "chunk": "top-up-3617",
+  "title": "top-up: merged-diff PR-summary claim check",
+  "ledger": "https://github.com/stSoftwareAU/VibeCoder/issues/3617",
+  "definition": "modules added to worker/deno/lib/ after 12af recorded their coverage: summary_claimed_paths.ts, merge_summary_claim_check.ts (#3617)",
+  "status": "claimed",
+  "paths": [
+    "worker/deno/lib/summary_claimed_paths.ts",
+    "worker/deno/lib/merge_summary_claim_check.ts"
+  ],
+  "sweptAt": "774c857812914d83b1c2bf9e51a5e78ce9a93a6f"
+}

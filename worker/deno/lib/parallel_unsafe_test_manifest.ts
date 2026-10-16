@@ -273,6 +273,10 @@ export const WALL_CLOCK_TEST_FILES: readonly string[] = [
   // PR summaries; only a growth measurement separates its single linear pass
   // from a rescan per line (Issue #3356).
   "tests/markdown_logical_units_3356_test.ts",
+  // The Docs sweep `updated:` and change-section scanners walk agent-written
+  // summary text; only a growth measurement separates their linear scans from
+  // a quadratic one (Issue #3617).
+  "tests/summary_claimed_paths_test.ts",
 ];
 
 /**
