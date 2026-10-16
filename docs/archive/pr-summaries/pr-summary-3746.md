@@ -6,7 +6,7 @@ Adds a gate that fails when a direct `gh issue create` argv appears in
 template literal, and `gh api` REST or GraphQL issue creation) without going
 through `fileRoutedIssue` (#3743) or an entry on a reasoned allowlist. The
 allowlist is `ISSUE_CREATE_ROUTING_ALLOWLIST` in
-`worker/deno/lib/issue_create_routing_check.ts` (line 64). It is seeded with the
+`worker/deno/lib/issue_create_routing_check.ts` (line 66). It is seeded with the
 30 files that build a create argv today, each with a one-line reason. No call
 site is migrated. Part of #3691, builds on #3743. Closes #3746.
 
@@ -47,23 +47,23 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
   interpolation are skipped whole (`indexAfterTemplate`).
 - The check fails closed. A missing scan directory throws
   (`worker/deno/lib/issue_create_routing_check.ts:748`), a scan path that is not
-  a directory throws (`:743`), and a scan that examines zero `.ts` files throws
-  (`:784`). A stat error other than NotFound is rethrown (`:741`).
-- `stripComments` (`:292`) is one left-to-right scan. It blanks `//` and block
+  a directory throws (`:755`), and a scan that examines zero `.ts` files throws
+  (`:796`). A stat error other than NotFound is rethrown (`:753`).
+- `stripComments` (`:301`) is one left-to-right scan. It blanks `//` and block
   comments and keeps string, template and regular-expression literals. Template
   literals may span lines, and code inside `${…}` is scanned as code, nesting
   included, so a backtick there neither ends nor opens the outer template. A `/`
-  where an operand is expected opens a regex literal (`:357`), so a quote or
+  where an operand is expected opens a regex literal (`:366`), so a quote or
   backtick inside a regex does not open a string. A `//` or `/*` inside any
   literal therefore neither hides a create nor invents one. Before this, the
   pass was a regex that ended a template at the end of its line, and
   `milestone/*` in the YAML template at
   `worker/deno/lib/workflow_definitions.ts:208` opened a fake block comment that
   blanked about 600 more lines, real code included, from the scan.
-- `findStaleAllowlistEntries` (`:806`) reports an allowlisted file that is gone
+- `findStaleAllowlistEntries` (`:818`) reports an allowlisted file that is gone
   or no longer holds a direct create. This is not in the issue. It stops the
   allowlist drifting once a call site is migrated, and its read errors other
-  than NotFound are rethrown (`:822`).
+  than NotFound are rethrown (`:834`).
 - The enforcement point is the real-tree scan in the unit test
   `worker/deno/tests/issue_create_routing_check_test.ts`. The gate is not wired
   into `quality_gate.ts`, which matches the sibling
@@ -77,7 +77,7 @@ site is migrated. Part of #3691, builds on #3743. Closes #3746.
 - `worker/deno/lib/issue_routing_filing.ts` gets a paragraph at lines 29-33 that
   points to this gate, so a reader of the chokepoint sees where the other direct
   sites are checked. The chokepoint is itself on the allowlist
-  (`issue_routing_filing.ts` entry, line 131), because its direct call is the
+  (`issue_routing_filing.ts` entry, line 133), because its direct call is the
   one `fileRoutedIssue` makes.
 
 ### Undiscoverable Facts
