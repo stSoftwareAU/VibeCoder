@@ -93,7 +93,8 @@ marker", "summary unchanged" — these existing skip reasons gained a sibling
 (`worker marker present`). They are documented only in the
 `syncPrBodyFromSummary` doc comment, which now lists it. updated:
 `docs/USAGE.md`, `docs/INTERNALS.md`, the module and function doc comments in
-`worker/deno/lib/pr_body_sync.ts`; `docs/workflows/issue-processing.md:2502`
+`worker/deno/lib/pr_body_sync.ts`, plus the sweep slice
+`docs/audits/lib-sweep-coverage/top-up-3804.json`; `docs/workflows/issue-processing.md:2502`
 and `:2567` — still true because they describe re-deriving the leading
 degraded/partial-delivery section, which adoption leaves unchanged.
 
@@ -136,5 +137,10 @@ degraded/partial-delivery section, which adoption leaves unchanged.
   - `adoptOnly: false` passed by the hook → the hook's sync test red
 - Targeted run: the new and edited test files, plus the 45 test files that
   reference `workOnIssueCompletion` or `syncPrBodyFn`, all passed.
+- `./quality.sh` on the final code: the first run failed only on
+  `tests/lib_sweep_coverage_test.ts`, because the new module was claimed by no
+  sweep slice. Adding `docs/audits/lib-sweep-coverage/top-up-3804.json` fixed
+  it, and the re-run reports `Result: PASSED (with skipped checks)`. Only
+  `config integration` was skipped.
 
 <!-- vibe-branch-outcomes -->
