@@ -199,22 +199,42 @@ function redactDecodedLine(
   };
   const escaped = (text: string): string => JSON.stringify(text).slice(1, -1);
   // Whether the raw pass masked something in `text` that the decoded pass
-  // kept: some unmasked run of it is missing from the raw output. The whole
-  // string is tried first (one search); only a mismatch is checked piece by
-  // piece, in order, so the search only moves forward through the line.
-  // Pieces may share a position, because the raw pass can rewrite the
-  // punctuation between them (the Issue #3826 backslash).
+  // kept: some unmasked run of it is missing from the raw output.
+  //
+  // Strings and keys are visited in source order, so one cursor moves
+  // forward through `raw` for the whole walk and each search starts where the
+  // last one matched — the check stays linear in the line, as redaction over
+  // model and tool output must (SECURITY.md). The whole string is tried
+  // first; only a mismatch is checked piece by piece, and pieces may share a
+  // position because the raw pass can rewrite the punctuation between them
+  // (the Issue #3826 backslash). A string not found from the cursor is
+  // reported lost, which only masks more. A miss scans to the end of the
+  // line, so after MAX_RAW_MISSES of them every remaining string is treated
+  // as lost rather than scanned: a bounded over-mask, never a leak.
+  let lineCursor = 0;
+  let misses = 0;
   const lostToRaw = (text: string): boolean => {
-    if (!rawChanged || raw.includes(escaped(text))) return false;
-    let cursor = 0;
+    if (!rawChanged) return false;
+    if (misses >= MAX_RAW_MISSES) return true;
+    const whole = escaped(text);
+    const at = raw.indexOf(whole, lineCursor);
+    if (at !== -1) {
+      lineCursor = at + whole.length;
+      return false;
+    }
+    let cursor = lineCursor;
     for (const run of text.split(REDACTION_PLACEHOLDER)) {
       for (const piece of run.split(/\s+/)) {
         if (piece === "") continue;
-        const at = raw.indexOf(escaped(piece), cursor);
-        if (at === -1) return true;
-        cursor = at;
+        const found = raw.indexOf(escaped(piece), cursor);
+        if (found === -1) {
+          misses++;
+          return true;
+        }
+        cursor = found;
       }
     }
+    lineCursor = cursor;
     return false;
   };
   // A string's own mask, widened to the whole string when the raw pass saw a
@@ -252,6 +272,13 @@ function redactDecodedLine(
   const redacted = walk(event);
   return changed || rawChanged ? JSON.stringify(redacted) : line;
 }
+
+/**
+ * How many strings on one line may miss the raw-output search before the rest
+ * are masked without searching. Each miss scans to the end of the line, so
+ * this bounds the check at a constant number of passes over it.
+ */
+const MAX_RAW_MISSES = 32;
 
 /** Options for {@link AgentTranscriptWriter}. */
 export interface AgentTranscriptWriterOptions {
