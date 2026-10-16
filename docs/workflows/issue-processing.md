@@ -1788,7 +1788,11 @@ a bare placeholder (`none`, `n/a`, `na`, `tbd`, `todo`, `-`, `?`), or a
 `n/a`, `tbd`, …), or quotes no backticked or double-quoted term and is not the
 `siblings: none — <reason>` negative. `section: none — <reason>` and `no hits`
 are both accepted, and a bad `section:` and a bad `siblings:` are reported
-together. The entry is read as one logical unit from the shared
+together. When the gate applies and the changed-file list is known, it also
+blocks a path listed after `updated:` that the branch's diff does not change,
+with the instruction to drop it from `updated:` or redo the edit (Issue #3617).
+A path cited elsewhere in the line, as `file:line — still true because …` or
+in `section:`, is not affected by that rule. The entry is read as one logical unit from the shared
 `markdownLogicalUnits` splitter (Issue #3356), so a hard-wrapped entry is
 joined up to the next blank line, list item, heading, table row, fence or HTML
 comment, and a `Docs sweep` line inside a fenced example is not the entry. Its

@@ -15,7 +15,7 @@ reviewers rarely comment on a PR that cannot merge, so there is nothing for the
 PR-feedback queue either. Priority **1.61** closes that gap: it labels every
 `CONFLICTING` PR `merge-conflict` so the stuck queue is visible, then merges the
 base branch into the PR branch **for real** — both sides' changes survive
-wherever both can stand, never a side-pick — and pushes without force. Where the
+wherever both can stand, never a side-pick — checks the PR summary's claimed paths against the merged diff before it pushes (Issue #3617), and pushes without force. Where the
 two sides genuinely contradict, the agent **decides** and names the call file by
 file on the PR; it does not run the repository's quality gate, because CI on the
 pushed merge is the gate on a PR and the worker's own type-check gate is the
@@ -212,7 +212,11 @@ progress and stopped on conflicts. Its contract is absolute:
   rebuilt only when this run's own push changed the summary file. Fix
   branches for a gated milestone head are skipped, and only a worker-authored
   PR is edited. A failed sync is logged once at warning and does not fail the
-  run (Issues #3089, #3315).
+  run (Issues #3089, #3315). The worker also checks that rewrite before it
+  pushes: each claimed path with a recognised file extension must appear in the
+  merged diff. A claimed path the merged diff lacks gets one recovery turn, and
+  a path still missing after it refuses the push and fails the attempt (Issue
+  #3617, [below](#-the-summarys-claims-are-checked-against-the-merged-diff-issue-3617)).
 - **The agent runs no quality gate.** CI on the pushed merge is the gate on a
   PR — a conflicting PR has had none at all, so that run is usually the first
   time its tests meet current base code — and the worker's type-check gate,
@@ -238,8 +242,83 @@ progress and stopped on conflicts. Its contract is absolute:
 
 The worker enforces what it can mechanically: it refuses to push a tree with
 unmerged paths or leftover conflict markers, and it verifies the base branch is
-genuinely an ancestor of the new branch tip before calling the merge resolved.
+genuinely an ancestor of the new branch tip before calling the merge resolved. It also checks the paths the PR summary
+claims against the merged diff before the push, and refuses the push when a
+claimed path is still missing after one recovery turn (Issue #3617, see
+[below](#-the-summarys-claims-are-checked-against-the-merged-diff-issue-3617)).
 Any failure aborts the merge, leaving the branch untouched.
+
+### 🧾 The summary's claims are checked against the merged diff (Issue #3617)
+
+The superseded-change rule above is a prompt rule, and a prompt rule alone did
+not hold. On GRQ-validation#904 (2026-10-01) a PR summary kept describing
+edits the merged diff did not carry. On 2026-10-11 a private fleet PR showed
+the same gap: the default branch landed the same fix, two merges left the
+summary claiming edits the diff no longer had, and the prompt rule added in
+PR #3027 did not stop it. The worker therefore checks the summary's claims
+mechanically, before the merge is pushed.
+
+**What is checked.** After the conflict is resolved, or the clean merge is
+made, and before the worker commits and pushes it, the worker lists the files
+the merged tree changes against the base (`git diff --name-only --no-renames
+origin/<base>`, plus the untracked files from `git ls-files --others
+--exclude-standard`). It reads each PR summary in that list
+(`docs/archive/pr-summaries/pr-summary-<N>.md`, or the legacy
+`docs/pr-summary-<N>.md`) and compares the paths it claims with the merged
+diff. Two kinds of claim are read:
+
+- the path after `updated:` in the **Docs sweep** line, up to the first `;` or
+  the end of that sentence, ignoring spans inside parentheses; and
+- the backticked path that opens each list item under a `Changes`, `Changes
+  made`, `What changed`, `Files changed`, `Changed files`, `File changes` or
+  `Files` heading (levels 2 to 4).
+
+Only a path with a recognised file extension is a claim; an extensionless name
+is not checked. A claimed path counts as present when a changed file equals it
+or ends with `/<path>`. The check runs on the PR merge-conflict pass only, not
+on the milestone takeover or the milestone sync ladder.
+
+```mermaid
+flowchart TD
+    Merged["Conflict resolved or clean merge,<br/>before commit and push"] --> List["List the merged tree's changed files<br/>against origin/base, plus untracked files"]
+    List --> Read{"Diff and summaries readable,<br/>at most 10 summaries?"}
+    Read -->|"No"| NotChecked["Not checked: cause on the resolved<br/>comment and in the log"]
+    Read -->|"Yes"| Check{"All claims present,<br/>or no summary in the diff?"}
+    Check -->|Yes| Push["Commit and push the merge"]
+    Check -->|No| Recovery["One recovery turn: rewrite only the summary,<br/>stage it and stop"]
+    Recovery -->|"Turn ended by run end,<br/>or refused by provider"| Withdrawn["Attempt withdrawn, uncharged"]
+    Recovery -->|"Turn cannot run"| Refuse
+    Recovery -->|"Turn completes"| Recheck{"Re-check: claimed paths present?"}
+    Recheck -->|Yes| Push
+    Recheck -->|"No, or evidence unreadable"| Refuse["Refuse the push: git merge --abort,<br/>then git reset --merge to the pre-merge head;<br/>failed attempt names the claimed paths"]
+    NotChecked --> Push
+```
+
+**What happens on each route.**
+
+- **All claims present, or no summary in the diff** — the merge is pushed as
+  before.
+- **A claimed path missing** — the worker runs one recovery turn with its own
+  prompt. That prompt carries the missing paths inside a fence marked as
+  untrusted data, and asks the agent to rewrite only the summary so that it
+  claims only what the merged diff carries, stage it, and stop. The recovery
+  turn does not commit, push or abort. The check then runs again.
+- **Still missing after the recovery turn, or the re-check cannot read the
+  evidence, or the recovery turn cannot run** — the push is refused. The merge
+  is undone (`git merge --abort`, then `git reset --merge` back to the pre-merge
+  head), and the attempt is concluded as a failed attempt on the PR, naming the
+  claimed paths. It uses the same failed-attempt record and the same budget as
+  the pass's other refusals. A recovery turn that the worker itself ends at the
+  end of the run, or that the provider refuses, withdraws the attempt uncharged,
+  as the resolution agent's does.
+- **Evidence that cannot be read before the recovery turn** — the diff fails,
+  a summary cannot be read, or there are more than 10 summaries — is reported
+  as not checked, with its cause, on the PR's resolved comment and in the log.
+  The push still goes ahead.
+
+The resolved comment carries one line on this check: how many claimed paths
+were checked against the merged diff, that the recovery turn rewrote the
+summary, or `not checked — <cause>`.
 
 ### 📦 Dependency files are decided before the agent runs
 

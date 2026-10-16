@@ -20,6 +20,14 @@
  * of each set the change adds a member to, quoted so the worker can re-run
  * them, or `siblings: none — <why no existing set gained a member>`.
  *
+ * The `updated:` list is checked against the diff (Issue #3617). A
+ * merge-conflict pass absorbed part of a fleet PR's change from the base
+ * branch, and the summary kept claiming the files the diff no longer changed
+ * (GRQ-validation#904 and a private fleet PR). Each quoted path after
+ * `updated:` must therefore be changed by this PR's own diff, when the
+ * changed-files list is known. A path cited elsewhere in the line (`file:line`
+ * evidence, `section:`) is not checked.
+ *
  * Modelled on `reproduction_status_gate.ts`: pure functions only, hardcoded
  * regexes (no `new RegExp()` built from input), and a bounded scan of the
  * summary — which is agent-authored and steered by an untrusted issue body,
@@ -34,6 +42,7 @@ import {
 } from "./markdown_code_spans.ts";
 import { isTestFilePath } from "./security_fix_gate.ts";
 import { extractSiblingTerms, isSiblingsNegative } from "./docs_sweep_hits.ts";
+import { extractUpdatedPaths, unbackedPaths } from "./summary_claimed_paths.ts";
 
 /** Cap on untrusted text scanned by the gate's regexes (defence in depth). */
 const MAX_SCAN_CHARS = 200_000;
@@ -233,14 +242,25 @@ export interface DocsSweepGateResult {
   problems: string[];
 }
 
-/** Up to how many code files are named in a "no Docs sweep line" problem. */
-const MAX_NAMED_CODE_FILES = 5;
+/** Up to how many files are named in a problem message. */
+const MAX_NAMED_FILES = 5;
+
+/**
+ * Render up to {@link MAX_NAMED_FILES} names for a problem message, joined
+ * with `, `, then ` and N more` for the rest.
+ */
+function describeNames(
+  names: readonly string[],
+  render: (name: string) => string = (name) => name,
+): string {
+  const named = names.slice(0, MAX_NAMED_FILES).map(render).join(", ");
+  const extra = names.length - MAX_NAMED_FILES;
+  return extra > 0 ? `${named} and ${extra} more` : named;
+}
 
 /** Render the changed code files for a problem message. */
 function describeCodeFiles(codeFiles: readonly string[]): string {
-  const named = codeFiles.slice(0, MAX_NAMED_CODE_FILES).join(", ");
-  const extra = codeFiles.length - MAX_NAMED_CODE_FILES;
-  return extra > 0 ? `${named} and ${extra} more` : named;
+  return describeNames(codeFiles);
 }
 
 /**
@@ -263,6 +283,12 @@ function describeCodeFiles(codeFiles: readonly string[]): string {
  *      negative (`none — <why>`) is accepted (Issue #3371, as rule 6).
  *   8. A `siblings:` that quotes no term, and is not the `none` negative →
  *      blocked, so the worker has a term to re-run (Issue #3371, as rule 6).
+ *   9. Applicable, with a known changed-files list, and a quoted path listed
+ *      after `updated:` that the diff does not change → blocked, so a merge
+ *      from the base branch cannot leave a claim the diff no longer carries
+ *      (Issue #3617). A path cited elsewhere in the line — as `file:line`
+ *      evidence, or in `section:` — is not affected. A docs-only diff is not
+ *      applicable, so its line is not checked.
  *
  * @param opts.changedFiles - The branch's changed files, or `null` when the
  *   diff could not be collected.
@@ -275,7 +301,7 @@ export function validateDocsSweep(opts: {
   const line = parseDocsSweepLine(opts.prSummaryContent ?? "");
 
   if (opts.changedFiles === null) {
-    return evaluateApplicable(line, [], false);
+    return evaluateApplicable(line, [], false, null);
   }
 
   const codeFiles = codeChangingFiles(opts.changedFiles);
@@ -290,7 +316,7 @@ export function validateDocsSweep(opts: {
     };
   }
 
-  return evaluateApplicable(line, codeFiles, true);
+  return evaluateApplicable(line, codeFiles, true, opts.changedFiles);
 }
 
 /** Shared rule evaluation for the `changedFiles === null` and known cases. */
@@ -298,6 +324,7 @@ function evaluateApplicable(
   line: DocsSweepLine,
   codeFiles: string[],
   changedFilesKnown: boolean,
+  changedFiles: readonly string[] | null,
 ): DocsSweepGateResult {
   const problems: string[] = [];
 
@@ -335,6 +362,21 @@ function evaluateApplicable(
     ) {
       problems.push(
         "the `Docs sweep` line's `siblings:` quotes no term — backtick or double-quote each existing sibling member you grepped, so the worker can re-run it, or write `siblings: none — <why no existing set gained a member>`",
+      );
+    }
+  }
+
+  // Issue #3617: every path after `updated:` must be in this PR's own diff.
+  if (line.present && changedFiles !== null) {
+    const unbacked = unbackedPaths(
+      extractUpdatedPaths(line.rawBody),
+      changedFiles,
+    );
+    if (unbacked.length > 0) {
+      const names = describeNames(unbacked, (path) => `\`${path}\``);
+      const verb = unbacked.length === 1 ? "it" : "them";
+      problems.push(
+        `the \`Docs sweep\` line lists ${names} after \`updated:\`, but the branch's diff does not change ${verb} — drop each from \`updated:\` (a merge from the base branch may already carry that change, so this PR no longer makes it), or redo the edit so the diff carries it`,
       );
     }
   }
@@ -400,6 +442,9 @@ export function buildDocsSweepGateComment(
     "",
     "`section: none — <reason>` is the honest answer when no manual " +
     "documents the surface, and `siblings: none — <why>` when no existing " +
-    "set gained a member — a bare `none` is not accepted for either part.",
+    "set gained a member — a bare `none` is not accepted for either part. " +
+    "List after `updated:` only files this PR's own diff changes — a file " +
+    "the base branch already changed, or one you only read, does not belong " +
+    "there.",
   ].join("\n");
 }

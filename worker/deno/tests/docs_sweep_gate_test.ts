@@ -443,8 +443,10 @@ Deno.test("buildDocsSweepGateComment - each example Docs sweep line it shows pas
   );
   assertEquals(examples.length, 2);
   for (const example of examples) {
+    // The first example lists `docs/reporting-api.md` after `updated:`, so
+    // the diff it describes changes that file (Issue #3617).
     const result = validateDocsSweep({
-      changedFiles: CODE_FILES,
+      changedFiles: [...CODE_FILES, "docs/reporting-api.md"],
       prSummaryContent: example,
     });
     assertEquals(result.applicable, true);
@@ -579,5 +581,149 @@ Deno.test(
 
     assertEquals(result.line.present, false);
     assertEquals(result.valid, false);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// `updated:` paths against the diff (Issue #3617)
+// ---------------------------------------------------------------------------
+
+const UPDATED_SIBLINGS = "siblings: none — no set gained a member";
+
+Deno.test(
+  "validateDocsSweep - an updated: path the base branch absorbed is named as unbacked",
+  () => {
+    // A merge from the base branch carried docs/x.md, so this PR's diff no
+    // longer changes it, but the summary still claims it.
+    const summary =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: \`docs/x.md\``;
+    const afterMerge = [
+      "worker/deno/lib/a.ts",
+      "docs/archive/pr-summaries/pr-summary-12.md",
+    ];
+
+    const result = validateDocsSweep({
+      changedFiles: afterMerge,
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.applicable, true);
+    assertEquals(result.valid, false);
+    assertEquals(result.problems.length, 1, result.problems.join("; "));
+    assertStringIncludes(result.problems[0]!, "`docs/x.md`");
+    assertStringIncludes(result.problems[0]!, "after `updated:`");
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - the same summary passes once the absorbed path is dropped from updated:",
+  () => {
+    const summary =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}`;
+    const afterMerge = [
+      "worker/deno/lib/a.ts",
+      "docs/archive/pr-summaries/pr-summary-12.md",
+    ];
+
+    const result = validateDocsSweep({
+      changedFiles: afterMerge,
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.valid, true, result.problems.join("; "));
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - positive control: the original updated: line is valid when the diff carries the doc",
+  () => {
+    const summary =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: \`docs/x.md\``;
+
+    const result = validateDocsSweep({
+      changedFiles: ["worker/deno/lib/a.ts", "docs/x.md"],
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.valid, true, result.problems.join("; "));
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a path cited only as evidence is not an updated: problem",
+  () => {
+    // `docs/y.md:12` is evidence after a semicolon, and `docs/y.md#z` is the
+    // section; neither is listed after `updated:`, so neither is checked.
+    const summary = "**Docs sweep** — grep: `foo`; section: `docs/y.md#z`; " +
+      `${UPDATED_SIBLINGS}; \`docs/y.md:12\` — still true because the flag is read there`;
+
+    const result = validateDocsSweep({
+      changedFiles: ["worker/deno/lib/a.ts"],
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.valid, true, result.problems.join("; "));
+    assertEquals(
+      result.problems.some((problem) => problem.includes("after `updated:`")),
+      false,
+    );
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a null changed-files list raises no updated: problem",
+  () => {
+    const summary =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: \`docs/x.md\``;
+
+    const result = validateDocsSweep({
+      changedFiles: null,
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.valid, true, result.problems.join("; "));
+    assertEquals(
+      result.problems.some((problem) => problem.includes("after `updated:`")),
+      false,
+    );
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - a relative updated: path matches the full changed path",
+  () => {
+    const summary =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: \`lib/a.ts\``;
+
+    const result = validateDocsSweep({
+      changedFiles: ["worker/deno/lib/a.ts"],
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.valid, true, result.problems.join("; "));
+  },
+);
+
+Deno.test(
+  "validateDocsSweep - more than five unbacked updated: paths are summarised as and N more",
+  () => {
+    const paths = [1, 2, 3, 4, 5, 6, 7].map((n) => `\`docs/a${n}.md\``);
+    const summary =
+      `**Docs sweep** — grep: \`foo\`; section: \`docs/x.md#y\`; ${UPDATED_SIBLINGS}; updated: ${
+        paths.join(", ")
+      }`;
+
+    const result = validateDocsSweep({
+      changedFiles: ["worker/deno/lib/a.ts"],
+      prSummaryContent: summary,
+    });
+
+    assertEquals(result.valid, false);
+    assertEquals(result.problems.length, 1, result.problems.join("; "));
+    assertStringIncludes(
+      result.problems[0]!,
+      "`docs/a1.md`, `docs/a2.md`, `docs/a3.md`, `docs/a4.md`, `docs/a5.md` and 2 more",
+    );
+    assertStringIncludes(result.problems[0]!, "does not change them");
   },
 );

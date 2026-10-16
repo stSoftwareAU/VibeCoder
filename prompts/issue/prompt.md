@@ -1243,6 +1243,7 @@ The file MUST contain:
      manual section you found and checked, the doc files you updated, and the
      existing sibling members you grepped (or `siblings: none — <why>`), or
      `no hits`, plus each hit left in place as `file:line — still true because …` — e.g. **Docs sweep** — grep: `retryLimit`, "Retr\w* in"; section: `docs/workflows/retries.md#retry-limit`; siblings: none — no existing set gained a member; updated: `docs/workflows/retries.md`; `docs/workflows/retries.md:88` — still true because the limit itself is unchanged
+     Every path after `updated:` must be in this PR's own diff: the worker checks it (Issue #3617).
 4. **Reproduction** (only when the issue carries the `bug` label): the block
    described in [Reproduction Status](#reproduction-status--say-how-far-you-actually-reproduced-the-bug)
    — the symptom, a `verified` / `partial` / `not-run` status, and the covering
