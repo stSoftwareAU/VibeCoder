@@ -29,6 +29,7 @@
 
 import type { Logger, WorkerConfig } from "../types.ts";
 import { auditChainVerifyCommand } from "../commands/audit_chain_verify.ts";
+import { agentTranscriptScanCommand } from "../commands/agent_transcript_scan.ts";
 import { diskSpaceCommand } from "../commands/disk_space.ts";
 import { logRotationCommand } from "../commands/log_rotation.ts";
 import { cleanupStaleTempFilesCommand } from "../commands/cleanup_stale_temp_files.ts";
@@ -55,6 +56,8 @@ import {
 import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
+  DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
+  DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
 } from "./worker_log_cleanup.ts";
 import { getEnvNumberOrDefault } from "./config.ts";
 import { type EnvLookup, processEnvLookup } from "./env_lookup.ts";
@@ -70,6 +73,12 @@ import { createLogger } from "./logger.ts";
  * re-verification of the worker's own audit trail, and it must observe the
  * journals before any cleanup step touches the work directory.
  *
+ * `agent-transcript-scan` runs **second** (Issue #3700): the scheduled scan of
+ * retained agent transcripts for egress, credential-path reads and
+ * disallowed-tool attempts. It runs before `log-rotation` and
+ * `worker-log-cleanup` so a transcript is scanned before anything rotates or
+ * deletes it, and a new finding fails the step loud.
+ *
  * `worker-log-cleanup` follows `log-rotation` (Issue #4027): size-based
  * rotation runs first, then age-based retention deletes the worker-PID logs
  * (plain or gzipped) that have aged out. This step was orphaned by the Deno
@@ -81,6 +90,7 @@ import { createLogger } from "./logger.ts";
  */
 export const HOUSEKEEPING_STEP_IDS = [
   "audit-chain-verify",
+  "agent-transcript-scan",
   "disk-space",
   "log-rotation",
   "worker-log-cleanup",
@@ -248,6 +258,11 @@ export function buildHousekeepingSteps(
       args: { "base-dir": `${options.workDir}/audit` },
     },
     {
+      id: "agent-transcript-scan",
+      command: "agent-transcript-scan",
+      args: { "log-dir": options.logDir },
+    },
+    {
       id: "disk-space",
       command: "disk-space",
       args: {
@@ -280,6 +295,14 @@ export function buildHousekeepingSteps(
         "hard-cap-count": envInt(
           "WORKER_LOG_HARD_CAP_COUNT",
           DEFAULT_HARD_CAP_COUNT,
+        ),
+        "transcript-max-age-days": envInt(
+          "AGENT_TRANSCRIPT_MAX_AGE_DAYS",
+          DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
+        ),
+        "transcript-hard-cap-count": envInt(
+          "AGENT_TRANSCRIPT_HARD_CAP_COUNT",
+          DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
         ),
       },
     },
@@ -411,6 +434,7 @@ export function buildHousekeepingSteps(
 /** Map from command name to the registered command object for dispatch. */
 const HOUSEKEEPING_COMMANDS = {
   "audit-chain-verify": auditChainVerifyCommand,
+  "agent-transcript-scan": agentTranscriptScanCommand,
   "disk-space": diskSpaceCommand,
   "log-rotation": logRotationCommand,
   "worker-log-cleanup": workerLogCleanupCommand,

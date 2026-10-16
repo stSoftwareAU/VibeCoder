@@ -156,6 +156,7 @@ import { toolchainSelfcheckCommand } from "./commands/toolchain_selfcheck.ts";
 import { repoSettingsHardenCommand } from "./commands/repo_settings_harden.ts";
 import { auditLogTailCommand } from "./commands/audit_log_tail.ts";
 import { auditChainVerifyCommand } from "./commands/audit_chain_verify.ts";
+import { agentTranscriptScanCommand } from "./commands/agent_transcript_scan.ts";
 import { milestoneCompletionCommand } from "./commands/milestone_completion.ts";
 import { milestoneHealthCommand } from "./commands/milestone_health.ts";
 import { milestoneBranchSyncCommand } from "./commands/milestone_branch_sync.ts";
@@ -356,6 +357,7 @@ export function createDefaultRegistry(): CommandRegistry {
   registry.register(repoSettingsHardenCommand);
   registry.register(auditLogTailCommand);
   registry.register(auditChainVerifyCommand);
+  registry.register(agentTranscriptScanCommand);
   registry.register(milestoneCompletionCommand);
   registry.register(milestoneHealthCommand);
   registry.register(milestoneBranchSyncCommand);
@@ -562,6 +564,7 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "clean-deno-cache",
       "log-rotation",
       "worker-log-cleanup",
+      "agent-transcript-scan",
       "path-bootstrap",
       "pid-guard",
       "load-config",
@@ -701,6 +704,7 @@ export async function main(args: string[] = Deno.args): Promise<void> {
       "clean-deno-cache",
       "log-rotation",
       "worker-log-cleanup",
+      "agent-transcript-scan",
       "path-bootstrap",
       "load-config",
       "gh-auth",

@@ -32,6 +32,8 @@ import {
 import {
   DEFAULT_HARD_CAP_COUNT,
   DEFAULT_MAX_AGE_DAYS,
+  DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
+  DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
 } from "../lib/worker_log_cleanup.ts";
 import { emptyEnv, envFrom } from "./support/env_lookup.ts";
 
@@ -404,6 +406,98 @@ Deno.test("sweepVolatileCliState - outside the worker container the CLI state is
   }
 });
 
+// --- Agent transcript scan and retention (Issue #3700) ---------------------
+
+Deno.test("buildHousekeepingSteps - runs agent-transcript-scan before any rotation or retention step (Issue #3700)", () => {
+  const steps = buildHousekeepingSteps(baseOptions({ logDir: "/l" }));
+  const step = steps.find((s) => s.id === "agent-transcript-scan");
+  assertEquals(step?.command, "agent-transcript-scan");
+  assertEquals(step?.args["log-dir"], "/l");
+
+  // Second, straight after audit-chain-verify (Issue #3712 keeps that first).
+  assertEquals(HOUSEKEEPING_STEP_IDS.indexOf("agent-transcript-scan"), 1);
+  const scanIndex = steps.findIndex((s) => s.id === "agent-transcript-scan");
+  assertEquals(scanIndex, 1);
+  for (
+    const later of ["disk-space", "log-rotation", "worker-log-cleanup"] as const
+  ) {
+    assertEquals(
+      scanIndex < steps.findIndex((s) => s.id === later),
+      true,
+      `agent-transcript-scan must run before ${later}`,
+    );
+  }
+});
+
+Deno.test("buildHousekeepingSteps - worker-log-cleanup passes the transcript retention window (Issue #3700)", () => {
+  const defaults = buildHousekeepingSteps(baseOptions(), emptyEnv)
+    .find((s) => s.id === "worker-log-cleanup");
+  assertEquals(
+    defaults?.args["transcript-max-age-days"],
+    DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
+  );
+  assertEquals(
+    defaults?.args["transcript-hard-cap-count"],
+    DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
+  );
+
+  const overridden = buildHousekeepingSteps(
+    baseOptions(),
+    envFrom({
+      AGENT_TRANSCRIPT_MAX_AGE_DAYS: "45",
+      AGENT_TRANSCRIPT_HARD_CAP_COUNT: "500",
+    }),
+  ).find((s) => s.id === "worker-log-cleanup");
+  assertEquals(overridden?.args["transcript-max-age-days"], 45);
+  assertEquals(overridden?.args["transcript-hard-cap-count"], 500);
+});
+
+Deno.test("runStartupHousekeeping - agent-transcript-scan fails loud on a flagged transcript end to end (Issue #3700)", async () => {
+  const logDir = await Deno.makeTempDir({
+    prefix: "housekeeping-transcripts-",
+  });
+  try {
+    await Deno.copyFile(
+      new URL("./fixtures/agent_transcripts/flagged.jsonl", import.meta.url),
+      `${logDir}/agent-vibe-hk3700-abc123-1.jsonl`,
+    );
+
+    // Run only the agent-transcript-scan step through the real command dispatch.
+    const step = buildHousekeepingSteps(baseOptions({ logDir }))
+      .find((s) => s.id === "agent-transcript-scan")!;
+    const deps = createDefaultHousekeepingDeps();
+    const outcome = await deps.runStep(step, buildDefaultWorkerConfig());
+
+    assertEquals(outcome.success, false);
+    assertStringIncludes(
+      outcome.message,
+      "[SECURITY] [AGENT_TRANSCRIPT_FLAGGED]",
+    );
+    const findingsExist = await Deno.stat(
+      `${logDir}/transcript-scan-findings.jsonl`,
+    ).then(() => true, () => false);
+    assertEquals(findingsExist, true);
+  } finally {
+    await Deno.remove(logDir, { recursive: true });
+  }
+});
+
+Deno.test("runStartupHousekeeping - agent-transcript-scan passes on an empty log dir (Issue #3700)", async () => {
+  const logDir = await Deno.makeTempDir({
+    prefix: "housekeeping-transcripts-clean-",
+  });
+  try {
+    const step = buildHousekeepingSteps(baseOptions({ logDir }))
+      .find((s) => s.id === "agent-transcript-scan")!;
+    const deps = createDefaultHousekeepingDeps();
+    const outcome = await deps.runStep(step, buildDefaultWorkerConfig());
+
+    assertEquals(outcome.success, true);
+  } finally {
+    await Deno.remove(logDir, { recursive: true });
+  }
+});
+
 // --- Two-tier work volume (Issue #242) -------------------------------------
 
 Deno.test("buildHousekeepingSteps - ages the work root's disposable tier out", () => {
@@ -481,6 +575,14 @@ Deno.test("buildHousekeepingSteps - an empty environment gives every documented 
   assertEquals(
     arg("worker-log-cleanup", "hard-cap-count"),
     DEFAULT_HARD_CAP_COUNT,
+  );
+  assertEquals(
+    arg("worker-log-cleanup", "transcript-max-age-days"),
+    DEFAULT_TRANSCRIPT_MAX_AGE_DAYS,
+  );
+  assertEquals(
+    arg("worker-log-cleanup", "transcript-hard-cap-count"),
+    DEFAULT_TRANSCRIPT_HARD_CAP_COUNT,
   );
   assertEquals(
     arg("work-volume-tiers", "max-age-days"),
